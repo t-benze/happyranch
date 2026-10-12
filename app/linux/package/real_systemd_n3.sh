@@ -119,7 +119,145 @@ printf 'subject=%s\n' "${PROOF_SUBJECT_SHA:-missing}" >"$diagnostics/bootstrap.t
 [[ -n "${PACKAGE_TAR:-}" && -f "$PACKAGE_TAR" ]] || fail "PACKAGE_TAR missing"
 [[ "${PROOF_SUBJECT_SHA:-}" =~ ^[0-9a-f]{40}$ ]] || fail "PROOF_SUBJECT_SHA missing"
 [[ "$(ps -p 1 -o comm= | xargs)" == systemd ]] || fail "PID 1 is not systemd"
-systemctl is-system-running >/dev/null 2>&1 || [[ "$(systemctl is-system-running 2>/dev/null)" == degraded ]] || fail "system manager unavailable"
+# This precedes the product cleanup trap. Own the query here, including a
+# shell-only cancellation, without retaining raw output or shell-normalizing it.
+preflight_pid=""; preflight_signal=0
+preflight_cancel() {
+  trap '' HUP INT TERM
+  preflight_signal="$1"
+  [[ -z "$preflight_pid" ]] || kill -TERM "$preflight_pid" 2>/dev/null || true
+}
+trap 'preflight_cancel 129' HUP
+trap 'preflight_cancel 130' INT
+trap 'preflight_cancel 143' TERM
+python - "$diagnostics/system-manager-preflight.txt" <<'PREFLIGHT' &
+import os
+import selectors
+import signal
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+cancelled = 0
+
+def cancel(signum, _frame):
+    global cancelled
+    cancelled = 128 + signum
+
+for signum in (signal.SIGHUP, signal.SIGINT, signal.SIGTERM):
+    signal.signal(signum, cancel)
+
+deadline = time.monotonic() + 120
+state, reason, query_status = "unavailable", "unavailable", "not_observed"
+query = None
+output = bytearray()
+try:
+    if not cancelled:
+        query = subprocess.Popen(
+            ["systemctl", "is-system-running", "--wait"],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, start_new_session=True,
+            env={**os.environ, "LC_ALL": "C", "SYSTEMD_COLORS": "0"},
+        )
+        os.set_blocking(query.stdout.fileno(), False)
+        with selectors.DefaultSelector() as selector:
+            selector.register(query.stdout, selectors.EVENT_READ)
+            eof = False
+            while True:
+                if cancelled:
+                    reason = "cancelled"
+                    break
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    state, reason = "unavailable", "timeout"
+                    break
+                if not eof:
+                    for _key, _events in selector.select(min(remaining, 0.1)):
+                        chunk = os.read(query.stdout.fileno(), 33 - len(output))
+                        output.extend(chunk)
+                        if not chunk:
+                            eof = True
+                            selector.unregister(query.stdout)
+                else:
+                    time.sleep(min(remaining, 0.1))
+                if len(output) > 32:
+                    state, reason = "unknown", "malformed"
+                    break
+                status = query.poll()
+                if eof and status is not None:
+                    query_status = status
+                    # v255 puts exactly one LF-terminated state. No decoding,
+                    # whitespace stripping or Bash substitution may admit it.
+                    states = ("running", "degraded", "initializing", "starting",
+                              "maintenance", "stopping", "offline", "unknown")
+                    state = next((s for s in states if output == (s + "\n").encode("ascii")), "unknown")
+                    if not output and status != 0:
+                        state, reason = "unavailable", "unavailable"
+                    elif output != (state + "\n").encode("ascii"):
+                        reason = "malformed"
+                    elif (state == "running" and status == 0) or (state == "degraded" and status == 1):
+                        reason = "ready"
+                    elif state in ("running", "degraded"):
+                        reason = "contradictory"
+                    elif status != 1:
+                        reason = "query_failed"
+                    else:
+                        reason = "unknown" if state == "unknown" else "not_ready"
+                    # Timely bytes alone cannot admit a late exit/validation.
+                    if time.monotonic() >= deadline:
+                        state, reason = "unavailable", "timeout"
+                    break
+except OSError:
+    reason = "unavailable" if query is None else "query_failed"
+finally:
+    if query is not None:
+        try:
+            if query.poll() is None:
+                query.kill()
+            query_status = query.wait(timeout=1)
+        except (OSError, subprocess.TimeoutExpired):
+            reason = "reap_failed"
+        query.stdout.close()
+    if cancelled and reason != "reap_failed":
+        reason = "cancelled"
+    if reason == "ready" and time.monotonic() >= deadline:
+        state, reason = "unavailable", "timeout"
+
+# No scratch or upstream stdout/stderr enters the always-uploaded diagnostics.
+try:
+    Path(sys.argv[1]).write_text(
+        f"state={state}\nreason={reason}\nquery_status={query_status}\n", encoding="ascii",
+    )
+except OSError:
+    reason = "evidence_unavailable"
+print(f"n3-system-manager:{state}:{reason}", file=sys.stderr)
+raise SystemExit(cancelled or (0 if reason == "ready" else 1))
+PREFLIGHT
+preflight_pid=$!
+# A signal between trap installation and PID assignment is not lost.
+if (( preflight_signal != 0 )); then
+  kill -TERM "$preflight_pid" 2>/dev/null || true
+fi
+preflight_status=0
+wait "$preflight_pid" || preflight_status=$?
+if (( preflight_signal != 0 )); then
+  # The interrupted Bash wait did not reap the child; its own kill/reap has
+  # a one-second allowance beyond the 120-second observation deadline.
+  wait "$preflight_pid" 2>/dev/null || true
+  # TERM also reaches a Python interpreter not yet initialized; in that
+  # case no query exists and no child diagnostic has been written.
+  if [[ ! -f "$diagnostics/system-manager-preflight.txt" ]]; then
+    printf 'state=unavailable\nreason=cancelled\nquery_status=not_observed\n' >"$diagnostics/system-manager-preflight.txt"
+  fi
+  printf 'shell_reason=cancelled\nshell_status=%s\n' "$preflight_signal" >>"$diagnostics/system-manager-preflight.txt"
+  exit "$preflight_signal"
+fi
+trap - HUP INT TERM
+case "$preflight_status" in
+  0) ;;
+  129|130|143) exit "$preflight_status" ;;
+  *) fail "system manager unavailable" ;;
+esac
 sudo -n true || fail "passwordless sudo unavailable"
 sudo systemd-run --quiet --wait --collect --unit=happyranch-n3-qualification /bin/true || fail "transient units unavailable"
 
