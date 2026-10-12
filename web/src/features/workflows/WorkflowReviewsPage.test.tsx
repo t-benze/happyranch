@@ -24,7 +24,7 @@ async function setup(n: 1 | 2 = 2) {
     current: { state: 'consumed', pending: false, reconciliation_required: false, reason: 'consumed', graph: { submission_id: 'submission-a', round_id: 'round-a', request_ids: ['request-a'], reviewer_task_ids: [] } } };
   if (n === 1) { handoff.current.graph!.request_ids = ['request-a','request-peer-a','request-peer-b']; handoff.current.graph!.reviewer_task_ids = ['TASK-101','TASK-102']; }
   selection = { format: 'workflow-owner-review-selection@1', activation_id: 'activation-a', instance_id: 'instance-a', original: { handoff_id: 'handoff-a', human_request_id: 'request-a', collection: { state: 'collecting', approved_use: false, validity: 'current', reason: null, owner_principal: 'human:founder', required_action: null } }, successor: null, return: { eligible: false, reason: 'pending', required_action: null } };
-  const scope = { format: `workflow-review-request@${n}`, org_slug: 'demo', instance_id: 'instance-a', handoff_id: 'handoff-a', submission_id: 'submission-a', submission_digest: digest, revision: 1, round_id: 'round-a', request_id: 'request-a', role: n === 1 ? 'founder' : 'approver', kind: 'human', principal: 'founder', team: null, assignment_generation: 1, template: activation.template, activation: { id: 'activation-a', revision: 1, request_digest: activation.original_request_digest }, authorization: 'authorization-a', binding_snapshot_id: 'binding-a', context_id: 'context-a', output: { primitive: n === 1 ? 'immutable-document-revision' : 'immutable-artifact-revision', description: 'Feasibility assessment', ...(n === 2 ? { accepted_kinds: ['document'] } : {}) }, outcomes: ['approved','changes_requested'], purpose: 'review', allowed_actions: ['collect-review'], inputs: [], ...(n === 2 ? { artifact: { identity: { org_namespace: 'demo', instance_id: 'instance-a', output_slot: 'output' }, submission_id: 'submission-a', revision: 1, kind: 'document', bytes_digest: digest, subject: { content_digest: digest } }, repository_resolution: null } : {}) };
+  const scope = { format: `workflow-review-request@${n}`, org_slug: 'demo', instance_id: 'instance-a', handoff_id: 'handoff-a', submission_id: 'submission-a', submission_digest: digest, revision: 1, round_id: 'round-a', request_id: 'request-a', role: n === 1 ? 'founder' : 'approver', kind: 'human', principal: 'founder', team: null, assignment_generation: 1, template: activation.template, activation: { id: 'activation-a', revision: 1, request_digest: activation.original_request_digest }, authorization: 'authorization-a', binding_snapshot_id: 'binding-a', context_id: 'context-a', output: { primitive: n === 1 ? 'immutable-document-revision' : 'immutable-artifact-revision', description: n === 1 ? 'Product requirements' : 'Feasibility assessment', ...(n === 2 ? { accepted_kinds: ['document'] } : {}) }, outcomes: ['approved','changes_requested'], purpose: 'review', allowed_actions: ['collect-review'], inputs: [], ...(n === 2 ? { artifact: { identity: { org_namespace: 'demo', instance_id: 'instance-a', output_slot: 'output' }, submission_id: 'submission-a', revision: 1, kind: 'document', bytes_digest: digest, subject: { content_digest: digest } }, repository_resolution: null } : {}) };
   request = { format: `workflow-review-request-receipt@${n}`, request_id: 'request-a', scope, request_scope_digest: '1'.repeat(64), submission_bytes_base64: base64(exactBytes(documentText)), reconciliation_required: false, status: 'pending', signed: false, pending: true, receipt: null } as unknown as WorkflowReviewRequestReceipt;
   transport.request.mockImplementation(async (path: string, opts?: { body?: HumanReviewCommand }) => {
     if (path.endsWith('/human-receipts')) {
@@ -50,7 +50,7 @@ async function confirm(outcome = 'Sign off') { fireEvent.click(screen.getByRole(
 describe('U1–U7 mounted route → real provider → shipping typed clients, intercepted fixture data', () => {
   it.each([1,2] as const)('U1/U2 uses generic labels and exact matching @%s findings command; individual receipt stays collecting', async n => {
     await setup(n); mount(); await ready();
-    expect(screen.getByRole('heading', { name: 'Feasibility assessment' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: n === 1 ? 'Product requirements' : 'Feasibility assessment' })).toBeInTheDocument();
     expect(screen.getByText(n === 1 ? 'product-design · Version 1' : 'different-proposal · Version 1')).toBeInTheDocument();
     expect(document.querySelector('script:not([src])')).toBeNull();
     fireEvent.change(screen.getByLabelText('Your findings'), { target: { value: '意见\r\nCafe\u0301\n' } });
@@ -181,6 +181,34 @@ describe('U1–U7 mounted route → real provider → shipping typed clients, in
     selection.instance_id = 'other-instance';
     mount(); await screen.findByText('Review unavailable');
     expect(transport.request.mock.calls.some(([path]) => path.includes('/handoffs/') || path.includes('/requests/'))).toBe(false);
+  });
+
+  it('U1/U4 equal document digests in two instances do not share a selection or draft', async () => {
+    const original = transport.request.getMockImplementation()!;
+    const a = structuredClone(activation); a.activation_id = 'activation-b'; a.instance_id = 'instance-b'; a.template.identity_id = 'another-template';
+    const h = structuredClone(handoff); h.core.handoff_id = 'handoff-b'; h.core.instance_id = 'instance-b'; h.core.reserved_submission_id = 'submission-b'; h.current.graph = { submission_id: 'submission-b', round_id: 'round-b', request_ids: ['request-b'], reviewer_task_ids: [] };
+    const d = structuredClone(selection); d.activation_id = 'activation-b'; d.instance_id = 'instance-b'; d.original!.handoff_id = 'handoff-b'; d.original!.human_request_id = 'request-b';
+    const q = structuredClone(request); q.request_id = 'request-b'; q.scope.request_id = 'request-b'; q.scope.instance_id = 'instance-b'; q.scope.activation.id = 'activation-b'; q.scope.submission_id = 'submission-b'; q.scope.round_id = 'round-b'; q.scope.template = a.template;
+    if ('handoff_id' in q.scope) q.scope.handoff_id = 'handoff-b';
+    if ('artifact' in q.scope) { q.scope.artifact.identity.instance_id = 'instance-b'; q.scope.artifact.submission_id = 'submission-b'; }
+    let release!: () => void; const selected = new Promise<void>(resolve => { release = resolve; });
+    transport.request.mockImplementation(async (...args) => {
+      const path = String(args[0]);
+      if (path.endsWith('/activations')) return [activation,a];
+      if (path.endsWith('/activations/activation-b')) return a;
+      if (path.endsWith('/activation-b/review-selection')) { await selected; return d; }
+      if (path.endsWith('/handoffs/handoff-b')) return h;
+      if (path.endsWith('/requests/request-b')) return q;
+      return original(...args);
+    });
+    mount(); await ready(); fireEvent.change(screen.getByLabelText('Your findings'), { target: { value: 'instance A private draft' } });
+    fireEvent.click(screen.getByRole('link', { name: /another-template/ }));
+    expect(screen.queryByDisplayValue('instance A private draft')).toBeNull();
+    expect(screen.queryByText((_text, node) => node?.tagName === 'PRE' && node.textContent === documentText)).toBeNull();
+    await act(async () => { release(); }); await ready();
+    expect(screen.getByText('Org: demo · Instance: instance-b · Output: output')).toBeInTheDocument();
+    expect(screen.getByLabelText('Your findings')).toHaveValue('');
+    expect(q.scope.submission_digest).toBe(request.scope.submission_digest);
   });
 
 });
