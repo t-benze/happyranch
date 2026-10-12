@@ -142,7 +142,7 @@ test('P18a bootstrap authentication refusal is translated and does not invent su
 });
 
 
-test('P18c mounted list/overview conflict refreshes without retry; deliberate Resume uses fresh generation', async () => {
+test('P18c mounted list conflict refreshes without retry or overview read; deliberate Resume uses fresh generation', async () => {
   let current = projection();
   let lists = 0; let overviews = 0;
   const writes: { action: string; body: unknown }[] = [];
@@ -153,11 +153,8 @@ test('P18c mounted list/overview conflict refreshes without retry; deliberate Re
       lists++;
       return HttpResponse.json({ tasks: new URL(request.url).searchParams.has('status') ? [] : [record({ pause: current })], next_cursor: null });
     }),
-    http.get('/api/v1/orgs/alpha/tasks/pause-overview', () => {
-      overviews++;
-      return HttpResponse.json({ org_slug: 'alpha', observed_at: '2026-10-11T00:00:00Z', evidence_complete: true, counts: null, next_cursor: null,
-        unheld_runnable: current.held ? [] : [current], paused: current.held ? [current] : [], pausing: [], terminal_drain: [], unavailable_roots: [] });
-    }),
+    // THR-292 seq41: the Tasks page no longer reads the overview; count any read as a regression.
+    http.get('/api/v1/orgs/alpha/tasks/pause-overview', () => { overviews++; return HttpResponse.json({ org_slug: 'alpha', observed_at: '2026-10-11T00:00:00Z', evidence_complete: true, counts: null, next_cursor: null, unheld_runnable: [], pausing: [], paused: [], terminal_drain: [], unavailable_roots: [] }); }),
     http.post('/api/v1/orgs/alpha/tasks/ROOT-1/:action', async ({ request, params }) => {
       writes.push({ action: String(params.action), body: await request.json() });
       if (params.action === 'pause') {
@@ -171,15 +168,16 @@ test('P18c mounted list/overview conflict refreshes without retry; deliberate Re
   renderWithProviders(<AppRoutes />, { route: '/orgs/alpha/tasks' });
   const list = await screen.findByTestId('tasks-responsive-list');
   await within(list).findByRole('button', { name: 'Pause' });
-  const previous = { lists, overviews };
+  const previous = { lists };
   fireEvent.click(within(list).getByRole('button', { name: 'Pause' }));
   expect(await within(list).findByRole('alert')).toHaveTextContent('Pause state changed.');
   await waitFor(() => expect(screen.getAllByRole('button', { name: 'Resume' })).toHaveLength(1));
-  expect(lists).toBeGreaterThan(previous.lists); expect(overviews).toBeGreaterThan(previous.overviews);
+  expect(lists).toBeGreaterThan(previous.lists);
   expect(writes).toEqual([{ action: 'pause', body: { expected_generation: 6 } }]);
   fireEvent.click(within(list).getByRole('button', { name: 'Resume' }));
   await waitFor(() => expect(screen.getAllByRole('button', { name: 'Pause' })).toHaveLength(1));
   expect(writes).toEqual([{ action: 'pause', body: { expected_generation: 6 } }, { action: 'resume', body: { expected_generation: 9 } }]);
+  expect(overviews).toBe(0);
 });
 
 

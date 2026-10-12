@@ -125,16 +125,19 @@ reader, even with empty controls. No live migration, restart or deployment is
 performed by delivering source.
 
 Backend transport is PR1. PR2 consumes it through provider-aware Web hooks:
-compact root-only list/detail controls and an org-scoped read-only Task pause overview.
+compact root-only list/detail controls. Founder THR-292 seq41 (TASK-10917) removed
+the standalone browser Task pause overview panel from the ordinary Tasks page; the
+read-only overview remains available through GET /tasks/pause-overview, its TS client
+and `happyranch tasks --pause-overview`, independently of any panel.
 Pending roots have no Pause; descendants show inherited hold and actual root
 links. Separate control/evidence presentation preserves real lifecycle, waiting,
 attention and lineage; terminal drain diagnostics remain visible. Missing or
 unsafe generation/projection is unavailable. Pending controls disable repeated
 submissions across mounted views. Actions submit the displayed generation and
-refresh all task list families/detail/overview for the original org, without
+refresh all task list families/detail for the original org, without
 provider-level replay or an opposite action on conflict/refusal. Existing shared
 HTTP authentication recovery is unchanged (a401 may bootstrap/retry once).
-Overview pagination displays independent timestamped observations, never summed
+CLI/API overview pages are independent timestamped observations, never summed
 counts or a complete-zero assertion; null counts/evidence limits stay explicit.
 Both locales and responsive layouts preserve original filters, dialogs, focus,
 drafts and actions. Prototype and browser-interception evidence is UI/transport
@@ -142,7 +145,8 @@ only. The daily source increment in e2e/pause.py and e2e/pause_browser.py author
 the finite P01a/P05 chain drain, P11/P14/P17 identity/idempotence/stale control,
 P14b/c same-org unheld progress, P12 drained same-files disposable product-daemon
 restart and explicit Resume, separate P01b Resume-during-drain, and P16/P18 live
-English/Chinese list/detail/child/overview/reload readback. Its 19 named Pause
+English/Chinese list/detail/child/reload readback (the browser case now asserts
+no overview panel or overview read; the CLI overview-readonly case is unchanged). Its 19 named Pause
 variants follow the unchanged 9-launch/23-variant baseline; exact host anchors
 are 12 before restart, 0 on restart readiness and 6 at final closure, with 18
 combined launches. These are full source expectations. Scheduled run38181136948

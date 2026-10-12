@@ -2,7 +2,7 @@ import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 import { MemoryRouter } from 'react-router-dom';
-import { beforeEach, test, expect } from 'vitest';
+import { test, expect } from 'vitest';
 import { AppProvider, makeQueryClient } from '@/design-system/providers/AppProvider';
 import { AppRoutes } from '@/routes';
 import { I18nTestBoundary } from '@/test/render';
@@ -88,14 +88,4 @@ test('retries a failed attention continuation with its own cursor and reaches th
   ]);
   await qc.cancelQueries();
   qc.clear();
-});
-
-beforeEach(() => {
-  server.use(
-    // Independent overview fixture; these tests retain their original list/attention contract.
-    http.get('/api/v1/orgs/:slug/tasks/pause-overview', ({ params }) => HttpResponse.json({
-      org_slug: params.slug, observed_at: '2026-10-11T00:00:00Z', evidence_complete: true,
-      counts: null, next_cursor: null, unheld_runnable: [], pausing: [], paused: [], terminal_drain: [], unavailable_roots: [],
-    })),
-  );
 });

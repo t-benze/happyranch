@@ -8,6 +8,8 @@ from playwright.sync_api import expect
 from oracles import require
 
 if TYPE_CHECKING:
+    from playwright.sync_api import Request
+
     from controller import Controller
 
 
@@ -29,7 +31,11 @@ class PauseBrowser:
         self.c.remaining()
 
     def held(self, root: str, child: str, state: str, locale: str) -> dict:
-        """Real list/detail/child/overview + reload; no projected-state mocks."""
+        """Real list/detail/child + reload; no projected-state mocks.
+
+        The Tasks page no longer mounts the standalone pause overview panel
+        (founder THR-292 seq41); the CLI/API overview stays in ``pause.overview``.
+        """
         page = self.b.page
         self.locale(locale)
         offset = len(self.b.events)
@@ -39,31 +45,28 @@ class PauseBrowser:
         overview_title = "Task pause overview" if locale == "en" else "任务暂停概览"
         roots_path = "/api/v1/orgs/alpha/tasks/roots"
         overview_path = "/api/v1/orgs/alpha/tasks/pause-overview"
-        with self.b.response(roots_path), self.b.response(overview_path) as received:
-            page.goto(f"{self.b.base}/orgs/alpha/tasks", timeout=self.c.remaining(self.b.page_timeout)*1000)
+        overview_reads: list[str] = []
+
+        def record_overview(request: Request) -> None:
+            if request.url.split("?")[0] == self.b.base + overview_path:
+                overview_reads.append(request.url)
+
+        page.on("request", record_overview)
+        try:
+            with self.b.response(roots_path):
+                page.goto(f"{self.b.base}/orgs/alpha/tasks", timeout=self.c.remaining(self.b.page_timeout)*1000)
+                self.c.remaining()
+            main = page.get_by_role("main")
+            root_control = main.locator(f'[data-task-pause="{root}"]')
+            expect(root_control.get_by_text(label, exact=True)).to_be_visible(timeout=self.c.remaining(5)*1000)
             self.c.remaining()
-        overview = received.value.json()
-        require(overview["org_slug"] == "alpha" and any(p["root_task_id"] == root for p in overview[state]),
-                "browser overview actual org/held root", overview)
-        main = page.get_by_role("main")
-        root_control = main.locator(f'[data-task-pause="{root}"]')
-        expect(root_control.get_by_text(label, exact=True)).to_be_visible(timeout=self.c.remaining(5)*1000)
-        self.c.remaining()
-        expect(root_control.get_by_role("button", name=resume, exact=True)).to_be_visible(timeout=self.c.remaining(5)*1000)
-        self.c.remaining()
-        section = main.get_by_role("region", name=overview_title, exact=True)
-        expect(section).to_be_visible(timeout=self.c.remaining(5)*1000)
-        self.c.remaining()
-        expect(section.get_by_text("Organization: alpha" if locale == "en" else "组织：alpha", exact=True)).to_be_visible(timeout=self.c.remaining(5)*1000)
-        self.c.remaining()
-        expect(section.get_by_text("This never certifies a safe restart" if locale == "en" else "本概览不能证明可以安全重启", exact=False)).to_be_visible(timeout=self.c.remaining(5)*1000)
-        self.c.remaining()
-        expect(section.locator(f'a[href="/orgs/alpha/tasks/{root}"]')).to_be_visible(timeout=self.c.remaining(5)*1000)
-        self.c.remaining()
-        expect(section.get_by_role("button", name=pause, exact=True)).to_have_count(0, timeout=self.c.remaining(5)*1000)
-        self.c.remaining()
-        expect(section.get_by_role("button", name=resume, exact=True)).to_have_count(0, timeout=self.c.remaining(5)*1000)
-        self.c.remaining()
+            expect(root_control.get_by_role("button", name=resume, exact=True)).to_be_visible(timeout=self.c.remaining(5)*1000)
+            self.c.remaining()
+            expect(main.get_by_role("region", name=overview_title, exact=True)).to_have_count(0, timeout=self.c.remaining(5)*1000)
+            self.c.remaining()
+        finally:
+            page.remove_listener("request", record_overview)
+        require(overview_reads == [], "Tasks page mounts no pause overview read", overview_reads)
         # Detail is reached through the actual list link, then genuinely reloaded.
         path = f"/api/v1/orgs/alpha/tasks/{root}"
         with self.b.response(path), self.b.response(path + "/recall"):
@@ -118,7 +121,7 @@ class PauseBrowser:
         self.c.remaining()
         require(not any(r["event"] == "pageerror" for r in self.b.events), "Pause browser JavaScript errors", self.b.events)
         return dict(root=root, child=child, locale=locale, state=state, generation=1,
-                    viewport=dict(width=1440, height=900), events=self.b.events[offset:], overview=overview,
+                    viewport=dict(width=1440, height=900), events=self.b.events[offset:], overview_reads=overview_reads,
                     reload=p, child_projection=data["pause"], screenshots=[shot + "-root.png", shot + "-child.png"])
 
     def terminal(self, root: str) -> None:
