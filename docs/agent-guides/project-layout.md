@@ -1,5 +1,53 @@
 # Project Layout
 
+**Document revision C1 — Founder THR139seq493/490, ROOT TASK10693.**
+The same current Founder owner explicitly returns a fully collected, objected
+r1 to the same author with a pinned CAS command. Pending peers survive objections.
+POST `/api/v1/orgs/{slug}/workflows/instances/{instance_id}/revisions` takes
+`workflow-document-revision-command@1`: operation_key, instance_id, activation_id,
+expected_revision=1, predecessor_submission_id/digest, predecessor_round_id and
+original authority pin. It returns201 or exact replay200 without another task.
+GET `/workflows/revisions/{revision_operation_id}` selects exactly owner-human
+bearer or the new-author current session; its closed receipt separates retained
+identity/history from current eligibility and exposes no claim/host controls.
+The new genuine task owns a new context/intent with admission_kind=revision,
+attempt/generation2 and unchanged activation1, owner/binding/authorization/root.
+POST `/workflows/revisions/{revision_operation_id}/submissions?session_id=CURRENT`
+stages `workflow-author-revision-command@1` with literal2 and artifact_kind=document.
+CLI `workflows revisions start/show/stage` matches these transports; stage requires
+loopback session proof, without bearer fallback. Browser exposes owner/read only.
+Staged G bytes keep permanent NULL legacy result; only the new task's own full
+INTEGER callback and successful Boolean-quiescent terminal append the genuine
+result link and fresh configured review requests/agent tasks. Review scope,
+human/stage commands, receipts, acknowledgement and service join select explicit
+@3/r2; old @1/@2 remain literal r1 and byte-compatible. Each current reviewer gets
+only its own bounded r1 prior_review. The author gets all closed findings and
+only originally addressed inputs. Fresh all-slot approvals yield one service
+join; old receipts and tasks never approve r2. Historical r1 is needs_revision
+with reason noncurrent_successor after return; current assignment replacement
+retains all historical tasks/results/evidence/contributors and receipts.
+Layout I changes only the draft admission enum and adds ONE
+workflow_document_revision_operations table. F/E/G/H independent readers remain;
+H literal r1/unique intent and every old schema/data byte are preserved. Proven
+fresh org creation initializes I. Existing startup/reopen/enable only validates.
+Explicit owned idle H→I operator source is
+`scripts/migrate_workflow_document_revision_schema.py --org-root ABSOLUTE_ORG_ROOT
+--org-slug ORG [--check]`. No live migration was executed. Even empty I needs a
+compatible reader; no old-reader downgrade claim. Native denies the exact new
+author POST using independent raw/normalized one-pass candidates before credentials;
+shared normalizer/transport/auth/host permissions remain unchanged.
+C1 source is delivered; wider recovery/reassignment/owner transfer/r3/direct-submit,
+B2 repository resolution and mounted end-user UI remain separate. Code activation
+still refuses409 before allocation. All new behavior/assertion/red-green/mutation/
+repetition/proof/executable-QA is UNEXECUTED/FOUNDER-WAIVED139429/430; integration
+SKIPPED24342; Python units RETIRED. Retained source assertions have not executed.
+Source checks establish no behavior or migration safety. Independent full review,
+same-head scoped QA, lint/static gates, normal hooks and manager guarded merge
+remain. Founder465 public two-template/revision smoke and actual Founder UI
+Request changes AND Sign off remain root-owned UNOBSERVED. This current C1
+section supersedes historical C1-pending/fresh-H checkpoint descriptions below.
+
+
 U3a(b) internal producers are `runtime/workflows/submissions.py` (immutable
 original-author H reservation, SAME-operation fulfillment, graph validation and
 completed-source discovery) and `review_dispatch.py` (actual F5 review ownership

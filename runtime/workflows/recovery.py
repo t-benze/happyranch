@@ -44,12 +44,16 @@ def classify_task(db: Any, task_id: str, *, org_slug: str | None) -> WorkflowTas
                 if task is None or (intent["state"] == "queued" and (
                         task["status"] != "pending" or task["current_session_id"] is not None)):
                     return WorkflowTaskOwnership("reconciliation_required", intent["id"], intent["state"])
-                operation = conn.execute(
-                    "SELECT * FROM workflow_activation_operations WHERE org_slug=? AND principal=? "
-                    "AND operation_key=? AND activation_id=? AND request_digest=?",
-                    (org_slug, intent["admission_principal"], intent["operation_key"],
-                     intent["activation_id"], intent["request_digest"]),
-                ).fetchone()
+                if intent['admission_kind'] == 'revision':
+                    operation = conn.execute('SELECT * FROM workflow_document_revision_operations WHERE draft_intent_id=? AND org_slug=? AND principal=? AND operation_key=? AND request_digest=?',
+                        (intent['id'], org_slug, intent['admission_principal'], intent['operation_key'], intent['request_digest'])).fetchone()
+                else:
+                    operation = conn.execute(
+                        "SELECT * FROM workflow_activation_operations WHERE org_slug=? AND principal=? "
+                        "AND operation_key=? AND activation_id=? AND request_digest=?",
+                        (org_slug, intent["admission_principal"], intent["operation_key"],
+                         intent["activation_id"], intent["request_digest"]),
+                    ).fetchone()
                 if operation is None:
                     return WorkflowTaskOwnership("reconciliation_required", intent["id"], intent["state"])
                 # The generic E validator checks schema/event integrity. The
@@ -59,9 +63,7 @@ def classify_task(db: Any, task_id: str, *, org_slug: str | None) -> WorkflowTas
                 dispatcher = getattr(db, "_workflow_drafts", None)
                 if dispatcher is None or dispatcher.org.slug != org_slug:
                     return WorkflowTaskOwnership("reconciliation_required", intent["id"], intent["state"])
-                dispatcher.org.workflow_activations._closure(
-                    conn, intent["activation_id"], actor=intent["admission_principal"],
-                )
+                dispatcher._intent(conn, task_id)
                 return WorkflowTaskOwnership("draft", intent["id"], intent["state"])
             if bridges:
                 bridge = bridges[0]

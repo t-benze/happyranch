@@ -155,7 +155,11 @@
     "POST /api/v1/runtime/custom-cli/{operation_id}/forget",
     "GET /api/v1/orgs/{slug}/workflows/submissions/handoffs/{handoff_id}",
     "GET /api/v1/orgs/{slug}/workflows/reviews/requests/{request_id}",
-    "GET /api/v1/orgs/{slug}/tasks/{task_id}/retry-verification"
+    "POST /api/v1/orgs/{slug}/workflows/reviews/human-receipts",
+    "POST /api/v1/orgs/{slug}/workflows/instances/{instance_id}/revisions",
+    "GET /api/v1/orgs/{slug}/workflows/revisions/{revision_operation_id}",
+    "GET /api/v1/orgs/{slug}/tasks/{task_id}/retry-verification",
+    "GET /api/v1/orgs/{slug}/workflows/activations/{activation_id}/review-selection"
   ],
   "excluded": {
     "POST /api/v1/runtime/custom-cli/connect": "registration-token-only direct custom-CLI ingress; secret token route, never browser-consumed",
@@ -207,7 +211,9 @@
     "POST /api/v1/orgs/{slug}/custom-skills/agent-create": "agent-only — opaque session-binding, not exercised from the Web UI (THR-055 B2)",
     "GET /api/v1/orgs/{slug}/portability-preflight": "cli-only org-portability preflight — read-only, no browser/TS consumer (THR-187 Slice A)",
     "POST /api/v1/orgs/{slug}/reconcile-portability": "founder-only org-portability reconciliation — no browser/TS consumer (THR-187 Slice A)",
+    "POST /api/v1/orgs/{slug}/workflows/reviews/stages": "agent-only current-reviewer mutation",
     "POST /api/v1/orgs/{slug}/workflows/submissions/handoffs": "agent-only current-source mutation",
+    "POST /api/v1/orgs/{slug}/workflows/revisions/{revision_operation_id}/submissions": "agent-only current-revision-author mutation",
     "POST /api/v1/orgs/{slug}/tasks/{task_id}/reconcile-failed-continuation": "agent-only exact THR299 ordinary TASK10725 manager operation; no browser write grant"
   }
 }

@@ -327,18 +327,48 @@ claims a receipt identity field that the API does not expose.
 
 Exact combined alpha closure is13 tasks/17 results; beta stays1/1. Each chain
 has3 tasks/4 results, root count2, each child count1, four starts/ends/consumed
-reports, exactly one chain advance and delegate→done manager decisions. Final
-socket holds are empty and every actual provider PID/start is gone. The outer
+reports, exactly one chain advance and delegate→done manager decisions. Closure
+joins each actual task/agent/session launch to exactly one genuine
+INTEGER `task_results` row, with identical row contents in the final snapshot.
+`session_start` supplies the matching SID; `CompletionReport.model_dump()` has
+no SID. Its completion audit supplies task/agent/status/confidence/summary/verdict
+and decision semantics, joined to the result and ordered start/end audit rows.
+Serialized `NextStep`/`ChainLeg` null fields and empty lists are compared as
+model defaults; every declared decision value and extra active value is checked.
+The already-read snapshot is retained through sanitized `c.durable` export as
+`pause_chain_observation`, explicitly partial/unvalidated, before assertions.
+`pause_chain_closure` and named PASS markers still require every assertion.
+Final socket holds are empty and every actual provider PID/start is gone. The outer
 unchanged watcher still owns all browser/relay/socket/old+new-port cleanup.
 Controller phase evidence retains old/new daemon identities and cumulative
 ports even if restart readiness fails. No serving daemon is touched.
 
 ### Authored versus executed
 
-All six groups and bilingual live browser aspects above are **AUTHORED,
-UNEXECUTED**. First scheduled daily execution remains **PENDING**; local syntax,
-registration/config inspection and lint cannot establish behavior or complete
-test-authoring PASS. Timing for this combined source is unmeasured. Manifest
+The first daily run [38181136948](https://github.com/t-benze/happyranch/actions/runs/38181136948)
+executed source `bfeb109fe0e7801f17508abe96a39d376f2886fb` on 2026-10-11
+at22:37UTC and FAILED in all Python3.12/3.13/3.14 cells. Each records14 partial
+Pause PASS observations: chain-drain, child-pause-denied, child-resume-denied,
+pause-idempotent, browser-pausing-en/zh, overview-readonly, same-org-unheld,
+drained-before-restart, drained-restart, browser-paused-en/zh, resume-idempotent
+and stale-resume. `Pause.restart-final` aborted on the harness's nonexistent
+completion-audit `session_id` expectation; terminal-denied, resume-during-drain,
+drain-final and exact-closure were not reached. This is no attributable product
+regression RED or complete post-Resume audit/behavioral acceptance.
+
+TASK10870/TASK10874 correct the existing `finish_chain` consumer join for both
+PAUSE_RESTART and PAUSE_DRAIN, reusing accepted groups4/5/6 above without a new
+production seam. Corrected behavior, wrong/missing/duplicate result identity,
+wrong audit owner/payload/order rejection, protected RED/restoration/GREEN and
+repetition remain **UNEXECUTED**. The failed run did not export its final chain
+SQL snapshot; public results/Recall support partial lifecycle observations only.
+Full case ledger and original designs: TASK10870 assessment.md,
+original-case-records.md and evidence/pause-case-ledger.json; TASK10869 supplies
+independent aggregate corroboration. New partial snapshot retention establishes
+no retrospective SQL proof. Local syntax/source/static inspection and lint
+cannot establish behavior or complete test-authoring PASS. All three aborted
+runs recorded cleanup.ok and empty survivors/errors; their scenario times
+76.722/73.925/69.951s measure abort prefixes, not full combined runtime fit. Manifest
 600-second target, 720-second action stop, 900-second hard limit, evidence/cleanup
 reserves and provider300 remain unchanged; there is no ad hoc/direct controller,
 provider, browser or disposable-daemon execution, rerun or forged event admission.

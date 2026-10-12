@@ -31,6 +31,7 @@ const SECTION_TITLES: Record<string, MessageKey> = {
   audit: 'shell.title.audit',
   settings: 'shell.title.settings',
   jobs: 'shell.title.jobs',
+  reviews: 'shell.title.reviews',
   health: 'shell.title.runtimeHealth',
 };
 

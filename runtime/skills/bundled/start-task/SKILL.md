@@ -41,6 +41,37 @@ original key on transport loss, and stage before the final callback. If the
 compatible adapter is unavailable, report that dependency; never fabricate a
 result or substitute an unapproved direct-submit/reviewer-stage operation.
 
+For a newly pinned @4 artifact original author, the template singleton selects
+kind. B1 admits documents only; code activation refuses before allocation.
+Follow the actual bound supplement and use workflow-author-handoff-command@2
+with artifact_kind document, never the historical @1 command for @4. The
+repository_binding/resolution slots are null and grant no repository capability.
+A current configured agent reviewer follows its bound launch supplement: read
+only the selected pinned request/inputs, then stage exact UTF8 findings with
+`happyranch workflows reviews stage --org ORG --session-id CURRENT
+--from-file /absolute/command.json --json` before the genuine final callback.
+Use workflow-review-stage-command@1 for an @1 request scope and @2 for an @2
+scope or @3 for a revision2 @3 scope, the selected request/digest/revision/declared outcome and one stable key.
+Staging returns an unsigned five-field acknowledgement; it is not a receipt.
+Keep the same key/body after transport loss, without automatic retry. Only the
+actual INTEGER/full callback plus successful Boolean-quiescent terminal and
+current authority can admit a receipt. Report unavailable dependencies and
+failure/BLOCK evidence honestly. No execution/merge authority follows.
+
+A genuine new revision author follows the bound return brief and all collected
+r1 feedback, with only originally author-addressed inputs. Stage literal r2 using
+`happyranch workflows revisions stage REVISION_OPERATION --org ORG
+--session-id CURRENT --from-file /absolute/command.json --json`. Supply exactly
+workflow-author-revision-command@1, operation_key, revision_operation_id,
+expected_revision=2, artifact_kind=document, submission_bytes_base64 and
+submission_digest. Keep the same key/body after transport loss and stage before
+the actual final callback. Admission, staged bytes and transport success supply
+no result, signature or review graph. Only this new task's own full INTEGER
+callback and successful Boolean-quiescent terminal can fulfill under current
+authority. Never revive the old task or reuse old findings/receipts as r2 approval.
+A new reviewer selected by its current @3 request can read only its own bounded
+r1 prior_review, not another reviewer's private inputs or proof material.
+
 Configured review tasks independently assess their pinned document and filtered
 inputs, then report through their actual task/session callback. Requests and
 callbacks remain unsigned; do not claim a receipt, joined approval or another

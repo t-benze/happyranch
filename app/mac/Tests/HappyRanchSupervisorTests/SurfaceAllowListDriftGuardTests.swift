@@ -45,7 +45,10 @@ struct SurfaceAllowListDriftGuardTests {
         ("{candidate_id}", "cand-1"),
         ("{attachment_id}", "att-1"),
         ("{adapter_id}", "adapter-1"),
+        ("{activation_id}", "activation-1"),
         ("{handoff_id}", "handoff-1"),
+        ("{instance_id}", "instance-1"),
+        ("{revision_operation_id}", "revision-1"),
         ("{request_id}", "request-1"),
     ]
 
@@ -98,6 +101,17 @@ struct SurfaceAllowListDriftGuardTests {
     ]
 
     // MARK: - Tests
+
+    @Test("owner review discovery GET retains existing remote classification")
+    func ownerReviewSelectionClassification() throws {
+        let (included, excluded) = try Self.loadClassification()
+        let route = "GET /api/v1/orgs/{slug}/workflows/activations/{activation_id}/review-selection"
+        #expect(included.contains(route))
+        #expect(!excluded.contains(route))
+        let raw = "/api/v1/orgs/alpha/workflows/activations/activation-1/review-selection"
+        #expect(SurfaceAllowList.default.isAllowed(method: "GET",
+            path: DaemonPathNormalizer.stripApiPrefix(raw), rawPath: raw))
+    }
 
     @Test("THR299 agent-only writer and advisory reader mirror classification in both forms")
     func failedContinuationClassification() throws {

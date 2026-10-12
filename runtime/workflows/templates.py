@@ -256,7 +256,31 @@ def _compile_document_definition(definition: object) -> dict:
                 submission=submission)
 
 
+def _compile_artifact_definition(definition: object) -> dict:
+    """Finite @4 data contract; kind selection never confers repository access."""
+    root = _closed_dict(definition, {
+        "kind", "schema_version", "description", "author", "output", "reviewers",
+        "outcomes", "approval", "request_changes", "submission",
+    })
+    output = _closed_dict(root["output"], {"primitive", "description", "accepted_kinds"})
+    if (type(root["schema_version"]) is not int or root["schema_version"] != 4
+            or root["kind"] != "artifact-review"
+            or output["primitive"] != "immutable-artifact-revision"
+            or type(output["accepted_kinds"]) is not list
+            or len(output["accepted_kinds"]) != 1
+            or output["accepted_kinds"][0] not in ("document", "code-change")):
+        raise WorkflowTemplateError("invalid_template_definition")
+    # Share finite policy validation, preserving the historical compiler and
+    # serializer. The @4 output remains explicit and is never content-sniffed.
+    policy = _compile_document_definition(dict(root, kind="document-review", schema_version=3,
+        output=dict(primitive="immutable-document-revision", description=output["description"])))
+    return dict(policy, format="workflow-artifact-contract@4", output=output)
+
+
 def _validate_definition(definition: object) -> bytes:
+    if isinstance(definition, dict) and type(definition.get("schema_version")) is int and definition["schema_version"] == 4:
+        _compile_artifact_definition(definition)
+        return _canonical_json(definition, code="invalid_template_definition")
     if isinstance(definition, dict) and type(definition.get("schema_version")) is int and definition["schema_version"] in (2, 3):
         _compile_document_definition(definition)
         return _canonical_json(definition, code="invalid_template_definition")
@@ -264,7 +288,7 @@ def _validate_definition(definition: object) -> bytes:
 
 
 def _definition_pins(definition: dict) -> tuple[str, str, str]:
-    if type(definition.get("schema_version")) is int and definition["schema_version"] in (2, 3):
+    if type(definition.get("schema_version")) is int and definition["schema_version"] in (2, 3, 4):
         version = definition["schema_version"]
         return f"workflow-compiler@{version}", f"workflow-validator@{version}", f"operator-input@{version}"
     return _COMPILER_PIN, _VALIDATOR_PIN, _SOURCE_PIN
@@ -288,7 +312,24 @@ def _document_contract(template: WorkflowTemplateVersion) -> dict | None:
             raise WorkflowTemplateError("template_storage_corrupt")
         if _definition_pins(definition)[0] in ("workflow-compiler@2", "workflow-compiler@3"):
             return _compile_document_definition(definition)
+        if template.compiler_pin == "workflow-compiler@4":
+            raise WorkflowTemplateError("template_storage_corrupt")
         return None
+    except (ValueError, TypeError, UnicodeError) as exc:
+        raise WorkflowTemplateError("template_storage_corrupt") from exc
+
+
+def _review_contract(template: WorkflowTemplateVersion) -> dict | None:
+    """Select an exact closed family; legacy documents keep their own contract."""
+    if template.compiler_pin != "workflow-compiler@4":
+        return _document_contract(template)
+    try:
+        definition = json.loads(template.definition_bytes)
+        raw = _validate_definition_pins(definition, compiler_pin=template.compiler_pin,
+            validator_pin=template.validator_pin, source_pin=template.source_pin)
+        if raw != template.definition_bytes:
+            raise ValueError("canonical bytes")
+        return _compile_artifact_definition(definition)
     except (ValueError, TypeError, UnicodeError) as exc:
         raise WorkflowTemplateError("template_storage_corrupt") from exc
 
@@ -373,7 +414,7 @@ class WorkflowTemplateStore:
             conn.execute("BEGIN IMMEDIATE")
             try:
                 principal.revalidate()
-                if compiler_pin == "workflow-compiler@3":
+                if compiler_pin in ("workflow-compiler@3", "workflow-compiler@4"):
                     from runtime.infrastructure.workflow_schema import require_author_handoff_schema
                     require_author_handoff_schema(conn, expected_org_slug=org_slug)
                 prior = conn.execute(
