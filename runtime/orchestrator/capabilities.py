@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from runtime.models import StepRecord
+from runtime.identities.presentation import identity_display
 
 
 def build_capabilities_prompt(
@@ -10,6 +11,7 @@ def build_capabilities_prompt(
     manager_name: str = "team_manager",
     self_only: bool = False,
     reviewer_agents: list[str] | None = None,
+    name_metadata=None,
 ) -> str:
     """Build the prompt sent to a task owner for each decision step.
 
@@ -84,7 +86,7 @@ def build_capabilities_prompt(
     ]
 
     for agent in agents:
-        sections.append(f"| {agent['name']} | {agent['description']} |")
+        sections.append(f"| {identity_display(name_metadata, agent['name'])} | {agent['description']} |")
 
     sections.extend([
         "\n### Response Format (MANDATORY)\n",

@@ -1,0 +1,519 @@
+{
+  "status": "PROPOSED_NOT_IMPLEMENTED_NOT_EXECUTED",
+  "observed_source_sha": "4cc1be720c1a170f3f5955a818b1053fd9116d23",
+  "selections": {
+    "core": [
+      "tests/integration/test_identity_names_core.py::test_a1_install_migrate_reopen",
+      "tests/integration/test_identity_names_core.py::test_a2_admission_readiness",
+      "tests/integration/test_identity_names_core.py::test_a3_rename_cas",
+      "tests/integration/test_identity_names_core.py::test_a3_label_boundaries",
+      "tests/integration/test_identity_names_core.py::test_a3_typed_owners",
+      "tests/integration/test_identity_names_core.py::test_a4_transaction_faults",
+      "tests/integration/test_identity_names_core.py::test_a5_enroll_rename_race",
+      "tests/integration/test_identity_names_core.py::test_a5_collision_isolation",
+      "tests/integration/test_identity_names_core.py::test_a6_pending_reuse",
+      "tests/integration/test_identity_names_core.py::test_a6_approve_reject_race",
+      "tests/integration/test_identity_names_core.py::test_a7_terminate_bootstrap",
+      "tests/integration/test_identity_names_core.py::test_a8_crash_cuts",
+      "tests/integration/test_identity_names_core.py::test_a9_attach_restart_compatibility",
+      "tests/integration/test_identity_names_core.py::test_a10_bound_callback_continuity"
+    ],
+    "integrated": [
+      "tests/integration/test_identity_names_core.py::test_a1_install_migrate_reopen",
+      "tests/integration/test_identity_names_core.py::test_a2_admission_readiness",
+      "tests/integration/test_identity_names_core.py::test_a3_rename_cas",
+      "tests/integration/test_identity_names_core.py::test_a3_label_boundaries",
+      "tests/integration/test_identity_names_core.py::test_a3_typed_owners",
+      "tests/integration/test_identity_names_core.py::test_a4_transaction_faults",
+      "tests/integration/test_identity_names_core.py::test_a5_enroll_rename_race",
+      "tests/integration/test_identity_names_core.py::test_a5_collision_isolation",
+      "tests/integration/test_identity_names_core.py::test_a6_pending_reuse",
+      "tests/integration/test_identity_names_core.py::test_a6_approve_reject_race",
+      "tests/integration/test_identity_names_core.py::test_a7_terminate_bootstrap",
+      "tests/integration/test_identity_names_core.py::test_a8_crash_cuts",
+      "tests/integration/test_identity_names_core.py::test_a9_attach_restart_compatibility",
+      "tests/integration/test_identity_names_core.py::test_a10_bound_callback_continuity",
+      "tests/integration/test_identity_names_integrated.py::test_a11_operator_denial",
+      "tests/integration/test_identity_names_integrated.py::test_a4_http_lost_response",
+      "tests/integration/test_identity_names_integrated.py::test_b1_founder_open",
+      "tests/integration/test_identity_names_integrated.py::test_b2_founder_stale_close",
+      "tests/integration/test_identity_names_integrated.py::test_b3_founder_restart",
+      "tests/integration/test_identity_names_integrated.py::test_b4_former_before_settlement",
+      "tests/integration/test_identity_names_integrated.py::test_b5_former_before_attachments",
+      "tests/integration/test_identity_names_integrated.py::test_b6_mixed_parser_eligibility",
+      "tests/integration/test_identity_names_integrated.py::test_c1_cli_prompts",
+      "tests/integration/test_identity_names_integrated.py::test_c2_integrated_browser"
+    ]
+  },
+  "repeat_races": [
+    "tests/integration/test_identity_names_core.py::test_a3_rename_cas",
+    "tests/integration/test_identity_names_core.py::test_a5_enroll_rename_race",
+    "tests/integration/test_identity_names_core.py::test_a6_approve_reject_race"
+  ],
+  "domains": {
+    "tests/integration/test_identity_names_core.py::test_a1_install_migrate_reopen": [
+      "test_a1_install_migrate_reopen:attach-fresh-F-absent",
+      "test_a1_install_migrate_reopen:attach-fresh-F-complete",
+      "test_a1_install_migrate_reopen:attach-fresh-E-absent",
+      "test_a1_install_migrate_reopen:attach-fresh-E-complete",
+      "test_a1_install_migrate_reopen:attach-fresh-G-absent",
+      "test_a1_install_migrate_reopen:attach-fresh-G-complete",
+      "test_a1_install_migrate_reopen:attach-v0-F-absent",
+      "test_a1_install_migrate_reopen:attach-v0-F-complete",
+      "test_a1_install_migrate_reopen:attach-v0-E-absent",
+      "test_a1_install_migrate_reopen:attach-v0-E-complete",
+      "test_a1_install_migrate_reopen:attach-v0-G-absent",
+      "test_a1_install_migrate_reopen:attach-v0-G-complete",
+      "test_a1_install_migrate_reopen:attach-v2-F-absent",
+      "test_a1_install_migrate_reopen:attach-v2-F-complete",
+      "test_a1_install_migrate_reopen:attach-v2-E-absent",
+      "test_a1_install_migrate_reopen:attach-v2-E-complete",
+      "test_a1_install_migrate_reopen:attach-v2-G-absent",
+      "test_a1_install_migrate_reopen:attach-v2-G-complete",
+      "test_a1_install_migrate_reopen:attach-v2-organic-F-absent",
+      "test_a1_install_migrate_reopen:attach-v2-organic-F-complete",
+      "test_a1_install_migrate_reopen:attach-v2-organic-E-absent",
+      "test_a1_install_migrate_reopen:attach-v2-organic-E-complete",
+      "test_a1_install_migrate_reopen:attach-v2-organic-G-absent",
+      "test_a1_install_migrate_reopen:attach-v2-organic-G-complete",
+      "test_a1_install_migrate_reopen:operator-fresh-draft-F-E-absent",
+      "test_a1_install_migrate_reopen:operator-fresh-draft-F-E-complete",
+      "test_a1_install_migrate_reopen:operator-fresh-draft-E-ready-absent",
+      "test_a1_install_migrate_reopen:operator-fresh-draft-E-ready-complete",
+      "test_a1_install_migrate_reopen:operator-fresh-draft-G-ready-absent",
+      "test_a1_install_migrate_reopen:operator-fresh-draft-G-ready-complete",
+      "test_a1_install_migrate_reopen:operator-fresh-submission-F-G-absent",
+      "test_a1_install_migrate_reopen:operator-fresh-submission-F-G-complete",
+      "test_a1_install_migrate_reopen:operator-fresh-submission-E-G-absent",
+      "test_a1_install_migrate_reopen:operator-fresh-submission-E-G-complete",
+      "test_a1_install_migrate_reopen:operator-fresh-submission-G-ready-absent",
+      "test_a1_install_migrate_reopen:operator-fresh-submission-G-ready-complete",
+      "test_a1_install_migrate_reopen:operator-v0-draft-F-E-absent",
+      "test_a1_install_migrate_reopen:operator-v0-draft-F-E-complete",
+      "test_a1_install_migrate_reopen:operator-v0-draft-E-ready-absent",
+      "test_a1_install_migrate_reopen:operator-v0-draft-E-ready-complete",
+      "test_a1_install_migrate_reopen:operator-v0-draft-G-ready-absent",
+      "test_a1_install_migrate_reopen:operator-v0-draft-G-ready-complete",
+      "test_a1_install_migrate_reopen:operator-v0-submission-F-G-absent",
+      "test_a1_install_migrate_reopen:operator-v0-submission-F-G-complete",
+      "test_a1_install_migrate_reopen:operator-v0-submission-E-G-absent",
+      "test_a1_install_migrate_reopen:operator-v0-submission-E-G-complete",
+      "test_a1_install_migrate_reopen:operator-v0-submission-G-ready-absent",
+      "test_a1_install_migrate_reopen:operator-v0-submission-G-ready-complete",
+      "test_a1_install_migrate_reopen:operator-v2-draft-F-E-absent",
+      "test_a1_install_migrate_reopen:operator-v2-draft-F-E-complete",
+      "test_a1_install_migrate_reopen:operator-v2-draft-E-ready-absent",
+      "test_a1_install_migrate_reopen:operator-v2-draft-E-ready-complete",
+      "test_a1_install_migrate_reopen:operator-v2-draft-G-ready-absent",
+      "test_a1_install_migrate_reopen:operator-v2-draft-G-ready-complete",
+      "test_a1_install_migrate_reopen:operator-v2-submission-F-G-absent",
+      "test_a1_install_migrate_reopen:operator-v2-submission-F-G-complete",
+      "test_a1_install_migrate_reopen:operator-v2-submission-E-G-absent",
+      "test_a1_install_migrate_reopen:operator-v2-submission-E-G-complete",
+      "test_a1_install_migrate_reopen:operator-v2-submission-G-ready-absent",
+      "test_a1_install_migrate_reopen:operator-v2-submission-G-ready-complete",
+      "test_a1_install_migrate_reopen:operator-v2-organic-draft-F-E-absent",
+      "test_a1_install_migrate_reopen:operator-v2-organic-draft-F-E-complete",
+      "test_a1_install_migrate_reopen:operator-v2-organic-draft-E-ready-absent",
+      "test_a1_install_migrate_reopen:operator-v2-organic-draft-E-ready-complete",
+      "test_a1_install_migrate_reopen:operator-v2-organic-draft-G-ready-absent",
+      "test_a1_install_migrate_reopen:operator-v2-organic-draft-G-ready-complete",
+      "test_a1_install_migrate_reopen:operator-v2-organic-submission-F-G-absent",
+      "test_a1_install_migrate_reopen:operator-v2-organic-submission-F-G-complete",
+      "test_a1_install_migrate_reopen:operator-v2-organic-submission-E-G-absent",
+      "test_a1_install_migrate_reopen:operator-v2-organic-submission-E-G-complete",
+      "test_a1_install_migrate_reopen:operator-v2-organic-submission-G-ready-absent",
+      "test_a1_install_migrate_reopen:operator-v2-organic-submission-G-ready-complete",
+      "test_a1_install_migrate_reopen:fresh-post-org",
+      "test_a1_install_migrate_reopen:flat-v1-no-write-refusal",
+      "test_a1_install_migrate_reopen:install-C01",
+      "test_a1_install_migrate_reopen:install-C02",
+      "test_a1_install_migrate_reopen:generic-excluded",
+      "test_a1_install_migrate_reopen:runtime-audit-excluded"
+    ],
+    "tests/integration/test_identity_names_core.py::test_a2_admission_readiness": [
+      "test_a2_admission_readiness:partial",
+      "test_a2_admission_readiness:newer",
+      "test_a2_admission_readiness:foreign-org",
+      "test_a2_admission_readiness:extra-naming-index",
+      "test_a2_admission_readiness:extra-trigger",
+      "test_a2_admission_readiness:extra-column",
+      "test_a2_admission_readiness:extra-unrelated-object",
+      "test_a2_admission_readiness:fk-corrupt",
+      "test_a2_admission_readiness:row-corrupt",
+      "test_a2_admission_readiness:duplicate-lifecycle",
+      "test_a2_admission_readiness:folded-founder",
+      "test_a2_admission_readiness:filename-mismatch",
+      "test_a2_admission_readiness:malformed",
+      "test_a2_admission_readiness:changing-capture",
+      "test_a2_admission_readiness:bound-definitions",
+      "test_a2_admission_readiness:bound-single-file",
+      "test_a2_admission_readiness:bound-file-total",
+      "test_a2_admission_readiness:bound-claims",
+      "test_a2_admission_readiness:bound-row-total",
+      "test_a2_admission_readiness:bound-scan-deadline",
+      "test_a2_admission_readiness:id-read-callback",
+      "test_a2_admission_readiness:same-id-update",
+      "test_a2_admission_readiness:same-id-reject",
+      "test_a2_admission_readiness:same-id-terminate",
+      "test_a2_admission_readiness:same-id-approve",
+      "test_a2_admission_readiness:new-enroll-refused",
+      "test_a2_admission_readiness:new-create-refused"
+    ],
+    "tests/integration/test_identity_names_core.py::test_a3_rename_cas": [
+      "test_a3_rename_cas:same-owner-same-label",
+      "test_a3_rename_cas:same-owner-different-label",
+      "test_a3_rename_cas:two-owners-sam",
+      "test_a3_rename_cas:two-owners-sAM"
+    ],
+    "tests/integration/test_identity_names_core.py::test_a3_label_boundaries": [
+      "test_a3_label_boundaries:empty",
+      "test_a3_label_boundaries:65",
+      "test_a3_label_boundaries:editable-_label-no-residue",
+      "test_a3_label_boundaries:leading-hyphen",
+      "test_a3_label_boundaries:space",
+      "test_a3_label_boundaries:dot",
+      "test_a3_label_boundaries:brackets",
+      "test_a3_label_boundaries:unicode",
+      "test_a3_label_boundaries:trailing-newline",
+      "test_a3_label_boundaries:leading-space-no-trim",
+      "test_a3_label_boundaries:trailing-space-no-trim",
+      "test_a3_label_boundaries:valid1",
+      "test_a3_label_boundaries:valid64",
+      "test_a3_label_boundaries:over64-cold-admission-refused",
+      "test_a3_label_boundaries:underscore-id-default-rename-reopen",
+      "test_a3_label_boundaries:underscore-own-id-edit-refused",
+      "test_a3_label_boundaries:foreign-owner-id-exception-refused",
+      "test_a3_label_boundaries:arbitrary-underscore-claim-refused"
+    ],
+    "tests/integration/test_identity_names_core.py::test_a3_typed_owners": [
+      "test_a3_typed_owners:active",
+      "test_a3_typed_owners:pending",
+      "test_a3_typed_owners:terminated",
+      "test_a3_typed_owners:absent-denied",
+      "test_a3_typed_owners:founder-current",
+      "test_a3_typed_owners:founder-former",
+      "test_a3_typed_owners:founder-reclaim",
+      "test_a3_typed_owners:no-op",
+      "test_a3_typed_owners:case-only",
+      "test_a3_typed_owners:own-id",
+      "test_a3_typed_owners:own-former",
+      "test_a3_typed_owners:foreign-current",
+      "test_a3_typed_owners:foreign-former",
+      "test_a3_typed_owners:foreign-id",
+      "test_a3_typed_owners:foreign-founder"
+    ],
+    "tests/integration/test_identity_names_core.py::test_a4_transaction_faults": [
+      "test_a4_transaction_faults:C03a",
+      "test_a4_transaction_faults:C03b",
+      "test_a4_transaction_faults:C03c",
+      "test_a4_transaction_faults:C03d",
+      "test_a4_transaction_faults:C04-lost-internal-response"
+    ],
+    "tests/integration/test_identity_names_core.py::test_a5_enroll_rename_race": [
+      "test_a5_enroll_rename_race:manager-enroll-rename-first",
+      "test_a5_enroll_rename_race:manager-enroll-create-first",
+      "test_a5_enroll_rename_race:founder-worker-rename-first",
+      "test_a5_enroll_rename_race:founder-worker-create-first",
+      "test_a5_enroll_rename_race:founder-manager-rename-first",
+      "test_a5_enroll_rename_race:founder-manager-create-first"
+    ],
+    "tests/integration/test_identity_names_core.py::test_a5_collision_isolation": [
+      "test_a5_collision_isolation:foreign-current",
+      "test_a5_collision_isolation:foreign-former",
+      "test_a5_collision_isolation:founder",
+      "test_a5_collision_isolation:beta-isolation"
+    ],
+    "tests/integration/test_identity_names_core.py::test_a6_pending_reuse": [
+      "test_a6_pending_reuse:default-reject-release",
+      "test_a6_pending_reuse:chosen-reject-dormant",
+      "test_a6_pending_reuse:same-id-default",
+      "test_a6_pending_reuse:same-id-chosen-spelling",
+      "test_a6_pending_reuse:stale-ABA",
+      "test_a6_pending_reuse:approve-retained-bootstrap",
+      "test_a6_pending_reuse:C08-injected-residue"
+    ],
+    "tests/integration/test_identity_names_core.py::test_a6_approve_reject_race": [
+      "test_a6_approve_reject_race:approve-first",
+      "test_a6_approve_reject_race:reject-first"
+    ],
+    "tests/integration/test_identity_names_core.py::test_a7_terminate_bootstrap": [
+      "test_a7_terminate_bootstrap:manager-refusal",
+      "test_a7_terminate_bootstrap:live-task",
+      "test_a7_terminate_bootstrap:session",
+      "test_a7_terminate_bootstrap:job",
+      "test_a7_terminate_bootstrap:schedule",
+      "test_a7_terminate_bootstrap:archive-collision",
+      "test_a7_terminate_bootstrap:terminated-rename",
+      "test_a7_terminate_bootstrap:absent-rename",
+      "test_a7_terminate_bootstrap:workspace-failure",
+      "test_a7_terminate_bootstrap:cleanup-failure",
+      "test_a7_terminate_bootstrap:create-bootstrap-retained",
+      "test_a7_terminate_bootstrap:approve-bootstrap-retained"
+    ],
+    "tests/integration/test_identity_names_core.py::test_a8_crash_cuts": [
+      "test_a8_crash_cuts:C01",
+      "test_a8_crash_cuts:C02",
+      "test_a8_crash_cuts:C03a",
+      "test_a8_crash_cuts:C03b",
+      "test_a8_crash_cuts:C03c",
+      "test_a8_crash_cuts:C03d",
+      "test_a8_crash_cuts:C04",
+      "test_a8_crash_cuts:C05",
+      "test_a8_crash_cuts:C06",
+      "test_a8_crash_cuts:C07",
+      "test_a8_crash_cuts:C08",
+      "test_a8_crash_cuts:C09",
+      "test_a8_crash_cuts:C10",
+      "test_a8_crash_cuts:C11",
+      "test_a8_crash_cuts:C12",
+      "test_a8_crash_cuts:C13",
+      "test_a8_crash_cuts:C14",
+      "test_a8_crash_cuts:C15a",
+      "test_a8_crash_cuts:C15b",
+      "test_a8_crash_cuts:C16",
+      "test_a8_crash_cuts:C17a",
+      "test_a8_crash_cuts:C17b",
+      "test_a8_crash_cuts:C17c",
+      "test_a8_crash_cuts:C17d",
+      "test_a8_crash_cuts:C18a",
+      "test_a8_crash_cuts:C18b",
+      "test_a8_crash_cuts:C19a",
+      "test_a8_crash_cuts:C19b",
+      "test_a8_crash_cuts:C19c",
+      "test_a8_crash_cuts:C19d",
+      "test_a8_crash_cuts:C19e",
+      "test_a8_crash_cuts:C19f",
+      "test_a8_crash_cuts:C20",
+      "test_a8_crash_cuts:C21",
+      "test_a8_crash_cuts:T1-add-before-save",
+      "test_a8_crash_cuts:T1-add-after-save",
+      "test_a8_crash_cuts:T1-remove-before-save",
+      "test_a8_crash_cuts:T1-remove-after-save",
+      "test_a8_crash_cuts:T1-rollback-before-save",
+      "test_a8_crash_cuts:T1-rollback-after-save",
+      "test_a8_crash_cuts:T2-add-before-save",
+      "test_a8_crash_cuts:T2-add-after-save",
+      "test_a8_crash_cuts:T2-remove-before-save",
+      "test_a8_crash_cuts:T2-remove-after-save",
+      "test_a8_crash_cuts:T2-rollback-before-save",
+      "test_a8_crash_cuts:T2-rollback-after-save"
+    ],
+    "tests/integration/test_identity_names_core.py::test_a9_attach_restart_compatibility": [
+      "test_a9_attach_restart_compatibility:cold",
+      "test_a9_attach_restart_compatibility:dynamic",
+      "test_a9_attach_restart_compatibility:sequential-restart",
+      "test_a9_attach_restart_compatibility:yaml-batch",
+      "test_a9_attach_restart_compatibility:yaml-owned-compensation",
+      "test_a9_attach_restart_compatibility:profile-after-batch"
+    ],
+    "tests/integration/test_identity_names_core.py::test_a10_bound_callback_continuity": [
+      "test_a10_bound_callback_continuity:claude",
+      "test_a10_bound_callback_continuity:codex",
+      "test_a10_bound_callback_continuity:opencode"
+    ],
+    "tests/integration/test_identity_names_integrated.py::test_a11_operator_denial": [
+      "test_a11_operator_denial:operator",
+      "test_a11_operator_denial:task-full",
+      "test_a11_operator_denial:task-partial",
+      "test_a11_operator_denial:task-null",
+      "test_a11_operator_denial:task-malformed",
+      "test_a11_operator_denial:thread-full",
+      "test_a11_operator_denial:thread-partial",
+      "test_a11_operator_denial:thread-null",
+      "test_a11_operator_denial:thread-malformed",
+      "test_a11_operator_denial:forged-label-header",
+      "test_a11_operator_denial:foreign-org",
+      "test_a11_operator_denial:stale-revision"
+    ],
+    "tests/integration/test_identity_names_integrated.py::test_a4_http_lost_response": [
+      "test_a4_http_lost_response:commit-drop-readback"
+    ],
+    "tests/integration/test_identity_names_integrated.py::test_b1_founder_open": [
+      "test_b1_founder_open:outside",
+      "test_b1_founder_open:open"
+    ],
+    "tests/integration/test_identity_names_integrated.py::test_b2_founder_stale_close": [
+      "test_b2_founder_stale_close:queued-catchup",
+      "test_b2_founder_stale_close:running-catchup"
+    ],
+    "tests/integration/test_identity_names_integrated.py::test_b3_founder_restart": [
+      "test_b3_founder_restart:open-restart",
+      "test_b3_founder_restart:released-catchup-restart"
+    ],
+    "tests/integration/test_identity_names_integrated.py::test_b4_former_before_settlement": [
+      "test_b4_former_before_settlement:reply-stale-close",
+      "test_b4_former_before_settlement:reply-settlement"
+    ],
+    "tests/integration/test_identity_names_integrated.py::test_b5_former_before_attachments": [
+      "test_b5_former_before_attachments:founder-json",
+      "test_b5_former_before_attachments:founder-multipart",
+      "test_b5_former_before_attachments:agent-json",
+      "test_b5_former_before_attachments:agent-multipart",
+      "test_b5_former_before_attachments:send-attached",
+      "test_b5_former_before_attachments:post-attached"
+    ],
+    "tests/integration/test_identity_names_integrated.py::test_b6_mixed_parser_eligibility": [
+      "test_b6_mixed_parser_eligibility:current-former",
+      "test_b6_mixed_parser_eligibility:founder-former",
+      "test_b6_mixed_parser_eligibility:founder-agent",
+      "test_b6_mixed_parser_eligibility:unknown",
+      "test_b6_mixed_parser_eligibility:self",
+      "test_b6_mixed_parser_eligibility:nonparticipant",
+      "test_b6_mixed_parser_eligibility:quoted",
+      "test_b6_mixed_parser_eligibility:email-interior",
+      "test_b6_mixed_parser_eligibility:pending",
+      "test_b6_mixed_parser_eligibility:terminated"
+    ],
+    "tests/integration/test_identity_names_integrated.py::test_c1_cli_prompts": [
+      "test_c1_cli_prompts:human-cli",
+      "test_c1_cli_prompts:full",
+      "test_c1_cli_prompts:delta",
+      "test_c1_cli_prompts:resume",
+      "test_c1_cli_prompts:dream",
+      "test_c1_cli_prompts:wake",
+      "test_c1_cli_prompts:schedule"
+    ],
+    "tests/integration/test_identity_names_integrated.py::test_c2_integrated_browser": [
+      "test_c2_integrated_browser:en-390x844-agent-edit",
+      "test_c2_integrated_browser:en-390x844-founder-edit",
+      "test_c2_integrated_browser:en-390x844-stale-conflict",
+      "test_c2_integrated_browser:en-390x844-picker",
+      "test_c2_integrated_browser:en-390x844-draft-locale",
+      "test_c2_integrated_browser:en-1440x900-agent-edit",
+      "test_c2_integrated_browser:en-1440x900-founder-edit",
+      "test_c2_integrated_browser:en-1440x900-stale-conflict",
+      "test_c2_integrated_browser:en-1440x900-picker",
+      "test_c2_integrated_browser:en-1440x900-draft-locale",
+      "test_c2_integrated_browser:zh-CN-390x844-agent-edit",
+      "test_c2_integrated_browser:zh-CN-390x844-founder-edit",
+      "test_c2_integrated_browser:zh-CN-390x844-stale-conflict",
+      "test_c2_integrated_browser:zh-CN-390x844-picker",
+      "test_c2_integrated_browser:zh-CN-390x844-draft-locale",
+      "test_c2_integrated_browser:zh-CN-1440x900-agent-edit",
+      "test_c2_integrated_browser:zh-CN-1440x900-founder-edit",
+      "test_c2_integrated_browser:zh-CN-1440x900-stale-conflict",
+      "test_c2_integrated_browser:zh-CN-1440x900-picker",
+      "test_c2_integrated_browser:zh-CN-1440x900-draft-locale"
+    ]
+  },
+  "required_files": {
+    "core": [
+      "tests/integration/test_identity_names_core.py",
+      "tests/integration/identity_names_owned_cases.py"
+    ],
+    "integrated": [
+      "tests/integration/test_identity_names_core.py",
+      "tests/integration/identity_names_owned_cases.py",
+      "tests/integration/test_identity_names_integrated.py"
+    ]
+  },
+  "bounds": {
+    "outer_seconds": 900,
+    "work_seconds": 855,
+    "processes": 128,
+    "memory_bytes": 4294967296,
+    "aggregate_writable_bytes": 536870912,
+    "total_output_bytes": 8388608,
+    "artifact_bytes": 16777216,
+    "sessions_per_case": 16,
+    "sessions_all_runs": 64,
+    "repeat": 1
+  },
+  "parameter_policy": "Literal top nodes; case-local finite loops exactly equal domains. No extra pytest parametrization or discovery. Each subcase records durable observations; missing/refused/skipped is NOT PASS.",
+  "affected_design_findings": [
+    "D1",
+    "D2",
+    "D3"
+  ],
+  "control_cases": {
+    "D2": [
+      {
+        "id": "early-marker-then-complete",
+        "expected": "Early setup/case marker: no final export/release. Later owned complete terminal+selected-run evidence may succeed after final validation and absence."
+      },
+      {
+        "id": "early-marker-only",
+        "expected": "No owned terminal result: no release/final-export flag; outer nonzero, diagnostic only, independently observed absence."
+      },
+      {
+        "id": "missing-terminal",
+        "expected": "Owned container exit0 with no result/notification/export fails nonzero; no final evidence claim."
+      },
+      {
+        "id": "malformed-terminal",
+        "expected": "Bounded JSON parse/type/inventory refusal, no release; diagnostic partial cannot qualify; nonzero and absence observation."
+      },
+      {
+        "id": "partial-selected-run",
+        "expected": "Missing repeat/JUnit/domain/session/observation/cleanup evidence or mismatched hashes fails before release; nonzero."
+      },
+      {
+        "id": "export-failure",
+        "expected": "Copy nonzero, truncated archive or retained write failure cannot set final_export; no successful release; outer nonzero."
+      },
+      {
+        "id": "container-exit0-without-evidence",
+        "expected": "Exit0 alone fails. Retained complete result/evidence and controller.json are mandatory before outer0."
+      },
+      {
+        "id": "complete-owned-terminal",
+        "expected": "Only exact owned PID1/container/phase/head, two actual completed selections, full validated archive, successful release/exit0, unchanged source and proven absence plus retained controller record propose outer0."
+      }
+    ],
+    "D3": [
+      {
+        "id": "work-cap-edge-eof",
+        "expected": "Exactly7MiB work diagnostic output with immediate EOF is within its lane; final success still requires all evidence/cleanup. One additional byte causes bounded unretained overflow record and nonzero."
+      },
+      {
+        "id": "noisy-docker-control",
+        "expected": "Terminal/release/finished control over its finite lane or per-call capture/time cap fails nonzero, noise only retained within lane; independent stop/source/remove/absence lanes remain."
+      },
+      {
+        "id": "noisy-export-stderr",
+        "expected": "Export stderr charges export128KiB and shared8MiB output; cap/nonzero leaves partial archive diagnostic, no final_export/release, nonzero."
+      },
+      {
+        "id": "noisy-absence",
+        "expected": "Absence query over188KiB/capture timeout fails, no absence proof; controller nonzero with bounded attributable record."
+      },
+      {
+        "id": "cleanup-after-work-cap",
+        "expected": "Exhausted7MiB work does not consume disjoint cleanup quotas: independently attempt diagnostic export/stop/source/remove/absence; observed absence can be true but run remains nonzero."
+      },
+      {
+        "id": "artifact-edge-later-controls",
+        "expected": "Tar+log reserving ALL remaining output+64KiB controller at or below16MiB may qualify; one extra tar byte refuses before write; later controls and final record cannot open a hole."
+      },
+      {
+        "id": "controller-record-cap",
+        "expected": "Over64KiB detailed record uses bounded status1 fallback; output/artifact counters and absence observation retained; never outer0."
+      },
+      {
+        "id": "cleanup-timeout",
+        "expected": "Each control bounded3s (source two queries3s each, diagnostic export8s) inside same900s; later independent steps attempted when time remains. Deadline/API loss or missing absence gives nonzero."
+      }
+    ]
+  },
+  "counts": {
+    "core": {
+      "top_nodes": 14,
+      "subcase_ids": 233
+    },
+    "integrated": {
+      "top_nodes": 24,
+      "subcase_ids": 297
+    },
+    "conditional_repeat": {
+      "top_nodes": 3,
+      "subcase_ids": 12
+    },
+    "control_proposal": {
+      "D2": 8,
+      "D3": 8,
+      "executed": 0,
+      "pytest_nodes": 0
+    }
+  }
+}

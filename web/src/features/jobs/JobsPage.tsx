@@ -1,3 +1,4 @@
+import { IdentityName } from '@/shared/identities/IdentityName';
 /**
  * JobsPage — the approval-queue LIST surface, styled to the Direction-A
  * `a-jobs` mockup (jobs-design.png): an uppercase eyebrow + serif display
@@ -186,7 +187,7 @@ function JobCard({ job, to }: { job: JobRecord; to: string }): JSX.Element {
       {/* REQUESTED BY */}
       <div className={`${CARD_COL.requestedBy} flex min-w-0 items-center gap-2`}>
         <AgentAvatar name={job.agent_name} />
-        <span className="text-text-secondary truncate text-sm">{job.agent_name}</span>
+        <span className="text-text-secondary truncate text-sm"><IdentityName canonicalId={job.agent_name} /></span>
       </div>
 
       {/* TASK */}

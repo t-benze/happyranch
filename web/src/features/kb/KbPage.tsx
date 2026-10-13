@@ -1,3 +1,4 @@
+import { useIdentityPresentation } from '@/hooks/identities';
 /**
  * KbPage — the Knowledge surface (§4.5).
  *
@@ -279,6 +280,7 @@ function DreamCandidateRow({
    */
   visible: boolean;
 }): JSX.Element | null {
+  const presentation = useIdentityPresentation();
   const { t } = useTranslation();
   const dreamQ = useDream(dreamId);
 
@@ -325,7 +327,7 @@ function DreamCandidateRow({
               {c.title}
             </p>
             <p className="text-xs text-text-muted mt-0.5">
-              {t('kb.proposedBy', { agent: c.agent_name })}
+              {t('kb.proposedBy', { agent: presentation.label(c.agent_name) })}
             </p>
           </button>
         </li>

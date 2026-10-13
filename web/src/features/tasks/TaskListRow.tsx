@@ -20,7 +20,7 @@
  */
 import { Link } from 'react-router-dom';
 import { StatusBadge } from '@/design-system/patterns/StatusBadge';
-import { AgentChip } from '@/design-system/patterns/AgentChip';
+import { CurrentAgentChip as AgentChip } from '@/shared/identities/CurrentAgentChip';
 import { IdBadge } from '@/design-system/patterns/IdBadge';
 import type { TaskRecord, TaskStatus } from '@/lib/api/types';
 import { useTranslation } from '@/hooks/i18n';

@@ -18,6 +18,7 @@ from fastapi import APIRouter, Header, HTTPException, Request
 from runtime.config import settings as global_settings
 from runtime.daemon.auth import require_token
 from runtime.daemon.routes._org_dep import OrgDep
+from runtime.identities.registry import naming_writer
 from runtime.orchestrator import prompt_loader
 from runtime.orchestrator._paths import OrgPaths
 from runtime.orchestrator.org_config import (
@@ -1049,6 +1050,7 @@ async def put_teams(slug: str, org: OrgDep, patch: TeamsPatch) -> dict:
         org.workflow_authority.async_writer_interval(
             publisher="put_teams",
         ) as authority_change,
+        naming_writer(org, authority_change),
         org.teams_lock,
     ):
         with authority_change.canonical_change():

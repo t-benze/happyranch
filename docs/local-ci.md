@@ -824,6 +824,54 @@ Keep those genuine callback failures and their durable/native receipts. A
 test expectation repair, native admission or artifact provisioning does not
 establish complete retirement or behavioral QA acceptance.
 
+
+## Finite naming verification lane
+
+The existing nightly workflow exposes a default-false `naming_only` input.
+It requires `all_only=false`, an exact published `naming_source_sha`, and
+`naming_image=node@sha256:<amd64-digest>`. The SHA must equal the workflow ref.
+It suppresses the manual Web lane and runs the twenty explicit function selectors
+(23 parameterized cases), retaining the original seventeen selectors for the twelve
+naming scenarios on a disposable Ubuntu 24.04 runner.
+`scripts/identity_names_hosted.sh` retains the source/image pins, resource bounds,
+shared deadline, cleanup reserve and bounded evidence export. The selection is
+`tests/helpers/identity_names/run.sh`; it does not collect retired Python units
+or run general integration. Scheduled/default behavior and retained PR/main
+checks are unchanged. Historical attempts remain evidence and do not renew
+allocations. A corrected candidate needs attributed behavioral results and
+independent review/QA; merely publishing or dispatching it is not a pass.
+
+A10 uses numeric `TASK-10010` and provider-distinct hexadecimal runtime sessions
+(`sess-a10c`, `sess-a10d`, `sess-a10e` for Claude, Codex, OpenCode) throughout the
+real executor/CLI/HTTP callback fixture, matching the unchanged registered stub
+binding grammar. The naming upload includes hidden files from only the existing
+bounded `naming-evidence/` directory, including synthetic `.playwright/cli.config.json`
+browser configuration already covered by the export manifest. Runner-side export
+authentication and cleanup do not prove delivered-archive completeness: run
+38341006191/attempt1 remains 21 passed/two failed, with 347/350 manifest files
+present. Fixture closure and complete packaging at the corrected head remain
+UNEXECUTED/pending independent evidence; no new run is authorized by these fixes.
+
+Scenario12 C17b preserves the exact BEFORE-team-save cut and shipping cold-load
+call. Its proposed accepted outcome is exact canonical-membership attachment
+refusal, never an attached naming writer. Successful returns and every exception
+attempt independent observations in `evidence/cold-load-refusal.json` (maximum65536 UTF8
+bytes): actual ownership/process facts, full exception module/class/message with
+truncation status and retained innermost frame, separate logical schema/rows/files/
+naming digests, bounded difference locations/counts or observation errors, complete
+archive mapping and durable team/schedule/cancellation observations. Exact source
+class/message/terminal raise and strict full durable equality are required; no
+filtering, initialization exemption or physical database/WAL-byte claim applies.
+All required evidence must be available, well formed and untruncated. Finally
+closes any exact unexpected attachment and the observer; original failure/traceback
+survives closure/diagnostic errors. Only after assertions, all closes and validated
+diagnostic readback does the terminal C17b receipt bind its exact diagnostic path
+and SHA256. Any failed observation, truncation, drift, unexpected cause or closure
+prevents success. Fixed selected failure summaries retain available component digests, owner/process/cut identities, comparison counts/bounded locations, archive/team/schedule/cancellation facts and first/secondary causes. Missing/unavailable fields, omitted excerpts and truncated required evidence are distinct. Validated sibling record path/SHA256 survives any canonical replacement/readback failure; reduced records never replace it. All files stay in C17b evidence/ for existing export discovery. An unwritable destination may prevent new evidence; prior evidence and first traceback remain, with no success. Unique `cold-load-refusal-record-N.json` and `cold-load-refusal-failure-N.json` files are retained under that same evidence directory; failure JSON binds source path, prior validated path/SHA256 and prior failure records. The existing exporter selects every evidence subtree file and hashes the complete inventory; no exporter change is proposed. Initial failure has no invented prior binding. Final cap failure leaves the last validated record intact. Staged and published readback are capped65537, equality checked before canonical replacement, and no diagnostic failure returns a success digest. Original C17b proved
+exception TYPE only; revised positives remain UNEXECUTED and C17c/tails UNREACHED.
+All17 extra deliberate-defect/restoration/repetition proofs including O6 remain
+UNPROVEN/outside naming merge conditions293143, never test-authoring PASS.
+
 ### Historical PR1022 recovery and browser evidence
 
 

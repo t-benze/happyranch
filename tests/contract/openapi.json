@@ -370,6 +370,28 @@
         ]
       }
     },
+    "/api/v1/orgs/{slug}/agents/{agent_id}/addressable-name": {
+      "PUT": {
+        "params": [
+          [
+            "agent_id",
+            "path"
+          ],
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
     "/api/v1/orgs/{slug}/agents/{agent_id}/skills/effective": {
       "GET": {
         "params": [
@@ -1685,6 +1707,60 @@
       }
     },
     "/api/v1/orgs/{slug}/executors/register": {
+      "POST": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
+    "/api/v1/orgs/{slug}/founder/addressable-name": {
+      "PUT": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
+    "/api/v1/orgs/{slug}/identities": {
+      "GET": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
+    "/api/v1/orgs/{slug}/identities/resolve": {
       "POST": {
         "params": [
           [

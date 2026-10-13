@@ -443,6 +443,11 @@ class WorkflowCutoverStore:
                         "pause_schema_requires_compatible_reader", owner="operator",
                         required_action="retain_pause_compatible_runtime",
                     ))
+
+                from runtime.identities.schema import validate_names
+                if validate_names(conn, org_slug=self._org_slug):
+                    blockers.append(self._blocker("naming_schema_requires_compatible_reader", owner="operator",
+                                                  required_action="retain_compatible_runtime"))
                 if _validate_installed(conn, expected_org_slug=self._org_slug, validate_data=False) in ("E", "G", "H", "I"):
                     layout = _validate_installed(conn, expected_org_slug=self._org_slug, validate_data=False)
                     blockers.append(self._blocker("document_revision_schema_requires_compatible_reader" if layout == "I" else "author_handoff_schema_requires_compatible_reader" if layout == "H" else "submission_schema_requires_compatible_reader" if layout == "G" else "draft_schema_requires_compatible_reader", owner="operator",

@@ -15,6 +15,7 @@ import sys
 from pathlib import Path
 
 from cli import _shared
+from cli import identities
 from cli._shared import _fmt_ts, _ok, resolve_org_slug
 from cli.client.client import OpcClient
 
@@ -72,10 +73,12 @@ def _needs_attention(schedule: dict) -> bool:
 # ── management commands ─────────────────────────────────────────────────
 
 def cmd_schedules_list(args: argparse.Namespace) -> None:
+    identities.validate_address(args.agent)
     client, slug = _client_and_org(args)
+    filter_agent = identities.filter_target(client, slug, args.agent)
     params = {"limit": args.limit}
     if args.agent:
-        params["agent"] = args.agent
+        params["agent"] = filter_agent
     if args.status:
         params["status"] = args.status
     r = client.get(f"/api/v1/orgs/{slug}{TODOS_BASE}", params=params)
@@ -85,6 +88,7 @@ def cmd_schedules_list(args: argparse.Namespace) -> None:
     if args.json:
         print(json.dumps(schedules, indent=2))
         return
+    names = identities.labels(client, slug)
     if not schedules:
         print("(no Todos)")
         return
@@ -94,7 +98,7 @@ def cmd_schedules_list(args: argparse.Namespace) -> None:
         brief = s.get("normalized_brief", "")[:50]
         print(
             f"{s['schedule_id']:14s}  {s['status']:12s}  {s['kind']:10s}  "
-            f"{s['agent_name']:20s}  {_fmt_ts(s['fire_at']):25s}  {brief}"
+            f"{identities.display(names, s['agent_name']):20s}  {_fmt_ts(s['fire_at']):25s}  {brief}"
         )
 
 
@@ -107,7 +111,8 @@ def cmd_schedules_show(args: argparse.Namespace) -> None:
     if args.json:
         print(json.dumps(body, indent=2))
         return
-    print(f"# {body['schedule_id']} — {body['agent_name']}")
+    names = identities.labels(client, slug)
+    print(f"# {body['schedule_id']} — {identities.display(names, body['agent_name'])}")
     print(f"  status={body['status']}  kind={body['kind']}")
     print(f"  fire_at={_fmt_ts(body['fire_at'])}  timezone={body['timezone']}")
     if body.get("recurrence"):

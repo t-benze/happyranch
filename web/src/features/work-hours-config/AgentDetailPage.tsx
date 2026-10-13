@@ -1,3 +1,4 @@
+import { IdentityName } from '@/shared/identities/IdentityName';
 /**
  * S2 — Agent Detail. The 3-column + Effective reconciliation table (per-leaf
  * provenance), eligibility state, read-only Routine Tasks panel, and the
@@ -104,7 +105,7 @@ export function AgentDetailPage(): JSX.Element {
           {t('workHours.detail.backToWorkHours')}
         </Link>
         <div className="mt-1 flex flex-wrap items-center gap-3">
-          <h1 className="font-display text-h2 text-text-primary min-w-0 max-w-full break-all">{agent}</h1>
+          <h1 className="font-display text-h2 text-text-primary min-w-0 max-w-full break-all"><IdentityName canonicalId={agent} /></h1>
           <span className="text-text-muted min-w-0 max-w-full break-all text-sm">{team ?? t('workHours.detail.noTeam')}</span>
           <EligibilityChip eligible={eligible} />
           <OnDot on={on} />
