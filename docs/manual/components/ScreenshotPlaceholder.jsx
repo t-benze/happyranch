@@ -10,19 +10,26 @@
 // image lands (the deferred screenshots-in-content slice), the marker's `(TODO)`
 // is swapped for an image path — the alt no longer starts with "placeholder:",
 // so this stand-in is bypassed and the real image renders.
+//
+// Every element is phrasing content (<span>/<svg>), never <figure>/<div>/
+// <figcaption>: the marker sits alone in a Markdown paragraph, so this card
+// renders inside a <p>. Flow content there is invalid HTML — the server's HTML
+// parser closes the <p> early and React reports hydration errors #418/#423.
+// globals.css gives .hr-shot display:block; role="img" + aria-label already
+// made the children presentational, so the accessible name is unchanged.
 export function ScreenshotPlaceholder({ caption }) {
   return (
-    <figure
+    <span
       className="hr-shot"
       role="img"
       aria-label={`Screenshot placeholder — ${caption}`}
     >
-      <div className="hr-shot-chrome" aria-hidden="true">
+      <span className="hr-shot-chrome" aria-hidden="true">
         <span className="hr-shot-dot" />
         <span className="hr-shot-dot" />
         <span className="hr-shot-dot" />
-      </div>
-      <div className="hr-shot-body">
+      </span>
+      <span className="hr-shot-body">
         <svg
           className="hr-shot-icon"
           viewBox="0 0 24 24"
@@ -57,9 +64,9 @@ export function ScreenshotPlaceholder({ caption }) {
         </svg>
         <span className="hr-shot-badge">Screenshot coming</span>
         {caption ? (
-          <figcaption className="hr-shot-caption">{caption}</figcaption>
+          <span className="hr-shot-caption">{caption}</span>
         ) : null}
-      </div>
-    </figure>
+      </span>
+    </span>
   )
 }
