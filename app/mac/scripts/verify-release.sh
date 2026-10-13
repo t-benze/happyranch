@@ -340,9 +340,16 @@ def member(row):
             'Contents/Resources/daemon/_internal/' + path)
 
 
+def inventory_identity(rows):
+    rows.sort(key=lambda row: row['path'])
+    encoded = (json.dumps(rows, ensure_ascii=False, sort_keys=True,
+                          separators=(',', ':')) + '\n').encode('utf-8')
+    return hashlib.sha256(encoded).hexdigest()
+
+
 def inventory(app):
     rows = []
-    for path in sorted(app.rglob('*')):
+    for path in app.rglob('*'):
         info = path.lstat()
         row = {'path': path.relative_to(app).as_posix(),
                'mode': f'{stat.S_IMODE(info.st_mode):04o}'}
@@ -357,10 +364,9 @@ def inventory(app):
         else:
             fail('APP_MEMBER_TYPE', row)
         rows.append(row)
-    encoded = (json.dumps(rows, ensure_ascii=False, sort_keys=True,
-                          separators=(',', ':')) + '\n').encode()
-    return {'definition': 'sorted UTF8 JSON path/type/mode/size/sha256/target; compact sorted keys; LF',
-            'members': rows, 'inventory_sha256': hashlib.sha256(encoded).hexdigest()}
+    identity = inventory_identity(rows)
+    return {'definition': 'relative-path string order; UTF8 JSON path/type/mode/size/sha256/target; compact sorted keys; LF',
+            'members': rows, 'inventory_sha256': identity}
 
 
 def zip_inventory(archive):
@@ -400,11 +406,9 @@ def zip_inventory(archive):
             else:
                 fail('ARCHIVE_IDENTITY_MISMATCH', name + ': unknown type')
             rows.append(row)
-    rows.sort(key=lambda row: row['path'])
     if len(rows) != len({r['path'] for r in rows}):
         fail('ARCHIVE_IDENTITY_MISMATCH', 'duplicate canonical paths')
-    encoded = (json.dumps(rows, ensure_ascii=False, sort_keys=True, separators=(',', ':')) + '\n').encode()
-    return hashlib.sha256(encoded).hexdigest()
+    return inventory_identity(rows)
 
 
 def resources(app, archive=None):
@@ -450,6 +454,27 @@ def resources(app, archive=None):
             'calculated_ordinary_root': str((app / 'Contents/Resources/daemon/_internal/runtime/skills/bundled').resolve())}
 
 
+def native_location(value, loader_dir, executable_dir):
+    for token, base in (('@loader_path', loader_dir),
+                        ('@executable_path', executable_dir)):
+        if value == token or value.startswith(token + '/'):
+            path = base / value[len(token):].lstrip('/')
+            break
+    else:
+        path = Path(value)
+        if not path.is_absolute():
+            return None
+    try:
+        return path.resolve()
+    except (OSError, RuntimeError):
+        return None
+
+
+def native_system_path(path):
+    return path is not None and any(path == root or root in path.parents
+                                   for root in (Path('/usr/lib'), Path('/System/Library')))
+
+
 def native(app, archive, link_map):
     if sys.platform != 'darwin':
         fail('NATIVE_VENUE_UNAVAILABLE', sys.platform)
@@ -491,21 +516,25 @@ def native(app, archive, link_map):
         rpaths = re.findall(r'cmd LC_RPATH\s+cmdsize \d+\s+path (.+?) \(offset', loads)
         if 'arm64' not in slices or not minima:
             fail('NATIVE_COMPONENT_INCOMPATIBLE', str(path))
-        # Rpaths may refer only to the bundle or host system, never build paths.
+        exe_dir = path.parent if os.access(path, os.X_OK) and path.name in ('HappyRanch', 'happyranch', 'happyranch-daemon') else (
+            app / 'Contents/Resources/daemon' if 'daemon' in path.parts else binary.parent)
+        # Validate every destination, including rpaths no dependency uses.
+        # Token-relative paths must stay in the bundle after symlink resolution.
+        rpath_locations = []
         for rp in rpaths:
-            if not rp.startswith(('@loader_path', '@executable_path', '/usr/lib', '/System/Library')):
+            location = native_location(rp, path.parent, exe_dir)
+            if location is None or not (location.is_relative_to(app.resolve())
+                    or (rp.startswith('/') and native_system_path(location))):
                 fail('NATIVE_RPATH_UNRESOLVED', [str(path), rp])
+            rpath_locations.append(location)
         component_deps = []
         for dep in re.findall(r'^\s+(.+?) \(compatibility version', deps, re.M):
-            if dep.startswith(('/usr/lib/', '/System/Library/')):
+            location = native_location(dep, path.parent, exe_dir)
+            if dep.startswith('/') and native_system_path(location):
                 component_deps.append({'path': dep, 'disposition': 'HOST_SYSTEM_REFERENCE'})
                 continue
-            exe_dir = path.parent if os.access(path, os.X_OK) and path.name in ('HappyRanch', 'happyranch', 'happyranch-daemon') else (
-                app / 'Contents/Resources/daemon' if 'daemon' in path.parts else binary.parent)
-            def expand(value):
-                return Path(value.replace('@loader_path', str(path.parent)).replace('@executable_path', str(exe_dir)))
-            candidates = ([expand(rp) / dep[len('@rpath/'):] for rp in rpaths]
-                          if dep.startswith('@rpath/') else [expand(dep)])
+            candidates = ([rp / dep[len('@rpath/'):] for rp in rpath_locations]
+                          if dep.startswith('@rpath/') else ([location] if location is not None else []))
             resolved = [p.resolve() for p in candidates if p.exists() and p.resolve().is_relative_to(app.resolve())]
             if not resolved:
                 fail('NATIVE_DEPENDENCY_UNRESOLVED', [str(path), dep])

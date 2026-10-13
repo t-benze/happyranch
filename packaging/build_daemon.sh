@@ -28,8 +28,22 @@ if paths[0] == paths[1] or paths[0] in paths[1].parents or paths[1] in paths[0].
     raise SystemExit('FREEZE_PATH_OVERLAP')
 PY
 cd "$REPO_ROOT"
+umask 077
 mkdir "$DIST" "$WORK"
 export HAPPYRANCH_FREEZE_EVIDENCE="$WORK"
+# --clean also clears PyInstaller's independent user cache. Override inherited
+# selection with a fresh allocation beneath this invocation's admitted work.
+export PYINSTALLER_CONFIG_DIR
+PYINSTALLER_CONFIG_DIR="$(mktemp -d "$WORK/pyinstaller-cache.XXXXXX")"
+python3 - "$PYINSTALLER_CONFIG_DIR" "$WORK" <<'PYCACHE'
+import os, sys
+from pathlib import Path
+cache, work = map(Path, sys.argv[1:])
+if (cache.is_symlink() or not cache.is_dir() or cache.parent != work
+        or cache.resolve().parent != work.resolve()
+        or cache.stat().st_uid != os.getuid() or any(cache.iterdir())):
+    raise SystemExit(f'FREEZE_CACHE_NOT_OWNED: {cache}')
+PYCACHE
 # Build-time env is located in this disposable checkout; never source main.
 uv sync --group build --frozen
 uv run --no-sync python - "$WORK/python-toolchain.json" <<'PYTOOL'

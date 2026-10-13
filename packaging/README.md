@@ -12,7 +12,13 @@ bash packaging/build_daemon.sh \
 Both paths must be new, disjoint, outside source, with existing owned parents
 and no symlink ancestors. `uv sync --group build --frozen` installs existing
 build dependencies in that checkout; PyInstaller receives explicit dist/work
-paths and the checked-in equivalent hook. Both daemon and CLI must be
+paths and the checked-in equivalent hook. Before any build tool runs, the
+freezer allocates and validates a fresh `pyinstaller-cache.*` directory under
+the admitted work path and exports it as `PYINSTALLER_CONFIG_DIR`, overriding
+any inherited selection. Thus `--clean` operates only on that invocation's
+cache in both standalone and full-app builds. Work and cache are retained with
+diagnostics; the venue owner disposes of only these invocation allocations,
+preserving external caches. Both daemon and CLI must be
 executable. Separate daemon/CLI PYZ archives share the byte-checked union of
 both native/data closures. Destination collisions refuse instead of dropping
 CLI-only payloads. `analysis.json` records actual pure/binary/data rows and CLI
@@ -33,6 +39,12 @@ Mac `file/lipo/otool/nm/ar` tools. Trust inspection captures the installed spctl
 nested/outer integrity exits plus actual policy-assessment diagnostics. Tool
 failure/unresolved assessment is separate from observed exit3 rejection or
 exit0 acceptance; these observations do not assert notarization/public trust.
+Every native rpath is expanded in its component's loader/executable context
+and resolved before dependency inspection, even if currently unused. Token
+paths must remain within the bundle, including through symlinks. Absolute paths
+must resolve within the bundle or `/usr/lib` or `/System/Library` themselves or
+their children; spelling prefixes and unknown tokens refuse. Raw paths remain
+in diagnostic evidence.
 No runtime imports, skill/guard/cleanup execution,
 provider calls or signing occurs. Example commands:
 
@@ -65,7 +77,8 @@ emits exact inner ZIP size/hash/source/tree/version/build/CPU/run/filename.
 compares these identities and archived plist. Named mismatches retain false/null
 availability. An Actions wrapper is distinct from this inner ZIP.
 
-Canonical app inventory hashes sorted compact UTF8 JSON plus LF, with every
+App and ZIP inventories use identical relative-path string ordering and compact
+UTF8 JSON with sorted keys plus LF, with every
 relative path/type/mode, file size/hash and symlink target, including hidden
 signing resources. Transforming the app changes its inventory. A later custodian
 must retain separate signed-app, notary submission ZIP, accepted UUID/log,

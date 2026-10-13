@@ -39,10 +39,20 @@ checkout. Go/archive, Python environment, web, Swift, icon and caches stay there
 no existing debug/archive/dist output is reused. Failed stages retain scratch
 and diagnostics, exit nonzero and produce no successful build receipt. The
 venue owner disposes of only that exact run after retaining evidence.
+The shared freezer overrides inherited `PYINSTALLER_CONFIG_DIR` with a fresh,
+validated cache under this run's freeze work path before invoking build tools.
+PyInstaller `--clean` therefore stays within the invocation's allocations,
+including for standalone freezer builds; external caches remain untouched.
 
 Success requires a real release executable, all eleven strong tsnet exports
 bound to fresh archive members, native component inspection, all 29 exact
 resources, exact frozen catalog JSON, notice closure and ZIP reconciliation.
+App and ZIP inventories share relative-path string ordering and UTF8 JSON
+encoding, including hidden members and symlink targets. Native inspection
+resolves every loader/executable-relative rpath in its component context and
+requires bundle containment through symlinks, even for unused paths. Absolute
+system exceptions use only `/usr/lib` and `/System/Library` roots and children;
+unknown tokens, escaping paths and spelling prefixes refuse with raw diagnostics.
 An unchanged linker may fail to extract Go members in the presence of weak
 stubs. A named `TSNET_STRONG_LINK_UNPROVEN` returns the missing exports and map;
 Package.swift is outside this correction's authority.
