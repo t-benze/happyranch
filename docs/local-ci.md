@@ -1197,6 +1197,55 @@ owned wait attempts. EOF, FIFO EAGAIN, complete frame boundaries, producer
 closure and consuming waits are separately recorded; none proves another.
 One channel's failure cannot skip attempts on the other channels.
 
+Tree discovery, signal, cleanup and finalization failures now enter that shared
+ordered recorder at occurrence time using the actual native exception. A
+re-propagated exception is deduplicated by identity; later failures retain their
+own operation labels. No delayed string-to-RuntimeError conversion or historical
+error-list reordering supplies a primary cause. The existing capture row includes
+successful acquisition followed by a native PermissionError in tree log cleanup,
+then an actual terminal-output read failure, pidfd close failure and process
+publication failure. It requires that PermissionError as `result.error`, distinct
+ordered later errors, every channel attempt, actual consuming wait, independent
+closes/publications and incomplete/nonzero result. The earlier acquisition-error
+combinations and successful raw diagnostic path remain selected.
+
+Combined provider/callback diagnostic trials require the actual first injected
+exception by identity: spawn+publication preserves spawn; selector-register+
+close+publication preserves registration. Later checkpoints and cleanup failures
+are asserted separately, including the last attempted incomplete row and the
+retained incomplete storage. Absent-child/absent-wait and genuine spawned/
+consuming-waited cases have separate assertions. Raw reconstruction, lengths,
+digests, preview and split-read handshake assertions remain.
+
+Outer selector injection targets exactly the first construction or first
+registration on that selected outer instance. Later independent selectors work.
+A real child announces readiness through a pipe and remains held until outer
+registration succeeds or cleanup signals it. Selector failure cases require its
+live pidfd binding before failure, exactly one intended injection, a later actual
+pidfd exit indication and an actual consuming wait. No exited/reaped flag or PID
+absence is substituted for those facts. Synthetic fd-close faults consume their
+selected fd once, preventing reused descriptor numbers from faulting later
+independent publication descriptors.
+
+All five rows and original C01 actions remain in the same setup15/call20/
+teardown5 seconds. The call hook captures its original monotonic deadline before
+sending the call-start frame. Diagnostic and outer trials each receive at most
+min(remaining call budget,500ms); outer supervision gets at most250ms of that
+same slice, with no new cleanup60-second allowance. TERM grace uses at most half
+the remaining cleanup time, then KILL and the real direct wait precede remaining
+child settlement. All three terminal drains use the same remaining deadline;
+waits do not add a minimum10ms after it expires. The selected19 diagnostic trials
+have a nominal9.5s ceiling and12 outer trials6s, including their assertions;
+these are upper slices, not independent grants. Retained worker waits/pipe gates,
+terminal checks, allocator work and the original product actions share the
+remaining call budget. Expiry is a failed assertion/incomplete receipt, never a
+passed row. The three-second terminal drain maxima cannot extend that budget.
+Ordinary filesystem/kernel I/O is not preemptible; actual full-selection fit,
+including all original product actions, is still UNEXECUTED/MISSING. No positive
+fit is inferred by summing maxima or by source reachability. Top-level original
+aggregate1200/backstop1280/job35min and process/byte/entry caps are unchanged;
+the actual top-level supervisor keeps its cleanup obligations and bounds.
+
 The existing C01 `test_c01_delegate[direct]` call invokes
 `run_finding_assertions` before its original product assertions. Its five checks
 are additional finding evidence, separate from the immutable61 nodes/123

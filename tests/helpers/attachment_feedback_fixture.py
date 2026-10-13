@@ -346,6 +346,7 @@ from runtime.models import TaskStatus
 _DESCRIPTOR = None
 _OBSERVATIONS = {}
 _ACTIVE_NODE = None
+_CALL_DEADLINE = None
 
 
 def pytest_addoption(parser):
@@ -419,9 +420,12 @@ def pytest_runtest_setup(item):
 
 @pytest.hookimpl(hookwrapper=True)
 def pytest_runtest_call(item):
+    global _CALL_DEADLINE
+    _CALL_DEADLINE=min(_DESCRIPTOR['deadline'],time.monotonic()+PHASE_LIMITS['call'])
     phase(item.nodeid,"call","start")
     outcome=yield
     phase(item.nodeid,"call","finish",outcome="error" if outcome.excinfo else "returned")
+    _CALL_DEADLINE=None
 
 
 @pytest.hookimpl(hookwrapper=True)
@@ -1465,6 +1469,7 @@ def _finding_diagnostic_trial(root, kind, fault=None, payload=b'\xff\xe2\x82\xac
     sink=_finding_sink(root/'evidence');control=root/'control';control.mkdir(mode=0o700)
     target=sink/'diagnostic.json';info=sink.stat();identity=(info.st_dev,info.st_ino)
     faults=set() if fault is None else set(fault.split('+'));primary=None if fault is None else fault.split('+')[0]
+    trial_deadline=min(_CALL_DEADLINE,time.monotonic()+.5)
     node=NODES[0];observer={'node':node,'binding':{'revision':_DESCRIPTOR['head']}}
     # Synthetic identity is explicitly restricted to diagnostic scratch. No
     # daemon assignment, result or callback is created or asserted by this trial.
@@ -1474,23 +1479,34 @@ def _finding_diagnostic_trial(root, kind, fault=None, payload=b'\xff\xe2\x82\xac
     (control/'observer').mkdir(mode=0o700)
     write_receipt(control/'observer'/'descriptor.json',observer,16384)
     real_popen=subprocess.Popen;real_selector=selectors.DefaultSelector
+    injected={name:OSError('finding-primary-'+name) for name in faults}
+    waits=[]
+    class Child(real_popen):
+        def wait(self,timeout=None):
+            remaining=max(0,trial_deadline-time.monotonic())
+            value=super().wait(timeout=remaining if timeout is None else min(timeout,remaining))
+            waits.append(value);return value
     def spawn(*args,**kwargs):
-        if 'spawn' in faults:raise OSError('finding-primary-spawn')
+        if 'spawn' in faults:raise injected['spawn']
         code='import os,time;os.write(1,'+repr(payload[:2])+');time.sleep(.01);os.write(1,'+repr(payload[2:])+');os.write(2,b"\\xfe")'
         if payload==b'\xff\xe2\x82\xac':
             read_fd,write_fd=os.pipe();sync_fds.append(write_fd)
             code='import os;os.write(1,'+repr(payload[:2])+');assert os.read('+str(read_fd)+',1)==b"R";os.write(1,'+repr(payload[2:])+');os.write(2,b"\\xfe")'
-            try:child=real_popen([sys.executable,'-c',code],stdout=subprocess.PIPE,stderr=subprocess.PIPE,pass_fds=(read_fd,))
+            try:child=Child([sys.executable,'-c',code],stdout=subprocess.PIPE,stderr=subprocess.PIPE,pass_fds=(read_fd,))
             finally:os.close(read_fd)
-        else:child=real_popen([sys.executable,'-c',code],stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+        else:child=Child([sys.executable,'-c',code],stdout=subprocess.PIPE,stderr=subprocess.PIPE)
         processes.append(child);return child
     class Selected:
         def __init__(self):
-            if 'selector-create' in faults:raise OSError('finding-primary-selector-create')
+            if 'selector-create' in faults:raise injected['selector-create']
             self.actual=real_selector()
         def register(self,*args):
-            if 'selector-register' in faults:raise OSError('finding-primary-selector-register')
+            if 'selector-register' in faults:raise injected['selector-register']
             return self.actual.register(*args)
+        def select(self,timeout=None):
+            remaining=trial_deadline-time.monotonic()
+            if remaining<=0:raise TimeoutError('finding diagnostic deadline')
+            return self.actual.select(remaining if timeout is None else min(timeout,remaining))
         def __getattr__(self,name):return getattr(self.actual,name)
         def close(self):
             self.actual.close();closes.append('selector')
@@ -1498,7 +1514,7 @@ def _finding_diagnostic_trial(root, kind, fault=None, payload=b'\xff\xe2\x82\xac
     def admission():
         # Parent/source guard was admitted before this helper. This is solely
         # a negative harness admission, not successful provider admission proof.
-        if 'admission' in faults:raise OSError('finding-primary-admission')
+        if 'admission' in faults:raise injected['admission']
     original_checkpoint=_diagnostic_checkpoint
     calls=[];attempted_rows=[];sync_fds=[];split_reads=[]
     def checkpoint(*args):
@@ -1507,7 +1523,7 @@ def _finding_diagnostic_trial(root, kind, fault=None, payload=b'\xff\xe2\x82\xac
         if size and (not split_reads or split_reads[-1]!=size):split_reads.append(size)
         if sync_fds and size==2:
             fd=sync_fds.pop();os.write(fd,b'R');os.close(fd)
-        if 'publication' in faults and len(calls)>1:raise OSError('finding-primary-publication')
+        if 'publication' in faults and len(calls)>1:raise injected['publication']
         return original_checkpoint(*args)
     failure=None;rows=[]
     # Replace only fixture references, not shared stdlib module attributes or
@@ -1527,21 +1543,30 @@ def _finding_diagnostic_trial(root, kind, fault=None, payload=b'\xff\xe2\x82\xac
         rows.append(attempted_rows[-1])
     assert failure is not None
     if isinstance(failure,SystemExit):assert failure.code==0
-    if 'publication' in faults:assert isinstance(failure,OSError) and 'primary-publication' in str(failure)
+    if primary and primary!='close':
+        assert failure is injected[primary], 'owner must preserve the actual first native exception'
+    if 'publication' in faults:
+        assert len(calls)>1 and attempted_rows[-1]['complete'] is False
+        assert any('finding-primary-publication' in error for error in attempted_rows[-1]['cleanup_errors'])
+        assert rows[0]['complete'] is False and rows[0]!=attempted_rows[-1]
+    if 'close' in faults:
+        assert closes==['selector'] and any('finding-secondary-close' in error for error in rows[-1]['cleanup_errors'])
     if ('admission' in faults and kind=='provider') or 'spawn' in faults:
         row=rows[-1];assert row['child_pid'] is None and row['parent_wait_returncode'] is None and row['child_state']=='absent'
-        assert row['complete'] is False and not processes
+        assert row['complete'] is False and not processes and not waits
     elif processes:
         child=processes[0];row=rows[-1]
         assert row['child_pid']==child.pid and type(row['parent_wait_returncode']) is int
         assert row['child_state']=='waited' and child.returncode==row['parent_wait_returncode']
+        assert waits and waits[-1]==row['parent_wait_returncode']
         assert child.stdout.closed and child.stderr.closed
         if fault:assert row['complete'] is False
         if primary not in ('publication','close') and primary:
             assert 'finding-primary-'+primary in row['error'] and not isinstance(failure,SystemExit)
         if 'close' in faults:assert row['cleanup_errors'] and not isinstance(failure,SystemExit)
+    assert time.monotonic()<trial_deadline, 'diagnostic trial exceeded the remaining call budget'
     return rows[-1] if rows else None, {'kind':kind,'fault':fault,'failure':type(failure).__name__,
-        'spawned':len(processes),'selector_closes':closes,'checkpoint_stages':calls,'split_read_lengths':split_reads,'stored_final':'publication' not in faults}
+        'spawned':len(processes),'consuming_waits':waits,'selector_closes':closes,'checkpoint_stages':calls,'split_read_lengths':split_reads,'stored_final':'publication' not in faults}
 
 
 def assert_finding_admission(root):
@@ -1610,7 +1635,7 @@ def _finding_owned_worker(action):
     finally:
         # Wait only on this genuine fork child. Bounded terminal wait, then
         # exact-child kill and consuming wait if the finite action did not exit.
-        deadline=time.monotonic()+1
+        deadline=min(_CALL_DEADLINE,time.monotonic()+1)
         while time.monotonic()<deadline:
             got,status=os.waitpid(pid,os.WNOHANG)
             if got:waited=status;break
@@ -1622,7 +1647,7 @@ def _finding_owned_worker(action):
 
 
 def _finding_message(fd,expected):
-    assert select.select([fd],[],[],.1)[0], 'finite finding gate timeout'
+    assert select.select([fd],[],[],max(0,min(.1,_CALL_DEADLINE-time.monotonic())))[0], 'finite finding gate timeout'
     assert os.read(fd,4096)==expected
 
 
@@ -1818,9 +1843,9 @@ def _finding_terminal_channels(root):
         try:return action()
         except BaseException as exc:failures.append(label+':'+str(exc));capture.failed.add(label.split(' ',1)[1])
     try:
-        waited=child.wait(timeout=1);assert waited==0
+        waited=child.wait(timeout=max(0,min(1,_CALL_DEADLINE-time.monotonic())));assert waited==0
         for channel,fd in (('output',child.stdout.fileno()),('phase',phase_fd),('junit',junit_fd)):
-            capture.drain(channel,fd,True,attempt)
+            capture.drain(channel,fd,True,attempt,deadline=_CALL_DEADLINE)
         assert not failures and capture.junit==xml and (sink/'pytest.log').read_bytes()==raw
         assert events==[json.loads(frame)] and all(row['complete'] for row in capture.drains.values())
         assert capture.drains['output']['read_state']=='EOF'
@@ -1841,14 +1866,14 @@ def _finding_terminal_channels(root):
             writer=junitxml.LogXML(str(junit_pipe),None)
             writer.pytest_sessionstart();writer.pytest_sessionfinish();os.write(ready,b'JUNIT')
         with _finding_owned_worker(pytest_writer) as (junit_pid,ready,release):_finding_message(ready,b'JUNIT')
-        independent.drain('junit',junit_fd,True,attempt)
+        independent.drain('junit',junit_fd,True,attempt,deadline=_CALL_DEADLINE)
         assert independent.drains['junit']['complete'] and not failures
         actual_xml=bytes(independent.junit);assert actual_xml.startswith(b'<?xml')
         parsed=ET.fromstring(actual_xml);assert parsed.tag=='testsuites' and parsed.find('testsuite').get('tests')=='0'
         qa.evidence_publish(independent.evidence/'cases.xml',actual_xml,CAPS['junit'],independent.evidence)
         assert (independent.evidence/'cases.xml').read_bytes()==actual_xml
         partial=qa.CaptureChannels(sink,events.append);os.write(phase_fd,b'{"event":')
-        _finding_assert_raises(lambda:partial.drain('phase',phase_fd,True,attempt))
+        _finding_assert_raises(lambda:partial.drain('phase',phase_fd,True,attempt,deadline=_CALL_DEADLINE))
         assert partial.drains['phase']['frame_complete'] is False and not partial.drains['phase']['complete']
     finally:
         child.stdout.close();os.close(phase_fd);os.close(junit_fd)
@@ -1862,9 +1887,21 @@ def _finding_outer_lifecycle(root):
     from scripts import attachment_scoped_qa as qa
     from types import SimpleNamespace
     facts=[];real_popen=subprocess.Popen;real_selector=selectors.DefaultSelector
-    for fault in ('spawn','discover','selector-create','selector-register','close','publication','selector-register+publication+pidfd-close+phase-close+junit-close','fifo-open','source-publication','output-publication','phase-parse'):
+    for fault in ('spawn','discover','selector-create','selector-register','close','publication','selector-register+publication+pidfd-close+phase-close+junit-close','fifo-open','source-publication','output-publication','phase-parse',
+                  'tree-cleanup+terminal-output+publication+pidfd-close'):
+        trial_deadline=min(_CALL_DEADLINE,time.monotonic()+.5)
         faults=set(fault.split('+'));primary=fault.split('+')[0]
-        case=root/fault;case.mkdir(mode=0o700);owned=[];selectors_acquired=[];published=[];pidfds=set();fifo_fds={};closed_fifos=[]
+        case=root/fault;case.mkdir(mode=0o700);owned=[];selectors_acquired=[];published=[];pidfds=set();fifo_fds={};fifo_names=[];closed_fifos=[]
+        constructions=[];injections=[];bound=[];observations=[];waits=[];gates=[];native=[]
+        cleanup_error=PermissionError('finding-primary-tree-cleanup')
+        def release():
+            if gates:
+                fd=gates.pop();os.write(fd,b'R');os.close(fd)
+        class Child(real_popen):
+            def wait(self,timeout=None):
+                remaining=max(0,trial_deadline-time.monotonic())
+                value=super().wait(timeout=remaining if timeout is None else min(timeout,remaining))
+                waits.append(value);return value
         def spawn(*args,**kwargs):
             if 'spawn' in faults:raise OSError('finding-primary-spawn')
             descriptor_path=next(value.split('=',1)[1] for value in args[0] if value.startswith('--attachment-qa-descriptor='))
@@ -1872,43 +1909,85 @@ def _finding_outer_lifecycle(root):
             frame=(json.dumps({'nonce':descriptor['nonce'],'node':NODES[0],'phase':'teardown','event':'finish'})+'\n').encode()
             if 'phase-parse' in faults:frame=b'not-json\n'+frame
             junit_path=next(value.split('=',1)[1] for value in args[0] if value.startswith('--junitxml='))
-            code='import os;os.write(1,b"queued");p=os.open('+repr(descriptor['phase_pipe'])+',os.O_WRONLY);os.write(p,'+repr(frame)+');os.close(p);j=os.open('+repr(junit_path)+',os.O_WRONLY);os.write(j,b"<testsuites/>");os.close(j)'
-            child=real_popen([sys.executable,'-c',code],stdout=subprocess.PIPE)
-            owned.append(child)
-            if primary in ('output-publication','phase-parse'):assert child.wait(timeout=1)==0
+            ready_r,ready_w=os.pipe();release_r,release_w=os.pipe();gates.append(release_w)
+            code=('import os,select;os.write('+str(ready_w)+',b"READY");'
+                'assert select.select(['+str(release_r)+'],[],[],.5)[0];'
+                'assert os.read('+str(release_r)+',1)==b"R";'
+                'os.write(1,b"queued");p=os.open('+repr(descriptor['phase_pipe'])+',os.O_WRONLY);'
+                'os.write(p,'+repr(frame)+');os.close(p);j=os.open('+repr(junit_path)+',os.O_WRONLY);'
+                'os.write(j,b"<testsuites/>");os.close(j)')
+            try:
+                child=Child([sys.executable,'-c',code],stdout=subprocess.PIPE,pass_fds=(ready_w,release_r))
+                owned.append(child);_finding_message(ready_r,b'READY')
+            finally:os.close(ready_r);os.close(ready_w);os.close(release_r)
+            if primary in ('output-publication','phase-parse'):
+                release();assert child.wait(timeout=1)==0
             return child
         class Tree(qa.OwnedTree):
+            in_cleanup=False
             def discover(self):
                 super().discover();pidfds.update(row['fd'] for row in self.identities.values() if row.get('fd') is not None)
+                for child in owned:
+                    if child.pid in self.identities and child.pid not in bound:
+                        row=self.identities[child.pid]
+                        assert row['exited'] is False and row['reaped'] is False and child.poll() is None
+                        bound.append(child.pid)
             def children(self,pid):
                 children=super().children(pid)
                 return children & {p.pid for p in owned} if pid==self.self_pid else children
+            def observe_exits(self,pid):
+                super().observe_exits(pid)
+                observations.append({'exited':{p:row['exited'] for p,row in self.identities.items()},
+                    'indicated':[row['pid'] for row in self.events if row['kind']=='exit_indication']})
+            def cleanup(self,*args,**kwargs):
+                self.in_cleanup=True
+                return super().cleanup(*args,**kwargs)
+            def capture_logs(self):
+                if 'tree-cleanup' in faults and self.in_cleanup and not native:
+                    raise cleanup_error
+                return super().capture_logs()
+            def failure(self,label,exc):
+                native.append((label,exc));super().failure(label,exc)
         class Selector:
             def __init__(self):
-                if 'selector-create' in faults:raise OSError('finding-primary-selector-create')
-                self.actual=real_selector();selectors_acquired.append(self)
+                self.outer=not constructions;constructions.append(self.outer)
+                if self.outer and 'selector-create' in faults:
+                    injections.append('selector-create');raise OSError('finding-primary-selector-create')
+                self.actual=real_selector();selectors_acquired.append(self);self.registrations=0
             def register(self,*args):
-                if 'selector-register' in faults:raise OSError('finding-primary-selector-register')
-                return self.actual.register(*args)
+                self.registrations+=1
+                if self.outer and self.registrations==1 and 'selector-register' in faults:
+                    injections.append('selector-register');raise OSError('finding-primary-selector-register')
+                value=self.actual.register(*args)
+                if self.outer and self.registrations==3:release()
+                return value
             def __getattr__(self,name):return getattr(self.actual,name)
             def close(self):
                 self.actual.close()
-                if 'close' in faults:raise OSError('finding-secondary-close')
+                if self.outer and 'close' in faults:raise OSError('finding-secondary-close')
         real_os=qa.os
         class OS:
             def __getattr__(self,name):return getattr(real_os,name)
             def open(self,path,*args,**kwargs):
                 if 'fifo-open' in faults and Path(path).name=='phases.fifo':raise OSError('finding-primary-fifo-open')
                 fd=real_os.open(path,*args,**kwargs)
-                if Path(path).name in ('phases.fifo','junit.fifo'):fifo_fds[fd]=Path(path).name
+                if Path(path).name in ('phases.fifo','junit.fifo'):
+                    fifo_fds[fd]=Path(path).name;fifo_names.append(Path(path).name)
                 return fd
+            def read(self,fd,*args):
+                if ('terminal-output' in faults and native and owned and fd==owned[0].stdout.fileno()
+                        and 'terminal-output' not in injections):
+                    injections.append('terminal-output');raise OSError('finding-secondary-terminal-output')
+                return real_os.read(fd,*args)
             def close(self,fd):
                 real_os.close(fd)
                 if fd in fifo_fds:
-                    closed_fifos.append(fifo_fds[fd])
-                    if ('phase-close' in faults and fifo_fds[fd]=='phases.fifo'
-                        or 'junit-close' in faults and fifo_fds[fd]=='junit.fifo'):raise OSError('finding-secondary-fifo-close')
-                if 'pidfd-close' in faults and fd in pidfds:raise OSError('finding-secondary-pidfd-close')
+                    name=fifo_fds.pop(fd);closed_fifos.append(name)
+                    if ('phase-close' in faults and name=='phases.fifo'
+                        or 'junit-close' in faults and name=='junit.fifo'):raise OSError('finding-secondary-fifo-close')
+                if fd in pidfds:
+                    pidfds.remove(fd)
+                    if 'pidfd-close' in faults:raise OSError('finding-secondary-pidfd-close')
         original_write=qa.write_receipt;original_append=qa.evidence_append
         def append(path,data,*args,**kwargs):
             if 'output-publication' in faults and data:raise OSError('finding-primary-output-publication')
@@ -1916,51 +1995,71 @@ def _finding_outer_lifecycle(root):
         def publish(path,*args,**kwargs):
             published.append(Path(path).name)
             if 'source-publication' in faults and Path(path).name=='source.json':raise OSError('finding-primary-source-publication')
-            if 'publication' in faults and Path(path).name=='processes.json':raise OSError('finding-primary-publication')
+            if 'publication' in faults and Path(path).name=='processes.json':raise OSError('finding-secondary-publication')
             return original_write(path,*args,**kwargs)
         binding={key:value for key,value in _DESCRIPTOR.items() if key in
             ('source','head','tree','ref','root','manifest_sha256','source_hashes','python','python_binary','python_version','python_prefix','python_sha256')}
         binding.update(task=EXECUTION_OWNER,run='synthetic-'+fault,attempt='1')
         scratch=case/'attachment-qa'/binding['task']/(binding['run']+'-1')/'scratch'
         def discover_failure(frame):raise OSError('finding-primary-discover')
-        with _finding_patch(qa,OwnedTree=Tree,write_receipt=publish,evidence_append=append,os=OS(),
-            subprocess=SimpleNamespace(Popen=spawn,TimeoutExpired=subprocess.TimeoutExpired),
-            selectors=SimpleNamespace(DefaultSelector=Selector,EVENT_READ=selectors.EVENT_READ)):
-            with _finding_patch(os,environ=dict(os.environ,RUNNER_TEMP=str(case))):
-                if 'discover' in faults:
-                    with harness_source_gate(qa.supervise,'tree.discover()',discover_failure) as gates:exit_code=qa.supervise(binding,scratch)
-                    assert gates
-                else:exit_code=qa.supervise(binding,scratch)
+        # Leave time in this SAME half-second slice for drains/closes/publication.
+        cleanup_deadline=min(trial_deadline,time.monotonic()+.25)
+        try:
+            with _finding_patch(qa,OwnedTree=Tree,write_receipt=publish,evidence_append=append,os=OS(),
+                subprocess=SimpleNamespace(Popen=spawn,TimeoutExpired=subprocess.TimeoutExpired),
+                selectors=SimpleNamespace(DefaultSelector=Selector,EVENT_READ=selectors.EVENT_READ)):
+                with _finding_patch(os,environ=dict(os.environ,RUNNER_TEMP=str(case))):
+                    if 'discover' in faults:
+                        with harness_source_gate(qa.supervise,'tree.discover()',discover_failure) as hits:
+                            exit_code=qa.supervise(binding,scratch,deadline=cleanup_deadline)
+                        assert hits
+                    else:exit_code=qa.supervise(binding,scratch,deadline=cleanup_deadline)
+        finally:
+            for fd in gates:os.close(fd)
+            # Independent real owner fallback if the assertion/gate failed.
+            for child in owned:
+                if child.returncode is None:child.kill();child.wait(timeout=max(0,trial_deadline-time.monotonic()))
+                if child.stdout is not None and not child.stdout.closed:child.stdout.close()
         evidence=scratch.parent/'evidence';result=closed_read(evidence/'result.json',CAPS['metadata'])
         assert exit_code!=0 and result['complete'] is False
         assert 'phase publication' not in result['error'] and 'phases.json' in published and 'result.json' in published
-        if primary in ('spawn','fifo-open','source-publication'):assert not owned and result['command_exit'] is None and result['closure'] is False
+        if primary in ('spawn','fifo-open','source-publication'):
+            assert not owned and not waits and result['command_exit'] is None and result['closure'] is False
         else:
-            child=owned[0];assert child.returncode is not None and child.stdout.closed
+            child=owned[0];assert child.returncode is not None and child.stdout.closed and waits
             if 'publication' not in faults:
                 process=closed_read(evidence/'processes.json',qa.FINAL_CAPS['processes.json'])
-                assert type(process['direct_wait_returncode']) is int
+                assert type(process['direct_wait_returncode']) is int and process['direct_wait_returncode']==waits[-1]
         if primary in ('spawn','discover','selector-create','selector-register','fifo-open','source-publication'):
             assert 'finding-primary-'+primary in result['error']
-        if 'publication' in faults:assert any('process publication' in e['error'] for e in result['errors'])
-        if 'pidfd-close' in faults:
-            assert any('pidfd close' in row['error'] for row in result['errors'])
-            assert result['error'].startswith('OSError:finding-primary-selector-register')
-        assert set(fifo_fds.values())==set(closed_fifos)
+        if primary in ('selector-create','selector-register'):
+            assert injections==[primary] and bound==[owned[0].pid] and len(constructions)>1
+            assert any(owned[0].pid in row['indicated'] for row in observations), 'independent pidfd exit observation unavailable'
+        if 'publication' in faults:assert any(e['operation']=='process publication' for e in result['errors'])
+        if 'pidfd-close' in faults:assert any(row['operation']=='pidfd close' for row in result['errors'])
+        assert not fifo_fds and sorted(fifo_names)==sorted(closed_fifos)
         if 'phase-close' in faults and 'junit-close' in faults:
             assert any(row['operation']=='phase fd close' for row in result['errors'])
             assert any(row['operation']=='junit fd close' for row in result['errors'])
-        if primary in ('output-publication','phase-parse'):
+        if primary in ('output-publication','phase-parse','tree-cleanup'):
             phases=closed_read(evidence/'phases.json',qa.FINAL_CAPS['phases.json'])
             assert set(phases['drains'])=={'output','phase','junit'}
             assert phases['drains']['junit']['complete'] and (evidence/'cases.xml').read_bytes()==b'<testsuites/>'
             assert any(row['event']=='finish' and row['phase']=='teardown' for row in phases['events'])
-            assert not phases['drains']['output' if primary=='output-publication' else 'phase']['complete']
+            assert not phases['drains']['output' if primary in ('output-publication','tree-cleanup') else 'phase']['complete']
+        if primary=='tree-cleanup':
+            assert native[0][0]=='log capture' and native[0][1] is cleanup_error
+            assert result['error']=='PermissionError:finding-primary-tree-cleanup'
+            operations=[row['operation'] for row in result['errors']]
+            assert operations[0]=='log capture' and operations.count('log capture')==1
+            assert operations.index('terminal output')<operations.index('pidfd close')<operations.index('process publication')
+            assert len(constructions)>=1 and injections==['terminal-output'] and bound==[owned[0].pid]
         for selected in selectors_acquired:assert not selected.actual.get_map()
+        assert time.monotonic()<trial_deadline, 'outer lifecycle exceeded the remaining original call budget'
         facts.append({'fault':fault,'exit':exit_code,'first_error':result['error'],'errors':result['errors'],
-                      'spawned':[p.pid for p in owned],'publications_attempted':published})
+            'spawned':[p.pid for p in owned],'consuming_waits':waits,'bound':bound,'selector_injections':injections,
+            'independent_observations':observations,'publications_attempted':published})
     return facts
-
 
 def assert_finding_capture(root):
     facts={}
@@ -1989,6 +2088,7 @@ def assert_finding_capture(root):
 def run_finding_assertions():
     from scripts.attachment_scoped_qa import FINDING_ROWS
     assert _ACTIVE_NODE==NODES[0] and _DESCRIPTOR['manifest_sha256']==MANIFEST_SHA256
+    assert _CALL_DEADLINE is not None and time.monotonic()<_CALL_DEADLINE
     root=Path(_DESCRIPTOR['scratch'])/'finding-checks';root.mkdir(mode=0o700)
     checks=(assert_finding_admission,assert_finding_popen,assert_finding_selector,assert_finding_raw,assert_finding_capture)
     receipts={}
@@ -1997,6 +2097,7 @@ def run_finding_assertions():
             case=root/('row-'+str(len(receipts)));case.mkdir(mode=0o700)
             try:
                 facts=check(case)
+                assert time.monotonic()<_CALL_DEADLINE, 'finding assertions exhausted the original call budget'
                 receipts[row]={'outcome':'passed','node':NODES[0],'head':_DESCRIPTOR['head'],
                     'source_hashes':_DESCRIPTOR['source_hashes'],'assertion':check.__name__,'facts':facts}
             except BaseException as exc:

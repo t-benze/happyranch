@@ -260,7 +260,7 @@ def write_receipt(path: Path, value, cap: int = 1048576, *, evidence: Path | Non
 
 class OwnedTree:
     """Discover only positively owned child edges; signals use bound pidfds."""
-    def __init__(self, evidence: Path):
+    def __init__(self, evidence: Path, record=None):
         libc = ctypes.CDLL(None, use_errno=True)
         if libc.prctl(36, 1, 0, 0, 0):  # PR_SET_CHILD_SUBREAPER
             raise OSError(ctypes.get_errno(), "subreaper refused")
@@ -268,6 +268,8 @@ class OwnedTree:
         if libc.prctl(37, ctypes.byref(value), 0, 0, 0) or value.value != 1:
             raise ValueError("subreaper readback refused")
         self.identities, self.errors, self.events = {}, [], []
+        self.record = record
+        self.reported = []
         self.evidence = evidence
         self.self_pid = os.getpid()
         self.ports = {}
@@ -276,6 +278,13 @@ class OwnedTree:
         self.head=None
         self.retired_cases={}
         self.direct_wait=None
+
+    def failure(self, label, exc):
+        # Report the actual exception when it occurs, before later obligations.
+        if any(prior is exc for prior in self.reported):return
+        if len(self.reported)<128:self.reported.append(exc)
+        self.errors.append(label+':'+type(exc).__name__+':'+str(exc)[:256])
+        if self.record is not None:self.record(label,exc)
 
     def event(self, **value):
         value.update(time_ns=time.time_ns())
@@ -326,8 +335,13 @@ class OwnedTree:
                                                     "fd": fd, "exited": False, "reaped": False,"birth_parent":parent,"parent_wait":None,"removed_after_exit":False}
                             fd=None  # ownership transferred to the retained identity
                             self.event(kind="bound", pid=pid, parent=parent, start=before[1])
+                        except BaseException as exc:
+                            self.failure('pidfd binding',exc)
+                            raise
                         finally:
-                            if fd is not None:evidence_cleanup([lambda:os.close(fd)])
+                            if fd is not None:
+                                try:os.close(fd)
+                                except BaseException as exc:self.failure('unbound pidfd close',exc)
                     else:
                         entry=self.identities[pid]
                         current=self.identity(pid)
@@ -343,7 +357,7 @@ class OwnedTree:
                 if parent == self.self_pid:
                     raise
             except (OSError, ValueError) as exc:
-                self.errors.append(type(exc).__name__ + ":" + str(exc)[:256])
+                self.failure("discover",exc)
 
     def observe_exits(self, direct_pid: int):
         for pid, entry in self.identities.items():
@@ -384,8 +398,12 @@ class OwnedTree:
                         else:
                             entry['exited']=False
                             self.event(kind='nonadopted_zombie',pid=pid,parent=entry['parent'])
+            except BaseException as exc:
+                self.failure('exit observation',exc)
+                raise
             finally:
-                poll.close()
+                try:poll.close()
+                except BaseException as exc:self.failure('exit selector close',exc)
 
     def signal_bound(self, sig: int):
         self.discover()
@@ -397,7 +415,7 @@ class OwnedTree:
                 except ProcessLookupError:
                     pass
                 except OSError as exc:
-                    self.errors.append("pidfd signal:" + str(exc)[:128])
+                    self.failure("pidfd signal",exc)
 
     def closed_identity(self,pid):
         entry=self.identities[pid]
@@ -417,7 +435,7 @@ class OwnedTree:
             for pid in (provider['pid'],launch['driver_pid']):
                 self.required_roles.add(pid)
                 if pid not in self.identities:
-                    self.errors.append('required provider role identity missing')
+                    self.failure('role identity',ValueError('required provider role identity missing'))
             waits=[]
             if 'provider-wait' in row:waits.append(row['provider-wait'])
             if 'callback' in row:
@@ -437,7 +455,7 @@ class OwnedTree:
                     # The authenticated deterministic callback wait is actual
                     # parent evidence; it grants no pidfd signalling right.
                     self.event(kind='callback_parent_wait',pid=pid,owner=wait['owner'],status=wait['returncode'],independently_bound=False)
-                    self.errors.append('required callback identity not observed')
+                    self.failure('callback identity',ValueError('required callback identity not observed'))
 
     def register_log(self,node,log):
         # Capture registration is not process ownership or endpoint admission.
@@ -552,7 +570,7 @@ class OwnedTree:
                 break
             time.sleep(.02)
         if not adopted:
-            self.errors.append('required daemon adoption unavailable; no observed wait')
+            self.failure('daemon adoption',ValueError('required daemon adoption unavailable; no observed wait'))
         for _ in range(CAPS['processes']):
             added={p for p,v in self.identities.items() if (v['parent'] in selected or v['birth_parent'] in selected)}
             if added<=selected:break
@@ -576,7 +594,12 @@ class OwnedTree:
             time.sleep(.02)
         probe=socket.socket();probe.settimeout(.2)
         try:port_closed=probe.connect_ex(('127.0.0.1',port))!=0
-        finally:probe.close()
+        except BaseException as exc:
+            self.failure('port probe',exc)
+            raise
+        finally:
+            try:probe.close()
+            except BaseException as exc:self.failure('port probe close',exc)
         # Public upload/launcher helpers are pytest children rather than daemon
         # descendants. Their actual exit/reap proof also belongs in the closed
         # receipt; never retain them merely because the live parent is pytest.
@@ -676,7 +699,12 @@ class OwnedTree:
                     raise ValueError('daemon log changed during capture')
                 with os.fdopen(fd,'rb',closefd=False) as handle:
                     data=handle.read(CAPS['daemon_log']+1)
-            finally:os.close(fd)
+            except BaseException as exc:
+                self.failure('log capture',exc)
+                raise
+            finally:
+                try:os.close(fd)
+                except BaseException as exc:self.failure('log fd close',exc)
             overflow=len(data)>CAPS['daemon_log']
             dest=self.evidence/('daemon-'+hashlib.sha256(endpoint['node'].encode()).hexdigest()[:20]
                 +'-'+hashlib.sha256(str(path).encode()).hexdigest()[:12]+'.log')
@@ -709,13 +737,14 @@ class OwnedTree:
         def attempt(label, action):
             try:return action()
             except BaseException as exc:
-                self.errors.append(label+':'+type(exc).__name__+':'+str(exc)[:256])
+                self.failure(label,exc)
                 return None
         attempt('log capture', self.capture_logs)
         attempt('TERM bound', lambda:self.signal_bound(signal.SIGTERM))
         if child is not None:
             attempt('TERM direct', lambda:child.terminate() if child.poll() is None else None)
-        grace=min(deadline,time.monotonic()+10)
+        # Reserve part of the remaining budget for KILL and the consuming wait.
+        grace=min(deadline,time.monotonic()+min(10,max(0,deadline-time.monotonic())/2))
         def settle(stop):
             while time.monotonic()<stop:
                 attempt('discover',self.discover)
@@ -726,15 +755,17 @@ class OwnedTree:
         attempt('KILL bound',lambda:self.signal_bound(signal.SIGKILL))
         if child is not None:
             attempt('KILL direct',lambda:child.kill() if child.poll() is None else None)
-        attempt('KILL settlement',lambda:settle(deadline))
+        # The direct owner can consume its wait even if pidfd observation failed.
+        # Do this before descendant settlement rather than after the deadline.
         if child is not None:
             def consuming_wait():
-                self.direct_wait=child.wait(timeout=max(.01,deadline-time.monotonic()))
+                self.direct_wait=child.wait(timeout=max(0,deadline-time.monotonic()))
                 if child.pid in self.identities:
                     self.identities[child.pid]['exited']=True
                     self.identities[child.pid]['reaped']=True
                 self.event(kind='direct_reaped',pid=child.pid,returncode=self.direct_wait)
             attempt('direct wait',consuming_wait)
+        attempt('KILL settlement',lambda:settle(deadline))
         attempt('final discover',self.discover)
         if child is not None:attempt('final observe',lambda:self.observe_exits(child.pid))
         attempt('final log capture',self.capture_logs)
@@ -749,13 +780,13 @@ class OwnedTree:
             if row.get('fd') is not None:
                 fd=row['fd'];row['fd']=None
                 try:os.close(fd)
-                except BaseException as exc:self.errors.append('pidfd close:'+type(exc).__name__+':'+str(exc)[:256])
+                except BaseException as exc:self.failure('pidfd close',exc)
         clean=clean and not self.errors
         try:write_receipt(self.evidence/'processes.json',
             {'identities':{pid:{k:v for k,v in row.items() if k!='fd'} for pid,row in self.identities.items()},
              'events':self.events,'errors':self.errors,'closure':clean,'retired_cases':self.retired_cases,
              'direct_wait_returncode':self.direct_wait},2097152,evidence=self.evidence)
-        except BaseException as exc:self.errors.append('process publication:'+type(exc).__name__+':'+str(exc)[:256])
+        except BaseException as exc:self.failure('process publication',exc)
         return clean and not self.errors
 
 
@@ -791,12 +822,12 @@ class CaptureChannels:
             if first is not None:raise first
         if self.counts[channel]>cap:raise ValueError(channel+' capture overflow; bounded prefix retained')
 
-    def drain(self, channel, fd, producer_closed, attempt):
+    def drain(self, channel, fd, producer_closed, attempt, *, deadline=None):
         # O_RDWR FIFOs report EAGAIN rather than EOF even after the actual owned
         # producer closes. That fact is recorded separately from closure/waits.
         status={'producer_closed':producer_closed,'read_state':None,'complete':False}
         self.drains[channel]=status
-        deadline=time.monotonic()+1
+        deadline=min(time.monotonic()+1,deadline) if deadline is not None else time.monotonic()+1
         if channel=='phase':self.processing_deadline=deadline
         cap={'output':CAPS['command_log'],'phase':CAPS['phases'],'junit':CAPS['junit']}[channel]
         budget=cap+8192
@@ -823,16 +854,22 @@ class CaptureChannels:
             raise
 
 
-def supervise(binding: dict, scratch: Path) -> int:
+def supervise(binding: dict, scratch: Path, *, deadline: float | None = None) -> int:
     runner_temp=Path(os.environ['RUNNER_TEMP']).resolve(strict=True)
     expected=runner_temp/'attachment-qa'/binding['task']/f"{binding['run']}-{binding['attempt']}"/'scratch'
     if scratch!=expected or scratch.exists() or scratch.is_symlink():raise ValueError('scratch binding/refusal')
     evidence=scratch.parent/'evidence'
     child=None;tree=None;selector=None;phase_fd=None;junit_fd=None;lock_fd=None;evidence_owned=False
     start=time.monotonic();phase_deadline=start+60;events=[];clean=False;total=None
-    errors=[];first=None;prior_handlers={};channels=CaptureChannels(evidence,lambda row:on_phase(row))
+    # A nested synthetic trial inherits the original call budget. The actual
+    # top-level owner retains its unchanged aggregate and cleanup guarantees.
+    cleanup_deadline=min(start+1260,deadline) if deadline is not None else start+1260
+    run_deadline=min(start+1200,deadline) if deadline is not None else start+1200
+    errors=[];first=None;reported=[];prior_handlers={};channels=CaptureChannels(evidence,lambda row:on_phase(row))
     def record(label,exc):
         nonlocal first
+        if any(prior is exc for prior in reported):return
+        if len(reported)<128:reported.append(exc)
         if first is None:first=exc
         if len(errors)<128:errors.append({'operation':label,'error':type(exc).__name__+':'+str(exc)[:1024]})
         else:first.add_note('additional bounded lifecycle error')
@@ -901,7 +938,7 @@ def supervise(binding: dict, scratch: Path) -> int:
             'tests.helpers.attachment_feedback_fixture','-m','integration',*NODES,
             f'--attachment-qa-descriptor={descriptor_path}','-v','--tb=short','--capture=no','--show-capture=no',
             f"--basetemp={scratch/'pytest'}",f'--junitxml={junit_pipe}']
-        tree=OwnedTree(evidence);tree.head=binding['head']
+        tree=OwnedTree(evidence,record=record);tree.head=binding['head']
         env=dict(os.environ,TMPDIR=str(scratch),TMP=str(scratch),TEMP=str(scratch),
                  HAPPYRANCH_TEST_REAL_PLATFORM='1',PYTHONDONTWRITEBYTECODE='1')
         child=subprocess.Popen(argv,cwd=Path(binding['source']),env=env,stdout=subprocess.PIPE,
@@ -918,7 +955,7 @@ def supervise(binding: dict, scratch: Path) -> int:
             if time.monotonic()>=next_capture:
                 tree.capture_logs();next_capture=time.monotonic()+.2
             tree.monitor()
-            if time.monotonic()>min(start+1200,phase_deadline):raise TimeoutError('aggregate or independent phase watchdog expired')
+            if time.monotonic()>min(run_deadline,phase_deadline):raise TimeoutError('aggregate or independent phase watchdog expired')
             for key,_ in selector.select(.02):
                 fd=key.fileobj if type(key.fileobj) is int else key.fileobj.fileno()
                 try:chunk=os.read(fd,8192)
@@ -927,23 +964,22 @@ def supervise(binding: dict, scratch: Path) -> int:
                 try:channels.consume(key.data,chunk)
                 except BaseException:
                     channels.failed.add(key.data);raise
-        child.wait(timeout=1)
+        child.wait(timeout=min(1,max(0,run_deadline-time.monotonic())))
     except BaseException as exc:record('acquisition/capture',exc)
     finally:
         # The tree's consuming wait precedes drains. An error anywhere leaves
         # the other acquired resources and channels with their own attempts.
         if tree is not None:
-            clean=bool(attempt('owned cleanup',lambda:tree.cleanup(child,min(start+1260,time.monotonic()+60),finalize=False)))
+            clean=bool(attempt('owned cleanup',lambda:tree.cleanup(child,min(cleanup_deadline,time.monotonic()+60),finalize=False)))
         producer_closed=bool(attempt('producer closure',lambda:(child is not None and tree is not None and tree.direct_wait is not None
                          and all(tree.closed_identity(pid) for pid in tree.identities))))
         output_fd=None
         if child is not None and child.stdout is not None:output_fd=attempt('stdout descriptor',child.stdout.fileno)
         for name,fd in (('output',output_fd),
                         ('phase',phase_fd),('junit',junit_fd)):
-            if fd is not None:attempt('terminal '+name,lambda name=name,fd=fd:channels.drain(name,fd,producer_closed,attempt))
+            if fd is not None:attempt('terminal '+name,lambda name=name,fd=fd:channels.drain(name,fd,producer_closed,attempt,deadline=cleanup_deadline))
         if tree is not None:
             clean=bool(attempt('process finalization',lambda:tree.finalize_cleanup(clean)))
-            for message in tree.errors:record('owned cleanup',RuntimeError(message))
         if child is not None and child.stdout is not None:attempt('stdout close',child.stdout.close)
         if selector is not None:attempt('selector close',selector.close)
         for name,fd in (('phase',phase_fd),('junit',junit_fd),('lock',lock_fd)):
