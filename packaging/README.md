@@ -47,6 +47,20 @@ build. Build-input membership alone is not final linked/emitted license
 completeness. Named missing/unresolved dispositions remain fatal to complete
 release finalization; their partial records are useful diagnostic output.
 
+Emitted web inputs are attributed within their innermost installed package
+boundary, including scoped and nested packages. Anonymous subpath format
+manifests inherit only that package's validated root name/version. Malformed,
+missing, conflicting or unsafe metadata/input/notice paths produce
+`LICENSE_UNRESOLVED` with source-map, input and metadata paths; they cannot
+inherit an enclosing dependency or web-app identity. Grouped inputs retain
+map/source/metadata hashes and original notice bytes. Failure diagnostics include
+`web-attribution.json`: first 100 rejected records, string fields capped at 512
+characters and serialized records capped at 2048 bytes, with explicit
+omitted-record/field truncation; the failure bundle keeps
+its existing 262144-byte per-file bound. No metadata contents or cache tree are
+uploaded. Retained texts leave `closure_complete=false` and release finalization
+blocked pending actual legal/native/asset reconciliation.
+
 ## Read-only verifier
 
 All commands use Python standard library and, for native inspection, actual

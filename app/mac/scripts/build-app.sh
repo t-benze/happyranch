@@ -51,7 +51,8 @@ from pathlib import Path
 root = Path(sys.argv[1]); target = root / 'bounded'
 target.mkdir()
 for name in ('build.log', 'failure.txt', 'toolchains.txt', 'go-inputs.sha256',
-             'swift-link.map', 'resources.json', 'license-mapping.json'):
+             'swift-link.map', 'resources.json', 'license-mapping.json',
+             'web-attribution.json'):
     path = root / name
     if path.is_file():
         data = path.read_bytes()
@@ -173,7 +174,7 @@ STAGE=notices
 cp -R "$OUTPUT/scratch/freeze-work/notices" "$APP/Contents/Resources/licenses/python"
 cp "$SOURCE/packaging/THIRD_PARTY_NOTICES.md" "$APP/Contents/Resources/licenses/THIRD_PARTY_NOTICES.md"
 python3 - "$SOURCE" "$APP" "$OUTPUT" <<'PYNOTICES'
-import hashlib, json, shutil, sys
+import hashlib, json, os, re, shutil, sys
 from pathlib import Path
 source, app, output = map(Path, sys.argv[1:])
 mapping = json.loads((output / 'scratch/freeze-work/license-mapping.json').read_text())
@@ -211,25 +212,153 @@ goroot = Path(__import__('subprocess').check_output(['go', 'env', 'GOROOT'], tex
 texts('Go-runtime', __import__('subprocess').check_output(['go', 'env', 'GOVERSION'], text=True).strip(), goroot, 'go', ['fresh c-archive'])
 # Source maps identify emitted input modules. They do not assert whether every
 # included helper/asset or legal obligation was preserved by the bundler.
-web = source / 'web'; packages = {}
+web = (source / 'web').resolve(); node_modules = web / 'node_modules'; packages = {}
+# Retain only paths, hashes and fixed reasons, never metadata/source contents.
+# First 100 records, with bounded fields, survive even a later notices failure.
+web_diagnostics = {'records': [], 'omitted_records': 0, 'truncated': False}
+def web_diagnostic(inclusion, reason):
+    record = {'disposition': 'LICENSE_UNRESOLVED', 'reason': reason}
+    record.update({key: inclusion.get(key) for key in
+                   ('map', 'map_sha256', 'source', 'input', 'metadata', 'package_root')})
+    clipped = []
+    for key, value in record.items():
+        if isinstance(value, str) and len(value) > 512:
+            record[key] = value[:512]
+            clipped.append(key)
+    record['truncated_fields'] = clipped
+    # A byte cap also bounds escaped/non-ASCII path strings in serialized JSON.
+    while len(json.dumps(record).encode('utf-8')) > 2048:
+        key = max((k for k, v in record.items() if isinstance(v, str)), key=lambda k: len(record[k]))
+        record[key] = record[key][:len(record[key]) // 2]
+        if key not in clipped:
+            clipped.append(key)
+    if len(web_diagnostics['records']) < 100:
+        web_diagnostics['records'].append(record)
+    else:
+        web_diagnostics['omitted_records'] += 1
+    web_diagnostics['truncated'] |= bool(clipped) or web_diagnostics['omitted_records'] > 0
+    (output / 'diagnostics/web-attribution.json').write_text(json.dumps(web_diagnostics, indent=2) + '\n')
+def unresolved(inclusion, reason):
+    components.append({'component': inclusion.get('source') or inclusion['map'], 'scope': 'web',
+                       'disposition': 'LICENSE_UNRESOLVED', 'reason': reason,
+                       'inclusion': [inclusion.copy()], 'notices': []})
+    web_diagnostic(inclusion, reason)
+def identity(meta):
+    if not isinstance(meta, dict):
+        raise ValueError('package metadata is not an object')
+    name, version = meta.get('name'), meta.get('version')
+    if not isinstance(name, str) or not isinstance(version, str) or not name or not version:
+        raise ValueError('package name/version must be nonempty strings')
+    if not re.fullmatch(r'(?:@[a-z0-9][a-z0-9._-]*/)?[a-z0-9][a-z0-9._-]*', name):
+        raise ValueError('unsafe package name')
+    if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9.+_-]*', version):
+        raise ValueError('unsafe package version')
+    return name, version
 for map_path in sorted((web / 'dist').rglob('*.map')):
-    graph = json.loads(map_path.read_text())
-    for src in graph.get('sources', []):
-        path = (map_path.parent / src).resolve()
-        if not path.is_relative_to(web / 'node_modules'):
+    base = {'map': str(map_path.relative_to(web)), 'source': None,
+            'input': None, 'metadata': None}
+    if map_path.is_symlink() or not map_path.resolve().is_relative_to(web / 'dist'):
+        base['metadata'] = base['map']
+        unresolved(base, 'source map escapes emitted dist boundary')
+        continue
+    base['map_sha256'] = sha(map_path)
+    try:
+        graph = json.loads(map_path.read_text())
+        if not isinstance(graph, dict) or not isinstance(graph.get('sources'), list):
+            raise ValueError('source map must be an object with a sources array')
+        source_root = graph.get('sourceRoot', '')
+        if not isinstance(source_root, str) or Path(source_root).is_absolute() or '\\' in source_root or '\x00' in source_root:
+            raise ValueError('unsafe sourceRoot')
+    except (OSError, ValueError) as exc:
+        base['metadata'] = base['map']
+        unresolved(base, 'unusable source map: ' + type(exc).__name__)
+        continue
+    for src in graph['sources']:
+        inclusion = base.copy(); inclusion['source'] = src if isinstance(src, str) else None
+        inclusion['metadata'] = base['map']
+        if not isinstance(src, str) or not src or '\x00' in src or '\\' in src or Path(src).is_absolute():
+            unresolved(inclusion, 'emitted input must be a safe relative path string')
             continue
-        root = path.parent
-        while root != web / 'node_modules' and not (root / 'package.json').is_file():
-            root = root.parent
-        if root == web / 'node_modules':
-            components.append({'component': src, 'disposition': 'LICENSE_UNRESOLVED', 'reason': 'emitted source has no package metadata', 'notices': []})
+        # Use lexical location first: resolving a symlink must not reassign an
+        # input from its actual package to another dependency or the web app.
+        path = Path(os.path.abspath(map_path.parent / source_root / src))
+        inclusion['input'] = str(path)
+        if not path.is_relative_to(node_modules):
+            try:
+                if 'node_modules' in Path(src).parts or path.resolve().is_relative_to(node_modules):
+                    unresolved(inclusion, 'dependency input escapes its lexical package boundary')
+            except (OSError, RuntimeError):
+                unresolved(inclusion, 'emitted input path cannot be safely resolved')
+            continue  # Ordinary first-party web input; no dependency attribution.
+        parts = path.relative_to(node_modules).parts
+        # The last node_modules segment identifies the innermost dependency,
+        # including nested and scoped packages. Never climb past this boundary.
+        start = max((i + 1 for i, part in enumerate(parts) if part == 'node_modules'), default=0)
+        count = 2 if start < len(parts) and parts[start].startswith('@') else 1
+        if len(parts) <= start + count:
+            unresolved(inclusion, 'dependency input has no package-local file')
             continue
-        metadata = json.loads((root / 'package.json').read_text())
-        packages.setdefault(root, {'meta': metadata, 'inputs': []})['inputs'].append(
-            {'map': str(map_path.relative_to(web)), 'map_sha256': sha(map_path), 'source': src,
-             'source_sha256': sha(path) if path.is_file() else None})
+        root = node_modules.joinpath(*parts[:start + count])
+        inclusion['package_root'] = str(root)
+        inclusion['metadata'] = str(root / 'package.json')
+        try:
+            if root.is_symlink() or not root.resolve().is_relative_to(node_modules) or root.resolve() != root:
+                raise ValueError('package boundary is symlinked or escaping')
+            if not path.resolve().is_relative_to(root) or not path.is_file():
+                raise ValueError('emitted input is missing or escapes package boundary')
+            # Inspect every encountered manifest. Anonymous format metadata may
+            # inherit only the validated identity at this same package root.
+            manifests = []; current = path.parent
+            while True:
+                metadata_path = current / 'package.json'
+                if metadata_path.exists() or metadata_path.is_symlink() or current == root:
+                    inclusion['metadata'] = str(metadata_path)
+                    if metadata_path.is_symlink() or not metadata_path.resolve().is_relative_to(root):
+                        raise ValueError('metadata escapes package boundary or is symlinked')
+                    try:
+                        meta = json.loads(metadata_path.read_text())
+                    except (OSError, ValueError) as exc:
+                        raise ValueError('unusable package metadata: ' + type(exc).__name__) from None
+                    if not isinstance(meta, dict):
+                        raise ValueError('package metadata is not an object')
+                    found = identity(meta) if current == root or 'name' in meta or 'version' in meta else None
+                    manifests.append({'path': str(metadata_path), 'sha256': sha(metadata_path), 'identity': found})
+                if current == root:
+                    break
+                current = current.parent
+            owner = manifests[-1]['identity']
+            for manifest in manifests:
+                if manifest['identity'] is not None and manifest['identity'] != owner:
+                    inclusion['metadata'] = manifest['path']
+                    raise ValueError('nested metadata identity conflicts with package owner')
+            inclusion['metadata'] = str(root / 'package.json')
+            inclusion['metadata_chain'] = manifests
+            inclusion['source_sha256'] = sha(path)
+            packages.setdefault(root, {'identity': owner, 'inputs': []})['inputs'].append(inclusion)
+        except (OSError, ValueError, RuntimeError) as exc:
+            unresolved(inclusion, str(exc) if isinstance(exc, ValueError) else 'package input inspection failed: ' + type(exc).__name__)
 for root, row in sorted(packages.items()):
-    texts(row['meta']['name'], row['meta']['version'], root, 'web', row['inputs'])
+    name, version = row['identity']
+    try:
+        # Validate all candidates before copying any text from this owner.
+        for p in sorted(root.iterdir()):
+            if not any(n in p.name.lower() for n in ('license', 'notice', 'copying', 'copyright')):
+                continue
+            if p.is_symlink() or not p.resolve().is_relative_to(root):
+                raise ValueError('notice escapes package boundary or is symlinked')
+            if p.is_file():
+                dest = app / 'Contents/Resources/licenses/web' / name / version / p.name
+                if not dest.resolve().is_relative_to(app.resolve()) or dest.is_symlink():
+                    raise ValueError('notice destination escapes app boundary')
+                if dest.exists() and (not dest.is_file() or sha(dest) != sha(p)):
+                    raise ValueError('conflicting notice bytes for package identity')
+        texts(name, version, root, 'web', row['inputs'])
+    except (OSError, ValueError) as exc:
+        for inclusion in row['inputs']:
+            unresolved(inclusion, str(exc) if isinstance(exc, ValueError) else 'notice retention failed: ' + type(exc).__name__)
+# Always preserve the legal closure gaps from the frozen input mapping.
+mapping['closure_complete'] = False
+(output / 'diagnostics/web-attribution.json').write_text(json.dumps(web_diagnostics, indent=2) + '\n')
 license = app / 'Contents/Resources/licenses/LICENSE'
 components.append({'component': 'HappyRanch first-party code and 29 source resources',
                    'disposition': 'RETAINED_TEXT', 'scope': 'pinned source and assembly',

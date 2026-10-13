@@ -27,6 +27,20 @@ inventory. Logs, actual found texts and partial mappings survive; return exact
 remaining component/text/destination evidence to TASK11199/TASK11196. Do not
 remove/replace dependencies or treat an index/dependency list as compliance.
 
+Emitted web inputs are attributed within their innermost installed package
+boundary, including scoped and nested packages. Anonymous subpath format
+manifests inherit only that package's validated root name/version. Malformed,
+missing, conflicting or unsafe metadata/input/notice paths produce
+`LICENSE_UNRESOLVED` with source-map, input and metadata paths; they cannot
+inherit an enclosing dependency or web-app identity. Grouped inputs retain
+map/source/metadata hashes and original notice bytes. Failure diagnostics include
+`web-attribution.json`: first 100 rejected records, string fields capped at 512
+characters and serialized records capped at 2048 bytes, with explicit
+omitted-record/field truncation; the failure bundle keeps
+its existing 262144-byte per-file bound. No metadata contents or cache tree are
+uploaded. Retained texts leave `closure_complete=false` and release finalization
+blocked pending actual legal/native/asset reconciliation.
+
 External claude/codex/opencode/pi/custom providers, git, helper Python,
 development uv and optional installed Tailscale are operation prerequisites;
 being mentioned here does not mean their external installations are shipped.
