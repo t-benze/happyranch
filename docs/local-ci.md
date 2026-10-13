@@ -1044,8 +1044,12 @@ admission precedes dependencies and product imports. The implementation ref is
 manager-allocated accountable execution owner for its eventual bounded run and
 evidence. TASK-11122 preserves the original TASK-11112 maker commits; this
 binding changes no case manifest or runtime identity/authority/callback contract.
-Final-head release remains pending. The sequence is manager allocation, maker
-publication of the binding, independent final-head source/readiness review,
+The first exact-head release was consumed by hosted run38382466677 attempt1,
+which failed during setup for all 61 nodes before any call phase. All 184 behavioral
+assertions remain MISSING; failed-run closure is not successful-case cleanup proof.
+The corrected candidate needs renewed independent review and a new exact-head
+release; prospective execution remains UNRELEASED. The sequence is manager
+allocation, maker publication of the binding, independent final-head source/readiness review,
 manager-recorded exact ref/SHA/complete-manifest release, then bounded invocation.
 The allocated root owns execution; the independent qa_engineer's later genuine
 task/session assesses the evidence separately and is not this allocation.
@@ -1102,3 +1106,10 @@ applied postACK history. Ambiguous-step read copies contain two matching initial
 decisions with valid, unrelated correction markers; durable history is unchanged.
 These R1–R7 source corrections supply no behavioral or test-authoring PASS,
 execution allocation, restart proof, release or merge authority.
+
+The R9 observer source binding excludes only unmapped `None` entries from
+`dis.findlinestarts` before numeric sorting (Python3.13+ metadata). Every real
+executable line remains eligible; all six phase anchors, including after-A and
+after the real ACK call, retain their boundaries and fail-closed missing-anchor
+checks. Source-only AST/compile/dis inspection executes no reconstructed callable
+and establishes no observer, callback, fit, cleanup or product assertion result.

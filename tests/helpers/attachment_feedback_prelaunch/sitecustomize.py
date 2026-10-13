@@ -77,7 +77,8 @@ def source_binding(source: Path, revision: str) -> dict:
     for function in tree.body:
         if not isinstance(function,ast.FunctionDef) or function.name not in targets:
             continue
-        lines=sorted({line for _,line in dis.findlinestarts(targets[function.name])})
+        # Bytecode without a source line is not an executable anchor.
+        lines=sorted({line for _,line in dis.findlinestarts(targets[function.name]) if line is not None})
         for node in ast.walk(function):
             if not isinstance(node,(ast.Assign,ast.Expr)):
                 continue
