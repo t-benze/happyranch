@@ -112,7 +112,7 @@ jobs:
 
   naming:
     name: Finite naming daemon/browser proof (Python 3.14, Node 24)
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.naming_only && inputs.thr299_scoped_qa != true }}
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.naming_only && inputs.attachment_scoped_qa != true && inputs.thr299_scoped_qa != true }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:

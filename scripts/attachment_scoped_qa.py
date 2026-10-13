@@ -90,7 +90,8 @@ def admit(task_id: str, expected_sha: str, *, interpreter: bool = True) -> dict:
             "ref": IMPLEMENTATION_REF, "task": task_id, "root": ROOT_TASK,
             "manifest_sha256": MANIFEST_SHA256,
             "source_hashes": {name: sha(source / name) for name in SOURCE_FILES},
-            "python": str(Path(sys.executable).resolve()), "python_version": sys.version,
+            "python": os.path.abspath(sys.executable), "python_binary": str(Path(sys.executable).resolve()),
+            "python_version": sys.version,
             "python_prefix": sys.prefix, "python_sha256": sha(Path(sys.executable).resolve()),
             "run": os.environ.get("GITHUB_RUN_ID"), "attempt": os.environ.get("GITHUB_RUN_ATTEMPT")}
 
@@ -121,6 +122,7 @@ class OwnedTree:
         self.ports = {}
         self.required_roles=set()
         self.head=None
+        self.retired_cases={}
 
     def event(self, **value):
         value.update(time_ns=time.time_ns())
@@ -300,13 +302,13 @@ class OwnedTree:
         if log_path.resolve(strict=True)!=log_path or log_path.stat().st_uid!=os.getuid():
             raise ValueError('owned daemon log unavailable')
         self.required_roles.add(pid)
-        self.ports[node]={'pid':pid,'port':port,'listener':listeners[0],'log':str(log_path),
+        self.ports[pid]={'node':node,'pid':pid,'port':port,'listener':listeners[0],'log':str(log_path),
                           'start':self.identities[pid]['start'],'wait_log':wait_log,'wait_rows':0}
         self.event(kind='endpoint_bound',pid=pid,node=node,listener=listeners[0])
 
     def close_case(self,pid,port,node,direct_pid,deadline,*,interrupt=False):
-        endpoint=self.ports.get(node)
-        if endpoint is None or endpoint['pid']!=pid or endpoint['port']!=port:
+        endpoint=self.ports.get(pid)
+        if endpoint is None or endpoint['pid']!=pid or endpoint['port']!=port or endpoint['node']!=node:
             raise ValueError('unbound case endpoint closure')
         selected={pid}
         for _ in range(CAPS['processes']):
@@ -333,10 +335,51 @@ class OwnedTree:
         probe=socket.socket();probe.settimeout(.2)
         try:port_closed=probe.connect_ex(('127.0.0.1',port))!=0
         finally:probe.close()
+        # Public upload/launcher helpers are pytest children rather than daemon
+        # descendants. Their actual exit/reap proof also belongs in the closed
+        # receipt; never retain them merely because the live parent is pytest.
+        # Another live endpoint may still owe roles, so keep its helpers.
+        if not any(other!=pid and not self.closed_identity(other) for other in self.ports):
+            selected.update(p for p in self.identities if p not in self.required_roles
+                and self.closed_identity(p))
         clean=not self.errors and all(self.closed_identity(p) for p in selected)
         return {'pid':pid,'node':node,'closed':clean,'port_closed':port_closed,'port':port,
             'owned_listener':endpoint['listener'],
-            'identities':{p:{k:v for k,v in self.identities[p].items() if k!='fd'} for p in selected}}
+            'identities':{p:{k:v for k,v in self.identities[p].items() if k!='fd'} for p in selected},
+            'events':[row for row in self.events if row.get('pid') in selected]}
+
+    def retire_case(self, closure: dict, receipt_path: Path) -> None:
+        """Retire only durably exported, completely settled owned identities."""
+        if not closure['closed'] or not closure['port_closed']:
+            raise ValueError('unclosed case cannot retire')
+        if closed_read(receipt_path,262144)!=json.loads(json.dumps(closure)):
+            raise ValueError('immutable closure export unavailable')
+        selected=set(closure['identities'])
+        if closure['node'] not in self.retired_cases and len(self.retired_cases)>=len(NODES):
+            raise ValueError('case closure inventory cap')
+        # An unresolved descendant still needs every observed ancestor link.
+        protected=set()
+        frontier=[pid for pid in self.identities if not self.closed_identity(pid)]
+        while frontier:
+            pid=frontier.pop()
+            if pid in protected:continue
+            protected.add(pid)
+            entry=self.identities.get(pid)
+            if entry is not None:
+                frontier.extend(p for p in (entry['parent'],entry['birth_parent']) if p in self.identities)
+        group=self.retired_cases.setdefault(closure['node'],[])
+        if len(group)>=3:raise ValueError('per-case batch receipt cap')
+        retired=[]
+        for pid in sorted(selected-protected):
+            if not self.closed_identity(pid):raise ValueError('unresolved identity retirement refused')
+            os.close(self.identities[pid]['fd'])
+            del self.identities[pid]
+            self.required_roles.discard(pid)
+            retired.append(pid)
+        group.append({'receipt':str(receipt_path),'sha256':sha(receipt_path),
+            'retired':retired,'retained':sorted(selected&protected)})
+        retired_set=set(retired)
+        self.events=[row for row in self.events if row.get('pid') not in retired_set]
 
     def wait_receipts(self):
         for endpoint in self.ports.values():
@@ -418,7 +461,7 @@ class OwnedTree:
         self.observe_exits(child.pid)
         clean = not self.errors and all(self.closed_identity(pid) for pid in self.identities)
         write_receipt(self.evidence / "processes.json", {"identities": {pid: {k:v for k,v in row.items() if k != "fd"}
-            for pid,row in self.identities.items()}, "events": self.events, "errors": self.errors, "closure": clean}, 2097152)
+            for pid,row in self.identities.items()}, "events": self.events, "errors": self.errors, "closure": clean, "retired_cases": self.retired_cases}, 2097152)
         for row in self.identities.values():
             os.close(row["fd"])
         return clean
@@ -511,20 +554,22 @@ def supervise(binding: dict, scratch: Path) -> int:
                                 tree.role_receipts(Path(row['roles']),node)
                                 closure=tree.close_case(pid,port,node,child.pid,time.monotonic()+4,interrupt=interruption)
                                 closure_path=Path(row['closure'])
-                                expected_name=f'closure-{pid}.json' if interruption else 'case-close-'+hashlib.sha256(node.encode()).hexdigest()[:20]+'.json'
-                                if closure_path.parent!=evidence or closure_path.name!=expected_name:
+                                stem='case-close-'+hashlib.sha256(node.encode()).hexdigest()[:20]
+                                expected_names={f'closure-{pid}.json'} if interruption else {stem+'.json',stem+'-batch-1.json',stem+'-batch-2.json'}
+                                if closure_path.parent!=evidence or closure_path.name not in expected_names:
                                     raise ValueError('closure receipt binding mismatch')
                                 write_receipt(closure_path,closure,262144)
                                 if not closure['closed'] or not closure['port_closed']:
                                     raise ValueError('owned case tree/port closure incomplete')
                                 if not interruption:
-                                    endpoint=tree.ports.pop(node)
+                                    endpoint=tree.ports.pop(pid)
                                     log_path=Path(endpoint['log'])
                                     if log_path.exists():
                                         data=log_path.read_bytes()
                                         if len(data)>CAPS['daemon_log']:raise ValueError('daemon capture overflow')
-                                        dest=evidence/('daemon-'+hashlib.sha256(node.encode()).hexdigest()[:20]+'.log')
+                                        dest=evidence/('daemon-'+hashlib.sha256(node.encode()).hexdigest()[:20]+'-'+str(pid)+'.log')
                                         with dest.open('xb') as handle:os.chmod(dest,0o600);handle.write(data)
+                                    tree.retire_case(closure,closure_path)
                             else:
                                 raise ValueError("unknown phase event")
             child.wait(timeout=1)

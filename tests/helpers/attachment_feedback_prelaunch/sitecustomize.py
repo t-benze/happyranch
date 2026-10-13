@@ -3,6 +3,36 @@ from __future__ import annotations
 
 import os
 
+import hashlib
+import json
+from pathlib import Path
+import sys
+
+if __name__=='sitecustomize' and 'HAPPYRANCH_ATTACHMENT_FROZEN_PYTHON' in os.environ:
+    try:
+        frozen=json.loads(os.environ['HAPPYRANCH_ATTACHMENT_FROZEN_PYTHON'])
+        if (sys.version_info[:2]!=(3,14) or sys.prefix!=frozen['python_prefix']
+                or sys.version!=frozen['python_version']
+                or str(Path(sys.executable).resolve())!=frozen['python_binary']
+                or hashlib.sha256(Path(sys.executable).resolve().read_bytes()).hexdigest()!=frozen['python_sha256']):
+            raise ValueError('frozen interpreter/prefix drift')
+        evidence=Path(os.environ['HAPPYRANCH_ATTACHMENT_PYTHON_EVIDENCE'])
+        if evidence.resolve(strict=True)!=evidence or evidence.stat().st_uid!=os.getuid():
+            raise ValueError('frozen interpreter receipt owner drift')
+        start=Path('/proc/self/stat').read_text().rsplit(')',1)[1].split()[19]
+        observed={'pid':os.getpid(),'start':start,'prefix':sys.prefix,'version':sys.version,
+            'executable':os.path.abspath(sys.executable),'binary':str(Path(sys.executable).resolve()),
+            'sha256':frozen['python_sha256'],'argv':sys.orig_argv}
+        encoded=(json.dumps(observed,sort_keys=True)+'\n').encode()
+        if len(encoded)>4096:raise ValueError('interpreter readback cap')
+        fd=os.open(evidence/('python-'+str(os.getpid())+'-'+start+'.json'),os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
+        try:
+            if os.write(fd,encoded)!=len(encoded):raise ValueError('short interpreter readback')
+        finally:os.close(fd)
+    except Exception:
+        os.write(2,b'attachment frozen pre-import venv binding unavailable\n')
+        os._exit(86)
+
 if __name__ == "sitecustomize" and "HAPPYRANCH_TEST_PARENT_MANIFEST" in os.environ:
     try:
         from guard import install

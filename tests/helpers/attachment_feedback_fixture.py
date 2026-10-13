@@ -1,7 +1,26 @@
 """Explicit closed THR304 plugin; no successful business boundary is replaced."""
 from __future__ import annotations
 
-# Parent admission is the first operation, before runtime/pytest/helper imports.
+import hashlib
+import json
+import os
+from pathlib import Path
+import sys
+
+# Bind the supervisor's frozen venv before pytest/guard/runtime dependencies.
+_descriptor_arg=next((arg.split('=',1)[1] for arg in sys.argv if arg.startswith('--attachment-qa-descriptor=')),None)
+if _descriptor_arg is not None:
+    _frozen=json.loads(Path(_descriptor_arg).read_text())
+    if (sys.version_info[:2]!=(3,14) or sys.prefix!=_frozen['python_prefix']
+            or sys.version!=_frozen['python_version']
+            or str(Path(sys.executable).resolve())!=_frozen['python_binary']
+            or hashlib.sha256(Path(sys.executable).resolve().read_bytes()).hexdigest()!=_frozen['python_sha256']):
+        raise RuntimeError('THR304 frozen pre-import venv binding refused')
+    os.environ['HAPPYRANCH_ATTACHMENT_FROZEN_PYTHON']=json.dumps({key:_frozen[key] for key in
+        ('python','python_binary','python_prefix','python_version','python_sha256')},sort_keys=True)
+    os.environ['HAPPYRANCH_ATTACHMENT_PYTHON_EVIDENCE']=_frozen['evidence']
+
+# Parent admission precedes runtime/pytest/helper imports.
 from tests.helpers.integration_stub_guard.guard import require_parent_environment
 require_parent_environment()
 from scripts.attachment_scoped_qa import EXECUTION_OWNER
@@ -18,6 +37,7 @@ import select
 import selectors
 import shlex
 import signal
+import shutil
 import sqlite3
 import stat
 import subprocess
@@ -57,7 +77,7 @@ def pytest_configure(config):
     descriptor = closed_read(Path(path), 16384)
     parent = manifest()
     expected_keys = {"version", "source", "head", "tree", "ref", "task", "root", "manifest_sha256",
-                     "source_hashes", "python", "python_version", "python_prefix", "python_sha256", "run", "attempt",
+                     "source_hashes", "python", "python_binary", "python_version", "python_prefix", "python_sha256", "run", "attempt",
                      "selection", "nodes", "nonce", "evidence", "scratch", "phase_pipe", "start", "deadline", "phase_limits", "caps"}
     if (set(descriptor) != expected_keys or descriptor["version"] != 1
             or descriptor["head"] != parent["revision"] or descriptor["source"] != parent["source"]
@@ -71,7 +91,10 @@ def pytest_configure(config):
         raise pytest.UsageError("THR304 parent/source/closed argv admission refused")
     source = Path(parent["source"])
     if (descriptor["caps"]!=CAPS or descriptor["phase_limits"]!=PHASE_LIMITS
-            or descriptor["python"]!=str(Path(sys.executable).resolve())
+            or descriptor["python"]!=parent["python"]
+            or descriptor["python_prefix"]!=sys.prefix
+            or descriptor["python_version"]!=sys.version
+            or descriptor["python_binary"]!=str(Path(sys.executable).resolve())
             or descriptor["python_sha256"]!=sha(Path(sys.executable).resolve())
             or set(descriptor["source_hashes"])!=set(SOURCE_FILES)):
         raise pytest.UsageError("THR304 complete runtime/cap/source binding refused")
@@ -166,6 +189,7 @@ def attachment_snapshot(root: Path, task_id: str) -> dict:
         queries={
             "tasks":("SELECT * FROM tasks WHERE id=? OR parent_task_id=? ORDER BY id LIMIT 257",(task_id,task_id)),
             "results":("SELECT * FROM task_results WHERE task_id=? ORDER BY id LIMIT 257",(task_id,)),
+            "child_results":("SELECT * FROM task_results WHERE task_id IN (SELECT id FROM tasks WHERE parent_task_id=?) ORDER BY id LIMIT 257",(task_id,)),
             "audits":("SELECT * FROM audit_log WHERE task_id=? ORDER BY id LIMIT 257",(task_id,)),
             "links":("SELECT * FROM task_attachments WHERE task_id IN (SELECT id FROM tasks WHERE id=? OR parent_task_id=?) ORDER BY id LIMIT 257",(task_id,task_id)),
             "envelopes":("SELECT * FROM authority_policy_v2_continue_envelopes WHERE root_task_id=? ORDER BY rowid LIMIT 257",(task_id,)),
@@ -186,7 +210,22 @@ def corrections(snapshot: dict) -> list[dict]:
     return found
 
 
-def assert_prechild(snapshot: dict, task_id: str, opportunities: int):
+def assert_prechild(snapshot: dict, task_id: str, opportunities: int, *, baseline: dict | None = None):
+    if baseline is not None:
+        assert snapshot["links"]==baseline["links"]
+        assert snapshot["child_results"]==baseline["child_results"]
+        old={row["id"]:row for row in baseline["tasks"]}
+        assert {row["id"] for row in snapshot["tasks"]}==set(old)
+        for row in snapshot["tasks"]:
+            if row["id"]!=task_id:assert row==old[row["id"]]
+            else:
+                for field in ("active_chain","active_fanout"):
+                    assert row[field]==old[task_id][field]
+        assert all(row in snapshot["results"] for row in baseline["results"])
+        assert all(row in snapshot["audits"] for row in baseline["audits"])
+        assert len(corrections(snapshot))==opportunities
+        assert [row for row in snapshot["audits"] if row["action"] in ("task_attachment_added","fanout_spawned")]==[row for row in baseline["audits"] if row["action"] in ("task_attachment_added","fanout_spawned")]
+        return
     assert len(snapshot["tasks"])==1 and snapshot["tasks"][0]["id"]==task_id
     assert not snapshot["links"]
     task=snapshot["tasks"][0]
@@ -273,9 +312,9 @@ class PublicDriver:
     def snapshot(self,task_id):
         return attachment_snapshot(self.root,task_id)
 
-    def await_correction(self,task_id,count):
+    def await_correction(self,task_id,count,*,baseline=None):
         snapshot=await_condition(lambda: (s if len(corrections(s:=self.snapshot(task_id)))==count else None))
-        assert_prechild(snapshot,task_id,count)
+        assert_prechild(snapshot,task_id,count,baseline=baseline)
         marker=corrections(snapshot)[-1]["attachment_correction"]
         assert marker["opportunity"]==count and marker["version"]==1
         assert marker["accepted_result_id"]<marker["feedback_result_id"]
@@ -365,6 +404,11 @@ def attachment_runtime_seed(runtime, tmp_path, fake_claude_plan_env, fake_codex_
     thread_script='#!/bin/sh\nexec happyranch thread-reply --org "$4" --thread-id "$1" --agent "$3" --invocation-token "$2" --decline\n'
     for plan in (fake_claude_thread_plan_env,fake_opencode_thread_plan_env):
         plan.write_text(thread_script)
+    # Copy only declared seed inputs before the first daemon/history exists.
+    template=controls/'matrix-seed'
+    template.mkdir(mode=0o700)
+    for name in ('org','workspaces'):
+        shutil.copytree(runtime/name,template/name)
     return controls
 
 
@@ -532,7 +576,8 @@ class PublicObserver:
 
     def interrupt_and_close(self,pause,port):
         receipt=Path(_DESCRIPTOR['evidence'])/('closure-'+str(pause['pid'])+'.json')
-        roles=retain_role_receipts(self.path.parent.parent,self.descriptor['node'],'interrupt')
+        suffix='interrupt-'+hashlib.sha256(str(self.path).encode()).hexdigest()[:12]
+        roles=retain_role_receipts(self.path.parent.parent,self.descriptor['node'],suffix)
         phase(self.descriptor['node'],'call','interrupt',daemon_pid=pause['pid'],port=int(port),closure=str(receipt),roles=str(roles))
         closure=await_condition(lambda:closed_read(receipt,262144) if receipt.exists() else None,10)
         assert closure['closed'] is True and closure['pid']==pause['pid']
@@ -650,8 +695,12 @@ def attachment_preparation_barrier(orch,task_id,report,result_id,*,before=False)
         function='_consume_completion_report_body',anchor='_prepare_attachment_params',after=not before)
 
 
+STAGED_PROVIDER_LIMIT = 5  # Leave a sixth worker for the original fixture's pending provider.
+
+
 def stage_cases(driver, observer, decisions):
-    """Publicly admit each actual report; retain its provider until owned closure."""
+    """One bounded worker batch; every result comes through real admission."""
+    assert 1<=len(decisions)<=STAGED_PROVIDER_LIMIT
     staged=[]
     for decision in decisions:
         task=driver.create(); launch=driver.launch(task)
@@ -664,7 +713,98 @@ def stage_cases(driver, observer, decisions):
     assert pause['task_id']==task and pause['result_id']==result['id']
     observer.acknowledge_interruption('before-gate')
     closure=observer.interrupt_and_close(pause,driver.port)
+    for task,launch,result,_ in staged:
+        snapshot=driver.snapshot(task)
+        assert len(snapshot['tasks'])==1 and not snapshot['links'] and not corrections(snapshot)
+        assert any(row['id']==result['id'] and row['session_id']==launch['session_id'] for row in snapshot['results'])
     return staged,closure
+
+
+@contextmanager
+def matrix_batch_runtime(original: PublicDriver, index: int):
+    """Fresh seeded venue; no task/result/audit/claim history is copied or restarted."""
+    from runtime.runtime import RuntimeDir
+    from runtime.daemon import paths as daemon_paths, runtimes
+    from runtime.orchestrator.executor_binary_registry import save_registry
+    from tests.integration.conftest import _nested_daemon_env
+    from tests.helpers.attachment_feedback_prelaunch.sitecustomize import source_binding
+    parent=manifest()
+    base=original.controls/('matrix-batch-'+str(index))
+    base.mkdir(mode=0o700)
+    controls=base/'controls';controls.mkdir(mode=0o700)
+    container=RuntimeDir.init(base/'runtime').root
+    root=container/'orgs/test';root.mkdir(parents=True)
+    for name in ('org','workspaces'):
+        shutil.copytree(original.controls/'matrix-seed'/name,root/name)
+    (root/'kb').mkdir()
+    home=base/'daemon';home.mkdir(mode=0o700)
+    observer_control=controls/'observer';observer_control.mkdir(mode=0o700)
+    incoming,output=observer_control/'commands.fifo',observer_control/'events.fifo'
+    os.mkfifo(incoming,0o600);os.mkfifo(output,0o600)
+    descriptor={'binding':source_binding(Path(parent['source']),parent['revision']),
+        'node':original.node,'released_nodes':list(NODES),'nonce':os.urandom(24).hex(),
+        'incoming':str(incoming),'output':str(output),
+        'wait_log':str(Path(_DESCRIPTOR['evidence'])/('waits-'+hashlib.sha256(original.node.encode()).hexdigest()[:20]+'-batch-'+str(index)+'.jsonl'))}
+    observer_path=observer_control/'descriptor.json';write_receipt(observer_path,descriptor,16384)
+    observer=PublicObserver(descriptor,observer_path)
+    plan=base/'provider.sh'
+    plan.write_text('#!/bin/sh\nexec 3<&0\npython -m tests.helpers.attachment_feedback_fixture provider "$1" "$2" "$3" "$4" '+shlex.quote(str(controls))+' <&3 &\nattachment_child=$!\nattachment_exit=0\nwait "$attachment_child" || attachment_exit=$?\npython -m tests.helpers.attachment_feedback_fixture provider-wait "$1" "$2" "$$" "$attachment_child" "$attachment_exit" '+shlex.quote(str(controls))+'\nexit "$attachment_exit"\n')
+    plan.chmod(0o700)
+    updates={'HAPPYRANCH_DAEMON_HOME':str(home),'HAPPYRANCH_DAEMON_PORT':'0',
+        'HAPPYRANCH_ATTACHMENT_OBSERVER':str(observer_path),
+        'FAKE_CLAUDE_PLAN':str(plan),'FAKE_CODEX_PLAN':str(plan)}
+    previous={key:os.environ.get(key) for key in updates}
+    os.environ.update(updates)
+    pid=None
+    try:
+        save_registry({provider:item['path'] for provider,item in parent['stubs'].items()})
+        runtimes.register(container)
+        script=Path(parent['source'])/'scripts/daemon.sh'
+        subprocess.run([str(script),'start'],check=True,env=_nested_daemon_env(),timeout=5)
+        port=await_condition(lambda:daemon_paths.port_file().read_text().strip() if daemon_paths.port_file().exists() else None)
+        driver=PublicDriver(port,root,controls,original.node)
+        driver.batch_index=index
+        pid,log,receipt=_case_endpoint(driver,wait_log=descriptor['wait_log'])
+        yield driver,observer
+    finally:
+        if pid is not None:
+            roles=retain_role_receipts(controls,original.node,'batch-'+str(index)+'-close')
+            phase(original.node,'call','case-close',daemon_pid=pid,port=int(port),closure=str(receipt),roles=str(roles))
+            closed=await_condition(lambda:closed_read(receipt,262144) if receipt.exists() else None,5)
+            assert closed['closed'] and closed['port_closed']
+        os.close(observer.reader);os.close(observer.writer)
+        for key,value in previous.items():
+            if value is None:os.environ.pop(key,None)
+            else:os.environ[key]=value
+
+
+def stage_case_batches(driver: PublicDriver, observer: PublicObserver, decisions: list[dict]):
+    """Up to three sequential <=5-provider venues within the SAME case deadline."""
+    from contextlib import nullcontext
+    assert 1<=len(decisions)<=13
+    original=driver
+    for index,offset in enumerate(range(0,len(decisions),STAGED_PROVIDER_LIMIT)):
+        batch=decisions[offset:offset+STAGED_PROVIDER_LIMIT]
+        context=nullcontext((driver,observer)) if index==0 else matrix_batch_runtime(original,index)
+        with context as (selected,selected_observer):
+            if index:
+                # Fresh public uploads in the fresh org, never copied claim/history rows.
+                mapping={}
+                def reupload(value: object) -> None:
+                    if isinstance(value,dict):
+                        key=value.get('storage_key')
+                        if key is not None:
+                            if key not in mapping:
+                                mapping[key]=selected.upload('matrix-input')[0]
+                                mapping[mapping[key]['storage_key']]=mapping[key]
+                            value['storage_key']=mapping[key]['storage_key']
+                        else:
+                            for child in value.values():reupload(child)
+                    elif isinstance(value,list):
+                        for child in value:reupload(child)
+                for decision in batch:reupload(decision)
+            staged,closure=stage_cases(selected,selected_observer,batch)
+            yield selected,staged,closure,offset
 
 
 def consume_staged(orch, staged):
@@ -758,9 +898,13 @@ def attachment_history_failure_only_read_adapter(database, task, variant):
         elif variant=='ambiguous-step':
             original=next(dict(x) for x in rows if json.loads(x['payload'])['step_number']==payload['step_number']
                 and json.loads(x['payload'])['decision']['action']!='feedback')
-            # Duplicate read INPUT with distinct positive existing audit ID; no INSERT.
-            original['id']=selected['id']
-            rows=[*rows,original]
+            # Two read-only contemporaneous originals, with distinct adapted IDs; no INSERT.
+            # Adapt only audit identity spacing; both originals precede the marker.
+            original_id=original['id']
+            rows=[{**dict(row),'id':row['id']*2} for row in rows]
+            selected['id']*=2
+            original['id']=original_id*2+1
+            rows=sorted([*rows,original],key=lambda row:row['id'])
         elif variant=='wrong-task':selected['task_id']='foreign-task'
         elif variant=='wrong-actor':selected['agent']='foreign-agent'
         elif variant=='wrong-step':payload['step_number']=True
@@ -769,7 +913,22 @@ def attachment_history_failure_only_read_adapter(database, task, variant):
         elif variant not in ('status-mismatch','owner-mismatch','feedback-status','feedback-confidence','feedback-sid','feedback-decision','accepted-decision','accepted-status'):
             raise AssertionError('closed integrity variant missing')
         selected['payload']=json.dumps(payload)
-    copied=[copy.deepcopy(selected) if row['id']==markers[-1]['id'] else dict(row) for row in rows]
+    copied=[copy.deepcopy(selected) if row['id']==selected['id'] else dict(row) for row in rows]
+    if variant=='ambiguous-step':
+        parsed=[json.loads(row['payload']) for row in copied]
+        initial=[value for value in parsed if value['step_number']==payload['step_number'] and value['decision']['action']!='feedback']
+        assert len(initial)==2 and initial[0]==initial[1]
+        assert all(row['id']<selected['id'] for row,value in zip(copied,parsed,strict=True) if value in initial)
+        adapted_markers=[value['attachment_correction'] for value in parsed if 'attachment_correction' in value]
+        assert adapted_markers==[json.loads(row['payload'])['attachment_correction'] for row in markers]
+        assert [value['opportunity'] for value in adapted_markers]==list(range(1,len(markers)+1))
+        assert len({row['id'] for row in copied})==len(copied)
+        for value in adapted_markers:
+            accepted=database._conn.execute('SELECT * FROM task_results WHERE id=?',(value['accepted_result_id'],)).fetchone()
+            feedback=database._conn.execute('SELECT * FROM task_results WHERE id=?',(value['feedback_result_id'],)).fetchone()
+            assert accepted is not None and feedback is not None
+            assert accepted['task_id']==feedback['task_id']==task
+            assert accepted['session_id']==value['accepted_session_id'] and feedback['session_id']==''
     original_rows=database._attachment_correction_rows_txn
     original_connection=database._conn
     accepted_id=marker['accepted_result_id'];feedback_id=marker['feedback_result_id']
@@ -904,14 +1063,15 @@ def database_path_root(database):
     return path.parent
 
 
-def _case_endpoint(driver):
+def _case_endpoint(driver,*,wait_log=None):
     from runtime.daemon import paths as daemon_paths
     pid=int(daemon_paths.pid_file().read_text().strip())
     log=daemon_paths.log_file().resolve()
-    receipt=Path(_DESCRIPTOR['evidence'])/('case-close-'+hashlib.sha256(driver.node.encode()).hexdigest()[:20]+'.json')
+    suffix='-batch-'+str(driver.batch_index) if hasattr(driver,'batch_index') else ''
+    receipt=Path(_DESCRIPTOR['evidence'])/('case-close-'+hashlib.sha256(driver.node.encode()).hexdigest()[:20]+suffix+'.json')
     phase(driver.node,'setup','endpoint',daemon_pid=pid,port=int(driver.port),
           daemon_log=str(log),closure=str(receipt),
-          wait_log=str(Path(_DESCRIPTOR['evidence'])/('waits-'+hashlib.sha256(driver.node.encode()).hexdigest()[:20]+'.jsonl')))
+          wait_log=wait_log or str(Path(_DESCRIPTOR['evidence'])/('waits-'+hashlib.sha256(driver.node.encode()).hexdigest()[:20]+'.jsonl')))
     return pid,log,receipt
 
 

@@ -1057,3 +1057,29 @@ timeout, missing observations or uncertain cleanup stays incomplete/nonzero.
 This lane is never selected by automatic CI/hooks/all/schedule and changes no
 THR299 allocation, shared fixture or daily Product E2E cadence. General
 integration remains SKIPPED24342; units RETIRED. Source checks are not behavior.
+
+The THR304 focused recipe preserves the lexical absolute frozen venv launcher
+and separately pins its resolved binary, version and original prefix through
+the parent/plugin and nested daemon/provider/callback admission. Owned Python
+readbacks remain source-bound external evidence. After role and endpoint
+obligations settle, immutable per-case closure receipts retain process identity,
+parent edges and events before closing proven closed pidfds; unresolved handles
+and ancestors needed by live descendants remain registered. The 256-process
+and all capture limits remain unchanged.
+The 13-input C4 and 10-input C8 matrices use sequential batches of at most five
+held providers. Later batches use fresh seeded runtimes and fresh public uploads;
+no interrupted task/result/audit/claim history is copied or restarted. Every
+victim still needs its actual SID/INTEGER callback, empty pre-consumer graph,
+acknowledged original pre-gate pause and owned quiescent closure before a
+supplement. All 52 exception observations and both five-placement race sets
+remain. These batches share the original node's 15/20/5 phase deadlines and
+1200/1280/35min bounds; their runtime fit remains UNEXECUTED/MISSING.
+Retained claimed-maker history is compared with its exact pre-decision baseline;
+fresh-task empty-graph checks remain strict. The unrelated reviewer-omission
+control includes a gated downstream chain, and the FDF exhaustion callback
+actually submits parallel with its stored/parsed fanout readback. V2 assertions
+separate owned before-body escalation from after-A retained effects and read-only
+applied postACK history. Ambiguous-step read copies contain two matching initial
+decisions with valid, unrelated correction markers; durable history is unchanged.
+These R1–R7 source corrections supply no behavioral or test-authoring PASS,
+execution allocation, restart proof, release or merge authority.

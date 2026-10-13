@@ -190,6 +190,12 @@ def test_c04_error_classes(variant,attachment_public_observer,attachment_live_da
         maker=next(row for row in snap['tasks'] if row['id']!=task)
         worker=driver.launch(maker['id']);driver.submit(worker,{'action':'done','summary':'synthetic completed maker'})
         launch=driver.launch(task)
+        baseline=driver.snapshot(task)
+        assert next(row for row in baseline['tasks'] if row['id']==maker['id'])['status']=='completed'
+        maker_results=[row for row in baseline['child_results'] if row['task_id']==maker['id']]
+        assert len(maker_results)==1 and type(maker_results[0]['id']) is int
+        assert maker_results[0]['session_id']==worker['session_id']
+        assert baseline['links'][0]['task_id']==maker['id'] and baseline['links'][0]['storage_key']==refs[0]['storage_key']
     elif variant=='invalid-key-subclass':
         refs=[{'storage_key':'../unsafe','display_name':'file.txt'}]
     else:
@@ -209,7 +215,7 @@ def test_c04_error_classes(variant,attachment_public_observer,attachment_live_da
             if (s:=driver.snapshot(task))['tasks'] else None)
         assert not corrections(snap)
     else:
-        snap=driver.await_correction(task,1)
+        snap=driver.await_correction(task,1,baseline=baseline if variant=='claimed-same-tree' else None)
         payload=corrections(snap)[0]
         assert payload['attachment_correction']['error_code']==codes[variant]
         reason=payload['decision']['reason']
@@ -394,15 +400,46 @@ def test_c06_receipts(variant,attachment_public_observer,attachment_live_daemon,
             with consumer_observation(orch,task,r2['id']) as entries:
                 _consume_completion_report(orch,task,report,result_row_id=r2['id'],reclaim_terminal_worktree=False)
         else:
-            _consume_completion_report(orch,task,report,result_row_id=r2['id'],reclaim_terminal_worktree=False)
+            from tests.helpers.attachment_feedback_fixture import consumer_observation
+            with consumer_observation(orch,task,r2['id']):
+                _consume_completion_report(orch,task,report,result_row_id=r2['id'],reclaim_terminal_worktree=False)
         after=driver.snapshot(task)
         current=next(row for row in after['envelopes'] if row['spending_result_id']==r2['id'])
         assert current['decision_state']==('applied' if variant=='v2-applied' else 'refused')
-        assert after['results']==before['results'] and after['tasks']==before['tasks'] and after['links']==before['links']
+        assert after['results']==before['results'] and after['links']==before['links']
+        assert after['child_results']==before['child_results']
+        assert after['attempts']==before['attempts']
+        assert [row for row in after['envelopes'] if row['spending_result_id']!=r2['id']]==[row for row in before['envelopes'] if row['spending_result_id']!=r2['id']]
+        if variant=='v2-claimed-before-body':
+            prior=next(row for row in before['tasks'] if row['id']==task)
+            now=next(row for row in after['tasks'] if row['id']==task)
+            assert prior['status']=='in_progress' and prior['block_kind'] is None
+            assert now['status']=='escalated' and now['block_kind'] is None
+            assert now['note']=='authority_v2_decision_dispatch_interrupted'
+            assert {key:value for key,value in now.items() if key not in ('status','block_kind','note','updated_at')}=={key:value for key,value in prior.items() if key not in ('status','block_kind','note','updated_at')}
+            assert [row for row in after['tasks'] if row['id']!=task]==[row for row in before['tasks'] if row['id']!=task]
+        else:
+            assert after['tasks']==before['tasks']
         assert corrections(after)==corrections(before)
+        assert {key:value for key,value in current.items() if key not in ('decision_state','canonical_payload_json')}=={key:value for key,value in envelope.items() if key not in ('decision_state','canonical_payload_json')}
+        prior_body=json.loads(envelope['canonical_payload_json']);current_body=json.loads(current['canonical_payload_json'])
+        assert {key:value for key,value in prior_body.items() if key!='decision_state'}=={key:value for key,value in current_body.items() if key!='decision_state'}
+        assert current_body['decision_state']==current['decision_state']
+        if variant!='v2-applied':
+            added=[row for row in after['audits'] if row not in before['audits']]
+            interruptions=[row for row in added if row['payload'] and json.loads(row['payload']).get('stage')=='decision_dispatch_interrupted']
+            assert len(interruptions)==1
+            event_payload=json.loads(interruptions[0]['payload'])
+            assert event_payload['spending_result_id']==r2['id'] and event_payload['result_id']==original['id']
+            assert event_payload['generation_id']==lineage['dispatch'][0]['generation_id']
+            escalations=[row for row in added if row['action']=='escalation']
+            assert len(escalations)==(1 if variant=='v2-claimed-before-body' else 0)
+            assert len(added)==1+len(escalations)
+            assert all(row in after['audits'] for row in before['audits'])
         frozen=driver.snapshot(task)
         if variant!='v2-applied':
-            _consume_completion_report(orch,task,report,result_row_id=r2['id'],reclaim_terminal_worktree=False)
+            with consumer_observation(orch,task,r2['id']):
+                _consume_completion_report(orch,task,report,result_row_id=r2['id'],reclaim_terminal_worktree=False)
             assert driver.snapshot(task)==frozen
         if variant=='v2-applied':
             assert after==before
@@ -480,17 +517,22 @@ def test_c07_two_opportunities(variant,attachment_live_daemon,attachment_public_
     for index,kind in enumerate(sequence):
         launch=driver.launch(task);sessions.append(launch['session_id'])
         decision=delegate([missing()]) if kind=='D' else fanout([missing()])
-        if variant=='root-FDF' and index==2:decision['action']='parallel'
         result,_=driver.submit(launch,decision);result_ids.append(result['id'])
         if index<2:
             driver.await_correction(task,index+1)
         if index==0 and sequence=='DFD':
             unrelated=driver.launch(task)
-            driver.submit(unrelated,{'action':'delegate','agent':'code_reviewer','prompt':'Synthetic missing reviewer expectation'})
+            before_unrelated=driver.snapshot(task)
+            unrelated_result,_=driver.submit(unrelated,{'action':'delegate','agent':'code_reviewer','prompt':'Synthetic missing reviewer expectation',
+                'then':[{'agent':'dev_agent','prompt':'Synthetic genuinely gated downstream'}]})
             # The real ordinary authoring path records untagged feedback and
             # launches another authorized SID without spending attachment count.
-            await_condition(lambda:len([row for row in driver.snapshot(task)['results'] if row['session_id']==''])==2)
-            assert len(corrections(driver.snapshot(task)))==1
+            untagged=await_condition(lambda:(s if len([row for row in s['results'] if row['session_id']==''])==2 else None) if (s:=driver.snapshot(task)) else None)
+            assert_prechild(untagged,task,1)
+            assert untagged['links']==before_unrelated['links']
+            feedback=next(row for row in untagged['results'] if row['session_id']=='' and row['id']>unrelated_result['id'])
+            assert 'expect_verdict' in feedback['output_summary']
+            assert not any(json.loads(row['payload']).get('attachment_correction',{}).get('accepted_result_id')==unrelated_result['id'] for row in untagged['audits'] if row['payload'])
             if variant=='root-DFD':
                 observe('C7.ledger-integrity.untagged-unrelated',trigger='real reviewer omission feedback',
                     expected='legacy feedback spends no attachment chance',observable='real generic result and unchanged marker count',
@@ -548,7 +590,7 @@ def test_c08_transaction_boundary(variant,attachment_public_observer,attachment_
 
 
 def _fixed_exception_observations(driver,observer,kind,site):
-    from tests.helpers.attachment_feedback_fixture import stage_cases,consume_staged
+    from tests.helpers.attachment_feedback_fixture import stage_case_batches,consume_staged
     from runtime.orchestrator import run_step as module
     from runtime.infrastructure import task_attachment_store as store
     class KnownLooking(ValueError):pass
@@ -566,29 +608,29 @@ def _fixed_exception_observations(driver,observer,kind,site):
     }
     refs=driver.upload('fixed-input')
     decisions=[delegate(refs) if kind=='D' else fanout(refs) for _ in inputs]
-    staged,closure=stage_cases(driver,observer,decisions)
-    with attachment_supplement_driver(driver,closure) as orch:
-        target=module if site=='prepare' or kind=='D' else store
-        attr='_prepare_attachment_params' if site=='prepare' else '_validate_decision_attachments' if kind=='D' else 'validate_task_attachment_refs'
-        for (label,exception),item in zip(inputs.items(),staged,strict=True):
-            before=driver.snapshot(item[0]);caught=None
-            with attachment_failure_adapter(target,attr,exception) as entries:
-                try:consume_staged(orch,item)
-                except (ValueError,TypeError,AttributeError,KeyError) as exc:caught=type(exc).__name__
-            assert len(entries)==1
-            after=driver.snapshot(item[0])
-            assert not corrections(after) and not after['links'] and len(after['tasks'])==1
-            assert after['results']==before['results']
-            task=after['tasks'][0]
-            assert task['active_chain'] is None and task['active_fanout'] is None
-            # Existing D catches all ValueError; F preparation propagates;
-            # F validation retains its old JSON/parser/hard-failure boundary.
-            assert task['status']=='failed' or caught is not None
-            observe(f'C4.errors.fixed.{kind}.{site}.{label}',trigger='fixed failure-only '+kind+'/'+site,
-                expected='original terminal/parser/propagation boundary, zero attachment charge or child',
-                observable='actual exception/terminal and exact accepted rows retained',
-                defect='broad attachment recovery catch',exception=type(exception).__name__,args=repr(exception.args),
-                propagated=caught,status=task['status'],result_id=item[2]['id'])
+    for driver,staged,closure,offset in stage_case_batches(driver,observer,decisions):
+        with attachment_supplement_driver(driver,closure) as orch:
+            target=module if site=='prepare' or kind=='D' else store
+            attr='_prepare_attachment_params' if site=='prepare' else '_validate_decision_attachments' if kind=='D' else 'validate_task_attachment_refs'
+            for (label,exception),item in zip(list(inputs.items())[offset:offset+len(staged)],staged,strict=True):
+                before=driver.snapshot(item[0]);caught=None
+                with attachment_failure_adapter(target,attr,exception) as entries:
+                    try:consume_staged(orch,item)
+                    except (ValueError,TypeError,AttributeError,KeyError) as exc:caught=type(exc).__name__
+                assert len(entries)==1
+                after=driver.snapshot(item[0])
+                assert not corrections(after) and not after['links'] and len(after['tasks'])==1
+                assert after['results']==before['results']
+                task=after['tasks'][0]
+                assert task['active_chain'] is None and task['active_fanout'] is None
+                # Existing D catches all ValueError; F preparation propagates;
+                # F validation retains its old JSON/parser/hard-failure boundary.
+                assert task['status']=='failed' or caught is not None
+                observe(f'C4.errors.fixed.{kind}.{site}.{label}',trigger='fixed failure-only '+kind+'/'+site,
+                    expected='original terminal/parser/propagation boundary, zero attachment charge or child',
+                    observable='actual exception/terminal and exact accepted rows retained',
+                    defect='broad attachment recovery catch',exception=type(exception).__name__,args=repr(exception.args),
+                    propagated=caught,status=task['status'],result_id=item[2]['id'])
 
 
 def _nested_manager(driver):
@@ -668,7 +710,16 @@ def _stop_owner_observation(driver,observer,nonroot):
     for ordinal,kind in enumerate('FD',1):
         launch=driver.launch(task);driver.submit(launch,delegate([missing()]) if kind=='D' else fanout([missing()]))
         driver.await_correction(task,ordinal)
-    launch=driver.launch(task);result,body=driver.submit(launch,fanout([missing()]),exit_provider=False)
+    launch=driver.launch(task)
+    decision=fanout([missing()]);decision['action']='parallel'
+    result,body=driver.submit(launch,decision,exit_provider=False)
+    assert body['decision']['action']=='parallel'
+    assert json.loads(result['decision_json'])['action']=='fanout'
+    report=completion_report_from_result_row(task,result,fallback_agent=launch['agent'])
+    assert report.decision.action=='fanout'
+    before_stop=driver.snapshot(task)
+    assert len(corrections(before_stop))==2
+    assert {row['attachment_correction']['accepted_session_id'] for row in corrections(before_stop)}=={row['session_id'] for row in before_stop['results'] if row['session_id'] and row['id']!=result['id']}
     observer.arm(task,result['id'],['before-gate']);driver.release_provider(launch)
     pause=observer.pause('before-gate');observer.acknowledge_interruption('before-gate')
     closure=observer.interrupt_and_close(pause,driver.port)
@@ -827,7 +878,7 @@ def _fault_staged(orch,driver,staged,recipes):
 
 
 def _real_race_observations(driver,observer):
-    from tests.helpers.attachment_feedback_fixture import stage_cases,source_barrier
+    from tests.helpers.attachment_feedback_fixture import stage_case_batches,source_barrier
     from runtime.models import TaskRecord
     scenarios=('missing-before-prepare','competing-key-claim','allocated-child-collision','writer-lock-conflict','missing-after-prepare')
     refs=driver.upload('real-races',10)
@@ -843,66 +894,66 @@ def _real_race_observations(driver,observer):
             carrier.pop('attachments',None);plain['attachments']=[ref]
             decision['children']=[carrier,plain]
         decisions.append(decision)
-    staged,closure=stage_cases(driver,observer,decisions)
-    with attachment_supplement_driver(driver,closure) as orch:
-        facts={'D':[],'F':[]}
-        for item,(kind,scenario,ref) in zip(staged,recipes,strict=True):
-            baseline=driver.snapshot(item[0]);path=OrgPaths(root=driver.root).task_attachments_dir/ref['storage_key']
-            # Preparation return is after actual stat; missing-before uses call.
-            if scenario=='missing-before-prepare':
-                function='_prepare_attachment_params';event='call'
-            else:
-                function='_consume_completion_report_body' if kind=='D' else '_spawn_fanout_children';event='line'
-            from contextlib import nullcontext
-            if scenario=='missing-before-prepare':
-                # Confined failure-only owned file unlink BEFORE real prepare
-                # through the validation return boundary, not forged existence.
-                function='_validate_decision_attachments' if kind=='D' else '_prepare_attachment_params'
-                event='return' if kind=='D' else 'call'
-            if event=='call':
-                barrier=preparation_call_barrier(orch,item)
-            else:
-                barrier=source_barrier(orch,item,function=function,
-                    anchor='try_delegate' if kind=='D' else 'try_delegate_many',event=event)
-            rival=None
-            with barrier as boundary:
-                if scenario in ('missing-before-prepare','missing-after-prepare'):
-                    path.unlink()
-                elif scenario=='competing-key-claim':
-                    rival=Database(OrgPaths(root=driver.root).db_path)
-                    rival.insert_task_attachment(task_id=item[0],ordinal=0,storage_key=ref['storage_key'],
-                        display_name=ref['display_name'],size_bytes=path.stat().st_size,content_type='text/plain',uploaded_by=item[1]['agent'])
-                elif scenario=='allocated-child-collision':
-                    rival=Database(OrgPaths(root=driver.root).db_path)
-                    allocated=boundary['locals'].get('child_id') if kind=='D' else boundary['locals']['children_ids'][-1]
-                    rival.insert_task(TaskRecord(id=allocated,brief='actual allocated contender',team='engineering',
-                        assigned_agent='dev_agent',parent_task_id=item[0],status=TaskStatus.PENDING,task_type='subtask'))
+    facts={'D':[],'F':[]}
+    for driver,staged,closure,offset in stage_case_batches(driver,observer,decisions):
+        with attachment_supplement_driver(driver,closure) as orch:
+            for item,(kind,scenario,ref) in zip(staged,recipes[offset:offset+len(staged)],strict=True):
+                baseline=driver.snapshot(item[0]);path=OrgPaths(root=driver.root).task_attachments_dir/ref['storage_key']
+                # Preparation return is after actual stat; missing-before uses call.
+                if scenario=='missing-before-prepare':
+                    function='_prepare_attachment_params';event='call'
                 else:
-                    rival=sqlite3.connect(OrgPaths(root=driver.root).db_path,timeout=.1)
-                    rival.execute('BEGIN IMMEDIATE');orch._db._conn.execute('PRAGMA busy_timeout=50')
-                contender=driver.snapshot(item[0]);boundary['release'].set()
-                if scenario=='writer-lock-conflict':await_condition(lambda:bool(boundary['errors']))
-            if rival is not None:
-                if scenario=='writer-lock-conflict':rival.rollback()
-                rival.close()
-            after=driver.snapshot(item[0])
-            if scenario=='missing-before-prepare':
-                assert len(corrections(after))==1 and not after['links'] and len(after['tasks'])==1
-            elif scenario=='missing-after-prepare':
-                assert len(after['links'])==1 and len(after['tasks'])==(2 if kind=='D' else 3)
-                assert not corrections(after)
-            else:
-                assert after['tasks']==contender['tasks'] and after['links']==contender['links']
-                assert not corrections(after) and boundary['errors']
-            assert after['results']==baseline['results'] or scenario=='missing-before-prepare'
-            facts[kind].append({'scenario':scenario,'claim_result':item[2]['id'],'errors':boundary['errors'],
-                'before_hash':__import__('hashlib').sha256(json.dumps(contender,sort_keys=True).encode()).hexdigest(),
-                'after_hash':__import__('hashlib').sha256(json.dumps(after,sort_keys=True).encode()).hexdigest()})
-        for kind in ('D','F'):
-            observe('C8.real-races.'+kind,trigger='real independent key/ID/writer and owned phase unlink contenders',
-                expected='loser rollback only, legitimate winner/committed graph retained',
-                observable='source boundary handshakes, independent COMMIT/rows/errors for all five placements',
-                defect='partial sibling insert, winner deletion or false file-transaction guarantee',placements=facts[kind])
+                    function='_consume_completion_report_body' if kind=='D' else '_spawn_fanout_children';event='line'
+                from contextlib import nullcontext
+                if scenario=='missing-before-prepare':
+                    # Confined failure-only owned file unlink BEFORE real prepare
+                    # through the validation return boundary, not forged existence.
+                    function='_validate_decision_attachments' if kind=='D' else '_prepare_attachment_params'
+                    event='return' if kind=='D' else 'call'
+                if event=='call':
+                    barrier=preparation_call_barrier(orch,item)
+                else:
+                    barrier=source_barrier(orch,item,function=function,
+                        anchor='try_delegate' if kind=='D' else 'try_delegate_many',event=event)
+                rival=None
+                with barrier as boundary:
+                    if scenario in ('missing-before-prepare','missing-after-prepare'):
+                        path.unlink()
+                    elif scenario=='competing-key-claim':
+                        rival=Database(OrgPaths(root=driver.root).db_path)
+                        rival.insert_task_attachment(task_id=item[0],ordinal=0,storage_key=ref['storage_key'],
+                            display_name=ref['display_name'],size_bytes=path.stat().st_size,content_type='text/plain',uploaded_by=item[1]['agent'])
+                    elif scenario=='allocated-child-collision':
+                        rival=Database(OrgPaths(root=driver.root).db_path)
+                        allocated=boundary['locals'].get('child_id') if kind=='D' else boundary['locals']['children_ids'][-1]
+                        rival.insert_task(TaskRecord(id=allocated,brief='actual allocated contender',team='engineering',
+                            assigned_agent='dev_agent',parent_task_id=item[0],status=TaskStatus.PENDING,task_type='subtask'))
+                    else:
+                        rival=sqlite3.connect(OrgPaths(root=driver.root).db_path,timeout=.1)
+                        rival.execute('BEGIN IMMEDIATE');orch._db._conn.execute('PRAGMA busy_timeout=50')
+                    contender=driver.snapshot(item[0]);boundary['release'].set()
+                    if scenario=='writer-lock-conflict':await_condition(lambda:bool(boundary['errors']))
+                if rival is not None:
+                    if scenario=='writer-lock-conflict':rival.rollback()
+                    rival.close()
+                after=driver.snapshot(item[0])
+                if scenario=='missing-before-prepare':
+                    assert len(corrections(after))==1 and not after['links'] and len(after['tasks'])==1
+                elif scenario=='missing-after-prepare':
+                    assert len(after['links'])==1 and len(after['tasks'])==(2 if kind=='D' else 3)
+                    assert not corrections(after)
+                else:
+                    assert after['tasks']==contender['tasks'] and after['links']==contender['links']
+                    assert not corrections(after) and boundary['errors']
+                assert after['results']==baseline['results'] or scenario=='missing-before-prepare'
+                facts[kind].append({'scenario':scenario,'claim_result':item[2]['id'],'errors':boundary['errors'],
+                    'before_hash':__import__('hashlib').sha256(json.dumps(contender,sort_keys=True).encode()).hexdigest(),
+                    'after_hash':__import__('hashlib').sha256(json.dumps(after,sort_keys=True).encode()).hexdigest()})
+    for kind in ('D','F'):
+        observe('C8.real-races.'+kind,trigger='real independent key/ID/writer and owned phase unlink contenders',
+            expected='loser rollback only, legitimate winner/committed graph retained',
+            observable='source boundary handshakes, independent COMMIT/rows/errors for all five placements',
+            defect='partial sibling insert, winner deletion or false file-transaction guarantee',placements=facts[kind])
 
 
 def preparation_call_barrier(orch,item):
