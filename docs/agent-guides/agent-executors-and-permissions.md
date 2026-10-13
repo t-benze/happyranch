@@ -41,6 +41,52 @@ reset/audit helper, while preserving thread delivery and breaker continuity.
 > Retained platform/callback sources are not automatic merge gates. See
 > [coverage gaps](../python-test-reset.md) and [current lanes](../local-ci.md).
 
+## Naming v1 core, API and routing source
+
+Names confer no executor permission, task ownership, role or session authority.
+The A internal service changes only registry claims/revision and an atomic audit.
+Canonical IDs continue to bind launch/callback principals, provider configuration
+and workspace paths. The owner-bound `_worker` default/address is separate from
+strict editable grammar. The bounded API uses the existing operator trust surface.
+
+The bounded API reuses existing bearer/operator trust. The human helper checks
+the shared bearer only; it does not cryptographically prove a person. Naming's
+local raw guard rejects task/session/agent/composer/speaker/thread/invocation
+binding-key presence in body/query, even null/partial/malformed, before strict
+rename decoding. A descriptive founder or label header cannot override denial.
+No auth.py, credentials, permission generation or shared helper consumer changes.
+Read resolution cannot authorize an actor; founder kind remains human only and
+never becomes a task agent, team participant or executor. Public API source is
+present, including CLI/prompt and provider-aware UI/type consumers. Behavioral
+acceptance remains separate from label presentation and frontend mock evidence.
+
+
+Current routing source resolves names/IDs case-insensitively with the unchanged
+@token grammar. Former inputs refuse409 with current_name before thread creation,
+stale closure, callback settlement or application attachment finalization. A
+lookup grants no reservation; action boundaries revalidate. Actors/proofs remain
+ID-only. Current-founder-only messages suppress new broadcast/cohort wakes, retain
+full-recipient obligations and enqueue prior catch-up separately. Founder remains
+human inbox only. Restart uses durable IDs/ranges/tokens/exchange/deferral rows;
+no historical body reclassification or schema addition occurs. Filesystem capture
+precedes the RLock and multipart reads precede final no-await admission/write.
+Unavailable naming keeps actual ID behavior; non-ID addresses refuse503.
+
+THR293seq34/35 requires twelve readable E2E scenarios. Core/API/routing,
+CLI/prompt and UI/type source are present in the combined candidate. The existing
+routing bodies and CLI assertions remain reusable E2E material; shipping-page
+MSW assertions cover frontend portions of scenarios2/3/4/5/8/10, without daemon/DB
+proof. Exact execution results and remaining obligations live in the maker
+handoff. Python units/collection/duration are RETIRED under THR-291 seq40 and
+general integration is SKIPPED THR243seq42, never PASS. Focused naming E2E requires
+a supported disposable GitHub runner or Mac Linux guest with finite commands,
+resources, output, deadline and actual cleanup. Independent full review,
+behavioral QA, applicable checks, normal publication and guarded merge remain.
+
+
+[Current contract](../superpowers/specs/2026-10-09-identity-names-core.md).
+
+
 ## Bundled skill sources and canonical delivery
 
 Release-owned instructions and supporting assets live in
@@ -342,7 +388,13 @@ earned receipt remains dormant: no runner reads it in PR 2, built-ins and
 registered kimi/codebuddy ordinary behavior are unchanged, and custom profiles
 still receive fresh/full SQLite-canonical thread prompts.
 
-**Optional reasoning effort (THR298).** The static catalog is shared by the factory, adapters, compatibility fallback argv and UI metadata. Claude uses `--effort`, Codex a literal `-c model_reasoning_effort="<level>"`, Pi `--thinking`, and OpenCode `-m provider/model#variant`. Unset adds no override, including when the saved model already contains a suffix. Equal explicit/embedded variants work; conflicts refuse; OpenCode explicit effort without `provider/model` refuses. The independent OpenCode 2.0.12 `--dir`/transport mismatch remains outside this change. Exact stub argv proves transport, not native provider behavior.
+**Optional reasoning effort (THR298).** The static catalog supplies literal mappings and historical metadata; shared token/composition validation covers the factory, adapters, compatibility fallback argv and saves. Claude uses `--effort`, Codex a literal `-c model_reasoning_effort="<level>"`, Pi `--thinking`, and OpenCode `-m provider/model#variant`. Unset adds no override, including when the saved model already contains a suffix. Equal explicit/embedded variants work; conflicts refuse; OpenCode explicit effort without `provider/model` refuses. The independent OpenCode 2.0.12 `--dir`/transport mismatch remains outside this change. Exact stub argv proves transport, not native provider behavior.
+
+Built-ins accept case-preserving fullmatch `[A-Za-z][A-Za-z0-9_-]{0,31}` through shared `model_effort_args` validation; historical catalog values are metadata, not a membership gate. UI uses plain text: blank on explicit Save maps to null/default, without trimming or truncation. Explicit wire/direct empty strings refuse; CLI clear retains its existing meaning. Custom adapters still require approved declared-value membership (at most16 lowercase identifiers); legacy/model-only effort controls remain disabled with saved values visible. Token acceptance proves syntax/transport only, not native model/account support.
+
+With explicit effort, OpenCode requires nonempty provider/model slash components (additional model path segments allowed), no whitespace/control/NUL, at most one # and a nonempty embedded variant byte-equal to effort; it composes one literal `-m provider/model#effort`. Unset preserves the original model transport. Pi recognizes only its existing finite thinking suffix set; arbitrary safe colon suffixes do not become native thinking syntax. Codex keeps one literal quoted config argv element.
+
+Bounded evidence does not verify dynamic manage_agent update/enrollment at runtime (source only), native models/accounts, full task/thread/dream/wake/schedule lifecycles, host/callback or custom contained-wrapper prelaunch. General integration including callback is SKIPPED THR243seq42; former Python units are RETIRED. No ad hoc Product E2E or protected mutation/repetition proof is authorized.
 
 Custom `input_options` declares strict `version:2`, optional literal `model_arg_template`, and paired `effort_arg_template` / finite `reasoning_effort_values`. Normal registration/conformance/store/profile resolution/runtime all use that exact declaration. Templates are argv elements with one matching `{model}` or `{effort}` placeholder, never shell expressions. Input-v2 sends the actual selected model (or null) and effort object (or null); v1 still sends `model:null` and no effort member, even with a configured model. Input-v2 must acknowledge integer `adapter_metadata.input_contract_version:2`; output stays v1 with the existing identity/version/session/hash/retry checks. The generated direct-connect prompt inspects installed model/effort controls,
 records supported/unsupported/unknown with sources, and retains input1 defaults.

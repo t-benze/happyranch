@@ -1,3 +1,5 @@
+import { useIdentityPresentation } from '@/hooks/identities';
+import { IdentityName } from '@/shared/identities/IdentityName';
 /**
  * SkillAssignmentPanel — per-agent assignment + config-review surface for a
  * CUSTOM (user-authored) skill (THR-092 Slice 5 of 6). Rendered from
@@ -87,6 +89,7 @@ export function SkillAssignmentPanel({
   skillId: string;
 }): JSX.Element {
   const { t } = useTranslation();
+  const identityPresentation = useIdentityPresentation();
   const status = useSkillStatus(skillId);
   // The full candidate roster comes from the real agents source, NOT the status
   // response (which lists only already-assigned agents) — so an unassigned agent
@@ -216,7 +219,7 @@ export function SkillAssignmentPanel({
             >
               <div className="min-w-0">
                 <div className="text-fg font-mono text-sm font-semibold break-all">
-                  {a.agent}
+                  <IdentityName canonicalId={a.agent} />
                 </div>
                 <p className="text-fg-muted text-body-sm mt-1">{t(p.reason)}</p>
               </div>
@@ -242,7 +245,7 @@ export function SkillAssignmentPanel({
                   type="button"
                   onClick={() => toggle(a)}
                   disabled={applying}
-                  aria-label={t('skills.assign.toggleAria', { action: t(label), agent: a.agent })}
+                  aria-label={t('skills.assign.toggleAria', { action: t(label), agent: identityPresentation.label(a.agent) })}
                   className="border-border-default bg-surface-subtle text-fg hover:bg-bg-subtle text-body-sm inline-flex items-center rounded-md border px-2.5 py-1 font-semibold disabled:opacity-60"
                 >
                   {t(label)}
@@ -297,7 +300,7 @@ export function SkillAssignmentPanel({
                       {t(c.label)}
                     </span>
                     <span className="text-fg-muted text-body-sm min-w-0 break-words">
-                      {t(c.summary, { agent: c.agent })}
+                      {t(c.summary, { agent: identityPresentation.label(c.agent) })}
                     </span>
                   </li>
                 ))}

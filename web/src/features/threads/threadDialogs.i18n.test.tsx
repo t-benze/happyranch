@@ -26,6 +26,22 @@ import { ReplyDeliveryStrip } from './ReplyDeliveryStrip';
 import { ResponderStatusStrip } from './ResponderStatusStrip';
 import { ResumeButton } from './ResumeButton';
 
+// Naming diagnostics precede the original action; its endpoint still decides eligibility.
+beforeEach(() => {
+  server.use(
+    http.get('/api/v1/orgs/:slug/identities', () => HttpResponse.json({ identities: [] })),
+    http.post('/api/v1/orgs/:slug/identities/resolve', async ({ request }) => {
+      const body = await request.json() as { addresses: string[] };
+      const known = new Set(['ops_lead']);
+      return HttpResponse.json({ resolutions: body.addresses.map((address) => ({
+        address, status: known.has(address) ? 'resolved' : 'unknown_identity', eligible: known.has(address),
+        identity: known.has(address) ? { canonical_id: address, kind: 'agent', lifecycle: 'active',
+          addressable_name: address, name_revision: 1, canonical_definition_revision: null, naming_status: 'ready' } : null,
+      })) });
+    }),
+  );
+});
+
 const SLUG = 'alpha';
 const THREAD = 'THR-7';
 
@@ -136,9 +152,21 @@ async function exerciseErrors(opts: {
   expect(state.posts).toHaveLength(2);
 
   // Empty raw diagnostic: a non-Error rejection of '' still renders its node.
-  const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementationOnce(() => Promise.reject(''));
+  const originalFetch = globalThis.fetch;
+  let rejectedAction = false;
+  const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
+    const url = new URL(input instanceof Request ? input.url : String(input), window.location.origin);
+    // Invite resolves names first. Fail the original action, preserving that
+    // read and its separate naming-error contract.
+    if (!rejectedAction && url.pathname.startsWith(`/api/v1/orgs/${SLUG}/threads/${THREAD}/`)) {
+      rejectedAction = true;
+      return Promise.reject('');
+    }
+    return originalFetch(input, init);
+  });
   await user.click(confirm());
   await waitFor(() => expect(findError()?.textContent).toBe(''));
+  expect(rejectedAction).toBe(true);
   expect(findError()).not.toBeNull();
   await switchTo('zh-CN');
   expect(findError()).not.toBeNull();

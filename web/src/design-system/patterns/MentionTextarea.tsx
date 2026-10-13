@@ -14,7 +14,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { MentionAutocomplete } from './MentionAutocomplete';
-import type { AgentSummary } from '@/lib/api/agents';
+import type { AddressOption } from './MentionAutocomplete';
 
 const MAX_TEXTAREA_PX = 240;
 
@@ -48,7 +48,7 @@ const DEFAULT_CLASSNAME =
 export interface MentionTextareaProps {
   value: string;
   onChange: (next: string) => void;
-  agents: AgentSummary[];
+  agents: AddressOption[];
   /** Fires on Enter when the mention popup is closed. */
   onSubmit?: (value: string) => void;
   disabled?: boolean;
@@ -92,7 +92,7 @@ export function MentionTextarea({
   const mentionMatches = useMemo(() => {
     if (!mention) return [];
     const q = mention.query.toLowerCase();
-    return agents.filter((a) => a.name.toLowerCase().startsWith(q)).slice(0, 8);
+    return agents.filter((a) => (a.name.toLowerCase().startsWith(q) || a.addressable_name?.toLowerCase().startsWith(q))).slice(0, 8);
   }, [mention, agents]);
 
   const popupOpen = mentionMatches.length > 0;
@@ -113,14 +113,14 @@ export function MentionTextarea({
 
   useEffect(() => { refreshMention(); }, [refreshMention]);
 
-  const acceptMention = useCallback((agent: AgentSummary) => {
+  const acceptMention = useCallback((agent: AddressOption) => {
     if (!mention) return;
     const el = textareaRef.current;
     if (!el) return;
     const caret = el.selectionStart ?? 0;
     const before = value.slice(0, mention.tokenStart);
     const after = value.slice(caret);
-    const inserted = `@${agent.name} `;
+    const inserted = `@${agent.addressable_name ?? agent.name} `;
     const next = before + inserted + after;
     onChange(next);
     setMention(null);

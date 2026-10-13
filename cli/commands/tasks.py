@@ -10,6 +10,7 @@ from urllib.parse import quote
 import httpx
 
 from cli import _shared
+from cli import identities
 from cli._shared import _fmt_ts, _ok, resolve_org_slug
 from cli.client.client import DaemonNotRunning, DaemonStateInconsistent, OpcClient
 from runtime.infrastructure.db.task_reconciliation import ReconciliationError, identifier, request_body, require
@@ -95,15 +96,7 @@ def cmd_run(args: argparse.Namespace) -> None:
     The CLI does not stream events. Use `happyranch tail <task_id>` to attach to
     a running task, or `happyranch details <task_id>` for a snapshot.
     """
-    try:
-        client = OpcClient.from_env()
-    except (DaemonNotRunning, DaemonStateInconsistent) as exc:
-        print(f"Error: {exc}")
-        sys.exit(1)
-
-    slug = resolve_org_slug(
-        args_org=args.org, available=_shared._fetch_available_orgs(client),
-    )
+    identities.validate_address(args.owner)
     if args.brief_file:
         try:
             brief = Path(args.brief_file).expanduser().read_text(encoding="utf-8")
@@ -115,11 +108,20 @@ def cmd_run(args: argparse.Namespace) -> None:
     if not brief.strip():
         print("Error: brief is empty")
         sys.exit(1)
+    try:
+        client = OpcClient.from_env()
+    except (DaemonNotRunning, DaemonStateInconsistent) as exc:
+        print(f"Error: {exc}")
+        sys.exit(1)
+
+    slug = resolve_org_slug(
+        args_org=args.org, available=_shared._fetch_available_orgs(client),
+    )
     payload: dict = {"brief": brief}
     if args.team:
         payload["team"] = args.team
     if args.owner:
-        payload["owner"] = args.owner
+        payload["owner"] = identities.resolve_targets(client, slug, [args.owner], context="task_owner")[0]
     # Handle --attach references.
     attachments_list = (
         getattr(args, "attachments", None)
@@ -255,6 +257,7 @@ def _cmd_pause_overview(args: argparse.Namespace, client: OpcClient, slug: str) 
 
 def cmd_tasks(args: argparse.Namespace) -> None:
     """List recent tasks."""
+    identities.validate_address(args.agent)
     try:
         client = OpcClient.from_env()
     except (DaemonNotRunning, DaemonStateInconsistent) as exc:
@@ -268,12 +271,14 @@ def cmd_tasks(args: argparse.Namespace) -> None:
     )
     if getattr(args, "pause_overview", False):
         return _cmd_pause_overview(args, client, slug)
+
+    filter_agent = identities.filter_target(client, slug, args.agent)
     params: dict = {"limit": args.limit}
     if getattr(args, "status", None):
         params["status"] = args.status
     if getattr(args, "block_kind", None):
         params["block_kind"] = args.block_kind
-    agent = getattr(args, "agent", None)
+    agent = filter_agent
     if isinstance(agent, str) and agent:
         params["assigned_agent"] = agent
     all_pages = getattr(args, "all_pages", False) is True
@@ -319,9 +324,10 @@ def cmd_tasks(args: argparse.Namespace) -> None:
         return
     print(f"{'ID':<12} {'Team':<16} {'Status':<22} {'Agent':<18} Brief")
     print("-" * 102)
+    names = identities.labels(client, slug)
     for t in tasks:
         brief = t["brief"][:40] + "..." if len(t["brief"]) > 40 else t["brief"]
-        agent = t.get("assigned_agent") or "-"
+        agent = identities.display(names, t.get("assigned_agent"))
         status = t["status"]
         if t.get("block_kind"):
             status = f"{status}({t['block_kind']})"
@@ -398,6 +404,8 @@ def cmd_details(args: argparse.Namespace) -> None:
     if body.get("pause"):
         _print_pause(body["pause"])
 
+    names = identities.labels(client, slug)
+
     # Revisit header: shown only when this task IS a revisit.
     if task.get("revisit_of_task_id"):
         prior = body.get("predecessor_prior_status") or "unknown"
@@ -414,7 +422,7 @@ def cmd_details(args: argparse.Namespace) -> None:
     print(f"Task:       {task['task_id']}")
     print(f"Team:       {task.get('team', '-')}")
     print(f"Status:     {task['status']}")
-    print(f"Agent:      {task.get('assigned_agent') or '-'}")
+    print(f"Agent:      {identities.display(names, task.get('assigned_agent'))}")
     print(f"Brief:      {task['brief']}")
     print(f"Created:    {_fmt_ts(task['created_at'])}")
     print(f"Updated:    {_fmt_ts(task['updated_at'])}")
@@ -461,7 +469,7 @@ def cmd_details(args: argparse.Namespace) -> None:
                 f" (expecting: {leg['expect_verdict']})"
                 if leg.get("expect_verdict") else ""
             )
-            agent = leg.get("agent", "")
+            agent = identities.display(names, leg.get("agent", ""))
             prompt_excerpt = (leg.get("prompt") or "")[:40]
             print(f"  {marker} Leg {i}  {agent:<14} {prompt_excerpt}{verdict_note}")
     escalation_reason = body.get("escalation_reason")
@@ -481,7 +489,7 @@ def cmd_details(args: argparse.Namespace) -> None:
         print(f"\nResults ({len(body['results'])}):")
         full = getattr(args, "full", False)
         for r_ in body["results"]:
-            header = f"  - [{r_['agent']}] confidence={r_['confidence_score']}"
+            header = f"  - [{identities.display(names, r_['agent'])}] confidence={r_['confidence_score']}"
             if full:
                 print(header)
                 for line in (r_["output_summary"] or "").splitlines() or [""]:
@@ -492,7 +500,7 @@ def cmd_details(args: argparse.Namespace) -> None:
         print(f"\nAudit log ({len(body['audit_log'])} entries):")
         for log in body["audit_log"]:
             line = (
-                f"  {_fmt_ts(log['timestamp'])}  {log['agent']:20s}  {log['action']}"
+                f"  {_fmt_ts(log['timestamp'])}  {identities.display(names, log['agent']):20s}  {log['action']}"
             )
             # Inline the progress message so a long-running task's history
             # reads as a story instead of a sequence of identical "progress"
@@ -514,6 +522,7 @@ def cmd_audit(args: argparse.Namespace) -> None:
     """Show filtered audit-log entries via the daemon."""
     import json as _json
 
+    identities.validate_address(args.agent)
     try:
         client = OpcClient.from_env()
     except (DaemonNotRunning, DaemonStateInconsistent) as exc:
@@ -523,11 +532,12 @@ def cmd_audit(args: argparse.Namespace) -> None:
     slug = resolve_org_slug(
         args_org=args.org, available=_shared._fetch_available_orgs(client),
     )
+    filter_agent = identities.filter_target(client, slug, args.agent)
     params: dict[str, str | int] = {}
     if args.task_id is not None:
         params["task_id"] = args.task_id
     if args.agent is not None:
-        params["agent"] = args.agent
+        params["agent"] = filter_agent
     if args.action is not None:
         params["action"] = args.action
     if args.since is not None:
@@ -583,10 +593,11 @@ def cmd_audit(args: argparse.Namespace) -> None:
 
     print(f"{'Timestamp':<20} {'Task':<10} {'Agent':<22} {'Action':<22} Payload")
     print("-" * 120)
+    names = identities.labels(client, slug)
     for e in entries:
         ts = _fmt_ts(e.get("timestamp"))
         task = e.get("task_id") or "-"
-        agent = e.get("agent") or "-"
+        agent = identities.display(names, e.get("agent"))
         action = e.get("action") or "-"
         payload = e.get("payload")
         payload_s = _json.dumps(payload, separators=(",", ":")) if payload else "-"
@@ -715,6 +726,7 @@ def cmd_tokens(args: argparse.Namespace) -> None:
       Codex includes it."""
     import json as _json
 
+    identities.validate_address(args.agent)
     try:
         client = OpcClient.from_env()
     except (DaemonNotRunning, DaemonStateInconsistent) as exc:
@@ -724,10 +736,11 @@ def cmd_tokens(args: argparse.Namespace) -> None:
     slug = resolve_org_slug(
         args_org=args.org, available=_shared._fetch_available_orgs(client),
     )
+    filter_agent = identities.filter_target(client, slug, args.agent)
 
     filters = dict(
         task_id=args.task_id,
-        agent=args.agent,
+        agent=filter_agent,
         since=args.since,
         scope_type=args.scope_type,
         scope_id=args.scope_id,
@@ -798,6 +811,7 @@ def cmd_tokens(args: argparse.Namespace) -> None:
                 f"{'Input':>12} {'Output':>12} {'CacheR':>12} {'Churn':>14} {'AllTokens':>14}"
             )
             print("-" * (label_width + 1 + 8 + 1 + 12 + 1 + 12 + 1 + 12 + 1 + 14 + 1 + 14))
+        names = identities.labels(client, slug) if group_by == "agent" else {}
         for r in rollup:
             inp = r.get("input_tokens") or 0
             out = r.get("output_tokens") or 0
@@ -807,7 +821,7 @@ def cmd_tokens(args: argparse.Namespace) -> None:
             if ctx is None:
                 ccr = r.get("cache_creation_tokens") or 0
                 ctx = churn + cr + ccr
-            label = r.get(key) or "-"
+            label = identities.display(names, r.get(key)) if group_by == "agent" else r.get(key) or "-"
             if show_model:
                 print(
                     f"{label:<{label_width}} {classify_model(r):<{model_width}} "
@@ -824,7 +838,7 @@ def cmd_tokens(args: argparse.Namespace) -> None:
     rows = client.list_tokens(
         slug=slug,
         since=args.since, limit=args.limit if args.limit is not None else 20,
-        task_id=args.task_id, agent=args.agent, scope_type=args.scope_type,
+        task_id=args.task_id, agent=filter_agent, scope_type=args.scope_type,
         scope_id=args.scope_id, thread_id=args.thread_id,
         purpose=args.purpose,
     )
@@ -839,6 +853,7 @@ def cmd_tokens(args: argparse.Namespace) -> None:
         f"{'Input':>12} {'Output':>12} {'CacheR':>12} {'Churn':>14} {'AllTokens':>14}"
     )
     print("-" * (20 + 1 + 10 + 1 + 22 + 1 + 10 + 1 + 12 + 1 + 12 + 1 + 12 + 1 + 14 + 1 + 14))
+    names = identities.labels(client, slug)
     for r in rows:
         ts = _fmt_ts(r.get("created_at"))
         inp = r.get("input_tokens") or 0
@@ -852,7 +867,7 @@ def cmd_tokens(args: argparse.Namespace) -> None:
             ctx = inp + out + rea + cr + ccr
         print(
             f"{ts:<20} {(r.get('task_id') or '-'):<10} "
-            f"{(r.get('agent') or '-'):<22} {(r.get('executor') or '-'):<10} "
+            f"{identities.display(names, r.get('agent')):<22} {(r.get('executor') or '-'):<10} "
             f"{inp:>12,} {out:>12,} {cr:>12,} {churn:>14,} {ctx:>14,}"
         )
 
@@ -1268,7 +1283,7 @@ def register(sub) -> None:
     )
     p_run.add_argument(
         "--owner", default=None,
-        help="Assign an active executable agent; required for a human-managed team",
+        help="Assign a current name/permanent ID of an active executable agent; required for a human-managed team",
     )
     p_run_brief = p_run.add_mutually_exclusive_group(required=True)
     p_run_brief.add_argument("--brief", help="Task description (inline string)")
@@ -1309,7 +1324,7 @@ def register(sub) -> None:
     p_tasks = sub.add_parser("tasks", help="List recent tasks")
     p_tasks.add_argument("--org", default=None, help="Org slug (or set HAPPYRANCH_ORG_SLUG; auto-inferred when only one org)")
     p_tasks.add_argument("--limit", type=int, default=20, help="Max tasks to show")
-    p_tasks.add_argument("--agent", default=None, help="Filter by assigned agent")
+    p_tasks.add_argument("--agent", default=None, help="Filter by current name/permanent ID; historical IDs remain queryable")
     p_tasks.add_argument(
         "--all-pages", action="store_true",
         help="Follow task keyset pages to exhaustion; --limit is the page size",
@@ -1332,7 +1347,7 @@ def register(sub) -> None:
     p_audit.add_argument("--org", default=None, help="Org slug (or set HAPPYRANCH_ORG_SLUG; auto-inferred when only one org)")
     p_audit.add_argument("task_id", nargs="?", default=None,
                          help="Optional task id to filter by (e.g. TASK-007)")
-    p_audit.add_argument("--agent", default=None, help="Filter by agent name")
+    p_audit.add_argument("--agent", default=None, help="Filter by current name/permanent ID")
     p_audit.add_argument("--action", default=None,
                          help="Filter by action (session_start, session_end, completion_report, ...)")
     p_audit.add_argument("--since", default=None,
@@ -1356,7 +1371,7 @@ def register(sub) -> None:
                           help="Org slug (or set HAPPYRANCH_ORG_SLUG; auto-inferred when only one org)")
     p_tokens.add_argument("--task-id", dest="task_id", default=None,
                           help="Filter by task id (e.g. TASK-007)")
-    p_tokens.add_argument("--agent", default=None, help="Filter by agent name")
+    p_tokens.add_argument("--agent", default=None, help="Filter by current name/permanent ID")
     p_tokens.add_argument("--since", default=None,
                           help="ISO-8601 date or timestamp; only rows at or after this time")
     p_tokens.add_argument("--scope-type", dest="scope_type", default=None,

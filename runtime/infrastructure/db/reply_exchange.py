@@ -183,6 +183,7 @@ class ReplyExchangeMixin:
         mentions: list[str],
         recipients: list[str],
         open_exchange,
+        founder_only: bool = False,
     ) -> list[str]:
         """U2 — strict-hold wake resolution inside an open exchange.
 
@@ -197,6 +198,8 @@ class ReplyExchangeMixin:
         full-broadcast branch). ``recipients`` is the candidate set minus the
         speaker; every recipient NOT in the wake set is held (obligation-only).
         """
+        if founder_only:
+            return []
         if mentions:
             return [m for m in mentions if m in recipients]
         cohort = self._exchange_cohort_uncommitted(open_exchange)

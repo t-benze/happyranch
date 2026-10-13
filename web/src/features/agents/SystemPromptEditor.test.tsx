@@ -1,5 +1,5 @@
 /** THR280 C01/C03/C04/C06/C09/C10/C17: real pane, providers and HTTP seam. */
-import { act, fireEvent, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { http, HttpResponse } from 'msw';
 import { beforeEach, expect, test } from 'vitest';
 import { useQueryClient, type QueryClient } from '@tanstack/react-query';
@@ -72,7 +72,7 @@ test.each(['pane', 'drawer'])('%s preserves authored text and waits for matching
   fireEvent.click(screen.getByRole('button', { name: 'Save system prompt' }));
   await waitFor(() => expect(writes).toEqual([{ system_prompt: authored, expected_revision: base.revision }]));
   expect(textarea).toBeDisabled();
-  expect(screen.getByRole('button', { name: 'Cancel' })).toBeDisabled();
+  expect(within(screen.getByRole('textbox', { name: 'System prompt' }).closest('section')!).getByRole('button', { name: 'Cancel' })).toBeDisabled();
   expect(screen.queryByText('Saved')).not.toBeInTheDocument();
   releaseGet();
   expect(await screen.findByText('Saved')).toBeInTheDocument();
@@ -95,7 +95,7 @@ test('cancel and locale switch retain the same draft node, focus and selection w
   expect(textarea.value).toBe(authored);
   expect(textarea.selectionStart).toBe(3); expect(textarea.selectionEnd).toBe(8);
   expect(textarea).toHaveFocus();
-  fireEvent.click(screen.getByRole('button', { name: '取消' }));
+  fireEvent.click(within(screen.getByRole('textbox', { name: '系统提示词' }).closest('section')!).getByRole('button', { name: '取消' }));
   expect(writes).toEqual([]);
   expect(screen.queryByRole('textbox', { name: '系统提示词' })).not.toBeInTheDocument();
 });
@@ -325,7 +325,7 @@ test('verified prompt survives navigation away and return', async () => {
   fireEvent.click(screen.getByRole('button', { name: 'Save system prompt' }));
   expect(await screen.findByText('Saved')).toBeInTheDocument();
   fireEvent.click(screen.getByRole('button', { name: 'select other fixture' }));
-  await screen.findByText('other', { selector: 'h2' });
+  await screen.findByRole('heading', { name: 'other', level: 2 });
   fireEvent.click(screen.getByRole('button', { name: 'Edit system prompt' }));
   expect(screen.getByRole('textbox', { name: 'System prompt' })).toHaveValue('OTHER\n');
   fireEvent.click(screen.getByRole('button', { name: 'select writer fixture' }));
@@ -359,7 +359,7 @@ test('returned editor uses verified revision for the next save', async () => {
   fireEvent.click(screen.getByRole('button', { name: 'Save system prompt' }));
   expect(await screen.findByText('Saved')).toBeInTheDocument();
   fireEvent.click(screen.getByRole('button', { name: 'select other fixture' }));
-  await screen.findByText('other', { selector: 'h2' });
+  await screen.findByRole('heading', { name: 'other', level: 2 });
   fireEvent.click(screen.getByRole('button', { name: 'select writer fixture' }));
   fireEvent.click(await screen.findByRole('button', { name: 'Edit system prompt' }));
   fireEvent.change(screen.getByRole('textbox', { name: 'System prompt' }), { target: { value: 'FOLLOWUP\n' } });
@@ -410,9 +410,9 @@ test.each(['winner', 'aba'] as const)('a newer observed prompt %s wins over a he
   expect(textarea).toHaveValue(authored);
   expect(screen.queryByText('Saved')).not.toBeInTheDocument();
   expect(screen.getByRole('button', { name: 'Save system prompt' })).toBeDisabled();
-  fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+  fireEvent.click(within(screen.getByRole('textbox', { name: 'System prompt' }).closest('section')!).getByRole('button', { name: 'Cancel' }));
   fireEvent.click(screen.getByRole('button', { name: 'select other fixture' }));
-  await screen.findByText('other', { selector: 'h2' });
+  await screen.findByRole('heading', { name: 'other', level: 2 });
   fireEvent.click(screen.getByRole('button', { name: 'select writer fixture' }));
   fireEvent.click(await screen.findByRole('button', { name: 'Edit system prompt' }));
   expect(screen.getByRole('textbox', { name: 'System prompt' })).toHaveValue(winner.system_prompt);
@@ -460,7 +460,7 @@ test('an older ordinary read cannot overwrite the verified return snapshot', asy
   expect(client.getQueryData<{ agents: AgentSummary[] }>(['agents', 'prompt-test'])?.agents[0])
     .toMatchObject({ system_prompt: authored, revision: 'b'.repeat(64) });
   fireEvent.click(screen.getByRole('button', { name: 'select other fixture' }));
-  await screen.findByText('other', { selector: 'h2' });
+  await screen.findByRole('heading', { name: 'other', level: 2 });
   fireEvent.click(screen.getByRole('button', { name: 'select writer fixture' }));
   fireEvent.click(await screen.findByRole('button', { name: 'Edit system prompt' }));
   expect(screen.getByRole('textbox', { name: 'System prompt' })).toHaveValue(authored);

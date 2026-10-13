@@ -1,3 +1,4 @@
+import { useIdentityPresentation } from '@/hooks/identities';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import { AlertCircle } from 'lucide-react';
@@ -41,13 +42,14 @@ interface V2EditorState {
 }
 
 export function TeamEscalationPolicyEntryCard({ agent }: { agent: { name: string; team: string; role: string } }): JSX.Element {
+  const presentation = useIdentityPresentation();
   const query = useTeamEscalationPolicy(agent);
   const routes = useAgentsRoutes();
   const { t } = useTranslation();
   return (
     <PolicyShell>
       <h3 className="font-display text-text-primary text-base font-medium">{t('agents.policy.entryTitle')}</h3>
-      <p className="text-text-muted mt-1 text-xs">{t('agents.policy.entryMeta', { team: agent.team, name: agent.name })}</p>
+      <p className="text-text-muted mt-1 text-xs">{t('agents.policy.entryMeta', { team: agent.team, name: presentation.label(agent.name) })}</p>
       {query.isLoading ? <p className="text-text-muted mt-3 text-xs">{t('agents.policy.statusLoading')}</p> : query.isError || !query.data ? <p role="alert" className="text-tier-red mt-3 text-xs">{renderAgentError(classifyAgentError(query.error, 'agents.policy.statusError'), t)}</p> : query.data.family === 'empty' ? <p className="text-text-muted mt-3 text-xs">{t('agents.policy.noActive')}</p> : <p className="text-text-muted mt-3 text-xs">{t(query.data.family === 'v2' ? 'agents.policy.activeV2' : 'agents.policy.activeLegacy', { version: query.data.active.release.version, epoch: authorityPolicyActiveEpoch(query.data.active), digest: query.data.active.release.digest.slice(0, 12) })}</p>}
       <Button asChild size="sm" className="mt-3"><Link to={routes.policy(agent.name)}>{t('agents.policy.open')}</Link></Button>
     </PolicyShell>

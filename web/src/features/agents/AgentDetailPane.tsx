@@ -1,3 +1,6 @@
+import { AddressableNameEditor } from '@/shared/identities/AddressableNameEditor';
+import { useIdentityPresentation } from '@/hooks/identities';
+import { IdentityName } from '@/shared/identities/IdentityName';
 import { SystemPromptEditor } from './SystemPromptEditor';
 /**
  * AgentDetailPane — inline right detail/edit pane (Direction-A Pasture).
@@ -11,7 +14,7 @@ import { SystemPromptEditor } from './SystemPromptEditor';
  * repo/tool chips, system prompt collapsible, accountability metrics,
  * recent tasks/memory/jobs. Sticky save bar at bottom.
  */
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { MessageCircle, Plus, X, AlertCircle } from 'lucide-react';
 import { TaskCard } from '@/design-system/patterns/TaskCard';
@@ -98,6 +101,7 @@ export function AgentDetailPane({ agentName, onClose, onStartThread }: AgentDeta
   const { slug } = useParams<{ slug: string }>();
   const { t, locale, render } = useTranslation();
   const agentsQuery = useAgentsList();
+  const identityPresentation = useIdentityPresentation();
   const teamsQuery = useTeamsList();
   const { density } = useDensity();
   const taskRoutes = useTasksRoutes();
@@ -121,6 +125,7 @@ export function AgentDetailPane({ agentName, onClose, onStartThread }: AgentDeta
   const [dirty, setDirty] = useState<DirtyState>({});
   const [saveError, setSaveError] = useState<SaveErrorItem[] | null>(null);
   const [saving, setSaving] = useState(false);
+  const saveInFlight = useRef(false);
   const [repoAddName, setRepoAddName] = useState('');
   const [repoAddUrl, setRepoAddUrl] = useState('');
   const [showRepoAdd, setShowRepoAdd] = useState(false);
@@ -137,11 +142,26 @@ export function AgentDetailPane({ agentName, onClose, onStartThread }: AgentDeta
 
   const isDirty = dirty.executor !== undefined || dirty.model !== undefined || dirty.reasoningEffort !== undefined || dirty.repos !== undefined;
 
-  const displayExecutor = dirty.executor ?? agent?.executor ?? '—';
+  // A display placeholder is never an executor identity for a draft or request.
+  const selectedExecutor = dirty.executor ?? agent?.executor;
+  const displayExecutor = selectedExecutor ?? '—';
   const displayModel = dirty.model !== undefined ? dirty.model : (agent?.model ?? '');
   const displayEffort = dirty.reasoningEffort ?? agent?.reasoning_effort ?? '';
-  const effortValues = [...executorOptions.selectable, ...executorOptions.unavailable]
-    .find((option) => option.name === displayExecutor)?.reasoningEffortValues ?? [];
+  const effortOption = [...executorOptions.selectable, ...executorOptions.unavailable]
+    .find((option) => option.name === displayExecutor);
+  const agentReady = !agentsQuery.isLoading && !agentsQuery.isError && !!agent?.executor;
+  const selectionReady = agentReady && executorOptions.state === 'ready' && effortOption?.present === true;
+  const effortSupported = selectionReady && effortOption?.present === true && (effortOption.kind === 'builtin' ||
+    (effortOption.kind === 'custom' && (effortOption.reasoningEffortValues?.length ?? 0) > 0));
+  const selectionHelpKey = agentsQuery.isLoading ? 'agents.detail.selectionLoading'
+    : agentsQuery.isError ? 'agents.detail.selectionError'
+    : !agent?.executor ? 'agents.detail.selectionMissing'
+    : executorOptions.state === 'loading' ? 'agents.detail.selectionLoading'
+    : executorOptions.state === 'error' ? 'agents.detail.executorError'
+    : executorOptions.state === 'empty' ? 'agents.detail.selectionEmpty'
+    : !selectionReady ? 'agents.detail.selectionUnavailable' : null;
+  const effortHelpKey = selectionHelpKey ?? (!effortSupported ? 'agents.detail.effortUnsupported'
+    : effortOption?.kind === 'custom' ? 'agents.detail.effortCustomHelp' : 'agents.detail.effortHelp');
   const displayRepos = dirty.repos ?? repos;
 
   // Is the agent's current executor (or the dirty value) available as a
@@ -167,7 +187,7 @@ export function AgentDetailPane({ agentName, onClose, onStartThread }: AgentDeta
 
   const onExecutorChange = useCallback((val: string) => {
     // Prevent selecting an unavailable option.
-    if (!liveSelectableNames.has(val)) return;
+    if (saveInFlight.current || !agentReady || executorOptions.state !== 'ready' || !liveSelectableNames.has(val)) return;
     if (val === currentExecutorName) {
       setDirty((prev) => {
         const next = { ...prev };
@@ -181,22 +201,30 @@ export function AgentDetailPane({ agentName, onClose, onStartThread }: AgentDeta
       setDirty((prev) => ({ ...prev, executor: val, model: '', reasoningEffort: '', selectionExecutor: val }));
     }
     setSaveError(null);
-  }, [currentExecutorName, liveSelectableNames]);
+  }, [agentReady, executorOptions.state, currentExecutorName, liveSelectableNames]);
 
   const onModelChange = useCallback((val: string) => {
+    if (saveInFlight.current || !selectionReady || !selectedExecutor) return;
     const trimmed = val.trim();
     const currentAgentModel = dirty.executor ? '' : (agent?.model ?? '');
     if (trimmed === (currentAgentModel || '')) {
       setDirty((prev) => {
         const next = { ...prev };
         delete next.model;
+        if (next.reasoningEffort === undefined && next.executor === undefined) delete next.selectionExecutor;
         return next;
       });
     } else {
-      setDirty((prev) => ({ ...prev, model: trimmed, selectionExecutor: prev.selectionExecutor ?? displayExecutor }));
+      setDirty((prev) => ({ ...prev, model: trimmed, selectionExecutor: prev.selectionExecutor ?? selectedExecutor }));
     }
     setSaveError(null);
-  }, [agent?.model, dirty.executor, displayExecutor]);
+  }, [agent?.model, dirty.executor, selectedExecutor, selectionReady]);
+
+  const onEffortChange = useCallback((val: string) => {
+    if (saveInFlight.current || !effortSupported || !selectedExecutor) return;
+    setDirty((prev) => ({ ...prev, reasoningEffort: val, selectionExecutor: prev.selectionExecutor ?? selectedExecutor }));
+    setSaveError(null);
+  }, [effortSupported, selectedExecutor]);
 
   const onRepoRemove = useCallback((key: string) => {
     setDirty((prev) => {
@@ -224,106 +252,113 @@ export function AgentDetailPane({ agentName, onClose, onStartThread }: AgentDeta
     setSaveError(null);
   }, [repoAddName, repoAddUrl, repos]);
 
-  const onSave = useCallback(async () => {
-    if (!slug) return;
-    setSaving(true);
-    setSaveError(null);
-    const errors: SaveErrorItem[] = [];
+  const hasSelectionDraft = dirty.executor !== undefined || dirty.model !== undefined || dirty.reasoningEffort !== undefined;
+  const canSave = agentReady && (!hasSelectionDraft || selectionReady);
 
-    // Save executor if dirty — guard: don't send an executor that is no
-    // longer selectable (e.g., refetched away or unavailable).
-    if (dirty.executor && dirty.executor !== agent?.executor) {
-      if (!liveSelectableNames.has(dirty.executor)) {
-        errors.push({ kind: 'executorUnavailable', name: dirty.executor });
-        setSaving(false);
-        setSaveError(errors);
-        return;
-      } else {
-        try {
-          await setExecutor.mutateAsync({
-            agentName,
-            body: { executor: dirty.executor },
-          });
-        } catch (err: unknown) {
-          errors.push({ kind: 'executor', view: classifyAgentError(err, 'agents.error.saveFailed') });
-          // Preserve dirty state on error — user can retry.
-          setSaving(false);
+  const onSave = useCallback(async () => {
+    if (!slug || !isDirty || !canSave || !selectedExecutor || saveInFlight.current) return;
+    saveInFlight.current = true;
+    setSaving(true);
+    try {
+      setSaveError(null);
+      const errors: SaveErrorItem[] = [];
+
+      // Save executor if dirty — guard: don't send an executor that is no
+      // longer selectable (e.g., refetched away or unavailable).
+      if (dirty.executor && dirty.executor !== agent?.executor) {
+        if (!liveSelectableNames.has(dirty.executor)) {
+          errors.push({ kind: 'executorUnavailable', name: dirty.executor });
           setSaveError(errors);
           return;
-        }
-      }
-    }
-
-    // Save model and effort together against the CLI displayed by this draft.
-    if (dirty.model !== undefined || dirty.reasoningEffort !== undefined) {
-      try {
-        await setModel.mutateAsync({
-          agentName,
-          body: {
-            ...(dirty.model !== undefined ? { model: dirty.model || null } : {}),
-            ...(dirty.reasoningEffort !== undefined ? { reasoning_effort: dirty.reasoningEffort || null } : {}),
-            expected_executor: dirty.selectionExecutor ?? dirty.executor ?? agent?.executor ?? '',
-          },
-        });
-      } catch (err: unknown) {
-        errors.push({ kind: 'model', view: classifyAgentError(err, 'agents.error.saveFailed') });
-      }
-    }
-
-    // Save repo changes if dirty
-    if (dirty.repos) {
-      const original = agent?.repos ?? {};
-      const current = dirty.repos;
-      // Removals
-      for (const key of dirty.removedRepos ?? []) {
-        if (!(key in current) && key in original) {
+        } else {
           try {
-            await manageRepo.mutateAsync({
+            await setExecutor.mutateAsync({
               agentName,
-              body: { action: 'remove', repo_name: key },
+              body: { executor: dirty.executor },
             });
           } catch (err: unknown) {
-            errors.push({ kind: 'repo', name: key, view: classifyAgentError(err, 'agents.error.removeFailed') });
+            errors.push({ kind: 'executor', view: classifyAgentError(err, 'agents.error.saveFailed') });
+            // Preserve dirty state on error — user can retry.
+            setSaveError(errors);
+            return;
           }
         }
       }
-      // Adds
-      for (const [key, url] of Object.entries(current)) {
-        if (!(key in original)) {
-          try {
-            await manageRepo.mutateAsync({
-              agentName,
-              body: { action: 'add', repo_name: key, url },
-            });
-          } catch (err: unknown) {
-            errors.push({ kind: 'repo', name: key, view: classifyAgentError(err, 'agents.error.addFailed') });
-          }
-        }
-      }
-      // Updates (repo existed before but URL changed)
-      for (const [key, url] of Object.entries(current)) {
-        if (key in original && original[key] !== url) {
-          try {
-            await manageRepo.mutateAsync({
-              agentName,
-              body: { action: 'update', repo_name: key, url },
-            });
-          } catch (err: unknown) {
-            errors.push({ kind: 'repo', name: key, view: classifyAgentError(err, 'agents.error.updateFailed') });
-          }
-        }
-      }
-    }
 
-    if (errors.length > 0) {
-      setSaveError(errors);
-    } else {
-      setDirty({});
+      // Save model and effort together against the CLI displayed by this draft.
+      if (dirty.model !== undefined || dirty.reasoningEffort !== undefined) {
+        try {
+          await setModel.mutateAsync({
+            agentName,
+            body: {
+              ...(dirty.model !== undefined ? { model: dirty.model || null } : {}),
+              ...(dirty.reasoningEffort !== undefined ? { reasoning_effort: dirty.reasoningEffort || null } : {}),
+              expected_executor: dirty.selectionExecutor ?? selectedExecutor,
+            },
+          });
+        } catch (err: unknown) {
+          errors.push({ kind: 'model', view: classifyAgentError(err, 'agents.error.saveFailed') });
+        }
+      }
+
+      // Save repo changes if dirty
+      if (dirty.repos) {
+        const original = agent?.repos ?? {};
+        const current = dirty.repos;
+        // Removals
+        for (const key of dirty.removedRepos ?? []) {
+          if (!(key in current) && key in original) {
+            try {
+              await manageRepo.mutateAsync({
+                agentName,
+                body: { action: 'remove', repo_name: key },
+              });
+            } catch (err: unknown) {
+              errors.push({ kind: 'repo', name: key, view: classifyAgentError(err, 'agents.error.removeFailed') });
+            }
+          }
+        }
+        // Adds
+        for (const [key, url] of Object.entries(current)) {
+          if (!(key in original)) {
+            try {
+              await manageRepo.mutateAsync({
+                agentName,
+                body: { action: 'add', repo_name: key, url },
+              });
+            } catch (err: unknown) {
+              errors.push({ kind: 'repo', name: key, view: classifyAgentError(err, 'agents.error.addFailed') });
+            }
+          }
+        }
+        // Updates (repo existed before but URL changed)
+        for (const [key, url] of Object.entries(current)) {
+          if (key in original && original[key] !== url) {
+            try {
+              await manageRepo.mutateAsync({
+                agentName,
+                body: { action: 'update', repo_name: key, url },
+              });
+            } catch (err: unknown) {
+              errors.push({ kind: 'repo', name: key, view: classifyAgentError(err, 'agents.error.updateFailed') });
+            }
+          }
+        }
+      }
+
+      if (errors.length > 0) {
+        setSaveError(errors);
+      } else {
+        setDirty({});
+      }
+    } finally {
+      saveInFlight.current = false;
+      setSaving(false);
     }
-    setSaving(false);
-  }, [slug, dirty, agentName, agent, setExecutor, setModel, manageRepo, liveSelectableNames]);
+  }, [slug, isDirty, canSave, dirty, agentName, agent, selectedExecutor, setExecutor, setModel, manageRepo, liveSelectableNames]);
 
   const onReset = useCallback(() => {
+    if (saveInFlight.current) return;
     setDirty({});
     setSaveError(null);
   }, []);
@@ -352,11 +387,11 @@ export function AgentDetailPane({ agentName, onClose, onStartThread }: AgentDeta
       <header className="border-border-default flex items-start gap-3.5 border-b px-5 py-4">
         {/* AGENTS-04: detail-hero avatar anchor (Direction-A `a-agents`),
             reusing the roster's role-colored initial chip. */}
-        <AgentAvatar name={agentName} role={agent?.role ?? null} size="lg" />
+        <AgentAvatar displayName={identityPresentation.name(agentName)} name={agentName} role={agent?.role ?? null} size="lg" />
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-3">
             <h2 className="font-display text-text-primary truncate text-xl font-medium">
-              {agentName}
+              <IdentityName canonicalId={agentName} />
             </h2>
             <span
               aria-hidden="true"
@@ -411,6 +446,7 @@ export function AgentDetailPane({ agentName, onClose, onStartThread }: AgentDeta
 
       {/* --- Editable fields — Pasture card sections --- */}
       <div className="flex-1 space-y-5 overflow-y-auto px-5 py-4">
+        <AddressableNameEditor canonicalId={agentName} />
         {isEligiblePolicyManager(
           policyAgent,
           teamsQuery.data?.teams,
@@ -431,6 +467,7 @@ export function AgentDetailPane({ agentName, onClose, onStartThread }: AgentDeta
           ) : (
             <select
               value={displayExecutor}
+              disabled={saving || !agentReady || executorOptions.state !== 'ready'}
               onChange={(e) => onExecutorChange(e.target.value)}
               className="border-border-subtle bg-surface w-full max-w-xs rounded border p-2 text-sm"
               aria-label={t('agents.executor.label')}
@@ -501,13 +538,14 @@ export function AgentDetailPane({ agentName, onClose, onStartThread }: AgentDeta
           <input
             type="text"
             value={displayModel}
+            disabled={saving || !selectionReady}
             onChange={(e) => onModelChange(e.target.value)}
             placeholder={displayExecutor !== '—' ? t('agents.detail.modelDefault', { executor: displayExecutor }) : t('agents.detail.modelUnset')}
             className="border-border-subtle bg-surface w-full max-w-xs rounded-md border px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-accent-soft"
             aria-label={t('agents.detail.model')}
           />
           <p className="text-text-muted mt-2 text-xs">
-            {t('agents.detail.modelHelp')}
+            {t(selectionHelpKey ?? 'agents.detail.modelHelp')}
           </p>
         </section>
 
@@ -515,19 +553,15 @@ export function AgentDetailPane({ agentName, onClose, onStartThread }: AgentDeta
           <label htmlFor="agent-reasoning-effort" className="text-overline text-text-muted mb-3 block tracking-wider uppercase">
             {t('agents.detail.reasoningEffort')}
           </label>
-          <select id="agent-reasoning-effort" value={displayEffort}
-            disabled={saving || effortValues.length === 0}
-            onChange={(event) => {
-              setDirty((prev) => ({ ...prev, reasoningEffort: event.target.value, selectionExecutor: prev.selectionExecutor ?? displayExecutor }));
-              setSaveError(null);
-            }}
-            className="border-border-subtle bg-surface w-full max-w-xs rounded-md border px-3 py-1.5 text-sm">
-            <option value="">{t('agents.detail.effortDefault')}</option>
-            {displayEffort && !effortValues.includes(displayEffort) && <option value={displayEffort}>{displayEffort}</option>}
-            {effortValues.map((value) => <option key={value} value={value}>{value}</option>)}
-          </select>
-          <p className="text-text-muted mt-2 text-xs">
-            {t(effortValues.length ? 'agents.detail.effortHelp' : 'agents.detail.effortUnsupported')}
+          <input id="agent-reasoning-effort" type="text" value={displayEffort}
+            placeholder={t('agents.detail.effortDefault')}
+            aria-describedby="agent-reasoning-effort-help"
+            disabled={saving || !effortSupported}
+            onChange={(event) => onEffortChange(event.target.value)}
+            className="border-border-subtle bg-surface w-full max-w-xs rounded-md border px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-accent-soft" />
+          <p id="agent-reasoning-effort-help" className="text-text-muted mt-2 text-xs">
+            {t(effortHelpKey)}
+            {effortSupported && effortOption?.kind === 'custom' && ` ${effortOption.reasoningEffortValues?.join(', ')}`}
             {dirty.selectionExecutor && dirty.selectionExecutor !== displayExecutor && <span role="alert">{t('agents.error.effortExecutorChanged')}</span>}
           </p>
         </section>
@@ -663,6 +697,7 @@ export function AgentDetailPane({ agentName, onClose, onStartThread }: AgentDeta
                 <li key={task.task_id}>
                   <TaskCard
                     task={task}
+                    agentLabel={task.assigned_agent ? <IdentityName canonicalId={task.assigned_agent} /> : undefined}
                     to={taskRoutes.detail(task.task_id)}
                     density={density}
                     taskRoutes={taskRoutes}
@@ -794,10 +829,10 @@ export function AgentDetailPane({ agentName, onClose, onStartThread }: AgentDeta
             )}
           </div>
           <div className="flex gap-2">
-            <Button variant="ghost" size="sm" onClick={onReset}>
+            <Button variant="ghost" size="sm" onClick={onReset} disabled={saving}>
               {t('agents.detail.reset')}
             </Button>
-            <Button size="sm" onClick={onSave} disabled={saving}>
+            <Button size="sm" onClick={onSave} disabled={saving || !canSave}>
               {saving ? t('agents.detail.saving') : t('agents.detail.save')}
             </Button>
           </div>

@@ -1,5 +1,72 @@
 # Runtime And Configuration
 
+## Current naming metadata prompt wiring
+
+TASK10385 adds a read-only OrgState→Orchestrator naming reader, using the existing
+validated org metadata adapter. Every relevant prompt construction captures
+current names once for its labels; filesystem namespace capture precedes the
+short DB coherent-read section. It does not hold DB locks across file scans or
+load files/DB per rendered name. Task role and outer wrapper are separate reads.
+
+Full/delta thread prompts, eviction and non-resumable full fallback, resumed
+no-callback nudge, and dream/wake/schedule production builders refresh naming
+context. No provider resume ID, launch/admission/executor/scheduler algorithm,
+callback identity/order, schema or config identity changes. Unavailable metadata
+renders ID-only context, with no reconciliation/write/launch gate or snapshots.
+CLI read filters retain historical IDs and naming-unavailable ID access; server
+owners keep original checks. Installed skills are unchanged; only release-owned
+bundled wording is updated for the current-name versus automation-ID boundary.
+
+The combined candidate includes UI/type consumers. Its maker handoff records
+source-pinned frontend, disposable E2E, browser and schema receipts. Published
+source still requires final independent review/QA/checks and guarded merge.
+No live runtime/provider/config/restart or deployment is authorized by the
+frontend verification leg. See the [current naming contract](../superpowers/specs/2026-10-09-identity-names-core.md).
+
+## Naming v1 core, API and routing source
+
+Schema2 multi-org attachment installs naming only after baseline admission; no
+flat-schema1 conversion or history-only ID mining is added. Naming failure is
+volatile readiness with an actionable category. Original strict team/attachment
+and complete workflow/reference guards remain. Every naming-installed F/E/G needs
+a compatible naming reader; existing explicit workflow commands preserve exact
+naming row identities/revisions and reject malformed naming without repair.
+One daemon controls each organization; no naming cross-process lease is added.
+
+Bounded API reads need no new readiness gate for canonical IDs. Failed naming
+metadata returns explicit null addressable_name/name_revision and unavailable
+status while original ID roster/lifecycle reads remain. Operator rename refreshes
+and validates through the accepted A service and refuses naming-only failure
+safely. All four routes use existing OrgDep and org-local owners; no foreign-org
+label lookup or alias-based config/session/workspace binding is introduced.
+No live migration, enablement, config change or restart is authorized by source.
+
+
+Current routing source resolves names/IDs case-insensitively with the unchanged
+@token grammar. Former inputs refuse409 with current_name before thread creation,
+stale closure, callback settlement or application attachment finalization. A
+lookup grants no reservation; action boundaries revalidate. Actors/proofs remain
+ID-only. Current-founder-only messages suppress new broadcast/cohort wakes, retain
+full-recipient obligations and enqueue prior catch-up separately. Founder remains
+human inbox only. Restart uses durable IDs/ranges/tokens/exchange/deferral rows;
+no historical body reclassification or schema addition occurs. Filesystem capture
+precedes the RLock and multipart reads precede final no-await admission/write.
+Unavailable naming keeps actual ID behavior; non-ID addresses refuse503.
+
+THR293seq34/35 requires twelve readable E2E scenarios. Core/API/routing,
+CLI/prompt and UI/type source are present in the combined candidate. The existing
+routing bodies and CLI assertions remain reusable E2E material; shipping-page
+MSW assertions cover frontend portions of scenarios2/3/4/5/8/10, without daemon/DB
+proof. Exact execution results and remaining obligations live in the maker
+handoff. Python units/collection/duration are RETIRED under THR-291 seq40 and
+general integration is SKIPPED THR243seq42, never PASS. Focused naming E2E requires
+a supported disposable GitHub runner or Mac Linux guest with finite commands,
+resources, output, deadline and actual cleanup. Independent full review,
+behavioral QA, applicable checks, normal publication and guarded merge remain.
+
+
+[Current contract](../superpowers/specs/2026-10-09-identity-names-core.md).
+
 
 **Mounted generic owner review — THR139465/480/493/506, ROOT TASK10693.**
 The normal `/orgs/:slug/reviews` list and `/orgs/:slug/reviews/:activationId`
@@ -808,9 +875,15 @@ See also: `docs/agent-guides/orchestrator-contracts.md` (resolver contract),
 
 ### Optional reasoning effort
 
+Built-ins accept case-preserving fullmatch `[A-Za-z][A-Za-z0-9_-]{0,31}` through shared `model_effort_args` validation; historical catalog values are metadata, not a membership gate. UI uses plain text: blank on explicit Save maps to null/default, without trimming or truncation. Explicit wire/direct empty strings refuse; CLI clear retains its existing meaning. Custom adapters still require approved declared-value membership (at most16 lowercase identifiers); legacy/model-only effort controls remain disabled with saved values visible. Token acceptance proves syntax/transport only, not native model/account support.
+
+With explicit effort, OpenCode requires nonempty provider/model slash components (additional model path segments allowed), no whitespace/control/NUL, at most one # and a nonempty embedded variant byte-equal to effort; it composes one literal `-m provider/model#effort`. Unset preserves the original model transport. Pi recognizes only its existing finite thinking suffix set; arbitrary safe colon suffixes do not become native thinking syntax. Codex keeps one literal quoted config argv element.
+
+Bounded evidence does not verify dynamic manage_agent update/enrollment at runtime (source only), native models/accounts, full task/thread/dream/wake/schedule lifecycles, host/callback or custom contained-wrapper prelaunch. General integration including callback is SKIPPED THR243seq42; former Python units are RETIRED. No ad hoc Product E2E or protected mutation/repetition proof is authorized.
+
 `reasoning_effort` is optional frontmatter beside `model`, never a second YAML store. Omitted updates preserve it; explicit `null` clears it. A real CLI change clears omitted model/effort; an explicit new pair is validated together. Unrelated whole-definition writes preserve the field. The residual YAML importer preserves it for the same CLI, clears it on a CLI change, and refuses incompatible model/effort before replacing canonical content.
 
-Allowed values come from the static built-in catalog or approved custom input-v2 declaration, surfaced through existing executor prerequisite metadata. Unset preserves existing model transport and emits no effort override. Static support says nothing about the chosen model/account accepting a level. OpenCode requires `provider/model`; embedded OpenCode `#variant` and recognized Pi `:thinking` must agree with explicit effort. See the [current contract](../superpowers/specs/2026-10-11-agent-reasoning-effort.md) for mappings/defaults and compatibility limits.
+Built-in tokens follow the shared grammar above; approved custom input-v2 declarations retain finite membership, surfaced through existing executor prerequisite metadata. Unset preserves existing model transport and emits no effort override. Static support says nothing about the chosen model/account accepting a level. OpenCode requires `provider/model`; embedded OpenCode `#variant` and recognized Pi `:thinking` must agree with explicit effort. See the [current contract](../superpowers/specs/2026-10-11-agent-reasoning-effort.md) for mappings/defaults and compatibility limits.
 
 ## Session Timeout Resolution
 

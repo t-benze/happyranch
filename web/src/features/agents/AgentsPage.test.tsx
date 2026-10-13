@@ -1531,7 +1531,7 @@ describe('Team escalation policy dedicated route', () => {
     mountPolicyRoute([`/orgs/${SLUG}/agents/engineering_manager/team-escalation-policy`]);
     expect(await screen.findByRole('heading', { level: 1, name: en['agents.policy.title'] })).toBeInTheDocument();
     expect(screen.getAllByRole('main')).toHaveLength(1);
-    expect(screen.getByText('engineering · engineering_manager')).toBeInTheDocument();
+    expect(screen.getByText((_text, node) => node?.tagName === 'P' && node.textContent === 'engineering · engineering_manager')).toBeInTheDocument();
     expect(screen.getByRole('link', { name: '← Back to engineering_manager' })).toHaveAttribute('href', `/orgs/${SLUG}/agents/engineering_manager`);
     expect(await screen.findByLabelText(en['agents.policy.whatTo'])).toBeInTheDocument();
     expect(screen.getByLabelText(en['agents.policy.whatNot'])).toBeInTheDocument();
@@ -1567,7 +1567,7 @@ describe('Team escalation policy dedicated route', () => {
 
     mountPolicyRoute([`/orgs/${SLUG}/agents/content_manager/team-escalation-policy`]);
 
-    expect(await screen.findByText('content · content_manager')).toBeInTheDocument();
+    expect(await screen.findByText((_text, node) => node?.tagName === 'P' && node.textContent === 'content · content_manager')).toBeInTheDocument();
     expect(screen.getByRole('link', { name: '← Back to content_manager' })).toHaveAttribute(
       'href', `/orgs/${SLUG}/agents/content_manager`,
     );
@@ -1797,7 +1797,7 @@ describe('AgentsPage — pending tab', () => {
     mountAt(`/orgs/${SLUG}/agents?view=pending`);
 
     await waitFor(() =>
-      expect(screen.getByText('new_writer')).toBeInTheDocument(),
+      expect(screen.getByText('new_writer', { selector: 'span' })).toBeInTheDocument(),
     );
     expect(screen.getByText(/team: content/)).toBeInTheDocument();
 
@@ -1837,7 +1837,7 @@ describe('AgentsPage — pending tab', () => {
     mountAt(`/orgs/${SLUG}/agents?view=pending`);
 
     await waitFor(() =>
-      expect(screen.getByText('new_writer')).toBeInTheDocument(),
+      expect(screen.getByText('new_writer', { selector: 'span' })).toBeInTheDocument(),
     );
     await user.click(screen.getByRole('button', { name: /^Reject$/ }));
 

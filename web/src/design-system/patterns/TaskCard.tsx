@@ -55,6 +55,7 @@ export interface TaskCardRoutes {
 
 export interface TaskCardProps {
   task: TaskRecord;
+  agentLabel?: ReactNode;
   to: string;
   active?: boolean;
   density?: Density;
@@ -75,7 +76,7 @@ export interface TaskCardProps {
 }
 
 /** Direction-A Pasture task card — ds.css .card (bg-surface, rounded-lg 18px, soft shadow). */
-export function TaskCard({ task, to, active, density = 'comfortable', taskRoutes, labels }: TaskCardProps): JSX.Element {
+export function TaskCard({ task, agentLabel, to, active, density = 'comfortable', taskRoutes, labels }: TaskCardProps): JSX.Element {
   const pad = density === 'compact' ? 'px-3 py-2' : 'px-4 py-3';
   const rollup = severityRollupStatus(task);
   const revisits = directRevisits(task);
@@ -98,7 +99,7 @@ export function TaskCard({ task, to, active, density = 'comfortable', taskRoutes
           <span className="flex shrink-0"><StatusBadge status={rollup} blockKind={task.block_kind} waitingLabels={labels?.waiting} /></span>
           <span className="text-text-muted font-mono text-xs tabular-nums">{task.team}</span>
           {task.assigned_agent && (
-            <span className="text-text-muted">· {task.assigned_agent}</span>
+            <span className="text-text-muted">· {agentLabel ?? task.assigned_agent}</span>
           )}
           <span className="text-text-muted ml-auto shrink-0 text-xs tabular-nums">{relativeAge(task.updated_at, labels)}</span>
         </div>

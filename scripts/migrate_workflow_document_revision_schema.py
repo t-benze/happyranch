@@ -45,7 +45,7 @@ def main(argv: list[str] | None = None) -> int:
             raise ValueError('org_database_identity_changed')
         conn.execute('BEGIN')
         layout = validate_workflow_schema(conn, expected_org_slug=args.org_slug)
-        _validate_release_database(conn, layout)
+        _validate_release_database(conn, layout, expected_org_slug=args.org_slug)
         conn.rollback()
         if layout not in ('H', 'I'):
             raise ValueError('workflow_document_revision_requires_h; use the separately approved G then H migrations first')

@@ -108,7 +108,7 @@ export type ComposeResult = Awaited<ReturnType<typeof threadsApi.composeThread>>
 export type SendFollowUpArgs = Parameters<typeof threadsApi.sendThreadFollowUp>[2];
 export type SendFollowUpResult = Awaited<ReturnType<typeof threadsApi.sendThreadFollowUp>>;
 
-export type InviteArgs = Parameters<typeof threadsApi.inviteToThread>[2];
+export type InviteArgs = Parameters<typeof threadsApi.inviteToThread>[2] & { destination?: { slug: string; threadId: string } };
 export type InviteResult = Awaited<ReturnType<typeof threadsApi.inviteToThread>>;
 
 export type RemoveParticipantArgs = Parameters<typeof threadsApi.removeParticipantFromThread>[2];
@@ -615,6 +615,16 @@ export interface ThreadRoutes {
   inboxForOrg: (slug: string) => string;
 }
 
+export interface IdentitiesApi {
+  useIdentities: () => QueryLike<import('@/lib/api/types').IdentityList>;
+  useReadIdentities: () => MutationLike<{ slug: string }, import('@/lib/api/types').IdentityList>;
+  useRenameIdentity: () => MutationLike<{
+    slug: string; kind: 'agent' | 'founder'; canonicalId: string;
+    body: import('@/lib/api/types').RenameBody;
+  }, import('@/lib/api/types').IdentityView>;
+  usePreflightAddresses: () => MutationLike<import('@/lib/api/identities').AddressPreflight, { recipients: string[] }>;
+}
+
 export interface WorkflowQuery<T> extends QueryLike<T> {
   isFetching: boolean;
   refetch: () => Promise<unknown>;
@@ -630,6 +640,7 @@ export interface DataContextValue {
   workflows: WorkflowsApi;
   orgs: OrgsApi;
   agents: AgentsApi;
+  identities: IdentitiesApi;
   authorityPolicy: AuthorityPolicyApi;
   audit: AuditApi;
   threads: ThreadsApi;

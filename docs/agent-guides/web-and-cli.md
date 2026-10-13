@@ -1,5 +1,98 @@
 # Web And CLI
 
+## CLI human names and fresh prompt context
+
+The naming CLI provides `identities list/resolve/rename` using the
+existing org-local API. Human output shows Name · ID; `--json` preserves raw
+fields/IDs. Rename takes `--name` plus positive `--expected-name-revision`, or
+`--from-file` containing exactly addressable_name/expected_name_revision. Local
+syntax/payload checks precede HTTP; extra binding keys refuse without stripping.
+Ambiguous transport/server/malformed-success failures cause one current-ID
+readback and an uncertain nonzero exit, never a blind retry. Names confer no
+human authentication beyond the existing shared-bearer operator surface.
+
+Human `run --owner`, operator init/approve/reject/model/executor targets and
+compose/invite/forward recipients resolve names to canonical IDs. Founder
+recipients retain literal `@founder`, never agent participation/ownership.
+Task/audit/token/Todo/dream/work-hours human filters resolve names while retaining
+historical ID queries and naming-unavailable baseline ID access. Existing action
+owners retain eligibility/authorization. Human task/thread/enrollment/Todo/dream/
+wake output enriches IDs with explicitly current labels; raw JSON, callback
+actors, session proofs, automated targets and historical bodies remain canonical.
+
+Before CLI-managed send/reply or multipart/shared compose uploads, preflight
+recognized former body tokens and compose recipients. Forward validates final
+quoted+note text. Quoted and email-interior matches follow the unchanged parser;
+unknown body text stays intact. Preflight is a read, not a reservation across
+HTTP uploads/sends. A rename between requests can leave an independent upload
+before the server refuses the message; no rollback/protocol/journal is added.
+
+Task/full/resumed/fallback/dream/wake/schedule prompt source refreshes current
+self/founder/ID-selected roster labels, with honest ID-only metadata fallback.
+Provider-aware UI editors, name/ID pickers, locales and TypeScript adapters are
+published on the open naming PR. The maker handoff attributes actual frontend,
+scenario5/8/9 daemon/DB, standalone/served OpenAPI and browser results to their
+source. Final independent full review/QA, applicable checks/hooks and guarded
+merge remain required. Source publication authorizes no deployment.
+See the [current naming contract](../superpowers/specs/2026-10-09-identity-names-core.md).
+
+## Naming v1 core, API and routing source
+
+The bounded API source mounts four existing-org-prefix endpoints: GET
+`/identities`, POST `/identities/resolve`, PUT `/agents/{agent_id}/addressable-name`
+and PUT `/founder/addressable-name`. Rename body has only strict `addressable_name`
+and positive strict integer `expected_name_revision`; extras/missing/null/coercion
+refuse. Agent path IDs remain canonical. Read/list/resolve do not reconcile or
+write names. Identity views separate canonical_id/kind/lifecycle, addressable_name,
+name_revision, canonical_definition_revision and naming_status. Agent roster and
+enrollment summaries add addressable_name/name_revision/naming_status while name,
+revision and existing ID transport remain canonical; unavailable labels are null.
+
+Resolver body is bounded addresses (1–128 raw names/IDs), context
+thread_recipient/task_owner/lookup and optional thread_id only for thread context.
+Responses retain input order and typed per-address statuses; unknown lookup is
+unknown_identity, former_name exposes current name with eligible=false and never
+forwards. ASCII fold and actual owner-bound canonical-ID defaults apply. Pending/
+terminated are lookup diagnostics, not eligible agent targets; founder is human,
+never task owner/agent participant. Reads grant no action authority/reservation;
+later action owners must revalidate. An optional thread must exist locally and
+be open, and agent recipients must be participants. Message parser/unknown @text
+is unchanged.
+
+Operator editing reuses shared bearer/human dependency, rejects raw body/query
+binding-key presence before decoding, and takes no authority from label headers.
+CAS/no-op/case-only/former reclaim and audit remain the A service. Lost-response
+clients read GET /identities before another CAS. No enrollment-label expansion,
+namespace generation or request receipt is added. CLI/prompt consumers are
+described above; the provider-aware UI/TS adapters, editors, current labels and
+pickers are described in the functional naming UI and API contract below.
+
+
+Current routing source resolves names/IDs case-insensitively with the unchanged
+@token grammar. Former inputs refuse409 with current_name before thread creation,
+stale closure, callback settlement or application attachment finalization. A
+lookup grants no reservation; action boundaries revalidate. Actors/proofs remain
+ID-only. Current-founder-only messages suppress new broadcast/cohort wakes, retain
+full-recipient obligations and enqueue prior catch-up separately. Founder remains
+human inbox only. Restart uses durable IDs/ranges/tokens/exchange/deferral rows;
+no historical body reclassification or schema addition occurs. Filesystem capture
+precedes the RLock and multipart reads precede final no-await admission/write.
+Unavailable naming keeps actual ID behavior; non-ID addresses refuse503.
+
+THR293seq34/35 requires twelve readable E2E scenarios. Core/API/routing,
+CLI/prompt and UI/type source are present in the combined candidate. The existing
+routing bodies and CLI assertions remain reusable E2E material; shipping-page
+MSW assertions cover frontend portions of scenarios2/3/4/5/8/10, without daemon/DB
+proof. Exact execution results and remaining obligations live in the maker
+handoff. Python units/collection/duration are RETIRED under THR-291 seq40 and
+general integration is SKIPPED THR243seq42, never PASS. Focused naming E2E requires
+a supported disposable GitHub runner or Mac Linux guest with finite commands,
+resources, output, deadline and actual cleanup. Independent full review,
+behavioral QA, applicable checks, normal publication and guarded merge remain.
+
+
+[Current contract](../superpowers/specs/2026-10-09-identity-names-core.md).
+
 
 **Mounted generic owner review — THR139465/480/493/506, ROOT TASK10693.**
 The normal `/orgs/:slug/reviews` list and `/orgs/:slug/reviews/:activationId`
@@ -973,7 +1066,7 @@ The Agents page (`web/src/features/agents/`) shows the active agent roster plus 
 
 - **Repositories** — `repos` map from org/agents/<name>.md frontmatter (THR-095), shown as badge chips in the detail header.
 - **System prompt** — collapsible, with Edit / Save / Cancel. The founder-only `PUT /agents/{agent_name}/system-prompt` accepts exactly `system_prompt` and the matching lowercase 64-hex `expected_revision` from `GET /agents`. Description remains read-only.
-- **Model and reasoning effort** — editable per-agent selection beside Executor, with localized default, static-support limits and unsupported-custom explanation. CLI switches clear the draft pair. Locale changes preserve draft/focus/actions without a save.
+- **Model and reasoning effort** — editable per-agent selection beside Executor, with plain text, localized default, built-in token syntax and approved custom limits. CLI switches clear the draft pair. Locale changes preserve draft/focus/actions without a save.
 
 Prompt saves preserve unrelated definition fields and normalize multiline/Unicode text through the existing parser and protected-input validators. The exact 200 receipt is `{agent, system_prompt, revision}` from one canonical byte snapshot. The editor freezes the draft base and captured org/target, disables typing/Save/Cancel through PUT and an explicit uncached GET, and shows Saved only when both body and revision match. Polling never rebases a dirty draft. Validated uncached prompt observations reconcile only the captured org/target prompt and revision in the roster cache, so leaving and returning preserves that observed base. Unrelated fields and agents stay unchanged; a newer prompt observed during readback wins and requires another explicit inspection instead of Saved. Ordinary reads already in flight are cancelled without reverting cached observations before reconciliation. Initial loading/error/empty/missing-revision/disappeared-target states refuse editing; close/selection/navigation discard locally and ignore late responses. en/zh-CN switching preserves the mounted draft, focus and selection. Errors retain the draft; inspect an explicit fresh read before deliberate reapply, with no automatic PUT retry. Cancelling the request can leave an admitted save committed: its started renderer and terminal reconciliation finish before the writer gate releases, so inspect fresh canonical state before reapplying.
 
@@ -1351,6 +1444,12 @@ merge/revise) is documented in `runtime/skills/bundled/jobs/SKILL.md` and
 
 ### Per-agent model and reasoning-effort selection
 
+Built-ins accept case-preserving fullmatch `[A-Za-z][A-Za-z0-9_-]{0,31}` through shared `model_effort_args` validation; historical catalog values are metadata, not a membership gate. UI uses plain text: blank on explicit Save maps to null/default, without trimming or truncation. Explicit wire/direct empty strings refuse; CLI clear retains its existing meaning. Custom adapters still require approved declared-value membership (at most16 lowercase identifiers); legacy/model-only effort controls remain disabled with saved values visible. Token acceptance proves syntax/transport only, not native model/account support.
+
+With explicit effort, OpenCode requires nonempty provider/model slash components (additional model path segments allowed), no whitespace/control/NUL, at most one # and a nonempty embedded variant byte-equal to effort; it composes one literal `-m provider/model#effort`. Unset preserves the original model transport. Pi recognizes only its existing finite thinking suffix set; arbitrary safe colon suffixes do not become native thinking syntax. Codex keeps one literal quoted config argv element.
+
+Bounded evidence does not verify dynamic manage_agent update/enrollment at runtime (source only), native models/accounts, full task/thread/dream/wake/schedule lifecycles, host/callback or custom contained-wrapper prelaunch. General integration including callback is SKIPPED THR243seq42; former Python units are RETIRED. No ad hoc Product E2E or protected mutation/repetition proof is authorized.
+
 Set or clear the model an agent uses via the `set-model` CLI command (mirrors `set-executor`):
 
 ```bash
@@ -1368,7 +1467,9 @@ happyranch set-model --org <org> dev_agent --reasoning-effort high
 happyranch set-model --org <org> dev_agent --clear-reasoning-effort
 ```
 
-The CLI with no model/effort options still clears model. The UI presents Default and the selected CLI's static list; a custom adapter without an input-v2 effort declaration is disabled with an English/zh-CN explanation. Unsupported levels and conflicts show localized errors and retain the draft; Save uses actual persistence and refetch. OpenCode requires a pinned `provider/model`, while existing `#variant` or Pi thinking suffixes are preserved when effort is unset and must agree when explicit. [Static mappings and custom opt-in](../superpowers/specs/2026-10-11-agent-reasoning-effort.md) describe transport only; account/model support and native OpenCode transport remain separate limits.
+The CLI with no model/effort options still clears model. The UI presents a plain text input; blank on explicit Save uses Default; a custom adapter without an input-v2 effort declaration is disabled with an English/zh-CN explanation. Unsupported levels and conflicts show localized errors and retain the draft; Save uses actual persistence and refetch. OpenCode requires a pinned `provider/model`, while existing `#variant` or Pi thinking suffixes are preserved when effort is unset and must agree when explicit. [Static mappings and custom opt-in](../superpowers/specs/2026-10-11-agent-reasoning-effort.md) describe transport only; account/model support and native OpenCode transport remain separate limits.
+
+Model/effort drafts require the actual selected agent and successfully loaded executor metadata; loading, failed reads and empty lists remain distinct from a ready custom adapter without effort support. Saved values and failed drafts stay visible. Both the Save button and keyboard shortcut enforce readiness and prevent duplicate in-flight saves. A display placeholder never binds a request. Ready legacy/model-only adapters still allow model edits; repository-only edits do not depend on effort support. Refetch does not rebind an authored pair to a new executor: its original expected_executor still reaches the server stale409 check. Explicit executor selection resets the dependent draft, then executor and pair saves remain two separate writes.
 
 The backend route is `PUT /api/v1/orgs/{slug}/agents/{agent_name}/model` with payload
 `{"model": "<id>" | null, "reasoning_effort": "<level>" | null, "expected_executor": "<profile>"}`. Each selection member is optional: omission preserves it and null clears it. Invalid types/values or unsupported/conflicting effort return422 before canonical replacement. The UI binds each draft to its selected CLI; a saved CLI mismatch returns409 `reasoning_executor_changed`. It atomically updates the selection in org/agents/<name>.md frontmatter (THR-095).
@@ -1744,8 +1845,11 @@ Refresh restarts at a null cursor, privately stages a prefix to prior depth and 
 
 ### Manual local-CI receipt contract
 
-The nightly workflow's sole manual input is `all_only` (boolean, default false);
-there is no `run_integration` toggle. It invokes the extracted receipt-producing
+The nightly workflow's default manual lane takes `all_only` (boolean, default
+false); there is no `run_integration` toggle. Explicit `naming_only=true` with
+`all_only=false`, exact published `naming_source_sha` and immutable amd64
+`naming_image` suppresses the broad manual lane and selects only finite naming.
+The default lane invokes the extracted receipt-producing
 `uv run python scripts/nightly_local_ci_all.py` runner from the checkout root,
 which records actual checkout/source/tool provenance and the
 `scripts/local_ci.sh all` command exit. The manual cap is the approved 150
@@ -1755,6 +1859,63 @@ Python unit source, G named-case controls/repetitions and the PR1011 unit entry.
 The wrapper verifies source boundary and Web static checks only under seq69,
 with units RETIRED and first daily E2E PENDING. General integration remains SKIPPED under THR243 seq42, never PASS.
 See `docs/local-ci.md` for current checks and selectors.
+
+## Functional naming UI and API contract
+
+The existing org surface has an independent human-founder name editor. Active
+agent detail, pending enrollment and terminated identity surfaces expose agent
+name editors, keeping immutable ID and definition settings separate. Editable
+names use exact ASCII 1–64 grammar (first letter/digit, then letters/digits/_/-),
+without trimming. PUT sends only `addressable_name` and positive
+`expected_name_revision`. A stale conflict performs authoritative GET, retains
+the draft and requires explicit resubmission. An ambiguous response reads back
+and reports the observed name/revision or uncertainty, with no blind retry or
+claim that failed transport rolled back a commit. Absent/unavailable metadata
+cannot rename. A displayed human label provides no authentication proof.
+
+Provider-aware naming hooks share one org-scoped identity list/query. Successful
+rename/readback refreshes identity metadata, preserving canonical IDs, settings
+and unrelated drafts. Current labels display Name · ID (ID alone when equal or
+unavailable); historical IDs, links, keys, owner/filter/recipient values and
+stored message text remain canonical/literal. Metadata follows existing focus/
+reconnect behavior and bounded 30-second polling; availability is never a global
+gate for established ID operations. Editor drafts are scoped by org/kind/ID and
+survive locale changes and identity refetches.
+
+Real thread compose/follow-up/invite/forward and task read-filter pickers search
+current names and permanent IDs. Selected values stay IDs across renames. Clear
+invalidates pending task-filter resolution; stale success/error/finalization cannot
+reapply a cleared filter, show an obsolete alert or release a newer attempt. Founder
+is a separate human option routed as established `@founder`, never an agent
+participant or task owner. There is no task-create owner GUI in the present web
+source; the existing task agent filter is the relevant selector. Prospective
+invite resolve omits `thread_id` because that optional scope means existing
+participants; the actual invite endpoint retains final action eligibility.
+Recognized former body/recipient tokens stop UI-managed associated attachment
+uploads when caught by separate preflight. Unknown body @text remains literal,
+including the existing quoted/email token parser behavior. This read is not a
+reservation: final server admission may reject after an intervening rename, and
+already-completed uploads are not claimed rolled back. New en/zh-CN text uses
+existing controls/tokens. The naming browser adapter captures 390×844/1440×900
+light/dark states in en/zh-CN. Source-pinned captures and interaction receipts are
+maker evidence; they do not establish pixel fidelity or independent acceptance.
+
+The four existing naming adapters mirror IdentityView/ResolveResponse/RenameBody.
+The repository contract snapshot is a summarized route/parameter/status artifact,
+not full JSON Schema. Its four entries were originally authored from source;
+the supported standalone generator and genuine served-schema comparison verify
+that summary independently. Source-pinned schema/frontend/browser receipts live
+in the maker handoff; final-candidate independent review and behavioral QA remain
+separate requirements. The shipping-page MSW assertions in
+`web/src/test/identity-names.test.tsx` add UI portions of scenarios2/3/4/5/8/10;
+API assertions are `web/src/lib/api/identities.test.ts`; scenario9 also exercises
+canonical skill-row attributes and stable row identity during label refresh.
+These provider/component tests use frontend mocks. Source-specific commands,
+red/keeper results and actual execution status belong in the maker handoff;
+frontend results do not establish daemon/DB end-to-end behavior. Existing
+twelve-scenario integration bodies/fixtures are preserved. Python units remain RETIRED under THR-291 seq40;
+general integration remains SKIPPED THR243seq42. Published source and maker verification do not establish independent acceptance,
+merge, deployment or whole-feature completion.
 
 ### OpenAPI snapshot operator
 
@@ -1850,6 +2011,39 @@ grant or broader permission change. Actual operator UI, revisions/reassignment/r
 remain later units; genuine receipts/joins remain dependency-incomplete;
 the manager-owned same-runtime two-template public smoke is required before
 Founder invitation. Source parity is not behavioral verification.
+
+
+
+Naming verification source now has the explicit finite selection
+`tests/helpers/identity_names/run.sh` for the same twelve THR293seq34 business
+scenarios. Core/ASGI assertions retain their layer attribution; naming-only
+`test_identity_names_e2e.py` and `web/scripts/identity-names-e2e.mjs` add real
+served daemon/CLI/native callback/browser-to-SQL assertions for2/3/6/8/9 and
+real390x844/1440x900 en/zh-CN light/dark captures. Source-pinned hosted receipts
+record actual daemon/browser outcomes separately from MSW/component evidence. The
+current case record, mutations and unselected historical branches are in
+`docs/superpowers/specs/2026-10-09-identity-names-core.md` under Current finite
+naming verification source. Standalone OpenAPI --check and a genuine served
+schema comparison are both retained in the hosted receipts. Clean hooked
+publication precedes each authorized disposable GitHub naming operation. The
+naming-only workflow and `scripts/identity_names_hosted.sh` are published on the
+open naming PR; each corrected source requires its own attributed verification.
+Its ordinary selection is exactly 20 function selectors / 23 parameterized cases
+for the same twelve scenarios, including C1/four C2/F1. Named daemon receipts,
+complete full-definition/CLI/readback evidence and every selected JUnit outcome
+are required. The exact offline workload container contains nested CLI sessions;
+its stopped ID/state closes that boundary. A SHA256/byte inventory authenticates
+complete export before owned storage cleanup; uncertain closure/export preserves
+partial receipts and exact storage names, subject to the original holder deadline.
+Founder THR293seq143 excludes all 17 additional defect/restoration/repetition
+proofs including O6 from naming merge conditions; they remain UNPROVEN, never
+test-authoring PASS. Independent full review, separate current-candidate behavioral
+QA and the existing lint/hooks/guarded merge/post-main gates still apply. The
+runner preserves source/evidence sentinels through init/prepare/work/export with
+a bounded offline mount holder, refuses output truncation, and reserves cleanup
+under one job-start deadline. Python unit retirement and
+general integration exception retain their exact scope; no behavioral acceptance,
+merge, live migration or deployment is established.
 
 ### U3b(d) human write and selected signed request
 

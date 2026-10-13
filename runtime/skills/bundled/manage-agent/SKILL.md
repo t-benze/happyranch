@@ -3,6 +3,19 @@ name: manage-agent
 description: Enroll, update, or terminate an agent. Write a JSON file and call happyranch manage-agent --from-file to keep the invocation single-line. Enrollment requires founder approval.
 ---
 
+## Current names and permanent automation IDs
+
+Fresh prompts may show current Name · ID for this turn. Use the permanent ID
+from the injected parameters for callback agent/composer/speaker, task/session/
+invocation proofs, configuration and delegate/then/fanout targets. A name is
+human-addressing/presentation data, never actor authority. Human destination
+arguments and @mentions accept current names or IDs; former names refuse with
+the current name and do not forward. Founder is a separate human; recipient
+transport remains `@founder`. Metadata failure gives ID-only context.
+
+Operator `identities rename` is separate from bound manage-agent. It uses positive expected_name_revision CAS with uncertain-failure readback. Manage-agent name/revision remain canonical ID/definition revision; it gains no rename authority.
+
+
 # manage-agent
 
 For an `update`, first obtain the target's current `revision` from the active
@@ -12,6 +25,28 @@ reload and deliberately reapply only the intended field change rather than
 resubmitting an older whole definition.
 
 Manage the agent roster. You can **enroll** a new agent (requires founder approval), **update** an existing agent's system prompt or description, or **terminate** a non-manager worker (archives its definition and workspace).
+
+## Canonical ID and naming ownership
+
+The `name` argument remains the permanent ID used by frontmatter, teams,
+workspaces and callbacks. New ID creation must pass the org's reconciled shared
+case-insensitive ASCII naming namespace. Naming-unavailable refuses new creation;
+original same-ID update/approve/reject/terminate guards and compensation remain.
+Default-only rejected reservations release; chosen/former labels and monotonic
+revisions survive absence and same-ID reenrollment. Admitted underscore-leading
+IDs retain their defaults/addresses, but editable labels require 1–64 ASCII
+letters/digits/underscore/hyphen with letter/digit first, without trimming.
+
+The bounded API provides org-local operator name editing and
+read/resolve projections. Agent roster/enrollment `name` and canonical `revision`
+retain their meanings; `addressable_name`, `name_revision` and `naming_status` are
+additive metadata, null/unavailable when names cannot be read. Never use a label
+as manage-agent's name, callback actor or expected canonical-definition revision.
+Operator rename accepts only addressable_name and positive expected_name_revision,
+with raw binding-key denial and the shared bearer limitation. The operator CLI is now described above; no agent-session rename authority is added. Mention delivery, CLI targets, fresh prompts and UI enrichment use current names at human boundaries. Names do not
+change allowed tools, execution permissions, task/session principals or workspace
+ownership. Coherent naming is not proof that bootstrap/cleanup/rollback succeeded.
+One daemon controls each org; no naming-specific cross-process guard is required.
 
 ## Authentication paths
 
@@ -87,7 +122,7 @@ This prevents a Content Manager from enrolling agents into the engineering team,
 ## What happens
 
 - **enroll**: Creates a pending enrollment request. `executor` is a registered executor profile name; if omitted, it defaults to `claude`. Supported profiles are the built-ins (`claude`, `codex`, `opencode`, `pi`) and custom profiles whose explicit `command_adapter_id: custom-adapter:<id>` resolves to a registered, conformance-passed, founder-approved adapter (see `docs/agent-guides/agent-executors-and-permissions.md`). You may also include `"allow_rules": ["curl https://api.example.com", ...]` to grant additional Bash prefixes beyond the baseline `happyranch` grant — for example, to allow a specific external API call. The founder must run `happyranch approve-agent --org {ORG_SLUG} <name>` before the agent's workspace is bootstrapped and the agent becomes available for delegation.
-- **update**: Updates the agent's description, system prompt, executor, model, reasoning_effort, or repos in the enrollment registry. If the system prompt or executor changes, the workspace bootstrap files are regenerated. A real executor change clears the old executor-specific model when `model` is omitted; include an explicit `model` value (or `null`) to choose the new executor's model (or its CLI default). An unchanged executor preserves omitted model and `reasoning_effort`; unrelated whole-definition writes preserve effort. A real CLI change clears omitted effort as well. Include explicit `reasoning_effort:null` to clear or a supported string to select. The proposed executor/model/effort pair is validated against static metadata, not provider/account acceptance; invalid/unsupported/conflicting selections refuse before replacement. OpenCode explicit effort requires provider/model, and embedded variants must agree. Custom adapters require ordinary input-v2 opt-in; legacy input-v1 model:null behavior remains. See `docs/superpowers/specs/2026-10-11-agent-reasoning-effort.md`. Only works on approved agents.
+- **update**: Updates the agent's description, system prompt, executor, model, reasoning_effort, or repos in the enrollment registry. If the system prompt or executor changes, the workspace bootstrap files are regenerated. A real executor change clears the old executor-specific model when `model` is omitted; include an explicit `model` value (or `null`) to choose the new executor's model (or its CLI default). An unchanged executor preserves omitted model and `reasoning_effort`; unrelated whole-definition writes preserve effort. A real CLI change clears omitted effort as well. Include explicit `reasoning_effort:null` to clear or a valid string to select. Built-ins accept case-preserving `[A-Za-z][A-Za-z0-9_-]{0,31}`, not static-list membership; custom values must belong to their approved finite declaration. Explicit empty strings refuse. The proposed executor/model/effort pair uses shared token/composition validation, not provider/account acceptance; invalid/unsupported/conflicting selections refuse before replacement. OpenCode explicit effort requires nonempty provider/model slash components, no whitespace/control/NUL, at most one # and a nonempty byte-equal embedded variant. Pi retains its finite recognized suffix set. Custom adapters require ordinary input-v2 opt-in; legacy input-v1 model:null behavior remains. See `docs/superpowers/specs/2026-10-11-agent-reasoning-effort.md`. Only works on approved agents. Dynamic manager update/enrollment remain source-inspected only, NOT VERIFIED at runtime in the THR298 plain-input venue; setters are not substitute endpoint coverage.
 - **terminate**: Archives a quiescent, approved non-manager worker. The active agent file is moved to `org/agents/_terminated/<name>.md`, the workspace is moved to `workspaces/_terminated/<name>/`, and the worker is removed from its team. Historic tasks, audit rows, token records, thread messages/participants, schedules, wakes, dreams, and archived files are preserved. The agent name cannot be re-enrolled while the terminated record exists. Termination is refused when the worker has live work (non-terminal assigned tasks, started thread invocations, firing schedules, running wakes/dreams, or pending/running jobs) or when the target is a manager.
 
 ## Lasting permission grants (`allow_rules`)

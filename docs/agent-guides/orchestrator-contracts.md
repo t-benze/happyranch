@@ -270,6 +270,78 @@ full cumulative independent review, honest same-head QA and guarded merge.
 > Product contracts are unchanged; replacement E2E is PENDING. See
 > [coverage gaps](../python-test-reset.md) and [current lanes](../local-ci.md).
 
+## Current name context in task prompts
+
+TASK10385 binds a presentation-only current metadata reader from OrgState to
+Orchestrator. The task role builder renders Name · ID for members selected by
+existing `_list_candidate_agents` IDs; it never substitutes labels into delegation,
+chains, fanout, reviewer rules or callback examples. The outer task wrapper
+refreshes self/founder context on every construction, including leaf/self-only
+and resumed work. Its outer agent, task/session/provider IDs remain canonical.
+
+Task role and outer wrapper are separate bounded metadata reads. All labels in
+each rendering share that read; no file/DB lookup per label or persisted snapshot
+is added. Founder is separate human context, never a roster agent. Missing naming
+metadata produces honest ID-only context with no writes, reconciliation or
+launch gate. Prompt wording states current-name human addressing and ID-only
+automation; remembered names do not override fresh resumed-turn context.
+
+Full/resumed thread, full fallback and resumed nudge plus dream/wake/schedule
+production callers supply fresh context under the same rule. IDs retain authority,
+role checks, durable queue membership and callback/failure ordering. Scenario8
+renders shipping builders and scenario9 checks bindings. Source-pinned maker
+E2E receipts do not establish real provider-resume launches or independent
+acceptance. UI/type source is published; final independent whole-candidate
+review/QA/checks and guarded merge remain required.
+See the [current naming contract](../superpowers/specs/2026-10-09-identity-names-core.md).
+
+## Naming v1 core, API and routing source
+
+Org identity names use the same outer coroutine gate as supported roster and
+consumer writes, with profile-before-publication ordering preserved. The thread
+RLock is distinct and cannot serialize yielding coroutine writers. Naming helpers
+capture twice outside short leases and project after real terminal compensation;
+pure rename never calls canonical_change. IDs continue to own session bindings,
+automated decisions, team membership and canonical definition filenames.
+
+The bounded API delegates operator rename to that same CAS/gate/audit service;
+it adds no canonical generation/publication, receipt or authority/profile
+algorithm. Raw task/session/agent/composer/speaker/thread/invocation binding-key
+presence (including null/partial/malformed) is denied before strict body decoding.
+Read resolution preserves lifecycle and current team/thread context predicates
+and returns typed founder-human/former diagnostics; it is never an authorization
+or reservation. Subsequent action owners revalidate canonical eligibility. No
+label becomes a session principal, automated target, team participant or executor.
+Current and resumed prompt rosters are implemented by the presentation-only
+reader described above.
+
+
+Current routing source resolves names/IDs case-insensitively with the unchanged
+@token grammar. Former inputs refuse409 with current_name before thread creation,
+stale closure, callback settlement or application attachment finalization. A
+lookup grants no reservation; action boundaries revalidate. Actors/proofs remain
+ID-only. Current-founder-only messages suppress new broadcast/cohort wakes, retain
+full-recipient obligations and enqueue prior catch-up separately. Founder remains
+human inbox only. Restart uses durable IDs/ranges/tokens/exchange/deferral rows;
+no historical body reclassification or schema addition occurs. Filesystem capture
+precedes the RLock and multipart reads precede final no-await admission/write.
+Unavailable naming keeps actual ID behavior; non-ID addresses refuse503.
+
+THR293seq34/35 requires twelve readable E2E scenarios. Core/API/routing,
+CLI/prompt and UI/type source are present in the combined candidate. The existing
+routing bodies and CLI assertions remain reusable E2E material; shipping-page
+MSW assertions cover frontend portions of scenarios2/3/4/5/8/10, without daemon/DB
+proof. Exact execution results and remaining obligations live in the maker
+handoff. Python units/collection/duration are RETIRED under THR-291 seq40 and
+general integration is SKIPPED THR243seq42, never PASS. Focused naming E2E requires
+a supported disposable GitHub runner or Mac Linux guest with finite commands,
+resources, output, deadline and actual cleanup. Independent full review,
+behavioral QA, applicable checks, normal publication and guarded merge remain.
+
+
+[Current contract](../superpowers/specs/2026-10-09-identity-names-core.md).
+
+
 **H handoff storage — U3a(a), THR139 seq445/465.** Proven-fresh org creation
 initializes H (complete G plus the exact `workflow_author_handoffs` table: 17
 columns, six automatic constraint indexes, no marker or explicit index).
@@ -658,6 +730,12 @@ explicit authorization. Source lint is not owner-lifecycle behavioral evidence.
 `AgentDef` in `runtime/orchestrator/agent_def.py` represents an agent file: markdown with YAML frontmatter parsed/rendered by `parse_agent_text` and `render_agent_text`.
 
 Fields: `name`, `team`, `role`, `executor`, `description`, `allow_rules`, `repos`, `enrolled_by`, `enrolled_at_task`, `enrolled_at`, `model`, optional `reasoning_effort`, and `system_prompt`. There is no `session_timeout_seconds` field.
+
+Built-ins accept case-preserving fullmatch `[A-Za-z][A-Za-z0-9_-]{0,31}` through shared `model_effort_args` validation; historical catalog values are metadata, not a membership gate. UI uses plain text: blank on explicit Save maps to null/default, without trimming or truncation. Explicit wire/direct empty strings refuse; CLI clear retains its existing meaning. Custom adapters still require approved declared-value membership (at most16 lowercase identifiers); legacy/model-only effort controls remain disabled with saved values visible. Token acceptance proves syntax/transport only, not native model/account support.
+
+With explicit effort, OpenCode requires nonempty provider/model slash components (additional model path segments allowed), no whitespace/control/NUL, at most one # and a nonempty embedded variant byte-equal to effort; it composes one literal `-m provider/model#effort`. Unset preserves the original model transport. Pi recognizes only its existing finite thinking suffix set; arbitrary safe colon suffixes do not become native thinking syntax. Codex keeps one literal quoted config argv element.
+
+Bounded evidence does not verify dynamic manage_agent update/enrollment at runtime (source only), native models/accounts, full task/thread/dream/wake/schedule lifecycles, host/callback or custom contained-wrapper prelaunch. General integration including callback is SKIPPED THR243seq42; former Python units are RETIRED. No ad hoc Product E2E or protected mutation/repetition proof is authorized.
 
 **THR-095 single-source-of-truth:** `executor`, `repos`, and `model` are read
 exclusively from ``AgentDef`` (the ``.md`` frontmatter). The workspace

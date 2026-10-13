@@ -517,7 +517,7 @@ describe('SettingsPage — Organization section', () => {
     expect(includeInput).toHaveValue('');
 
     // Form must NOT be dirty since no valid change was made
-    expect(within(content).queryByText('Save changes')).not.toBeInTheDocument();
+    expect(within(content).queryAllByText('Save changes').filter((node) => !node.closest('section[aria-label]'))).toEqual([]);
 
     // Now add a valid roster agent via autocomplete
     await user.type(includeInput, 'dev');
@@ -573,7 +573,7 @@ describe('SettingsPage — Organization section', () => {
 
     // The input may still show the text (RecipientsInput preserves the
     // actively-typed last token for autocomplete), but the form MUST stay clean
-    expect(within(content).queryByText('Save changes')).not.toBeInTheDocument();
+    expect(within(content).queryAllByText('Save changes').filter((node) => !node.closest('section[aria-label]'))).toEqual([]);
     expect(within(content).queryByText('Discard')).not.toBeInTheDocument();
 
     // Simulate save attempt via keyboard shortcut (Cmd+S / Ctrl+S fires
@@ -903,7 +903,7 @@ describe('SettingsPage — Organization section', () => {
     // Save feedback is announced via role=status
     await waitFor(() => {
       expect(
-        within(content).getByRole('status'),
+        within(content).getAllByRole('status').find((node) => /Saved.*takes effect.*scheduler/.test(node.textContent ?? '')),
       ).toHaveTextContent(/Saved.*takes effect.*scheduler/);
     });
   });
@@ -1052,7 +1052,7 @@ describe('SettingsPage — Organization section', () => {
     });
     await waitFor(() => {
       expect(
-        within(content).getByRole('status'),
+        within(content).getAllByRole('status').find((node) => /Saved.*takes effect.*scheduler/.test(node.textContent ?? '')),
       ).toHaveTextContent(/Saved.*takes effect.*scheduler/);
     });
   });
