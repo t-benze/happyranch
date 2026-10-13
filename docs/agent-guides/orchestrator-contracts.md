@@ -495,6 +495,42 @@ and skips; root is outside the scan; positive non-exempt use blocks. This is a
 snapshot with disclosed later-opener/data-loss residual, not proof of OS-wide
 absence.
 
+Preparation and outer-batch evidence use the packaged `prepare_cleanup.py` and
+`observe_cleanup_batch.py` (THR-259 seq506). Compare explicit aware terminal
+instants, preserving original strings, exact inclusive604800/86400-second floors
+and both action-time rechecks; naive/missing/malformed/changed times refuse.
+Freeze cap40 with historical overlap exclusions and no refill. Useful preparation,
+honest complete empty/no-repo evidence and incomplete enumeration are distinct;
+empty leaves retain native inventory/peer/history receipts and emit no request.
+Render one supported task/session-bound request with omitted or relative cwd,
+actual remaining budget and preserved TMPDIR; submission rejection/uncertainty
+ends that attempt without an alternate or retry. The outer host observer requires
+readable self context, host-init/unstacked proc and protected/mount metadata,
+including workspace .codex/.aws without credential-content reads. Root PID1
+namespace denial is diagnostic, without a new equality veto. An incomplete
+baseline admits no batch; native batch failure and postcheck failure/drift both
+remain nonzero/incomplete with their original causes. Only the default packaged
+batch/candidate runner executes; scanner/action gates are unchanged. Local report
+or persisted result is distinct from canonical lifecycle/output publication;
+failed/unpublished evidence overrides local success. Known-excluded nonempty inventories finish no-action only with verified
+same-bound preparation, original/copied inventory and manifest/history hashes,
+owner/native receipts and independently consistent excluded rows; a state label
+alone is insufficient. Result admission/pending remains separate from evidence
+completeness: missing inventory/baseline/postcheck stays blocked/nonzero. Native
+batch argv/cwd/exit/raw is persisted before postwrites; after/sequence write
+failure retains source/binding and both causes as unknown/nonzero, using bounded
+captured cleanup_sequence_fallback JSON if the sequence cannot be persisted.
+JSON writers flush, fsync and close a one-attempt .NAME.pending sibling before
+publishing the canonical name with an exclusive hard link; existing canonical or
+pending evidence is never replaced. Pending siblings remain evidence, are never
+consumed as canonical receipts, and need no unlink for failure safety. This does
+not add a directory-fsync/crash-durability guarantee. On observer write failure, report
+--sequence must select the exact captured cleanup_sequence_fallback JSON file;
+report retains its native batch/source/binding/write causes, blocks even against
+success-valued pending bytes, and separately retains admitted-result/pending facts.
+A missing canonical sequence also produces blocked intent with an evidence error.
+A genuine bound completion callback is the final session action. This repair grants no cleanup allocation.
+
 The scan runs only as a task-bound host-visible HappyRanch job. The procedure
 authenticates a closed-schema, non-truncated receipt binding the current
 task/session to the actual job, agent, stored command, interpreter, resolved
@@ -637,6 +673,19 @@ Workflow authority `_agent_projection` appends `reasoning_effort` only when set.
 Founder `PUT /agents/{agent_name}/system-prompt` is a strict prompt-only CAS. It validates through the existing parser/scanners before persistence, uses the same-read canonical SHA256 and short teams/canonical critical section, then refreshes only the existing workspace's selected registered adapter instruction pair. An absent workspace stays absent until explicit init. Reconciliation conditionally restores exact original canonical bytes only while its written revision is current; route-level pair replay also requires owned captured pair state. Detected winners/disappearance are preserved, inner pair compensation is not a global same-UID fence, and incomplete compensation is reported. Audit failure may leave committed bytes; best-effort authority publication may leave readiness fenced. The founder `agent_managed` audit retains scope/actor/source `founder` and `{action:'update',name,source:'founder'}`.
 
 `TeamsRegistry` in `runtime/orchestrator/teams.py` is seeded from `teams.yaml` and auto-persists on `add_worker` and `remove_worker`. There is no `DEFAULT_LAYOUT`; an org without `teams.yaml` is empty.
+
+The separate online founder `POST /teams/ensure-default` creates only an absent
+empty human-founder Default. `needs_empty_default` rejects conflicting management
+before fencing; `ensure_empty_default` saves a validated candidate before updating
+the shared registry object. Canonical/cache and membership prevalidation precedes
+the durable lease. The async authority writer gate precedes teams_lock; only
+canonical save/cache update and bounded audit use the short canonical fence.
+Publication occurs through interval exit, then a read-only interval checks owned
+readiness and compares the complete current snapshot. Compatible repeat preserves
+workers and metadata without save/audit/publication. It reports incomplete authority
+rather than repairing it; existing publication/cold recovery retains ownership.
+Only absent display metadata is initialized; task routing and explicit pointers
+remain unchanged. See the current THR296 spec's separate online contract.
 
 ## Agent Lifecycle: Enrollment, Approval, and Termination
 

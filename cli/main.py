@@ -35,6 +35,7 @@ from cli.commands import (
     schedules,
     skills,
     tasks,
+    teams,
     threads,
     workflows,
     work_hours,
@@ -158,6 +159,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     runtime.register(sub)
     tasks.register(sub)
+    teams.register(sub)
     agents.register(sub)
     jobs.register(sub)
     learning.register(sub)
