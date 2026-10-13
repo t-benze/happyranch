@@ -108,17 +108,61 @@ bind_stop_instance() {
   stop_pid="$pid"; stop_invocation="$invocation"; stop_phase="$phase"
 }
 stop_completed() {
-  local phase="$1" boot receipts receipt_count
+  local phase="$1" boot result
   [[ -n "${stop_phase:-}" && "$stop_phase" == "$phase" ]] || return 1
   boot="$(cat /proc/sys/kernel/random/boot_id)" || return 1
   [[ "$boot" == "$stop_boot" ]] || return 1
-  # Keep R1's checked streaming acquisition/count/exact lines. No raw journal
-  # is persisted; even valid-looking output from any failed producer refuses.
-  receipts="$(sudo journalctl -u happyranch-tsnet-sidecar.service --boot="$stop_boot" --since="@$stop_since" _PID="$stop_pid" _SYSTEMD_INVOCATION_ID="$stop_invocation" --no-pager -o cat | awk 'index($0, "lifecycle_stop_complete") { print }')" || return 1
-  receipt_count="$(printf '%s\n' "$receipts" | awk 'length($0) > 0 { count++ } END { print count+0 }')" || return 1
-  [[ "$receipt_count" == 2 ]] || return 1
-  grep -qx "lifecycle_stop_complete run=$stop_pid invocation=1" <<<"$receipts" || return 1
-  grep -qx "lifecycle_stop_complete run=$stop_pid invocation=2" <<<"$receipts" || return 1
+  # JSON preserves each original MESSAGE and cursor, including binary fields
+  # as arrays. Validate the stream before Bash sees only a closed result.
+  # pipefail checks BOTH journal and decoder even in conditional/EXIT callers.
+  result="$(sudo journalctl -u happyranch-tsnet-sidecar.service --boot="$stop_boot" --since="@$stop_since" _PID="$stop_pid" _SYSTEMD_INVOCATION_ID="$stop_invocation" --no-pager --all -o json --output-fields=MESSAGE,_PID,_SYSTEMD_INVOCATION_ID | python -c '
+import json,sys
+def unique_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate field")
+        result[key] = value
+    return result
+def invalid_constant(value):
+    raise ValueError("invalid JSON constant")
+def printable(value):
+    if not isinstance(value, str):
+        return False
+    value.encode("utf-8", "strict")
+    return all(character.isprintable() for character in value)
+pid, invocation, boot, since = sys.argv[1:]
+cutoff = int(since.replace(".", ""))
+expected = {f"lifecycle_stop_complete run={pid} invocation={i}" for i in (1, 2)}
+seen, cursors = set(), set()
+for raw in sys.stdin.buffer:
+    if not raw.endswith(b"\n"):
+        raise ValueError("truncated frame")
+    record = json.loads(raw.decode("utf-8", "strict"), object_pairs_hook=unique_object, parse_constant=invalid_constant)
+    if not isinstance(record, dict):
+        raise ValueError("invalid record")
+    message, cursor = record.get("MESSAGE"), record.get("__CURSOR")
+    if not printable(message) or not printable(cursor) or not cursor or cursor in cursors:
+        raise ValueError("invalid message or cursor")
+    cursors.add(cursor)
+    timestamp = record.get("__REALTIME_TIMESTAMP")
+    if (record.get("_PID") != pid or record.get("_SYSTEMD_INVOCATION_ID") != invocation
+            or record.get("_BOOT_ID") != boot.replace("-", "")
+            or not isinstance(timestamp, str) or not timestamp.isascii()
+            or not timestamp.isdecimal() or int(timestamp) < cutoff):
+        raise ValueError("invalid instance context")
+    # Well-formed printable unrelated MESSAGE records are permitted. Any
+    # completion-like record must be one whole canonical, distinct receipt.
+    if "lifecycle_stop_complete" not in message:
+        continue
+    if message not in expected or message in seen:
+        raise ValueError("invalid completion")
+    seen.add(message)
+if seen != expected:
+    raise ValueError("incomplete completion set")
+print("complete")
+' "$stop_pid" "$stop_invocation" "$stop_boot" "$stop_since" 2>/dev/null)" || return 1
+  [[ "$result" == complete ]] || return 1
   # A new running instance cannot reuse the preceding completed Stop proof.
   systemctl_absent_value happyranch-tsnet-sidecar.service MainPID 0
 }
@@ -164,6 +208,59 @@ peer_current() {
   [[ "$process" == "$peer_started" ]] || return 1
   identity="$(peer_identity)" || return 1
   [[ "$identity" == "$peer_node" ]] || return 1
+  process="$(peer_process_identity)" || return 1
+  [[ "$process" == "$peer_started" ]]
+}
+peer_inventory_absent() {
+  local process
+  [[ -n "${peer_started:-}" && -n "${peer_node:-}" ]] || return 1
+  process="$(peer_process_identity)" || return 1
+  [[ "$process" == "$peer_started" ]] || return 1
+  # Validate identity and inventory in the SAME consumed status. A separate
+  # good peer_current query cannot make missing/malformed Peer data available.
+  sudo "$ts_dir/tailscale" --socket="$work/peer.sock" status --json 2>/dev/null | python -c '
+import ipaddress,json,sys
+def unique_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate field")
+        result[key] = value
+    return result
+def invalid_constant(value):
+    raise ValueError("invalid JSON constant")
+data = json.loads(sys.stdin.buffer.read().decode("utf-8", "strict"), object_pairs_hook=unique_object, parse_constant=invalid_constant)
+if not isinstance(data, dict) or data.get("BackendState") != "Running":
+    raise ValueError("unavailable backend")
+self = data.get("Self")
+if (not isinstance(self, dict) or self.get("HostName") != "synthetic-peer-ci"
+        or self.get("ID") != sys.argv[1]):
+    raise ValueError("changed peer identity")
+ips = self.get("TailscaleIPs")
+if not isinstance(ips, list) or not ips or not all(isinstance(ip, str) and ip for ip in ips):
+    raise ValueError("unavailable peer addresses")
+for ip in ips:
+    ipaddress.ip_address(ip)
+if "Peer" not in data:
+    raise ValueError("missing inventory")
+peers = data["Peer"]
+# Pinned Status.Peer is a Go map without omitempty: nil -> null, empty -> {}.
+if peers is not None:
+    if not isinstance(peers, dict):
+        raise ValueError("invalid inventory")
+    present = False
+    for key, peer in peers.items():
+        if not isinstance(key, str) or not key or not key.isprintable() or not isinstance(peer, dict):
+            raise ValueError("invalid peer entry")
+        key.encode("utf-8", "strict")
+        hostname = peer.get("HostName")
+        if not isinstance(hostname, str) or not hostname or not hostname.isprintable():
+            raise ValueError("unclassifiable hostname")
+        hostname.encode("utf-8", "strict")
+        present = present or hostname == "home-sidecar-ci"
+    if present:
+        raise ValueError("sidecar remains visible")
+' "$peer_node" 2>/dev/null || return 1
   process="$(peer_process_identity)" || return 1
   [[ "$process" == "$peer_started" ]]
 }
@@ -1204,7 +1301,7 @@ sudo systemctl stop happyranch-managed.target happyranch-tsnet-sidecar.service h
 inactive happyranch-tsnet-sidecar.service || fail "sidecar survived missing-credential startup"
 absent /var/lib/happyranch-tsnet-sidecar/credential.consumed
 systemctl_absent_value happyranch-tsnet-sidecar.service MainPID 0 || fail "sidecar process survived failed startup"
-sudo "$ts_dir/tailscale" --socket="$work/peer.sock" status --json | python -c 'import json,sys; d=json.load(sys.stdin); raise SystemExit(any(p.get("HostName")=="home-sidecar-ci" for p in (d.get("Peer") or {}).values()))' || fail "failed-start TSNet identity remained visible"
+peer_inventory_absent || fail "failed-start TSNet identity remained visible or peer inventory unavailable"
 evidence "startup" "process_absent"
 evidence "startup" "tsnet_admission_absent"
 negative_leg_diagnostic_id="$run_id:negative-leg-expected:credential_input"

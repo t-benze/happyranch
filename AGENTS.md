@@ -1271,10 +1271,17 @@ sole-cause and credential-fix causality remain inference. Seq428 is consumed1/1.
 Seq435 remains manager-owned0/1; no maker publication, build or product run.
 
 
-**Receipt and assertion acquisition correction (TASK11084/11090, SAME TASK11067).**
-Shutdown receipt acquisition now checks the complete journal/filter pipeline
-before counting and exact-line assertions; a successful no-match still fails
-the required two-receipt count. Before/after rollback digests, staged readlink
+**Receipt and assertion acquisition correction (TASK11084/11090/11099, SAME TASK11067).**
+Stop receipt acquisition checks the complete journal/decoder pipeline before
+admitting a closed result; a successful no-match still fails the required pair.
+SAME TASK11067 step4 corrects R4 using existing JSON journal output: each original
+MESSAGE and distinct cursor is decoded from strict UTF8, LF-terminated records
+before Bash receives only `complete`. Missing/invalid types, binary arrays,
+LF/NUL/control MESSAGE content, duplicate JSON fields/cursors/completions,
+extra completion-like messages, invalid instance context and truncated frames
+refuse. Well-formed printable unrelated MESSAGE records are explicitly allowed;
+they cannot supply a receipt. A nonzero journal or decoder status refuses even
+with valid-looking output. No raw journal is retained. Before/after rollback digests, staged readlink
 and metadata, payload/source custody, PID1 and package provenance are acquired
 with explicit status checks before comparison or reporting. Matching or partial
 stdout from a nonzero producer refuses. Capture counters, file reads and cap
@@ -1286,9 +1293,9 @@ TASK11084's FAILED partial return is preserved. SAME TASK11067 step3 resolves
 R3 with the existing successful Stop completion observations. Before each known
 instance's stop, the harness binds exact active PID, nonzero InvocationID and
 start-monotonic context, rechecks the tuple and pins boot plus a pre-stop wall
-cutoff. Checked journal/filter/count acquisition selects that unit/PID/boot/
-invocation since the cutoff and requires both exact completion lines, with no
-extra, duplicate or malformed completion rows. MainPID0 excludes a running
+cutoff. Checked journal/decoder acquisition selects that unit/PID/boot/
+invocation since the cutoff and requires two distinct original canonical
+completion records, with no extra, duplicate or malformed completion records. MainPID0 excludes a running
 replacement. This applies to final cleanup, later shipping cleanup, health loss,
 Stop barrier, readiness loss and shutdown; shutdown uses one shared acquisition.
 The Stop-barrier check precedes queueing the next start and releasing its latch.
@@ -1302,6 +1309,18 @@ retained, actual reachability vetoes removal, and failed nc alone cannot pass.
 Known phases require nonmissing target plus successful current peer process-start
 identity and local status/node identity checks; query/parse/liveness/receipt
 failure refuses. No raw journal/status or new evidence fields are retained.
+Step4 also corrects R5 before the first negative-start process/admission records:
+process start ticks must match the established live peer before and after the
+consumed status; that SAME status must have Running backend, current Self
+hostname/node/IP shape and a present Peer field. Pinned Tailscale v1.102.3 emits
+null for a nil Peer map and {} for an empty map; either is accepted only within
+otherwise valid current status. Every nonempty map entry must be an object with
+a nonempty printable UTF8 HostName; all entries are validated before absence.
+Missing/malformed inventory or hostname, stale identity, duplicate JSON fields,
+invalid encoding or any failed producer/parser refuses. A separate good status
+cannot bless malformed consumed data. The expected credential diagnostic, both
+resets, staging/absence checks, completed-stop capture, source restoration,
+denial then positive-start order and saved status/all cleanup remain required.
 
 The first reset_shipping_unit precedes every managed start, and package install
 only writes payload/units. Every start attempt, including a failed/background
