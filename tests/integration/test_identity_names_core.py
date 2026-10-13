@@ -596,8 +596,88 @@ def test_a8_crash_cuts(tmp_path, case_ids=None):
     for case in cases(node, case_ids):
         parent=tmp_path/case
         lifecycle='pending' if case in ('C08','C12','C13','C14','C15a','C15b') else 'active'
-        with owned_org(parent,lifecycle=lifecycle) as org:
-            root=org.root;before=naming_snapshot(org);org.close()
+        pending_c17b_receipt=None
+        owner_context=owned_org(parent,lifecycle=lifecycle)
+        if case=='C17b':
+            diagnostic=None;write_diagnostic=None
+            @contextmanager
+            def c17b_observer_context():
+                # Retain the original owned_org closure without allowing a second
+                # observer-close failure to replace the first load/assertion failure.
+                fixture=owner_context.__enter__()
+                original_failure=(None,None,None)
+                try:yield fixture
+                except BaseException as error:
+                    original_failure=(type(error),error,error.__traceback__)
+                    raise
+                finally:
+                    try:owner_context.__exit__(*original_failure)
+                    except BaseException as error:
+                        if diagnostic is not None and write_diagnostic is not None:
+                            diagnostic['phase']='failed'
+                            diagnostic['owner_context_close_error']=capture('owner_context_close',lambda:error_detail(error))
+                            try:write_diagnostic()
+                            except BaseException as write_error:
+                                BaseException.add_note(error,'final context-close diagnostic unavailable: '+type(write_error).__qualname__)
+                        if original_failure[1] is None:raise
+                        BaseException.add_note(original_failure[1],'owned_org final observer close failed: '+type(error).__module__+'.'+type(error).__qualname__)
+            selected_context=c17b_observer_context()
+        else:selected_context=owner_context
+        with selected_context as org:
+            root=org.root;before=naming_snapshot(org)
+            if case=='C17b':
+                # These helpers are local to this assertion, never a product seam.
+                import ast
+                import traceback
+                observation_errors=[]
+                def bounded_text(value, limit=2048):
+                    raw=value.encode('utf8')
+                    return {'text':raw[:limit].decode('utf8',errors='replace'),
+                            'utf8_bytes':len(raw),'truncated':len(raw)>limit}
+                def error_detail(error):
+                    frames=traceback.extract_tb(error.__traceback__)
+                    return {'module':bounded_text(type(error).__module__,512),
+                            'class':bounded_text(type(error).__qualname__,512),
+                            'message':bounded_text(str(error)),
+                            'frames_omitted':max(0,len(frames)-8),
+                            'frames':[{'file':bounded_text(str(Path(f.filename).resolve()),1024),
+                                       'function':bounded_text(f.name,512),'line':f.lineno}
+                                      for f in frames[-8:]]}
+                def capture(label, reader):
+                    try:return reader()
+                    except BaseException as error:
+                        observation_errors.append((label,error,error.__traceback__))
+                        return None
+                component_evidence={}
+                def logical_schema():
+                    with org.db.coherent_read_view() as conn:
+                        return tuple(tuple(row) for row in conn.execute('SELECT type,name,tbl_name,sql FROM sqlite_master ORDER BY type,name'))
+                def logical_rows():
+                    with org.db.coherent_read_view() as conn:
+                        tables=[r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")]
+                        return {table:tuple(tuple(row) for row in conn.execute(f'SELECT rowid,* FROM "{table}" ORDER BY rowid')) for table in tables}
+                def canonical_files():
+                    result={}
+                    for base in (org.root/'org',org.root/'workspaces'):
+                        for path in sorted(base.rglob('*')):
+                            st=path.lstat()
+                            result[str(path.relative_to(org.root))]=(st.st_mode,os.readlink(path) if path.is_symlink() else path.read_bytes() if path.is_file() else None)
+                    return result
+                def capture_full_snapshot(label):
+                    value=capture(label,lambda:snapshot(org))
+                    parts={}
+                    # Failed full capture remains a required failure. These independent
+                    # fallback observations only retain available component diagnostics.
+                    for key,reader in (('schema',logical_schema),('rows',logical_rows),('files',canonical_files)):
+                        part=capture(label+'_'+key,reader) if value is None else value[key]
+                        parts[key+'_sha256']=capture(label+'_'+key+'_digest',lambda part=part:digest(part)) if part is not None else None
+                        if key=='rows':
+                            parts['naming_sha256']=capture(label+'_naming_digest',lambda:digest({k:v for k,v in part.items() if k.startswith('identity_name_')})) if part is not None else None
+                    parts['full_snapshot_available']=value is not None
+                    component_evidence[label]=parts
+                    return value
+                canonical_before=capture_full_snapshot('pre_cut_snapshot')
+            org.close()
             with owned_child(crash_case,(str(root),case),parent/'ownership.json') as (process,pipe):
                 assert pipe.poll(25), f'actual cut not reached: {case}; exit={process.exitcode}'
                 observation=pipe.recv()
@@ -605,52 +685,453 @@ def test_a8_crash_cuts(tmp_path, case_ids=None):
                 process.kill();process.join(5)
                 assert process.exitcode == -9 and not process.is_alive()
             # No old process/control survives into genuinely fresh construction.
-            assert json.loads((parent/'ownership.json').read_text())['reaped'] is True
-            org.db=Database(OrgPaths(root).db_path)
-            durable_before=naming_snapshot(org)
+            if case=='C17b':
+                observer=capture('observer_database_open',lambda:Database(OrgPaths(root).db_path))
+                if observer is not None:org.db=observer
+                durable_before=capture('durable_naming_after_kill',lambda:naming_snapshot(org))
+            else:
+                assert json.loads((parent/'ownership.json').read_text())['reaped'] is True
+                org.db=Database(OrgPaths(root).db_path)
+                durable_before=naming_snapshot(org)
             if case.startswith('C03') or case=='C01':
                 assert durable_before==({} if case=='C01' else before)
             if case=='C04':
                 assert names.classify(org,'Alex').revision==2
-            baseline_error=None;reopened=None
-            try:reopened=OrgState.load(slug='alpha',root=root,settings=org.settings)
-            except (ValueError,OrgConsistencyError) as error:baseline_error=type(error).__name__
-            expected_unavailable={'C06','C09','C16','C17a','C17b','C19c','C19d','C19f',
-                                  'T1-remove-after-save','T2-remove-after-save','T2-rollback-before-save'}
-            if case.startswith('T1-') and 'rollback' in case:
-                assert baseline_error=='OrgConsistencyError'
-            else:
-                assert reopened is not None, (case,baseline_error)
+            if case=='C17b':
+                # Observe independently: a failed snapshot must not erase load's outcome.
+                refusal_before=capture_full_snapshot('before_load_snapshot')
+                load_error=None;load_traceback=None;reopened=None
+                first_failure=None;closure_errors=[];diagnostic_sha256=None;exact_refusal=False
+                diagnostic_path=parent/'evidence'/'cold-load-refusal.json'
+                diagnostic={'case':case,'phase':'outcome_observed',
+                            'diagnostic_path':str(diagnostic_path.resolve())}
+                def snapshot_summary(value):
+                    if value is None:return None
+                    return {'all_sha256':digest(value),
+                            'schema_sha256':digest(value['schema']),
+                            'rows_sha256':digest(value['rows']),
+                            'files_sha256':digest(value['files']),
+                            'naming_sha256':digest({k:v for k,v in value['rows'].items()
+                                                  if k.startswith('identity_name_')}),
+                            'tables':len(value['rows']),'files':len(value['files'])}
+                def mismatches(left,right):
+                    if left is None or right is None:return {'observed':False}
+                    count=0;locations=[]
+                    def walk(a,b,path):
+                        nonlocal count
+                        if type(a) is type(b) and a==b:return
+                        if isinstance(a,dict) and isinstance(b,dict):
+                            for key in sorted(a.keys()|b.keys()):
+                                if key not in a or key not in b:hit(path+'/'+str(key))
+                                else:walk(a[key],b[key],path+'/'+str(key))
+                        elif isinstance(a,(tuple,list)) and type(a) is type(b):
+                            for index in range(max(len(a),len(b))):
+                                if index>=min(len(a),len(b)):hit(path+'/'+str(index))
+                                else:walk(a[index],b[index],path+'/'+str(index))
+                        else:hit(path)
+                    def hit(path):
+                        nonlocal count
+                        count+=1
+                        if len(locations)<8:locations.append(bounded_text(path,1024))
+                    walk(left,right,'')
+                    return {'observed':True,'differing_locations':count,'locations':locations,
+                            'locations_omitted':max(0,count-len(locations))}
+                def ownership_readback():
+                    path=parent/'ownership.json'
+                    with path.open('rb') as stream:raw=stream.read(8193)
+                    assert len(raw)<=8192,'ownership evidence truncated'
+                    value=json.loads(raw.decode('utf8'))
+                    assert isinstance(value,dict),'malformed ownership evidence'
+                    return {'path':bounded_text(str(path.resolve()),1024),
+                            'sha256':hashlib.sha256(raw).hexdigest(),'record':value}
+                def validator_reference():
+                    path=Path(__file__).resolve().parents[2]/'runtime/orchestrator/org_validation.py'
+                    raw=path.read_bytes()
+                    # Pinned777d2da5 validator, independently authenticated before authoring.
+                    assert hashlib.sha256(raw).hexdigest()=='d50473552d41c4fb1e229327f0c7b7688fa56ac0f0a3aa965c9fedc290a2a77c'
+                    tree=ast.parse(raw.decode('utf8'))
+                    functions=[n for n in tree.body if isinstance(n,ast.FunctionDef)
+                               and n.name=='validate_team_membership']
+                    assert len(functions)==1
+                    raises=[n for n in ast.walk(functions[0]) if isinstance(n,ast.Raise)
+                            and isinstance(n.exc,ast.Call) and isinstance(n.exc.func,ast.Name)
+                            and n.exc.func.id=='OrgConsistencyError']
+                    assert len(raises)==1 and raises[0].lineno==60
+                    return {'file':str(path),'function':'validate_team_membership',
+                            'raise_line':raises[0].lineno,'raise_end_line':raises[0].end_lineno,
+                            'source_sha256':hashlib.sha256(raw).hexdigest()}
+                def archive_readback():
+                    assert canonical_before is not None and refusal_before is not None
+                    original=canonical_before['files'];files=refusal_before['files']
+                    active='workspaces/maker';archived='workspaces/_terminated/maker'
+                    original_subtree={k:v for k,v in original.items()
+                                      if k==active or k.startswith(active+'/')}
+                    assert active in original_subtree,'missing original maker subtree'
+                    mapped={archived+k[len(active):]:v for k,v in original_subtree.items()}
+                    archived_subtree={k:v for k,v in files.items()
+                                      if k==archived or k.startswith(archived+'/')}
+                    residue={k:v for k,v in files.items()
+                             if k==active or k.startswith(active+'/')}
+                    return {'expected':mapped,'actual':archived_subtree,'residue':residue,
+                            'definition_equal':files.get('org/agents/_terminated/maker.md')==original['org/agents/maker.md'],
+                            'active_definition_absent':'org/agents/maker.md' not in files,
+                            'pending_definition_absent':'org/agents/_pending/maker.md' not in files,
+                            'teams_bytes_modes_equal':files.get('org/teams.yaml')==original['org/teams.yaml'],
+                            'definition_mode_sha256':digest(files.get('org/agents/_terminated/maker.md')),
+                            'teams_mode_sha256':digest(files.get('org/teams.yaml'))}
+                diagnostic_sequence=0;last_validated_diagnostic=None
+                diagnostic_failures=[];published_failure_records=[]
+                def write_diagnostic():
+                    nonlocal diagnostic_sequence,last_validated_diagnostic
+                    # C17b-only fixed projection: never reserialize the failing dictionary.
+                    def atom(value, limit=256, excerpts=True):
+                        if value is None:return {'status':'unavailable'}
+                        if type(value) in (bool,float):
+                            if type(value) is float:return {'status':'unsupported_type','type':'float'}
+                            return value
+                        if type(value) is int:
+                            return value if -(2**63)<=value<2**63 else {'status':'required_integer_out_of_bound'}
+                        if type(value) is dict and 'text' in value:
+                            return {'value':atom(value.get('text'),limit,excerpts),
+                                    'utf8_bytes':atom(value.get('utf8_bytes')),
+                                    'truncated_required':value.get('truncated') is True}
+                        if type(value) is str:
+                            raw=value.encode('utf8',errors='replace')
+                            if len(value) in (40,64) and all(c in '0123456789abcdef' for c in value):return value
+                            result={'utf8_bytes':len(raw),'sha256':hashlib.sha256(raw).hexdigest(),
+                                    'excerpt_omitted_bytes':max(0,len(raw)-(limit if excerpts else 128 if len(raw)<=128 else 0))}
+                            if excerpts or len(raw)<=128:result['text']=raw[:limit].decode('utf8',errors='replace')
+                            return result
+                        module=type(value).__module__
+                        return {'status':'unsupported_type','module':module[:128] if type(module) is str else 'unavailable',
+                                'type':type(value).__qualname__[:128]}
+                    def fields(value, keys, excerpts=True):
+                        if type(value) is not dict:return {'status':'unavailable' if value is None else 'malformed'}
+                        return {key:atom(value[key],excerpts=excerpts) if key in value else {'status':'missing'} for key in keys}
+                    def sequence(value, limit=2, excerpts=True):
+                        if type(value) not in (list,tuple):return {'status':'unavailable' if value is None else 'malformed'}
+                        return {'count':len(value),'bounded_excerpts_omitted':max(0,len(value)-limit),
+                                'values':[atom(item,128,excerpts) for item in value[:limit]]}
+                    def cause(detail, exact=False, excerpts=True):
+                        if type(detail) is not dict:return {'status':'unavailable' if detail is None else 'malformed'}
+                        frames=detail.get('frames');terminal=frames[-1] if type(frames) is list and frames else None
+                        return {'module':atom(detail.get('module'),512 if exact else 128,excerpts),
+                                'class':atom(detail.get('class'),512 if exact else 128,excerpts),
+                                'message':atom(detail.get('message'),2048 if exact else 256,excerpts),
+                                'frames_omitted':atom(detail.get('frames_omitted')),
+                                'available_frames':len(frames) if type(frames) is list else None,
+                                'bounded_frames_omitted':max(0,len(frames)-1) if type(frames) is list else None,
+                                'terminal':{'file':atom(terminal.get('file'),1024 if exact else 256,excerpts),
+                                            'function':atom(terminal.get('function'),512 if exact else 128,excerpts),
+                                            'line':atom(terminal.get('line'))} if type(terminal) is dict else {'status':'unavailable'}}
+                    def exception_cause(error, exact=False, excerpts=True):
+                        try:return cause(error_detail(error),exact,excerpts)
+                        except BaseException as secondary:
+                            # Still bind the real type when even str(error)/trace extraction fails.
+                            return {'status':'cause_detail_unavailable',
+                                    'module':atom(type(error).__module__,excerpts=excerpts),
+                                    'class':atom(type(error).__qualname__,excerpts=excerpts),
+                                    'detail_failure_module':atom(type(secondary).__module__,excerpts=excerpts),
+                                    'detail_failure_class':atom(type(secondary).__qualname__,excerpts=excerpts)}
+                    def failure_record(excerpts=True):
+                        owner=diagnostic.get('ownership');owner=owner if type(owner) is dict else {}
+                        comparisons=diagnostic.get('comparisons');comparisons=comparisons if type(comparisons) is dict else {}
+                        archive=diagnostic.get('archive');archive=archive if type(archive) is dict else {}
+                        components={}
+                        for label in ('pre_cut_snapshot','before_load_snapshot','after_load_snapshot'):
+                            components[label]=fields(component_evidence.get(label),
+                                ('schema_sha256','rows_sha256','files_sha256','naming_sha256','full_snapshot_available'),excerpts)
+                        return {'case':case,'phase':'failed_diagnostic',
+                            'required_evidence_status':'consult per-component markers and bound prior validated evidence; failure-only summary',
+                            'component_availability':{key:('missing' if key not in diagnostic else
+                                'unavailable' if diagnostic[key] is None else 'available')
+                                for key in ('load_outcome','exception','expected_validator','pre_cut','at_cut',
+                                    'before_load','after_load','ownership','process','cut','comparisons',
+                                    'archive','workers','schedule','cancellations','first_failure','closure',
+                                    'owner_context_close_error')},
+                            'original_phase':atom(diagnostic.get('phase'),excerpts=excerpts),
+                            'source_diagnostic_path':str(diagnostic_path.resolve()),
+                            'prior_validated':last_validated_diagnostic,
+                            'prior_failure_records':list(published_failure_records),
+                            'load_outcome':atom(diagnostic.get('load_outcome'),excerpts=excerpts),
+                            'attached':atom(diagnostic.get('attached')),
+                            'exception':cause(diagnostic.get('exception'),True,excerpts),
+                            'expected_validator':fields(diagnostic.get('expected_validator'),
+                                ('file','function','raise_line','raise_end_line','source_sha256'),excerpts),
+                            'exact_refusal_observed':atom(diagnostic.get('exact_refusal_observed')),
+                            'component_evidence':components,
+                            'snapshots':{key:fields(diagnostic.get(key),
+                                ('all_sha256','schema_sha256','rows_sha256','files_sha256','naming_sha256','tables','files'),excerpts)
+                                for key in ('pre_cut','at_cut','before_load','after_load')},
+                            'ownership':{'file':fields(owner,('path','sha256'),excerpts),
+                                'record':fields(owner.get('record'),('parent_pid','child_pid','target','source_sha',
+                                    'parent_manifest_sha256','exit','reaped','cleanup_verified_absent',
+                                    'deadline_seconds','resource_enforcement'),excerpts)},
+                            'process':fields(diagnostic.get('process'),('pid','exit','is_alive','parent_pid'),excerpts),
+                            'cut':fields(diagnostic.get('cut'),('cut','pid'),excerpts),
+                            'comparisons':{key:{'counts':fields(comparisons.get(key),
+                                ('observed','differing_locations','locations_omitted'),excerpts),
+                                'locations':sequence(comparisons[key].get('locations'),excerpts=excerpts)
+                                    if type(comparisons.get(key)) is dict else {'status':'unavailable'}}
+                                for key in ('full_load','naming_across_cut','naming_after_kill','archive')},
+                            'archive':{'facts':fields(diagnostic.get('archive'),('original_entries','archived_entries',
+                                'active_residue_entries','expected_sha256','actual_sha256','definition_equal',
+                                'active_definition_absent','pending_definition_absent','teams_bytes_modes_equal',
+                                'definition_mode_sha256','teams_mode_sha256'),excerpts),
+                                'residue_locations':sequence(archive.get('active_residue_locations'),excerpts=excerpts)},
+                            'workers':sequence(diagnostic.get('workers'),3,excerpts),
+                            'schedule':atom(diagnostic.get('schedule'),excerpts=excerpts),
+                            'cancellations':atom(diagnostic.get('cancellations')),
+                            'first_failure_state':'selected' if first_failure else 'not_selected_yet',
+                            'first_failure':exception_cause(first_failure[0],excerpts=excerpts) if first_failure else
+                                cause(diagnostic.get('first_failure'),excerpts=excerpts),
+                            'observation_error_count':len(observation_errors),
+                            'observation_errors_omitted':max(0,len(observation_errors)-16),
+                            'observation_errors':[{'observation':atom(label,128,excerpts),
+                                'cause':exception_cause(error,excerpts=excerpts and index<2)}
+                                for index,(label,error,_) in enumerate(observation_errors[:16])],
+                            'closure_error_count':len(closure_errors),
+                            'closure_errors':[{'handle':label,'cause':exception_cause(error,excerpts=excerpts)}
+                                for label,error,_ in closure_errors],
+                            'closure':fields(diagnostic.get('closure'),('attachment_returned','close_calls_succeeded'),excerpts),
+                            'owner_context_close_error':cause(diagnostic.get('owner_context_close_error'),excerpts=excerpts),
+                            'diagnostic_error_count':len(diagnostic_failures),
+                            'diagnostic_errors':[{'stage':label,'cause':exception_cause(error,excerpts=excerpts)}
+                                for label,error in diagnostic_failures[-3:]],
+                            'diagnostic_errors_omitted':max(0,len(diagnostic_failures)-3),
+                            'excerpt_policy':'fixed selected fields; counts/digests retained; omission is distinct from unavailable and truncated_required'}
+                    def encoded(value):
+                        raw=json.dumps(value,sort_keys=True,ensure_ascii=True,allow_nan=False).encode('utf8')
+                        assert len(raw)<=65536,'C17b diagnostic exceeds65536 bytes'
+                        return raw
+                    def validate(path,raw,value):
+                        # Bounded readback; do not allocate an unlimited corrupted destination.
+                        with path.open('rb') as stream:saved=stream.read(65537)
+                        assert len(saved)<=65536 and saved==raw and json.loads(saved)==value,'diagnostic readback mismatch'
+                        return {'path':str(path.resolve()),'sha256':hashlib.sha256(saved).hexdigest()}
+                    def publish(raw,value,failure=False):
+                        # Never replace an earlier retained file. Export walks the evidence subtree.
+                        diagnostic_path.parent.mkdir(parents=True,exist_ok=True)
+                        suffix='failure' if failure else 'record'
+                        path=diagnostic_path.with_name(f'cold-load-refusal-{suffix}-{diagnostic_sequence}.json')
+                        with path.open('xb') as stream:stream.write(raw)
+                        return validate(path,raw,value)
+                    diagnostic_sequence+=1
+                    errors=[]
+                    for label,error,_ in observation_errors[:16]:
+                        try:detail=error_detail(error)
+                        except BaseException:detail={'unavailable':True}
+                        errors.append({'observation':label,'error':detail})
+                    diagnostic['component_evidence']=component_evidence
+                    diagnostic['observation_errors']=errors
+                    diagnostic['observation_errors_omitted']=max(0,len(observation_errors)-16)
+                    diagnostic['diagnostic_errors']=[{'stage':label,'cause':exception_cause(error)} for label,error in diagnostic_failures[-3:]]
+                    diagnostic['diagnostic_errors_omitted']=max(0,len(diagnostic_failures)-3)
+                    diagnostic['retained_validated']=last_validated_diagnostic
+                    diagnostic['retained_failure_records']=list(published_failure_records)
+                    stage='serialization_or_cap'
+                    try:
+                        raw=encoded(diagnostic)
+                        stage='record_write_or_readback'
+                        last_validated_diagnostic=publish(raw,diagnostic)
+                        # Verify staged replacement first; the validated sibling survives any
+                        # canonical publication/readback failure, including an initial write.
+                        stage='canonical_write_or_readback'
+                        temp=diagnostic_path.with_suffix('.tmp')
+                        temp.write_bytes(raw);validate(temp,raw,diagnostic)
+                        os.replace(temp,diagnostic_path)
+                        binding=validate(diagnostic_path,raw,diagnostic)
+                        return binding['sha256']
+                    except BaseException as write_problem:
+                        diagnostic_failures.append((stage,write_problem))
+                        try:
+                            reduced=failure_record()
+                            try:raw=encoded(reduced)
+                            except BaseException as reduction_problem:
+                                diagnostic_failures.append(('reduced_serialization_or_cap',reduction_problem))
+                                # A different fixed projection omits optional excerpts, retaining
+                                # their lengths/digests/counts and explicit loss markers.
+                                reduced=failure_record(excerpts=False);raw=encoded(reduced)
+                            failure_binding=publish(raw,reduced,failure=True)
+                            published_failure_records.append(failure_binding)
+                            BaseException.add_note(write_problem,'C17b failure evidence: '+failure_binding['path']+' sha256='+failure_binding['sha256'])
+                        except BaseException as secondary:
+                            diagnostic_failures.append(('failure_record_write_or_readback',secondary))
+                            BaseException.add_note(write_problem,'C17b new failure evidence unavailable: '+type(secondary).__module__+'.'+type(secondary).__qualname__)
+                        if last_validated_diagnostic is not None:
+                            BaseException.add_note(write_problem,'C17b retained validated evidence: '+last_validated_diagnostic['path']+' sha256='+last_validated_diagnostic['sha256'])
+                        else:BaseException.add_note(write_problem,'C17b no prior validated diagnostic; new evidence may be unavailable')
+                        # No diagnostic failure can return a success digest or replace first failure.
+                        raise
                 try:
-                    # Cold disk truth differs from in-process memory at C19b.
-                    expected='unavailable' if case in expected_unavailable or (case.startswith(('T1-add-before','T2-add-before'))) else 'ready'
-                    assert reopened.naming_readiness==expected,(case,reopened.naming_diagnostic)
-                    if case in ('C17c','C17d','C18a','C18b','C19a'):
-                        assert names.classify(reopened,'maker').lifecycle=='terminated'
-                        status=reopened.db.schedules.get('SCHEDULE-001').status.value
-                        assert status==('cancelled' if case in ('C18a','C18b') else 'armed')
-                        cancellations=reopened.db.execute("SELECT count(*) FROM audit_log WHERE action='schedule_cancelled'").fetchone()[0]
-                        assert cancellations==int(case in ('C18a','C18b'))
-                    if case=='C19e':
-                        assert names.classify(reopened,'maker').lifecycle=='active'
-                        assert not (root/'workspaces/maker').exists()
-                        assert (root/'workspaces/_terminated/maker').is_dir()
-                        assert reopened.db.schedules.get('SCHEDULE-001').status.value=='armed'
-                    stable=naming_snapshot(reopened)
-                    if expected=='ready':
-                        assert names.refresh_names(reopened) and naming_snapshot(reopened)==stable
-                    else:
-                        refusal_before = snapshot(reopened)
-                        with pytest.raises(NamingError, match='naming_unavailable'):
-                            run(rename(reopened, 'RefusedCutName', revision=1))
-                        assert snapshot(reopened) == refusal_before
-                    reopened.close()
-                    emit_case(node,case,{'durable_naming_sha256':digest(stable),'readiness':reopened.naming_readiness,
-                                        'child_exit':-9,'reaped':True,'original_cut_snapshot_sha256':digest(observation['snapshot']),
-                                        'receipt_root':str(tmp_path/'receipts')})
-                finally:reopened.close()
-            if baseline_error:
-                emit_case(node,case,{'baseline_error':baseline_error,'child_exit':-9,'reaped':True,'receipt_root':str(tmp_path/'receipts')})
+                    try:reopened=OrgState.load(slug='alpha',root=root,settings=org.settings)
+                    except BaseException as error:
+                        load_error=error;load_traceback=error.__traceback__
+                    diagnostic['load_outcome']='raised' if load_error is not None else 'returned'
+                    diagnostic['attached']=reopened is not None
+                    diagnostic['exception']=capture('load_exception_detail',lambda:error_detail(load_error)) if load_error is not None else None
+                    # Each observation is attempted even when a different observation failed.
+                    refusal_after=capture_full_snapshot('after_load_snapshot')
+                    ownership=capture('ownership_readback',ownership_readback)
+                    process_facts=capture('process_readback',lambda:{'pid':process.pid,
+                        'exit':process.exitcode,'is_alive':process.is_alive(),'parent_pid':os.getpid()})
+                    reference=capture('validator_reference',validator_reference)
+                    workers=capture('persisted_team_membership',lambda:TeamsRegistry.load(root).manager_for_team('engineering').workers)
+                    schedule=capture('schedule_readback',lambda:org.db.schedules.get('SCHEDULE-001').status.value)
+                    cancellations=capture('cancellation_readback',lambda:org.db.execute("SELECT count(*) FROM audit_log WHERE action='schedule_cancelled'").fetchone()[0])
+                    archive=capture('archive_mapping',archive_readback)
+                    for label,value in (('pre_cut',canonical_before),('at_cut',observation.get('snapshot')),
+                                        ('before_load',refusal_before),('after_load',refusal_after)):
+                        diagnostic[label]=capture(label+'_digests',lambda value=value:snapshot_summary(value))
+                    cut_names=capture('cut_naming_rows',lambda:{k:v for k,v in observation['snapshot']['rows'].items() if k.startswith('identity_name_')})
+                    comparisons=(('full_load',refusal_before,refusal_after),
+                                 ('naming_across_cut',before,cut_names),
+                                 ('naming_after_kill',before,durable_before),
+                                 ('archive',None if archive is None else archive['expected'],None if archive is None else archive['actual']))
+                    diagnostic['comparisons']={label:capture(label+'_differences',lambda a=a,b=b:mismatches(a,b)) for label,a,b in comparisons}
+                    diagnostic.update(ownership=ownership,process=process_facts,
+                        cut=capture('cut_identity',lambda:{'cut':bounded_text(observation['cut'],512),'pid':observation['pid']}),
+                        expected_validator=reference,workers=list(workers) if workers is not None else None,
+                        schedule=schedule,cancellations=cancellations,
+                        archive=None if archive is None else {
+                            'original_entries':len(archive['expected']),'archived_entries':len(archive['actual']),
+                            'active_residue_entries':len(archive['residue']),
+                            'active_residue_locations':[bounded_text(k,1024) for k in sorted(archive['residue'])[:8]],
+                            'expected_sha256':digest(archive['expected']),'actual_sha256':digest(archive['actual']),
+                            **{k:v for k,v in archive.items() if k not in ('expected','actual','residue')}})
+                    # Diagnostics precede acceptance, including successful returns and wrong exceptions.
+                    write_diagnostic()
+                    assert reopened is None,'C17b unexpectedly attached an OrgState'
+                    expected_message=("org content is inconsistent — agent files and teams.yaml disagree:\n"
+                        "  - teams.yaml 'engineering' worker 'maker' has no matching worker agent file\n"
+                        "Fix teams.yaml (or the offending agent file) and reload the org.")
+                    diagnostic['expected_exception_message']=bounded_text(expected_message)
+                    detail=diagnostic['exception']
+                    terminal=detail['frames'][-1] if detail and detail.get('frames') else None
+                    exact_refusal=(type(load_error) is OrgConsistencyError and detail is not None
+                        and detail['module']==bounded_text(OrgConsistencyError.__module__,512)
+                        and detail['class']==bounded_text(OrgConsistencyError.__qualname__,512)
+                        and detail['message']==bounded_text(expected_message)
+                        and detail['message']['truncated'] is False and reference is not None
+                        and terminal is not None
+                        and terminal['file']==bounded_text(reference['file'],1024)
+                        and terminal['file']['truncated'] is False
+                        and terminal['function']==bounded_text(reference['function'],512)
+                        and terminal['function']['truncated'] is False
+                        and terminal['line']==reference['raise_line'])
+                    diagnostic['exact_refusal_observed']=exact_refusal
+                    if not exact_refusal:
+                        if load_error is not None:raise load_error.with_traceback(load_traceback)
+                        raise AssertionError('missing exact C17b refusal provenance')
+                    assert not observation_errors,'required C17b observation unavailable'
+                    # No initialization exemptions or physical DB/WAL-byte equality claims.
+                    assert refusal_before is not None and refusal_after==refusal_before
+                    assert cut_names==before and durable_before==before
+                    assert workers==('maker',)
+                    assert archive['active_definition_absent'] and archive['pending_definition_absent']
+                    assert archive['definition_equal'] and archive['teams_bytes_modes_equal']
+                    assert archive['actual']==archive['expected'] and not archive['residue']
+                    assert schedule=='armed' and cancellations==0
+                    owner=ownership['record']
+                    assert owner['child_pid']==process_facts['pid']==observation['pid']
+                    assert owner['parent_pid']==process_facts['parent_pid']
+                    assert owner['exit']==process_facts['exit']==-9
+                    assert owner['reaped'] is True and owner['cleanup_verified_absent'] is True
+                    assert process_facts['is_alive'] is False and observation['cut']==case
+                    # Bounded mismatch excerpts are labelled; any truncated required value refuses.
+                    def has_truncation(value):
+                        if isinstance(value,dict):return value.get('truncated') is True or any(has_truncation(v) for v in value.values())
+                        if isinstance(value,list):return any(has_truncation(v) for v in value)
+                        return False
+                    assert not has_truncation(diagnostic),'required evidence truncated'
+                    diagnostic['phase']='assertions_satisfied'
+                except BaseException as error:
+                    # A diagnostic/observation failure cannot replace an unexpected load failure.
+                    if load_error is not None and not exact_refusal:
+                        first_failure=(load_error,load_traceback)
+                        observation_errors.append(('validation_or_diagnostic',error,error.__traceback__))
+                    else:first_failure=(error,error.__traceback__)
+                    diagnostic['phase']='failed'
+                finally:
+                    # Own both handles; exact unexpected attachment closes even on diagnostic/assertion failure.
+                    for label,handle in (('unexpected_attachment',reopened),('observer_org',org)):
+                        if handle is None:continue
+                        try:handle.close()
+                        except BaseException as error:
+                            closure_errors.append((label,error,error.__traceback__))
+                    diagnostic['closure']={'attachment_returned':reopened is not None,
+                        'close_calls_succeeded':not closure_errors,
+                        'errors':[]}
+                    for label,error,tb in closure_errors:
+                        detail=capture(label+'_closure_detail',lambda error=error:error_detail(error))
+                        diagnostic['closure']['errors'].append({'handle':label,'error':detail})
+                    if first_failure is None and closure_errors:
+                        first_failure=(closure_errors[0][1],closure_errors[0][2])
+                    if first_failure is not None:
+                        diagnostic['phase']='failed'
+                        diagnostic['first_failure']=capture('first_failure_detail',lambda:error_detail(first_failure[0]))
+                    else:diagnostic['phase']='accepted_resources_closed'
+                    try:diagnostic_sha256=write_diagnostic()
+                    except BaseException as error:
+                        # Prior diagnostic remains evidence, but cannot authorize success.
+                        if first_failure is None:first_failure=(error,error.__traceback__)
+                        BaseException.add_note(first_failure[0],'C17b final diagnostic unavailable: '+type(error).__module__+'.'+type(error).__qualname__)
+                    if first_failure is not None:
+                        BaseException.add_note(first_failure[0],'C17b diagnostic path: '+str(diagnostic_path)+'; closure failures: '+str(len(closure_errors)))
+                if first_failure is not None:raise first_failure[0].with_traceback(first_failure[1])
+                assert diagnostic_sha256 is not None and not closure_errors and not observation_errors
+                pending_c17b_receipt={'baseline_error':type(load_error).__name__,
+                    'attachment_refused':True,'load_nonmutation_observed':True,
+                    'durable_naming_sha256':digest(durable_before),
+                    'original_cut_snapshot_sha256':digest(observation['snapshot']),
+                    'child_exit':process_facts['exit'],'reaped':ownership['record']['reaped'],
+                    'diagnostic_path':str(diagnostic_path.resolve()),'diagnostic_sha256':diagnostic_sha256,
+                    'receipt_root':str(tmp_path/'receipts')}
+
+            else:
+                baseline_error=None;reopened=None
+                try:reopened=OrgState.load(slug='alpha',root=root,settings=org.settings)
+                except (ValueError,OrgConsistencyError) as error:baseline_error=type(error).__name__
+                expected_unavailable={'C06','C09','C16','C17a','C17b','C19c','C19d','C19f',
+                                      'T1-remove-after-save','T2-remove-after-save','T2-rollback-before-save'}
+                if case.startswith('T1-') and 'rollback' in case:
+                    assert baseline_error=='OrgConsistencyError'
+                else:
+                    assert reopened is not None, (case,baseline_error)
+                    try:
+                        # Cold disk truth differs from in-process memory at C19b.
+                        expected='unavailable' if case in expected_unavailable or (case.startswith(('T1-add-before','T2-add-before'))) else 'ready'
+                        assert reopened.naming_readiness==expected,(case,reopened.naming_diagnostic)
+                        if case in ('C17c','C17d','C18a','C18b','C19a'):
+                            assert names.classify(reopened,'maker').lifecycle=='terminated'
+                            status=reopened.db.schedules.get('SCHEDULE-001').status.value
+                            assert status==('cancelled' if case in ('C18a','C18b') else 'armed')
+                            cancellations=reopened.db.execute("SELECT count(*) FROM audit_log WHERE action='schedule_cancelled'").fetchone()[0]
+                            assert cancellations==int(case in ('C18a','C18b'))
+                        if case=='C19e':
+                            assert names.classify(reopened,'maker').lifecycle=='active'
+                            assert not (root/'workspaces/maker').exists()
+                            assert (root/'workspaces/_terminated/maker').is_dir()
+                            assert reopened.db.schedules.get('SCHEDULE-001').status.value=='armed'
+                        stable=naming_snapshot(reopened)
+                        if expected=='ready':
+                            assert names.refresh_names(reopened) and naming_snapshot(reopened)==stable
+                        else:
+                            refusal_before = snapshot(reopened)
+                            with pytest.raises(NamingError, match='naming_unavailable'):
+                                run(rename(reopened, 'RefusedCutName', revision=1))
+                            assert snapshot(reopened) == refusal_before
+                        reopened.close()
+                        emit_case(node,case,{'durable_naming_sha256':digest(stable),'readiness':reopened.naming_readiness,
+                                            'child_exit':-9,'reaped':True,'original_cut_snapshot_sha256':digest(observation['snapshot']),
+                                            'receipt_root':str(tmp_path/'receipts')})
+                    finally:reopened.close()
+                if baseline_error:
+                    emit_case(node,case,{'baseline_error':baseline_error,'child_exit':-9,'reaped':True,'receipt_root':str(tmp_path/'receipts')})
+
+        if pending_c17b_receipt is not None:
+            # owned_org's final observer close has also completed; now bind terminal evidence.
+            emit_case(node,case,pending_c17b_receipt)
 
 
 def test_a9_attach_restart_compatibility(tmp_path,monkeypatch):

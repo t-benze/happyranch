@@ -852,6 +852,26 @@ authentication and cleanup do not prove delivered-archive completeness: run
 present. Fixture closure and complete packaging at the corrected head remain
 UNEXECUTED/pending independent evidence; no new run is authorized by these fixes.
 
+Scenario12 C17b preserves the exact BEFORE-team-save cut and shipping cold-load
+call. Its proposed accepted outcome is exact canonical-membership attachment
+refusal, never an attached naming writer. Successful returns and every exception
+attempt independent observations in `evidence/cold-load-refusal.json` (maximum65536 UTF8
+bytes): actual ownership/process facts, full exception module/class/message with
+truncation status and retained innermost frame, separate logical schema/rows/files/
+naming digests, bounded difference locations/counts or observation errors, complete
+archive mapping and durable team/schedule/cancellation observations. Exact source
+class/message/terminal raise and strict full durable equality are required; no
+filtering, initialization exemption or physical database/WAL-byte claim applies.
+All required evidence must be available, well formed and untruncated. Finally
+closes any exact unexpected attachment and the observer; original failure/traceback
+survives closure/diagnostic errors. Only after assertions, all closes and validated
+diagnostic readback does the terminal C17b receipt bind its exact diagnostic path
+and SHA256. Any failed observation, truncation, drift, unexpected cause or closure
+prevents success. Fixed selected failure summaries retain available component digests, owner/process/cut identities, comparison counts/bounded locations, archive/team/schedule/cancellation facts and first/secondary causes. Missing/unavailable fields, omitted excerpts and truncated required evidence are distinct. Validated sibling record path/SHA256 survives any canonical replacement/readback failure; reduced records never replace it. All files stay in C17b evidence/ for existing export discovery. An unwritable destination may prevent new evidence; prior evidence and first traceback remain, with no success. Unique `cold-load-refusal-record-N.json` and `cold-load-refusal-failure-N.json` files are retained under that same evidence directory; failure JSON binds source path, prior validated path/SHA256 and prior failure records. The existing exporter selects every evidence subtree file and hashes the complete inventory; no exporter change is proposed. Initial failure has no invented prior binding. Final cap failure leaves the last validated record intact. Staged and published readback are capped65537, equality checked before canonical replacement, and no diagnostic failure returns a success digest. Original C17b proved
+exception TYPE only; revised positives remain UNEXECUTED and C17c/tails UNREACHED.
+All17 extra deliberate-defect/restoration/repetition proofs including O6 remain
+UNPROVEN/outside naming merge conditions293143, never test-authoring PASS.
+
 ### Historical PR1022 recovery and browser evidence
 
 
