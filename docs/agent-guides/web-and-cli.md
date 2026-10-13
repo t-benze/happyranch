@@ -2003,7 +2003,18 @@ naming verification source. Standalone OpenAPI --check and a genuine served
 schema comparison are both retained in the hosted receipts. Clean hooked
 publication precedes each authorized disposable GitHub naming operation. The
 naming-only workflow and `scripts/identity_names_hosted.sh` are published on the
-open naming PR; each corrected source requires its own attributed verification. The
+open naming PR; each corrected source requires its own attributed verification.
+Its ordinary selection is exactly 20 function selectors / 23 parameterized cases
+for the same twelve scenarios, including C1/four C2/F1. Named daemon receipts,
+complete full-definition/CLI/readback evidence and every selected JUnit outcome
+are required. The exact offline workload container contains nested CLI sessions;
+its stopped ID/state closes that boundary. A SHA256/byte inventory authenticates
+complete export before owned storage cleanup; uncertain closure/export preserves
+partial receipts and exact storage names, subject to the original holder deadline.
+Founder THR293seq143 excludes all 17 additional defect/restoration/repetition
+proofs including O6 from naming merge conditions; they remain UNPROVEN, never
+test-authoring PASS. Independent full review, separate current-candidate behavioral
+QA and the existing lint/hooks/guarded merge/post-main gates still apply. The
 runner preserves source/evidence sentinels through init/prepare/work/export with
 a bounded offline mount holder, refuses output truncation, and reserves cleanup
 under one job-start deadline. Python unit retirement and

@@ -319,7 +319,30 @@ merge, deployment or whole-feature completion.
 these same twelve business scenarios, including necessary supplements at different
 shipping seams. It adds no node-count acceptance rule. Core OrgState/SQL and
 mounted ASGI/CLI assertions remain lower-layer evidence; only `test_identity_names_e2e.py`
-starts a real disposable daemon. Its naming-only fixture uses unchanged
+starts a real disposable daemon. The ordinary selection now retains the original
+17 function selectors and adds the adopted fresh-human C1, four-parameter C2
+(`effort-high`, `clear-effort`, `no-options`, `model-and-effort`) and isolated F1
+owner-validation regression: 20 function selectors / 23 parameterized cases.
+`tests/helpers/identity_names/ordinary-selection.json` names that exact composition;
+these totals describe source selection, not acceptance. Eleven exact daemon case
+IDs must match fixture receipts. Every selected JUnit outcome, including F1, is
+required; failed, skipped, missing, capped or duplicate evidence is incomplete.
+C1 retains fresh public/persisted/canonical/schema observations. C2 retains seeded
+and post-change full definition bytes including Markdown body, public readbacks,
+other files/beta/name revision, actual CLI output and child receipts. Outgoing
+omission/null transport remains UNOBSERVED unless actual evidence establishes it.
+F1 proves only isolated negative owner validation, not complete H/I transactions.
+
+Founder THR293seq143 accepts managerseq141's naming-only evidence exception.
+All 17 additional deliberate-defect/restoration/applicable repetition proofs,
+including O6, remain UNPROVEN and outside naming merge conditions. Four-answer
+records and historical failures/receipts/budgets remain preserved; no test-authoring
+PASS is inferred. The twelve current-candidate scenarios, ownership/changed-main
+verification, independent whole-candidate APPROVE, separate behavioral QA PASS,
+exact lint/static, normal hooks, guarded merge and post-main evidence remain.
+The launcher/export source preparation itself has not executed this composition.
+
+Its naming-only fixture uses unchanged
 `scripts/daemon.sh`, private registration/home and ephemeral loopback ports,
 independent release SQL and explicit source-bound native stub plans. Native
 Claude thread replies and the genuine Codex completion callback use the
@@ -414,7 +437,19 @@ logs are diagnostics only; screenshots and failed nodes cannot be silently dropp
 The runner starts its common27-minute deadline before checkout/tool acquisition,
 reserves120seconds for export and all remaining-time stop/inspect/remove/absence
 calls, and leaves three minutes of the30-minute job for upload/runner overhead.
-The holder is removed after export and other containers, then exact volumes.
+The exact offline resource-bounded workload container contains nested CLI/daemon
+sessions, independently of their process groups. Its stopped Docker ID/state and
+original cgroup/volume observations supply the outer closure receipt for C2.
+The naming-owned exporter binds each daemon fixture to its full actual node ID,
+retains the existing browser/SQL/callback/schema evidence, and writes a complete
+SHA256/byte inventory of copied files. The host authenticates that inventory and
+exact selected JUnit identities/outcomes before destructive storage cleanup.
+It retains named outcomes, partial receipts and the first workload failure.
+After authenticated export and certain child closure, the holder is removed,
+then exact volumes. On uncertain export/closure the holder, volumes and generated
+scripts are retained with exact names; its original deadline still limits holder
+lifetime, and tmpfs bytes are not promised beyond expiry. Copied diagnostic/partial
+host evidence remains for the existing artifact upload. No automatic retry follows.
 Workload failure remains the operation exit if cleanup/export also fails; those
 failures are separately recorded and turn an otherwise-successful operation nonzero.
 Export contains at most256MiB/14000 entries; incomplete proof is never PASS.

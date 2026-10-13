@@ -110,24 +110,35 @@ naming_clean() {
       naming_call 18 65536 export.txt docker cp "$naming_holder:/evidence/." "$naming_destination/" || naming_export_failed=1
       [[ $(cat "$naming_destination/source-sentinel" 2>/dev/null || true) == "$naming_sha" ]] || naming_export_failed=1
       [[ $(cat "$naming_destination/evidence-sentinel" 2>/dev/null || true) == "$naming_sha" ]] || naming_export_failed=1
+      naming_call 10 65536 export-authentication.txt python3 tests/helpers/identity_names/verify_export.py \
+        "$naming_destination" "$naming_sha" "$naming_exit" "$naming_destination/${naming_work}-final.json" "$naming_work" || naming_export_failed=1
     else naming_export_failed=1; fi
-    naming_call 4 65536 holder-stop.txt docker stop --time 2 "$naming_holder" || naming_cleanup_failed=1
-    naming_call 1 65536 holder-final.json docker container inspect "$naming_holder" || naming_cleanup_failed=1
-    naming_call 1 65536 holder-stopped.txt docker inspect --format '{{.State.Running}}:{{.State.Pid}}' "$naming_holder" || naming_cleanup_failed=1
-    [[ $(cat "$naming_destination/holder-stopped.txt") == 'false:0' ]] || naming_cleanup_failed=1
-    naming_call 1 65536 holder-remove.txt docker rm "$naming_holder" || naming_cleanup_failed=1
-    naming_absent container "$naming_holder" holder-absent.txt || naming_cleanup_failed=1
+    # Retain exact holder/volumes on uncertain closure or export. The holder's
+    # original deadline still bounds its lifetime; copied partial receipts remain.
+    if (( ! naming_cleanup_failed && ! naming_export_failed )); then
+      naming_call 4 65536 holder-stop.txt docker stop --time 2 "$naming_holder" || naming_cleanup_failed=1
+      naming_call 1 65536 holder-final.json docker container inspect "$naming_holder" || naming_cleanup_failed=1
+      naming_call 1 65536 holder-stopped.txt docker inspect --format '{{.State.Running}}:{{.State.Pid}}' "$naming_holder" || naming_cleanup_failed=1
+      [[ $(cat "$naming_destination/holder-stopped.txt") == 'false:0' ]] || naming_cleanup_failed=1
+      naming_call 1 65536 holder-remove.txt docker rm "$naming_holder" || naming_cleanup_failed=1
+      naming_absent container "$naming_holder" holder-absent.txt || naming_cleanup_failed=1
+    fi
   else naming_export_failed=1; naming_cleanup_failed=1; fi
-  if (( naming_scratch_created )); then
+  if (( ! naming_cleanup_failed && ! naming_export_failed && naming_scratch_created )); then
     naming_call 1 65536 scratch-remove.txt docker volume rm "$naming_scratch" || naming_cleanup_failed=1
     naming_absent volume "$naming_scratch" scratch-absent.txt || naming_cleanup_failed=1
   fi
-  if (( naming_artifacts_created )); then
+  if (( ! naming_cleanup_failed && ! naming_export_failed && naming_artifacts_created )); then
     naming_call 1 65536 artifacts-remove.txt docker volume rm "$naming_artifacts" || naming_cleanup_failed=1
     naming_absent volume "$naming_artifacts" artifacts-absent.txt || naming_cleanup_failed=1
   fi
   # Only finite runner-generated scripts live here; never arbitrary host data.
-  rm -r -- "$naming_dir" || naming_cleanup_failed=1
+  if (( ! naming_cleanup_failed && ! naming_export_failed )); then
+    rm -r -- "$naming_dir" || naming_cleanup_failed=1
+  else
+    printf 'retained exact holder=%s scratch=%s artifacts=%s scripts=%s; holder lifetime ends at original deadline\n' \
+      "$naming_holder" "$naming_scratch" "$naming_artifacts" "$naming_dir" > "$naming_destination/storage-retained.txt"
+  fi
   printf '{"workload_exit":%d,"cleanup_failed":%d,"export_failed":%d,"source_sha":"%s","image":"%s","deadline_epoch":%d}\n' \
     "$naming_exit" "$naming_cleanup_failed" "$naming_export_failed" "$naming_sha" "$naming_image" "$naming_deadline" > "$naming_destination/operation.json" || naming_cleanup_failed=1
   # Exact finite export:192MiB tmpfs plus<=32MiB stage/control diagnostics,
@@ -187,87 +198,8 @@ naming_limits=(--cpus=1.95 --memory=3840m --memory-swap=3840m --pids-limit=496 -
   --log-driver=local --log-opt max-size=2m --log-opt max-file=1 --log-opt compress=false)
 naming_remaining=$((naming_deadline-$(date +%s)))
 (( naming_remaining > 120 ))
-cat > "$naming_dir/export.cjs" <<'EXPORT'
-const f=require('fs'), p=require('path');
-const root='/scratch/naming-tests', output='/evidence/fixture-artifacts';
-let files=0, bytes=0;
-function walk(directory, target, relative=[]) {
-  for(const entry of f.readdirSync(directory,{withFileTypes:true})) {
-    const source=p.join(directory,entry.name), next=[...relative,entry.name];
-    const chosen=next.includes('evidence') || next.includes('receipts') || entry.name==='ownership.json';
-    if(entry.isSymbolicLink()) { if(chosen) throw Error('symlink in required evidence:'+source); continue; }
-    if(entry.isDirectory()) walk(source,p.join(target,entry.name),next);
-    else if(entry.isFile() && chosen) {
-      const size=f.statSync(source).size;
-      if(size>8*1024**2) throw Error('required evidence exceeds per-file limit:'+source);
-      files++;bytes+=size;
-      if(files>10000 || bytes>192*1024**2) throw Error('required evidence aggregate limit');
-      f.mkdirSync(p.dirname(p.join(target,entry.name)),{recursive:true});
-      f.copyFileSync(source,p.join(target,entry.name));
-    }
-  }
-}
-if(f.existsSync(root)) {
-  for(const entry of f.readdirSync(root,{withFileTypes:true}))
-    if(entry.isDirectory()) walk(p.join(root,entry.name),p.join(output,entry.name));
-}
-f.writeFileSync('/evidence/fixture-export.json',JSON.stringify({files,bytes,workloadExit:Number(process.argv[2])})+'\n');
-if(Number(process.argv[2])===0) {
-  for(const name of ['naming.log','naming.xml','work-status.json','boundary-completed.json'])
-    if(!f.existsSync('/evidence/'+name) || f.statSync('/evidence/'+name).size===0)
-      throw Error('missing required completed evidence:'+name);
-  // Successful pytest tmp_path cleanup must never erase the native proof.
-  if(files===0) throw Error('missing required native fixture evidence');
-  const cases=f.readdirSync(output,{withFileTypes:true}).filter(e=>e.isDirectory()).map(e=>p.join(output,e.name,'evidence'));
-  const requireFile=path=>{
-    if(!f.existsSync(path) || !f.statSync(path).isFile() || f.statSync(path).size===0)
-      throw Error('missing required native evidence:'+path);
-    return f.readFileSync(path);
-  };
-  const json=path=>JSON.parse(requireFile(path));
-  const daemons=cases.filter(directory=>f.existsSync(p.join(directory,'daemon-owned.json')));
-  // The six explicit live selectors each own one daemon fixture.
-  if(daemons.length!==6) throw Error('missing actual daemon ownership/closure');
-  for(const directory of daemons) {
-    json(p.join(directory,'daemon-owned.json'));
-    const closed=json(p.join(directory,'daemon-closure.json'));
-    if(closed.stop_exit!==0 || !closed.pid_dead || !closed.listener_closed || closed.remaining_native_pids.length)
-      throw Error('incomplete actual daemon closure:'+directory);
-  }
-  const sql=cases.filter(directory=>f.existsSync(p.join(directory,'sql-observations.jsonl')));
-  if(!sql.length) throw Error('missing actual SQL observations');
-  for(const directory of sql) requireFile(p.join(directory,'sql-observations.jsonl'));
-  const served=cases.filter(directory=>f.existsSync(p.join(directory,'served-openapi.json')));
-  if(served.length!==1) throw Error('missing unique served-schema evidence');
-  json(p.join(served[0],'served-openapi.json'));
-  const witnesses=cases.filter(directory=>f.existsSync(p.join(directory,'witness','identities.jsonl')));
-  if(!witnesses.length) throw Error('missing genuine callback witness');
-  for(const directory of witnesses) requireFile(p.join(directory,'witness','identities.jsonl'));
-  for(const scenario of ['agent','founder','picker']) {
-    const found=cases.map(directory=>p.join(directory,'browser-'+scenario)).filter(directory=>f.existsSync(p.join(directory,'result.json')));
-    if(found.length!==1) throw Error('missing unique browser proof:'+scenario);
-    const directory=found[0], result=json(p.join(directory,'result.json'));
-    const closed=json(p.join(directory,'browser-closure.json'));
-    if(result.ownedChildrenClosed!==true || closed.remainingPids.length)
-      throw Error('incomplete actual browser closure:'+scenario);
-    requireFile(p.join(directory,'native-children.jsonl'));
-    if(scenario==='picker') {
-      const expected=[];
-      for(const width of [390,1440]) for(const locale of ['en','zh-CN'])
-        for(const theme of ['light','dark']) for(const route of ['agents-maker','settings-organization','threads','tasks'])
-          expected.push(`${route}-${width}-${locale}-${theme}.png`);
-      if(JSON.stringify([...result.screenshots].sort())!==JSON.stringify(expected.sort()))
-        throw Error('incomplete authored route/viewport/locale/theme captures');
-      for(const name of expected) {
-        const png=requireFile(p.join(directory,name));
-        if(png.length>4*1024**2 || !png.subarray(0,8).equals(Buffer.from([137,80,78,71,13,10,26,10])))
-          throw Error('invalid required screenshot:'+name);
-      }
-    }
-  }
-}
-console.log('fixture export complete',files,bytes);
-EXPORT
+cp tests/helpers/identity_names/export.cjs "$naming_dir/export.cjs"
+cp tests/helpers/identity_names/ordinary-selection.json "$naming_dir/ordinary-selection.json"
 naming_call 5 65536 holder-start.txt docker run -d --name "$naming_holder" \
   --cpus=0.05 --memory=64m --memory-swap=64m --pids-limit=16 --read-only \
   --cap-drop=ALL --security-opt=no-new-privileges --network=none --user=1000:1000 \
@@ -275,6 +207,7 @@ naming_call 5 65536 holder-start.txt docker run -d --name "$naming_holder" \
   --mount "type=volume,src=$naming_scratch,dst=/scratch" \
   --mount "type=volume,src=$naming_artifacts,dst=/evidence" \
   --mount "type=bind,src=$naming_dir/export.cjs,dst=/naming-export.cjs,readonly" \
+  --mount "type=bind,src=$naming_dir/ordinary-selection.json,dst=/ordinary-selection.json,readonly" \
   "$naming_image" bash -euc '
     [[ $(</sys/fs/cgroup/memory.max) == 67108864 ]]
     [[ $(</sys/fs/cgroup/memory.swap.max) == 0 ]]
@@ -407,36 +340,10 @@ set +e
 bash tests/helpers/identity_names/run.sh
 status=$?
 set -e
-# Copy only naming-owned basetemp evidence: SQL observations, real captures,
-# actual children/ports/closure and CLI results. Aggregate 192MiB target refuses
-# exhaustion visibly; do not silently omit screenshots/logs after a cap.
-if [ -d /scratch/naming-tests ]; then
-  /source/.venv/bin/python - <<'PY'
-from pathlib import Path
-import shutil
-root=Path('/scratch/naming-tests')
-output=Path('/evidence/fixture-artifacts')
-output.mkdir()
-# Only exact naming fixture evidence/receipts/child ownership; no global temp
-# or dependency/cache/runtime copy, and no silent skip on output exhaustion.
-for directory in root.iterdir():
-    # Pytest's current aliases refer to the same owned fixture, not another case.
-    if directory.is_symlink() or not directory.is_dir():
-        continue
-    for path in directory.rglob('*'):
-        relative=path.relative_to(directory)
-        if ('evidence' not in relative.parts and 'receipts' not in relative.parts
-                and path.name != 'ownership.json'):
-            continue
-        if path.is_symlink():
-            raise RuntimeError(f"symlink in required evidence: {path}")
-        if not path.is_file():
-            continue
-        target=output/directory.name/relative
-        target.parent.mkdir(parents=True,exist_ok=True)
-        shutil.copyfile(path,target)
-PY
-fi
+# The offline holder exports fixture evidence only after this exact workload
+# container closes, including its nested CLI sessions. Preserve the test exit
+# before any later evidence/boundary step can fail.
+printf '{"workload_exit":%d}\n' "$status" > /evidence/work-status.json || true
 # A successful child with a retained tail is incomplete required evidence.
 # Keep the shared bounded-output helper unchanged.
 set +e
@@ -456,10 +363,14 @@ if Path('/evidence/naming.xml').exists():
 PY
 proof_status=$?
 set -e
+set +e
 printf '{"workload_exit":%d,"evidence_check_exit":%d}\n' "$status" "$proof_status" > /evidence/work-status.json
+receipt_status=$?
 bash /boundary.sh completed "$1"
+boundary_status=$?
+set -e
 if (( status )); then exit "$status"; fi
-(( proof_status == 0 )) || exit 125
+(( proof_status == 0 && receipt_status == 0 && boundary_status == 0 )) || exit 125
 test -s /evidence/naming.xml
 test -s /evidence/naming.log
 exit 0

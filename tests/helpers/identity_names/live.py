@@ -194,6 +194,10 @@ def naming_daemon(tmp_path, tmp_home, monkeypatch, fake_claude, fake_codex, fake
                 root / 'workspaces' / key, key, definition.system_prompt, provider=definition.executor)
     evidence = tmp_path / 'evidence'
     evidence.mkdir()
+    # Bind exported fixture evidence to the actual selected parameterized case.
+    (evidence / 'naming-case.json').write_text(json.dumps({
+        'nodeid': request.node.nodeid, 'fixture_root': str(tmp_path),
+        'runtime': str(runtime.root), 'source': str(SOURCE)}))
     witness = evidence / 'witness'
     witness.mkdir(mode=0o700)
     monkeypatch.setenv('HAPPYRANCH_TEST_WITNESS_DIR', str(witness))
