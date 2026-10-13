@@ -742,7 +742,7 @@ def attachment_history_failure_only_read_adapter(database, task, variant):
     if variant in malformed:selected['payload']=malformed[variant]
     else:
         edits={'wrong-version':('version',2),'bool-version':('version',True),
-            'wrong-code':('error_code','unknown'),'ordinal-gap':('opportunity',2),
+            'wrong-code':('error_code','unknown'),'ordinal-gap':('opportunity',4),
             'third-ordinal':('opportunity',3),'bool-ordinal':('opportunity',True),
             'missing-accepted':('accepted_result_id',999999999),'orphan-result':('feedback_result_id',999999999),
             'cross-role':('feedback_result_id',marker['accepted_result_id']),
