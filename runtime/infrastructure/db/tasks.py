@@ -17,6 +17,7 @@ from runtime.models import (
     WorkHourStatus,
     DreamStatus,
     TaskRecord,
+    NextStep,
     TaskStatus,
     ThreadInvocationPurpose,
     ThreadInvocationStatus,
@@ -84,6 +85,49 @@ class PendingRetry:
     claim: RetryClaim
     result_id: int
     feedback: str
+
+
+_ATTACHMENT_ERROR_CODES = frozenset({
+    "too_many_attachments", "duplicate_attachment", "task_attachment_not_found",
+    "attachment_already_claimed", "invalid_attachment_display_name",
+    "unsupported_attachment_type",
+})
+_ATTACHMENT_STOP_FIELDS = (
+    "id", "task_type", "parent_task_id", "assigned_agent", "team",
+    "current_session_id", "orchestration_step_count", "revision_count", "note",
+    "cancelled_at", "block_kind", "status", "active_chain", "active_fanout",
+    "updated_at", "completed_at",
+)
+
+
+@dataclass(frozen=True)
+class AttachmentCorrectionStopped:
+    """Winning stop identity captured inside the writer, never a replay receipt."""
+
+    claim: RetryClaim
+    task_projection: tuple
+    accepted_result_digest: str
+    audit_pair: tuple[str, ...]
+    active_envelope: str | None
+    worktree_before: str | None
+    worktree_after: str | None
+
+
+def _attachment_material_digest(row) -> str:
+    return hashlib.sha256(json.dumps(dict(row), sort_keys=True,
+                                    ensure_ascii=True).encode("utf-8")).hexdigest()
+
+
+def _attachment_history_require(condition: bool) -> None:
+    if not condition:
+        raise ValueError("attachment correction history is invalid; preserve evidence for owner remediation")
+
+
+def _attachment_emitted_timestamp(value) -> None:
+    _attachment_history_require(type(value) is str)
+    parsed = datetime.fromisoformat(value)
+    _attachment_history_require(parsed.utcoffset() == timezone.utc.utcoffset(parsed)
+                                and parsed.isoformat() == value)
 
 
 class _RetryEvidenceRefusal(Exception):
@@ -1418,23 +1462,211 @@ class TasksMixin:
             if not self._retry_claim_matches(expected_claim):
                 self._conn.rollback()
                 return LostClaim()
-            self._insert_task_result(
-                task_id=expected_claim.task_id, agent=expected_claim.assigned_agent,
-                session_id="", status="completed", confidence_score=0,
-                output_summary=feedback, risks_flagged=[],
-            )
-            result_id = self._conn.execute("SELECT last_insert_rowid()").fetchone()[0]
-            self.insert_audit_log_uncommitted(
-                task_id=expected_claim.task_id, agent="orchestrator", action="orchestration_step",
-                payload={"step_number": expected_claim.step,
-                         "decision": {"action": "feedback", "reason": feedback}},
-            )
-            self._conn.execute(
-                "UPDATE tasks SET status = 'pending', block_kind = NULL, updated_at = ? WHERE id = ?",
-                (datetime.now(timezone.utc).isoformat(), expected_claim.task_id),
+            pending = self._retry_feedback_uncommitted(expected_claim, feedback)
+            self._conn.commit()
+            return pending
+        except BaseException:
+            self._conn.rollback()
+            raise
+
+    def _retry_feedback_uncommitted(
+        self, expected_claim: RetryClaim, feedback: str, correction: dict | None = None,
+    ) -> PendingRetry:
+        """Caller owns BEGIN/claim/commit; generic feedback defaults stay literal."""
+        self._insert_task_result(
+            task_id=expected_claim.task_id, agent=expected_claim.assigned_agent,
+            session_id="", status="completed", confidence_score=0,
+            output_summary=feedback, risks_flagged=[],
+        )
+        result_id = self._conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        self.insert_audit_log_uncommitted(
+            task_id=expected_claim.task_id, agent="orchestrator", action="orchestration_step",
+            payload={"step_number": expected_claim.step,
+                     "decision": {"action": "feedback", "reason": feedback},
+                     **({"attachment_correction": {**correction, "feedback_result_id": result_id}}
+                        if correction is not None else {})},
+        )
+        self._conn.execute(
+            "UPDATE tasks SET status = 'pending', block_kind = NULL, updated_at = ? WHERE id = ?",
+            (datetime.now(timezone.utc).isoformat(), expected_claim.task_id),
+        )
+        return PendingRetry(expected_claim, result_id, feedback)
+
+    def _attachment_correction_rows_txn(self, task_id: str) -> list:
+        return self._conn.execute(
+            "SELECT * FROM audit_log WHERE task_id=? AND action='orchestration_step' ORDER BY id",
+            (task_id,),
+        ).fetchall()
+
+    def _attachment_initial_result_txn(self, task_id: str, result_id: int, step: int,
+                                       audits: list, *, before_audit_id: int | None = None):
+        _attachment_history_require(type(result_id) is int and result_id > 0
+                                    and type(step) is int and step > 0)
+        row = self._conn.execute("SELECT * FROM task_results WHERE id=?", (result_id,)).fetchone()
+        _attachment_history_require(row is not None and row["task_id"] == task_id
+                                    and row["status"] == "completed"
+                                    and type(row["agent"]) is str and bool(row["agent"])
+                                    and type(row["session_id"]) is str and bool(row["session_id"])
+                                    and type(row["decision_json"]) is str and bool(row["decision_json"]))
+        _attachment_emitted_timestamp(row["created_at"])
+        try:
+            raw = strict_json(row["decision_json"], allow_floats=True)
+            decision = NextStep.model_validate(raw)
+        except (ReconciliationError, ValueError) as exc:
+            raise ValueError("attachment accepted decision evidence is invalid") from exc
+        _attachment_history_require(decision.action in {"delegate", "fanout"})
+        matching = []
+        for audit, payload in audits:
+            if payload["step_number"] != step or payload["decision"].get("action") == "feedback":
+                continue
+            # The exact contemporaneous initial action is required, with only
+            # the existing parser's parallel alias/default interpretation.
+            _attachment_history_require(before_audit_id is None or audit["id"] < before_audit_id)
+            try:
+                audited_decision = NextStep.model_validate(payload["decision"])
+            except ValueError as exc:
+                raise ValueError("attachment initial step evidence is invalid") from exc
+            _attachment_history_require(audit["agent"] == "orchestrator"
+                                        and audited_decision.model_dump() == decision.model_dump())
+            matching.append(audit["id"])
+        _attachment_history_require(len(matching) == 1)
+        return row
+
+    def _attachment_correction_history_txn(self, task_id: str) -> list[dict]:
+        """Read ALL exact-task rows strictly, without repairing or charging legacy rows."""
+        audits = []
+        for row in self._attachment_correction_rows_txn(task_id):
+            try:
+                payload = strict_json(row["payload"], allow_floats=True)
+            except ReconciliationError as exc:
+                raise ValueError("attachment exact-task step history is undecodable") from exc
+            _attachment_history_require(type(row["id"]) is int and row["id"] > 0
+                                        and row["task_id"] == task_id
+                                        and row["action"] == "orchestration_step"
+                                        and type(payload.get("step_number")) is int
+                                        and payload["step_number"] > 0
+                                        and type(payload.get("decision")) is dict
+                                        and type(payload["decision"].get("action")) is str)
+            _attachment_history_require(payload["decision"]["action"] in
+                                        {"delegate", "done", "escalate", "fanout", "parallel", "supersede", "feedback"})
+            if payload["decision"]["action"] == "feedback":
+                _attachment_history_require(type(payload["decision"].get("reason")) is str)
+            else:
+                try:
+                    NextStep.model_validate(payload["decision"])
+                except ValueError as exc:
+                    raise ValueError("attachment exact-task decision history is invalid") from exc
+            audits.append((row, payload))
+        history, used_results, last_step = [], set(), 0
+        for audit, payload in audits:
+            if "attachment_correction" not in payload:
+                continue
+            marker = payload["attachment_correction"]
+            _attachment_history_require(set(payload) == {"step_number", "decision", "attachment_correction"}
+                                        and audit["agent"] == "orchestrator" and type(marker) is dict)
+            _attachment_history_require(set(marker) == {"version", "opportunity", "accepted_result_id",
+                "accepted_session_id", "feedback_result_id", "error_code"})
+            _attachment_history_require(type(marker["version"]) is int and marker["version"] == 1
+                and type(marker["opportunity"]) is int and marker["opportunity"] == len(history)+1
+                and len(history) < 2 and payload["step_number"] > last_step
+                and type(marker["error_code"]) is str and marker["error_code"] in _ATTACHMENT_ERROR_CODES
+                and type(marker["accepted_session_id"]) is str and bool(marker["accepted_session_id"])
+                and set(payload["decision"]) == {"action", "reason"}
+                and payload["decision"]["action"] == "feedback"
+                and type(payload["decision"]["reason"]) is str)
+            accepted_id, feedback_id = marker["accepted_result_id"], marker["feedback_result_id"]
+            _attachment_history_require(type(accepted_id) is int and type(feedback_id) is int
+                and 0 < accepted_id < feedback_id and accepted_id not in used_results
+                and feedback_id not in used_results)
+            accepted = self._attachment_initial_result_txn(task_id, accepted_id, payload["step_number"],
+                                                         audits, before_audit_id=audit["id"])
+            _attachment_history_require(accepted["session_id"] == marker["accepted_session_id"])
+            feedback = self._conn.execute("SELECT * FROM task_results WHERE id=?", (feedback_id,)).fetchone()
+            _attachment_history_require(feedback is not None and feedback["task_id"] == task_id
+                and feedback["agent"] == accepted["agent"] and feedback["session_id"] == ""
+                and feedback["status"] == "completed" and type(feedback["confidence_score"]) is int
+                and feedback["confidence_score"] == 0 and feedback["decision_json"] is None
+                and feedback["output_summary"] == payload["decision"]["reason"]
+                and feedback["risks_flagged"] == "[]"
+                and all(feedback[field] is None for field in ("learnings", "duration_seconds", "token_count",
+                    "estimated_cost", "output_dir", "waiting_on_job_ids", "verdict", "local_ci")))
+            _attachment_emitted_timestamp(audit["timestamp"])
+            _attachment_emitted_timestamp(feedback["created_at"])
+            used_results.update((accepted_id, feedback_id))
+            last_step = payload["step_number"]
+            history.append(marker)
+        return history
+
+    @_synchronized
+    def try_attachment_retry_feedback(
+        self, expected_claim: RetryClaim, feedback: str, attachment_error: str,
+    ) -> PendingRetry | LostClaim | AttachmentCorrectionStopped:
+        """One original-claim reservation owns count and either A or the final stop."""
+        if type(attachment_error) is not str or attachment_error not in _ATTACHMENT_ERROR_CODES:
+            raise ValueError("unrecognized attachment correction code")
+        if type(feedback) is not str or not feedback:
+            raise ValueError("attachment correction feedback is required")
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            if not self._retry_claim_matches(expected_claim):
+                self._conn.rollback()
+                return LostClaim()
+            task = self._conn.execute("SELECT * FROM tasks WHERE id=?", (expected_claim.task_id,)).fetchone()
+            _attachment_history_require(task["task_type"] == "task")
+            history = self._attachment_correction_history_txn(expected_claim.task_id)
+            audits = [(row, strict_json(row["payload"], allow_floats=True))
+                      for row in self._attachment_correction_rows_txn(expected_claim.task_id)]
+            accepted = self._attachment_initial_result_txn(expected_claim.task_id,
+                                                          expected_claim.result_row_id, expected_claim.step, audits)
+            _attachment_history_require(accepted["agent"] == expected_claim.assigned_agent
+                                        and accepted["session_id"] == expected_claim.current_session_id
+                                        and all(accepted["id"] not in {m["accepted_result_id"], m["feedback_result_id"]}
+                                                for m in history))
+            if history:
+                last_audit_step = max(payload["step_number"] for _, payload in audits
+                                      if "attachment_correction" in payload)
+                _attachment_history_require(expected_claim.step > last_audit_step)
+            if len(history) < 2:
+                pending = self._retry_feedback_uncommitted(expected_claim, feedback, {
+                    "version": 1, "opportunity": len(history)+1,
+                    "accepted_result_id": accepted["id"], "accepted_session_id": accepted["session_id"],
+                    "error_code": attachment_error,
+                })
+                self._conn.commit()
+                return pending
+            # Count2 never writes a third feedback or enters B.
+            if not self._retry_claim_matches(expected_claim):
+                self._conn.rollback()
+                return LostClaim()
+            now = datetime.now(timezone.utc).isoformat()
+            note = "attachment correction opportunities exhausted (2): " + feedback
+            before = self.terminal_worktree_task_projection(expected_claim.task_id)
+            envelope = self.get_active_authority_continue_envelope(expected_claim.task_id)
+            audit_pair = ()
+            if task["parent_task_id"] is None:
+                ids = self._escalate_runtime_uncommitted(
+                    expected_claim.task_id, reason=note, agent="orchestrator",
+                    reason_code="attachment_correction_exhausted", now=now,
+                    state_predicate="status = ? AND block_kind IS NULL", state_args=("in_progress",),
+                )
+                _attachment_history_require(ids is not None)
+                audit_pair = tuple(json.dumps(dict(self._conn.execute(
+                    "SELECT * FROM audit_log WHERE id=?", (audit_id,)).fetchone()), sort_keys=True)
+                    for audit_id in ids)
+            else:
+                self._conn.execute("UPDATE tasks SET status='failed', block_kind=NULL, note=?, "
+                    "completed_at=?, updated_at=?, active_chain=NULL, active_fanout=NULL WHERE id=?",
+                    (note, now, now, expected_claim.task_id))
+            stopped_task = self._conn.execute("SELECT * FROM tasks WHERE id=?", (expected_claim.task_id,)).fetchone()
+            stopped = AttachmentCorrectionStopped(
+                expected_claim, tuple(stopped_task[key] for key in _ATTACHMENT_STOP_FIELDS),
+                _attachment_material_digest(accepted), audit_pair,
+                json.dumps(dict(envelope), sort_keys=True) if envelope is not None else None,
+                json.dumps(before, sort_keys=True) if before is not None else None,
+                json.dumps(self.terminal_worktree_task_projection(expected_claim.task_id), sort_keys=True),
             )
             self._conn.commit()
-            return PendingRetry(expected_claim, result_id, feedback)
+            return stopped
         except BaseException:
             self._conn.rollback()
             raise

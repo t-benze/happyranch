@@ -1124,6 +1124,50 @@ change must not trigger a request, mutation or transport restart. See
 
 Before editing code, inspect the relevant definitions and affected callers, imports, and configuration consumers using targeted searches. Briefly summarize the expected files and symbols, affected behavior, material risks, and supporting findings in a progress message. Scale the investigation to the change; documentation-only edits need only a scope statement. Summarize findings rather than raw search output; no separate report file is required. If the scope expands, update the summary before making those edits.
 
+
+
+Each attachment storage_key can be claimed by one task only, including within
+the same tree. Each direct, child or then-leg list allows at most five refs;
+keys must be unique across the entire initial decision, including siblings and
+nested legs. Carrier top-level refs belong to the carrier; its first leg reads
+through ancestry without a second claim. Initial fanout preserves both child
+and nested attachment fields; later chain advancement keeps its existing rules.
+
+Recognized initial pre-child errors include too_many_attachments,
+duplicate_attachment, task_attachment_not_found, attachment_already_claimed,
+invalid_attachment_display_name and unsupported_attachment_type. Feedback gives
+the code, escaped key when supplied, and remediation. Correct in a genuinely
+new authorized session/result; never replay the consumed result. Each
+decision-owning task has at most TWO committed attachment-error feedback
+opportunities shared across sessions and initial delegate/fanout/parallel.
+Committed A consumes a chance even if B/enqueue is lost. The third recognized
+error uses the existing root ESCALATED or nonroot FAILED disposition. A valid
+correction after two remains eligible under current authority and revision
+limits. Other authoring, revise, slice and total-step rules stay unchanged.
+The exact-task append-only orchestration_step feedback audit adds
+attachment_correction version1 with opportunity, accepted_result_id,
+accepted_session_id, feedback_result_id and error_code. Strict history reads
+validate genuine result/step associations; ambiguous history refuses without
+repair. One synchronized BEGIN IMMEDIATE checks the ORIGINAL RetryClaim and
+history/count, then commits A (feedback/PENDING) or the exhausted stop atomically.
+B separately reserves the exact pending fingerprint through synchronous enqueue;
+queue insertion is not a durable claim or crash-atomic exactly-once guarantee.
+SQLite/OSError/transaction/postcommit failures retain their existing boundaries;
+only six exact built-in ValueError shapes at initial validation/preparation
+recover. Callback admission, receipt identity/history and once-only consumption
+are preserved. Old schema readers do not enforce this new budget policy.
+Stop tails use the captured winning owner and recheck before initiation. Existing
+external cross-process/cross-await job, cleanup and notification limits remain;
+source inspection supplies no behavioral or automatic-startup coverage.
+Keep task-only evidence in output/<actual-task-id>, report output_dir and use
+supported recall. Do not reattach an already-claimed maker key to a reviewer.
+For a distinct attachment handoff upload a fresh authorized copy with
+`happyranch attach-upload --org ORG --as-agent CURRENT_AGENT --file /absolute/source`
+within the actual authorized environment (upload has no --session-id flag).
+Inherited access grants reading, not another claim. Never upload task-only
+logs/screenshots/review packets to Shared Artifacts as an ownership workaround.
+
+
 **Verified retry transactions.** Final single/fanout spawn rereads the original
 report claim and recorded retry evidence only after `BEGIN IMMEDIATE` under the
 Database RLock. `Committed` alone enqueues children; `InvalidLineage` uses owned

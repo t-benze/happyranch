@@ -37,7 +37,7 @@ from types import ModuleType
 from typing import TYPE_CHECKING, Any, Callable, NamedTuple
 
 from runtime.infrastructure.database import (
-    Committed, InvalidLineage, LostClaim, PendingRetry, RetryClaim, SpawnOutcome,
+    AttachmentCorrectionStopped, Committed, InvalidLineage, LostClaim, PendingRetry, RetryClaim, SpawnOutcome,
 )
 from runtime.models import BlockKind, TaskStatus
 from runtime.orchestrator.org_config import load_org_config
@@ -881,6 +881,7 @@ async def _await_worktree_cleanup(operation: Callable[..., Any], *args: Any, **k
 def _reclaim_terminal_task_worktree(
     orch: "Orchestrator", task_id: str, *, transition: _RootWorktreeTransition | None = None,
     original_task: TaskRecord | None = None,
+    current_owner: Callable[[], bool] | None = None,
 ) -> TerminalWorktreeReclaimOutcome:
     """Remove one exact clean, durable, quiescent task worktree fail-closed.
 
@@ -888,6 +889,8 @@ def _reclaim_terminal_task_worktree(
     worktrees, retries, deletes a branch, changes task state, signals a process,
     or raises into the terminal transition that called it.
     """
+    if current_owner is not None and not current_owner():
+        return TerminalWorktreeReclaimOutcome("preserved", "attachment_stop_owner_lost")
     # Original owners already captured this root (including unavailable
     # capture). Its one shared batch owns all cleanup observations; a notice
     # lookup here would reset the DB/work allowance before that batch runs.
@@ -926,6 +929,8 @@ def _reclaim_terminal_task_worktree(
         return TerminalWorktreeReclaimOutcome("preserved", reason)
 
     def run(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
+        if current_owner is not None and not current_owner():
+            raise ValueError("attachment_stop_owner_lost")
         result = _run_terminal_worktree_command(
             args,
             cwd=cwd,
@@ -3361,22 +3366,33 @@ def _consume_completion_report_body(
                 cd["revisit_of_task_id"] = c.revisit_of_task_id
             if c.expect_verdict is not None:
                 cd["expect_verdict"] = c.expect_verdict
+            if c.attachments:
+                cd["attachments"] = [ref.model_dump(exclude_none=True) for ref in c.attachments]
             if c.then:
                 cd["then"] = [
                     {"agent": l.agent, "prompt": l.prompt,
-                     "expect_verdict": l.expect_verdict}
+                     "expect_verdict": l.expect_verdict,
+                     **({"attachments": [ref.model_dump(exclude_none=True) for ref in l.attachments]}
+                        if l.attachments else {})}
                     for l in c.then
                 ]
             children_payload.append(cd)
-        outcome = _spawn_fanout_children(
-            orch, task, task_id, next_count,
-            children=children_payload,
-            width=width,
-            manager_agent=agent,
-            join_summary=decision.join_summary,
-            step_audit_id=_step_audit_id,
-            expected_claim=expected_claim,
-        )
+        try:
+            outcome = _spawn_fanout_children(
+                orch, task, task_id, next_count,
+                children=children_payload,
+                width=width,
+                manager_agent=agent,
+                join_summary=decision.join_summary,
+                step_audit_id=_step_audit_id,
+                expected_claim=expected_claim,
+            )
+        except _PreChildDecisionAttachmentError as exc:
+            _attachment_feedback_and_reenqueue(
+                orch, expected_claim, exc.detail, location=exc.location,
+                reclaim_terminal_worktree=reclaim_terminal_worktree,
+            )
+            return
         if isinstance(outcome, InvalidLineage):
             _reject_retry_link_decision(orch, task_id, agent, next_count, outcome.reason,
                                         expected_claim=expected_claim)
@@ -3552,6 +3568,13 @@ def _consume_completion_report_body(
                         orch, prevalidated,
                     )
             except ValueError as e:
+                detail = _classify_attachment_error(e)
+                if detail is not None:
+                    _attachment_feedback_and_reenqueue(
+                        orch, expected_claim, detail,
+                        reclaim_terminal_worktree=reclaim_terminal_worktree,
+                    )
+                    return
                 note = f"invalid decision attachments: {e}"
                 _fail(
                     orch, task_id, note=note,
@@ -3668,6 +3691,169 @@ def _validate_one_leg(orch: "Orchestrator", *, agent: str | None, where: str) ->
     return None
 
 
+_ATTACHMENT_REMEDIATION = {
+    "too_many_attachments": "Reduce each task/leg list to at most five attachments.",
+    "duplicate_attachment": "Use distinct fresh authorized uploads for each claiming task/leg; inherited access is reading, not a second claim.",
+    "task_attachment_not_found": "Correct the reference or upload the permitted source anew before delegating.",
+    "attachment_already_claimed": "A key belongs to one task, even in the same tree. Use output_dir/recall or a fresh authorized task upload for the handoff.",
+    "invalid_attachment_display_name": "Use a safe supported filename without path separators or control characters (maximum 200 characters).",
+    "unsupported_attachment_type": "Use the allowlisted extension matching the authorized file; do not relabel incompatible bytes or bypass MIME checks.",
+}
+
+
+def _classify_attachment_error(exc: ValueError) -> dict | None:
+    """Only the six exact built-in validator/preparation emissions are recoverable."""
+    if type(exc) is not ValueError or len(exc.args) != 1 or type(exc.args[0]) is not str:
+        return None
+
+    def pairs(items: list[tuple[str, object]]) -> dict[str, object]:
+        result = {}
+        for key, value in items:
+            if key in result:
+                raise ValueError("duplicate JSON member")
+            result[key] = value
+        return result
+
+    def constant(_: str) -> None:
+        raise ValueError("nonstandard JSON constant")
+
+    try:
+        detail = json.loads(exc.args[0], object_pairs_hook=pairs, parse_constant=constant)
+        if type(detail) is not dict or type(detail.get("code")) is not str:
+            return None
+        code = detail["code"]
+        if code not in _ATTACHMENT_REMEDIATION:
+            return None
+        fields = {"code"}
+        if code == "too_many_attachments":
+            fields.add("max")
+            if type(detail.get("max")) is not int or detail["max"] != 5:
+                return None
+        if code in {"duplicate_attachment", "task_attachment_not_found", "attachment_already_claimed"}:
+            fields.add("storage_key")
+            if type(detail.get("storage_key")) is not str or not detail["storage_key"]:
+                return None
+        if code == "attachment_already_claimed":
+            fields.add("task_id")
+            if type(detail.get("task_id")) is not str or not detail["task_id"]:
+                return None
+        if set(detail) != fields:
+            return None
+        # Reject lone surrogates even though the JSON decoder accepts them.
+        for value in detail.values():
+            if type(value) is str:
+                value.encode("utf-8")
+        return detail
+    except (ValueError, UnicodeError, RecursionError):
+        return None
+
+
+class _PreChildDecisionAttachmentError(Exception):
+    """Private transport from recognized fanout pre-child seams only."""
+    def __init__(self, detail: dict, location: str) -> None:
+        self.detail, self.location = detail, location
+        super().__init__(detail["code"])
+
+
+def _attachment_feedback_text(detail: dict, location: str | None) -> str:
+    text = "Invalid initial decision attachments: " + detail["code"]
+    if location:
+        text += " at " + location
+    if "storage_key" in detail:
+        text += " storage_key=" + json.dumps(detail["storage_key"][:200], ensure_ascii=True)
+    if "task_id" in detail:
+        text += " claimed_by=" + json.dumps(detail["task_id"][:200], ensure_ascii=True)
+    return (text + ". " + _ATTACHMENT_REMEDIATION[detail["code"]]
+            + " Correct in a genuinely new authorized session/result; never replay the consumed result. "
+            "At most two committed attachment-error feedback opportunities are shared by this task across sessions and initial delegate/fanout decisions. "
+            "Committed feedback spends a chance even when enqueue is lost; current authority and revision limits still govern. "
+            "Keep task-only evidence in output_dir/recall, not Shared Artifacts.")
+
+
+def _attachment_stop_owner_current(orch: "Orchestrator", stopped: AttachmentCorrectionStopped) -> bool:
+    from runtime.infrastructure.db.tasks import _ATTACHMENT_STOP_FIELDS, _attachment_material_digest
+    db = orch._db
+    row = db._conn.execute("SELECT * FROM tasks WHERE id=?", (stopped.claim.task_id,)).fetchone()
+    if row is None or tuple(row[key] for key in _ATTACHMENT_STOP_FIELDS) != stopped.task_projection:
+        return False
+    result = db._conn.execute("SELECT * FROM task_results WHERE id=?", (stopped.claim.result_row_id,)).fetchone()
+    if result is None or _attachment_material_digest(result) != stopped.accepted_result_digest:
+        return False
+    for raw in stopped.audit_pair:
+        audit = json.loads(raw)
+        current = db._conn.execute("SELECT * FROM audit_log WHERE id=?", (audit["id"],)).fetchone()
+        if current is None or json.dumps(dict(current), sort_keys=True) != raw:
+            return False
+    return True
+
+
+def _attachment_owned_effect(
+    orch: "Orchestrator", current_owner: Callable[[], bool],
+    effect: Callable[[], object], *, history: bool = False,
+) -> object | None:
+    """Same-daemon fence; history additionally reserves independent SQLite writers."""
+    with orch._db._lock:
+        try:
+            if history:
+                orch._db._conn.execute("BEGIN IMMEDIATE")
+            if current_owner():
+                return effect()
+        finally:
+            if history:
+                orch._db._conn.rollback()
+
+
+def _attachment_feedback_and_reenqueue(
+    orch: "Orchestrator", expected_claim: RetryClaim, detail: dict, *,
+    location: str | None = None, reclaim_terminal_worktree: bool = True,
+) -> None:
+    feedback = _attachment_feedback_text(detail, location)
+    outcome = orch._db.try_attachment_retry_feedback(expected_claim, feedback, detail["code"])
+    if isinstance(outcome, PendingRetry):
+        enqueue = None if orch._queue is None else lambda: orch._queue.put_nowait(orch._slug, expected_claim.task_id)
+        orch._db.admit_retry_feedback(outcome, enqueue)
+        return
+    if not isinstance(outcome, AttachmentCorrectionStopped):
+        return
+    task_id = expected_claim.task_id
+    current = lambda: _attachment_stop_owner_current(orch, outcome)
+    # Normal continued-turn handling normally already spent this envelope.
+    # Never spend a replacement selected after the winning stop.
+    def abort_original_envelope():
+        envelope = orch._db.get_active_authority_continue_envelope(task_id)
+        if (outcome.active_envelope is not None and envelope is not None
+                and json.dumps(dict(envelope), sort_keys=True) == outcome.active_envelope):
+            orch._db.spend_authority_continue_envelope_if_active(
+                task_id, audit_agent=expected_claim.assigned_agent or "orchestrator",
+                error="task stopped after attachment correction opportunities were exhausted",
+            )
+    _attachment_owned_effect(orch, current, abort_original_envelope)
+    root_transitions = _RootWorktreeTransitions()
+    if outcome.worktree_before and outcome.worktree_after:
+        before, after = json.loads(outcome.worktree_before), json.loads(outcome.worktree_after)
+        if (before["parent_task_id"] is None and before["status"] not in {s.value for s in TERMINAL_STATES}
+                and after["status"] in {s.value for s in TERMINAL_STATES}):
+            root_transitions.append(_RootWorktreeTransition(before, after, "attachment_correction_stop"))
+    is_root_stop = bool(outcome.audit_pair)
+    if is_root_stop:
+        _attachment_owned_effect(orch, current, lambda: orch.notify_escalated(
+            task_id=task_id, agent="orchestrator", reason=outcome.task_projection[8],
+        ))
+        _attachment_owned_effect(orch, current, lambda: _maybe_post_thread_escalation(
+            orch, task_id, reason=outcome.task_projection[8], current_owner=current,
+        ))
+    else:
+        _fail_terminal_tail(orch, task_id, reclaim_terminal_worktree=reclaim_terminal_worktree,
+                            current_owner=current, root_transitions=root_transitions)
+        _attachment_owned_effect(orch, current, lambda: _enqueue_parent_if_waiting(
+            orch, task_id, current_owner=current,
+        ))
+        _attachment_owned_effect(orch, current, lambda: _maybe_post_thread_followup(
+            orch, task_id, status=TaskStatus.FAILED, auto_revisit_spawned=False,
+            current_owner=current,
+        ))
+
+
 def _prepare_attachment_params(
     orch: "Orchestrator",
     prevalidated: list[dict],
@@ -3724,8 +3910,9 @@ def _validate_decision_attachments(
     different chain legs, is rejected before any child/spawn/park/chain state.
     One shared key ledger covers every declared ref in the decision.
 
-    Raises ValueError (JSON-encoded error) on validation failure, causing
-    the orchestrator to fail the task with an informative note.
+    Raises ValueError (JSON-encoded error) on validation failure. Initial
+    dispatch recognizes only the six closed attachment-error shapes for owned
+    feedback; later chain advancement retains its existing failure semantics.
     """
     from runtime.infrastructure.task_attachment_store import (
         TaskAttachmentStore,
@@ -4422,9 +4609,12 @@ def _fail_terminal_tail(
     reclaim_terminal_worktree: bool = True,
     expected_note: str | None = None,
     root_transitions: list | None = None,
+    current_owner: Callable[[], bool] | None = None,
 ) -> None:
     """Run `_fail`'s post-transition effects, optionally owner-fenced."""
     def current() -> bool:
+        if current_owner is not None and not current_owner():
+            return False
         task = orch._db.get_task(task_id)
         if task is not None and task.task_type == "subtask" and task.assigned_agent:
             try:
@@ -4444,13 +4634,24 @@ def _fail_terminal_tail(
     tail_failed = False
     try:
         if current():
-            _log_verdict_if_delegated(orch, task_id, success=False)
+            if current_owner is None:
+                _log_verdict_if_delegated(orch, task_id, success=False)
+            else:
+                _attachment_owned_effect(orch, current, lambda: _log_verdict_if_delegated(orch, task_id, success=False))
         if current():
-            orch._update_task_history(task_id)
+            if current_owner is None:
+                orch._update_task_history(task_id)
+            else:
+                _attachment_owned_effect(orch, current, lambda: orch._update_task_history(task_id), history=True)
         if current():
-            _kill_jobs_for_terminating_task(orch, task_id)
+            if current_owner is None:
+                _kill_jobs_for_terminating_task(orch, task_id)
+            else:
+                _attachment_owned_effect(orch, current, lambda: _kill_jobs_for_terminating_task(
+                    orch, task_id, current_owner=current,
+                ))
         if reclaim_terminal_worktree and not root_transitions and current():
-            _reclaim_terminal_task_worktree(orch, task_id)
+            _reclaim_terminal_task_worktree(orch, task_id, current_owner=current_owner)
     except BaseException:
         tail_failed = True
         raise
@@ -4535,6 +4736,7 @@ def _kill_jobs_for_terminating_task(
     root_transitions: list | None = None,
     after_recovery_parent_effect: Callable[[], None] | None = None,
     human_recovery_operation: _HumanFailedRecoveryOperation | None = None,
+    current_owner: Callable[[], bool] | None = None,
 ) -> asyncio.Task | None:
     """Fire-and-forget: kill all in-flight persistent jobs owned by ``task_id``.
 
@@ -4552,6 +4754,8 @@ def _kill_jobs_for_terminating_task(
     worker with no event loop of its own.
     """
     db = orch._db
+    if current_owner is not None and not current_owner():
+        return
     inflight_map = (
         {job_id: task_id for job_id in recovery_job_ids}
         if recovery_job_ids is not None else db.get_running_job_task_ids()
@@ -4621,6 +4825,9 @@ def _kill_jobs_for_terminating_task(
             operation.phase = "parent_handoff"
             _drive_human_failed_recovery(orch, operation)
             return
+        with db._lock:
+            if current_owner is not None and not current_owner():
+                return
         drain_failed = False
         try:
             await terminate_jobs_for_task(task_id, inflight_to_task=inflight_map)
@@ -4630,7 +4837,10 @@ def _kill_jobs_for_terminating_task(
             # termination, signals, or the runner's grace-period wait above.
             now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
             if recovery_owner is None:
-                db.backstop_terminated_task_jobs(task_id, finished_at=now)
+                if current_owner is None:
+                    db.backstop_terminated_task_jobs(task_id, finished_at=now)
+                else:
+                    _attachment_owned_effect(orch, current_owner, lambda: db.backstop_terminated_task_jobs(task_id, finished_at=now))
             else:
                 agent, session_id, result_row_id, terminal_status = recovery_owner
                 handed_off = False
@@ -5206,6 +5416,7 @@ def _enqueue_parent_if_waiting(
     task_id: str,
     *,
     root_auto_revisit_spawned: bool = False,
+    current_owner: Callable[[], bool] | None = None,
 ) -> None:
     """Idempotent: advance the parent only if it's actually waiting on THIS
     lineage (in_progress+delegated) AND all its children are now terminal.
@@ -5233,6 +5444,8 @@ def _enqueue_parent_if_waiting(
     to auto-advance as before; on mismatch it clears the chain and wakes
     the parent.
     """
+    if current_owner is not None and not current_owner():
+        return
     task = orch._db.get_task(task_id)
     if task is None or task.parent_task_id is None:
         return
@@ -5246,6 +5459,8 @@ def _enqueue_parent_if_waiting(
 
     def enqueue_parent_once() -> None:
         """Keep a restart-reconstructed wake from duplicating a live tail."""
+        if current_owner is not None and not current_owner():
+            return
         queue = getattr(orch, "_queue", None)
         if queue is None:
             return
@@ -5362,12 +5577,16 @@ def _enqueue_parent_if_waiting(
             # (its own parent has active_fanout), fail the whole carrier
             # immediately — no partial-chain completion.
             if parent.active_chain is not None:
+                if current_owner is not None and not current_owner():
+                    return
                 orch._db.update_task_active_chain(parent.id, None)
             if _is_carrier(orch, parent):
                 causal_leaf = next(
                     (leaf for leaf in unresolved_leaves if leaf.id == task_id),
                     unresolved_leaves[-1],
                 )
+                if current_owner is not None and not current_owner():
+                    return
                 _carrier_fail_immediate(orch, parent, causal_leaf.id)
                 return  # carrier failure feeds the fan-out parent's barrier
 
@@ -5465,6 +5684,7 @@ def _maybe_post_thread_escalation(
     task_id: str,
     *,
     reason: str,
+    current_owner: Callable[[], bool] | None = None,
 ) -> None:
     """Post a `task_escalated` SYSTEM message + re-invoke the dispatcher when a
     thread-dispatched task escalates to the founder.
@@ -5477,6 +5697,8 @@ def _maybe_post_thread_escalation(
 
     Spec: docs/superpowers/specs/2026-06-06-thread-escalation-surfacing-design.md
     """
+    if current_owner is not None and not current_owner():
+        return
     db = orch._db
     audit = orch._audit
 
@@ -5571,6 +5793,8 @@ def _maybe_post_thread_escalation(
         system_payload["causal_terminal_result"] = causal_terminal_result
     if causal_escalation_audit_id is not None:
         system_payload["causal_escalation_audit_id"] = causal_escalation_audit_id
+    if current_owner is not None and not current_owner():
+        return
     _append_followup_system_and_reinvoke(
         orch,
         thread_id=thread_id,
@@ -5587,6 +5811,7 @@ def _maybe_post_thread_followup(
     *,
     status: TaskStatus,
     auto_revisit_spawned: bool,
+    current_owner: Callable[[], bool] | None = None,
     revisit_task_id: str | None = None,
 ) -> None:
     """Post a task-followup system message + mint a re-invocation for the dispatcher.
@@ -5635,6 +5860,8 @@ def _maybe_post_thread_followup(
     ):
         return
 
+    if current_owner is not None and not current_owner():
+        return
     db = orch._db
     audit = orch._audit
     terminal_task = db.get_task(task_id)
@@ -5741,6 +5968,8 @@ def _maybe_post_thread_followup(
         "revisit_task_id": revisit_task_id,
     }
 
+    if current_owner is not None and not current_owner():
+        return
     _append_followup_system_and_reinvoke(
         orch,
         thread_id=thread_id,
@@ -5904,7 +6133,8 @@ def _spawn_fanout_children(
         per_child_prevalidated: list[list[dict]] = []
         all_keys: set[str] = set()
         try:
-            for child_info in children:
+            for child_index, child_info in enumerate(children):
+                location = f"children[{child_index}].attachments"
                 child_refs_raw = child_info.get("attachments") or []
                 refs = [TaskAttachmentRef(
                     storage_key=r["storage_key"],
@@ -5922,7 +6152,8 @@ def _spawn_fanout_children(
                 # Validate pipeline nested attachments (each then[].attachments
                 # leg individually, with global duplicate detection).
                 pipeline_nested_refs: list[list] = []
-                for leg in child_info.get("then") or []:
+                for leg_index, leg in enumerate(child_info.get("then") or []):
+                    location = f"children[{child_index}].then[{leg_index}].attachments"
                     leg_refs_raw = leg.get("attachments") or []
                     if not leg_refs_raw:
                         continue
@@ -5939,6 +6170,9 @@ def _spawn_fanout_children(
 
                 per_child_prevalidated.append(child_pv)
         except ValueError as e:
+            detail = _classify_attachment_error(e)
+            if detail is not None:
+                raise _PreChildDecisionAttachmentError(detail, location) from e
             import json as _json
             error_detail = _json.loads(str(e))
             note = (
@@ -5955,11 +6189,19 @@ def _spawn_fanout_children(
             return LostClaim()
 
         # Build per-child params from the per-child prevalidated lists.
-        for child_pv in per_child_prevalidated:
+        for child_index, child_pv in enumerate(per_child_prevalidated):
             if not child_pv:
                 children_att_params.append(None)
             else:
-                child_params = _prepare_attachment_params(orch, child_pv)
+                try:
+                    child_params = _prepare_attachment_params(orch, child_pv)
+                except ValueError as exc:
+                    detail = _classify_attachment_error(exc)
+                    if detail is None:
+                        raise
+                    raise _PreChildDecisionAttachmentError(
+                        detail, f"children[{child_index}].attachments",
+                    ) from exc
                 children_att_params.append(child_params)
     else:
         children_att_params = [None] * len(children)

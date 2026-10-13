@@ -80,6 +80,33 @@ retain this skill's FINAL report-completion action and current session binding.
 
 ## Steps
 
+Each attachment storage_key can be claimed by one task only, including within
+the same tree. Each direct, child or then-leg list allows at most five refs;
+keys must be unique across the entire initial decision, including siblings and
+nested legs. Carrier top-level refs belong to the carrier; its first leg reads
+through ancestry without a second claim. Initial fanout preserves both child
+and nested attachment fields; later chain advancement keeps its existing rules.
+
+Recognized initial pre-child errors include too_many_attachments,
+duplicate_attachment, task_attachment_not_found, attachment_already_claimed,
+invalid_attachment_display_name and unsupported_attachment_type. Feedback gives
+the code, escaped key when supplied, and remediation. Correct in a genuinely
+new authorized session/result; never replay the consumed result. Each
+decision-owning task has at most TWO committed attachment-error feedback
+opportunities shared across sessions and initial delegate/fanout/parallel.
+Committed A consumes a chance even if B/enqueue is lost. The third recognized
+error uses the existing root ESCALATED or nonroot FAILED disposition. A valid
+correction after two remains eligible under current authority and revision
+limits. Other authoring, revise, slice and total-step rules stay unchanged.
+Keep task-only evidence in output/<actual-task-id>, report output_dir and use
+supported recall. Do not reattach an already-claimed maker key to a reviewer.
+For a distinct attachment handoff upload a fresh authorized copy with
+`happyranch attach-upload --org ORG --as-agent CURRENT_AGENT --file /absolute/source`
+within the actual authorized environment (upload has no --session-id flag).
+Inherited access grants reading, not another claim. Never upload task-only
+logs/screenshots/review packets to Shared Artifacts as an ownership workaround.
+
+
 1. **Parse parameters.** Extract `task_id`, `session_id`, `brief`, and (when present) `role_guidance` from the prompt above. Hold `session_id` in a variable for the lifetime of this session — every callback to `happyranch` must include it. When the `role_guidance` block is absent (typical worker spawn), treat `brief` as your complete per-task instruction.
 
 2. **Consult memory.** Before planning:

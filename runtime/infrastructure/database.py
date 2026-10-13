@@ -88,6 +88,7 @@ from runtime.infrastructure.db.tasks import (
     LostClaim,
     SpawnOutcome,
     PendingRetry,
+    AttachmentCorrectionStopped,
     _RetryEvidenceRefusal,
 )
 from runtime.infrastructure.db.threads import ThreadsMixin
@@ -748,38 +749,53 @@ class Database(
 
         try:
             self._conn.execute("BEGIN IMMEDIATE")
-            cursor = self._conn.execute(
-                f"""UPDATE tasks
-                    SET status = ?, block_kind = NULL, note = ?, updated_at = ?
-                        {set_active_fanout}
-                    WHERE id = ? AND parent_task_id IS NULL AND {state_predicate}""",
-                (TaskStatus.ESCALATED.value, reason, now, task_id, *state_args),
+            audit_pair = self._escalate_runtime_uncommitted(
+                task_id, reason=reason, agent=agent, reason_code=reason_code,
+                now=now, state_predicate=state_predicate, state_args=state_args,
+                set_active_fanout=set_active_fanout,
             )
-            if cursor.rowcount != 1:
+            if audit_pair is None:
                 self._conn.rollback()
                 return False
-            escalation_audit_id = self.insert_audit_log_uncommitted(
-                task_id=task_id,
-                agent=agent,
-                action="escalation",
-                payload={"reason": reason},
-            )
-            self.insert_audit_log_uncommitted(
-                task_id=task_id,
-                agent=agent,
-                action="authority_hook",
-                payload={
-                    "outcome": "not_applicable",
-                    "reason_code": reason_code,
-                    "reason": "runtime-raised escalation is not an authority decision",
-                    "causal_escalation_audit_id": escalation_audit_id,
-                },
-            )
             self._conn.commit()
             return True
         except Exception:
             self._conn.rollback()
             raise
+
+    def _escalate_runtime_uncommitted(
+        self, task_id: str, *, reason: str, agent: str, reason_code: str,
+        now: str, state_predicate: str, state_args: tuple,
+        set_active_fanout: str = "",
+    ) -> tuple[int, int] | None:
+        """Existing compound write only; caller owns synchronization/transaction."""
+        cursor = self._conn.execute(
+            f"""UPDATE tasks
+                SET status = ?, block_kind = NULL, note = ?, updated_at = ?
+                    {set_active_fanout}
+                WHERE id = ? AND parent_task_id IS NULL AND {state_predicate}""",
+            (TaskStatus.ESCALATED.value, reason, now, task_id, *state_args),
+        )
+        if cursor.rowcount != 1:
+            return None
+        escalation_audit_id = self.insert_audit_log_uncommitted(
+            task_id=task_id,
+            agent=agent,
+            action="escalation",
+            payload={"reason": reason},
+        )
+        denominator_audit_id = self.insert_audit_log_uncommitted(
+            task_id=task_id,
+            agent=agent,
+            action="authority_hook",
+            payload={
+                "outcome": "not_applicable",
+                "reason_code": reason_code,
+                "reason": "runtime-raised escalation is not an authority decision",
+                "causal_escalation_audit_id": escalation_audit_id,
+            },
+        )
+        return escalation_audit_id, denominator_audit_id
 
     @_synchronized
     def try_escalate_over_budget(

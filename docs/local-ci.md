@@ -987,3 +987,23 @@ controls UNAUTHORED; protected12/RED-restoration-GREEN/repetitions unauthorized.
 General AND actual CLI callback integration SKIPPED243seq42; units RETIRED.
 Root remains INCOMPLETE for held R, wider E04, cancel-CLI mismatch and daily
 acceptance. No deployment/serving restart/Jenkins/schema/auth/permission work.
+
+THR304's separate manual `attachment_scoped_qa` sibling in registered
+`nightly-integration.yml` selects only the 61 literal C1–C8 nodes plus their
+closed connected subobservations in `scripts/attachment_scoped_qa.py`. Source
+admission precedes dependencies and product imports. The implementation ref is
+`refs/heads/task/TASK-11112`; `EXECUTION_OWNER = None` deliberately refuses.
+Manager allocation, independent source/readiness review and an immutable
+final-head/manifest release are required before binding the actual execution
+owner and invoking `gh workflow run nightly-integration.yml --repo
+t-benze/happyranch --ref task/TASK-11112 -f attachment_scoped_qa=true -f
+execution_task_id=<actual released owner> -f expected_source_sha=<reviewed head>`.
+The angle-bracket arguments document missing release evidence and are not
+runnable authorization. Ubuntu24.04/Python3.14, frozen setup, retained isolated
+parent/registered deterministic stubs, real platform, independent phase1200s
+aggregate watchdog, pidfd/subreaper owned-tree cleanup and capped external
+evidence apply. The 1280s backstop/35min job cap is an unproved candidate fit;
+timeout, missing observations or uncertain cleanup stays incomplete/nonzero.
+This lane is never selected by automatic CI/hooks/all/schedule and changes no
+THR299 allocation, shared fixture or daily Product E2E cadence. General
+integration remains SKIPPED24342; units RETIRED. Source checks are not behavior.
