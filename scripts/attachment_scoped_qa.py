@@ -62,6 +62,22 @@ FINDING_ROWS = ('R14.admission','R14.Popen','R14.selector','R15.raw','R14/R15.ca
 FINAL_CAPS = {'processes.json':2097152, 'phases.json':2097152,
               'result.json':1048576, 'observations.json':1048576, 'cases.xml':1048576}
 EVIDENCE_LOCK = '.allocation.lock'
+ERROR_LIMIT = 128
+ERROR_TEXT_LIMIT = 1024
+ERROR_LABEL_LIMIT = 96
+ERROR_OVERFLOW_LIMIT = 128
+ERROR_OVERFLOW_MEANING = 'unretained observations, not unique causes; count saturates at 128 (lower bound)'
+
+
+def error_text(exc, limit=ERROR_TEXT_LIMIT):
+    return (type(exc).__name__+':'+str(exc)[:limit])[:limit]
+
+
+def error_note(exc, note):
+    # Even repeated evidence cleanup of the SAME propagated exception is bounded.
+    notes=getattr(exc,'__notes__',())
+    if len(notes)<ERROR_LIMIT-1:exc.add_note(note[:ERROR_TEXT_LIMIT])
+    elif len(notes)==ERROR_LIMIT-1:exc.add_note('additional evidence cleanup notes truncated')
 
 
 def evidence_cleanup(actions):
@@ -69,7 +85,7 @@ def evidence_cleanup(actions):
     for action in actions:
         try:action()
         except BaseException as exc:
-            if original is not None:original.add_note('evidence cleanup unavailable: '+type(exc).__name__)
+            if original is not None:error_note(original,'evidence cleanup unavailable: '+type(exc).__name__)
             elif failure is None:failure=exc
     if failure is not None:raise failure
 
@@ -270,6 +286,7 @@ class OwnedTree:
         self.identities, self.errors, self.events = {}, [], []
         self.record = record
         self.reported = []
+        self.error_overflow = 0
         self.evidence = evidence
         self.self_pid = os.getpid()
         self.ports = {}
@@ -282,8 +299,13 @@ class OwnedTree:
     def failure(self, label, exc):
         # Report the actual exception when it occurs, before later obligations.
         if any(prior is exc for prior in self.reported):return
-        if len(self.reported)<128:self.reported.append(exc)
-        self.errors.append(label+':'+type(exc).__name__+':'+str(exc)[:256])
+        if len(self.reported)<ERROR_LIMIT:
+            self.reported.append(exc)
+            self.errors.append(label[:ERROR_LABEL_LIMIT]+':'+error_text(exc,256))
+        else:
+            # Unknown identities are deliberately NOT retained after capacity.
+            # Repeated propagation can count again, but adds no rows or notes.
+            self.error_overflow=min(ERROR_OVERFLOW_LIMIT,self.error_overflow+1)
         if self.record is not None:self.record(label,exc)
 
     def event(self, **value):
@@ -785,6 +807,7 @@ class OwnedTree:
         try:write_receipt(self.evidence/'processes.json',
             {'identities':{pid:{k:v for k,v in row.items() if k!='fd'} for pid,row in self.identities.items()},
              'events':self.events,'errors':self.errors,'closure':clean,'retired_cases':self.retired_cases,
+             'error_overflow':{'observations':self.error_overflow,'meaning':ERROR_OVERFLOW_MEANING},
              'direct_wait_returncode':self.direct_wait},2097152,evidence=self.evidence)
         except BaseException as exc:self.failure('process publication',exc)
         return clean and not self.errors
@@ -792,35 +815,52 @@ class OwnedTree:
 
 class CaptureChannels:
     """One parser for live reads and bounded residue; pipe state is not wait proof."""
-    def __init__(self, evidence, on_phase):
+    def __init__(self, evidence, on_phase, record=None):
         self.evidence=evidence;self.on_phase=on_phase;self.log_identity=None
+        self.record=record
         self.counts={'output':0,'phase':0,'junit':0};self.buffer=b'';self.junit=bytearray()
         self.drains={};self.failed=set();self.processing_deadline=None
 
     def consume(self, channel, chunk):
+        first=None
+        def failure(label,exc):
+            nonlocal first
+            if first is None:first=exc
+            self.failed.add(channel)
+            if self.record is not None:self.record(label,exc)
         cap={'output':CAPS['command_log'],'phase':CAPS['phases'],'junit':CAPS['junit']}[channel]
-        remaining=max(0,cap-self.counts[channel]);self.counts[channel]+=len(chunk)
+        remaining=max(0,cap-self.counts[channel])
+        # Counts are observed prefix lengths, saturating one byte above cap.
+        self.counts[channel]=min(cap+1,self.counts[channel]+len(chunk))
         kept=chunk[:remaining]
-        if channel=='output' and kept:
-            if self.log_identity is None:
-                self.log_identity=evidence_append(self.evidence/'pytest.log',b'',cap,self.evidence,exclusive=True)
-            evidence_append(self.evidence/'pytest.log',kept,cap,self.evidence,identity=self.log_identity)
-        elif channel=='junit':self.junit.extend(kept)
-        elif channel=='phase':
-            self.buffer+=kept
-            if len(self.buffer)>12288:raise ValueError('phase framing cap')
-            first=None
-            while b'\n' in self.buffer:
-                if self.processing_deadline is not None and time.monotonic()>self.processing_deadline:
-                    raise TimeoutError('terminal phase parsing deadline')
-                raw,self.buffer=self.buffer.split(b'\n',1)
-                if len(raw)>CAPS['phase']:raise ValueError('phase row cap')
-                try:self.on_phase(json.loads(raw))
-                except BaseException as exc:
-                    if first is None:first=exc
-                    else:first.add_note(type(exc).__name__+':'+str(exc)[:256])
-            if first is not None:raise first
-        if self.counts[channel]>cap:raise ValueError(channel+' capture overflow; bounded prefix retained')
+        if self.counts[channel]>cap:
+            failure(channel+' capture cap',ValueError(channel+' capture overflow; bounded prefix retained'))
+        try:
+            if channel=='output' and kept:
+                if self.log_identity is None:
+                    self.log_identity=evidence_append(self.evidence/'pytest.log',b'',cap,self.evidence,exclusive=True)
+                evidence_append(self.evidence/'pytest.log',kept,cap,self.evidence,identity=self.log_identity)
+            elif channel=='junit':self.junit.extend(kept)
+            elif channel=='phase':
+                available=12288-len(self.buffer)
+                self.buffer+=kept[:available]
+                if len(kept)>available:failure('phase framing',ValueError('phase framing cap; bounded prefix retained'))
+                while b'\n' in self.buffer:
+                    if self.processing_deadline is not None and time.monotonic()>self.processing_deadline:
+                        failure('phase parsing deadline',TimeoutError('terminal phase parsing deadline'))
+                        break  # Leave the unprocessed residue; no action after expiry.
+                    raw,self.buffer=self.buffer.split(b'\n',1)
+                    if len(raw)>CAPS['phase']:
+                        failure('phase row',ValueError('phase row cap'))
+                        continue
+                    try:row=json.loads(raw)
+                    except BaseException as exc:
+                        failure('phase parse',exc)
+                        continue
+                    try:self.on_phase(row)
+                    except BaseException as exc:failure('phase action',exc)
+        except BaseException as exc:failure(channel+' capture',exc)
+        if first is not None:raise first
 
     def drain(self, channel, fd, producer_closed, attempt, *, deadline=None):
         # O_RDWR FIFOs report EAGAIN rather than EOF even after the actual owned
@@ -828,7 +868,8 @@ class CaptureChannels:
         status={'producer_closed':producer_closed,'read_state':None,'complete':False}
         self.drains[channel]=status
         deadline=min(time.monotonic()+1,deadline) if deadline is not None else time.monotonic()+1
-        if channel=='phase':self.processing_deadline=deadline
+        if channel=='phase':
+            self.processing_deadline=min(deadline,self.processing_deadline) if self.processing_deadline is not None else deadline
         cap={'output':CAPS['command_log'],'phase':CAPS['phases'],'junit':CAPS['junit']}[channel]
         budget=cap+8192
         try:
@@ -849,8 +890,9 @@ class CaptureChannels:
             status['complete']=(producer_closed and status['read_state'] in ('EOF','EAGAIN')
                 and status['frame_complete'] and channel not in self.failed and self.counts[channel]<=cap)
             if not status['complete']:raise ValueError(channel+' terminal drain incomplete')
-        except BaseException:
+        except BaseException as exc:
             self.failed.add(channel)
+            if self.record is not None:self.record('terminal '+channel,exc)
             raise
 
 
@@ -865,14 +907,18 @@ def supervise(binding: dict, scratch: Path, *, deadline: float | None = None) ->
     # top-level owner retains its unchanged aggregate and cleanup guarantees.
     cleanup_deadline=min(start+1260,deadline) if deadline is not None else start+1260
     run_deadline=min(start+1200,deadline) if deadline is not None else start+1200
-    errors=[];first=None;reported=[];prior_handlers={};channels=CaptureChannels(evidence,lambda row:on_phase(row))
+    errors=[];first=None;reported=[];prior_handlers={}
+    overflow={'observations':0,'meaning':ERROR_OVERFLOW_MEANING}
     def record(label,exc):
         nonlocal first
-        if any(prior is exc for prior in reported):return
-        if len(reported)<128:reported.append(exc)
+        if any(prior is exc for prior in reported):return first
         if first is None:first=exc
-        if len(errors)<128:errors.append({'operation':label,'error':type(exc).__name__+':'+str(exc)[:1024]})
-        else:first.add_note('additional bounded lifecycle error')
+        if len(reported)<ERROR_LIMIT:
+            reported.append(exc)
+            errors.append({'operation':label[:ERROR_LABEL_LIMIT],'error':error_text(exc)})
+        else:overflow['observations']=min(ERROR_OVERFLOW_LIMIT,overflow['observations']+1)
+        return first
+    channels=CaptureChannels(evidence,lambda row:on_phase(row),record=record)
     def attempt(label,action):
         try:return action()
         except BaseException as exc:
@@ -986,11 +1032,11 @@ def supervise(binding: dict, scratch: Path, *, deadline: float | None = None) ->
             if fd is not None:attempt(name+' fd close',lambda fd=fd:os.close(fd))
         for sig,handler in prior_handlers.items():attempt('signal restore',lambda sig=sig,handler=handler:signal.signal(sig,handler))
     if not evidence_owned:
-        print(json.dumps({'complete':False,'storage':'unavailable','errors':errors}),file=sys.stderr)
+        print(json.dumps({'complete':False,'storage':'unavailable','errors':errors,'error_overflow':overflow}),file=sys.stderr)
         return 1
     if channels.junit:attempt('JUnit publication',lambda:evidence_publish(evidence/'cases.xml',bytes(channels.junit),CAPS['junit'],evidence))
     attempt('phase publication',lambda:write_receipt(evidence/'phases.json',
-        {'events':events,'capture':channels.counts,'drains':channels.drains,'errors':errors},2097152,evidence=evidence))
+        {'events':events,'capture':channels.counts,'drains':channels.drains,'errors':errors,'error_overflow':overflow},2097152,evidence=evidence))
     import xml.etree.ElementTree as ET
     complete=False
     def acceptance():
@@ -1018,13 +1064,17 @@ def supervise(binding: dict, scratch: Path, *, deadline: float | None = None) ->
               and set(channels.drains)=={'output','phase','junit'} and all(row['complete'] for row in channels.drains.values()))
     command_exit=None if child is None else child.returncode
     exit_code=command_exit if command_exit else (0 if complete else 1)
-    before_result=len(errors)
-    attempt('result publication',lambda:write_receipt(evidence/'result.json',
-        {'exit':exit_code,'command_exit':command_exit,'complete':complete,'closure':clean,
-         'error':None if first is None else type(first).__name__+':'+str(first)[:1024],'errors':errors,
-         'manifest':MANIFEST_SHA256,'bytes':total},evidence=evidence))
-    if len(errors)>before_result:
-        print(json.dumps({'complete':False,'storage':'unavailable','errors':errors}),file=sys.stderr)
+    result_stored=False
+    def publish_result():
+        nonlocal result_stored
+        write_receipt(evidence/'result.json',
+            {'exit':exit_code,'command_exit':command_exit,'complete':complete,'closure':clean,
+             'error':None if first is None else error_text(first),'errors':errors,'error_overflow':overflow,
+             'manifest':MANIFEST_SHA256,'bytes':total},evidence=evidence)
+        result_stored=True
+    attempt('result publication',publish_result)
+    if not result_stored:
+        print(json.dumps({'complete':False,'storage':'unavailable','errors':errors,'error_overflow':overflow}),file=sys.stderr)
     if first is not None:return exit_code or 1
     if complete:
         attempt('scratch removal',lambda:shutil.rmtree(scratch))

@@ -1888,12 +1888,43 @@ def _finding_outer_lifecycle(root):
     from types import SimpleNamespace
     facts=[];real_popen=subprocess.Popen;real_selector=selectors.DefaultSelector
     for fault in ('spawn','discover','selector-create','selector-register','close','publication','selector-register+publication+pidfd-close+phase-close+junit-close','fifo-open','source-publication','output-publication','phase-parse',
-                  'tree-cleanup+terminal-output+publication+pidfd-close'):
+                  'tree-cleanup+terminal-output+publication+pidfd-close',
+                  'phase-malformed+tree-phase','phase-action+tree-phase','phase-malformed+parse-deadline',
+                  'tree-overflow+close+publication+pidfd-close'):
         trial_deadline=min(_CALL_DEADLINE,time.monotonic()+.5)
         faults=set(fault.split('+'));primary=fault.split('+')[0]
         case=root/fault;case.mkdir(mode=0o700);owned=[];selectors_acquired=[];published=[];pidfds=set();fifo_fds={};fifo_names=[];closed_fifos=[]
         constructions=[];injections=[];bound=[];observations=[];waits=[];gates=[];native=[]
         cleanup_error=PermissionError('finding-primary-tree-cleanup')
+        phase_error=ValueError('finding-primary-phase-action')
+        tree_error=PermissionError('finding-later-phase-tree')
+        overflow_error=PermissionError('finding-primary-overflow-'+('X'*2048))
+        recorded=[];earliest=[];trees=[];captures=[];diagnostics={};overflow_facts={};log_fds=set()
+        def spy(record):
+            def save(label,exc):
+                value=record(label,exc)
+                if not earliest:earliest.append(value)
+                assert value is earliest[0], 'shared recorder replaced the actual earliest exception'
+                if len(recorded)<qa.ERROR_LIMIT and not any(e is exc for _,e in recorded):recorded.append((label,exc))
+                return value
+            return save
+        class Channels(qa.CaptureChannels):
+            def __init__(self,evidence,on_phase,record=None):
+                shared=spy(record)
+                def phase_record(label,exc):
+                    value=shared(label,exc)
+                    if 'parse-deadline' in faults and label=='phase parse':
+                        # Select and actually exhaust the parser's real bound
+                        # after recording the malformed frame, before the next.
+                        self.processing_deadline=min(_CALL_DEADLINE,time.monotonic()+.001)
+                        while time.monotonic()<=self.processing_deadline:
+                            time.sleep(min(.0002,max(0,self.processing_deadline-time.monotonic())))
+                        assert time.monotonic()<_CALL_DEADLINE
+                    return value
+                def action(row):
+                    if primary=='phase-action' and row.get('event')=='finding-refusal':raise phase_error
+                    return on_phase(row)
+                super().__init__(evidence,action,phase_record);captures.append(self)
         def release():
             if gates:
                 fd=gates.pop();os.write(fd,b'R');os.close(fd)
@@ -1908,6 +1939,16 @@ def _finding_outer_lifecycle(root):
             descriptor=closed_read(Path(descriptor_path),16384)
             frame=(json.dumps({'nonce':descriptor['nonce'],'node':NODES[0],'phase':'teardown','event':'finish'})+'\n').encode()
             if 'phase-parse' in faults:frame=b'not-json\n'+frame
+            if primary in ('phase-malformed','phase-action'):
+                if 'tree-phase' in faults:
+                    log=Path(descriptor['scratch'])/'daemon'/'daemon.log'
+                    log.parent.mkdir(mode=0o700);log.write_bytes(b'owned synthetic log')
+                    later=(json.dumps({'nonce':descriptor['nonce'],'node':NODES[0],
+                        'phase':'call','event':'daemon-log','daemon_log':str(log)})+'\n').encode()
+                else:later=b''
+                refusal=b'not-json\n' if primary=='phase-malformed' else (json.dumps({
+                    'nonce':descriptor['nonce'],'node':NODES[0],'phase':'call','event':'finding-refusal'})+'\n').encode()
+                frame=refusal+later+frame
             junit_path=next(value.split('=',1)[1] for value in args[0] if value.startswith('--junitxml='))
             ready_r,ready_w=os.pipe();release_r,release_w=os.pipe();gates.append(release_w)
             code=('import os,select;os.write('+str(ready_w)+',b"READY");'
@@ -1925,6 +1966,8 @@ def _finding_outer_lifecycle(root):
             return child
         class Tree(qa.OwnedTree):
             in_cleanup=False
+            def __init__(self,evidence,record=None):
+                super().__init__(evidence,spy(record));trees.append(self);self.seeded=False
             def discover(self):
                 super().discover();pidfds.update(row['fd'] for row in self.identities.values() if row.get('fd') is not None)
                 for child in owned:
@@ -1932,6 +1975,30 @@ def _finding_outer_lifecycle(root):
                         row=self.identities[child.pid]
                         assert row['exited'] is False and row['reaped'] is False and child.poll() is None
                         bound.append(child.pid)
+                if 'tree-overflow' in faults and not self.seeded:
+                    self.seeded=True
+                    for index in range(qa.ERROR_LIMIT+4):
+                        exc=overflow_error if index==0 else OSError('finding-discover-'+str(index)+('X'*2048))
+                        self.failure('discover '+str(index),exc)
+                        self.failure('same propagation',exc)
+                    assert len(self.errors)==len(self.reported)==qa.ERROR_LIMIT
+                    assert max(map(len,self.errors))<=qa.ERROR_LABEL_LIMIT+1+256
+                    assert self.reported[0] is overflow_error and self.error_overflow==8
+                    rows=list(self.errors)
+                    self.failure('retained again',overflow_error)
+                    assert self.errors==rows and self.error_overflow==8
+                    self.record('overflow propagation',exc);self.record('overflow propagation',exc)
+                    for _ in range(qa.ERROR_OVERFLOW_LIMIT+1):self.failure('overflow replay',exc)
+                    assert self.error_overflow==qa.ERROR_OVERFLOW_LIMIT and self.errors==rows
+                    assert not getattr(overflow_error,'__notes__',())
+                    note_error=OSError('bounded evidence cleanup notes')
+                    for _ in range(qa.ERROR_LIMIT+4):qa.error_note(note_error,'X'*2048)
+                    assert len(note_error.__notes__)==qa.ERROR_LIMIT
+                    assert max(map(len,note_error.__notes__))<=qa.ERROR_TEXT_LIMIT
+                    assert note_error.__notes__[-1]=='additional evidence cleanup notes truncated'
+                    overflow_facts.update(fresh_errors=qa.ERROR_LIMIT+4,retained=len(rows),
+                        observed_overflow_before_saturation=8,saturated=self.error_overflow,
+                        meaning=qa.ERROR_OVERFLOW_MEANING,bounded_notes=len(note_error.__notes__))
             def children(self,pid):
                 children=super().children(pid)
                 return children & {p.pid for p in owned} if pid==self.self_pid else children
@@ -1941,13 +2008,18 @@ def _finding_outer_lifecycle(root):
                     'indicated':[row['pid'] for row in self.events if row['kind']=='exit_indication']})
             def cleanup(self,*args,**kwargs):
                 self.in_cleanup=True
+                if primary=='tree-overflow':
+                    retained=list(self.errors)
+                    for index in range(4):self.failure('settlement fresh '+str(index),OSError('finding-settlement-'+str(index)))
+                    assert self.errors==retained and self.error_overflow==qa.ERROR_OVERFLOW_LIMIT
                 return super().cleanup(*args,**kwargs)
             def capture_logs(self):
                 if 'tree-cleanup' in faults and self.in_cleanup and not native:
                     raise cleanup_error
                 return super().capture_logs()
             def failure(self,label,exc):
-                native.append((label,exc));super().failure(label,exc)
+                if len(native)<qa.ERROR_LIMIT:native.append((label,exc))
+                super().failure(label,exc)
         class Selector:
             def __init__(self):
                 self.outer=not constructions;constructions.append(self.outer)
@@ -1959,7 +2031,12 @@ def _finding_outer_lifecycle(root):
                 if self.outer and self.registrations==1 and 'selector-register' in faults:
                     injections.append('selector-register');raise OSError('finding-primary-selector-register')
                 value=self.actual.register(*args)
-                if self.outer and self.registrations==3:release()
+                if self.outer and self.registrations==3:
+                    release()
+                    if primary in ('phase-malformed','phase-action'):
+                        # Bind the real held child first, then guarantee the
+                        # complete phase batch and JUnit are queued together.
+                        assert owned[0].wait(timeout=max(0,cleanup_deadline-time.monotonic()))==0
                 return value
             def __getattr__(self,name):return getattr(self.actual,name)
             def close(self):
@@ -1973,7 +2050,19 @@ def _finding_outer_lifecycle(root):
                 fd=real_os.open(path,*args,**kwargs)
                 if Path(path).name in ('phases.fifo','junit.fifo'):
                     fifo_fds[fd]=Path(path).name;fifo_names.append(Path(path).name)
+                if Path(path).name=='daemon.log':log_fds.add(fd)
                 return fd
+            def fdopen(self,fd,*args,**kwargs):
+                actual=real_os.fdopen(fd,*args,**kwargs)
+                if fd not in log_fds or 'tree-phase' not in faults:return actual
+                class Read:
+                    def __enter__(self):actual.__enter__();return self
+                    def __exit__(self,*args):return actual.__exit__(*args)
+                    def read(self,*args):
+                        if 'log-read' not in injections:
+                            injections.append('log-read');raise tree_error
+                        return actual.read(*args)
+                return Read()
             def read(self,fd,*args):
                 if ('terminal-output' in faults and native and owned and fd==owned[0].stdout.fileno()
                         and 'terminal-output' not in injections):
@@ -1981,6 +2070,7 @@ def _finding_outer_lifecycle(root):
                 return real_os.read(fd,*args)
             def close(self,fd):
                 real_os.close(fd)
+                log_fds.discard(fd)
                 if fd in fifo_fds:
                     name=fifo_fds.pop(fd);closed_fifos.append(name)
                     if ('phase-close' in faults and name=='phases.fifo'
@@ -2002,10 +2092,27 @@ def _finding_outer_lifecycle(root):
         binding.update(task=EXECUTION_OWNER,run='synthetic-'+fault,attempt='1')
         scratch=case/'attachment-qa'/binding['task']/(binding['run']+'-1')/'scratch'
         def discover_failure(frame):raise OSError('finding-primary-discover')
+        def diagnostic_snapshot(frame):
+            state=frame.f_locals
+            if earliest:assert state['first'] is earliest[0]
+            else:earliest.append(state['first'])
+            assert len(state['errors'])==len(state['reported'])<=qa.ERROR_LIMIT
+            assert len({id(exc) for exc in state['reported']})==len(state['reported'])
+            assert all(len(row['operation'])<=qa.ERROR_LABEL_LIMIT and len(row['error'])<=qa.ERROR_TEXT_LIMIT for row in state['errors'])
+            assert not getattr(state['first'],'__notes__',())
+            if primary=='tree-overflow':
+                assert state['first'] is overflow_error and len(state['errors'])==qa.ERROR_LIMIT
+                assert state['overflow']['observations']==qa.ERROR_OVERFLOW_LIMIT
+                assert state['overflow']['meaning']==qa.ERROR_OVERFLOW_MEANING
+                assert all(len(t.errors)==len(t.reported)==qa.ERROR_LIMIT and t.error_overflow==qa.ERROR_OVERFLOW_LIMIT for t in trees)
+            diagnostics.update(retained=len(state['reported']),rows=len(state['errors']),
+                overflow=dict(state['overflow']),notes=len(getattr(state['first'],'__notes__',())),
+                representation_bytes=len(json.dumps({'errors':state['errors'],'error_overflow':state['overflow']})))
+            assert diagnostics['representation_bytes']<=qa.ERROR_LIMIT*(6*(qa.ERROR_LABEL_LIMIT+qa.ERROR_TEXT_LIMIT)+128)+512
         # Leave time in this SAME half-second slice for drains/closes/publication.
         cleanup_deadline=min(trial_deadline,time.monotonic()+.25)
         try:
-            with _finding_patch(qa,OwnedTree=Tree,write_receipt=publish,evidence_append=append,os=OS(),
+            with _finding_patch(qa,OwnedTree=Tree,CaptureChannels=Channels,write_receipt=publish,evidence_append=append,os=OS(),
                 subprocess=SimpleNamespace(Popen=spawn,TimeoutExpired=subprocess.TimeoutExpired),
                 selectors=SimpleNamespace(DefaultSelector=Selector,EVENT_READ=selectors.EVENT_READ)):
                 with _finding_patch(os,environ=dict(os.environ,RUNNER_TEMP=str(case))):
@@ -2013,7 +2120,11 @@ def _finding_outer_lifecycle(root):
                         with harness_source_gate(qa.supervise,'tree.discover()',discover_failure) as hits:
                             exit_code=qa.supervise(binding,scratch,deadline=cleanup_deadline)
                         assert hits
-                    else:exit_code=qa.supervise(binding,scratch,deadline=cleanup_deadline)
+                    else:
+                        from contextlib import ExitStack
+                        with ExitStack() as gates_context:
+                            gates_context.enter_context(harness_source_gate(qa.supervise,'result_stored=False',diagnostic_snapshot))
+                            exit_code=qa.supervise(binding,scratch,deadline=cleanup_deadline)
         finally:
             for fd in gates:os.close(fd)
             # Independent real owner fallback if the assertion/gate failed.
@@ -2035,8 +2146,10 @@ def _finding_outer_lifecycle(root):
         if primary in ('selector-create','selector-register'):
             assert injections==[primary] and bound==[owned[0].pid] and len(constructions)>1
             assert any(owned[0].pid in row['indicated'] for row in observations), 'independent pidfd exit observation unavailable'
-        if 'publication' in faults:assert any(e['operation']=='process publication' for e in result['errors'])
-        if 'pidfd-close' in faults:assert any(row['operation']=='pidfd close' for row in result['errors'])
+        if 'publication' in faults:
+            assert 'processes.json' in published
+            assert primary=='tree-overflow' or any(e['operation']=='process publication' for e in result['errors'])
+        if 'pidfd-close' in faults:assert primary=='tree-overflow' or any(row['operation']=='pidfd close' for row in result['errors'])
         assert not fifo_fds and sorted(fifo_names)==sorted(closed_fifos)
         if 'phase-close' in faults and 'junit-close' in faults:
             assert any(row['operation']=='phase fd close' for row in result['errors'])
@@ -2054,11 +2167,39 @@ def _finding_outer_lifecycle(root):
             assert operations[0]=='log capture' and operations.count('log capture')==1
             assert operations.index('terminal output')<operations.index('pidfd close')<operations.index('process publication')
             assert len(constructions)>=1 and injections==['terminal-output'] and bound==[owned[0].pid]
+        if primary in ('phase-malformed','phase-action'):
+            operations=[row['operation'] for row in result['errors']]
+            expected_type=json.JSONDecodeError if primary=='phase-malformed' else ValueError
+            assert type(earliest[0]) is expected_type and result['error']==qa.error_text(earliest[0])
+            assert operations[0]==('phase parse' if primary=='phase-malformed' else 'phase action')
+            assert operations.count(operations[0])==1
+            phases=closed_read(evidence/'phases.json',qa.FINAL_CAPS['phases.json'])
+            assert set(phases['drains'])=={'output','phase','junit'} and phases['drains']['junit']['complete']
+            assert not phases['drains']['phase']['complete'] and (evidence/'cases.xml').read_bytes()==b'<testsuites/>'
+            if 'tree-phase' in faults:
+                assert any(exc is tree_error for _,exc in recorded)
+                assert operations.index('log capture')>0 and operations.count('log capture')==1
+                assert 'PermissionError:finding-later-phase-tree' in result['errors'][operations.index('log capture')]['error']
+                assert injections==['log-read'] and not log_fds
+                assert any(row['event']=='finish' for row in phases['events'])
+            else:
+                assert operations.index('phase parsing deadline')>0 and operations.count('phase parsing deadline')==1
+                assert any(type(exc) is TimeoutError for _,exc in recorded)
+                assert not any(row['event']=='finish' for row in phases['events']) and captures[0].buffer
+            if primary=='phase-action':assert earliest[0] is phase_error
+        if primary=='tree-overflow':
+            assert earliest[0] is overflow_error and result['error']==qa.error_text(overflow_error)
+            assert len(result['errors'])==qa.ERROR_LIMIT and result['closure'] is False
+            assert result['error_overflow']=={'observations':qa.ERROR_OVERFLOW_LIMIT,'meaning':qa.ERROR_OVERFLOW_MEANING}
+            assert waits and set(published)>={'processes.json','phases.json','result.json'}
+            assert all(c.drains.keys()=={'output','phase','junit'} for c in captures)
+            assert all(len(t.errors)==len(t.reported)==qa.ERROR_LIMIT for t in trees)
         for selected in selectors_acquired:assert not selected.actual.get_map()
         assert time.monotonic()<trial_deadline, 'outer lifecycle exceeded the remaining original call budget'
         facts.append({'fault':fault,'exit':exit_code,'first_error':result['error'],'errors':result['errors'],
             'spawned':[p.pid for p in owned],'consuming_waits':waits,'bound':bound,'selector_injections':injections,
-            'independent_observations':observations,'publications_attempted':published})
+            'independent_observations':observations,'publications_attempted':published,
+            'bounded_diagnostics':diagnostics,'overflow_assertions':overflow_facts})
     return facts
 
 def assert_finding_capture(root):

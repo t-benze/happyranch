@@ -1200,7 +1200,11 @@ One channel's failure cannot skip attempts on the other channels.
 Tree discovery, signal, cleanup and finalization failures now enter that shared
 ordered recorder at occurrence time using the actual native exception. A
 re-propagated exception is deduplicated by identity; later failures retain their
-own operation labels. No delayed string-to-RuntimeError conversion or historical
+own operation labels within the first128 retained causes. Phase JSON parse,
+action, framing/row/channel cap and parsing-deadline failures use the same
+recorder before the next frame. Complete subsequent frames remain attempted
+within the selected deadline; expiry retains incomplete residue and never
+renews that parsing deadline during terminal drain. No delayed string-to-RuntimeError conversion or historical
 error-list reordering supplies a primary cause. The existing capture row includes
 successful acquisition followed by a native PermissionError in tree log cleanup,
 then an actual terminal-output read failure, pidfd close failure and process
@@ -1208,6 +1212,35 @@ publication failure. It requires that PermissionError as `result.error`, distinc
 ordered later errors, every channel attempt, actual consuming wait, independent
 closes/publications and incomplete/nonzero result. The earlier acquisition-error
 combinations and successful raw diagnostic path remain selected.
+
+R17a extends that SAME capture row with malformed JSON then a valid daemon-log
+frame whose real tree log-read raises PermissionError, a phase-action refusal
+then that tree failure, and a saved malformed-frame failure followed by actual
+selected parsing-deadline exhaustion. Assertions inspect the actual earliest
+exception identity/type and serialized `result.error`, distinct chronological
+operation rows without duplicate retained propagation, all channel attempts,
+real consuming wait, descriptor closure, publication attempts and incomplete/
+nonzero outcome. Expired parsing performs no later frame action.
+
+R17b bounds tree error strings/references and shared rows/references at128 each,
+operation labels at96 characters, shared error text at1024 and tree error text
+at256. Native causes stay
+native; diagnostics do not append overflow notes to the first cause. Evidence
+cleanup notes retain at most127 bounded notes plus one fixed truncation marker.
+Each tree/shared `error_overflow` carries a fixed explanation and an observation
+count saturating at128, meaning at least128 when saturated. Those are unretained
+observations, NOT unique causes: unknown over-cap propagation may count again;
+no overflow identity set/list exists. Retained identities still deduplicate;
+overflow adds no retained rows, references or notes. Capture byte counts saturate
+at cap+1, an honest overflow indication rather than an exact unbounded count.
+Fixed limits apply before serialization; a final file cap is not the retention
+bound. Resource observations and cleanup/publication attempts continue after
+diagnostic capacity fills, while success remains refused. Failed result storage
+is detected independently even when diagnostic rows/counts are saturated.
+The SAME capture assertions select132 fresh native failures, repeated retained
+and overflow propagation, saturation, string/reference/notes/representation
+bounds, stable actual first cause and continued cleanup/publication attempts.
+These assertions are source-authored and remain UNEXECUTED until root release.
 
 Combined provider/callback diagnostic trials require the actual first injected
 exception by identity: spawn+publication preserves spawn; selector-register+
@@ -1235,7 +1268,7 @@ same slice, with no new cleanup60-second allowance. TERM grace uses at most half
 the remaining cleanup time, then KILL and the real direct wait precede remaining
 child settlement. All three terminal drains use the same remaining deadline;
 waits do not add a minimum10ms after it expires. The selected19 diagnostic trials
-have a nominal9.5s ceiling and12 outer trials6s, including their assertions;
+have a nominal9.5s ceiling and16 outer trials8s, including their assertions;
 these are upper slices, not independent grants. Retained worker waits/pipe gates,
 terminal checks, allocator work and the original product actions share the
 remaining call budget. Expiry is a failed assertion/incomplete receipt, never a
