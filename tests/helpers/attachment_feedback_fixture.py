@@ -706,6 +706,14 @@ def stage_cases(driver, observer, decisions):
         task=driver.create(); launch=driver.launch(task)
         result,body=driver.submit(launch,decision,exit_provider=False)
         staged.append((task,launch,result,body))
+    for task,launch,result,_ in staged:
+        before=driver.snapshot(task)
+        assert len(before['tasks'])==1 and not before['links'] and not corrections(before)
+        owner=before['tasks'][0]
+        assert owner['status']=='in_progress' and owner['block_kind'] is None
+        assert owner['current_session_id']==launch['session_id'] and owner['executor_pid']==launch['actual_provider_pid']
+        assert not any(row['action']=='orchestration_step' for row in before['audits'])
+        assert not (driver.controls/f"provider-exit-{launch['session_id']}.json").exists()
     task,launch,result,_=staged[-1]
     observer.arm(task,result['id'],['before-gate'])
     driver.release_provider(launch)
