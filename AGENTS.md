@@ -622,6 +622,34 @@ Detailed contracts: `docs/agent-guides/agent-executors-and-permissions.md` § "C
 
 **Owning-branch cleanup authority.** For daemon-managed workspace cleanup, an existing owning origin task branch is authoritative: if it does not contain the candidate commit, or its containment evidence fails, cleanup refuses without falling through to owning-task or any-task merged-PR proofs.
 
+The current-use scanner treats a parseable leader `Z` as evidence for that task
+only. It independently enumerates the bounded group frontier before requiring
+leader namespaces or references. Repeated PID/TID, Tgid, starttime and complete
+UID identity with repeated `Z` may omit only that task's dead references; live
+workers still require their own `cwd`, `root`, `exe`, `maps`, private fd table,
+mount/user namespaces and path resolution through their own proc root. Missing
+worker census after leader exit remains `unknown`; `Threads: 1`, a controller's
+TIDs or a guessed singleton never substitute for a complete census. Canonical
+positive ASCII TIDs, uniqueness, actual group membership and unique complete
+Pid/Tgid/Uid/State status fields are required. Malformed identities, reuse or
+credential changes refuse; ordinary live R/S transitions alone are not reuse.
+Thread membership/count observations converge within the existing pass cap
+and shared deadline, reserving final census and identity/view checks. Known
+positive use remains `blocked` even with incomplete evidence. Public result,
+coverage and row schemas, scan/Bounds compatibility and exits 0/3/2 are retained.
+
+For receipts from this revised source, `scanned` counts distinct admitted
+non-exempt group leaders; `exited` counts distinct confirmed terminal task
+identities (Tgid,TID,starttime,all four UIDs), with initially absent unbracketed
+PID census slots accounted separately; `vanished` counts deduplicated actual
+absence/closed-reference observations, including separately observed reopened
+reference incarnations. A present confirmed Z contributes one exited and zero
+vanished; leader/task-leader aliases and rediscovery do not recount it. These
+counters are different units and must not be summed as population proof.
+Historical receipts retain their original source-bound event meanings and
+bytes. This correction grants no cleanup, package refresh, deployment or
+live-process unreadability waiver.
+
 **Forward-only root-terminal worktree reconciliation (THR-259 seq476 adopting474).** Each original newly committed structural root in `completed`, `failed`, `cancelled` or `superseded`, including NULL-parent workflow tasks, reconciles only its parent ancestry after existing history/teardown and outside owner locks. Recorded child `worktree-deferred:` evidence becomes advisory at this root pass without rewriting results/history. Child hooks retain their one-task/five-second deferral policy; manual/daily retain age/ordinal/peer/history/host-job/cache authority. The shared bundled safety owner proves fresh exact-HEAD preservation with live owning-branch precedence, recursive no-follow boundaries, unchanged same-user scanner and action-time registration/ownership/protected identities. Dirty/local-only/open/active/held/successor-used/unknown paths retain; terminality is not quiescence. Existing append-only audit start INTEGER id plus root id/created_at identify a pass; mutable timestamps, replay and missing finish never create a retry. One owner batch shares 10s work including 0.5s DB/50ms lock admissions,1s report,1s owned-group reap;16 events/256 nodes/depth64/page64/16 attempts/5s clipped candidates/200000 entries/1MiB capture/256KiB receipts. The 12s ordinary-I/O target cannot interrupt SQLite/fsync/kernel I/O. Incomplete membership/protection starts zero removal and names exact frontier/remainder; possible post-action or report anomaly halts. Success requires absence, unregistration, branch preservation and protected identities. No force, cache-only action, task-tmp action, new schedule/queue/retry, schema/auth/permission change, historical sweep or deployment follows. See [the full contract](docs/agent-guides/orchestrator-contracts.md#forward-only-terminal-task-worktrees).
 
 **Temporary-filesystem containment and inode advisory (THR-200/TASK-6501).** The workspace-cleanup advisory adds fail-open `statvfs` inode used/free/total/percent/threshold fields and a full-CI preflight. These observations are non-authoritative: they never grant cleanup authority, enumerate candidates, or cause the scheduler to inspect, move, quarantine, restore, unlink, or recursively delete `/tmp` content. Every runtime-launched task-agent and job subprocess now receives `TMPDIR`/`TMP`/`TEMP` rooted at the canonical mode-0700 `<workspace>/.happyranch/task-tmp/TASK-N`; runtime-owned, bounded, atomic v1 observations live separately at `.happyranch/task-scratch-manifests/TASK-N.json` and distinguish regenerable scratch roots from durable/recovery manifest evidence. Containment-variable or sidecar changes between preparation and launch fail closed; unrelated inherited environment is preserved. Manifests are report-only evidence and never deletion authority: automatic teardown, periodic eligibility expansion, backlog cleanup, and manifest-driven removal are not implemented. Executor language/package caches remain below `.happyranch/cache`, registered scratch worktrees remain below `.happyranch/scratch/worktrees`, and small daemon callback payload contracts are unchanged.

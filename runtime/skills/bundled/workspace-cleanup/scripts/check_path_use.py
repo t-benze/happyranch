@@ -763,16 +763,26 @@ class ScanResult:
                 "exempt": self.exempt, "cycles": self.cycles}
 
 
+def _unique_status_field(text: str, name: str) -> str | None:
+    values = [line.split(":", 1)[1].strip() for line in text.splitlines()
+              if line.startswith(name + ":")]
+    return values[0] if len(values) == 1 else None
+
+
+def _decimal(value: str | None, *, positive: bool = False) -> bool:
+    pattern = r"[1-9][0-9]*" if positive else r"[0-9]+"
+    return isinstance(value, str) and re.fullmatch(pattern, value) is not None
+
+
 def _parse_uid(status_text: str) -> tuple[int, int, int, int] | None:
-    for line in status_text.splitlines():
-        if line.startswith("Uid:"):
-            parts = line.split()
-            if len(parts) >= 5:
-                try:
-                    return (int(parts[1]), int(parts[2]), int(parts[3]), int(parts[4]))
-                except ValueError:
-                    return None
-    return None
+    value = _unique_status_field(status_text, "Uid")
+    parts = value.split() if value is not None else []
+    if len(parts) != 4 or not all(_decimal(v) for v in parts):
+        return None
+    try:
+        return tuple(int(v) for v in parts)
+    except ValueError:
+        return None
 
 
 def _parse_gid(status_text: str) -> tuple[int, int, int, int] | None:
@@ -814,13 +824,102 @@ def _stat_text(pid, starttime) -> str:
     return f"{pid} (x) " + " ".join(fields) + f" {starttime}"
 
 
-def _parse_starttime(stat_text: str) -> str | None:
-    try:
-        close = stat_text.rindex(")")
-        rest = stat_text[close + 2:].split()
-        return rest[19]  # field 22 == rest[19]
-    except (ValueError, IndexError):
+_TASK_STATES = "RSDZTtXxKWPI"
+
+
+def _parse_stat(stat_text: str) -> tuple[str, str, int, str] | None:
+    # Fields 3, 20 and 22; the comm may itself contain spaces/parentheses.
+    match = re.fullmatch(r"([1-9][0-9]*) \((.*)\) (.*)", stat_text.rstrip("\n"), re.S)
+    if match is None:
         return None
+    fields = match[3].split()
+    if (len(fields) < 20 or fields[0] not in _TASK_STATES
+            or len(fields[0]) != 1 or not _decimal(fields[17])
+            or not _decimal(fields[19])):
+        return None
+    return match[1], fields[0], int(fields[17]), fields[19]
+
+
+def _parse_starttime(stat_text: str) -> str | None:
+    parsed = _parse_stat(stat_text)
+    return parsed[3] if parsed is not None else None
+
+
+@dataclass(frozen=True)
+class _TaskIdentity:
+    tid: str
+    tgid: str
+    starttime: str
+    uid: tuple[int, int, int, int]
+    state: str
+    threads: int
+    zombie: bool
+
+    @property
+    def key(self) -> tuple:
+        return self.tgid, self.tid, self.starttime, self.uid
+
+
+def _read_task_identity(
+    proc, pid: str, tid: str | None = None,
+) -> tuple[_TaskIdentity | None, str]:
+    task_id = pid if tid is None else tid
+    prefix = "" if tid is None else f"task/{tid}/"
+    stat = proc.read_text(pid, prefix + "stat", 4096)
+    if stat.kind == VANISHED:
+        return None, "gone"
+    if stat.kind != OK:
+        return None, stat.kind
+    parsed = _parse_stat(stat.value)
+    if parsed is None or parsed[0] != task_id or parsed[2] == 0:
+        return None, "malformed"
+    status = proc.read_text(pid, prefix + "status", 8192)
+    if status.kind != OK:
+        return None, status.kind
+    return _task_identity(stat.value, status.value, pid, task_id)
+
+
+def _task_identity(
+    stat_text: str, status_text: str, pid: str, task_id: str,
+) -> tuple[_TaskIdentity | None, str]:
+    parsed = _parse_stat(stat_text)
+    if parsed is None or parsed[0] != task_id or parsed[2] == 0:
+        return None, "malformed"
+    uid = _parse_uid(status_text)
+    status_pid = _unique_status_field(status_text, "Pid")
+    group = _unique_status_field(status_text, "Tgid")
+    state = _unique_status_field(status_text, "State")
+    if (uid is None or status_pid != task_id or group != pid
+            or not _decimal(status_pid, positive=True)
+            or not _decimal(group, positive=True) or state is None
+            or re.fullmatch(r"[" + _TASK_STATES + r"] \([^()\n]+\)", state) is None):
+        return None, "malformed"
+    return _TaskIdentity(task_id, group, parsed[3], uid, parsed[1],
+                         parsed[2], parsed[1] == "Z" and state[0] == "Z"), "ok"
+
+
+@dataclass
+class _TaskAccounting:
+    exited: set = field(default_factory=set)
+    vanished: set = field(default_factory=set)
+
+    def exit(self, res: ScanResult, identity: _TaskIdentity | None,
+             pid: str, *, absent: bool = False) -> None:
+        key = identity.key if identity is not None else (pid, "absent_slot")
+        if key not in self.exited:
+            self.exited.add(key)
+            res.coverage["exited"] += 1
+        if absent:
+            self.close(res, key, "stat")
+
+    def close(self, res: ScanResult, key: tuple, rel: str) -> None:
+        marker = key, rel
+        if marker not in self.vanished:
+            self.vanished.add(marker)
+            res.coverage["vanished"] += 1
+
+    def opened(self, key: tuple, rel: str) -> None:
+        self.vanished.discard((key, rel))
 
 
 def _under(path: str | None, target_real: str) -> bool:
@@ -864,6 +963,11 @@ class _Rec:
     role: str | None = None
     ev: IdentityEvidence | None = None
     handled: bool = False
+    identity: _TaskIdentity | None = None
+    frontier: dict[str, _TaskIdentity] = field(default_factory=dict)
+    dead_refs: set[str] = field(default_factory=set)
+    frontier_complete: bool = False
+    views: dict[str, tuple[str, str, str]] = field(default_factory=dict)
 
 
 class _DeadlineProc:
@@ -1069,9 +1173,14 @@ def scan(target: str | os.PathLike, *, proc=None, self_pid: int | None = None,
 
     records: dict[str, _Rec] = {}
     processed: set[str] = set()
+    accounting = _TaskAccounting()
 
     def snapshot(pid: str) -> _Rec:
         st = proc.read_text(pid, "stat", 4096)
+        if st.kind == VANISHED:
+            rec = _Rec(pid=pid, stat_kind=VANISHED, status_kind=VANISHED)
+            records[pid] = rec
+            return rec
         status = proc.read_text(pid, "status", 8192)
         rec = _Rec(pid=pid, status_kind=status.kind, stat_kind=st.kind)
         if st.kind == OK:
@@ -1086,6 +1195,10 @@ def scan(target: str | os.PathLike, *, proc=None, self_pid: int | None = None,
             rec.ppid = _parse_status_field(status.value, "PPid")
         elif status.kind == ERROR:
             res.coverage["identity_read_errors"] += 1
+        if st.kind == OK and status.kind == OK:
+            rec.identity, _ = _task_identity(st.value, status.value, pid, pid)
+            if rec.identity is not None and rec.identity.threads > bounds.max_threads:
+                rec.identity = None
         records[pid] = rec
         return rec
 
@@ -1137,7 +1250,15 @@ def scan(target: str | os.PathLike, *, proc=None, self_pid: int | None = None,
                 res.coverage["truncated"] += 1
                 return
             if rec.uid == (agent_uid,) * 4:
-                ev = _gather_identity(proc, pid, rec, agent_uid)
+                if rec.identity is not None and rec.identity.zombie:
+                    cg = proc.read_text(pid, "cgroup", 8192)
+                    ev = IdentityEvidence(
+                        pid=pid, uid_quad=rec.uid, comm=rec.comm, ppid=rec.ppid,
+                        exe_path=None, exe_stat=None, exe_verified_root_file=False,
+                        gid_quad=rec.gid, groups=rec.groups, agent_uid=agent_uid,
+                        cgroup=cg.value if cg.kind == OK else None)
+                else:
+                    ev = _gather_identity(proc, pid, rec, agent_uid)
                 ev.parent_comm, ev.parent_uid, ev.parent_cgroup = parent_facts(rec.ppid)
                 rec.ev = ev
         # classify every role except (sd-pam) first, then resolve its parent
@@ -1205,7 +1326,7 @@ def scan(target: str | os.PathLike, *, proc=None, self_pid: int | None = None,
     for rec in sorted(records.values(), key=lambda r: int(r.pid)):
         if rec.uid is None:
             if rec.stat_kind == VANISHED:
-                res.coverage["exited"] += 1
+                accounting.exit(res, None, rec.pid, absent=True)
             else:
                 # B3: identity itself is unreadable -> UNKNOWN uid. This is not
                 # the same as a known other-user process, which is out of scope.
@@ -1215,6 +1336,10 @@ def scan(target: str | os.PathLike, *, proc=None, self_pid: int | None = None,
                 if kind == ERROR:
                     res.coverage["errors"] += 1
             continue
+        if (rec.uid == (agent_uid,) * 4 and rec.identity is None
+                and rec.stat_kind != VANISHED):
+            res.reasons.append(f"identity_malformed:{rec.pid}")
+            res.coverage["unreadable_same_user"] += 1
         if rec.role == "member":
             res.coverage["same_user"] += 1
             if rec.ev is not None and looks_exceptional(rec.ev):
@@ -1255,54 +1380,27 @@ def scan(target: str | os.PathLike, *, proc=None, self_pid: int | None = None,
             res.coverage["truncated"] += 1
             break
         rec.handled = True
-        cur = proc.read_text(pid, "stat", 4096)
-        if cur.kind == VANISHED:
-            res.coverage["exited"] += 1
-            res.coverage["vanished"] += 1
+        current, kind = _read_task_identity(proc, pid)
+        if kind == "gone":
+            accounting.exit(res, rec.identity, pid, absent=True)
+            res.coverage["scanned"] += 1
+            if rec.identity is not None:
+                _scan_member(proc, pid, rec, roots, bounds, res, self_mnt, expired,
+                             accounting)
+            else:
+                _identity_gap(res, pid, "leader_unbracketed")
             continue
-        if cur.kind != OK:
-            res.reasons.append(f"identity_recheck_{cur.kind}:{pid}")
+        if (kind != "ok" or rec.identity is None
+                or current.key != rec.identity.key
+                or current.threads > bounds.max_threads):
+            res.reasons.append(f"leader_identity_{kind}:{pid}")
             res.coverage["unreadable_same_user"] += 1
-            res.coverage["denied"] += 1
-            continue
-        cur_start = _parse_starttime(cur.value)
-        if cur_start is None or rec.starttime is None:
-            # F2: a readable stat with an unparseable starttime (now or at
-            # snapshot time) is an incomplete identity; None == None must not
-            # look like a reuse-free match.
-            res.reasons.append(f"identity_malformed_starttime:{pid}")
-            res.coverage["unreadable_same_user"] += 1
-            continue
-        if cur_start != rec.starttime:
-            res.reasons.append(f"pid_reuse:{pid}")
-            res.coverage["reused_pids"] += 1
-            continue
-        cur_status = proc.read_text(pid, "status", 8192)
-        if cur_status.kind != OK:
-            res.reasons.append(f"identity_recheck_{cur_status.kind}:{pid}")
-            res.coverage["unreadable_same_user"] += 1
-            res.coverage["denied"] += 1
-            continue
-        if _parse_uid(cur_status.value) != rec.uid:
-            res.reasons.append(f"credential_change:{pid}")
-            res.coverage["unreadable_same_user"] += 1
+            if kind == "ok" and rec.identity is not None:
+                res.coverage["reused_pids"] += 1
             continue
         res.coverage["scanned"] += 1
-        _scan_member(proc, pid, rec, roots, bounds, res, self_mnt, expired)
-
-        # post-observation identity revalidation
-        after = proc.read_text(pid, "stat", 4096)
-        if after.kind != OK or _parse_starttime(after.value) != rec.starttime:
-            res.reasons.append(f"identity_changed_after_scan:{pid}")
-            res.coverage["unreadable_same_user"] += 1
-            continue
-        after_status = proc.read_text(pid, "status", 8192)
-        if after_status.kind != OK:
-            res.reasons.append(f"identity_recheck_after_{after_status.kind}:{pid}")
-            res.coverage["unreadable_same_user"] += 1
-        elif _parse_uid(after_status.value) != rec.uid:
-            res.reasons.append(f"credential_change_after_scan:{pid}")
-            res.coverage["unreadable_same_user"] += 1
+        _scan_member(proc, pid, rec, roots, bounds, res, self_mnt, expired,
+                     accounting)
 
     # F3/R3: no final revalidation read is admitted after the shared deadline.
     if expired():
@@ -1352,6 +1450,11 @@ def scan(target: str | os.PathLike, *, proc=None, self_pid: int | None = None,
                     res.reasons.append("containing_resolution_changed")
             except OSError:
                 res.reasons.append("containing_resolution_changed")
+
+    # F: final group/frontier identities are independent of target identity.
+    for pid, rec in records.items():
+        if rec.role == "member" and rec.frontier_complete:
+            _validate_frontier(proc, pid, rec, bounds, res, accounting)
 
     # The last enumeration that contained no unprocessed process defines the
     # observation boundary. Processes that appear after that instant are later
@@ -1408,131 +1511,116 @@ def _gather_identity(proc, pid: str, rec: _Rec, agent_uid: int) -> IdentityEvide
 
 
 def _still_present(proc, pid: str, tid: str | None) -> bool | None:
-    """Return true/false only for observed presence/confirmed disappearance.
-
-    F2: ``ENOENT`` for a cwd/maps/fd reference is NOT confirmed process/thread
-    exit. Only an actually absent PID/TID stat (and status for a leader) proves
-    the disappearance; a still-present PID/TID with a missing child reference is
-    an unknown observation, never a clean clear. Denied/error/truncated identity
-    reads return ``None`` rather than masquerading as a confirmed exit.
-    """
-    if tid is None:
-        st = proc.read_text(pid, "stat", 4096)
-        if st.kind == OK:
-            return True
-        if st.kind != VANISHED:
-            return None
-        status = proc.read_text(pid, "status", 8192)
-        if status.kind == OK:
-            return True
-        return False if status.kind == VANISHED else None
-    st = proc.read_text(pid, f"task/{tid}/stat", 4096)
-    if st.kind == OK:
-        return True
-    return False if st.kind == VANISHED else None
+    prefix = "" if tid is None else f"task/{tid}/"
+    stat = proc.read_text(pid, prefix + "stat", 4096)
+    if stat.kind == VANISHED:
+        return False
+    return True if stat.kind == OK else None
 
 
-def _thread_bracket(proc, pid: str, tid: str):
-    """Return ((starttime, uid_quad), "ok") or (None, state).
+def _thread_bracket(proc, pid: str, tid: str) -> tuple[_TaskIdentity | None, str]:
+    return _read_task_identity(proc, pid, tid)
 
-    F2: a complete TID identity requires a parseable starttime AND all four UID
-    fields from a readable status. A denied/error status read, a missing ``Uid:``
-    line, or an unparseable starttime is an incomplete identity -> ``unknown``,
-    never ``ok`` and never a comparison against missing values. Only an actually
-    absent TID ``stat`` is a confirmed disappearance (``gone``).
-    """
-    st = proc.read_text(pid, f"task/{tid}/stat", 4096)
-    if st.kind == VANISHED:
-        return None, "gone"
-    if st.kind != OK:
-        return None, st.kind
-    starttime = _parse_starttime(st.value)
-    if starttime is None:
+
+def _thread_frontier(
+    proc, pid: str, bounds: Bounds,
+) -> tuple[tuple[str, ...] | None, str]:
+    listed = proc.listdir(pid, "task", bounds.max_threads)
+    if listed.kind != OK:
+        return None, listed.kind
+    tids = listed.value
+    if not isinstance(tids, list) or not tids:
         return None, "malformed"
-    status = proc.read_text(pid, f"task/{tid}/status", 8192)
-    if status.kind != OK:
-        return None, status.kind
-    uid = _parse_uid(status.value)
-    if uid is None:
-        return None, "malformed"
-    return (starttime, uid), "ok"
+    if len(tids) > bounds.max_threads:
+        return None, TRUNCATED
+    valid = [tid for tid in tids if _decimal(tid, positive=True)]
+    canonical = tuple(sorted(set(valid), key=lambda tid: (len(tid), tid)))
+    kind = "ok" if len(canonical) == len(tids) else "malformed"
+    # A malformed population cannot clear, but independently bracketable
+    # canonical members can still supply a positive hit.
+    return canonical, kind
+
+
+def _identity_gap(res: ScanResult, pid: str, detail: str) -> None:
+    res.reasons.append(f"thread_coverage_{detail}:{pid}")
+    res.coverage["unreadable_same_user"] += 1
+    if detail == TRUNCATED:
+        res.coverage["threads_truncated"] += 1
+        res.coverage["truncated"] += 1
+    elif detail == DENIED:
+        res.coverage["denied"] += 1
+    elif detail == ERROR:
+        res.coverage["errors"] += 1
+
+
+def _thread_view(proc, pid: str, tid: str) -> tuple[str, str, str] | None:
+    values = [proc.readlink(pid, f"task/{tid}/{rel}")
+              for rel in ("ns/mnt", "ns/user", "root")]
+    return tuple(v.value for v in values) if all(v.kind == OK for v in values) else None
+
+
+def _validate_frontier(proc, pid: str, rec: _Rec, bounds: Bounds,
+                       res: ScanResult, accounting: _TaskAccounting) -> None:
+    leader, kind = _read_task_identity(proc, pid)
+    if kind == "gone":
+        # Group census is still required: leader absence alone is task evidence.
+        accounting.exit(res, rec.identity, pid, absent=True)
+    elif kind != "ok" or rec.identity is None or leader.key != rec.identity.key:
+        _identity_gap(res, pid, "leader_final_" + kind)
+    if kind == "ok" and pid in rec.dead_refs and not leader.zombie:
+        _identity_gap(res, pid, "leader_zombie_changed_final")
+    tids, kind = _thread_frontier(proc, pid, bounds)
+    if kind != "ok":
+        _identity_gap(res, pid, "final_" + kind)
+        return
+    if (set(tids) != set(rec.frontier) or pid not in tids
+            or leader is None or leader.threads != len(tids)):
+        _identity_gap(res, pid, "frontier_changed_final")
+    for tid in tids:
+        current, state = _thread_bracket(proc, pid, tid)
+        previous = rec.frontier.get(tid)
+        if state == "ok" and tid not in rec.dead_refs:
+            if (previous is None or current.key != previous.key
+                    or current.threads != len(tids)):
+                _identity_gap(res, pid, f"identity_before_final:{tid}")
+            if _thread_view(proc, pid, tid) != rec.views.get(tid):
+                _identity_gap(res, pid, f"view_changed_final:{tid}")
+            # Include view reads inside the final identity bracket.
+            current, state = _thread_bracket(proc, pid, tid)
+        if state == "gone":
+            if previous is not None:
+                accounting.exit(res, previous, pid, absent=True)
+            _identity_gap(res, pid, "frontier_lost_final")
+        elif (state != "ok" or previous is None or current.key != previous.key
+              or current.threads != len(tids)
+              or (tid in rec.dead_refs and not current.zombie)):
+            _identity_gap(res, pid, f"identity_final_{state}:{tid}")
+            if state == "ok" and previous is not None and current.key != previous.key:
+                res.coverage["reused_pids"] += 1
+
+    final_tids, final_kind = _thread_frontier(proc, pid, bounds)
+    final_leader, final_state = _read_task_identity(proc, pid)
+    if (final_kind != "ok" or final_tids != tids
+            or final_state != "ok" or rec.identity is None
+            or final_leader.key != rec.identity.key
+            or final_leader.threads != len(tids)
+            or (pid in rec.dead_refs and not final_leader.zombie)):
+        _identity_gap(res, pid, "frontier_changed_at_admission")
 
 
 def _scan_member(proc, pid: str, rec: _Rec, roots: dict, bounds: Bounds,
-                 res: ScanResult, self_mnt: str | None, expired) -> None:
-    mnt = proc.readlink(pid, "ns/mnt")
-    usr = proc.readlink(pid, "ns/user")
-    if mnt.kind == VANISHED or usr.kind == VANISHED:
-        # F2: ENOENT for a namespace link is a missing child reference, not
-        # confirmed exit. Only an actually absent PID proves the process is
-        # gone; a still-present PID with a missing namespace is unknown.
-        present = _still_present(proc, pid, None)
-        if present is not False:
-            res.reasons.append(f"ns_vanished_but_present:{pid}")
-            res.coverage["unreadable_same_user"] += 1
-        else:
-            res.coverage["exited"] += 1
-            res.coverage["vanished"] += 1
-        return
-    if mnt.kind != OK or usr.kind != OK:
-        kind = mnt.kind if mnt.kind != OK else usr.kind
-        res.reasons.append(f"ns_{kind}:{pid}")
-        res.coverage["unreadable_same_user"] += 1
-        if kind == DENIED:
-            res.coverage["denied"] += 1
-        elif kind == TRUNCATED:
-            res.coverage["truncated"] += 1
-        else:
-            res.coverage["errors"] += 1
-        return
-    same_ns = self_mnt is not None and mnt.value == self_mnt
-    if not same_ns:
-        res.coverage["mnt_ns_differs"] += 1
-        # establish path identity for every observed root in that namespace
-        for root, rid in roots.items():
-            if rid is None:
-                res.reasons.append(f"mnt_ns_target_identity_unknown:{pid}")
-                res.coverage["mnt_ns_path_unverified"] += 1
-            else:
-                ident = _path_identity(proc, pid, root, same_ns=False)
-                if ident != rid:
-                    res.reasons.append(f"mnt_ns_path_unverified:{pid}")
-                    res.coverage["mnt_ns_path_unverified"] += 1
-
-    threads = proc.listdir(pid, "task", bounds.max_threads)
-    if threads.kind == VANISHED:
-        # F2: same rule as the namespace links -- a missing thread listing is
-        # not a confirmed exit while the PID is still observable.
-        present = _still_present(proc, pid, None)
-        if present is not False:
-            res.reasons.append(f"threads_vanished_but_present:{pid}")
-            res.coverage["unreadable_same_user"] += 1
-        else:
-            res.coverage["exited"] += 1
-            res.coverage["vanished"] += 1
-        return
-    if threads.kind != OK:
-        res.reasons.append(f"threads_{threads.kind}:{pid}")
-        res.coverage["unreadable_same_user"] += 1
-        if threads.kind == TRUNCATED:
-            res.coverage["threads_truncated"] += 1
-            res.coverage["truncated"] += 1
-        elif threads.kind == DENIED:
-            res.coverage["denied"] += 1
-        else:
-            res.coverage["errors"] += 1
-        return
-    tids = threads.value or []
-    if len(tids) > bounds.max_threads:
-        res.reasons.append(f"threads_truncated:{pid}")
-        res.coverage["threads_truncated"] += 1
-        res.coverage["truncated"] += 1
-        return
+                 res: ScanResult, self_mnt: str | None, expired,
+                 accounting: _TaskAccounting) -> None:
+    # Discover the group before attempting any leader namespace/reference.
+    # Each reference resolves through the currently bracketed thread's root.
+    observed: _TaskIdentity | None = None
+    view = pid
+    same_ns = False
 
     def _inode_hit(value: str | None) -> bool:
         if not value or not value.startswith("/"):
             return False
-        ident = _path_identity(proc, pid, value, same_ns)
+        ident = _path_identity(proc, view, value, False)
         return any(rid is not None and ident == rid for rid in roots.values())
 
     def vanished_ref(kind: str, tid: str | None) -> None:
@@ -1542,8 +1630,7 @@ def _scan_member(proc, pid: str, rec: _Rec, roots: dict, bounds: Bounds,
             res.reasons.append(f"{kind}_vanished_but_present:{label}")
             res.coverage["unreadable_same_user"] += 1
         else:
-            res.coverage["exited"] += 1
-            res.coverage["vanished"] += 1
+            accounting.exit(res, observed, pid, absent=True)
 
     def check(rel: str, kind: str, tid: str | None) -> None:
         link = proc.readlink(pid, rel)
@@ -1551,7 +1638,7 @@ def _scan_member(proc, pid: str, rec: _Rec, roots: dict, bounds: Bounds,
             if kind == "exe":
                 # F2 names cwd/maps/fd explicitly. An absent exe symlink (e.g. a
                 # zombie/kernel task) is a closed reference, not a coverage hole.
-                res.coverage["vanished"] += 1
+                accounting.close(res, observed.key, rel)
                 return
             vanished_ref(kind, tid)
             return
@@ -1566,6 +1653,9 @@ def _scan_member(proc, pid: str, rec: _Rec, roots: dict, bounds: Bounds,
                 res.coverage["errors"] += 1
                 res.coverage["unreadable_same_user"] += 1
             return
+        accounting.opened(observed.key, rel)
+        if kind == "root":
+            rec.views[tid] = (mnt.value, usr.value, link.value)
         if _matches_any(link.value, roots):
             res.hits.append({"pid": pid, "tid": tid, "kind": kind, "evidence": link.value})
         elif _inode_hit(link.value):
@@ -1640,7 +1730,7 @@ def _scan_member(proc, pid: str, rec: _Rec, roots: dict, bounds: Bounds,
             link = proc.readlink(pid, f"{rel}/{fd}")
             if link.kind == VANISHED:
                 # a single fd entry closing mid-iteration is a confirmed close
-                res.coverage["vanished"] += 1
+                accounting.close(res, observed.key, f"{rel}/{fd}")
                 continue
             if link.kind != OK:
                 res.reasons.append(f"fd_{link.kind}:{pid}{':' + tid if tid else ''}")
@@ -1653,6 +1743,7 @@ def _scan_member(proc, pid: str, rec: _Rec, roots: dict, bounds: Bounds,
                     res.coverage["errors"] += 1
                     res.coverage["unreadable_same_user"] += 1
                 continue
+            accounting.opened(observed.key, f"{rel}/{fd}")
             if _matches_any(link.value, roots):
                 res.hits.append({"pid": pid, "tid": tid, "kind": "fd",
                                  "evidence": link.value})
@@ -1660,59 +1751,137 @@ def _scan_member(proc, pid: str, rec: _Rec, roots: dict, bounds: Bounds,
                 res.hits.append({"pid": pid, "tid": tid, "kind": "fd_inode",
                                  "evidence": link.value})
 
-    # F2/F6: process each thread in its own identity bracket, admitted against
-    # the shared deadline before every bounded read/iteration.
-    for tid in [None] + tids:
+    previous_tids = None
+    # Reserve two bounded census reads for the final admission bracket.
+    for _ in range(max(0, bounds.max_enum_passes - 2)):
         if expired():
-            res.reasons.append("deadline_exceeded")
-            res.coverage["truncated"] += 1
+            _identity_gap(res, pid, TRUNCATED)
             return
-        t_start = t_uid = None
-        if tid is not None:
-            bracket, state = _thread_bracket(proc, pid, tid)
+        leader, leader_kind = _read_task_identity(proc, pid)
+        if (leader_kind != "ok" or rec.identity is None
+                or leader.key != rec.identity.key):
+            _identity_gap(res, pid, "leader_" + leader_kind)
+        tids, kind = _thread_frontier(proc, pid, bounds)
+        if kind != "ok":
+            _identity_gap(res, pid, kind)
+            if tids is None:
+                return
+        if leader is not None and pid in rec.dead_refs and not leader.zombie:
+            _identity_gap(res, pid, "leader_zombie_changed")
+        if leader is not None and leader.threads > bounds.max_threads:
+            _identity_gap(res, pid, TRUNCATED)
+        compatible = (kind == "ok" and leader is not None and leader_kind == "ok"
+                      and 0 < leader.threads <= bounds.max_threads
+                      and leader.threads == len(tids) and pid in tids)
+        for tid in tids:
+            if expired():
+                _identity_gap(res, pid, TRUNCATED)
+                return
+            before, state = _thread_bracket(proc, pid, tid)
             if state == "gone":
-                res.coverage["exited"] += 1
-                res.coverage["vanished"] += 1
+                previous = rec.frontier.get(tid)
+                if previous is not None:
+                    accounting.exit(res, previous, pid, absent=True)
+                compatible = False
                 continue
             if state != "ok":
-                res.reasons.append(f"thread_identity_{state}:{pid}:{tid}")
-                res.coverage["unreadable_same_user"] += 1
+                _identity_gap(res, pid, f"identity_{state}:{tid}")
+                compatible = False
                 continue
-            t_start, t_uid = bracket
-        prefix = "" if tid is None else f"task/{tid}/"
-        for rel, kind in ((prefix + "cwd", "cwd"), (prefix + "root", "root"),
-                          (prefix + "exe", "exe")):
-            if expired():
-                res.reasons.append("deadline_exceeded")
-                res.coverage["truncated"] += 1
-                return
-            check(rel, kind, tid)
-        if expired():
-            res.reasons.append("deadline_exceeded")
-            res.coverage["truncated"] += 1
-            return
-        check_maps(prefix + "maps", tid)
-        if expired():
-            res.reasons.append("deadline_exceeded")
-            res.coverage["truncated"] += 1
-            return
-        check_fds(prefix + "fd", tid)
-        if tid is not None:
-            after, state2 = _thread_bracket(proc, pid, tid)
-            if state2 == "gone":
-                res.coverage["exited"] += 1
-                res.coverage["vanished"] += 1
-            elif state2 != "ok":
-                res.reasons.append(f"thread_identity_recheck_{state2}:{pid}:{tid}")
-                res.coverage["unreadable_same_user"] += 1
-            else:
-                a_start, a_uid = after
-                if a_start != t_start:
-                    res.reasons.append(f"thread_reuse:{pid}:{tid}")
+            if before.threads > bounds.max_threads:
+                _identity_gap(res, pid, TRUNCATED)
+            if not 0 < before.threads <= bounds.max_threads or before.threads != len(tids):
+                compatible = False
+            prior = rec.frontier.get(tid)
+            if ((prior is not None and prior.key != before.key)
+                    or before.uid != rec.identity.uid
+                    or (tid == pid and before.key != rec.identity.key)):
+                _identity_gap(res, pid, f"reuse_or_credentials:{tid}")
+                res.coverage["reused_pids"] += 1
+                compatible = False
+                continue
+            if tid in rec.dead_refs and not before.zombie:
+                _identity_gap(res, pid, f"zombie_changed:{tid}")
+                compatible = False
+            if before.key in accounting.exited and not before.zombie:
+                _identity_gap(res, pid, f"returned_after_exit:{tid}")
+                compatible = False
+            observed = before
+            # Repeated Z authorizes omission of THIS task's dead references.
+            # No namespace, cwd/root/exe, maps or fd read is issued for it.
+            if not before.zombie and prior is None:
+                view = f"{pid}/task/{tid}"
+                mnt = proc.readlink(pid, f"task/{tid}/ns/mnt")
+                usr = proc.readlink(pid, f"task/{tid}/ns/user")
+                same_ns = self_mnt is not None and mnt.kind == OK and mnt.value == self_mnt
+                if mnt.kind != OK or usr.kind != OK:
+                    ns_kind = mnt.kind if mnt.kind != OK else usr.kind
+                    if _still_present(proc, pid, tid) is False:
+                        accounting.exit(res, before, pid, absent=True)
+                        compatible = False
+                        continue
+                    _identity_gap(res, pid, "namespace_" + ns_kind)
+                if not same_ns:
+                    res.coverage["mnt_ns_differs"] += 1
+                    for root, rid in roots.items():
+                        if rid is None or _path_identity(proc, view, root, False) != rid:
+                            res.reasons.append(f"mnt_ns_path_unverified:{pid}:{tid}")
+                            res.coverage["mnt_ns_path_unverified"] += 1
+                prefix = f"task/{tid}/"
+                for rel, ref_kind in (("cwd", "cwd"), ("root", "root"), ("exe", "exe")):
+                    check(prefix + rel, ref_kind, tid)
+                check_maps(prefix + "maps", tid)
+                check_fds(prefix + "fd", tid)
+                post_view = _thread_view(proc, pid, tid)
+                if (post_view is None or mnt.kind != OK or usr.kind != OK
+                        or post_view != rec.views.get(tid)):
+                    _identity_gap(res, pid, f"view_changed:{tid}")
+                else:
+                    rec.views[tid] = post_view
+            elif not before.zombie:
+                if _thread_view(proc, pid, tid) != rec.views.get(tid):
+                    _identity_gap(res, pid, f"view_changed:{tid}")
+            after, state = _thread_bracket(proc, pid, tid)
+            if state == "gone":
+                accounting.exit(res, before, pid, absent=True)
+                compatible = False
+                continue
+            if state != "ok" or after.key != before.key:
+                _identity_gap(res, pid, f"identity_after_{state}:{tid}")
+                if state == "ok":
                     res.coverage["reused_pids"] += 1
-                elif t_uid is not None and a_uid != t_uid:
-                    res.reasons.append(f"thread_credential_change:{pid}:{tid}")
-                    res.coverage["unreadable_same_user"] += 1
+                compatible = False
+                continue
+            if after.threads > bounds.max_threads:
+                _identity_gap(res, pid, TRUNCATED)
+            if not 0 < after.threads <= bounds.max_threads or after.threads != len(tids):
+                compatible = False
+            if before.zombie:
+                if after.zombie:
+                    accounting.exit(res, after, pid)
+                    rec.dead_refs.add(tid)
+                else:
+                    _identity_gap(res, pid, f"zombie_unconfirmed:{tid}")
+                    compatible = False
+            rec.frontier[tid] = after
+        after_leader, kind = _read_task_identity(proc, pid)
+        if (kind != "ok" or rec.identity is None
+                or after_leader.key != rec.identity.key):
+            _identity_gap(res, pid, "leader_after_" + kind)
+            compatible = False
+        elif pid in rec.dead_refs and not after_leader.zombie:
+            _identity_gap(res, pid, "leader_zombie_changed_after")
+            compatible = False
+        elif after_leader.threads != len(tids):
+            if after_leader.threads > bounds.max_threads:
+                _identity_gap(res, pid, TRUNCATED)
+            compatible = False
+        if (compatible and previous_tids == tids
+                and set(rec.frontier) == set(tids)):
+            rec.frontier_complete = True
+            return
+        previous_tids = tids
+    _identity_gap(res, pid, "frontier_nonconvergent")
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────
