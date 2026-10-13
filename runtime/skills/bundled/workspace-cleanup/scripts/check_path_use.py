@@ -1803,6 +1803,9 @@ def _scan_member(proc, pid: str, rec: _Rec, roots: dict, bounds: Bounds,
             if tid in rec.dead_refs and not before.zombie:
                 _identity_gap(res, pid, f"zombie_changed:{tid}")
                 compatible = False
+            if before.key in accounting.exited and not before.zombie:
+                _identity_gap(res, pid, f"returned_after_exit:{tid}")
+                compatible = False
             observed = before
             # Repeated Z authorizes omission of THIS task's dead references.
             # No namespace, cwd/root/exe, maps or fd read is issued for it.
