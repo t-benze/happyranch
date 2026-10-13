@@ -79,7 +79,8 @@ print(json.dumps({{'success':True,'duration_seconds':0,'session_id':value['invoc
         child = root / (profile + '-child')
         child.write_text(f'#!{sys.executable}\nraise SystemExit(0)\n')
         child.chmod(0o700)
-        wrapper = root / (profile + '-adapter')
+        # Filename and output identity must equal the registry's canonical ID.
+        wrapper = root / (profile.replace('_', '-') + '-adapter')
         wrapper.write_text(f'''#!{sys.executable}
 import sys,json,subprocess
 value=json.load(sys.stdin)
