@@ -321,7 +321,8 @@ def main():
                 # Locale transition uses the real browser adapter; no reload or API mutation.
                 mutation_count = sum(e['event'] == 'request' for e in browser_events)
                 switch_locale(locale)
-                page.locator('#agent-reasoning-effort').scroll_into_view_if_needed()
+                # Include the label and localized help, not just the text box.
+                page.locator('#agent-reasoning-effort').locator('xpath=ancestor::section[1]').scroll_into_view_if_needed()
                 target = args.output / f'effort-{width}x{height}-{locale}-{state}.png'
                 page.screenshot(path=str(target))
                 require(sum(e['event'] == 'request' for e in browser_events) == mutation_count, 'locale change/screenshot must not trigger finite reads or mutations')
@@ -519,7 +520,11 @@ def main():
             require(stale.value.request.post_data_json['expected_executor'] == 'claude', 'old actual executor binding after refetch reaches stale409')
             require(agent_path.read_bytes() == before_stale and roster()['reasoning_effort'] is None, 'stale UI cannot mutate pair after refetch')
             expect(page.locator('#agent-reasoning-effort')).to_have_value('future_Tier-2')
-            expect(page.get_by_text('The saved CLI changed.', exact=False)).to_be_visible()
+            # The field alert and save summary intentionally repeat this error.
+            # Assert each surface explicitly rather than using ambiguous text.
+            expect(page.locator('#agent-reasoning-effort-help').get_by_role('alert')).to_contain_text('The saved CLI changed.')
+            expect(page.locator('#agent-reasoning-effort-help').get_by_role('alert')).to_be_visible()
+            expect(page.get_by_text('Save error: Model: The saved CLI changed.', exact=False)).to_be_visible()
             receipts.append({'case': 'C2-stale-draft', 'request': stale.value.request.post_data_json, 'status': 409, 'canonical_before_base64': base64.b64encode(before_stale).decode(), 'canonical_after_base64': base64.b64encode(agent_path.read_bytes()).decode(), 'draft_retained': True})
             request('POST', prefix + '/repos', {'action': 'remove', 'repo_name': 'stale-refetch-source'})
             request('PUT', prefix + '/executor', {'executor': 'claude'})
