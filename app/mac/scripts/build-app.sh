@@ -44,22 +44,166 @@ finish() {
     local code=$?
     if [ "$code" -ne 0 ]; then
         printf 'BUILD_FAILED stage=%s exit=%s run=%s\n' "$STAGE" "$code" "$RUN_ID"
-        printf 'stage=%s\nexit=%s\nrun=%s\n' "$STAGE" "$code" "$RUN_ID" > "$OUTPUT/diagnostics/failure.txt"
-        python3 - "$OUTPUT/diagnostics" <<'PYFAIL'
-import json, sys
+        # Evidence errors must never replace the original build exit.
+        python3 - "$OUTPUT" "$STAGE" "$code" "$RUN_ID" "$SOURCE_SHA" "$SOURCE_TREE" "$VERSION" "$BUILD" "$ARCH" "${INSPECTION_STAGE:-not-started}" <<'PYFAIL' || printf 'DIAGNOSTIC_COLLECTION_FAILED\n' >&2
+import gzip, hashlib, json, os, stat, sys
 from pathlib import Path
-root = Path(sys.argv[1]); target = root / 'bounded'
-target.mkdir()
-for name in ('build.log', 'failure.txt', 'toolchains.txt', 'go-inputs.sha256',
-             'swift-link.map', 'resources.json', 'license-mapping.json',
-             'web-attribution.json'):
-    path = root / name
-    if path.is_file():
-        data = path.read_bytes()
-        (target / (name + '.diagnostic')).write_bytes(data[-262144:])
-        (target / (name + '.bounds.json')).write_text(json.dumps(
-            {'original_size': len(data), 'retained_size': min(len(data), 262144),
-             'truncated': len(data) > 262144, 'selection': 'last bytes'}))
+output = Path(sys.argv[1]); stage, code, run_id, sha, tree, version, build, arch, inspection_stage = sys.argv[2:]
+# Fixed task-owned inputs only. No traversal, app/archive upload or environment.
+inputs = [(name, 'diagnostics/' + name, kind) for name, kind in (
+    ('build.log', 'text'), ('failure.txt', 'text'), ('toolchains.txt', 'text'),
+    ('go-inputs.sha256', 'text'), ('go-members.txt', 'text'),
+    ('go-symbols.txt', 'text'), ('go-deps.json', 'json-stream'),
+    ('go-modules.json', 'json-stream'), ('swift-link.map', 'text'),
+    ('swift-bin-path.txt', 'text'), ('swift-release.sha256', 'text'),
+    ('resources.json', 'json'), ('license-mapping.json', 'json'),
+    ('web-attribution.json', 'json'), ('native.json', 'json'),
+    ('native-nm.txt', 'text'), ('native-members.json', 'json'),
+    ('catalog.json', 'json'), ('trust.json', 'json'), ('licenses.json', 'json'))]
+inputs += [(name, 'scratch/freeze-work/' + src, kind) for name, src, kind in (
+    ('analysis.json', 'analysis.json', 'json'),
+    ('python-toolchain.json', 'python-toolchain.json', 'json'),
+    ('freeze-license-mapping.json', 'license-mapping.json', 'json'),
+    ('daemon-analysis.toc', 'daemon/Analysis-00.toc', 'text'),
+    ('cli-analysis.toc', 'daemon/Analysis-01.toc', 'text'),
+    ('daemon-pyz.toc', 'daemon/PYZ-00.toc', 'text'),
+    ('cli-pyz.toc', 'daemon/PYZ-01.toc', 'text'))]
+inputs += [(f'cli-{i}.{suffix}', f'diagnostics/cli-{i}.{suffix}', kind)
+           for i in range(7) for suffix, kind in
+           (('stdout', 'text'), ('stderr', 'text'), ('json', 'json'))]
+critical = [('native-failure.json', 'diagnostics/native-failure.json', 'json'),
+            ('native-symbols.json', 'diagnostics/native-symbols.json', 'json')]
+FILE_READ = 8 * 1024 * 1024; TOTAL_READ = 32 * 1024 * 1024
+FILE_STORED = 2 * 1024 * 1024; TOTAL_STORED = 8 * 1024 * 1024
+CRITICAL = 262144
+flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+# Check every ancestor, then keep directory descriptors for no-follow IO.
+if any(p.is_symlink() for p in (output, *output.parents)):
+    raise SystemExit('DIAGNOSTIC_ROOT_UNSAFE')
+rootfd = os.open(output, flags | os.O_DIRECTORY)
+def owned(fd, directory=False):
+    info = os.fstat(fd)
+    if info.st_uid != os.getuid() or not (stat.S_ISDIR(info.st_mode) if directory else stat.S_ISREG(info.st_mode)):
+        raise ValueError('NOT_OWNED_REGULAR_INPUT')
+    if not directory and info.st_nlink != 1:
+        raise ValueError('HARDLINK_INPUT_REFUSED')
+    return info
+owned(rootfd, True)
+diagfd = os.open('diagnostics', flags | os.O_DIRECTORY, dir_fd=rootfd); owned(diagfd, True)
+os.mkdir('bounded', dir_fd=diagfd)
+fdout = os.open('bounded', flags | os.O_DIRECTORY, dir_fd=diagfd); owned(fdout, True)
+def write(name, data):
+    fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=fdout)
+    with os.fdopen(fd, 'wb') as stream:
+        stream.write(data)
+def encode(value):
+    return (json.dumps(value, sort_keys=True, indent=2) + '\n').encode()
+summary = {'error': 'BUILD_FAILED', 'stage': stage, 'exit': int(code), 'run_id': run_id,
+           'source_sha': sha, 'source_tree': tree, 'version': version, 'build': build, 'arch': arch,
+           'inspection_stage': inspection_stage,
+           'available': False, 'approved_url': None}
+try:
+    fd = os.open('failure.txt', os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=diagfd)
+    with os.fdopen(fd, 'w') as stream:
+        stream.write(f'stage={stage}\nexit={code}\nrun={run_id}\n')
+except FileExistsError:
+    pass  # Existing input (including a symlink) is inspected without overwriting.
+write('failure.json', encode(summary))
+rows = []; read_bytes = stored_bytes = 0
+for name, relative, kind in critical + inputs:
+    row = {'name': name, 'source': relative, 'kind': kind, 'original_size': None,
+           'source_sha256': None, 'retained_source_size': 0, 'retained_size': 0,
+           'omitted_bytes': None, 'original_records': None, 'retained_records': None,
+           'omitted_records': None, 'complete': False, 'selection': 'none'}
+    is_critical = (name, relative, kind) in critical
+    cap = CRITICAL if is_critical else min(FILE_READ, TOTAL_READ - read_bytes)
+    fds = []; data = None
+    try:
+        parent = rootfd
+        for part in Path(relative).parts[:-1]:
+            parent = os.open(part, flags | os.O_DIRECTORY, dir_fd=parent); fds.append(parent); owned(parent, True)
+        fd = os.open(Path(relative).name, flags, dir_fd=parent); fds.append(fd)
+        info = owned(fd); row['original_size'] = info.st_size
+        if info.st_size > cap:
+            row['disposition'] = 'INPUT_CAP_EXCEEDED'
+        else:
+            with os.fdopen(os.dup(fd), 'rb') as stream:
+                data = stream.read(cap)
+            if not is_critical:
+                read_bytes += len(data)
+            after = os.fstat(fd)
+            if len(data) != info.st_size or (after.st_size, after.st_mtime_ns) != (info.st_size, info.st_mtime_ns):
+                row['disposition'] = 'INPUT_CHANGED_OR_CAP_EXCEEDED'
+            else:
+                row['source_sha256'] = hashlib.sha256(data).hexdigest()
+                try:
+                    value = None
+                    if kind == 'json':
+                        value = json.loads(data)
+                    elif kind == 'json-stream':
+                        text = data.decode('utf-8'); decoder = json.JSONDecoder(); count = 0
+                        while text.strip():
+                            _, end = decoder.raw_decode(text.lstrip()); text = text.lstrip()[end:]; count += 1
+                        if not count:
+                            raise ValueError('EMPTY_JSON_STREAM')
+                        row['original_records'] = count
+                    if isinstance(value, dict) and isinstance(value.get('components'), list):
+                        row['original_records'] = len(value['components'])
+                    elif isinstance(value, dict) and isinstance(value.get('observations'), list):
+                        row['original_records'] = len(value['observations'])
+                    elif isinstance(value, list):
+                        row['original_records'] = len(value)
+                    if kind == 'text':
+                        row['original_records'] = len(data.splitlines())
+                    packed = data if len(data) <= 262144 else gzip.compress(data, mtime=0)
+                    limit = CRITICAL if is_critical else min(FILE_STORED, TOTAL_STORED - stored_bytes)
+                    if len(packed) > limit:
+                        row['disposition'] = 'STORAGE_CAP_EXCEEDED'
+                    else:
+                        dest = name + ('.diagnostic' if len(data) <= 262144 else '.diagnostic.gz')
+                        write(dest, packed)
+                        row.update(disposition='COMPLETE', complete=True, artifact=dest,
+                                   selection='whole file', encoding='identity' if len(data) <= 262144 else 'gzip',
+                                   retained_source_size=len(data), retained_size=len(packed),
+                                   retained_sha256=hashlib.sha256(packed).hexdigest(),
+                                   retained_records=row['original_records'], omitted_records=0, omitted_bytes=0)
+                        if not is_critical:
+                            stored_bytes += len(packed)
+                except (ValueError, UnicodeError, RecursionError):
+                    row['disposition'] = 'MALFORMED_STRUCTURED_INPUT'
+    except FileNotFoundError:
+        row['disposition'] = 'MISSING_AT_FAILURE_STAGE'
+    except (OSError, ValueError):
+        row['disposition'] = 'UNSAFE_OR_UNREADABLE_INPUT'
+    finally:
+        for fd in reversed(fds):
+            os.close(fd)
+    if not row['complete']:
+        row['omitted_bytes'] = row['original_size']
+        row['omitted_records'] = row['original_records']
+    # Compatibility fields never label a JSON byte-tail complete.
+    row['truncated'] = not row['complete']
+    write(name + '.bounds.json', encode(row)); rows.append(row)
+inspection_order = ['resources', 'native', 'cli', 'catalog', 'trust', 'licenses']
+reached = inspection_order.index(inspection_stage) if inspection_stage in inspection_order else -1
+manifest = {**summary, 'inspection_stages': {name: ('REACHED' if i <= reached else 'NOT_REACHED')
+            for i, name in enumerate(inspection_order)}, 'inputs': rows, 'input_count': len(rows),
+            'complete_files': sum(r['complete'] for r in rows),
+            'partial_or_missing_files': sum(not r['complete'] for r in rows),
+            'bulk_read_bytes': read_bytes, 'bulk_stored_bytes': stored_bytes,
+            'caps': {'input_files': 50, 'output_files': 102,
+                     'input_per_file': FILE_READ, 'input_total': TOTAL_READ,
+                     'stored_per_file': FILE_STORED, 'stored_total': TOTAL_STORED,
+                     'critical_per_file': CRITICAL, 'critical_files': 3,
+                     'metadata_total': 131072},
+            'scope': 'AVAILABLE_ALLOWLISTED_EVIDENCE_ONLY_NOT_RELEASE_CLOSURE'}
+assert len(rows) == 50
+encoded = encode(manifest)
+# Fixed field names and short dispositions bound all sidecars and this index.
+assert len(encoded) + sum(len(encode(r)) for r in rows) < 131072
+write('evidence-index.json', encoded)
+for fd in (fdout, diagfd, rootfd):
+    os.close(fd)
 PYFAIL
     fi
     exit "$code"
@@ -113,7 +257,7 @@ npm run build -- --sourcemap
 STAGE=swift
 cd "$PROJECT"
 LINK_MAP="$OUTPUT/diagnostics/swift-link.map"
-swift build -c release --arch arm64 --scratch-path "$OUTPUT/scratch/swift" -Xlinker -map -Xlinker "$LINK_MAP"
+swift build -v -c release --arch arm64 --scratch-path "$OUTPUT/scratch/swift" -Xlinker -map -Xlinker "$LINK_MAP"
 BIN_DIR="$(swift build -c release --arch arm64 --scratch-path "$OUTPUT/scratch/swift" --show-bin-path)"
 printf '%s\n' "$BIN_DIR" > "$OUTPUT/diagnostics/swift-bin-path.txt"
 test -x "$BIN_DIR/HappyRanchApp" || { echo RELEASE_BINARY_MISSING >&2; exit 1; }
@@ -390,10 +534,13 @@ components.append({'component': 'HappyRanch first-party code and 29 source resou
 (output / 'diagnostics/license-mapping.json').write_text(json.dumps(mapping, indent=2) + '\n')
 PYNOTICES
 STAGE=verification
+INSPECTION_STAGE=resources
 bash "$VERIFY" resources --app "$APP" > "$OUTPUT/diagnostics/resources.json"
-bash "$VERIFY" native --app "$APP" --go-archive "$PROJECT/tsnet-bridge/libtsnet.a" --link-map "$LINK_MAP" > "$OUTPUT/diagnostics/native.json"
+INSPECTION_STAGE=native
+bash "$VERIFY" native --app "$APP" --go-archive "$PROJECT/tsnet-bridge/libtsnet.a" --link-map "$LINK_MAP" --evidence-dir "$OUTPUT/diagnostics" > "$OUTPUT/diagnostics/native.json"
 # Requested frozen entry-point inspection outside source, with bounded subprocess
 # timeouts and no checkout/PYTHONPATH/development tool search path.
+INSPECTION_STAGE=cli
 python3 - "$APP" "$OUTPUT/diagnostics" <<'PY'
 import json, os, subprocess, sys
 from pathlib import Path
@@ -412,12 +559,15 @@ for i, argv in enumerate(commands):
     if p.returncode:
         raise SystemExit(f'FROZEN_ENTRYPOINT_FAILED: {argv}: {p.returncode}')
 PY
+INSPECTION_STAGE=catalog
 bash "$VERIFY" catalog --app "$APP" --list-json "$OUTPUT/diagnostics/cli-5.stdout" --validate-json "$OUTPUT/diagnostics/cli-6.stdout" > "$OUTPUT/diagnostics/catalog.json"
 # The freezer retains real installed notice texts and Analysis mappings. Other
 # compiled layers remain named gaps until their actual inclusion is reconciled.
 # Refuse complete-release inventory on missing/unresolved notices. Preserve
 # all diagnostic evidence and staged app for the owner; no success ZIP/upload.
+INSPECTION_STAGE=trust
 bash "$VERIFY" trust --app "$APP" > "$OUTPUT/diagnostics/trust.json"
+INSPECTION_STAGE=licenses
 bash "$VERIFY" licenses --app "$APP" --mapping "$OUTPUT/diagnostics/license-mapping.json" > "$OUTPUT/diagnostics/licenses.json"
 STAGE=archive
 ZIP="$OUTPUT/HappyRanch-${VERSION}-${BUILD}-${ARCH}.zip"

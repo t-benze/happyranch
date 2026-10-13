@@ -10,9 +10,13 @@ these scripts. Bundle identity stays `ai.happyranch.HappyRanchApp`.
 
 Xcode 16 / Swift 6 and a macOS build host are required. From `app/mac`, use
 `swift build` and `swift run HappyRanchApp`. Existing development weak tsnet
-stubs remain available when no Go archive exists. Those stubs never satisfy
-release verification. Retained native tests are separate from automated
-lint/static merge checks.
+stubs remain available when no Go archive exists. When the freshly built
+archive exists, CTsnet exposes the unchanged header without compiling stubs;
+Darwin `-force_load` selects that exact archive with separate path arguments,
+including paths with spaces. Darwin `-u` roots each unchanged ABI export against
+SwiftPM release dead stripping. All eleven exports still require independent
+strong-definition and archive-member verification. Retained native tests are
+separate from automated lint/static merge checks.
 
 ## Internal candidate build
 
@@ -78,9 +82,13 @@ resolves every loader/executable-relative rpath in its component context and
 requires bundle containment through symlinks, even for unused paths. Absolute
 system exceptions use only `/usr/lib` and `/System/Library` roots and children;
 unknown tokens, escaping paths and spelling prefixes refuse with raw diagnostics.
-An unchanged linker may fail to extract Go members in the presence of weak
-stubs. A named `TSNET_STRONG_LINK_UNPROVEN` returns the missing exports and map;
-Package.swift is outside this correction's authority.
+A named `TSNET_STRONG_LINK_UNPROVEN` still refuses release finalization. Small
+independent error/all-eleven symbol receipts survive separately from bulky nm
+and link-map evidence. Failed builds retain available Analysis/CLI PYZ/native
+union, toolchain and component provenance through the fixed diagnostic allowlist
+and whole-file raw/gzip bounds described in the packaging instructions. Missing,
+malformed, unsafe and over-cap inputs carry explicit loss records; no byte-tail
+JSON is called a complete mapping. Native linkage acceptance remains pending.
 
 Notice collection retains original installed texts and actual Analysis/Go/web
 input mappings. Native redistribution, embedded bootloader exception, emitted

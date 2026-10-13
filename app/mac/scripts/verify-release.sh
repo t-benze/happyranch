@@ -268,7 +268,47 @@ CATALOG = {'status': 'SOURCE_DERIVED_EXPECTATIONS_NOT_OBSERVED',
 EXPORTS = 'tsnet_init tsnet_start tsnet_close tsnet_dial tsnet_conn_dial tsnet_conn_read tsnet_conn_write tsnet_conn_close tsnet_local_addr tsnet_last_error tsnet_free_string'.split()
 
 
+NATIVE_EVIDENCE_DIR = None
+NATIVE_SYMBOL_STATE = None
+
+
+def native_evidence(name, value, raw=False):
+    if NATIVE_EVIDENCE_DIR is None:
+        return
+    # Explicit filenames, no-follow writes to this invocation's diagnostics.
+    if name not in ('native-failure.json', 'native-symbols.json',
+                    'native-members.json', 'native-nm.txt'):
+        raise ValueError('NATIVE_EVIDENCE_NAME_UNSAFE')
+    root = NATIVE_EVIDENCE_DIR
+    if any(p.is_symlink() for p in (root, *root.parents)):
+        raise ValueError('NATIVE_EVIDENCE_PATH_UNSAFE')
+    fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        if os.fstat(fd).st_uid != os.getuid():
+            raise ValueError('NATIVE_EVIDENCE_NOT_OWNED')
+        data = value.encode('utf-8') if raw else (json.dumps(value, indent=2) + '\n').encode('utf-8')
+        cap = 262144 if name in ('native-failure.json', 'native-symbols.json') else 8 * 1024 * 1024
+        if len(data) > cap:
+            data = (json.dumps({'error': 'NATIVE_EVIDENCE_CAP_EXCEEDED',
+                                'original_size': len(data), 'retained_source_size': 0,
+                                'omitted_bytes': len(data), 'source_sha256': hashlib.sha256(data).hexdigest(),
+                                'complete': False}) + '\n').encode()
+        dest = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=fd)
+        with os.fdopen(dest, 'wb') as stream:
+            stream.write(data)
+    finally:
+        os.close(fd)
+
+
 def fail(code, detail):
+    if NATIVE_EVIDENCE_DIR is not None:
+        try:
+            if NATIVE_SYMBOL_STATE is not None:
+                native_evidence('native-symbols.json', NATIVE_SYMBOL_STATE)
+            native_evidence('native-failure.json', {'error': code, 'stage': 'native',
+                            'exit': 1, 'available': False, 'approved_url': None})
+        except (OSError, ValueError):
+            print('NATIVE_FAILURE_EVIDENCE_WRITE_REFUSED', file=sys.stderr)
     print(json.dumps({'error': code, 'detail': detail, 'available': False,
                       'approved_url': None}), file=sys.stderr)
     raise SystemExit(1)
@@ -476,21 +516,24 @@ def native_system_path(path):
 
 
 def native(app, archive, link_map):
+    global NATIVE_SYMBOL_STATE
+    # Initial all11 rows also survive an inspection tool failure before nm/map.
+    observations = [{'export': export, 'observation': 'NOT_OBSERVED'} for export in EXPORTS]
+    NATIVE_SYMBOL_STATE = {'observations': observations, 'required_exports': EXPORTS,
+                           'go_archive_path': str(archive), 'link_map_path': str(link_map),
+                           'available': False, 'approved_url': None}
     if sys.platform != 'darwin':
         fail('NATIVE_VENUE_UNAVAILABLE', sys.platform)
     binary = app / 'Contents/MacOS/HappyRanch'
     symbols = run('nm', '-m', str(binary))
+    native_evidence('native-nm.txt', symbols, raw=True)
     text = link_map.read_text()
     objects = dict(re.findall(r'^\[\s*(\d+)\]\s+(.+)$', text, re.M))
     linked, errors = [], []
     members = run('ar', '-t', str(archive)).splitlines()
     if len(members) != len(set(members)):
         fail('ARCHIVE_MEMBER_AMBIGUOUS', members)
-    archive_rows = []
-    for name in members:
-        data = subprocess.run(['ar', '-p', str(archive), name], capture_output=True, check=True).stdout
-        archive_rows.append({'member': name, 'size': len(data), 'sha256': hashlib.sha256(data).hexdigest()})
-    for export in EXPORTS:
+    for index, export in enumerate(EXPORTS):
         definitions = [line for line in symbols.splitlines() if re.search(r'\b_' + export + r'$', line)]
         matches = re.findall(r'^\S+\s+\S+\s+\[\s*(\d+)\]\s+_' + export + r'$', text, re.M)
         origin = [objects.get(i, '') for i in matches]
@@ -499,9 +542,30 @@ def native(app, archive, link_map):
         if len(definitions) != 1 or 'weak' in definitions[0].lower() or '(undefined)' in definitions[0].lower() or ' external ' not in definitions[0] or not real:
             errors.append({'export': export, 'nm': definitions, 'map_origins': origin})
         linked.append({'export': export, 'nm': definitions, 'archive_objects': real})
+        # Summary stays independent of nm/raw/map/member bulk budgets. Preserve
+        # counts and explicit row/field loss if an anomalous symbol fans out.
+        def selected(values):
+            return {'rows': [v[:256] for v in values[:4]], 'original_rows': len(values),
+                    'omitted_rows': max(0, len(values) - 4),
+                    'omitted_characters': sum(max(0, len(v) - 256) for v in values[:4]),
+                    'complete': len(values) <= 4 and all(len(v) <= 256 for v in values)}
+        observations[index] = {'export': export, 'observation': 'OBSERVED',
+                               'nm': selected(definitions), 'map_origins': selected(origin),
+                               'archive_objects': selected(real),
+                               'strong_member_backed': not any(e['export'] == export for e in errors)}
+    native_evidence('native-symbols.json', NATIVE_SYMBOL_STATE)
+    NATIVE_SYMBOL_STATE = None
+    archive_rows = []
+    for name in members:
+        data = subprocess.run(['ar', '-p', str(archive), name], capture_output=True, check=True).stdout
+        archive_rows.append({'member': name, 'size': len(data), 'sha256': hashlib.sha256(data).hexdigest()})
+    native_evidence('native-members.json', {'archive_path': str(archive),
+                    'archive_sha256': digest(archive), 'members': archive_rows,
+                    'link_map_sha256': digest(link_map), 'link_objects': objects})
     if errors:
-        fail('TSNET_STRONG_LINK_UNPROVEN', {'symbols': errors, 'nm_raw': symbols,
-                                          'proposed_delta': 'Return exact Package.swift linker selection to manager; no automatic change.'})
+        fail('TSNET_STRONG_LINK_UNPROVEN', {'symbols': errors,
+                                          'raw_nm_evidence': 'native-nm.txt',
+                                          'proposed_delta': 'All eleven strong archive-member definitions remain required; return linkage failure to manager.'})
     components = []
     for path in sorted(app.rglob('*')):
         if not path.is_file() or path.is_symlink():
@@ -572,6 +636,7 @@ q.add_argument('--list-json', type=Path, required=True); q.add_argument('--valid
 q = s.add_parser('trust'); q.add_argument('--app', type=Path, required=True)
 q = s.add_parser('native'); q.add_argument('--app', type=Path, required=True)
 q.add_argument('--go-archive', type=Path, required=True); q.add_argument('--link-map', type=Path, required=True)
+q.add_argument('--evidence-dir', type=Path, help='Owned task diagnostics only; small failure/all11 summaries plus separate raw evidence')
 q = s.add_parser('archive')
 q.add_argument('--app', type=Path, required=True); q.add_argument('--archive', type=Path, required=True)
 q.add_argument('--run-id', required=True)
@@ -583,6 +648,8 @@ for key in ('version', 'build', 'source-sha', 'source-tree', 'arch', 'run-id'):
 q = s.add_parser('licenses'); q.add_argument('--app', type=Path, required=True)
 q.add_argument('--mapping', type=Path, required=True)
 a = p.parse_args()
+if a.mode == 'native':
+    NATIVE_EVIDENCE_DIR = a.evidence_dir
 try:
     if a.mode == 'preflight':
         for key in ('version', 'build'):

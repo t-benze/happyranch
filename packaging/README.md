@@ -63,10 +63,28 @@ Grouped inputs retain map/source/metadata hashes and original notice bytes.
 Failure diagnostics include
 `web-attribution.json`: first 100 rejected records, string fields capped at 512
 characters and serialized records capped at 2048 bytes, with explicit
-omitted-record/field truncation; the failure bundle keeps
-its existing 262144-byte per-file bound. No metadata contents or cache tree are
-uploaded. Retained texts leave `closure_complete=false` and release finalization
-blocked pending actual legal/native/asset reconciliation.
+omitted-record/field truncation. Retained texts leave `closure_complete=false`
+and release finalization blocked pending actual legal/native/asset reconciliation.
+
+The failure bundle preserves complete small files (up to 262144 bytes) as
+`.diagnostic` and larger complete files as `.diagnostic.gz`, with no JSON byte
+tails. A fixed 50-input allowlist covers available Analysis/daemon and CLI PYZ
+TOC descriptors, native/data union, Python/toolchain, Go inputs/members, link
+map and component/notice provenance plus per-command CLI/catalog/trust results.
+Inputs are capped at 8 MiB each and 32 MiB total; stored bulk is capped at
+2 MiB each and 8 MiB total. Three independent critical files (build failure,
+native failure and all eleven symbol observations) each have a 262144-byte
+budget. At most 102 files and 128 KiB of metadata describe source hashes/sizes,
+whole-file identity/gzip encoding, original/retained/omitted byte and known row
+counts. Missing or uncountable inputs use null counts, never zero-loss claims;
+malformed, unsafe or over-cap inputs get valid explicit loss records. The
+`evidence-index.json` distinguishes available stage evidence from missing or
+not-yet-produced inputs. Native summaries preserve per-export nm/member
+observations separately from bulky raw nm and link-object data; bounded row or
+field selection states its omissions. Only task-owned regular allowlisted
+files are read through no-follow descriptors; symlinks and hardlinks refuse.
+No app binary, private archive, recursive cache tree or environment dump is
+uploaded. Diagnostic completeness does not establish release or legal closure.
 
 ## Read-only verifier
 
