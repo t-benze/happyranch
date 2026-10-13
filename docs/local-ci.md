@@ -1107,7 +1107,8 @@ decisions with valid, unrelated correction markers; durable history is unchanged
 These R1–R7 source corrections supply no behavioral or test-authoring PASS,
 execution allocation, restart proof, release or merge authority.
 
-The R9 observer source binding excludes only unmapped `None` entries from
+The R9 observer source binding and R10 supplemental line barriers exclude only
+unmapped `None` entries from
 `dis.findlinestarts` before numeric sorting (Python3.13+ metadata). Every real
 executable line remains eligible; all six phase anchors, including after-A and
 after the real ACK call, retain their boundaries and fail-closed missing-anchor

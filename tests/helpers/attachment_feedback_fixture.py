@@ -678,7 +678,7 @@ def _attachment_consumer_barrier(orch,task_id,report,result_id,*,function,anchor
                     or (isinstance(call.func,ast.Name) and call.func.id==anchor)) for call in ast.walk(item))]
     assert len(statements)==1
     statement=statements[0]
-    lines=sorted({line for _,line in dis.findlinestarts(callback.__code__)})
+    lines=sorted({line for _,line in dis.findlinestarts(callback.__code__) if line is not None})
     target=next(line for line in lines if line>statement.end_lineno) if after else statement.lineno
     if after and function=='_consume_completion_report_body':
         # Success skips the except suite: use the first statement AFTER the
@@ -893,7 +893,7 @@ def source_barrier(orch, staged, *, function, anchor, after=False, event='line')
     if event=='line':
         assert len(statements)==1
         statement=statements[0]
-        lines=sorted({line for _,line in dis.findlinestarts(callback.__code__)})
+        lines=sorted({line for _,line in dis.findlinestarts(callback.__code__) if line is not None})
         line=next(x for x in lines if x>statement.end_lineno) if after else statement.lineno
     else:
         assert event in ('call','return');line=None
