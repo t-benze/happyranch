@@ -1,3 +1,4 @@
+import { IdentityName } from '@/shared/identities/IdentityName';
 import { useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import {
@@ -81,7 +82,7 @@ export function JobDetailPane({ jobId }: JobDetailPaneProps): JSX.Element {
             </DrawerTitle>
             {job && (
               <p className="text-text-muted mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
-                <span>{job.agent_name}</span>
+                <span><IdentityName canonicalId={job.agent_name} /></span>
                 <span>·</span>
                 {slug ? (
                   <Link

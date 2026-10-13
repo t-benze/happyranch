@@ -20,6 +20,11 @@ from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel, ConfigDict, StrictStr, field_validator, model_validator
 from sse_starlette.sse import EventSourceResponse
 
+from runtime.identities.registry import (
+    naming_writer, require_new_id, read_name_metadata, summary_name_metadata,
+)
+from runtime.identities.schema import NamingError
+
 from runtime.daemon.agent_config import (
     load_agent_config,
 )
@@ -465,6 +470,7 @@ def list_agents(slug: str, org: OrgDep) -> dict:
     """
     paths = OrgPaths(root=org.root)
     rows = []
+    name_metadata = read_name_metadata(org)
     for listed_agent in prompt_loader.list_agents(paths):
         loaded = prompt_loader.load_agent_with_revision(paths, listed_agent.name)
         if loaded is None:
@@ -486,6 +492,7 @@ def list_agents(slug: str, org: OrgDep) -> dict:
             "repos": repos,
             "system_prompt": agent_def.system_prompt,
             "revision": revision,
+            **summary_name_metadata(name_metadata, name),
         })
     return {"agents": rows}
 
@@ -715,8 +722,10 @@ async def manage_agent(slug: str, body: ManageAgentBody, org: OrgDep) -> dict:
             org.workflow_authority.async_writer_interval(
                 publisher="manage_agent_enroll",
             ) as authority_change,
+            naming_writer(org, authority_change),
             org.teams_lock,
         ):
+            _require_naming_id(org, body.name)
             # Never reuse a name that has ever been enrolled (active, pending,
             # or terminated), to keep historical identity unambiguous. This must
             # share the lock with the synchronous pending write: the helper
@@ -1265,6 +1274,7 @@ async def founder_create_agent(
         org, publisher="founder_create_agent", consumer=body.name, executor=body.executor,
     ) as authority_change:
         async with org.teams_lock:
+            _require_naming_id(org, body.name)
             # Duplicate check inside the lock to close TOCTOU between check + write.
             # Terminated names are also unavailable to preserve historical identity.
             if prompt_loader.is_name_unavailable(paths, body.name):
@@ -1968,19 +1978,28 @@ async def _finish_consumer_write(
     return operation.result()
 
 
+def _require_naming_id(org, name):
+    try:
+        require_new_id(org, name)
+    except NamingError as exc:
+        raise HTTPException(status_code=409, detail={"code": exc.code, "name": name}) from None
+
+
 @asynccontextmanager
 async def _consumer_writer_interval(org, *, publisher, consumer, executor=None, preserve=False):
     coordinator = getattr(org, "_profile_coordinator", None)
     if coordinator is None:
         async with org.workflow_authority.async_writer_interval(publisher=publisher) as interval:
-            yield interval
+            async with naming_writer(org, interval):
+                yield interval
         return
     try:
         async with coordinator.consumer_writer(
             org=org, publisher=publisher, consumer=consumer,
             executor=executor, preserve=preserve,
         ) as interval:
-            yield interval
+            async with naming_writer(org, interval):
+                yield interval
     except Exception as exc:
         from runtime.workflows.profile_coordinator import ProfileCoordinatorError
         if isinstance(exc, ProfileCoordinatorError):
@@ -2717,6 +2736,7 @@ def list_enrollments(
     when ?status=terminated is explicitly requested.
     """
     paths = OrgPaths(root=org.root)
+    name_metadata = read_name_metadata(org)
 
     # Collect all enrollments from files. `team` and `role` come from the
     # parsed AgentDef so the founder UI can render the same shape as the
@@ -2727,6 +2747,7 @@ def list_enrollments(
         for agent in prompt_loader.list_terminated(paths):
             all_enrollments.append({
                 "name": agent.name,
+                **summary_name_metadata(name_metadata, agent.name),
                 "team": agent.team,
                 "role": agent.role,
                 "executor": agent.executor,
@@ -2740,6 +2761,7 @@ def list_enrollments(
     for agent in prompt_loader.list_pending(paths):
         all_enrollments.append({
             "name": agent.name,
+            **summary_name_metadata(name_metadata, agent.name),
             "team": agent.team,
             "role": agent.role,
             "executor": agent.executor,
@@ -2751,6 +2773,7 @@ def list_enrollments(
     for agent in prompt_loader.list_agents(paths):
         all_enrollments.append({
             "name": agent.name,
+            **summary_name_metadata(name_metadata, agent.name),
             "team": agent.team,
             "role": agent.role,
             "executor": agent.executor,
@@ -2891,6 +2914,7 @@ async def reject_agent(slug: str, agent_name: str, org: OrgDep) -> dict:
         org.workflow_authority.async_writer_interval(
             publisher="reject_agent",
         ) as authority_change,
+        naming_writer(org, authority_change),
         org.teams_lock,
     ):
         with authority_change.canonical_change():

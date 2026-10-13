@@ -28,6 +28,7 @@ export { subscribeSSE, type SSEOptions } from './sse';
 export type * from './types';
 export * as workflowCutover from './workflowCutover';
 export * as workflowActivations from './workflowActivations';
+export * as identities from './identities';
 export * as workflowSubmissions from './workflowSubmissions';
 export * as workflowReviews from './workflowReviews';
 

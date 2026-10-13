@@ -1,3 +1,4 @@
+import { IdentityName } from '@/shared/identities/IdentityName';
 import type { ResponderStatusEntry } from '@/lib/api/types';
 import { useTranslation } from '@/hooks/i18n';
 import { localizedElapsed, type DeliveryTranslator } from './ReplyDeliveryStrip';
@@ -27,7 +28,7 @@ export function ResponderStatusStrip({
       {terminal.map((s) => (
         <span key={s.agent_name} className="inline-flex items-center gap-1.5">
           <span aria-hidden="true" className={`h-1.5 w-1.5 shrink-0 rounded-full ${dotClass(s)}`} />
-          <span className="text-text-secondary font-mono">{s.agent_name}</span>
+          <span className="text-text-secondary font-mono"><IdentityName canonicalId={s.agent_name} /></span>
           <span className={stateClass(s)}>{statusLabel(s, now, t)}</span>
         </span>
       ))}

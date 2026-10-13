@@ -1,3 +1,4 @@
+import { IdentityName } from '@/shared/identities/IdentityName';
 import { useState } from 'react';
 import { Link, useBlocker, useParams } from 'react-router-dom';
 import { Button } from '@/design-system/primitives/Button';
@@ -33,7 +34,7 @@ export function TeamEscalationPolicyPage(): JSX.Element {
         <Button asChild variant="ghost" size="sm"><Link to={routes.detail(policyAgent.name)}>{t('agents.policy.backTo', { name: policyAgent.name })}</Link></Button>
         <header className="mt-4 mb-5">
           <h1 id="team-policy-page-heading" className="font-display text-text-primary text-2xl font-medium">{t('agents.policy.title')}</h1>
-          <p className="text-text-muted mt-1 text-sm">{policyAgent.team} · {policyAgent.name}</p>
+          <p className="text-text-muted mt-1 text-sm">{policyAgent.team} · <IdentityName canonicalId={policyAgent.name} /></p>
         </header>
         <TeamEscalationPolicyCard agent={policyAgent} onDirtyChange={setDirty} />
       </section>

@@ -1,3 +1,4 @@
+import { IdentityName } from '@/shared/identities/IdentityName';
 /**
  * SkillDetailPage — single-skill detail + per-agent effective/provenance
  * (THR-092 Slice 2 of 6). Reached from a Catalog card.
@@ -310,7 +311,7 @@ export function SkillDetailPage(): JSX.Element {
                   >
                     <div className="min-w-0">
                       <div className="text-fg font-mono text-sm font-semibold break-all">
-                        {p.agent}
+                        <IdentityName canonicalId={p.agent} />
                       </div>
                       <p className="text-fg-muted text-body-sm mt-1">
                         {t(p.reason)}

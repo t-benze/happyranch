@@ -16,6 +16,8 @@ import { TooltipProvider } from '@/design-system/primitives/Tooltip';
 import { StaticOrgProvider } from '@/lib/orgSlug';
 import { MOCK_ORG_SLUG } from '@/mocks';
 import { DataContext } from './DataContext';
+import { mockIdentitiesApi } from './_mock-identities';
+
 import { mockWorkflowsApi } from './_mock-workflows';
 import { mockAgentsApi } from './_mock-agents';
 import { mockAuthorityPolicyApi } from './_mock-authority-policy';
@@ -56,6 +58,7 @@ export function PrototypeProvider({ children }: { children: ReactNode }): JSX.El
           workflows: mockWorkflowsApi,
           orgs: mockOrgsApi,
           agents: mockAgentsApi,
+          identities: mockIdentitiesApi,
           authorityPolicy: mockAuthorityPolicyApi,
           audit: mockAuditApi,
           threads: mockThreadsApi,

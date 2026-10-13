@@ -1,3 +1,4 @@
+import { IdentityName } from '@/shared/identities/IdentityName';
 /**
  * S4 — Eligibility editor. The single org-level gate (`agents` selector).
  *
@@ -216,7 +217,7 @@ function AgentPicker({
                   : 'bg-bg-raised text-fg-muted border-border border'
               }`}
             >
-              {name}
+              <IdentityName canonicalId={name} />
             </button>
           );
         })}

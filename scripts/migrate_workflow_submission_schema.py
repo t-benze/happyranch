@@ -129,7 +129,7 @@ def main(argv: list[str] | None = None) -> int:
             raise ValueError('org_database_identity_changed')
         conn.execute('BEGIN')
         layout = validate_workflow_schema(conn, expected_org_slug=args.org)
-        _validate_release_database(conn, layout)
+        _validate_release_database(conn, layout, expected_org_slug=args.org)
         if layout != 'G':
             for event in _records(conn, 'SELECT * FROM workflow_events'):
                 _event_revision(conn, event)

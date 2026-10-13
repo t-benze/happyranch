@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from cli import _shared
+from cli import identities
 from cli._shared import _fmt_ts, _ok, resolve_org_slug
 from cli.client.client import OpcClient
 
@@ -48,6 +49,7 @@ def _merge_uploaded_attachments(
     (TASK-1616). Set use_shared_artifacts=True for the explicit cross-task
     handoff escape hatch.
     """
+    identities.preflight_body(client, slug, payload.get("body_markdown"))
     refs = list(payload.get("attachments") or [])
     for path in attach_paths or []:
         if thread_id is not None and not use_shared_artifacts:
@@ -99,28 +101,34 @@ def cmd_threads_compose(args: argparse.Namespace) -> None:
     import json as _json
     import sys
     from pathlib import Path
-    client = OpcClient.from_env()
-    slug = resolve_org_slug(
-        args_org=args.org, available=_shared._fetch_available_orgs(client),
-    )
+    if args.recipients:
+        identities.validate_recipients([r.strip() for r in args.recipients.split(",") if r.strip()])
     attach_paths: list[Path] = getattr(args, "attach", None) or []
     use_shared: bool = getattr(args, "shared", False)
+    if getattr(args, "task_id", None):
+        if not args.from_file:
+            identities.fail("--from-file is required for agent-initiated compose", code=2)
+        _shared.require_absolute_payload_path(args.from_file, kind="thread-compose")
+        try:
+            payload = _json.loads(Path(args.from_file).read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            identities.fail(f"cannot read compose payload: {exc}", code=2)
+        identities.validate_message_payload(payload, recipients=True)
+    else:
+        identities.validate_body(args.body)
+        if not (args.subject and args.recipients and (args.body or attach_paths)):
+            identities.fail("--subject, --recipients, and --body or --attach required for founder compose", code=2)
+    client = OpcClient.from_env()
+    slug = resolve_org_slug(args_org=args.org, available=_shared._fetch_available_orgs(client))
     # Agent-initiated compose: requires --from-file with a JSON payload that
     # includes `composer` + task binding flags supplied on the CLI.
     if getattr(args, "task_id", None):
-        if not args.from_file:
-            print(
-                "error: --from-file is required for agent-initiated compose",
-                file=sys.stderr,
-            )
-            sys.exit(2)
-        _shared.require_absolute_payload_path(args.from_file, kind="thread-compose")
-        with open(args.from_file) as fh:
-            payload = _json.load(fh)
         payload["task_id"] = args.task_id
         if args.session_id:
             payload["session_id"] = args.session_id
 
+        identities.preflight_body(client, slug, payload.get("body_markdown"))
+        payload["recipients"] = identities.resolve_recipients(client, slug, payload.get("recipients") or [])
         if attach_paths and not use_shared:
             # Thread-scoped multipart upload (TASK-1616).
             import mimetypes as _mime
@@ -156,12 +164,6 @@ def cmd_threads_compose(args: argparse.Namespace) -> None:
         return
 
     # Founder path.
-    if not (args.subject and args.recipients and (args.body or attach_paths)):
-        print(
-            "error: --subject, --recipients, and --body or --attach required for founder compose",
-            file=sys.stderr,
-        )
-        sys.exit(2)
     recipients = [r.strip() for r in args.recipients.split(",") if r.strip()]
     payload = {
         "subject": args.subject,
@@ -169,6 +171,8 @@ def cmd_threads_compose(args: argparse.Namespace) -> None:
         "body_markdown": args.body or "",
     }
 
+    identities.preflight_body(client, slug, payload.get("body_markdown"))
+    payload["recipients"] = identities.resolve_recipients(client, slug, payload["recipients"])
     if attach_paths and not use_shared:
         # Thread-scoped multipart upload (TASK-1616).
         import mimetypes as _mime
@@ -222,16 +226,17 @@ def cmd_threads_list(args: argparse.Namespace) -> None:
 
 def cmd_threads_reply(args: argparse.Namespace) -> None:
     import json as _json
-    client = OpcClient.from_env()
-    slug = resolve_org_slug(
-        args_org=args.org, available=_shared._fetch_available_orgs(client),
-    )
     _shared.require_absolute_payload_path(args.from_file, kind="thread-reply")
     try:
         body = _json.loads(Path(args.from_file).read_text())
     except (OSError, ValueError) as exc:
         print(f"Error reading {args.from_file}: {exc}")
         sys.exit(1)
+    identities.validate_message_payload(body)
+    client = OpcClient.from_env()
+    slug = resolve_org_slug(
+        args_org=args.org, available=_shared._fetch_available_orgs(client),
+    )
     thread_id = args.thread_id or body.get("thread_id", "")
     body = _merge_uploaded_attachments(
         client=client,
@@ -316,15 +321,16 @@ def cmd_threads_show(args: argparse.Namespace) -> None:
     if args.json:
         print(_json.dumps(data, indent=2))
         return
+    names = identities.labels(client, slug)
     print(f"Thread: {data['thread_id']} — {data['subject']}")
     print(f"  status: {data['status']}  turns: {data['turns_used']}/{data['turn_cap']}")
-    print(f"  participants: {', '.join(data.get('participants', []))}")
+    print(f"  participants: {', '.join(identities.display(names, p) for p in data.get('participants', []))}")
     if data.get("forwarded_from_id"):
         print(f"  forwarded from: {data['forwarded_from_id']}")
     print()
     for m in data.get("messages", []):
         kind = m["kind"]
-        head = f"--- seq {m['seq']} — {m['speaker']} · {kind}"
+        head = f"--- seq {m['seq']} — {identities.display(names, m['speaker'])} · {kind}"
         print(head)
         if m.get("body_markdown"):
             print(m["body_markdown"])
@@ -345,15 +351,12 @@ def cmd_threads_show(args: argparse.Namespace) -> None:
 
 def cmd_threads_send(args: argparse.Namespace) -> None:
     import json as _json
-    client = OpcClient.from_env()
-    slug = resolve_org_slug(
-        args_org=args.org, available=_shared._fetch_available_orgs(client),
-    )
     try:
         payload = _json.loads(Path(args.from_file).read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
         print(f"Error reading {args.from_file}: {exc}")
         sys.exit(1)
+    identities.validate_message_payload(payload)
     # Agent-initiated send (THR-069): when --task-id is provided, attach
     # the binding fields so the daemon attributes to the agent.
     # FINDING 1 (REVISE): --session-id is REQUIRED when --task-id is supplied
@@ -393,6 +396,10 @@ def cmd_threads_send(args: argparse.Namespace) -> None:
         agent = composer
     else:
         agent = "founder"
+    client = OpcClient.from_env()
+    slug = resolve_org_slug(
+        args_org=args.org, available=_shared._fetch_available_orgs(client),
+    )
     payload = _merge_uploaded_attachments(
         client=client,
         slug=slug,
@@ -411,13 +418,15 @@ def cmd_threads_send(args: argparse.Namespace) -> None:
 
 def cmd_threads_invite(args: argparse.Namespace) -> None:
     import json as _json
+    identities.validate_address(args.agent)
     client = OpcClient.from_env()
     slug = resolve_org_slug(
         args_org=args.org, available=_shared._fetch_available_orgs(client),
     )
+    target = identities.agent_target(client, slug, args.agent, lifecycles={"active"})
     r = client.post(
         f"/api/v1/orgs/{slug}/threads/{args.thread_id}/invite",
-        json={"agent_name": args.agent},
+        json={"agent_name": target},
     )
     if not _ok(r):
         return
@@ -608,6 +617,8 @@ def cmd_threads_attachments_get(args: argparse.Namespace) -> None:
 def cmd_threads_forward(args: argparse.Namespace) -> None:
     import json as _json
     from datetime import datetime
+    if args.recipients:
+        identities.validate_recipients([r.strip() for r in args.recipients.split(",") if r.strip()])
     client = OpcClient.from_env()
     slug = resolve_org_slug(
         args_org=args.org, available=_shared._fetch_available_orgs(client),
@@ -642,9 +653,11 @@ def cmd_threads_forward(args: argparse.Namespace) -> None:
         sys.exit(2)
 
     body = quoted + note
+    identities.preflight_body(client, slug, body)
     payload = {
         "subject": args.subject or default_subject,
-        "recipients": [r.strip() for r in args.recipients.split(",") if r.strip()],
+        "recipients": identities.resolve_recipients(client, slug,
+            [r.strip() for r in args.recipients.split(",") if r.strip()]),
         "body_markdown": body,
         "forwarded_from_id": source,
         "forwarded_from_kind": kind,
@@ -682,7 +695,7 @@ def register(sub) -> None:
     p_threads_compose.add_argument("--subject", default=None)
     p_threads_compose.add_argument(
         "--recipients", default=None,
-        help="Comma-separated agent names (founder path)",
+        help="Comma-separated current names/permanent IDs; founder is a human inbox target",
     )
     p_threads_compose.add_argument(
         "--body", default=None,
@@ -822,7 +835,7 @@ def register(sub) -> None:
     p_threads_forward = threads_sub.add_parser("forward", help="Founder: forward a thread into a new thread")
     p_threads_forward.add_argument("--org", default=None, help="Org slug")
     p_threads_forward.add_argument("--source", required=True, help="THR-NNN")
-    p_threads_forward.add_argument("--recipients", required=True, help="comma-separated agent names")
+    p_threads_forward.add_argument("--recipients", required=True, help="comma-separated current names/permanent IDs")
     p_threads_forward.add_argument("--note-file", dest="note_file", default=None)
     p_threads_forward.add_argument("--subject", default=None)
     p_threads_forward.set_defaults(func=cmd_threads_forward)
