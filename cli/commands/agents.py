@@ -428,6 +428,6 @@ def register(sub) -> None:
         help="Model id (omit to clear — revert to CLI default)",
     )
     effort_options = p_setmodel.add_mutually_exclusive_group()
-    effort_options.add_argument("--reasoning-effort", help="Static CLI effort value (preserve model when --model omitted)")
+    effort_options.add_argument("--reasoning-effort", help="Builtin token: [A-Za-z][A-Za-z0-9_-]{0,31}; custom: approved declared value (preserve model when --model omitted)")
     effort_options.add_argument("--clear-reasoning-effort", action="store_true", help="Clear the effort override, preserving model")
     p_setmodel.set_defaults(func=cmd_set_model)

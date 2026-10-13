@@ -24,6 +24,8 @@ Rollback: revert the removal commit.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
+import unicodedata
 
 from runtime.adapters.claude import ClaudeAdapter
 from runtime.adapters.codex import CodexAdapter
@@ -193,6 +195,14 @@ __all__ = [
 ]
 
 
+def validate_builtin_reasoning_effort(reasoning_effort: str) -> None:
+    """Validate literal transport syntax, without claiming native support."""
+    if not isinstance(reasoning_effort, str) or re.fullmatch(
+        r"[A-Za-z][A-Za-z0-9_-]{0,31}", reasoning_effort
+    ) is None:
+        raise ValueError("reasoning_effort must match [A-Za-z][A-Za-z0-9_-]{0,31}")
+
+
 def model_effort_args(
     cli: str, model: str | None, model_arg: list[str] | None,
     reasoning_effort: str | None = None,
@@ -200,13 +210,17 @@ def model_effort_args(
     """Literal argv only; unset preserves the existing model transport exactly."""
     descriptor = next(d for d in _BUILTIN_CATALOG if d.name == cli)
     if reasoning_effort is not None:
-        if not isinstance(reasoning_effort, str) or reasoning_effort not in descriptor.reasoning_effort_values:
-            raise ValueError(f"Unsupported reasoning_effort for {cli}: {reasoning_effort!r}")
+        validate_builtin_reasoning_effort(reasoning_effort)
         if cli == "opencode":
-            if not model or not model_arg:
+            if not isinstance(model, str) or not model or not model_arg:
                 raise ValueError("OpenCode reasoning_effort requires a pinned provider/model")
             base, sep, variant = model.partition("#")
-            if not base or "/" not in base or base.startswith("/") or base.endswith("/"):
+            if (
+                len(base.split("/")) < 2
+                or any(not part for part in base.split("/"))
+                or any(char.isspace() or unicodedata.category(char) in ("Cc", "Cf") for char in base)
+                or model.count("#") > 1
+            ):
                 raise ValueError("OpenCode reasoning_effort requires provider/model")
             if sep and variant != reasoning_effort:
                 raise ValueError("OpenCode model variant conflicts with reasoning_effort")
