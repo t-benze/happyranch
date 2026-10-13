@@ -252,7 +252,7 @@ export function AgentDetailPane({ agentName, onClose, onStartThread }: AgentDeta
   const canSave = agentReady && (!hasSelectionDraft || selectionReady);
 
   const onSave = useCallback(async () => {
-    if (!slug || !isDirty || !canSave || saveInFlight.current) return;
+    if (!slug || !isDirty || !canSave || !selectedExecutor || saveInFlight.current) return;
     saveInFlight.current = true;
     setSaving(true);
     try {
