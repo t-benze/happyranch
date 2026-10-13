@@ -1133,15 +1133,29 @@ readiness, not successful-case closure evidence.
 Pytest exports each bounded node/phase report before teardown, and connected
 observations when recorded. The supervisor checkpoints owned daemon bytes during
 execution and before closure/refusal/abort, retaining them on failure. Actual
-provider/callback stdout/stderr bodies and original task/SID/node/source are
-retained under the existing aggregate/file limits; overflow keeps a bounded
-prefix and marks evidence incomplete. The fixture's provider entry uses existing
+provider/callback stdout/stderr use reversible base64, retained raw lengths,
+observed raw lengths and SHA256 digests; a separate short replacement-decoded
+preview is not raw evidence. Concatenated raw bytes preserve invalid UTF8 and
+multibyte sequences split across reads. Encoding expansion, previews, metadata
+and temporary checkpoints count within the existing aggregate/file/inode limits;
+overflow retains only a bounded raw prefix and marks evidence incomplete. The fixture's provider entry uses existing
 registered stub/plan/callback guards and its real injected org/SID; it returns
 before pytest-parent/conftest imports. The actual executor injects org/SID and
 workspace cache, which cannot satisfy the stricter parent-only admission.
-The guarded plan owns a real Python provider child, captures bounded diagnostics
-and records its actual parent wait; it invents no callback/result. Initial and
-fresh matrix batches use that same entry. Historical first-call attribution
+The guarded plan validates an owned observer and evidence sink before the
+covered source/environment/frozen/stub/plan/callback admission and provider
+spawn. A refused diagnostic context grants no evidence-write rights. Once that
+context exists, admission or Popen failure records the original exception and
+stage with an absent child and absent wait. Provider and nested callback selector
+initialization/registration run inside protected cleanup: acquired streams and
+selectors close independently, and only an actual owned child is stopped and
+consumingly waited within the existing bounds. The first failure survives later
+checkpoint/cleanup errors; those failures remain separately incomplete/nonzero.
+An actual wait/exit is distinct from diagnostic completeness. Retention is
+conditional on successful bounded checkpoint storage; unavailable/failed writes
+or uncatchable process death cannot promise all-outcome diagnostics. No PID,
+callback, result or wait is invented. Initial and fresh matrix batches use that
+same entry. Historical first-call attribution
 still needs the missing actual traceback; no production attachment defect or
 behavioral PASS follows. Manifest61+123 and SHA256
 bb10120c35cc8750eb822bb57c136e430c366fd993b197ec027868fabf4d751c,

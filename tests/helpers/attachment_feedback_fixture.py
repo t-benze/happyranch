@@ -34,6 +34,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import base64
 import select
 import selectors
 import shlex
@@ -46,7 +47,7 @@ import sys
 import time
 
 from tests.helpers.integration_stub_guard.guard import manifest, validate_callback, validate_plan, validate_stub
-if _PROVIDER_ENTRY:
+def _provider_admission():
     # The existing source-bound stub guard already ran in the public shell.
     # Recheck its registered identities here; do not strip runtime variables to
     # pretend this actual child satisfies the stricter pytest-parent contract.
@@ -92,7 +93,90 @@ def await_condition(predicate, seconds: float = 5):
     raise TimeoutError("bounded attachment readiness/readback missing")
 
 
+def _provider_diagnostic(kind):
+    """Validate storage independently; a refused context grants no write rights."""
+    task,sid,agent,slug=sys.argv[2:6]
+    control=Path(sys.argv[6])
+    assert control.resolve(strict=True)==control and control.stat().st_uid==os.getuid()
+    assert task and sid and len(task)<=128 and len(sid)<=128
+    assert all(c.isascii() and (c.isalnum() or c=='-') for c in task+sid)
+    path=Path(os.environ['HAPPYRANCH_ATTACHMENT_OBSERVER'])
+    assert path==control/'observer'/'descriptor.json'
+    observer=closed_read(path,16384)
+    assert observer['node'] in NODES
+    evidence=Path(observer['wait_log']).parent
+    info=evidence.lstat()
+    assert evidence.resolve(strict=True)==evidence and stat.S_ISDIR(info.st_mode) and info.st_uid==os.getuid()
+    target=evidence/(kind+'-'+hashlib.sha256(observer['node'].encode()).hexdigest()[:20]+'-'+sid+'.json')
+    return task,sid,agent,slug,control,observer,target,(info.st_dev,info.st_ino)
+
+
+def _diagnostic_checkpoint(target, identity, row, cap):
+    # Same file/aggregate/inventory limits include base64 expansion and metadata.
+    directory=target.parent
+    info=directory.lstat()
+    if (directory.resolve(strict=True)!=directory or not stat.S_ISDIR(info.st_mode)
+            or info.st_uid!=os.getuid() or (info.st_dev,info.st_ino)!=identity):
+        raise ValueError('diagnostic directory changed')
+    encoded=(json.dumps(row,sort_keys=True)+'\n').encode()
+    if len(encoded)>cap:raise ValueError('diagnostic receipt cap')
+    total=0;count=0
+    for path in directory.rglob('*'):
+        count+=1
+        if count+1>4096:raise ValueError('external evidence file inventory cap')
+        item=path.lstat()
+        if stat.S_ISLNK(item.st_mode):raise ValueError('external evidence symlink refused')
+        if stat.S_ISREG(item.st_mode):total+=item.st_size
+        if total+len(encoded)>CAPS['aggregate']:raise ValueError('aggregate evidence cap')
+    if total+len(encoded)>CAPS['aggregate']:raise ValueError('aggregate evidence cap')
+    parent=os.open(directory,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+    temporary=target.name+'.tmp';owned=None
+    try:
+        opened=os.fstat(parent)
+        if (opened.st_dev,opened.st_ino)!=identity:raise ValueError('diagnostic directory changed')
+        try:previous=os.stat(target.name,dir_fd=parent,follow_symlinks=False)
+        except FileNotFoundError:previous=None
+        if previous is not None and (not stat.S_ISREG(previous.st_mode)
+                or previous.st_uid!=os.getuid() or previous.st_nlink!=1
+                or stat.S_IMODE(previous.st_mode)!=0o600):
+            raise ValueError('diagnostic target unowned')
+        fd=os.open(temporary,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600,dir_fd=parent)
+        try:
+            owned=os.fstat(fd)
+            with os.fdopen(fd,'wb',closefd=False) as handle:
+                handle.write(encoded);handle.flush();os.fsync(fd)
+        finally:
+            failed=sys.exc_info()[0] is not None
+            try:os.close(fd)
+            except BaseException:
+                if not failed:raise
+        os.replace(temporary,target.name,src_dir_fd=parent,dst_dir_fd=parent)
+        owned=None
+    finally:
+        failed=sys.exc_info()[0] is not None
+        try:
+            if owned is not None:
+                current=os.stat(temporary,dir_fd=parent,follow_symlinks=False)
+                if (current.st_dev,current.st_ino)==(owned.st_dev,owned.st_ino):os.unlink(temporary,dir_fd=parent)
+        except BaseException:
+            if not failed:raise
+        finally:
+            try:os.close(parent)
+            except BaseException:
+                if not failed:raise
+
+
+def _raw_output(chunks, lengths):
+    # Preview is not evidence: concatenate reconstructed raw bytes, not previews.
+    return {key:{'raw_base64':base64.b64encode(bytes(value)).decode('ascii'),
+        'raw_length':len(value),'observed_raw_length':lengths[key],
+        'raw_sha256':hashlib.sha256(value).hexdigest(),
+        'preview_utf8_replacement':bytes(value[:256]).decode('utf-8','replace')}
+        for key,value in chunks.items()}
+
+
 def provider_main():
+    _provider_admission()
     task,sid,agent,slug=sys.argv[2:6]
     control=Path(sys.argv[6])
     assert os.environ.get('HAPPYRANCH_RUNTIME_SESSION_ID')==sid and os.environ.get('HAPPYRANCH_ORG_SLUG')==slug=='test'
@@ -124,44 +208,70 @@ def provider_main():
         raise SystemExit(1)
     body=control/f"body-{sid}.json"
     write_receipt(body,payload["body"],16384)
-    process=subprocess.Popen([manifest()["callback"],"report-completion","--org",slug,"--from-file",str(body)],
-                             stdout=subprocess.PIPE,stderr=subprocess.PIPE)
-    diagnostic=Path(observer['wait_log']).parent/('callback-'+hashlib.sha256(observer['node'].encode()).hexdigest()[:20]+'-'+sid+'.json')
-    selector=selectors.DefaultSelector()
-    selector.register(process.stdout,selectors.EVENT_READ,'stdout')
-    selector.register(process.stderr,selectors.EVENT_READ,'stderr')
-    chunks={'stdout':bytearray(),'stderr':bytearray()};deadline=time.monotonic()+5
-    capture_error=None
-    def callback_checkpoint(complete=False):
-        temporary=diagnostic.with_suffix('.json.tmp')
-        write_receipt(temporary,{'node':observer['node'],'head':manifest()['revision'],
-            'helper_sha256':sha(Path(__file__).resolve()),'task':task,'sid':sid,
-            'stdout':bytes(chunks['stdout']).decode('utf-8','replace'),
-            'stderr':bytes(chunks['stderr']).decode('utf-8','replace'),
-            'complete':complete,'error':capture_error,'exit':process.returncode,
-            'parent_pid':os.getpid(),'child_pid':process.pid},32768)
-        os.replace(temporary,diagnostic)
+    task,sid,agent,slug,control,observer,diagnostic,identity=_provider_diagnostic('callback')
+    process=None;selector=None;waited=None;capture_error=None;cleanup_errors=[];stage='checkpoint';helper_hash=None
+    chunks={'stdout':bytearray(),'stderr':bytearray()};lengths={'stdout':0,'stderr':0}
+    deadline=time.monotonic()+5
+    def callback_checkpoint():
+        _diagnostic_checkpoint(diagnostic,identity,{'node':observer['node'],'head':observer['binding']['revision'],
+            'source':__file__,'helper_sha256':helper_hash,'task':task,'sid':sid,
+            'output':_raw_output(chunks,lengths),'complete':capture_error is None and not cleanup_errors and waited is not None,
+            'error':capture_error,'stage':stage,'cleanup_errors':cleanup_errors,
+            'exit':None if process is None else process.returncode,'parent_wait_returncode':waited,
+            'parent_pid':os.getpid(),'child_pid':None if process is None else process.pid,
+            'child_state':'absent' if process is None else 'waited' if waited is not None else 'spawned'},32768)
     try:
+        callback_checkpoint()
+        stage='callback-source-binding'
+        helper_hash=sha(Path(__file__).resolve())
+        stage='callback-spawn'
+        process=subprocess.Popen([manifest()["callback"],"report-completion","--org",slug,"--from-file",str(body)],
+                                 stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+        stage='callback-selector'
+        selector=selectors.DefaultSelector()
+        selector.register(process.stdout,selectors.EVENT_READ,'stdout')
+        selector.register(process.stderr,selectors.EVENT_READ,'stderr')
+        stage='callback-capture'
         callback_checkpoint()
         while selector.get_map():
             if time.monotonic()>deadline:raise TimeoutError('bounded public callback deadline')
             for key,_ in selector.select(.02):
                 data=os.read(key.fileobj.fileno(),4096)
                 if not data:selector.unregister(key.fileobj);continue
+                lengths[key.data]+=len(data)
                 remaining=4096-sum(len(value) for value in chunks.values())
                 chunks[key.data].extend(data[:remaining])
-                if len(data)>remaining:
-                    capture_error='public callback capture overflow; bounded prefix retained'
-                    callback_checkpoint()
-                    raise RuntimeError(capture_error)
+                if len(data)>remaining:raise RuntimeError('public callback capture overflow; bounded prefix retained')
                 callback_checkpoint()
-        process.wait(timeout=max(.01,deadline-time.monotonic()))
+        stage='callback-wait'
+        waited=process.wait(timeout=max(.01,deadline-time.monotonic()))
     except BaseException as exc:
         capture_error=type(exc).__name__+':'+str(exc)[:1024]
         raise
     finally:
-        selector.close()
-        callback_checkpoint(capture_error is None and type(process.returncode) is int)
+        # Every acquired resource is independently cleaned; a cleanup/checkpoint
+        # error cannot replace the original exception or invent a consuming wait.
+        def cleanup(action):
+            try:action()
+            except BaseException as exc:cleanup_errors.append(type(exc).__name__+':'+str(exc)[:512])
+        if process is not None:
+            if waited is None:
+                def stop_and_wait():
+                    nonlocal waited
+                    try:
+                        cleanup(process.terminate)
+                        waited=process.wait(timeout=1)
+                    except subprocess.TimeoutExpired:
+                        cleanup(process.kill)
+                        waited=process.wait(timeout=1)
+                cleanup(stop_and_wait)
+            for stream in (process.stdout,process.stderr):
+                if stream is not None:cleanup(stream.close)
+        if selector is not None:cleanup(selector.close)
+        cleanup(callback_checkpoint)
+        if cleanup_errors:
+            cleanup(callback_checkpoint)
+            if capture_error is None:raise RuntimeError('callback cleanup/checkpoint incomplete: '+cleanup_errors[0])
     stdout,stderr=bytes(chunks['stdout']),bytes(chunks['stderr'])
     from types import SimpleNamespace
     result=SimpleNamespace(stdout=stdout,stderr=stderr,returncode=process.returncode)
@@ -178,63 +288,71 @@ def provider_main():
 
 def provider_supervise():
     """Own the actual provider Python child, bounded bytes and real parent wait."""
-    task,sid,agent,slug=sys.argv[2:6]
-    control=Path(sys.argv[6])
-    assert os.environ.get('HAPPYRANCH_RUNTIME_SESSION_ID')==sid and os.environ.get('HAPPYRANCH_ORG_SLUG')==slug=='test'
-    assert control.resolve(strict=True)==control and control.stat().st_uid==os.getuid()
-    observer=closed_read(Path(os.environ['HAPPYRANCH_ATTACHMENT_OBSERVER']),16384)
-    assert Path(os.environ['HAPPYRANCH_ATTACHMENT_OBSERVER'])==control/'observer'/'descriptor.json'
-    assert observer['binding']['revision']==manifest()['revision'] and observer['node'] in NODES
-    evidence=Path(observer['wait_log']).parent
-    assert evidence.resolve(strict=True)==evidence and evidence.stat().st_uid==os.getuid()
-    target=evidence/('provider-'+hashlib.sha256(observer['node'].encode()).hexdigest()[:20]+'-'+sid+'.json')
+    task,sid,agent,slug,control,observer,target,identity=_provider_diagnostic('provider')
     argv=[sys.executable,'-m','tests.helpers.attachment_feedback_fixture','provider',task,sid,agent,slug,str(control)]
-    child=subprocess.Popen(argv,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
-    selector=selectors.DefaultSelector()
-    selector.register(child.stdout,selectors.EVENT_READ,'stdout')
-    selector.register(child.stderr,selectors.EVENT_READ,'stderr')
-    chunks={'stdout':bytearray(),'stderr':bytearray()};waited=None;error=None
+    child=None;selector=None;waited=None;error=None;cleanup_errors=[];stage='checkpoint';helper_hash=None
+    chunks={'stdout':bytearray(),'stderr':bytearray()};lengths={'stdout':0,'stderr':0}
     def checkpoint():
-        temporary=target.with_suffix('.json.tmp')
-        write_receipt(temporary,{'node':observer['node'],'head':manifest()['revision'],
-            'helper_sha256':sha(Path(__file__).resolve()),'task':task,'sid':sid,'argv':argv,
-            'parent_pid':os.getpid(),'child_pid':child.pid,'parent_wait_returncode':waited,
-            'stdout':bytes(chunks['stdout']).decode('utf-8','replace'),
-            'stderr':bytes(chunks['stderr']).decode('utf-8','replace'),
-            'complete':waited is not None and error is None,'error':error},262144)
-        os.replace(temporary,target)
+        _diagnostic_checkpoint(target,identity,{'node':observer['node'],'head':observer['binding']['revision'],
+            'source':__file__,'helper_sha256':helper_hash,'task':task,'sid':sid,'argv':argv,
+            'parent_pid':os.getpid(),'child_pid':None if child is None else child.pid,'parent_wait_returncode':waited,
+            'child_state':'absent' if child is None else 'waited' if waited is not None else 'spawned',
+            'output':_raw_output(chunks,lengths),'complete':waited is not None and error is None and not cleanup_errors,
+            'error':error,'stage':stage,'cleanup_errors':cleanup_errors},262144)
     try:
+        checkpoint()
+        stage='provider-source-binding'
+        helper_hash=sha(Path(__file__).resolve())
+        stage='provider-admission'
+        _provider_admission()
+        assert os.environ.get('HAPPYRANCH_RUNTIME_SESSION_ID')==sid and os.environ.get('HAPPYRANCH_ORG_SLUG')==slug=='test'
+        assert observer['binding']['revision']==manifest()['revision']
+        stage='provider-spawn'
+        child=subprocess.Popen(argv,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+        stage='provider-selector'
+        selector=selectors.DefaultSelector()
+        selector.register(child.stdout,selectors.EVENT_READ,'stdout')
+        selector.register(child.stderr,selectors.EVENT_READ,'stderr')
+        stage='provider-capture'
         checkpoint()
         while selector.get_map():
             for key,_ in selector.select(.02):
                 data=os.read(key.fileobj.fileno(),4096)
                 if not data:selector.unregister(key.fileobj);continue
+                lengths[key.data]+=len(data)
                 remaining=16384-len(chunks[key.data])
                 chunks[key.data].extend(data[:remaining])
-                if len(data)>remaining:
-                    error='provider capture overflow; bounded prefix retained'
-                    checkpoint()
-                    raise RuntimeError(error)
+                if len(data)>remaining:raise RuntimeError('provider capture overflow; bounded prefix retained')
                 checkpoint()
+        stage='provider-wait'
         waited=child.wait(timeout=5)
-        # This is an actual wait of our own child, including a failed launch.
         write_receipt(control/f'provider-wait-{sid}.json',
             {'owner':os.getpid(),'child':child.pid,'returncode':waited,'sid':sid,'task':task},4096)
     except BaseException as exc:
         error=type(exc).__name__+':'+str(exc)[:1024]
         raise
     finally:
-        selector.close()
-        if waited is None:
-            # This Popen owns the exact child. Failure cleanup never claims an
-            # unobserved wait and never synthesizes a callback/result.
-            try:
-                child.terminate();waited=child.wait(timeout=1)
-            except subprocess.TimeoutExpired:
-                child.kill();waited=child.wait(timeout=1)
-            finally:checkpoint()
-        else:checkpoint()
-        child.stdout.close();child.stderr.close()
+        def cleanup(action):
+            try:action()
+            except BaseException as exc:cleanup_errors.append(type(exc).__name__+':'+str(exc)[:512])
+        if child is not None:
+            if waited is None:
+                def stop_and_wait():
+                    nonlocal waited
+                    try:
+                        cleanup(child.terminate)
+                        waited=child.wait(timeout=1)
+                    except subprocess.TimeoutExpired:
+                        cleanup(child.kill)
+                        waited=child.wait(timeout=1)
+                cleanup(stop_and_wait)
+            for stream in (child.stdout,child.stderr):
+                if stream is not None:cleanup(stream.close)
+        if selector is not None:cleanup(selector.close)
+        cleanup(checkpoint)
+        if cleanup_errors:
+            cleanup(checkpoint)
+            if error is None:raise RuntimeError('provider cleanup/checkpoint incomplete: '+cleanup_errors[0])
     raise SystemExit(waited)
 
 
@@ -248,9 +366,12 @@ if _PROVIDER_ENTRY:
                 # stderr is captured by the owned provider supervisor, even if
                 # launch admission failed before a JSON launch receipt existed.
                 import traceback
-                os.write(2,traceback.format_exc(limit=12).encode()[:16384])
+                try:os.write(2,traceback.format_exc(limit=12).encode()[:16384])
+                except BaseException as diagnostic_exc:
+                    exc.add_note('provider stderr diagnostic unavailable: '+type(diagnostic_exc).__name__)
             raise
     else:
+        _provider_admission()
         task,sid,parent,child,status,control=sys.argv[2:8]
         launch=closed_read(Path(control)/f"launch-{sid}.json",16384)
         assert launch['task_id']==task and launch['driver_pid']==int(child) and launch['plan_parent_pid']==int(parent)
