@@ -172,9 +172,9 @@ shared = merge_tocs(a.binaries, a.datas, a_cli.binaries, a_cli.datas)
 evidence = Path(os.environ['HAPPYRANCH_FREEZE_EVIDENCE'])
 
 def toc_rows(toc):
-    return [{'destination': d, 'source': str(s), 'kind': k,
+    return [{'destination': d, 'source': str(s) if s else None, 'kind': k,
              'sha256': hashlib.sha256(Path(s).read_bytes()).hexdigest()
-             if Path(s).is_file() else None} for d, s, k in toc]
+             if s and Path(s).is_file() else None} for d, s, k in toc]
 
 analysis = {label: {kind: toc_rows(getattr(value, kind))
                    for kind in ('pure', 'binaries', 'datas')}
