@@ -21,14 +21,18 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>1.0</string>
+	<string>REQUIRED_VERSION</string>
 	<key>CFBundleVersion</key>
-	<string>1.0.0</string>
+	<string>REQUIRED_BUILD</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>14.0</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
 	<key>GitCommitSHA</key>
+	<string></string>
+	<key>GitTreeSHA</key>
+	<string></string>
+	<key>ReleaseArchitecture</key>
 	<string></string>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
