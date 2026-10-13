@@ -3250,6 +3250,25 @@
         ]
       }
     },
+    "/api/v1/orgs/{slug}/teams/ensure-default": {
+      "POST": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "202",
+          "422"
+        ]
+      }
+    },
     "/api/v1/orgs/{slug}/threads": {
       "GET": {
         "params": [

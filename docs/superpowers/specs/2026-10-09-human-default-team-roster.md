@@ -5,6 +5,60 @@ SHA256 d6e8dd860fbcf7c09501d898abc3d936580170e68e5cc791f1d56df2f7094275,
 accepted by engineering_manager TASK10394. Source authoring does not establish
 behavioral readiness, migration capability, deployment or a successful apply.
 
+## Separate online empty Default correction (THR296 seq107 / TASK11050)
+
+The supported founder command is `happyranch teams ensure-default --org ORG`,
+using POST `/api/v1/orgs/{slug}/teams/ensure-default` with the existing founder
+bearer boundary. No request body, startup/GET mutation or agent creation is
+needed. An absent Default becomes an empty human-founder team. A compatible
+Default keeps all its workers and metadata without saving, auditing or publishing
+again; a different manager refuses409 `default_team_conflict` before mutation.
+Creation adds `default_team: default` only when that display pointer is absent.
+Existing explicit display/task pointers are preserved; absent `task_default_team`
+continues resolving to Engineering. This is independent of fresh-org seeding,
+which deliberately chooses Default for both pointers.
+
+TeamsRegistry validates and serializes a candidate before updating the shared
+OrgState/orchestrator/authority registry. Save failure leaves that object unchanged.
+The process async writer gate precedes teams_lock; canonical/cache and membership
+prevalidation runs outside the durable lease. Only save/shared-object update and
+the bounded `config:teams` / founder `team_default_ensured` audit run in the short
+synchronous canonical fence. Owned best-effort publication follows lease release.
+Audit failure reports500 `default_team_audit_failed`, committed=true; no rollback
+is claimed. Save failure reports503 `default_team_save_failed`, committed=false.
+Existing publication journals, compensation and cold recovery stay unchanged.
+
+The response contains created, current team row, both resolved routing pointers
+and authority readback. HTTP200 includes ready=true, namespace, generation and
+snapshot_digest only after the owned readiness check and full current snapshot
+comparison. HTTP202 includes ready=false, `default_team_authority_not_ready`,
+reason and guidance; the team can be committed while authority remains fenced.
+The CLI prints the full receipt and exits1 for that partial state, exit0 only for
+ready readback. A compatible repeat performs no repair/republication and honestly
+reports the current partial state. Existing supported publication or cold recovery
+owns its resolution; this command introduces no new recovery engine.
+
+Read the roster with `happyranch teams list --org ORG`. After compatible source
+is adopted by the running runtime, the parent performs the supported provision,
+checks the receipt and live teams, refreshes Add Agent's existing teams read and
+selects Default without submitting agent creation. A404/missing OpenAPI operation
+is an unavailable loaded capability, not successful provision. Source merge alone
+does not establish loaded capability, ready publication or the live dropdown.
+No deployment/restart/shutdown is authorized here. Roster/routing preservation,
+repeat/conflict/concurrency and failure properties require honest source-only or
+executed attribution; static lint establishes no behavioral PASS.
+
+This operation moves no consultants, clears no sessions and changes no existing
+AgentDef, policy/history/pins, memory, prompts, workspaces or team memberships.
+It adds no schema/auth/permission model or executable founder identity. The
+offline move remains deferred with all historical evidence/reservations and its
+own correction counter intact; that counter does not apply to this separate root.
+No new tests/cases/fixtures or ad hoc E2E follow. Python units remain RETIRED;
+general integration SKIPPED24342. Independent full review/scoped QA, lint-only
+checks, normal hooked nonforce publication and parent guarded merge remain.
+
+## Retained offline consultant-move contract
+
 THR296 seq87 / TASK10953 permits exactly two follow-up utility corrections.
 `roster_delta` accepts the admitted multiline block workers list as well as
 the existing single-line inline sequence, preserving comments/unrelated literal

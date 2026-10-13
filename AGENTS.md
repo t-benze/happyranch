@@ -573,6 +573,28 @@ There is no added orgs_lock hold, worker drain or lifespan guarantee.
 
 ## Founder-managed teams (THR296)
 
+Founder THR296 seq107 / TASK11050 authorizes the separate online empty-team
+correction: `happyranch teams ensure-default --org ORG` calls founder-bearer
+POST `/api/v1/orgs/{slug}/teams/ensure-default`. It creates only an absent
+`default` with `{kind: human, principal: founder}` and no workers. Compatible
+replay preserves existing workers and performs no save, audit or publication;
+conflicting management refuses409 before mutation. Registry serialization saves
+the candidate before changing the shared object; the existing async writer gate
+precedes teams_lock and the short canonical fence, with owned publication after
+lease release. Only an absent display `default_team` pointer becomes Default;
+explicit pointers and omitted-task Engineering routing remain unchanged.
+HTTP200 requires current canonical/cache authority readback; HTTP202 means the
+team exists but authority is not ready (CLI exit1). Retry does not repair that
+partial state; existing supported publication/cold recovery retains ownership.
+`happyranch teams list --org ORG` reads the roster. Add Agent already lists human
+teams; refresh its teams read after provision, then select Default without
+creating an agent. Source acceptance, loaded capability and actual live selection
+are separate evidence. No startup seeding, live raw edits, agent move/creation,
+offline migration, deployment/restart or broader administration follows. The
+deferred offline move and its historical proof/correction limits below remain
+unchanged; they do not gate this distinct empty-team operation. No new cases or
+fixtures, retired Python units, integration or ad hoc E2E execution follows.
+
 Historical TASK10394/TASK10553 PR1022 runs used the finite
 L1/L4/L5/L7/L8/L9/W10 selections with the closed integration parent,
 independently pinned b317 reader and transient exact browser tooling.
