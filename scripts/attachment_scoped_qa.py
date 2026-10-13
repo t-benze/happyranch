@@ -24,8 +24,9 @@ import sys
 import time
 
 ROOT_TASK = "TASK-11079"
-IMPLEMENTATION_TASK = "TASK-11112"
-IMPLEMENTATION_REF = "refs/heads/task/TASK-11112"
+# Recovery publication retains original TASK-11112 maker commits and provenance.
+IMPLEMENTATION_TASK = "TASK-11122"
+IMPLEMENTATION_REF = "refs/heads/task/TASK-11122"
 EXECUTION_OWNER = None  # Manager allocation + independent final-head source review required.
 SELECTION = "attachment-c1-c8-v1"
 TEST_PATH = "tests/integration/test_attachment_feedback_shipping.py"

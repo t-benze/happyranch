@@ -992,11 +992,13 @@ THR304's separate manual `attachment_scoped_qa` sibling in registered
 `nightly-integration.yml` selects only the 61 literal C1–C8 nodes plus their
 closed connected subobservations in `scripts/attachment_scoped_qa.py`. Source
 admission precedes dependencies and product imports. The implementation ref is
-`refs/heads/task/TASK-11112`; `EXECUTION_OWNER = None` deliberately refuses.
+`refs/heads/task/TASK-11122`; `EXECUTION_OWNER = None` deliberately refuses.
+TASK-11122 preserves the original TASK-11112 maker commits; this recovery ref
+changes no execution allocation or case manifest.
 Manager allocation, independent source/readiness review and an immutable
 final-head/manifest release are required before binding the actual execution
 owner and invoking `gh workflow run nightly-integration.yml --repo
-t-benze/happyranch --ref task/TASK-11112 -f attachment_scoped_qa=true -f
+t-benze/happyranch --ref task/TASK-11122 -f attachment_scoped_qa=true -f
 execution_task_id=<actual released owner> -f expected_source_sha=<reviewed head>`.
 The angle-bracket arguments document missing release evidence and are not
 runnable authorization. Ubuntu24.04/Python3.14, frozen setup, retained isolated

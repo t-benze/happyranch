@@ -305,7 +305,7 @@ jobs:
   attachment-scoped-qa:
     name: THR304 closed attachment scoped QA (Python 3.14)
     needs: manual-input-guard
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.attachment_scoped_qa == true && github.repository == 't-benze/happyranch' && github.ref == 'refs/heads/task/TASK-11112' }}
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.attachment_scoped_qa == true && github.repository == 't-benze/happyranch' && github.ref == 'refs/heads/task/TASK-11122' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     env:
