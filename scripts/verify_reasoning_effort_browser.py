@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""Bounded THR298 actual API/browser save-reload checks (no response mocks).
+"""Bounded THR298 actual API/browser save-reload checks.
+
+Readiness-only barriers/interceptions are labelled separately from real-route refusals.
 
 Prerequisite: owned reasoning_effort_browser_fixture.py, ordinary Web build,
 locked e2e/browser.lock installed in a local venv, Chromium executable supplied.
@@ -239,10 +241,64 @@ def main():
             page.on('response', lambda r: browser_events.append({'event': 'response', 'method': r.request.method, 'path': r.url.split(args.base_url)[-1], 'status': r.status}) if r.url.startswith(args.base_url) else None)
             page.on('pageerror', lambda error: browser_events.append({'event': 'pageerror', 'message': str(error)}))
 
-            def open_agent(locale='en'):
+            def open_unready(locale='en'):
                 page.add_init_script(f"localStorage.setItem('happyranch.ui.locale', {json.dumps(locale)})")
                 page.goto(args.base_url + '/orgs/effort-fixture/agents/case_worker')
                 expect(page.locator('#agent-reasoning-effort')).to_be_visible()
+
+            def ready():
+                # A visible input alone does not identify the selected agent/CLI.
+                actual = roster()
+                expect(page.get_by_label('Executor', exact=True)).to_have_value(actual['executor'])
+                expect(page.get_by_label('Model', exact=True)).to_be_enabled()
+                expect(page.get_by_label('Model', exact=True)).to_have_value(actual['model'] or '')
+                expect(page.locator('#agent-reasoning-effort')).to_have_value(actual['reasoning_effort'] or '')
+
+            def open_agent(locale='en'):
+                open_unready(locale)
+                ready()
+
+            def settle_events():
+                # Deterministic event/render barrier, never a timing delay/retry.
+                page.evaluate('() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))')
+
+            def mutation_count():
+                return sum(e['event'] == 'request' and e['method'] in ('PUT', 'POST', 'DELETE', 'PATCH') for e in browser_events)
+
+            def draft_repo(name):
+                page.get_by_role('button', name='Add repository', exact=True).click()
+                page.get_by_placeholder('Repo name (e.g. happyranch)').fill(name)
+                page.get_by_placeholder('Git URL').fill(str(root / 'synthetic-source.git'))
+                page.get_by_role('button', name='Add', exact=True).click()
+
+            def refuse_unready(label):
+                before = agent_path.read_bytes()
+                count = mutation_count()
+                model = page.get_by_label('Model', exact=True)
+                effort = page.locator('#agent-reasoning-effort')
+                expect(model).to_be_disabled()
+                expect(effort).to_be_disabled()
+                old_model, old_effort = model.input_value(), effort.input_value()
+                # Dispatch past the DOM disabled attribute to inspect handler guards.
+                for control, value in ((model, 'placeholder-model'), (effort, 'future_Tier-2')):
+                    control.evaluate("(node, value) => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(node, value); node.dispatchEvent(new Event('input', {bubbles: true})); }", value)
+                executor = page.get_by_label('Executor', exact=True)
+                if executor.count():
+                    expect(executor).to_be_disabled()
+                    executor.dispatch_event('change')
+                action = page.get_by_role('button', name='Save agent', exact=True)
+                if action.count():
+                    expect(action).to_be_disabled()
+                    action.dispatch_event('click')
+                page.keyboard.press('Control+s')
+                settle_events()
+                require(mutation_count() == count and agent_path.read_bytes() == before, label + ': no unready writes/canonical changes')
+                require(not action.count() or action.is_disabled(), label + ': cannot create a Save action')
+                receipts.append({'case': 'C3-readiness', 'state': label, 'interception': 'browser delivery only, not backend refusal', 'mutation_requests': 0, 'canonical_sha256': hashlib.sha256(before).hexdigest(), 'original_display': [old_model, old_effort], 'click_save': 'disabled dispatched' if action.count() else 'absent', 'keyboard_save': 'Control+s'})
+                # Restore the DOM-only probe; handlers must have left React's draft untouched.
+                for control, value in ((model, old_model), (effort, old_effort)):
+                    control.evaluate("(node, value) => Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(node, value)", value)
+                retain_prefix()
 
             def save():
                 before = len(browser_events)
@@ -264,6 +320,105 @@ def main():
                 require(sum(e['event'] == 'request' for e in browser_events) == mutation_count, 'locale change/screenshot must not trigger finite reads or mutations')
                 screenshots.append({'state': state, 'locale': locale, 'width': width, 'height': height, 'file': target.name, 'sha256': hashlib.sha256(target.read_bytes()).hexdigest()})
                 (args.output / 'screenshots.json').write_text(json.dumps(screenshots, indent=2) + '\n')
+
+            # Independently delay actual roster and each metadata response.
+            # Release uses route.continue_(), never a fabricated success response.
+            request('PUT', prefix + '/executor', {'executor': 'claude'})
+            request('PUT', prefix + '/model', {'model': 'ready-model', 'reasoning_effort': 'high'})
+            for label, pattern in (
+                ('roster-loading', '**/api/v1/orgs/effort-fixture/agents'),
+                ('prereqs-loading', '**/api/v1/health/prereqs'),
+                ('profiles-loading', '**/api/v1/executors/runtime/profiles'),
+            ):
+                pending = []
+                def hold(route): pending.append(route)
+                page.route(pattern, hold)
+                with page.expect_request(pattern):
+                    open_unready()
+                refuse_unready(label)
+                require(pending, label + ': actual response held')
+                for route in pending: route.continue_()
+                page.unroute(pattern, hold)
+                ready()
+                page.get_by_label('Model', exact=True).fill('ready-model-' + label)
+                page.locator('#agent-reasoning-effort').fill('future_Tier-2')
+                save()
+                page.reload()
+                ready()
+                require(roster()['model'] == 'ready-model-' + label and roster()['reasoning_effort'] == 'future_Tier-2', label + ': real readiness save/reload')
+                receipts.append({'case': 'C3-readiness-recovery', 'state': label, 'route': 'actual model PUT200 + roster GET', 'canonical_sha256': hashlib.sha256(agent_path.read_bytes()).hexdigest()})
+                retain_prefix()
+
+            # Initial failed and empty reads never invent support; saved values
+            # remain visible whenever the actual roster has arrived.
+            for label, pattern, delivery in (
+                ('roster-error', '**/api/v1/orgs/effort-fixture/agents', None),
+                ('roster-empty', '**/api/v1/orgs/effort-fixture/agents', {'agents': []}),
+                ('metadata-error', '**/api/v1/health/prereqs', None),
+                ('metadata-empty', '**/api/v1/health/prereqs', {'prereqs': []}),
+            ):
+                def deliver(route, body=delivery):
+                    route.fulfill(status=503 if body is None else 200, content_type='application/json', body=json.dumps(body) if body is not None else '{}')
+                page.route(pattern, deliver)
+                def empty_profiles(route): route.fulfill(status=200, content_type='application/json', body='{"profiles": []}')
+                if label == 'metadata-empty': page.route('**/api/v1/executors/runtime/profiles', empty_profiles)
+                open_unready()
+                help_text = page.locator('#agent-reasoning-effort-help')
+                expect(help_text).to_contain_text('Could not load' if label.endswith('error') else ('selected agent' if label.startswith('roster') else 'No selectable executors'))
+                refuse_unready(label)
+                if label.startswith('metadata'):
+                    expect(page.locator('#agent-reasoning-effort')).to_have_value('future_Tier-2')
+                for locale in ('en', 'zh-CN'): snapshot(label, locale)
+                page.unroute(pattern, deliver)
+                if label == 'metadata-empty': page.unroute('**/api/v1/executors/runtime/profiles', empty_profiles)
+                open_agent()
+
+            # A live draft survives a failed roster refetch. Exercise both
+            # disabled-click dispatch and keyboard handler while Save exists.
+            page.get_by_label('Model', exact=True).fill('retained-ready-draft')
+            page.locator('#agent-reasoning-effort').fill('h=igh')
+            draft_repo('readiness-source')
+            roster_pattern = '**/api/v1/orgs/effort-fixture/agents'
+            def fail_roster(route): route.fulfill(status=503, content_type='application/json', body='{}')
+            page.route(roster_pattern, fail_roster)
+            with page.expect_response(lambda r: r.url.endswith('/orgs/effort-fixture/agents') and r.status == 503):
+                # Real rejected pair + unrelated repo write invalidates roster without remount.
+                page.get_by_role('button', name='Save agent', exact=True).click()
+            expect(page.get_by_role('button', name='Save agent', exact=True)).to_be_disabled()
+            expect(page.locator('#agent-reasoning-effort-help')).to_contain_text('Could not load')
+            expect(page.get_by_text('Invalid reasoning effort.', exact=False)).to_be_visible()
+            refuse_unready('draft-refetch-error')
+            page.unroute(roster_pattern, fail_roster)
+            with page.expect_response(lambda r: r.url.endswith('/orgs/effort-fixture/agents') and r.status == 200):
+                page.get_by_role('button', name='Retry', exact=True).click()
+            expect(page.get_by_label('Model', exact=True)).to_have_value('retained-ready-draft')
+            expect(page.locator('#agent-reasoning-effort')).to_have_value('h=igh')
+            expect(page.get_by_text('Invalid reasoning effort.', exact=False)).to_be_visible()
+            page.get_by_role('button', name='Reset', exact=True).click()
+            request('POST', prefix + '/repos', {'action': 'remove', 'repo_name': 'readiness-source'})
+            open_agent()
+            page.get_by_label('Model', exact=True).fill('retained-ready-draft')
+            page.locator('#agent-reasoning-effort').fill('future_Tier-2')
+            # Duplicate keyboard/click saves while the genuine first PUT is held.
+            pending_save = []
+            model_pattern = '**/api/v1/orgs/effort-fixture/agents/case_worker/model'
+            def hold_save(route): pending_save.append(route)
+            page.route(model_pattern, hold_save)
+            count = mutation_count()
+            with page.expect_request(model_pattern): page.keyboard.press('Control+s')
+            expect(page.get_by_role('button', name='Saving…', exact=True)).to_be_disabled()
+            page.keyboard.press('Control+s')
+            page.get_by_role('button', name='Saving…', exact=True).dispatch_event('click')
+            settle_events()
+            require(len(pending_save) == 1 and mutation_count() == count + 1, 'one in-flight save despite keyboard/click duplicates')
+            with page.expect_response(lambda r: r.url.endswith('/agents/case_worker/model') and r.status == 200):
+                pending_save[0].continue_()
+            page.unroute(model_pattern, hold_save)
+            expect(page.get_by_role('button', name='Save agent', exact=True)).not_to_be_visible()
+            export_ui('readiness-keyboard-save')
+            receipts.append({'case': 'C3-save-latch', 'actual_model_puts': 1, 'duplicate_control_s_and_click': 'no extra writes', 'status': 200})
+            page.reload()
+            ready()
 
             request('PUT', prefix + '/executor', {'executor': 'claude'})
             request('PUT', prefix + '/model', {'model': None, 'reasoning_effort': None})
@@ -326,9 +481,23 @@ def main():
             # Stale draft remains bound to the CLI for which it was authored.
             page.locator('#agent-reasoning-effort').fill('future_Tier-2')
             request('PUT', prefix + '/executor', {'executor': 'pi'})
-            with page.expect_response(lambda r: r.url.endswith('/agents/case_worker/model') and r.status == 409):
-                page.get_by_role('button', name='Save agent', exact=True).click()
-            require(roster()['reasoning_effort'] is None, 'stale UI cannot save old CLI effort')
+            # An unrelated repo write induces a genuine roster refetch even
+            # when the stale pair refuses; both existing writes stay separate.
+            draft_repo('stale-refetch-source')
+            with page.expect_response(lambda r: r.url.endswith('/orgs/effort-fixture/agents') and r.status == 200):
+                with page.expect_response(lambda r: r.url.endswith('/agents/case_worker/model') and r.status == 409):
+                    page.get_by_role('button', name='Save agent', exact=True).click()
+            expect(page.get_by_label('Executor', exact=True)).to_have_value('pi')
+            expect(page.get_by_role('button', name='Save agent', exact=True)).to_be_enabled()
+            before_stale = agent_path.read_bytes()
+            with page.expect_response(lambda r: r.url.endswith('/agents/case_worker/model') and r.status == 409) as stale:
+                page.keyboard.press('Control+s')
+            require(stale.value.request.post_data_json['expected_executor'] == 'claude', 'old actual executor binding after refetch reaches stale409')
+            require(agent_path.read_bytes() == before_stale and roster()['reasoning_effort'] is None, 'stale UI cannot mutate pair after refetch')
+            expect(page.locator('#agent-reasoning-effort')).to_have_value('future_Tier-2')
+            expect(page.get_by_text('The saved CLI changed.', exact=False)).to_be_visible()
+            receipts.append({'case': 'C2-stale-draft', 'request': stale.value.request.post_data_json, 'status': 409, 'canonical_before_base64': base64.b64encode(before_stale).decode(), 'canonical_after_base64': base64.b64encode(agent_path.read_bytes()).decode(), 'draft_retained': True})
+            request('POST', prefix + '/repos', {'action': 'remove', 'repo_name': 'stale-refetch-source'})
             request('PUT', prefix + '/executor', {'executor': 'claude'})
             request('PUT', prefix + '/model', {'model': 'old-cli-model', 'reasoning_effort': 'high'})
             open_agent()
@@ -343,6 +512,14 @@ def main():
             expect(page.locator('#agent-reasoning-effort')).to_be_disabled()
             for locale in ('en', 'zh-CN'):
                 snapshot('unsupported', locale)
+            page.evaluate("window.dispatchEvent(new StorageEvent('storage',{key:'happyranch.ui.locale',newValue:'en',storageArea:localStorage}));")
+            page.get_by_label('Model', exact=True).fill('legacy-model-edit')
+            with page.expect_response(lambda r: r.url.endswith('/agents/case_worker/model') and r.status == 200):
+                page.keyboard.press('Control+s')
+            expect(page.get_by_role('button', name='Save agent', exact=True)).not_to_be_visible()
+            page.reload()
+            ready()
+            require(roster()['model'] == 'legacy-model-edit', 'legacy effort-disabled model keyboard save/reload')
             request('PUT', prefix + '/executor', {'executor': 'claude'})
             request('PUT', prefix + '/model', {'model': None, 'reasoning_effort': None})
             open_agent()
@@ -390,6 +567,12 @@ def main():
             expect(page.locator('#agent-reasoning-effort')).to_be_disabled()
             for locale in ('en', 'zh-CN'):
                 snapshot('model-only-disabled', locale)
+            page.evaluate("window.dispatchEvent(new StorageEvent('storage',{key:'happyranch.ui.locale',newValue:'en',storageArea:localStorage}));")
+            page.get_by_label('Model', exact=True).fill('model-only-edit')
+            save()
+            page.reload()
+            ready()
+            require(roster()['model'] == 'model-only-edit' and roster()['reasoning_effort'] is None, 'model-only real UI save/reload without effort support')
             # Historical malformed readable value is setup, not a setter success.
             request('PUT', prefix + '/executor', {'executor': 'claude'})
             definition = parse_agent_text(agent_path.read_text(), expected_name='case_worker')
@@ -406,7 +589,8 @@ def main():
             # Stale registered-name absence is synthetic read setup only.
             current = parse_agent_text(agent_path.read_text(), expected_name='case_worker')
             agent_path.write_text(render_agent_text(dataclasses.replace(current, executor='stale_custom', reasoning_effort='future_Tier-2')))
-            open_agent()
+            open_unready()
+            expect(page.get_by_label('Executor', exact=True)).to_have_value('stale_custom')
             expect(page.locator('#agent-reasoning-effort')).to_have_value('future_Tier-2')
             expect(page.locator('#agent-reasoning-effort')).to_be_disabled()
             receipts.append({'case': 'C3-stale-profile', 'saved_value': 'future_Tier-2', 'enabled': False})
@@ -437,20 +621,6 @@ def main():
             expect(page.locator('#agent-reasoning-effort')).to_have_value(actual)
             receipts.append({'case': 'B2-browser-delivered-refusal', 'request': delivered_request, 'status': sanitation_response.value.status, 'before_base64': base64.b64encode(before).decode(), 'after_base64': base64.b64encode(agent_path.read_bytes()).decode()})
             open_agent()
-            # C3 availability via bounded browser HTTP delivery, not fake product
-            # support; canonical saved text remains visible when metadata fails.
-            for state in ('error', 'empty', 'loading'):
-                def deliver(route, state=state):
-                    if state == 'error': route.fulfill(status=503, body='unavailable')
-                    elif state == 'empty': route.fulfill(status=200, content_type='application/json', body='{"prereqs": []}')
-                    else: pending_routes.append(route)
-                pending_routes = []
-                page.route('**/api/v1/health/prereqs', deliver)
-                open_agent()
-                expect(page.locator('#agent-reasoning-effort')).to_be_disabled()
-                receipts.append({'case': 'C3-availability', 'state': state, 'saved_value': page.locator('#agent-reasoning-effort').input_value(), 'enabled': False})
-                for route in pending_routes: route.abort()
-                page.unroute('**/api/v1/health/prereqs', deliver)
             context.close()
         require(not any(event['event'] == 'pageerror' for event in browser_events), 'no JS exceptions')
         browser.close()
