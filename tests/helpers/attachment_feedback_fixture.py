@@ -1482,7 +1482,9 @@ def _finding_diagnostic_trial(root, kind, fault=None, payload=b'\xff\xe2\x82\xac
     sink=_finding_sink(root/'evidence');control=root/'control';control.mkdir(mode=0o700)
     target=sink/'diagnostic.json';info=sink.stat();identity=(info.st_dev,info.st_ino)
     faults=set() if fault is None else set(fault.split('+'));primary=None if fault is None else fault.split('+')[0]
-    trial_deadline=min(_CALL_DEADLINE,time.monotonic()+.5)
+    trial_start=time.monotonic()
+    trial_deadline=min(_CALL_DEADLINE,trial_start+.5)
+    work_deadline=trial_start+max(0,trial_deadline-trial_start)/2
     node=NODES[0];observer={'node':node,'binding':{'revision':_DESCRIPTOR['head']}}
     # Synthetic identity is explicitly restricted to diagnostic scratch. No
     # daemon assignment, result or callback is created or asserted by this trial.
@@ -1493,24 +1495,43 @@ def _finding_diagnostic_trial(root, kind, fault=None, payload=b'\xff\xe2\x82\xac
     write_receipt(control/'observer'/'descriptor.json',observer,16384)
     real_popen=subprocess.Popen;real_selector=selectors.DefaultSelector
     injected={name:OSError('finding-primary-'+name) for name in faults}
-    waits=[];seams=[];acquired_selectors=[]
+    waits=[];wait_attempts=[];seams=[];acquired_selectors=[];cleanup_facts=[]
+    cleanup_waits=0
     class Child(real_popen):
         def wait(self,timeout=None):
-            remaining=max(0,trial_deadline-time.monotonic())
-            value=super().wait(timeout=remaining if timeout is None else min(timeout,remaining))
-            waits.append(value);return value
+            nonlocal cleanup_waits
+            cleanup_call=sys._getframe(1).f_code.co_name=='stop_and_wait'
+            stop=trial_deadline if cleanup_call else work_deadline
+            remaining=max(0,stop-time.monotonic())
+            if cleanup_call:
+                cleanup_waits+=1
+                if cleanup_waits==1:remaining/=2  # reserve KILL + real wait
+            admitted=remaining if timeout is None else min(timeout,remaining)
+            fact={'pid':self.pid,'cleanup':cleanup_call,'timeout':admitted,'returncode':None,'exception':None}
+            wait_attempts.append(fact)
+            try:
+                if 'wait-unavailable' in faults:raise injected['wait-unavailable']
+                value=super().wait(timeout=admitted)
+                fact['returncode']=value;waits.append(value);return value
+            except BaseException as exc:
+                fact['exception']=type(exc).__name__+':'+str(exc)[:512]
+                raise
     def spawn(*args,**kwargs):
         assert kwargs['stdout'] is subprocess.PIPE and kwargs['stderr'] is subprocess.PIPE
         seams.append('spawn')
         if 'spawn' in faults:raise injected['spawn']
         code='import os,time;os.write(1,'+repr(payload[:2])+');time.sleep(.01);os.write(1,'+repr(payload[2:])+');os.write(2,b"\\xfe")'
         if payload==b'\xff\xe2\x82\xac':
-            read_fd,write_fd=os.pipe();sync_fds.append(write_fd)
+            read_fd,write_fd=os.pipe();owned_pipes.extend((read_fd,write_fd));sync_fds.append(write_fd)
             code='import os;os.write(1,'+repr(payload[:2])+');assert os.read('+str(read_fd)+',1)==b"R";os.write(1,'+repr(payload[2:])+');os.write(2,b"\\xfe")'
-            try:child=Child([sys.executable,'-c',code],stdout=subprocess.PIPE,stderr=subprocess.PIPE,pass_fds=(read_fd,))
-            finally:os.close(read_fd)
-        else:child=Child([sys.executable,'-c',code],stdout=subprocess.PIPE,stderr=subprocess.PIPE)
-        processes.append(child);return child
+            try:
+                child=Child([sys.executable,'-c',code],stdout=subprocess.PIPE,stderr=subprocess.PIPE,pass_fds=(read_fd,))
+                processes.append(child)
+            finally:close_pipe(read_fd)
+        else:
+            child=Child([sys.executable,'-c',code],stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+            processes.append(child)
+        return child
     class Selected:
         def __init__(self):
             seams.append('selector-create')
@@ -1521,8 +1542,11 @@ def _finding_diagnostic_trial(root, kind, fault=None, payload=b'\xff\xe2\x82\xac
             if 'selector-register' in faults:raise injected['selector-register']
             return self.actual.register(*args)
         def select(self,timeout=None):
-            remaining=trial_deadline-time.monotonic()
-            if remaining<=0:raise TimeoutError('finding diagnostic deadline')
+            remaining=work_deadline-time.monotonic()
+            if 'capture-expired' in faults and remaining>0:
+                time.sleep(remaining)  # exhaust ONLY the admitted work half
+                remaining=work_deadline-time.monotonic()
+            if remaining<=0:raise TimeoutError('finding diagnostic work deadline')
             return self.actual.select(remaining if timeout is None else min(timeout,remaining))
         def __getattr__(self,name):return getattr(self.actual,name)
         def close(self):
@@ -1533,61 +1557,123 @@ def _finding_diagnostic_trial(root, kind, fault=None, payload=b'\xff\xe2\x82\xac
         # a negative harness admission, not successful provider admission proof.
         if 'admission' in faults:raise injected['admission']
     original_checkpoint=_diagnostic_checkpoint
-    calls=[];attempted_rows=[];sync_fds=[];split_reads=[]
+    calls=[];attempted_rows=[];sync_fds=[];owned_pipes=[];split_reads=[]
+    def close_pipe(fd):
+        os.close(fd);owned_pipes.remove(fd)
     def checkpoint(*args):
         calls.append(args[2]['stage']);attempted_rows.append(json.loads(json.dumps(args[2])))
         size=args[2]['output']['stdout']['raw_length']
         if size and (not split_reads or split_reads[-1]!=size):split_reads.append(size)
         if sync_fds and size==2:
-            fd=sync_fds.pop();os.write(fd,b'R');os.close(fd)
+            fd=sync_fds[-1]
+            try:os.write(fd,b'R')
+            finally:close_pipe(fd)
+            sync_fds.pop()
         if 'publication' in faults and len(calls)>1:raise injected['publication']
         return original_checkpoint(*args)
-    failure=None;rows=[]
-    # Replace only fixture references, not shared stdlib module attributes or
-    # product code. The actual capture/cleanup/checkpoint implementation runs.
-    with _finding_patch(module,_provider_diagnostic=lambda kind:(task,sid,'dev_agent',slug,control,observer,target,identity),
-        _provider_admission=admission,manifest=lambda:{'revision':_DESCRIPTOR['head'],'callback':'synthetic-unexecuted-callback'},
-        subprocess=_finding_subprocess(spawn),
-        selectors=SimpleNamespace(DefaultSelector=Selected,EVENT_READ=selectors.EVENT_READ),_diagnostic_checkpoint=checkpoint):
-        with _finding_patch(sys,argv=argv,stdin=__import__('io').StringIO('')), _finding_patch(os,environ=dict(os.environ,
-            HAPPYRANCH_RUNTIME_SESSION_ID=sid,HAPPYRANCH_ORG_SLUG=slug,HAPPYRANCH_ATTACHMENT_OBSERVER=str(control/'observer'/'descriptor.json'))):
-            try:(provider_supervise if kind=='provider' else provider_main)()
-            except BaseException as exc:failure=exc
-    for fd in sync_fds:os.close(fd)
-    if target.exists():rows.append(closed_read(target,262144))
-    if 'publication' in faults:
-        assert rows and rows[-1]['complete'] is False
-        rows.append(attempted_rows[-1])
-    assert failure is not None
-    if isinstance(failure,SystemExit):assert failure.code==0
-    if primary and primary!='close':
-        assert failure is injected[primary], 'owner must preserve the actual first native exception'
-    if 'publication' in faults:
-        assert len(calls)>1 and attempted_rows[-1]['complete'] is False
-        assert any('finding-primary-publication' in error for error in attempted_rows[-1]['cleanup_errors'])
-        assert rows[0]['complete'] is False and rows[0]!=attempted_rows[-1]
-    if 'close' in faults:
-        assert closes==['selector'] and any('finding-secondary-close' in error for error in rows[-1]['cleanup_errors'])
-    if ('admission' in faults and kind=='provider') or 'spawn' in faults:
-        row=rows[-1];assert row['child_pid'] is None and row['parent_wait_returncode'] is None and row['child_state']=='absent'
-        assert row['complete'] is False and not processes and not waits
-    elif processes:
-        child=processes[0];row=rows[-1]
-        assert row['child_pid']==child.pid and type(row['parent_wait_returncode']) is int
-        assert row['child_state']=='waited' and child.returncode==row['parent_wait_returncode']
-        assert waits and waits[-1]==row['parent_wait_returncode']
-        assert child.stdout.closed and child.stderr.closed
-        if fault:assert row['complete'] is False
-        if primary not in ('publication','close') and primary:
-            assert 'finding-primary-'+primary in row['error'] and not isinstance(failure,SystemExit)
-        if 'close' in faults:assert row['cleanup_errors'] and not isinstance(failure,SystemExit)
-    if 'spawn' in faults:assert seams==['spawn']
-    if 'selector-create' in faults:assert seams==['spawn','selector-create']
-    if 'selector-register' in faults:assert seams==['spawn','selector-create','selector-register']
-    for selected in acquired_selectors:assert not selected.actual.get_map()
-    assert time.monotonic()<trial_deadline, 'diagnostic trial exceeded the remaining call budget'
+    failure=None;rows=[];assertion_error=None;stage='invoke'
+    def cleanup(label,action):
+        fact={'operation':label,'returncode':None,'exception':None};cleanup_facts.append(fact)
+        try:fact['returncode']=action()
+        except BaseException as exc:fact['exception']=type(exc).__name__+':'+str(exc)[:512]
+    def export():
+        # Export BEFORE assertions and again on assertion failure, through the
+        # existing counted evidence writer. Scratch rows are diagnostic only.
+        receipt={'kind':kind,'fault':fault,'root':str(root),'stage':stage,
+            'native_exception':None if failure is None else type(failure).__name__+':'+str(failure)[:1024],
+            'assertion_exception':assertion_error,'attempted_diagnostic':attempted_rows[-1] if attempted_rows else None,
+            'stored_diagnostic':rows[0] if rows else None,'wait_attempts':wait_attempts,
+            'fallback_cleanup':cleanup_facts,'seams':seams,'checkpoint_stages':calls,
+            'work_deadline':work_deadline,'cleanup_deadline':trial_deadline}
+        destination=Path(_DESCRIPTOR['evidence'])/('finding-trial-'+hashlib.sha256(str(root).encode()).hexdigest()[:20]+'.json')
+        evidence_publish(destination,(json.dumps(receipt,sort_keys=True)+'\n').encode(),131072,
+                         destination.parent,replace=True)
+    try:
+        with _finding_patch(module,_provider_diagnostic=lambda kind:(task,sid,'dev_agent',slug,control,observer,target,identity),
+            _provider_admission=admission,manifest=lambda:{'revision':_DESCRIPTOR['head'],'callback':'synthetic-unexecuted-callback'},
+            subprocess=_finding_subprocess(spawn),
+            selectors=SimpleNamespace(DefaultSelector=Selected,EVENT_READ=selectors.EVENT_READ),_diagnostic_checkpoint=checkpoint):
+            with _finding_patch(sys,argv=argv,stdin=__import__('io').StringIO('')), _finding_patch(os,environ=dict(os.environ,
+                HAPPYRANCH_RUNTIME_SESSION_ID=sid,HAPPYRANCH_ORG_SLUG=slug,HAPPYRANCH_ATTACHMENT_OBSERVER=str(control/'observer'/'descriptor.json'))):
+                try:(provider_supervise if kind=='provider' else provider_main)()
+                except BaseException as exc:failure=exc
+    except BaseException as exc:
+        if failure is None:failure=exc
+        else:failure.add_note('trial scope cleanup failed: '+type(exc).__name__)
+        raise
+    finally:
+        # Every acquired real child/resource has an independent owner attempt,
+        # even when native cleanup, storage, capture or an assertion failed.
+        stage='owned fallback'
+        for child in processes:
+            if child.returncode is None:cleanup('TERM exact child',child.terminate)
+            cleanup('owned consuming wait',lambda child=child:real_popen.wait(child,timeout=max(0,trial_deadline-time.monotonic())/2))
+            if child.returncode is None:
+                cleanup('KILL exact child',child.kill)
+                cleanup('KILL consuming wait',lambda child=child:real_popen.wait(child,timeout=max(0,trial_deadline-time.monotonic())))
+            for stream in (child.stdout,child.stderr):
+                if stream is not None and not stream.closed:cleanup('stream close',stream.close)
+        for selected in acquired_selectors:cleanup('selector close',selected.actual.close)
+        for fd in list(owned_pipes):cleanup('sync pipe close',lambda fd=fd:close_pipe(fd))
+        stage='diagnostic readback'
+        if target.exists():
+            try:rows.append(closed_read(target,262144))
+            except BaseException as exc:
+                cleanup_facts.append({'operation':'diagnostic readback','returncode':None,'exception':type(exc).__name__+':'+str(exc)[:512]})
+        if 'publication' in faults and attempted_rows:rows.append(attempted_rows[-1])
+        stage='before assertions'
+        try:export()
+        except BaseException as exc:
+            if failure is not None and not isinstance(failure,SystemExit):
+                failure.add_note('trial export unavailable: '+type(exc).__name__)
+                raise failure
+            raise
+    try:
+        assert failure is not None
+        if isinstance(failure,SystemExit):assert failure.code==0
+        if primary and primary not in ('close','capture-expired'):
+            assert failure is injected[primary], 'owner must preserve the actual first native exception'
+        if 'publication' in faults:
+            assert len(calls)>1 and attempted_rows[-1]['complete'] is False
+            assert any('finding-primary-publication' in error for error in attempted_rows[-1]['cleanup_errors'])
+            assert rows[0]['complete'] is False and rows[0]!=attempted_rows[-1]
+        if 'close' in faults:
+            assert closes==['selector'] and any('finding-secondary-close' in error for error in rows[-1]['cleanup_errors'])
+        if ('admission' in faults and kind=='provider') or 'spawn' in faults:
+            row=rows[-1];assert row['child_pid'] is None and row['parent_wait_returncode'] is None and row['child_state']=='absent'
+            assert row['complete'] is False and not processes and not waits
+        elif processes:
+            child=processes[0];row=rows[-1]
+            assert row['child_pid']==child.pid
+            if 'wait-unavailable' in faults:
+                assert row['parent_wait_returncode'] is None and row['child_state']=='spawned' and row['complete'] is False
+                assert any('wait-unavailable' in error for error in row['cleanup_errors'])
+            else:
+                assert type(row['parent_wait_returncode']) is int
+                assert row['child_state']=='waited' and child.returncode==row['parent_wait_returncode']
+                assert waits and waits[-1]==row['parent_wait_returncode']
+            assert child.stdout.closed and child.stderr.closed
+            if fault:assert row['complete'] is False
+            if primary not in ('publication','close','capture-expired') and primary:
+                assert 'finding-primary-'+primary in row['error'] and not isinstance(failure,SystemExit)
+            if 'close' in faults:assert row['cleanup_errors'] and not isinstance(failure,SystemExit)
+        if 'spawn' in faults:assert seams==['spawn']
+        if 'selector-create' in faults:assert seams==['spawn','selector-create']
+        if 'selector-register' in faults:assert seams==['spawn','selector-create','selector-register']
+        for selected in acquired_selectors:assert not selected.actual.get_map()
+        assert all(p.returncode is not None for p in processes), 'trial fallback wait unavailable'
+        assert not owned_pipes, 'trial sync pipe cleanup incomplete'
+        assert all(f['exception'] is None or f['operation']=='owned consuming wait' and f['exception'].startswith('TimeoutExpired:') for f in cleanup_facts), 'trial resource cleanup incomplete'
+        assert time.monotonic()<trial_deadline, 'diagnostic trial exceeded the remaining call budget'
+    except BaseException as exc:
+        assertion_error=type(exc).__name__+':'+str(exc)[:1024];stage='assertion failure'
+        try:export()
+        except BaseException as later:exc.add_note('trial export unavailable: '+type(later).__name__)
+        raise
     return rows[-1] if rows else None, {'kind':kind,'fault':fault,'failure':type(failure).__name__,
-        'intended_seams':seams,'spawned':len(processes),'consuming_waits':waits,'selector_closes':closes,'checkpoint_stages':calls,'split_read_lengths':split_reads,'stored_final':'publication' not in faults}
+        'intended_seams':seams,'spawned':len(processes),'consuming_waits':waits,'wait_attempts':wait_attempts,
+        'fallback_cleanup':cleanup_facts,'selector_closes':closes,'checkpoint_stages':calls,
+        'split_read_lengths':split_reads,'stored_final':'publication' not in faults}
 
 
 def assert_finding_admission(root):
@@ -2373,13 +2459,147 @@ def _finding_process_binding(root):
     return facts
 
 
+def _finding_process_transitions(root):
+    """Real held child, parent wait/adoption and genuine recorder saturation."""
+    from scripts import attachment_scoped_qa as qa
+    import marshal
+    facts=[]
+    for mode in ('parent-wait','adoption','saturation'):
+        case=root/mode;case.mkdir(mode=0o700);sink=_finding_sink(case/'evidence')
+        deadline=min(_CALL_DEADLINE,time.monotonic()+.5)
+        child_r,child_w=os.pipe();grand=None;tree=None;recorded=[];owner_command=None;owner_released=False
+        journal=sink/'waits.jsonl';recorder_error=OSError('finding-recorder-publication')
+        def record(label,exc):
+            recorded.append((label,exc))
+            if mode=='saturation' and label=='process evidence':raise recorder_error
+        def worker(ready,release):
+            os.close(child_w)
+            child=subprocess.Popen([sys.executable,'-c',
+                'import os;assert os.read('+str(child_r)+',1)==b"R"'],pass_fds=(child_r,))
+            os.close(child_r)
+            os.write(ready,('CHILD:'+str(child.pid)).encode())
+            assert select.select([release],[],[],max(0,deadline-time.monotonic()))[0]
+            command=os.read(release,1)
+            if command==b'A':os._exit(0)  # actual zombie adoption, not fake wait
+            assert command==b'W'
+            status=child.wait(timeout=max(0,deadline-time.monotonic()))
+            row={'owner':os.getpid(),'child':child.pid,'returncode':status,'head':_DESCRIPTOR['head'],
+                'code_sha256':hashlib.sha256(marshal.dumps(subprocess.Popen.wait.__code__,2)).hexdigest()}
+            fd=os.open(journal,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
+            try:assert os.write(fd,(json.dumps(row)+'\n').encode())>0
+            finally:os.close(fd)
+            os.write(ready,b'WAIT0')
+            assert select.select([release],[],[],max(0,deadline-time.monotonic()))[0]
+            assert os.read(release,1)==b'X'
+        class Tree(qa.OwnedTree):
+            def children(self,pid):return super().children(pid)&{owner,grand}
+        try:
+            with _finding_owned_worker(worker) as (owner,ready,release):
+                os.close(child_r);child_r=None
+                try:
+                    assert select.select([ready],[],[],max(0,deadline-time.monotonic()))[0]
+                    message=os.read(ready,64);assert message.startswith(b'CHILD:');grand=int(message[6:])
+                    tree=Tree(sink,record=record);tree.head=_DESCRIPTOR['head']
+                    tree.bind_child(owner,tree.self_pid);tree.bind_child(grand,owner);tree.required_roles.add(grand)
+                    if mode=='saturation':
+                        # Distinct real recorder calls fill the UNCHANGED cap;
+                        # no counter reset, cap override or dropped history.
+                        while tree.event_count<CAPS['process_rows']:
+                            assert tree.event(kind='finding_pressure',sequence=tree.event_count)
+                        # Actual identity-bound signal0 changes no process state;
+                        # recording refusal must not prevent the second signal.
+                        signals=[];native_signal=qa.signal
+                        class Signal:
+                            def __getattr__(self,name):return getattr(native_signal,name)
+                            def pidfd_send_signal(self,fd,sig):
+                                native_signal.pidfd_send_signal(fd,sig);signals.append((fd,sig))
+                        with _finding_patch(qa,signal=Signal()):tree.signal_bound(0)
+                        assert {fd for fd,sig in signals}=={tree.identities[p]['fd'] for p in (owner,grand)}
+                        assert all(sig==0 for fd,sig in signals)
+                    os.write(child_w,b'R')
+                    while not tree.binding_exit(tree.identities[grand]['fd']):
+                        assert time.monotonic()<deadline;time.sleep(.001)
+                    before=len(tree.events)
+                    for _ in range(128):
+                        tree.observe_exits(owner)
+                        assert time.monotonic()<deadline
+                    entry=tree.identities[grand]
+                    assert entry['exited'] and not entry['reaped'] and entry['parent_wait'] is None
+                    assert not tree.closed_identity(grand)
+                    if mode=='saturation':
+                        assert len(tree.events)==before==CAPS['process_rows']
+                        assert tree.event_failure is recorded[0][1] and len(recorded)==1
+                        assert str(tree.event_failure)=='process evidence cap'
+                        assert tree.reported[1] is recorder_error
+                    else:
+                        assert len(tree.events)-before==2
+                        assert sum(e['kind']=='exit_indication' and e.get('pid')==grand for e in tree.events)==1
+                        assert sum(e['kind']=='nonadopted_zombie' and e.get('pid')==grand for e in tree.events)==1
+                    if mode=='parent-wait':
+                        owner_command='W';os.write(release,b'W');_finding_message(ready,b'WAIT0')
+                        tree.ports[owner]={'pid':owner,'wait_log':str(journal),'wait_rows':0}
+                        tree.wait_receipts();tree.observe_exits(owner)
+                        assert entry['parent_wait']==0 and entry['reaped'] and tree.closed_identity(grand)
+                        assert any(e['kind']=='source_parent_wait' and e['pid']==grand for e in tree.events)
+                        assert any(e['kind']=='owning_parent_exit' and e['pid']==grand for e in tree.events)
+                        os.write(release,b'X');owner_released=True
+                    else:
+                        owner_command='A';os.write(release,b'A');owner_released=True
+                        while not entry['reaped']:
+                            assert time.monotonic()<deadline
+                            tree.discover();tree.observe_exits(owner);time.sleep(.001)
+                        assert entry['supervisor_wait']['child']==grand and tree.closed_identity(grand)
+                        if mode=='adoption':
+                            assert any(e['kind']=='reparent' and e['pid']==grand for e in tree.events)
+                            assert any(e['kind']=='reaped' and e['pid']==grand for e in tree.events)
+                        else:
+                            assert tree.errors and tree.event_failure is recorded[0][1]
+                            assert tree.event_failure is recorded[0][1] and tree.identities[grand]['reaped']
+                    facts.append({'mode':mode,'events':len(tree.events),'event_count':tree.event_count,
+                        'child':grand,'actual_wait':entry.get('supervisor_wait'),'parent_wait':entry['parent_wait'],
+                        'saturated':tree.event_failure is not None,'closure':tree.closed_identity(grand)})
+                finally:
+                    if not owner_released:
+                        os.write(release,b'X' if owner_command=='W' else b'A')
+        finally:
+            # The context has attempted the actual original-parent wait first;
+            # any newly adopted owned child still gets independent settlement.
+            if tree is not None:
+                try:tree.cleanup(None,deadline,finalize=False)
+                finally:tree.finalize_cleanup(False)
+            for fd in (child_r,child_w):
+                if fd is not None:os.close(fd)
+        if mode=='saturation':
+            exported=closed_read(sink/'processes.json',2097152)
+            assert exported['closure'] is False and exported['event_saturated']
+            assert exported['identities'][str(grand)]['supervisor_wait']['child']==grand
+    return facts
+
+
 def assert_finding_capture(root):
     facts={}
     for kind in ('provider','callback'):
-        for fault in ('close','publication','spawn+publication','selector-register+close+publication',None):
+        for fault in ('close','publication','spawn+publication','selector-register+close+publication','capture-expired','wait-unavailable',None):
             name=kind+'-'+str(fault);case=root/name;case.mkdir(mode=0o700)
             payload=b'X'*(16385 if kind=='provider' else 4097) if fault is None else b'X'
-            row,receipt=_finding_diagnostic_trial(case,kind,fault,payload)
+            exported=[]
+            def before_assertion(frame):
+                path=Path(_DESCRIPTOR['evidence'])/('finding-trial-'+hashlib.sha256(str(case).encode()).hexdigest()[:20]+'.json')
+                prior=closed_read(path,131072)
+                assert prior['stage']=='before assertions' and prior['native_exception']
+                assert prior['attempted_diagnostic']['output'] and prior['checkpoint_stages']
+                assert all(p.returncode is not None for p in frame.f_locals['processes'])
+                assert prior['wait_attempts']==frame.f_locals['wait_attempts']
+                exported.append(prior['native_exception'])
+            with harness_source_gate(_finding_diagnostic_trial,'assert failure is not None',before_assertion) as exported_hits:
+                row,receipt=_finding_diagnostic_trial(case,kind,fault,payload)
+            assert exported_hits and exported
+            if fault=='capture-expired':
+                assert row['complete'] is False and row['error'].startswith('TimeoutError:')
+                assert any(w['cleanup'] and type(w['returncode']) is int for w in receipt['wait_attempts'])
+            if fault=='wait-unavailable':
+                assert row['complete'] is False and row['parent_wait_returncode'] is None
+                assert any(f['operation'].endswith('consuming wait') and type(f['returncode']) is int for f in receipt['fallback_cleanup'])
             if fault is None:
                 assert row['complete'] is False and 'overflow' in row['error']
                 assert row['output']['stdout']['raw_length']<=(16384 if kind=='provider' else 4096)
@@ -2393,7 +2613,7 @@ def assert_finding_capture(root):
             facts[name]=receipt
     for name,check in (('capacity',_finding_capacity),('lock',_finding_lock_and_cleanup),
                        ('terminal',_finding_terminal_channels),('outer',_finding_outer_lifecycle),
-                       ('binding',_finding_process_binding)):
+                       ('binding',_finding_process_binding),('transitions',_finding_process_transitions)):
         case=root/name;case.mkdir(mode=0o700);facts[name]=check(case)
     return facts
 

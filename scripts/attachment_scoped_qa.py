@@ -296,6 +296,8 @@ class OwnedTree:
         self.head=None
         self.retired_cases={}
         self.direct_wait=None
+        self.event_count=0
+        self.event_failure=None
 
     def failure(self, label, exc):
         # Report the actual exception when it occurs, before later obligations.
@@ -307,13 +309,39 @@ class OwnedTree:
             # Unknown identities are deliberately NOT retained after capacity.
             # Repeated propagation can count again, but adds no rows or notes.
             self.error_overflow=min(ERROR_OVERFLOW_LIMIT,self.error_overflow+1)
-        if self.record is not None:self.record(label,exc)
+        if self.record is not None:
+            try:self.record(label,exc)
+            except BaseException as later:
+                # This diagnostic callback owns no process operation. Preserve
+                # its failure without interrupting the wait/signal/close caller.
+                if len(self.reported)<ERROR_LIMIT:
+                    self.reported.append(later)
+                    self.errors.append('failure recorder:'+error_text(later,256))
+                else:self.error_overflow=min(ERROR_OVERFLOW_LIMIT,self.error_overflow+1)
 
     def event(self, **value):
-        value.update(time_ns=time.time_ns())
-        if len(self.events) >= CAPS["process_rows"] or len(json.dumps(value)) > 2048:
-            raise ValueError("process evidence cap")
+        # Admission is cumulative across retired cases. Saturation remains an
+        # honest failure, but optional recording never interrupts ownership,
+        # consuming waitid, signalling or the remaining cleanup obligations.
+        if self.event_failure is not None:return False
+        try:
+            value.update(time_ns=time.time_ns())
+            if self.event_count >= CAPS["process_rows"] or len(json.dumps(value)) > 2048:
+                raise ValueError("process evidence cap")
+        except BaseException as exc:
+            self.event_failure=exc
+            self.failure('process evidence',exc)
+            return False
         self.events.append(value)
+        self.event_count+=1
+        return True
+
+    def transition(self, entry, state, **value):
+        # Only finite named state flags are retained per admitted identity.
+        # A repeated positive poll still checks native ownership below.
+        if entry.get(state):return
+        entry[state]=True
+        self.event(**value)
 
     @staticmethod
     def identity(pid: int):
@@ -436,7 +464,7 @@ class OwnedTree:
     def discover(self):
         frontier, visited = [self.self_pid], set()
         # Retain known nonadopted ancestors to cover teardown/reparenting.
-        frontier.extend(pid for pid, entry in self.identities.items() if not entry['exited'])
+        frontier.extend(pid for pid, entry in self.identities.items() if not self.closed_identity(pid))
         while frontier:
             parent = frontier.pop()
             if parent in visited:
@@ -448,7 +476,7 @@ class OwnedTree:
                 entry = self.identities.get(parent)
                 # Only an already bound, positively terminal parent may vanish.
                 if entry is not None and self.binding_exit(entry['fd']):
-                    self.event(kind='discovery_parent_absent', pid=parent,
+                    self.transition(entry,'discovery_parent_absent',kind='discovery_parent_absent', pid=parent,
                                start=entry['start'], exit_indicated=True, consuming_wait=False)
                     continue
                 self.failure('discover parent', exc)
@@ -467,7 +495,7 @@ class OwnedTree:
                         try:current = self.identity(pid)
                         except FileNotFoundError:
                             if not self.binding_exit(entry['fd']):raise
-                            self.event(kind='discovery_child_absent', pid=pid,
+                            self.transition(entry,'discovery_child_absent',kind='discovery_child_absent', pid=pid,
                                        start=entry['start'], exit_indicated=True, consuming_wait=False)
                             continue
                         if current[:2] != (entry['uid'], entry['start']):
@@ -483,16 +511,17 @@ class OwnedTree:
                     self.failure('discover', exc)
 
     def observe_exits(self, direct_pid: int):
+        first=None
         for pid, entry in self.identities.items():
-            if entry["exited"]:
+            if entry['reaped'] or entry['removed_after_exit']:
                 continue
-            poll = selectors.DefaultSelector()
+            poll = None
             try:
+                poll = selectors.DefaultSelector()
                 poll.register(entry["fd"], selectors.EVENT_READ)
-                if not poll.select(0):
-                    continue
-                entry["exited"] = True
-                self.event(kind="exit_indication", pid=pid, start=entry["start"])
+                if not poll.select(0):continue
+                entry["exited"] = True  # monotonic exit observation, not closure
+                self.transition(entry,'exit_indicated',kind="exit_indication",pid=pid,start=entry["start"])
                 if pid != direct_pid:
                     try:
                         result = os.waitid(os.P_PIDFD, entry["fd"], os.WEXITED | os.WNOHANG | os.WNOWAIT)
@@ -507,26 +536,35 @@ class OwnedTree:
                             self.event(kind="reaped", pid=pid,owner=self.self_pid,start=entry['start'],
                                        status=consumed.si_status,code=consumed.si_code)
                     except ChildProcessError:
-                        # Its actual parent owns reap; this is only exit indication.
-                        try:
-                            current=self.identity(pid)
-                            removed=current[1]!=entry['start']
-                        except FileNotFoundError:
-                            removed=True
-                        if removed:
+                        # Continue checking this same zombie for later genuine
+                        # adoption/parent wait. Never reset its exit observation.
+                        try:current=self.identity(pid)
+                        except FileNotFoundError:current=None
+                        if current is None:
                             entry['removed_after_exit']=True
                             entry['reaped']=entry['parent_wait'] is not None
-                            self.event(kind='owning_parent_exit',pid=pid,parent=entry['parent'],
+                            self.transition(entry,'owning_parent_exit',kind='owning_parent_exit',pid=pid,parent=entry['parent'],
                                 evidence='bound pidfd exit and original proc identity absent; parent wait separately required')
                         else:
-                            entry['exited']=False
-                            self.event(kind='nonadopted_zombie',pid=pid,parent=entry['parent'])
+                            if current[:2]!=(entry['uid'],entry['start']):
+                                raise ValueError('terminal owned PID identity changed')
+                            self.proved_parent(current[2])
+                            if pid not in self.children(current[2]):
+                                raise ValueError('terminal owned parent edge unavailable')
+                            if current[2]!=entry['parent']:
+                                self.event(kind='reparent',pid=pid,before=entry['parent'],after=current[2])
+                                entry['parent']=current[2]
+                            self.transition(entry,'nonadopted_zombie',kind='nonadopted_zombie',pid=pid,parent=current[2])
             except BaseException as exc:
                 self.failure('exit observation',exc)
-                raise
+                if first is None:first=exc
             finally:
-                try:poll.close()
-                except BaseException as exc:self.failure('exit selector close',exc)
+                if poll is not None:
+                    try:poll.close()
+                    except BaseException as exc:
+                        self.failure('exit selector close',exc)
+                        if first is None:first=exc
+        if first is not None:raise first
 
     def signal_bound(self, sig: int):
         self.discover()
@@ -836,6 +874,7 @@ class OwnedTree:
             if overflow:raise ValueError('daemon capture overflow; bounded prefix retained')
 
     def monitor(self):
+        if self.event_failure is not None:raise self.event_failure
         self.wait_receipts()
         # All mutation and this snapshot share allocation; never inspect an
         # active temporary as if it were an interrupted publication.
@@ -871,8 +910,8 @@ class OwnedTree:
         def settle(stop):
             while time.monotonic()<stop:
                 attempt('discover',self.discover)
-                if child is not None:attempt('observe',lambda:self.observe_exits(child.pid))
-                if all(row['exited'] for row in self.identities.values()):break
+                attempt('observe',lambda:self.observe_exits(child.pid if child is not None else -1))
+                if all(self.closed_identity(pid) for pid in self.identities if child is None or pid!=child.pid):break
                 time.sleep(.02)
         attempt('TERM grace',lambda:settle(grace))
         attempt('KILL bound',lambda:self.signal_bound(signal.SIGKILL))
@@ -890,7 +929,7 @@ class OwnedTree:
             attempt('direct wait',consuming_wait)
         attempt('KILL settlement',lambda:settle(deadline))
         attempt('final discover',self.discover)
-        if child is not None:attempt('final observe',lambda:self.observe_exits(child.pid))
+        attempt('final observe',lambda:self.observe_exits(child.pid if child is not None else -1))
         attempt('final log capture',self.capture_logs)
         clean=(child is not None and self.direct_wait is not None and not self.errors
                and all(self.closed_identity(pid) for pid in self.identities))
@@ -907,7 +946,8 @@ class OwnedTree:
         clean=clean and not self.errors
         try:write_receipt(self.evidence/'processes.json',
             {'identities':{pid:{k:v for k,v in row.items() if k!='fd'} for pid,row in self.identities.items()},
-             'events':self.events,'errors':self.errors,'closure':clean,'retired_cases':self.retired_cases,
+             'events':self.events,'event_count':self.event_count,'event_saturated':self.event_failure is not None,
+             'errors':self.errors,'closure':clean,'retired_cases':self.retired_cases,
              'error_overflow':{'observations':self.error_overflow,'meaning':ERROR_OVERFLOW_MEANING},
              'direct_wait_returncode':self.direct_wait},2097152,evidence=self.evidence)
         except BaseException as exc:self.failure('process publication',exc)

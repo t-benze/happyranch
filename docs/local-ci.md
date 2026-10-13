@@ -1268,8 +1268,8 @@ min(remaining call budget,500ms); outer supervision gets at most250ms of that
 same slice, with no new cleanup60-second allowance. TERM grace uses at most half
 the remaining cleanup time, then KILL and the real direct wait precede remaining
 child settlement. All three terminal drains use the same remaining deadline;
-waits do not add a minimum10ms after it expires. The selected19 diagnostic trials
-have a nominal9.5s ceiling and16 outer trials8s, including their assertions;
+waits do not add a minimum10ms after it expires. The selected23 diagnostic trials
+have a nominal11.5s ceiling and16 outer trials8s, including their assertions;
 these are upper slices, not independent grants. Retained worker waits/pipe gates,
 terminal checks, allocator work and the original product actions share the
 remaining call budget. Expiry is a failed assertion/incomplete receipt, never a
@@ -1293,9 +1293,9 @@ There is no second selection, new product seam or extra test unit.
 | --- | --- | --- |
 | R14.admission | `assert_finding_admission` | Negative harness admission after a valid synthetic diagnostic sink; retained first error/stage, absent child/wait, incomplete and propagated nonzero. |
 | R14.Popen | `assert_finding_popen` | Complete local subprocess dependencies reach intended provider and nested callback spawn refusal; absent child/PID/wait, first error and no acquired-child signal. |
-| R14.selector | `assert_finding_selector` | Both constructor and registration failures after real owned Popen; actual consuming wait, independent acquired-stream/selector closes, incomplete and first error. |
+| R14.selector | `assert_finding_selector` | Trial reserves half its existing slice for TERM/KILL and real waits; every acquired child/stream/selector/pipe has an independent fallback even on assertion/storage failure. Both constructor and registration failures after real owned Popen; actual consuming wait, independent acquired-stream/selector closes, incomplete and first error. |
 | R15.raw | `assert_finding_raw` | Real subprocess writes invalid UTF8 and a split multibyte sequence. A pipe handshake holds the second write until the first actual retained read checkpoint. Reconstruct base64 bytes and compare exact retained/observed lengths and SHA256, separately from replacement preview. |
-| R14/R15.capture | `assert_finding_capture` | Positively proved short-lived-child exit/owned reparent, unknown/UID/start/foreign-parent refusal and missing required parent wait; raw overflow; combined primary/close/publication failures; outer supervisor spawn/discovery/FIFO/source/selector/pidfd/stream/publication failures; byte/entry allocation, independent append and snapshot producers, lock timeout/caught signal/uncatchable death; queued stdout/final phase/JUnit and partial-frame refusal. |
+| R14/R15.capture | `assert_finding_capture` | Expired capture and unavailable wait retain incomplete native diagnostics exported before assertions; repeated zombie polls remain bounded, later genuine adoption/source parent wait still records transitions, and actual event saturation retains failure while real cleanup continues. Positively proved short-lived-child exit/owned reparent, unknown/UID/start/foreign-parent refusal and missing required parent wait; raw overflow; combined primary/close/publication failures; outer supervisor spawn/discovery/FIFO/source/selector/pidfd/stream/publication failures; byte/entry allocation, independent append and snapshot producers, lock timeout/caught signal/uncatchable death; queued stdout/final phase/JUnit and partial-frame refusal. |
 
 `harness_source_gate` binds the actual current harness function object to the
 admitted source-file SHA256 and an executable disassembly line. Its finite
@@ -1405,3 +1405,61 @@ is established. Its release was consumed; these partial facts do not accept the
 repaired head. Automatic startup after A/PENDING/delegated preACK remains
 MISSING, before-body remains unobserved, and SAME-R2 supplement is not restart
 proof. New behavior remains UNEXECUTED/UNRELEASED; merged:NO, deployed:NO.
+
+
+R22 reserves half of each existing at-most500ms diagnostic slice for cleanup.
+Capture/select and the normal wait use the work half; the first cleanup wait
+reserves half of the remaining cleanup time for KILL and its real wait. An
+unconditional exact-child fallback independently attempts TERM, native Popen
+wait, KILL when still unavailable, native wait, streams, selectors and sync
+pipes before assertions. Every attempted wait records its actual native class,
+text, timeout and return value. A missing diagnostic wait stays null/incomplete,
+even if a separate fallback later consumes the actual child; no row is rewritten
+to invent success. Before assertion/propagation the existing counted writer
+exports one bounded per-subtrial identity/stage/native exception, last attempted
+raw diagnostic, stored diagnostic and cleanup facts. Assertion failure updates
+that same counted file and preserves the first failure if later export fails.
+Storage refusal remains a failure; it grants no alternate uncounted success.
+The existing capture row adds provider/callback expired-work and unavailable-
+wait trials, with a real source gate verifying export precedes assertions.
+
+R23 keeps exit indication monotonic and separate from consuming wait/reap.
+Repeated same-identity nonadopted zombie and discovery absence observations
+record one finite transition; they still check real pidfd/UID/start/owner edges,
+and keep observing unresolved children for actual adoption or parent waits.
+Unknown/foreign/reused identity refuses. The event admission count is cumulative
+across case retirement, with the unchanged4096 limit. Saturation records one
+actual failure and preserves the admitted prefix and earliest native cause;
+normal monitor refuses further capture. Optional event/recorder failure cannot
+interrupt an acquired pidfd transfer, waitid consuming wait, signal or later
+cleanup. Other native failures remain independent labeled obligations. Cleanup
+also observes acquired identities if direct Popen acquisition never returned.
+Three bounded synthetic harness trials select128 repeated real zombie polls,
+then a genuine original-parent Popen.wait journal or actual subreaper adoption,
+and actual recorder saturation at4096 distinct admitted rows. Assertions require
+bounded transition counts, absent required-role closure before wait, later real
+wait/reparent/reap evidence, saturated closure false and continued actual wait.
+All three use the existing call deadline and at most500ms each. Their1.5s maxima,
+plus seven binding trials3.5s,23 diagnostic trials11.5s and16 outer trials8s,
+are24.5s of possible slices under the SAME20s call budget. This is not measured
+fit: trials must finish earlier and leave time for original actions/I/O; expiry
+fails, with no deadline renewal. New behavior/timing/capacity remain UNEXECUTED.
+
+Fourth run38440989363/attempt1 at9fe0a9bf FAILED. JOB4536 completed exit1/61870ms;
+watch1 and view/identity/artifact0. Source admission/frozen Ubuntu24/Python3.14.8
+setup succeeded and61 collected. C01/direct setup/teardown passed but call
+failed at fixture1576: actual child2363 had parent_wait_returncode null; owned
+DAEMON closure true does not close that supplemental child. C01/then-only all
+three phases passed (call9.32566359s), closure and port closed true. C02/plain-
+first all phases passed (call10.088775247s), closure and port closed true.
+C02/plain-last setup started without finish;57 other base nodes did not start.
+All123 connected observations remain absent. R14.admission/Popen/selector and
+R15.raw have actual passed historical receipts; R14/R15.capture is incomplete.
+The final result command_exit143/exit143/complete=false/closure=false first
+records ValueError:process evidence cap, then later drain/JUnit failures.
+4096 process rows include1980 exit_indication and1958 nonadopted_zombie,1956
+for the same2363. The exact diagnostic subtrial/native wait cause was not
+exported and remains UNKNOWN. Four releases are consumed; no rerun is released.
+Partial historical positives are not overall C1-C8, QA or test-authoring PASS.
+Startup afterA/PENDING and delegated preACK remain MISSING; before-body
+UNOBSERVED; SAME-R2 is not automatic restart proof. Merged:NO; deployed:NO.
