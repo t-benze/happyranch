@@ -8,6 +8,8 @@ from __future__ import annotations
 import argparse
 import ast
 import ctypes
+from contextlib import contextmanager
+import fcntl
 import hashlib
 import json
 import marshal
@@ -53,6 +55,150 @@ CAPS = {"command_log": 1048576, "junit": 1048576, "phase": 4096,
         "snapshot":65536, "snapshots":8388608, "logs":16777216, "daemon_log":1048576,
         "processes": 256, "process_rows": 4096, "aggregate": 33554432}
 
+# Missing immutable terminal files retain headroom while other writers run.
+# The empty lock inode is permanent, counted, and never unlinked/recreated.
+FINAL_CAPS = {'processes.json':2097152, 'phases.json':2097152,
+              'result.json':1048576, 'observations.json':1048576, 'cases.xml':1048576}
+EVIDENCE_LOCK = '.allocation.lock'
+
+
+def evidence_cleanup(actions):
+    original=sys.exception(); failure=None
+    for action in actions:
+        try:action()
+        except BaseException as exc:
+            if original is not None:original.add_note('evidence cleanup unavailable: '+type(exc).__name__)
+            elif failure is None:failure=exc
+    if failure is not None:raise failure
+
+
+@contextmanager
+def evidence_allocation(root: Path, identity=None):
+    info=root.lstat()
+    if (root.resolve(strict=True)!=root or not stat.S_ISDIR(info.st_mode)
+            or info.st_uid!=os.getuid() or stat.S_IMODE(info.st_mode)!=0o700
+            or identity is not None and (info.st_dev,info.st_ino)!=identity):
+        raise ValueError('evidence directory changed/unowned')
+    parent=os.open(root,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+    lock=None
+    try:
+        opened=os.fstat(parent)
+        if (opened.st_dev,opened.st_ino)!=(info.st_dev,info.st_ino):
+            raise ValueError('evidence directory changed')
+        lock=os.open(EVIDENCE_LOCK,os.O_RDWR|os.O_NOFOLLOW,dir_fd=parent)
+        held=os.fstat(lock)
+        if (not stat.S_ISREG(held.st_mode) or held.st_uid!=os.getuid()
+                or stat.S_IMODE(held.st_mode)!=0o600 or held.st_nlink!=1 or held.st_size!=0):
+            raise ValueError('evidence lock unowned')
+        deadline=time.monotonic()+.25
+        while True:
+            try:
+                fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic()>=deadline:raise TimeoutError('bounded evidence allocation expired')
+                time.sleep(.005)
+        current=os.stat(EVIDENCE_LOCK,dir_fd=parent,follow_symlinks=False)
+        if (current.st_dev,current.st_ino)!=(held.st_dev,held.st_ino):
+            raise ValueError('evidence lock changed')
+        yield
+    finally:
+        # Closing releases flock even on interruption; no stale PID lock/retry.
+        evidence_cleanup([lambda fd=fd:os.close(fd) for fd in (lock,parent) if fd is not None])
+
+
+def evidence_usage(root: Path):
+    total=0; entries=0; files={}
+    for path in root.rglob('*'):
+        entries+=1
+        if entries>4096:raise ValueError('external evidence file inventory cap')
+        info=path.lstat()
+        directory=stat.S_ISDIR(info.st_mode)
+        if (info.st_uid!=os.getuid() or stat.S_IMODE(info.st_mode)!=(0o700 if directory else 0o600)
+                or not (directory or stat.S_ISREG(info.st_mode))
+                or not directory and info.st_nlink!=1):
+            raise ValueError('external evidence entry unowned/unsafe')
+        if not directory:
+            total+=info.st_size
+            files[path.relative_to(root).as_posix()]=info.st_size
+        if total>CAPS['aggregate']:raise ValueError('aggregate evidence cap')
+    return total,entries,files
+
+
+def evidence_capacity(root: Path, path: Path, size: int, entries: int):
+    total,count,files=evidence_usage(root)
+    # Reserve only absent final targets, excluding the one being published now.
+    missing={name:cap for name,cap in FINAL_CAPS.items() if name not in files and root/name!=path}
+    if total+size+sum(missing.values())>CAPS['aggregate']:
+        raise ValueError('aggregate evidence allocation refused')
+    if count+entries+len(missing)>4096:
+        raise ValueError('external evidence entry allocation refused')
+
+
+def evidence_publish(path: Path, data: bytes, cap: int, root: Path, *, replace=False, identity=None):
+    if len(data)>cap or path.name==EVIDENCE_LOCK or path.name.endswith('.tmp'):
+        raise ValueError('evidence publication cap/name')
+    if path.parent!=root and (path.parent.parent!=root or not re.fullmatch(r'[0-9a-f]{20}',path.parent.name)):
+        raise ValueError('evidence publication domain')
+    if path.parent==root and path.name in FINAL_CAPS and (replace or cap>FINAL_CAPS[path.name]):
+        raise ValueError('immutable final evidence cap')
+    with evidence_allocation(root,identity):
+        new_directory=path.parent!=root and not path.parent.exists()
+        # Count the old target plus the full temporary, and a new directory.
+        evidence_capacity(root,path,len(data),1+int(new_directory))
+        if new_directory:path.parent.mkdir(mode=0o700)
+        parent_info=path.parent.lstat()
+        parent=os.open(path.parent,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+        owned=None;fd=None;temporary=path.name+'.tmp'
+        try:
+            opened=os.fstat(parent)
+            if (opened.st_dev,opened.st_ino)!=(parent_info.st_dev,parent_info.st_ino):
+                raise ValueError('evidence parent changed')
+            if path.parent.resolve(strict=True)!=path.parent:
+                raise ValueError('evidence parent changed')
+            try:previous=os.stat(path.name,dir_fd=parent,follow_symlinks=False)
+            except FileNotFoundError:previous=None
+            if previous is not None and not replace:raise FileExistsError(path)
+            fd=os.open(temporary,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600,dir_fd=parent)
+            owned=os.fstat(fd)
+            if os.write(fd,data)!=len(data):raise ValueError('short evidence publication')
+            os.fsync(fd)
+            os.replace(temporary,path.name,src_dir_fd=parent,dst_dir_fd=parent)
+            owned=None
+        finally:
+            def remove_temporary():
+                if owned is None:return
+                current=os.stat(temporary,dir_fd=parent,follow_symlinks=False)
+                if (current.st_dev,current.st_ino)!=(owned.st_dev,owned.st_ino):
+                    raise ValueError('evidence temporary changed')
+                os.unlink(temporary,dir_fd=parent)
+            evidence_cleanup(([lambda:os.close(fd)] if fd is not None else [])
+                             +[remove_temporary,lambda:os.close(parent)])
+
+
+def evidence_append(path: Path, data: bytes, cap: int, root: Path, *, exclusive=False, identity=None):
+    if path.parent!=root or path.name==EVIDENCE_LOCK or path.name in FINAL_CAPS or path.name.endswith('.tmp'):
+        raise ValueError('evidence append domain')
+    with evidence_allocation(root):
+        try:before=path.lstat()
+        except FileNotFoundError:before=None
+        if exclusive and before is not None:raise FileExistsError(path)
+        if identity is not None and (before is None or (before.st_dev,before.st_ino)!=identity):
+            raise ValueError('evidence stream identity changed')
+        size=0 if before is None else before.st_size
+        if size+len(data)>cap:raise ValueError('evidence stream cap')
+        evidence_capacity(root,path,len(data),int(before is None))
+        flags=os.O_WRONLY|os.O_APPEND|os.O_NOFOLLOW
+        fd=os.open(path,flags|(os.O_CREAT|os.O_EXCL if before is None else 0),0o600)
+        try:
+            opened=os.fstat(fd)
+            if before is not None and (opened.st_dev,opened.st_ino)!=(before.st_dev,before.st_ino):
+                raise ValueError('evidence stream changed')
+            if os.write(fd,data)!=len(data):raise ValueError('short evidence stream write')
+            return opened.st_dev,opened.st_ino
+        finally:
+            evidence_cleanup([lambda:os.close(fd)])
+
 
 def sha(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
@@ -96,10 +242,13 @@ def admit(task_id: str, expected_sha: str, *, interpreter: bool = True) -> dict:
             "run": os.environ.get("GITHUB_RUN_ID"), "attempt": os.environ.get("GITHUB_RUN_ATTEMPT")}
 
 
-def write_receipt(path: Path, value, cap: int = 1048576):
+def write_receipt(path: Path, value, cap: int = 1048576, *, evidence: Path | None = None):
     encoded = (json.dumps(value, sort_keys=True) + "\n").encode()
     if len(encoded) > cap:
         raise ValueError("receipt cap exceeded")
+    if evidence is not None:
+        evidence_publish(path,encoded,cap,evidence)
+        return
     with path.open("xb") as handle:
         os.chmod(path, 0o600)
         handle.write(encoded)
@@ -526,28 +675,22 @@ class OwnedTree:
             dest=self.evidence/('daemon-'+hashlib.sha256(endpoint['node'].encode()).hexdigest()[:20]
                 +'-'+hashlib.sha256(str(path).encode()).hexdigest()[:12]+'.log')
             # Our fixed owned checkpoint can be replaced; closure/history cannot.
-            temporary=dest.with_suffix('.log.tmp')
-            with temporary.open('xb') as handle:
-                os.chmod(temporary,0o600);handle.write(data[:CAPS['daemon_log']]);handle.flush();os.fsync(handle.fileno())
-            os.replace(temporary,dest)
+            evidence_publish(dest,data[:CAPS['daemon_log']],CAPS['daemon_log'],self.evidence,replace=True)
             if overflow:raise ValueError('daemon capture overflow; bounded prefix retained')
 
     def monitor(self):
         self.wait_receipts()
-        # Refuse oversized external evidence while writers still run.
-        files=list(self.evidence.rglob('*'))
-        if len(files)>4096:raise ValueError('external evidence file inventory cap')
-        total=0
-        for path in files:
-            info=path.lstat()
-            if stat.S_ISLNK(info.st_mode):raise ValueError('external evidence symlink refused')
-            if stat.S_ISREG(info.st_mode):
-                total+=info.st_size
-                cap=CAPS['junit'] if path.name=='cases.xml' else CAPS['command_log'] if path.name=='pytest.log' else CAPS['metadata']
-                if info.st_size>cap:raise ValueError('external evidence cap exceeded: '+path.name)
-        if total>CAPS['aggregate']:raise ValueError('aggregate evidence cap')
-        log_total=sum(path.stat().st_size for path in files if path.is_file() and path.suffix=='.log')
-        if log_total>CAPS['logs']:raise ValueError('aggregate required log cap')
+        # All mutation and this snapshot share allocation; never inspect an
+        # active temporary as if it were an interrupted publication.
+        with evidence_allocation(self.evidence):
+            total,entries,files=evidence_usage(self.evidence)
+            if any(name.endswith('.tmp') for name in files):
+                raise ValueError('interrupted evidence publication remains')
+            for name,size in files.items():
+                cap=FINAL_CAPS.get(name,CAPS['command_log'] if name=='pytest.log' else CAPS['metadata'])
+                if size>cap:raise ValueError('external evidence cap exceeded: '+name)
+            if sum(size for name,size in files.items() if name.endswith('.log'))>CAPS['logs']:
+                raise ValueError('aggregate required log cap')
         for endpoint in self.ports.values():
             path=Path(endpoint['log'])
             if path.exists() and path.stat().st_size>CAPS['daemon_log']:
@@ -585,7 +728,7 @@ class OwnedTree:
         except (OSError,ValueError) as exc:self.errors.append('final log capture:'+str(exc)[:256])
         clean = not self.errors and all(self.closed_identity(pid) for pid in self.identities)
         write_receipt(self.evidence / "processes.json", {"identities": {pid: {k:v for k,v in row.items() if k != "fd"}
-            for pid,row in self.identities.items()}, "events": self.events, "errors": self.errors, "closure": clean, "retired_cases": self.retired_cases}, 2097152)
+            for pid,row in self.identities.items()}, "events": self.events, "errors": self.errors, "closure": clean, "retired_cases": self.retired_cases}, 2097152,evidence=self.evidence)
         for row in self.identities.values():
             os.close(row["fd"])
         return clean
@@ -601,6 +744,12 @@ def supervise(binding: dict, scratch: Path) -> int:
     scratch.mkdir(mode=0o700)
     evidence = scratch.parent / "evidence"
     evidence.mkdir(mode=0o700)
+    lock_fd=os.open(evidence/EVIDENCE_LOCK,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
+    os.close(lock_fd)
+    junit_pipe=scratch.parent/'junit.fifo'
+    os.mkfifo(junit_pipe,0o600)
+    junit_fd=os.open(junit_pipe,os.O_RDWR|os.O_NONBLOCK)
+    junit=bytearray()
     phase_pipe = scratch.parent / "phases.fifo"
     os.mkfifo(phase_pipe, 0o600)
     phase_fd = os.open(phase_pipe, os.O_RDWR | os.O_NONBLOCK)
@@ -611,12 +760,12 @@ def supervise(binding: dict, scratch: Path) -> int:
                   "phase_limits": PHASE_LIMITS, "caps": CAPS}
     descriptor_path = scratch.parent / "descriptor.json"
     write_receipt(descriptor_path, descriptor, 16384)
-    write_receipt(evidence / "source.json", binding, 262144)
+    write_receipt(evidence / "source.json", binding, 262144,evidence=evidence)
     source, python = Path(binding["source"]), binding["python"]
     argv = [python, "tests/helpers/integration_parent.py", "--", "pytest", "-p", "tests.helpers.attachment_feedback_fixture",
             "-m", "integration", *NODES, f"--attachment-qa-descriptor={descriptor_path}",
             "-v", "--tb=short", "--capture=no", "--show-capture=no", f"--basetemp={scratch/'pytest'}",
-            f"--junitxml={evidence/'cases.xml'}"]
+            f"--junitxml={junit_pipe}"]
     tree = OwnedTree(evidence)
     tree.head=binding["head"]
     env = dict(os.environ, TMPDIR=str(scratch), TMP=str(scratch), TEMP=str(scratch),
@@ -627,8 +776,9 @@ def supervise(binding: dict, scratch: Path) -> int:
     selector = selectors.DefaultSelector()
     selector.register(child.stdout, selectors.EVENT_READ, "output")
     selector.register(phase_fd, selectors.EVENT_READ, "phase")
+    selector.register(junit_fd, selectors.EVENT_READ, "junit")
     next_capture=start
-    phase_deadline, buffer, events, counts = start+60, b"", [], {"output":0, "phase":0}
+    phase_deadline, buffer, events, counts = start+60, b"", [], {"output":0, "phase":0, "junit":0}
     error = None
     prior_handlers={sig:signal.getsignal(sig) for sig in (signal.SIGINT,signal.SIGTERM)}
     def interrupted(signum,frame):
@@ -636,78 +786,94 @@ def supervise(binding: dict, scratch: Path) -> int:
     for sig in prior_handlers:
         signal.signal(sig,interrupted)
     try:
-        with (evidence / "pytest.log").open("xb") as log:
-            while child.poll() is None:
-                tree.discover()
-                tree.observe_exits(child.pid)
-                if time.monotonic()>=next_capture:
-                    tree.capture_logs();next_capture=time.monotonic()+.2
-                tree.monitor()
-                if time.monotonic() > min(start+1200, phase_deadline):
-                    raise TimeoutError("aggregate or independent phase watchdog expired")
-                for key, _ in selector.select(0.02):
-                    chunk = os.read(key.fileobj if type(key.fileobj) is int else key.fileobj.fileno(), 8192)
-                    if not chunk:
-                        selector.unregister(key.fileobj)
-                        continue
-                    counts[key.data] += len(chunk)
-                    cap = CAPS["command_log"] if key.data == "output" else CAPS["phases"]
-                    if counts[key.data] > cap:
-                        raise ValueError("external output/phase capture cap")
-                    if key.data == "output":
-                        log.write(chunk); log.flush()
-                    else:
-                        buffer += chunk
-                        if len(buffer) > 12288:
-                            raise ValueError("phase framing cap")
-                        while b"\n" in buffer:
-                            raw, buffer = buffer.split(b"\n",1)
-                            if len(raw) > 4096:
-                                raise ValueError("phase row cap")
-                            row=json.loads(raw)
-                            if row.get("nonce") != descriptor["nonce"] or row.get("node") not in NODES:
-                                raise ValueError("phase source/node/nonce mismatch")
-                            if len(events)>=4096:raise ValueError("phase row count cap")
-                            events.append(row)
-                            if row.get("event") == "start":
-                                phase_deadline = time.monotonic()+PHASE_LIMITS[row["phase"]]
-                            elif row.get("event") == "finish":
-                                phase_deadline = time.monotonic()+5
-                            elif row.get('event')=='daemon-log':
-                                tree.register_log(row['node'],row['daemon_log'])
-                                tree.capture_logs()
-                            elif row.get('event')=='endpoint':
-                                tree.bind_endpoint(row['daemon_pid'],row['port'],row['node'],row['daemon_log'],row['wait_log'])
-                            elif row.get('event') in ('interrupt','case-close'):
-                                pid=row['daemon_pid'];port=row['port'];node=row['node']
-                                interruption=row['event']=='interrupt'
-                                tree.capture_logs()
-                                tree.role_receipts(Path(row['roles']),node)
-                                closure=tree.close_case(pid,port,node,child.pid,time.monotonic()+4,interrupt=interruption)
-                                closure_path=Path(row['closure'])
-                                stem='case-close-'+hashlib.sha256(node.encode()).hexdigest()[:20]
-                                expected_names={f'closure-{pid}.json'} if interruption else {stem+'.json',stem+'-batch-1.json',stem+'-batch-2.json'}
-                                if closure_path.parent!=evidence or closure_path.name not in expected_names:
-                                    raise ValueError('closure receipt binding mismatch')
-                                write_receipt(closure_path,closure,262144)
-                                tree.capture_logs()
-                                if not closure['closed'] or not closure['port_closed']:
-                                    raise ValueError('owned case tree/port closure incomplete')
-                                if not interruption:
-                                    endpoint=tree.ports.pop(pid)
-                                    tree.logs.pop(endpoint['log'])
-                                    tree.retire_case(closure,closure_path)
-                            else:
-                                raise ValueError("unknown phase event")
-            child.wait(timeout=1)
+        log_identity=evidence_append(evidence/'pytest.log',b'',CAPS['command_log'],evidence,exclusive=True)
+        while child.poll() is None:
+            tree.discover()
+            tree.observe_exits(child.pid)
+            if time.monotonic()>=next_capture:
+                tree.capture_logs();next_capture=time.monotonic()+.2
+            tree.monitor()
+            if time.monotonic() > min(start+1200, phase_deadline):
+                raise TimeoutError("aggregate or independent phase watchdog expired")
+            for key, _ in selector.select(0.02):
+                chunk = os.read(key.fileobj if type(key.fileobj) is int else key.fileobj.fileno(), 8192)
+                if not chunk:
+                    selector.unregister(key.fileobj)
+                    continue
+                counts[key.data] += len(chunk)
+                cap = {"output":CAPS["command_log"],"phase":CAPS["phases"],"junit":CAPS["junit"]}[key.data]
+                if key.data=="junit":
+                    junit.extend(chunk[:max(0,cap-len(junit))])
+                if counts[key.data] > cap:
+                    raise ValueError("external output/phase capture cap")
+                if key.data == "output":
+                    evidence_append(evidence/"pytest.log",chunk,CAPS["command_log"],evidence,identity=log_identity)
+                elif key.data=="phase":
+                    buffer += chunk
+                    if len(buffer) > 12288:
+                        raise ValueError("phase framing cap")
+                    while b"\n" in buffer:
+                        raw, buffer = buffer.split(b"\n",1)
+                        if len(raw) > 4096:
+                            raise ValueError("phase row cap")
+                        row=json.loads(raw)
+                        if row.get("nonce") != descriptor["nonce"] or row.get("node") not in NODES:
+                            raise ValueError("phase source/node/nonce mismatch")
+                        if len(events)>=4096:raise ValueError("phase row count cap")
+                        events.append(row)
+                        if row.get("event") == "start":
+                            phase_deadline = time.monotonic()+PHASE_LIMITS[row["phase"]]
+                        elif row.get("event") == "finish":
+                            phase_deadline = time.monotonic()+5
+                        elif row.get('event')=='daemon-log':
+                            tree.register_log(row['node'],row['daemon_log'])
+                            tree.capture_logs()
+                        elif row.get('event')=='endpoint':
+                            tree.bind_endpoint(row['daemon_pid'],row['port'],row['node'],row['daemon_log'],row['wait_log'])
+                        elif row.get('event') in ('interrupt','case-close'):
+                            pid=row['daemon_pid'];port=row['port'];node=row['node']
+                            interruption=row['event']=='interrupt'
+                            tree.capture_logs()
+                            tree.role_receipts(Path(row['roles']),node)
+                            closure=tree.close_case(pid,port,node,child.pid,time.monotonic()+4,interrupt=interruption)
+                            closure_path=Path(row['closure'])
+                            stem='case-close-'+hashlib.sha256(node.encode()).hexdigest()[:20]
+                            expected_names={f'closure-{pid}.json'} if interruption else {stem+'.json',stem+'-batch-1.json',stem+'-batch-2.json'}
+                            if closure_path.parent!=evidence or closure_path.name not in expected_names:
+                                raise ValueError('closure receipt binding mismatch')
+                            write_receipt(closure_path,closure,262144,evidence=evidence)
+                            tree.capture_logs()
+                            if not closure['closed'] or not closure['port_closed']:
+                                raise ValueError('owned case tree/port closure incomplete')
+                            if not interruption:
+                                endpoint=tree.ports.pop(pid)
+                                tree.logs.pop(endpoint['log'])
+                                tree.retire_case(closure,closure_path)
+                        else:
+                            raise ValueError("unknown phase event")
+        child.wait(timeout=1)
     except (OSError, ValueError, TimeoutError, KeyError, subprocess.SubprocessError) as exc:
         error = type(exc).__name__+":"+str(exc)[:1024]
     finally:
         selector.close(); os.close(phase_fd)
         for sig in prior_handlers:
             signal.signal(sig,prior_handlers[sig])
-        clean = tree.cleanup(child, min(start+1260, time.monotonic()+60))
-    write_receipt(evidence / "phases.json", {"events": events, "capture":counts, "error":error}, 2097152)
+        try:
+            clean = tree.cleanup(child, min(start+1260, time.monotonic()+60))
+            # Drain bounded FIFO residue after the real owned wait attempt.
+            # Neither EOF nor disappearance can substitute for a successful wait.
+            while True:
+                try:chunk=os.read(junit_fd,8192)
+                except BlockingIOError:break
+                if not chunk:break
+                counts['junit']+=len(chunk)
+                junit.extend(chunk[:max(0,CAPS['junit']-len(junit))])
+                if counts['junit']>CAPS['junit']:
+                    if error is None:error='JUnit capture overflow; bounded prefix retained'
+                    break
+        finally:evidence_cleanup([lambda:os.close(junit_fd)])
+    if junit:evidence_publish(evidence/'cases.xml',bytes(junit),CAPS['junit'],evidence)
+    write_receipt(evidence / "phases.json", {"events": events, "capture":counts, "error":error}, 2097152,evidence=evidence)
     # Results alone cannot satisfy missing subobservations, closure or caps.
     import xml.etree.ElementTree as ET
     complete=False
@@ -725,10 +891,15 @@ def supervise(binding: dict, scratch: Path) -> int:
                   and all(v.get("outcome")=="passed" for v in observations.values()))
     except (OSError, ValueError, ET.ParseError):
         complete=False
-    total=sum(p.stat().st_size for p in evidence.rglob("*") if p.is_file())
+    with evidence_allocation(evidence):
+        total,entries,files=evidence_usage(evidence)
+        if any(name.endswith('.tmp') for name in files):
+            complete=False
+            if error is None:error='interrupted evidence publication remains'
+    complete=complete and clean and error is None
     exit_code=child.returncode if child.returncode else (0 if complete and clean and error is None and total<=CAPS["aggregate"] else 1)
     write_receipt(evidence/"result.json", {"exit":exit_code,"command_exit":child.returncode,"complete":complete,
-        "closure":clean,"error":error,"manifest":MANIFEST_SHA256,"bytes":total})
+        "closure":clean,"error":error,"manifest":MANIFEST_SHA256,"bytes":total},evidence=evidence)
     if clean:
         # Exact scratch only; source/external evidence are retained.
         shutil.rmtree(scratch)

@@ -1137,8 +1137,31 @@ provider/callback stdout/stderr use reversible base64, retained raw lengths,
 observed raw lengths and SHA256 digests; a separate short replacement-decoded
 preview is not raw evidence. Concatenated raw bytes preserve invalid UTF8 and
 multibyte sequences split across reads. Encoding expansion, previews, metadata
-and temporary checkpoints count within the existing aggregate/file/inode limits;
-overflow retains only a bounded raw prefix and marks evidence incomplete. The fixture's provider entry uses existing
+and temporary checkpoints count within the unchanged 33554432-byte/4096-entry
+external evidence limits. Every evidence publisher and growing journal takes the
+same owned, no-follow, permanent empty `.allocation.lock` inode: acquisition
+uses nonblocking flock with a 250ms deadline, and process interruption releases
+the kernel lock without a stale-owner wait. Allocation scans and publication
+remain serialized through the full old-target/temporary coexistence; new node
+directories and the lock entry count too. Missing `processes.json`, `phases.json`,
+`result.json`, `observations.json` and `cases.xml` reserve 7340032 bytes/five
+entries initially, consumed only by their immutable bounded publication.
+Provider/callback diagnostics, daemon checkpoints, node/role/closure receipts,
+interpreter readbacks and consuming-wait journals share allocation. Pytest output
+is admitted before each append. The independent JUnit writer writes to an owned
+scratch FIFO, captured as at most 1048576 raw bytes and published as `cases.xml`
+through the same allocator; it cannot grow an unreserved evidence file. Scratch
+launch/command/body/plan/upload controls and observer/phase/JUnit FIFOs are not
+published external evidence. The existing daemon scratch-log cap monitor remains
+separate from serialized external snapshots. Catchable publication failures
+remove only the owned temporary inode; leftovers from uncatchable death remain
+counted and refuse completeness. Short writes, lock timeout, failed storage or
+cleanup remain unavailable/incomplete/nonzero; monitors are integrity checks,
+not allocation. Ordinary filesystem I/O is not made preemptible by the flock
+acquisition deadline. Overflow retains only a bounded raw prefix and marks
+evidence incomplete. This mechanism and concurrent near-cap acceptance inputs
+are source-only, UNEXECUTED; capacity at the selected manifest remains subject
+to actual released evidence, not a guarantee that every per-file maximum fits. The fixture's provider entry uses existing
 registered stub/plan/callback guards and its real injected org/SID; it returns
 before pytest-parent/conftest imports. The actual executor injects org/SID and
 workspace cache, which cannot satisfy the stricter parent-only admission.

@@ -77,7 +77,7 @@ def _provider_admission():
 from scripts.attachment_scoped_qa import (
     CAPS, EXECUTION_OWNER, IMPLEMENTATION_REF, IMPLEMENTATION_TASK, MANIFEST_SHA256, NODES,
     PARAMETERS, PHASE_LIMITS, ROOT_TASK, SELECTION, SOURCE_FILES, SUBOBSERVATIONS,
-    closed_read, sha, write_receipt,
+    closed_read, sha, write_receipt, evidence_publish,
 )
 
 if EXECUTION_OWNER is None:raise RuntimeError('THR304 missing manager execution binding; product/test imports refused')
@@ -112,58 +112,9 @@ def _provider_diagnostic(kind):
 
 
 def _diagnostic_checkpoint(target, identity, row, cap):
-    # Same file/aggregate/inventory limits include base64 expansion and metadata.
-    directory=target.parent
-    info=directory.lstat()
-    if (directory.resolve(strict=True)!=directory or not stat.S_ISDIR(info.st_mode)
-            or info.st_uid!=os.getuid() or (info.st_dev,info.st_ino)!=identity):
-        raise ValueError('diagnostic directory changed')
-    encoded=(json.dumps(row,sort_keys=True)+'\n').encode()
-    if len(encoded)>cap:raise ValueError('diagnostic receipt cap')
-    total=0;count=0
-    for path in directory.rglob('*'):
-        count+=1
-        if count+1>4096:raise ValueError('external evidence file inventory cap')
-        item=path.lstat()
-        if stat.S_ISLNK(item.st_mode):raise ValueError('external evidence symlink refused')
-        if stat.S_ISREG(item.st_mode):total+=item.st_size
-        if total+len(encoded)>CAPS['aggregate']:raise ValueError('aggregate evidence cap')
-    if total+len(encoded)>CAPS['aggregate']:raise ValueError('aggregate evidence cap')
-    parent=os.open(directory,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
-    temporary=target.name+'.tmp';owned=None
-    try:
-        opened=os.fstat(parent)
-        if (opened.st_dev,opened.st_ino)!=identity:raise ValueError('diagnostic directory changed')
-        try:previous=os.stat(target.name,dir_fd=parent,follow_symlinks=False)
-        except FileNotFoundError:previous=None
-        if previous is not None and (not stat.S_ISREG(previous.st_mode)
-                or previous.st_uid!=os.getuid() or previous.st_nlink!=1
-                or stat.S_IMODE(previous.st_mode)!=0o600):
-            raise ValueError('diagnostic target unowned')
-        fd=os.open(temporary,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600,dir_fd=parent)
-        try:
-            owned=os.fstat(fd)
-            with os.fdopen(fd,'wb',closefd=False) as handle:
-                handle.write(encoded);handle.flush();os.fsync(fd)
-        finally:
-            failed=sys.exc_info()[0] is not None
-            try:os.close(fd)
-            except BaseException:
-                if not failed:raise
-        os.replace(temporary,target.name,src_dir_fd=parent,dst_dir_fd=parent)
-        owned=None
-    finally:
-        failed=sys.exc_info()[0] is not None
-        try:
-            if owned is not None:
-                current=os.stat(temporary,dir_fd=parent,follow_symlinks=False)
-                if (current.st_dev,current.st_ino)==(owned.st_dev,owned.st_ino):os.unlink(temporary,dir_fd=parent)
-        except BaseException:
-            if not failed:raise
-        finally:
-            try:os.close(parent)
-            except BaseException:
-                if not failed:raise
+    # Every external writer shares allocation, including old+temporary bytes.
+    evidence_publish(target,(json.dumps(row,sort_keys=True)+'\n').encode(),
+                     cap,target.parent,replace=True,identity=identity)
 
 
 def _raw_output(chunks, lengths):
@@ -489,7 +440,8 @@ def pytest_sessionfinish(session, exitstatus):
     missing = set(SUBOBSERVATIONS)-set(_OBSERVATIONS)
     for subid in missing:
         _OBSERVATIONS[subid] = {"outcome":"missing", "reason":"no complete assertion receipt"}
-    write_receipt(Path(_DESCRIPTOR["evidence"])/"observations.json",_OBSERVATIONS)
+    write_receipt(Path(_DESCRIPTOR["evidence"])/"observations.json",_OBSERVATIONS,
+                  evidence=Path(_DESCRIPTOR["evidence"]))
     if missing or any(v["outcome"] != "passed" for v in _OBSERVATIONS.values()):
         session.exitstatus = 1
 
@@ -1375,8 +1327,7 @@ def pytest_runtest_makereport(item,call):
 
 def retain_node_receipt(node, name, value, cap=16384):
     directory=Path(_DESCRIPTOR['evidence'])/hashlib.sha256(node.encode()).hexdigest()[:20]
-    directory.mkdir(mode=0o700,exist_ok=True)
-    write_receipt(directory/name,value,cap)
+    write_receipt(directory/name,value,cap,evidence=Path(_DESCRIPTOR["evidence"]))
 
 
 def genuine_scheduler_contender(orch,driver,task):
@@ -1450,5 +1401,6 @@ def retain_role_receipts(controls,node,suffix):
         rows.append(item)
     if len(rows)>128:raise RuntimeError('required role receipt inventory cap')
     target=Path(_DESCRIPTOR['evidence'])/('roles-'+hashlib.sha256(node.encode()).hexdigest()[:20]+'-'+suffix+'.json')
-    write_receipt(target,{'node':node,'head':_DESCRIPTOR['head'],'rows':rows},262144)
+    write_receipt(target,{'node':node,'head':_DESCRIPTOR['head'],'rows':rows},262144,
+                  evidence=Path(_DESCRIPTOR['evidence']))
     return target

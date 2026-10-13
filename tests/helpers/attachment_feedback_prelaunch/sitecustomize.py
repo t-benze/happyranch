@@ -25,10 +25,9 @@ if __name__=='sitecustomize' and 'HAPPYRANCH_ATTACHMENT_FROZEN_PYTHON' in os.env
             'sha256':frozen['python_sha256'],'argv':sys.orig_argv}
         encoded=(json.dumps(observed,sort_keys=True)+'\n').encode()
         if len(encoded)>4096:raise ValueError('interpreter readback cap')
-        fd=os.open(evidence/('python-'+str(os.getpid())+'-'+start+'.json'),os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
-        try:
-            if os.write(fd,encoded)!=len(encoded):raise ValueError('short interpreter readback')
-        finally:os.close(fd)
+        from scripts.attachment_scoped_qa import evidence_publish
+        evidence_publish(evidence/('python-'+str(os.getpid())+'-'+start+'.json'),
+                         encoded,4096,evidence)
     except Exception:
         os.write(2,b'attachment frozen pre-import venv binding unavailable\n')
         os._exit(86)
@@ -139,7 +138,8 @@ def install_observer():
     wait_path=Path(descriptor["wait_log"])
     if wait_path.parent.resolve(strict=True)!=wait_path.parent or wait_path.exists():
         raise ValueError("wait journal path refused")
-    wait_fd=os.open(wait_path,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
+    from scripts.attachment_scoped_qa import evidence_append
+    wait_identity=evidence_append(wait_path,b'',1048576,wait_path.parent,exclusive=True)
     wait_bytes=0
     armed=None
     entered=None
@@ -175,7 +175,8 @@ def install_observer():
             data=(json.dumps(row,sort_keys=True)+'\n').encode()
             with lock:
                 wait_bytes+=len(data)
-                if wait_bytes>1048576 or os.write(wait_fd,data)!=len(data):os._exit(86)
+                if wait_bytes>1048576:os._exit(86)
+                evidence_append(wait_path,data,1048576,wait_path.parent,identity=wait_identity)
             return trace
         if event!="line" or frame.f_code.co_filename!=binding["path"] or frame.f_code.co_name not in binding["codes"]:
             return trace
