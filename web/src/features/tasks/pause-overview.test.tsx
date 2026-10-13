@@ -35,8 +35,8 @@ const ROOTS = [
   root('CHILD-9', { ...projection('ROOT-PAUSED', 'in_progress'), held: true, effective_hold: true, control_state: 'paused' }, { parent_task_id: 'ROOT-PAUSED' }),
 ];
 // Distinctive rendered pause copy per locale (placeholder-free prefixes), sourced from the shipped catalogs.
-const PAUSE_COPY_KEYS = ['tasks.pause.unheld', 'tasks.pause.pausing', 'tasks.pause.paused', 'tasks.pause.unavailable',
-  'tasks.pause.inherited', 'tasks.pause.evidenceComplete', 'tasks.pause.evidenceIncomplete', 'tasks.pause.observed',
+const PAUSE_COPY_KEYS = ['tasks.pause.evidenceUnknown', 'tasks.pause.pausing', 'tasks.pause.paused', 'tasks.pause.unavailable',
+  'tasks.pause.inherited', 'tasks.pause.waitingNote', 'tasks.pause.evidenceIncomplete', 'tasks.pause.observed',
   'tasks.pause.terminalDrain', 'tasks.pause.blocker.task', 'tasks.pause.blocker.unknown'] as const;
 function pauseCopy(locale: 'en' | 'zh-CN'): string[] {
   const catalog = (locale === 'en' ? en : zhCN) as Record<string, unknown>;

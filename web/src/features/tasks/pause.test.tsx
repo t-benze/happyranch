@@ -216,3 +216,86 @@ test('P18b detail unavailable generation retains terminal drain diagnostics', as
   expect(screen.getByText('Unknown execution evidence')).toBeInTheDocument();
   expect(screen.queryByRole('button', { name: 'Resume' })).toBeNull();
 });
+
+// THR-292 seq77 task-detail header: compact Pause in the shared action row, hold indicator, collapsed drain disclosure.
+const blocker = (kind: TaskPauseProjection['blockers'][number]['kind'], task_id: string, job_id: string | null = null) => ({
+  kind, task_id, job_id, owner_kind: 'raw-owner', reason: 'raw_reason', observed_at: '2026-10-11T00:00:00Z',
+});
+const headerRow = (region: HTMLElement) => region.parentElement as HTMLElement;
+
+test('seq77 normal root: compact Pause shares the ordinary action row with Revisit/Cancel/audit and adds no hold clutter', async () => {
+  mountDetail(record({ block_kind: null }));
+  const region = await controls();
+  const pause = await screen.findByRole('button', { name: 'Pause' });
+  const row = headerRow(region);
+  for (const name of ['Revisit', 'Cancel']) expect(row.contains(screen.getByRole('button', { name }))).toBe(true);
+  expect(row.querySelector('a[href="/orgs/alpha/audit?task_id=ROOT-1"]')).not.toBeNull();
+  expect(region.contains(pause)).toBe(true);
+  expect(row.textContent).not.toMatch(/Not held|Paused|Drain evidence|Observed|still running|Waiting for current work/);
+  expect(region.textContent).toBe('Pause');
+  expect(row.querySelector('details')).toBeNull();
+});
+
+test.each(['en', 'zh-CN'] as const)('seq77 pausing root: amber waiting indicator, secondary Resume, collapsed disclosure with real task/job links: %s', async locale => {
+  mountDetail(record({ pause: projection({ held: true, effective_hold: true, control_state: 'pausing', evidence_complete: true,
+    blockers: [blocker('job', 'ROOT-1', 'JOB-9'), blocker('task_session', 'CHILD-2')] }) }), locale);
+  const region = await controls();
+  const resume = await screen.findByRole('button', { name: locale === 'en' ? 'Resume' : '恢复' });
+  expect(resume.className).not.toMatch(/\bbg-primary\b/);
+  expect(region).toHaveTextContent(locale === 'en' ? 'Waiting for current work to finish' : '正在等待当前工作完成');
+  const details = region.querySelector('details') as HTMLDetailsElement;
+  expect(details.open).toBe(false);
+  expect(details.querySelector('summary')).toHaveTextContent(locale === 'en' ? /^2 still running$/ : /^2 项仍在运行$/);
+  fireEvent.click(details.querySelector('summary') as HTMLElement);
+  expect(details.open).toBe(true);
+  expect(details.querySelector('a[href="/orgs/alpha/jobs/JOB-9"]')).toHaveTextContent('JOB-9');
+  expect(details.querySelector('a[href="/orgs/alpha/tasks/CHILD-2"]')).toHaveTextContent('CHILD-2');
+  expect(details.querySelector('a[href="/orgs/alpha/tasks/ROOT-1"]')).toHaveTextContent('ROOT-1');
+  expect(details).toHaveTextContent(locale === 'en' ? 'Nothing new will start.' : '不会启动新工作。');
+  expect(details.textContent).not.toMatch(/started|agent-a/);
+});
+
+test('seq77 launch/result/unknown and incomplete evidence are never counted as running', async () => {
+  mountDetail(record({ pause: projection({ held: true, effective_hold: true, control_state: 'pausing', evidence_complete: false,
+    blockers: [blocker('launch', 'ROOT-1'), blocker('result_processing', 'ROOT-1'), blocker('unknown', 'ROOT-1')] }) }));
+  const region = await controls();
+  const summary = region.querySelector('details summary') as HTMLElement;
+  expect(summary).toHaveTextContent(/^3 other items to resolve · Drain evidence incomplete$/);
+  expect(summary.textContent).not.toMatch(/running/);
+  for (const label of ['Launch', 'Result processing', 'Unknown execution evidence', 'Drain evidence incomplete; unknown work may remain.'])
+    expect(region).toHaveTextContent(label);
+  expect(screen.getByRole('button', { name: 'Resume' })).toBeInTheDocument();
+});
+
+test('seq77 paused root: distinct Paused indicator, primary Resume, no disclosure when drain evidence is complete', async () => {
+  mountDetail(record({ pause: projection({ held: true, effective_hold: true, control_state: 'paused' }) }));
+  const region = await controls();
+  const resume = await screen.findByRole('button', { name: 'Resume' });
+  expect(resume.className).toMatch(/\bbg-primary\b/);
+  expect(region).toHaveTextContent('Paused');
+  expect(region).not.toHaveTextContent('Waiting for current work');
+  expect(region.querySelector('details')).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Pause' })).toBeNull();
+});
+
+test.each(['pausing', 'paused'] as const)('seq77 Resume during %s: pending protection and a refused write keeps the held state', async control_state => {
+  const bodies: unknown[] = [];
+  let release!: () => void;
+  const ready = new Promise<void>(resolve => { release = resolve; });
+  server.use(http.post('/api/v1/orgs/alpha/tasks/ROOT-1/resume', async ({ request }) => {
+    bodies.push(await request.json()); await ready;
+    return HttpResponse.json({ detail: { code: 'control_generation_conflict' } }, { status: 409 });
+  }));
+  mountDetail(record({ pause: projection({ generation: 7, held: true, effective_hold: true, control_state,
+    blockers: control_state === 'pausing' ? [blocker('job', 'ROOT-1', 'JOB-9')] : [] }) }));
+  const region = await controls();
+  const resume = await screen.findByRole('button', { name: 'Resume' });
+  fireEvent.click(resume); fireEvent.click(resume);
+  await waitFor(() => expect(bodies).toEqual([{ expected_generation: 7 }]));
+  expect(resume).toBeDisabled();
+  release();
+  await waitFor(() => expect(region.querySelector('[role="alert"]')).toHaveTextContent('Pause state changed.'));
+  expect(bodies).toEqual([{ expected_generation: 7 }]);
+  expect(region).toHaveTextContent(control_state === 'paused' ? 'Paused' : 'Waiting for current work to finish');
+  expect(screen.queryByRole('button', { name: 'Pause' })).toBeNull();
+});

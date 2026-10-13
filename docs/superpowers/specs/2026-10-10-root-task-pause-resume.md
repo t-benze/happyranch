@@ -134,7 +134,22 @@ JSON/API list projection still carries `pause`, and the read-only overview remai
 available through GET /tasks/pause-overview, its TS client and
 `happyranch tasks --pause-overview`, independently of any rendered list or panel.
 Pending roots have no Pause; descendant detail shows inherited hold and the actual
-root link. Separate control/evidence presentation preserves real lifecycle, waiting,
+root link. Founder THR-292 seq77 (TASK-11155) sets the header presentation from the
+shared "Task Header - Pause States" artifact: compact Pause in the ordinary
+Revisit/Cancel/audit row; Pausing = amber "Waiting for current work to finish"
+indicator, secondary Resume and a default-closed disclosure; Paused = separate
+Paused indicator and primary Resume; mobile order indicator/Resume, disclosure,
+actions in normal document flow. Supported-data adaptations: blocker rows render only
+kind, actual task/job links, raw owner_kind and reason (no title, agent or start
+time exists); owner_kind is not an assignee and observed_at is not a start time, so
+the single projection observed_at appears inside the disclosure. Only
+task_session/job count as "still running"; launch/result_processing/unknown are
+"other items to resolve" and incomplete evidence is stated. The artifact's
+"evidence moves to View audit" note is not adopted: pause/resume audit rows carry
+generation/held and event time, not live drain observations, so necessary
+unknown/incomplete/terminal diagnostics stay in the detail disclosure; the existing
+`/orgs/:slug/audit?task_id=` link and label are unchanged. Primary Resume uses the
+existing primary button token and fonts. Separate control/evidence presentation preserves real lifecycle, waiting,
 attention and lineage; terminal drain diagnostics remain visible. Missing or
 unsafe generation/projection is unavailable. Pending controls disable repeated
 submissions across mounted views. Actions submit the displayed generation and
