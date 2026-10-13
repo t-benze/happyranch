@@ -515,6 +515,13 @@ def native_system_path(path):
                                    for root in (Path('/usr/lib'), Path('/System/Library')))
 
 
+def native_archive_member(origin, archive, members):
+    # Apple may insert a numeric member index. It is syntax only, not an
+    # independently proven ar ordinal. Preserve and match the complete origin.
+    match = re.fullmatch(re.escape(str(archive)) + r'(?:\[[0-9]+\])?\(([^()]+)\)', origin)
+    return match[1] if match and match[1] in members else None
+
+
 def native(app, archive, link_map):
     global NATIVE_SYMBOL_STATE
     # Initial all11 rows also survive an inspection tool failure before nm/map.
@@ -528,18 +535,29 @@ def native(app, archive, link_map):
     symbols = run('nm', '-m', str(binary))
     native_evidence('native-nm.txt', symbols, raw=True)
     text = link_map.read_text()
-    objects = dict(re.findall(r'^\[\s*(\d+)\]\s+(.+)$', text, re.M))
+    objects = {}
+    for object_id, origin in re.findall(r'^\[[ \t]*([0-9]+)\][ \t]+(.+)$', text, re.M):
+        objects.setdefault(str(int(object_id)), []).append(origin)
+    ambiguous_objects = any(len(origins) != 1 for origins in objects.values())
     linked, errors = [], []
     members = run('ar', '-t', str(archive)).splitlines()
-    if len(members) != len(set(members)):
-        fail('ARCHIVE_MEMBER_AMBIGUOUS', members)
+    ambiguous_members = len(members) != len(set(members))
     for index, export in enumerate(EXPORTS):
         definitions = [line for line in symbols.splitlines() if re.search(r'\b_' + export + r'$', line)]
-        matches = re.findall(r'^\S+\s+\S+\s+\[\s*(\d+)\]\s+_' + export + r'$', text, re.M)
-        origin = [objects.get(i, '') for i in matches]
-        real = [o for o in origin if str(archive) + '(' in o and o.endswith(')')
-                and o.rsplit('(', 1)[1][:-1] in members]
-        if len(definitions) != 1 or 'weak' in definitions[0].lower() or '(undefined)' in definitions[0].lower() or ' external ' not in definitions[0] or not real:
+        symbol_rows = [line for line in text.splitlines() if re.search(r'[ \t]_' + export + r'$', line)]
+        matches = re.findall(r'^\S+[ \t]+\S+[ \t]+\[[ \t]*([0-9]+)\][ \t]+_' + export + r'$', text, re.M)
+        origin = [o for i in matches for o in objects.get(str(int(i)), [''])]
+        association_errors = []
+        if ambiguous_members:
+            association_errors.append('ARCHIVE_MEMBER_AMBIGUOUS')
+        if ambiguous_objects:
+            association_errors.append('LINK_MAP_OBJECT_AMBIGUOUS')
+        if len(symbol_rows) != 1 or len(matches) != 1 or len(origin) != 1:
+            association_errors.append('LINK_MAP_SYMBOL_ASSOCIATION_AMBIGUOUS_OR_MISSING')
+        if len(origin) == 1 and native_archive_member(origin[0], archive, members) is None:
+            association_errors.append('LINK_MAP_ARCHIVE_MEMBER_UNPROVEN')
+        real = origin if not association_errors else []
+        if len(definitions) != 1 or 'weak' in definitions[0].lower() or '(undefined)' in definitions[0].lower() or ' external ' not in definitions[0] or association_errors:
             errors.append({'export': export, 'nm': definitions, 'map_origins': origin})
         linked.append({'export': export, 'nm': definitions, 'archive_objects': real})
         # Summary stays independent of nm/raw/map/member bulk budgets. Preserve
@@ -552,10 +570,19 @@ def native(app, archive, link_map):
         observations[index] = {'export': export, 'observation': 'OBSERVED',
                                'nm': selected(definitions), 'map_origins': selected(origin),
                                'archive_objects': selected(real),
+                               'association_errors': association_errors,
                                'strong_member_backed': not any(e['export'] == export for e in errors)}
     native_evidence('native-symbols.json', NATIVE_SYMBOL_STATE)
     NATIVE_SYMBOL_STATE = None
     archive_rows = []
+    if ambiguous_members:
+        # ar -p cannot uniquely attribute duplicate names. Keep all eleven
+        # observations and the raw listing, without claiming member hashes.
+        native_evidence('native-members.json', {'archive_path': str(archive),
+                        'archive_sha256': digest(archive), 'members': [],
+                        'ar_members': members, 'member_hashes': 'UNPROVEN_DUPLICATE_NAMES',
+                        'link_map_sha256': digest(link_map), 'link_objects': objects})
+        fail('ARCHIVE_MEMBER_AMBIGUOUS', members)
     for name in members:
         data = subprocess.run(['ar', '-p', str(archive), name], capture_output=True, check=True).stdout
         archive_rows.append({'member': name, 'size': len(data), 'sha256': hashlib.sha256(data).hexdigest()})

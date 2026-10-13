@@ -76,6 +76,12 @@ including for standalone freezer builds; external caches remain untouched.
 Success requires a real release executable, all eleven strong tsnet exports
 bound to fresh archive members, native component inspection, all 29 exact
 resources, exact frozen catalog JSON, notice closure and ZIP reconciliation.
+Each export requires one final strong definition and one unambiguous map object
+whose origin exactly matches the full archive path and a unique `ar -t` member.
+Both `archive(member)` and Apple's `archive[3](member)` syntax are accepted;
+the optional numeric index does not prove an archive ordinal. Foreign paths,
+prefixes/suffixes, malformed origins and duplicate object/member/symbol
+associations refuse; all eleven observations and raw origins remain evidence.
 App and ZIP inventories share relative-path string ordering and UTF8 JSON
 encoding, including hidden members and symlink targets. Native inspection
 resolves every loader/executable-relative rpath in its component context and

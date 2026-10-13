@@ -99,6 +99,15 @@ paths must remain within the bundle, including through symlinks. Absolute paths
 must resolve within the bundle or `/usr/lib` or `/System/Library` themselves or
 their children; spelling prefixes and unknown tokens refuse. Raw paths remain
 in diagnostic evidence.
+Native strong linkage requires exactly one final strong definition and one map
+object per export. The complete origin must match the exact archive path plus
+`(member)` or `[numeric-index](member)`, with that member uniquely present in
+`ar -t`. Path metacharacters are literal; no basename, substring or prefix/suffix
+fallback is used. The optional Apple index is syntax, not proven positional
+identity. Duplicate archive names, object IDs or symbol associations refuse
+while retaining all eleven observations and original origins. Duplicate member
+names leave member hashes explicitly unproven rather than hashing ambiguous
+`ar -p` output. Unique members retain their actual size/hash provenance.
 No runtime imports, skill/guard/cleanup execution,
 provider calls or signing occurs. Example commands:
 
