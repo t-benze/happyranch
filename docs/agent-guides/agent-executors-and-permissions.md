@@ -974,6 +974,42 @@ requires the exact first line `HAPPYRANCH SYSTEM WORKSPACE CLEANUP RUN
 (manual-dispatch)`; an unmarked manual request is inventory-only, and manual
 runs contribute zero to the first-two report-only ordinal.
 
+Preparation and outer-batch evidence use the packaged `prepare_cleanup.py` and
+`observe_cleanup_batch.py` (THR-259 seq506). Compare explicit aware terminal
+instants, preserving original strings, exact inclusive604800/86400-second floors
+and both action-time rechecks; naive/missing/malformed/changed times refuse.
+Freeze cap40 with historical overlap exclusions and no refill. Useful preparation,
+honest complete empty/no-repo evidence and incomplete enumeration are distinct;
+empty leaves retain native inventory/peer/history receipts and emit no request.
+Render one supported task/session-bound request with omitted or relative cwd,
+actual remaining budget and preserved TMPDIR; submission rejection/uncertainty
+ends that attempt without an alternate or retry. The outer host observer requires
+readable self context, host-init/unstacked proc and protected/mount metadata,
+including workspace .codex/.aws without credential-content reads. Root PID1
+namespace denial is diagnostic, without a new equality veto. An incomplete
+baseline admits no batch; native batch failure and postcheck failure/drift both
+remain nonzero/incomplete with their original causes. Only the default packaged
+batch/candidate runner executes; scanner/action gates are unchanged. Local report
+or persisted result is distinct from canonical lifecycle/output publication;
+failed/unpublished evidence overrides local success. Known-excluded nonempty inventories finish no-action only with verified
+same-bound preparation, original/copied inventory and manifest/history hashes,
+owner/native receipts and independently consistent excluded rows; a state label
+alone is insufficient. Result admission/pending remains separate from evidence
+completeness: missing inventory/baseline/postcheck stays blocked/nonzero. Native
+batch argv/cwd/exit/raw is persisted before postwrites; after/sequence write
+failure retains source/binding and both causes as unknown/nonzero, using bounded
+captured cleanup_sequence_fallback JSON if the sequence cannot be persisted.
+JSON writers flush, fsync and close a one-attempt .NAME.pending sibling before
+publishing the canonical name with an exclusive hard link; existing canonical or
+pending evidence is never replaced. Pending siblings remain evidence, are never
+consumed as canonical receipts, and need no unlink for failure safety. This does
+not add a directory-fsync/crash-durability guarantee. On observer write failure, report
+--sequence must select the exact captured cleanup_sequence_fallback JSON file;
+report retains its native batch/source/binding/write causes, blocks even against
+success-valued pending bytes, and separately retains admitted-result/pending facts.
+A missing canonical sequence also produces blocked intent with an evidence error.
+A genuine bound completion callback is the final session action. This repair grants no cleanup allocation.
+
 Its bundled read-only helper `runtime/skills/bundled/workspace-cleanup/scripts/check_path_use.py`
 implements the founder-approved THR-259 seq171/seq185 observation: an
 authoritative recorded terminal status plus a fresh complete same-user process
