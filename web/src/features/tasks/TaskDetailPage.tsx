@@ -1022,6 +1022,55 @@ export function TaskDetailPage(): JSX.Element {
     };
   }
 
+  // THR-292 seq77: ordinary header actions share one row with the root Pause control.
+  const headerActions = (
+    <>
+      {isEscalated ? (
+        <>
+          {/* THR-080: Continue via resolve-escalation; Cancel via
+              generic /cancel route (removed from resolve vocabulary). */}
+          <Button size="sm" onClick={(event) => openDialog('resolve-continue', event.currentTarget)}>
+            {t('tasks.detail.continue')}
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={(event) => openDialog('cancel', event.currentTarget)}
+          >
+            {t('tasks.detail.cancel')}
+          </Button>
+        </>
+      ) : (
+        <>
+          <Button size="sm" variant="ghost" onClick={(event) => openDialog('revisit', event.currentTarget)}>
+            {t('tasks.detail.revisit')}
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={(event) => openDialog('cancel', event.currentTarget)}
+            disabled={isTerminal}
+            title={
+              isTerminal
+                ? t('tasks.detail.cannotCancel', { status: task.data?.status ?? '' })
+                : undefined
+            }
+          >
+            {t('tasks.detail.cancel')}
+          </Button>
+        </>
+      )}
+      {slug && (
+        <Link
+          to={`/orgs/${slug}/audit?task_id=${taskId}`}
+          className="text-accent-default ml-auto self-center text-xs hover:underline"
+        >
+          {t('tasks.detail.viewAudit')}
+        </Link>
+      )}
+    </>
+  );
+
   return (
     <>
       <ContentWrap>
@@ -1137,52 +1186,7 @@ export function TaskDetailPage(): JSX.Element {
                 )}
               </div>
             )}
-            {task.data && <div className="mt-3"><TaskPauseControls task={task.data} routes={routes} /></div>}
-            <div className="mt-3 flex flex-wrap gap-2">
-              {isEscalated ? (
-                <>
-                  {/* THR-080: Continue via resolve-escalation; Cancel via
-                      generic /cancel route (removed from resolve vocabulary). */}
-                  <Button size="sm" onClick={(event) => openDialog('resolve-continue', event.currentTarget)}>
-                    {t('tasks.detail.continue')}
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    onClick={(event) => openDialog('cancel', event.currentTarget)}
-                  >
-                    {t('tasks.detail.cancel')}
-                  </Button>
-                </>
-              ) : (
-                <>
-                  <Button size="sm" variant="ghost" onClick={(event) => openDialog('revisit', event.currentTarget)}>
-                    {t('tasks.detail.revisit')}
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    onClick={(event) => openDialog('cancel', event.currentTarget)}
-                    disabled={isTerminal}
-                    title={
-                      isTerminal
-                        ? t('tasks.detail.cannotCancel', { status: task.data?.status ?? '' })
-                        : undefined
-                    }
-                  >
-                    {t('tasks.detail.cancel')}
-                  </Button>
-                </>
-              )}
-              {slug && (
-                <Link
-                  to={`/orgs/${slug}/audit?task_id=${taskId}`}
-                  className="text-accent-default ml-auto self-center text-xs hover:underline"
-                >
-                  {t('tasks.detail.viewAudit')}
-                </Link>
-              )}
-            </div>
+            <TaskPauseControls task={task.data} routes={routes} actions={headerActions} />
           </header>
 
           {/* Fan-out status band — pending / running / joined. Only mounted
