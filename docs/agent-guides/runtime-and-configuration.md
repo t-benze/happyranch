@@ -1297,8 +1297,9 @@ mutation failures and attempt all remaining actions, preserving original exit
 and once-only EXIT/INT/TERM teardown. Source restore, refusal, one-use lifecycle,
 SYSTEMD0222/File0077, sidecar policy, sandbox and capture budgets remain unchanged.
 Successful full process/listener inventories replace negative kill/TCP errors in
-cleanup. Negative virtual `nc` callers remain a blocking source defect requiring SAME
-manager observation-boundary disposition before publication, not a waived gap.
+cleanup. Negative virtual `nc` attempts remain inconclusive; the SAME manager's
+TASK11067 step3 correction requires independent phase-bound Stop completion or
+the strict initial NEVER-STARTED conjunction below before removal admission.
 Filesystem probe limitations and unexecuted cleanup/lifecycle proofs remain gaps.
 The [finite cases](../operations/managed-remote-access-staged-credential-cases.md)
 are source specifications only. Seq428 run38259906794 at590768ff failed after
@@ -1308,7 +1309,7 @@ sole-cause and credential-fix causality remain inference. Seq428 is consumed1/1.
 Seq435 remains manager-owned0/1; no maker publication, build or product run.
 
 
-**R1/R2 acquisition correction and R3 boundary (TASK11084, SAME TASK11067).**
+**Receipt and assertion acquisition correction (TASK11084/11090, SAME TASK11067).**
 Shutdown receipt acquisition now checks the complete journal/filter pipeline
 before counting and exact-line assertions; a successful no-match still fails
 the required two-receipt count. Before/after rollback digests, staged readlink
@@ -1319,14 +1320,46 @@ pipeline statuses are checked even when the capture function is called under a
 conditional or cleanup with errexit suppressed; failures retain existing closed
 loss values, unknown/empty projections, section budgets and remaining teardown.
 These are source corrections with executable proof UNEXECUTED/SUSPENDED.
-R3 remains a blocking source defect: negated virtual nc failures cannot establish
-listener removal. Peer identity/status, unit/PID state and connector host18443
-observations do not observe virtual443 admission at the Stop barrier. No existing
-typed refusal observation separates dial/copy/transport errors from removal.
-The partial candidate is unpublished and MUST NOT advance to review/QA or spend
-seq435 until SAME manager resolves that observation boundary. The existing real
-probe and required predicates remain present, with their unsafe negative callers
-explicitly unresolved; no error is accepted as absence in the delivery evidence.
+TASK11084's FAILED partial return is preserved. SAME TASK11067 step3 resolves
+R3 with the existing successful Stop completion observations. Before each known
+instance's stop, the harness binds exact active PID, nonzero InvocationID and
+start-monotonic context, rechecks the tuple and pins boot plus a pre-stop wall
+cutoff. Checked journal/filter/count acquisition selects that unit/PID/boot/
+invocation since the cutoff and requires both exact completion lines, with no
+extra, duplicate or malformed completion rows. MainPID0 excludes a running
+replacement. This applies to final cleanup, later shipping cleanup, health loss,
+Stop barrier, readiness loss and shutdown; shutdown uses one shared acquisition.
+The Stop-barrier check precedes queueing the next start and releasing its latch.
+Readiness timestamps/order and connector/watchdog checks remain mandatory.
+
+Sidecar.Stop calls listener-first shutdown, joins work and returns stopErr;
+stopTwice emits each receipt only after nil Stop. Thus the receipt supports local
+listener teardown as a SOURCE inference. It is not a typed remote connection-
+refused result or network-health proof. Every real peer attempt with a target is
+retained, actual reachability vetoes removal, and failed nc alone cannot pass.
+Known phases require nonmissing target plus successful current peer process-start
+identity and local status/node identity checks; query/parse/liveness/receipt
+failure refuses. No raw journal/status or new evidence fields are retained.
+
+The first reset_shipping_unit precedes every managed start, and package install
+only writes payload/units. Every start attempt, including a failed/background
+start, permanently revokes NEVER-STARTED before calling systemd. Initial shipping
+cleanup requires independent successful exact unit/PID absence, full owned-unit
+inventory, process census, owned/credential/transaction/staging path absence,
+host-listener absence and valid Headscale inventory without the owned sidecar.
+Together in the isolated fixture, no start plus no owned running process/unit,
+state or registered sidecar excludes an owned virtual listener. Missing address
+contributes no evidence; this branch emits no peer observation. Later no-address
+cleanup refuses. Initial absence is not reusable after a failed start.
+
+Final cleanup retains the peer until the checked teardown, real probe and current
+peer-process/node identity conjunction finishes. Missing prerequisites (including
+failure before any successful start) refuse the virtual and aggregate cleanup
+claims without inventing a Stop receipt; every later cleanup attempt and original
+nonzero exit remain. Barrier refusal still releases both latches in teardown.
+This unpublished source candidate requires fresh FULL independent review and
+same-head SOURCE/STATIC QA before manager publication; seq435 stays0/1. No
+behavioral/red-green/mutation/repetition/test-authoring PASS is claimed.
 SYSTEMD0222/File0077, production sidecar/supervisor/lifecycle, sandbox, CI guards,
 original failure and all cleanup attempts remain unchanged. No whole-harness
 acceptance or original staged-mode/installer/restart/N6 proof follows.

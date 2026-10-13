@@ -75,6 +75,98 @@ tsnet_open() {
   [[ -n "${sidecar_ip:-}" ]] || return 1
   printf 'GET / HTTP/1.0\r\n\r\n' | timeout 5 sudo "$ts_dir/tailscale" --socket="$work/peer.sock" nc "$sidecar_ip" 443 >/dev/null 2>&1
 }
+# These helpers serve only the six virtual-removal sites below. A failed nc
+# remains inconclusive: successful SAME-instance Stop independently establishes
+# local listener teardown; a successful negative-phase nc always vetoes it.
+bind_stop_instance() {
+  local phase="$1" properties checked key value pid="" invocation="" started="" state="" seen="|"
+  stop_phase=""; stop_pid=""; stop_invocation=""; stop_since=""; stop_boot=""
+  case "$phase" in final|shipping|health_loss|stop_barrier|readiness_loss|shutdown) ;; *) return 1 ;; esac
+  stop_since="$(date -u +%s.%6N)" || return 1
+  [[ "$stop_since" =~ ^[1-9][0-9]{9}\.[0-9]{6}$ ]] || return 1
+  stop_boot="$(cat /proc/sys/kernel/random/boot_id)" || return 1
+  [[ "$stop_boot" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] || return 1
+  properties="$(systemctl show happyranch-tsnet-sidecar.service -p MainPID -p InvocationID -p ExecMainStartTimestampMonotonic -p ActiveState)" || return 1
+  while IFS='=' read -r key value; do
+    [[ "$seen" != *"|$key|"* ]] || return 1
+    seen="$seen$key|"
+    case "$key" in
+      MainPID) pid="$value" ;;
+      InvocationID) invocation="$value" ;;
+      ExecMainStartTimestampMonotonic) started="$value" ;;
+      ActiveState) state="$value" ;;
+      *) return 1 ;;
+    esac
+  done <<<"$properties"
+  [[ "$pid" =~ ^[1-9][0-9]{0,9}$ ]] && (( pid > 1 && pid <= 2147483647 )) || return 1
+  [[ "$invocation" =~ ^[0-9a-f]{32}$ && "$invocation" != 00000000000000000000000000000000 ]] || return 1
+  [[ "$started" =~ ^[1-9][0-9]{0,17}$ && "$state" == active ]] || return 1
+  # Recheck the complete tuple before Stop, rather than combining fields from
+  # different activations. Journal invocation+boot+time excludes stale/PID reuse.
+  checked="$(systemctl show happyranch-tsnet-sidecar.service -p MainPID -p InvocationID -p ExecMainStartTimestampMonotonic -p ActiveState)" || return 1
+  [[ "$checked" == "$properties" ]] || return 1
+  stop_pid="$pid"; stop_invocation="$invocation"; stop_phase="$phase"
+}
+stop_completed() {
+  local phase="$1" boot receipts receipt_count
+  [[ -n "${stop_phase:-}" && "$stop_phase" == "$phase" ]] || return 1
+  boot="$(cat /proc/sys/kernel/random/boot_id)" || return 1
+  [[ "$boot" == "$stop_boot" ]] || return 1
+  # Keep R1's checked streaming acquisition/count/exact lines. No raw journal
+  # is persisted; even valid-looking output from any failed producer refuses.
+  receipts="$(sudo journalctl -u happyranch-tsnet-sidecar.service --boot="$stop_boot" --since="@$stop_since" _PID="$stop_pid" _SYSTEMD_INVOCATION_ID="$stop_invocation" --no-pager -o cat | awk 'index($0, "lifecycle_stop_complete") { print }')" || return 1
+  receipt_count="$(printf '%s\n' "$receipts" | awk 'length($0) > 0 { count++ } END { print count+0 }')" || return 1
+  [[ "$receipt_count" == 2 ]] || return 1
+  grep -qx "lifecycle_stop_complete run=$stop_pid invocation=1" <<<"$receipts" || return 1
+  grep -qx "lifecycle_stop_complete run=$stop_pid invocation=2" <<<"$receipts" || return 1
+  # A new running instance cannot reuse the preceding completed Stop proof.
+  systemctl_absent_value happyranch-tsnet-sidecar.service MainPID 0
+}
+virtual_removed() {
+  local phase="$1" probe_failed=0
+  # Always retain the real negative attempt when a target exists, even if the
+  # independent receipt acquisition will fail. Missing input is never evidence.
+  if [[ -n "${sidecar_ip:-}" ]]; then
+    tsnet_open || probe_failed=1
+  fi
+  stop_completed "$phase" || return 1
+  peer_current || return 1
+  (( probe_failed == 1 ))
+}
+peer_process_identity() {
+  [[ "${peer_pid:-}" =~ ^[1-9][0-9]{0,9}$ ]] || return 1
+  # Linux process start ticks distinguish PID reuse; zombie/dead is not alive.
+  python - "$peer_pid" 2>/dev/null <<'PY_PEER'
+import sys
+from pathlib import Path
+pid = sys.argv[1]
+raw = Path(f"/proc/{pid}/stat").read_text()
+head, tail = raw.rsplit(") ", 1)
+fields = tail.split()
+if head.split(" (", 1)[0] != pid or len(fields) < 20:
+    raise SystemExit(1)
+if fields[0] not in {"R", "S", "D", "I", "T"}:
+    raise SystemExit(1)
+started = fields[19]
+if not (started.isascii() and started.isdecimal() and int(started) > 0):
+    raise SystemExit(1)
+print(started)
+PY_PEER
+}
+peer_identity() {
+  # Observe the existing local API without capturing its raw status or keys.
+  sudo "$ts_dir/tailscale" --socket="$work/peer.sock" status --json 2>/dev/null | python -c 'import ipaddress,json,sys; d=json.load(sys.stdin); (isinstance(d,dict)) or sys.exit(1); s=d.get("Self"); (d.get("BackendState")=="Running" and isinstance(s,dict) and s.get("HostName")=="synthetic-peer-ci") or sys.exit(1); i=s.get("ID"); (isinstance(i,str) and i and i.isascii() and i.isalnum()) or sys.exit(1); ips=s.get("TailscaleIPs"); (isinstance(ips,list) and ips and all(isinstance(ip,str) and ip for ip in ips)) or sys.exit(1); [ipaddress.ip_address(ip) for ip in ips]; print(i)' 2>/dev/null
+}
+peer_current() {
+  local process identity
+  [[ -n "${peer_started:-}" && -n "${peer_node:-}" ]] || return 1
+  process="$(peer_process_identity)" || return 1
+  [[ "$process" == "$peer_started" ]] || return 1
+  identity="$(peer_identity)" || return 1
+  [[ "$identity" == "$peer_node" ]] || return 1
+  process="$(peer_process_identity)" || return 1
+  [[ "$process" == "$peer_started" ]]
+}
 systemctl_absent_value() {
   local unit="$1" property="$2" expected="$3" value
   # v255 SHOW_PROPERTIES returns0 for genuine not-found units. STATUS exits
@@ -321,6 +413,7 @@ package_sha="$(sha256sum "$PACKAGE_TAR" | cut -d' ' -f1)" || fail "package diges
 [[ "$package_sha" =~ ^[0-9a-f]{64}$ ]] || fail "package digest malformed"
 python "$evidence_driver" init "$evidence_artifact" --git-head "$PROOF_SUBJECT_SHA" --package-sha256 "$package_sha" --run-id "$run_id"
 headscale_pid=""; peer_pid=""; daemon_pid=""
+service_start_attempted=0
 safe_systemctl_value() {
   observe_systemctl_value "$1" "$2"
   printf '%s' "$observation_value"
@@ -767,6 +860,7 @@ start_managed_target() {
   # This is intentionally before the start invocation: a sidecar receipt can
   # be emitted before systemctl returns the failing positive-start status.
   capture_window_since_us="$(capture_now_us)"
+  service_start_attempted=1
   if sudo systemctl start happyranch-managed.target; then
     return 0
   else
@@ -798,11 +892,10 @@ cleanup() {
     : | sudo tee "$barrier_dir/start-release" >/dev/null
     : | sudo tee "$barrier_dir/stop-release" >/dev/null
   fi
+  bind_stop_instance final || { cleanup_failed=1; cleanup_refusal final virtual_listener_residue; }
   sudo systemctl stop happyranch-managed.target || true
-  if [[ -n "${sidecar_ip:-}" ]] && [[ -n "$peer_pid" ]] && sudo kill -0 "$peer_pid" 2>/dev/null; then
-    ! tsnet_open || { cleanup_failed=1; cleanup_refusal final virtual_listener_residue; }
-    (( cleanup_failed != 0 )) || evidence cleanup virtual_admission_removed_while_peer_alive || { cleanup_failed=1; cleanup_refusal final evidence_failed; }
-  fi
+  virtual_removed final || { cleanup_failed=1; cleanup_refusal final virtual_listener_residue; }
+  (( cleanup_failed != 0 )) || evidence cleanup virtual_admission_removed_while_peer_alive || { cleanup_failed=1; cleanup_refusal final evidence_failed; }
   sudo systemctl disable happyranch-managed.target || true
   sudo systemctl reset-failed happyranch-connector.service happyranch-tsnet-sidecar.service happyranch-managed.target || true
   sudo rm -rf /etc/systemd/system/happyranch-tsnet-sidecar.service.d || { cleanup_failed=1; cleanup_refusal final owned_path_unconfirmed; }
@@ -918,6 +1011,8 @@ sidecar_key="$("$work/headscale" preauthkeys create --user ci --reusable=false -
 sudo "$ts_dir/tailscaled" --state="$work/peer.state" --socket="$work/peer.sock" --tun=userspace-networking >"$work/peer.log" 2>&1 & peer_pid=$!
 wait_for "synthetic peer local API" sudo test -S "$work/peer.sock"
 sudo "$ts_dir/tailscale" --socket="$work/peer.sock" up --login-server=https://127.0.0.1:18080 --auth-key="$peer_key" --hostname=synthetic-peer-ci --accept-dns=false --timeout=30s
+peer_started="$(peer_process_identity)" || fail "peer process identity unavailable"
+peer_node="$(peer_identity)" || fail "peer node identity unavailable"
 
 # N3 only needs a genuine reachable loopback daemon gate. Request admission
 # and authorization-negative proof are deliberately deferred to N6.
@@ -1019,7 +1114,12 @@ PY
   python "$evidence_driver" validate-denial-matrix "$diagnostics/$arm_id-denial-matrix.json" --expected-arm "$arm_id"
 }
 shipping_cleanup() {
-  local cleanup_complete=0 residue_root="${N3_RESIDUE_ROOT:-}" stage_paths process_status
+  local cleanup_complete=0 residue_root="${N3_RESIDUE_ROOT:-}" stage_paths process_status never_started=0
+  if [[ "$service_start_attempted" == 0 ]]; then
+    never_started=1
+  else
+    bind_stop_instance shipping || { cleanup_complete=1; cleanup_refusal shipping virtual_listener_residue; }
+  fi
   # These requests are deliberately idempotent: the pre-arm reset also runs
   # after a prior cleanup has removed the units.  The explicit process, port,
   # fixture, credential, transaction, and path checks below decide success.
@@ -1031,20 +1131,31 @@ shipping_cleanup() {
   sudo systemctl daemon-reload || { cleanup_complete=1; cleanup_refusal shipping reload_failed; }
   sudo rm -rf /opt/happyranch /etc/happyranch /var/lib/happyranch-connector /var/lib/happyranch-tsnet-sidecar /run/happyranch-connector /run/happyranch-tsnet-sidecar /var/log/happyranch-connector /var/log/happyranch-tsnet-sidecar || { cleanup_complete=1; cleanup_refusal shipping owned_path_unconfirmed; }
   local fixture_ids
-  if fixture_ids="$("$work/headscale" nodes list --output json --config "$work/hs/config.yaml" | python -c 'import json,sys; print("\n".join(str(n["id"]) for n in json.load(sys.stdin) if n.get("givenName")=="home-sidecar-ci" or n.get("name")=="home-sidecar-ci"))')"; then
+  if fixture_ids="$("$work/headscale" nodes list --output json --config "$work/hs/config.yaml" | python -c 'import json,sys; d=json.load(sys.stdin); (isinstance(d,list) and all(isinstance(n,dict) and type(n.get("id")) is int and 0<n["id"]<=18446744073709551615 and isinstance(n.get("name"),str) and n["name"] and all(k not in n or isinstance(n[k],str) for k in ("givenName","given_name")) for n in d)) or sys.exit(1); print("\n".join(str(n["id"]) for n in d if n.get("givenName")=="home-sidecar-ci" or n.get("given_name")=="home-sidecar-ci" or n.get("name")=="home-sidecar-ci"))')"; then
     while read -r fixture_id; do
       [[ -z "$fixture_id" ]] || "$work/headscale" nodes delete --identifier "$fixture_id" --force --config "$work/hs/config.yaml" >/dev/null || { cleanup_complete=1; cleanup_refusal shipping fixture_delete_failed; }
     done <<<"$fixture_ids"
   else
     cleanup_complete=1; cleanup_refusal shipping fixture_absence_unconfirmed
   fi
-  "$work/headscale" nodes list --output json --config "$work/hs/config.yaml" | python -c 'import json,sys; raise SystemExit(any(n.get("givenName")=="home-sidecar-ci" or n.get("name")=="home-sidecar-ci" for n in json.load(sys.stdin)))' || { cleanup_complete=1; cleanup_refusal shipping fixture_absence_unconfirmed; }
+  "$work/headscale" nodes list --output json --config "$work/hs/config.yaml" | python -c 'import json,sys; d=json.load(sys.stdin); (isinstance(d,list) and all(isinstance(n,dict) and type(n.get("id")) is int and 0<n["id"]<=18446744073709551615 and isinstance(n.get("name"),str) and n["name"] and all(k not in n or isinstance(n[k],str) for k in ("givenName","given_name")) for n in d)) or sys.exit(1); raise SystemExit(any(n.get("givenName")=="home-sidecar-ci" or n.get("given_name")=="home-sidecar-ci" or n.get("name")=="home-sidecar-ci" for n in d))' || { cleanup_complete=1; cleanup_refusal shipping fixture_absence_unconfirmed; }
   for unit in happyranch-managed.target happyranch-tsnet-sidecar.service happyranch-connector.service; do
     unit_absent "$unit" || { cleanup_complete=1; cleanup_refusal shipping unit_absence_unconfirmed; }
   done
   owned_unit_files_absent shipping || cleanup_complete=1
   port_absent 18443 || { cleanup_complete=1; cleanup_refusal shipping host_listener_residue; }
-  ! tsnet_open || { cleanup_complete=1; cleanup_refusal shipping virtual_listener_residue; }
+  if (( never_started )); then
+    # Initial call only: no harness start (even a failed one) has been requested.
+    # Install writes files only. In this isolated fixture, successful unit/PID,
+    # full process, owned-path, host-listener and Headscale absence together
+    # exclude an owned virtual engine/listener. Missing IP contributes nothing.
+    [[ "$service_start_attempted" == 0 ]] || { cleanup_complete=1; cleanup_refusal shipping virtual_listener_residue; }
+    if [[ -n "${sidecar_ip:-}" ]]; then
+      tsnet_open && { cleanup_complete=1; cleanup_refusal shipping virtual_listener_residue; }
+    fi
+  else
+    virtual_removed shipping || { cleanup_complete=1; cleanup_refusal shipping virtual_listener_residue; }
+  fi
   test_false -e "$residue_root/etc/happyranch/enrollment.key" && test_false -e "$residue_root/etc/systemd/system/happyranch-tsnet-sidecar.service.d" || { cleanup_complete=1; cleanup_refusal shipping credential_path_residue; }
   test_false -e "$residue_root/.happyranch-install-transaction.json" && test_false -e "$residue_root/.happyranch-backup" && test_false -e "$residue_root/.happyranch-units-backup" || { cleanup_complete=1; cleanup_refusal shipping transaction_path_residue; }
   test_false -e "$residue_root/opt/happyranch" && test_false -e "$residue_root/etc/happyranch" && test_false -e "$residue_root/var/lib/happyranch-connector" && test_false -e "$residue_root/var/lib/happyranch-tsnet-sidecar" || { cleanup_complete=1; cleanup_refusal shipping payload_path_residue; }
@@ -1086,6 +1197,7 @@ reset_shipping_unit || fail "fresh shipping-unit reset/setup failed"
 
 # semantic evidence: startup
 sudo mv /etc/happyranch/enrollment.key /etc/happyranch/enrollment.key.held
+service_start_attempted=1
 sudo systemctl start happyranch-managed.target || true
 sleep 2
 sudo systemctl stop happyranch-managed.target happyranch-tsnet-sidecar.service happyranch-connector.service || true
@@ -1149,6 +1261,7 @@ evidence "startup" "credential_dropin_retired"
 evidence "startup" "composite_ready_after_sidecar"
 sudo systemctl stop happyranch-managed.target
 sudo mv /var/lib/happyranch-tsnet-sidecar/credential.consumed "$work/credential.consumed.held"
+service_start_attempted=1
 sudo systemctl start happyranch-managed.target || true
 sleep 2
 inactive happyranch-tsnet-sidecar.service || fail "missing consumed state started sidecar"
@@ -1156,6 +1269,7 @@ evidence "startup" "missing_consumed_state_failed_closed"
 sudo mv "$work/credential.consumed.held" /var/lib/happyranch-tsnet-sidecar/credential.consumed
 # Best-effort reset request, not absence evidence: an unloaded unit is valid.
 sudo systemctl reset-failed happyranch-tsnet-sidecar.service happyranch-connector.service || true
+service_start_attempted=1
 sudo systemctl start happyranch-managed.target
 wait_for "credential-free stopped-service restart" active happyranch-tsnet-sidecar.service
 absent /etc/happyranch/enrollment.key
@@ -1166,6 +1280,7 @@ evidence "recovery" "credential_free_stopped_restart"
 sudo systemctl stop happyranch-managed.target
 printf '%s\n' interrupted-retirement >"$work/enrollment.key"
 sudo install -m 0600 -o root -g root "$work/enrollment.key" /etc/happyranch/enrollment.key
+service_start_attempted=1
 sudo systemctl start happyranch-managed.target
 wait_for "interrupted retirement re-entry" active happyranch-tsnet-sidecar.service
 absent /etc/happyranch/enrollment.key
@@ -1178,12 +1293,13 @@ fresh_sidecar_key="$("$work/headscale" preauthkeys create --user ci --reusable=f
 printf '%s\n' "$fresh_sidecar_key" >"$work/enrollment.key"
 sudo install -m 0600 -o root -g root "$work/enrollment.key" /etc/happyranch/enrollment.key
 sudo /opt/happyranch/bin/happyranch-connector prepare-fresh-enrollment --source /etc/happyranch/enrollment.key --marker /var/lib/happyranch-tsnet-sidecar/credential.consumed --dropin /etc/systemd/system/happyranch-tsnet-sidecar.service.d/10-enrollment-credential.conf
+service_start_attempted=1
 sudo systemctl start happyranch-managed.target
 wait_for "explicit fresh re-enrollment" active happyranch-tsnet-sidecar.service
 absent /etc/happyranch/enrollment.key
 absent /etc/systemd/system/happyranch-tsnet-sidecar.service.d/10-enrollment-credential.conf
 evidence "recovery" "explicit_fresh_reenrollment"
-sidecar_ip="$(sudo "$ts_dir/tailscale" --socket="$work/peer.sock" status --json | python -c 'import json,sys; d=json.load(sys.stdin); print(next(ip for p in d.get("Peer",{}).values() if p.get("HostName")=="home-sidecar-ci" for ip in p.get("TailscaleIPs",[]) if ":" not in ip))')"
+sidecar_ip="$(sudo "$ts_dir/tailscale" --socket="$work/peer.sock" status --json | python -c 'import ipaddress,json,sys; d=json.load(sys.stdin); ip=next(ip for p in d.get("Peer",{}).values() if p.get("HostName")=="home-sidecar-ci" for ip in p.get("TailscaleIPs",[]) if ":" not in ip); print(ipaddress.IPv4Address(ip))')" || fail "sidecar address unavailable"
 wait_for "virtual TSNet listener" tsnet_open
 evidence "admission" "tsnet_admission_reachable"
 sidecar_pid="$(mainpid happyranch-tsnet-sidecar.service)" && [[ "$sidecar_pid" != 0 ]] || fail "production sidecar absent"
@@ -1195,14 +1311,16 @@ watchdog_after="$(systemctl_number happyranch-connector.service WatchdogTimestam
 active happyranch-tsnet-sidecar.service || fail "watchdog continued without sidecar health"
 evidence "active_flow" "watchdog_composite_current"
 
+bind_stop_instance health_loss || fail "health-loss instance unavailable"
 sudo systemctl stop happyranch-tsnet-sidecar.service
 wait_for "connector watchdog cessation" inactive happyranch-connector.service
-! tsnet_open || fail "admission survived sidecar health loss"
+virtual_removed health_loss || fail "health-loss listener teardown unconfirmed"
 watchdog_stopped="$(systemctl_number happyranch-connector.service WatchdogTimestampMonotonic)"
 sleep 2
 watchdog_current="$(systemctl_number happyranch-connector.service WatchdogTimestampMonotonic)"
 [[ "$watchdog_current" == "$watchdog_stopped" ]] || fail "watchdog refreshed after sidecar loss"
 evidence "active_flow" "watchdog_ceased_on_sidecar_loss"
+service_start_attempted=1
 sudo systemctl start happyranch-managed.target
 wait_for "composite restart after health loss" active happyranch-tsnet-sidecar.service
 wait_for "virtual admission after health recovery" tsnet_open
@@ -1226,6 +1344,7 @@ ExecStartPre=/bin/sh -c 'touch $barrier_dir/start-entered; while test ! -e $barr
 EOF
 sudo systemctl daemon-reload
 sudo systemctl stop happyranch-managed.target
+service_start_attempted=1
 sudo systemctl start happyranch-managed.target & start_job=$!
 wait_for "start barrier entered" sudo test -e "$barrier_dir/start-entered"
 sudo systemctl stop happyranch-managed.target & stop_job=$!
@@ -1242,10 +1361,13 @@ sudo tee /etc/systemd/system/happyranch-tsnet-sidecar.service.d/90-ci-barrier.co
 ExecStopPost=/bin/sh -c 'touch $barrier_dir/stop-entered; while test ! -e $barrier_dir/stop-release; do sleep .05; done'
 EOF
 sudo systemctl daemon-reload
+service_start_attempted=1
 sudo systemctl start happyranch-managed.target
+bind_stop_instance stop_barrier || fail "Stop-barrier instance unavailable"
 sudo systemctl stop happyranch-managed.target & stop_job=$!
 wait_for "stop barrier entered" sudo test -e "$barrier_dir/stop-entered"
-! tsnet_open || fail "TSNet admission survived production Stop"
+virtual_removed stop_barrier || fail "Stop-barrier listener teardown unconfirmed"
+service_start_attempted=1
 sudo systemctl start happyranch-managed.target & start_job=$!
 systemctl list-jobs --no-legend | grep -q 'happyranch-managed.target' || fail "start was not queued behind entered stop"
 evidence "concurrency_reentry" "stop_then_start_barrier"
@@ -1257,9 +1379,10 @@ sudo systemctl daemon-reload
 
 # semantic evidence: readiness_loss. Compare the real systemd monotonic
 # inactive timestamps and probe the virtual TSNet listener from the real peer.
+bind_stop_instance readiness_loss || fail "readiness-loss instance unavailable"
 sudo systemctl stop happyranch-connector.service
 wait_for "BindsTo readiness loss" inactive happyranch-tsnet-sidecar.service
-! tsnet_open || fail "virtual TSNet admission remained after connector loss"
+virtual_removed readiness_loss || fail "readiness-loss listener teardown unconfirmed"
 sidecar_down="$(systemctl_number happyranch-tsnet-sidecar.service InactiveEnterTimestampMonotonic)"
 connector_down="$(systemctl_number happyranch-connector.service InactiveEnterTimestampMonotonic)"
 [[ "$sidecar_down" -le "$connector_down" ]] || fail "connector cleanup preceded TSNet admission removal"
@@ -1268,19 +1391,12 @@ sudo systemctl stop happyranch-managed.target
 
 # semantic evidence: revocation and shutdown. The packaged binary calls Stop
 # twice on the same Sidecar and emits invocation-scoped receipts for its PID.
+service_start_attempted=1
 sudo systemctl start happyranch-managed.target
 wait_for "shutdown admission" tsnet_open
-shutdown_pid="$(mainpid happyranch-tsnet-sidecar.service)"
-[[ "$shutdown_pid" != 0 ]] || fail "shutdown PID unavailable"
+bind_stop_instance shutdown || fail "shutdown instance unavailable"
 sudo systemctl stop happyranch-managed.target
-! tsnet_open || fail "TSNet admission survived target stop"
-# Successful no-match acquisition yields zero receipts; any producer/filter
-# failure refuses even when its partial output contains both expected lines.
-shutdown_receipts="$(sudo journalctl -u happyranch-tsnet-sidecar.service _PID="$shutdown_pid" --no-pager -o cat | awk -v prefix="lifecycle_stop_complete run=$shutdown_pid invocation=" 'index($0, prefix) { print }')" || fail "shutdown receipt acquisition failed"
-shutdown_receipt_count="$(printf '%s\n' "$shutdown_receipts" | awk 'length($0) > 0 { count++ } END { print count+0 }')" || fail "shutdown receipt count failed"
-[[ "$shutdown_receipt_count" == 2 ]] || fail "same-instance Stop did not produce two receipts"
-grep -qx "lifecycle_stop_complete run=$shutdown_pid invocation=1" <<<"$shutdown_receipts" || fail "missing first same-instance Stop receipt"
-grep -qx "lifecycle_stop_complete run=$shutdown_pid invocation=2" <<<"$shutdown_receipts" || fail "missing second same-instance Stop receipt"
+virtual_removed shutdown || fail "shutdown listener teardown unconfirmed"
 evidence "revocation" "stop_before_connector_cleanup"
 evidence "revocation" "tsnet_admission_absent"
 evidence "shutdown" "same_instance_stop_twice"
@@ -1288,6 +1404,7 @@ evidence "shutdown" "no_double_close"
 systemctl_absent_value happyranch-tsnet-sidecar.service MainPID 0 || fail "sidecar residue after repeated shutdown"
 evidence "shutdown" "no_residue"
 
+service_start_attempted=1
 sudo systemctl start happyranch-managed.target
 wait_for "fresh recovery" active happyranch-tsnet-sidecar.service
 # semantic evidence: recovery. Exercise the real installer checkpoint seam on
@@ -1325,6 +1442,7 @@ from runtime.remote_access.linux_package import install_linux_package
 install_linux_package(Path(sys.argv[1]), Path('/'), system_service=True)
 PY
   sudo systemctl daemon-reload
+  service_start_attempted=1
   sudo systemctl start happyranch-managed.target
   wait_for "fresh $boundary composite startup" active happyranch-tsnet-sidecar.service
   wait_for "fresh $boundary virtual admission" tsnet_open
@@ -1365,6 +1483,7 @@ stage_paths="$(sudo find / -maxdepth 1 -name '.happyranch-stage-*' -print -quit)
 [[ -z "$stage_paths" ]] || fail "transaction stage residue"
 evidence "recovery" "no_transaction_residue"
 sudo systemctl daemon-reload
+service_start_attempted=1
 sudo systemctl start happyranch-managed.target
 wait_for "upgrade recovery" active happyranch-tsnet-sidecar.service
 wait_for "upgrade virtual admission" tsnet_open
