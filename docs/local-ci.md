@@ -1067,7 +1067,15 @@ parent edges and events before closing proven closed pidfds; unresolved handles
 and ancestors needed by live descendants remain registered. The 256-process
 and all capture limits remain unchanged.
 The 13-input C4 and 10-input C8 matrices use sequential batches of at most five
-held providers. Later batches use fresh seeded runtimes and fresh public uploads;
+held providers. Both seed-copy boundaries preserve relative symlinks and inspect
+every seed link for a valid target inside its copied venue. Each workspace has
+regular AGENTS.md and raw CLAUDE.md -> AGENTS.md resolving to that file; copied
+workspace history is only the empty bootstrap header. Fresh batch provider plans
+use the retained DeterministicPlan authoring path, which writes executable 0700
+bytes and a matching owner-only 0600 SHA256 sidecar before daemon startup.
+Prelaunch assertions record these actual seed/plan prerequisites separately from
+genuine provider launch and callback observations; unchanged instruction-pair and
+registered-stub guards still apply. Later batches use fresh public uploads;
 no interrupted task/result/audit/claim history is copied or restarted. Every
 victim still needs its actual SID/INTEGER callback, empty pre-consumer graph,
 acknowledged original pre-gate pause and owned quiescent closure before a

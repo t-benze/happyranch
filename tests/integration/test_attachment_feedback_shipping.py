@@ -630,7 +630,8 @@ def _fixed_exception_observations(driver,observer,kind,site):
                     expected='original terminal/parser/propagation boundary, zero attachment charge or child',
                     observable='actual exception/terminal and exact accepted rows retained',
                     defect='broad attachment recovery catch',exception=type(exception).__name__,args=repr(exception.args),
-                    propagated=caught,status=task['status'],result_id=item[2]['id'])
+                    propagated=caught,status=task['status'],result_id=item[2]['id'],
+                    batch_prerequisites=getattr(driver,'batch_prerequisites',None))
 
 
 def _nested_manager(driver):
@@ -947,6 +948,7 @@ def _real_race_observations(driver,observer):
                     assert not corrections(after) and boundary['errors']
                 assert after['results']==baseline['results'] or scenario=='missing-before-prepare'
                 facts[kind].append({'scenario':scenario,'claim_result':item[2]['id'],'errors':boundary['errors'],
+                    'batch_prerequisites':getattr(driver,'batch_prerequisites',None),
                     'before_hash':__import__('hashlib').sha256(json.dumps(contender,sort_keys=True).encode()).hexdigest(),
                     'after_hash':__import__('hashlib').sha256(json.dumps(after,sort_keys=True).encode()).hexdigest()})
     for kind in ('D','F'):

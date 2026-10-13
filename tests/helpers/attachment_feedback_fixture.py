@@ -54,6 +54,7 @@ from scripts.attachment_scoped_qa import (
 )
 from tests.helpers.integration_stub_guard.guard import manifest
 from tests.integration.conftest import seed_agent_definition, seed_workspace
+from tests.helpers.deterministic_plan import DeterministicPlan
 from runtime.config import Settings
 from runtime.daemon.org_state import OrgState
 from runtime.orchestrator._paths import OrgPaths
@@ -380,6 +381,48 @@ def provider_main():
     raise SystemExit(result.returncode)
 
 
+def seed_copy_observation(root: Path) -> dict:
+    """Read every seed link without following directory links during traversal."""
+    links={}
+    for name in ('org','workspaces'):
+        assert (root/name).is_dir() and not (root/name).is_symlink()
+        for directory,dirs,files in os.walk(root/name,followlinks=False):
+            for entry in sorted(dirs+files):
+                path=Path(directory)/entry
+                if not path.is_symlink():continue
+                raw=os.readlink(path)
+                assert not Path(raw).is_absolute()
+                target=path.resolve(strict=True)
+                assert target.is_relative_to(root.resolve())
+                links[str(path.relative_to(root))]={'raw':raw,'target':str(target.relative_to(root.resolve()))}
+    pairs={}
+    for workspace in sorted((root/'workspaces').iterdir()):
+        assert workspace.is_dir() and not workspace.is_symlink()
+        agents,claude=workspace/'AGENTS.md',workspace/'CLAUDE.md'
+        assert stat.S_ISREG(agents.lstat().st_mode)
+        assert stat.S_ISLNK(claude.lstat().st_mode)
+        assert os.readlink(claude)=='AGENTS.md' and claude.resolve(strict=True)==agents.resolve(strict=True)
+        # Bootstrap's header-only history is seed data, never completed task history.
+        assert (workspace/'task_history.md').read_text()==f'# Task History: {workspace.name}\n\n'
+        pairs[workspace.name]={'agents_sha256':sha(agents),'raw_claude_link':os.readlink(claude)}
+    assert pairs
+    assert not any(path.suffix=='.db' for name in ('org','workspaces') for path in (root/name).rglob('*'))
+    return {'links':links,'instruction_pairs':pairs,'seed_history':'empty'}
+
+
+def provider_plan_observation(plan: Path) -> dict:
+    """Observe the actual approved bytes/owner/modes before registered stub launch."""
+    sidecar=Path(str(plan)+'.sha256')
+    for path,mode in ((plan,0o700),(sidecar,0o600)):
+        info=path.lstat()
+        assert stat.S_ISREG(info.st_mode) and info.st_uid==os.getuid() and info.st_nlink==1
+        assert stat.S_IMODE(info.st_mode)==mode
+    digest=hashlib.sha256(plan.read_bytes()).hexdigest()
+    assert sidecar.read_bytes()==digest.encode('ascii')
+    return {'plan':str(plan),'sha256':digest,'sidecar':str(sidecar),'owner':os.getuid(),
+            'plan_mode':0o700,'sidecar_mode':0o600}
+
+
 @pytest.fixture
 def attachment_runtime_seed(runtime, tmp_path, fake_claude_plan_env, fake_codex_plan_env,
                             fake_claude_thread_plan_env, fake_opencode_thread_plan_env, request):
@@ -407,8 +450,10 @@ def attachment_runtime_seed(runtime, tmp_path, fake_claude_plan_env, fake_codex_
     # Copy only declared seed inputs before the first daemon/history exists.
     template=controls/'matrix-seed'
     template.mkdir(mode=0o700)
+    source_seed=seed_copy_observation(runtime)
     for name in ('org','workspaces'):
-        shutil.copytree(runtime/name,template/name)
+        shutil.copytree(runtime/name,template/name,symlinks=True)
+    assert seed_copy_observation(template)==source_seed
     return controls
 
 
@@ -701,6 +746,10 @@ STAGED_PROVIDER_LIMIT = 5  # Leave a sixth worker for the original fixture's pen
 def stage_cases(driver, observer, decisions):
     """One bounded worker batch; every result comes through real admission."""
     assert 1<=len(decisions)<=STAGED_PROVIDER_LIMIT
+    if getattr(driver,'batch_index',0):
+        assert closed_read(driver.controls/'batch-prerequisites.json',16384)==driver.batch_prerequisites
+        assert driver.batch_prerequisites['seed']['instruction_pairs']
+        assert driver.batch_prerequisites['provider_plan']['sha256']
     staged=[]
     for decision in decisions:
         task=driver.create(); launch=driver.launch(task)
@@ -742,8 +791,10 @@ def matrix_batch_runtime(original: PublicDriver, index: int):
     controls=base/'controls';controls.mkdir(mode=0o700)
     container=RuntimeDir.init(base/'runtime').root
     root=container/'orgs/test';root.mkdir(parents=True)
+    source_seed=seed_copy_observation(original.controls/'matrix-seed')
     for name in ('org','workspaces'):
-        shutil.copytree(original.controls/'matrix-seed'/name,root/name)
+        shutil.copytree(original.controls/'matrix-seed'/name,root/name,symlinks=True)
+    assert seed_copy_observation(root)==source_seed
     (root/'kb').mkdir()
     home=base/'daemon';home.mkdir(mode=0o700)
     observer_control=controls/'observer';observer_control.mkdir(mode=0o700)
@@ -755,9 +806,11 @@ def matrix_batch_runtime(original: PublicDriver, index: int):
         'wait_log':str(Path(_DESCRIPTOR['evidence'])/('waits-'+hashlib.sha256(original.node.encode()).hexdigest()[:20]+'-batch-'+str(index)+'.jsonl'))}
     observer_path=observer_control/'descriptor.json';write_receipt(observer_path,descriptor,16384)
     observer=PublicObserver(descriptor,observer_path)
-    plan=base/'provider.sh'
+    plan=DeterministicPlan(base/'provider.sh')
     plan.write_text('#!/bin/sh\nexec 3<&0\npython -m tests.helpers.attachment_feedback_fixture provider "$1" "$2" "$3" "$4" '+shlex.quote(str(controls))+' <&3 &\nattachment_child=$!\nattachment_exit=0\nwait "$attachment_child" || attachment_exit=$?\npython -m tests.helpers.attachment_feedback_fixture provider-wait "$1" "$2" "$$" "$attachment_child" "$attachment_exit" '+shlex.quote(str(controls))+'\nexit "$attachment_exit"\n')
-    plan.chmod(0o700)
+    approved_plan=provider_plan_observation(plan)
+    prerequisites={'seed':source_seed,'provider_plan':approved_plan}
+    write_receipt(controls/'batch-prerequisites.json',prerequisites,16384)
     updates={'HAPPYRANCH_DAEMON_HOME':str(home),'HAPPYRANCH_DAEMON_PORT':'0',
         'HAPPYRANCH_ATTACHMENT_OBSERVER':str(observer_path),
         'FAKE_CLAUDE_PLAN':str(plan),'FAKE_CODEX_PLAN':str(plan)}
@@ -772,6 +825,7 @@ def matrix_batch_runtime(original: PublicDriver, index: int):
         port=await_condition(lambda:daemon_paths.port_file().read_text().strip() if daemon_paths.port_file().exists() else None)
         driver=PublicDriver(port,root,controls,original.node)
         driver.batch_index=index
+        driver.batch_prerequisites=prerequisites
         pid,log,receipt=_case_endpoint(driver,wait_log=descriptor['wait_log'])
         yield driver,observer
     finally:
