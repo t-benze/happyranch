@@ -1,7 +1,22 @@
 # Frozen Mac packaging
 
 Run the full [Mac build contract](../app/mac/README.md) from clean reviewed
-source. Freezer-only work is supported **only in a disposable checkout**:
+source.
+
+The full hosted candidate workflow bootstraps native arm64 Go **1.23.12** using
+`actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e` (v7.0.0), with
+shared setup caching disabled and job-wide `GOTOOLCHAIN=local`. Before native
+packaging it records PATH/resolved executable/version/GOHOSTOS/GOHOSTARCH and
+refuses a version, Darwin/arm64 host or toolchain mismatch. Compilation retains
+the fresh run's Go caches and `-mod=readonly`; module/source pins stay unchanged.
+This follows the pinned Tailscale release's Go 1.23 line and runtime-dependent
+gVisor graph, using its newest archived patch. Go 1.23 is out of upstream
+maintenance; newer maintained compatibility is not established. See the
+[source provenance and maintenance limit](../app/mac/README.md#internal-candidate-build).
+The prior hosted missing-Go failure remains a failure; corrected native build,
+archive/linkage and compatibility remain UNEXECUTED pending independent QA.
+
+Freezer-only work is supported **only in a disposable checkout**:
 
 ```bash
 bash packaging/build_daemon.sh \

@@ -23,6 +23,31 @@ with the checked-in module graph (1.23.1 or newer), CGO/SDK, Python 3.12–3.14,
 uv, Node 24 and npm. Dependencies stay locked. The script records effective
 toolchains; missing tools or evidence fail explicitly.
 
+The existing hosted workflow installs exact native arm64 Go **1.23.12** with
+`actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e` (v7.0.0), with
+shared setup caching disabled. Before packaging it logs PATH, the resolved Go
+executable, version, GOHOSTOS/GOHOSTARCH and GOTOOLCHAIN, and refuses anything
+other than that version on Darwin/arm64 with `GOTOOLCHAIN=local`. The latter
+applies to the entire job, including initial queries, preventing automatic
+toolchain substitution. Actual compilation still uses the invocation-owned
+Go caches and `-mod=readonly` against the unchanged module graph.
+
+This is a conservative bootstrap choice, not proof that any Go version above
+the module's 1.23.1 directive is compatible. Tailscale v1.78.0's
+[pinned upstream toolchain](https://github.com/tailscale/tailscale/blob/v1.78.0/go.toolchain.rev)
+identifies [Go 1.23.3](https://github.com/tailscale/go/blob/96578f73d04e1a231fa2a495ad3fa97747785bc6/VERSION).
+Its pinned gVisor dependency uses Go runtime/ABI internals, including the old
+[map type layout](https://github.com/google/gvisor/blob/64c016c92987/pkg/sync/runtime_unsafe.go);
+[Go 1.24 changed the default map implementation](https://go.dev/doc/go1.24).
+The selected 1.23.12 is the newest archived patch in that upstream-used minor
+line, [available for Darwin/arm64](https://go.dev/dl/). Go 1.23 is outside the
+[upstream maintenance window](https://go.dev/doc/devel/release); a maintained
+compatible toolchain for this unchanged graph has not been established.
+No Go/Tailscale dependency update or native compatibility acceptance follows.
+The earlier hosted run failed with `BUILD_TOOL_MISSING: go` before output
+allocation; success with this corrected configuration remains UNEXECUTED
+pending a separately authorized independent QA run.
+
 ```bash
 sha="$(git rev-parse HEAD)"
 tree="$(git rev-parse HEAD^{tree})"

@@ -23,6 +23,11 @@ jobs:
   build:
     name: Build HappyRanch.app (macOS arm64, unsigned)
     runs-on: macos-15
+    env:
+      # Stay on the pinned graph's Go 1.23 line; see the maintenance limit in
+      # app/mac/README.md. Never auto-download a substitute toolchain.
+      NATIVE_GO_VERSION: '1.23.12'
+      GOTOOLCHAIN: local
     steps:
       - name: Checkout exact candidate
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
@@ -42,6 +47,31 @@ jobs:
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 24
+
+      - name: Set up exact native Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ env.NATIVE_GO_VERSION }}
+          architecture: arm64
+          check-latest: false
+          cache: false
+
+      - name: Verify effective native Go before packaging
+        run: |
+          set -euo pipefail
+          printf 'PATH=%s\n' "$PATH"
+          uname -s
+          uname -m
+          [ "$(uname -s)" = Darwin ] || { echo NATIVE_VENUE_UNAVAILABLE >&2; exit 1; }
+          [ "$(uname -m)" = arm64 ] || { echo RELEASE_HOST_ARCH_MISMATCH >&2; exit 1; }
+          go_path="$(command -v go)" || { echo BUILD_TOOL_MISSING: go >&2; exit 1; }
+          printf 'go executable=%s\n' "$go_path"
+          go version
+          go env GOVERSION GOHOSTOS GOHOSTARCH GOTOOLCHAIN
+          [ "$(go env GOVERSION)" = "go${NATIVE_GO_VERSION}" ] || { echo GO_VERSION_MISMATCH >&2; exit 1; }
+          [ "$(go env GOHOSTOS)" = darwin ] || { echo GO_HOST_OS_MISMATCH >&2; exit 1; }
+          [ "$(go env GOHOSTARCH)" = arm64 ] || { echo GO_HOST_ARCH_MISMATCH >&2; exit 1; }
+          [ "$(go env GOTOOLCHAIN)" = local ] || { echo GO_TOOLCHAIN_MISMATCH >&2; exit 1; }
 
       - name: Build and inspect exact unsigned candidate
         env:
