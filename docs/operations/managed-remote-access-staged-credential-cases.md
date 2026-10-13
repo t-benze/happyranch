@@ -62,7 +62,7 @@ snapshot, and gains no new success assertion. Numeric modes are metadata, not
 token bytes, ACL identities, hashes, service capability, ownership proof or a
 readiness API. No local product exercise/build, Product E2E/Jenkins, publication,
 trigger registration, rerun, merge, deploy or permission change is authorized
-in the maker leg. Manager retains seq4280/1 and later publication after gates.
+in the maker leg. Seq428 is consumed1/1; manager retains seq4350/1 and later publication after fresh gates.
 
 ## Harness continuation cases — THR228seq435 / TASK11067 / TASK11071
 
@@ -79,7 +79,7 @@ has run here. No assertion sensitivity or behavioral/test-authoring PASS exists.
 | H02 second reset unloaded | Missing-consumed-state negative leg, marker restored, either service unloaded at second reset | Reset tolerance followed by actual managed start and active wait; no reset-derived success receipt | Bare reset or missing start/active check; runtime N3 UNEXECUTED |
 | H03 loaded failed units | Either reset sees loaded failed sidecar/connector | Clear failed request, retain all later checks; reset itself proves neither quiescence nor success | Removed process/staging/refusal assertion; static inspection only |
 | H04 loaded successful/active states | Reset returns0 while service remains active | First-leg inactive/MainPID/staging assertions refuse active/residue; second leg still requires managed restart readiness | Reset success used as absence; future N3 sensitivity UNEXECUTED |
-| H05 reset denied/query unavailable | sudo/systemctl reset request fails independently of unit state | Best-effort request remains tolerated; later successful independent state/path/start checks decide progression | ||true on required query/assertion or reset interpreted as absence; static only |
+| H05 reset denied/query unavailable | sudo/systemctl reset request fails independently of unit state | Best-effort request remains tolerated; later successful independent state/path/start checks decide progression | Ignoring a required query/assertion or reset interpreted as absence; static only |
 | H06 missing-credential stop unloaded | Negative startup before first reset; stop includes collected units | Stop request cannot abort expected-negative transition; successful inactive, PID0, marker absence and peer inventory remain mandatory | Bare stop or erased subsequent assertion; future N3 UNEXECUTED |
 | H07 absent state status0 | v255 SHOW_PROPERTIES returns not-found/inactive/dead and service MainPID0 | Exact states + absent unit paths + full valid file inventory allow shipping cleanup; target has no MainPID query | Wrong target/service distinction or missing common/PID/path checks; static only |
 | H08 failed valid-looking state query | systemctl show exits1/4/other with text0/inactive/not-found | Refuse; output is never confirmed absence at nonzero status | systemctl_absent_value/inactive/MainPID admits failed output; static only; malformed query sensitivity UNEXECUTED |
