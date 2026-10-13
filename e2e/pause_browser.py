@@ -59,7 +59,7 @@ class PauseBrowser:
 
         page.on("request", record_overview)
         try:
-            with self.b.response(roots_path):
+            with self.b.response(roots_path, mode="new-document", document="/orgs/alpha/tasks"):
                 page.goto(f"{self.b.base}/orgs/alpha/tasks", timeout=self.c.remaining(self.b.page_timeout)*1000)
                 self.c.remaining()
             main = page.get_by_role("main")
@@ -81,16 +81,22 @@ class PauseBrowser:
         require(overview_reads == [], "Tasks page mounts no pause overview read", overview_reads)
         # Detail is reached through the actual list link, then genuinely reloaded.
         path = f"/api/v1/orgs/alpha/tasks/{root}"
-        with self.b.response(path), self.b.response(path + "/recall"):
+        with (
+            self.b.response(path, mode="action"),
+            self.b.response(path + "/recall", mode="action", tree=True),
+        ):
             main.locator(f'a[href="/orgs/alpha/tasks/{root}"]').first.click(timeout=self.c.remaining(self.b.page_timeout)*1000)
             self.c.remaining()
         root_control = page.get_by_role("main").locator(f'[data-task-pause="{root}"]')
         expect(root_control.get_by_text(label, exact=True)).to_be_visible(timeout=self.c.remaining(5)*1000)
         self.c.remaining()
-        with self.b.response(path) as reloaded, self.b.response(path + "/recall"):
+        with (
+            self.b.response(path, mode="new-document", document=f"/orgs/alpha/tasks/{root}", capture_json=True) as reloaded,
+            self.b.response(path + "/recall", mode="new-document", document=f"/orgs/alpha/tasks/{root}", tree=True),
+        ):
             page.reload(timeout=self.c.remaining(self.b.page_timeout)*1000)
             self.c.remaining()
-        p = reloaded.value.json()["pause"]
+        p = reloaded.captured_json["pause"]
         require(p["org_slug"] == "alpha" and p["root_task_id"] == root and p["generation"] == 1
                 and p["effective_hold"] and p["control_state"] == state, "real reload preserves committed hold", p)
         expect(root_control.get_by_text(label, exact=True)).to_be_visible(timeout=self.c.remaining(5)*1000)
@@ -113,10 +119,13 @@ class PauseBrowser:
         page.screenshot(path=str(self.c.root / "raw" / f"{shot}-root.png"), full_page=True, timeout=self.c.remaining(self.b.page_timeout)*1000)
         self.c.remaining()
         child_path = f"/api/v1/orgs/alpha/tasks/{child}"
-        with self.b.response(child_path) as child_response, self.b.response(child_path + "/recall"):
+        with (
+            self.b.response(child_path, mode="new-document", document=f"/orgs/alpha/tasks/{child}", capture_json=True) as child_response,
+            self.b.response(child_path + "/recall", mode="new-document", document=f"/orgs/alpha/tasks/{child}", tree=True),
+        ):
             page.goto(f"{self.b.base}/orgs/alpha/tasks/{child}", timeout=self.c.remaining(self.b.page_timeout)*1000)
             self.c.remaining()
-        data = child_response.value.json()
+        data = child_response.captured_json
         require(data["task"]["parent_task_id"] == root and data["pause"]["effective_hold"], "live inherited child transport", data)
         child_control = page.get_by_role("main").locator(f'[data-task-pause="{child}"]')
         expect(child_control.get_by_text(label, exact=True)).to_be_visible(timeout=self.c.remaining(5)*1000)
@@ -140,7 +149,10 @@ class PauseBrowser:
         page = self.b.page
         self.locale("en")
         path = f"/api/v1/orgs/alpha/tasks/{root}"
-        with self.b.response(path), self.b.response(path + "/recall"):
+        with (
+            self.b.response(path, mode="new-document", document=f"/orgs/alpha/tasks/{root}"),
+            self.b.response(path + "/recall", mode="new-document", document=f"/orgs/alpha/tasks/{root}", tree=True),
+        ):
             page.goto(f"{self.b.base}/orgs/alpha/tasks/{root}", timeout=self.c.remaining(self.b.page_timeout)*1000)
             self.c.remaining()
         main = page.get_by_role("main")

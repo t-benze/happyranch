@@ -265,7 +265,11 @@ def validate_e04(row: dict, observations: dict, browser: list[dict], directory: 
         jobs = record["jobs"]
         ids = sorted(j["id"] for j in jobs)
         check([j["code"] for j in jobs] == expected_codes[index], "literal case set/order")
-        check(record["block"]["payload"] == dict(task_id=task, session_id=first["session"], agent="case_manager", status="blocked",
+        block_payload = dict(record["block"]["payload"])
+        for optional in ("verdict", "decision"):
+            if optional in block_payload:
+                check(block_payload.pop(optional) is None, "declared original block null default")
+        check(block_payload == dict(task_id=task, session_id=first["session"], agent="case_manager", status="blocked",
               confidence=90, summary="waiting for genuine IDs", waiting_on_job_ids=[j["id"] for j in jobs]), "real blocked callback payload")
         check(record["parked"]["tasks"][0]["block_kind"] == "blocked_on_job"
               and record["parked"]["results"][0]["status"] == "blocked", "S1 parked durable evidence")
@@ -281,7 +285,8 @@ def validate_e04(row: dict, observations: dict, browser: list[dict], directory: 
         check(live_task["id"] == blocked["task_id"] == task and live_task["status"] == "in_progress"
               and live_task["current_session_id"] == second["session"]
               and live_task["orchestration_step_count"] == 2 and live_task["completed_at"] is None
-              and live_task["block_kind"] is None and live_task["parent_task_id"] is None
+              and live_task["assigned_agent"] == "case_manager"
+              and all(live_task[k] is None for k in ("block_kind", "active_chain", "active_fanout", "parent_task_id"))
               and json.loads(live_task["blocked_on_job_ids"]) == ids
               and blocked["status"] == "blocked" and blocked["session_id"] == first["session"]
               and blocked["agent"] == "case_manager" and live_snapshot["results"] == record["parked"]["results"],
@@ -423,39 +428,138 @@ def validate_e04(row: dict, observations: dict, browser: list[dict], directory: 
                 else:
                     check(payload["stdout_bytes"] == len(job["out"].encode()) and payload["stderr_bytes"] == len(job["err"].encode())
                           and payload["truncated_stdout"] is False and payload["truncated_stderr"] is False, "terminal audit exact bytes")
+        # Independent reconstruction from serialized frames and original
+        # commands. Never import the maker oracle or trust its validation flag.
+        summary = ["E04_OK completed exit0", "E04_REJECT rejected E04_REJECTED_BY_REVIEW",
+                   "E04_EXIT7 completed exit7; operation nonzero", "E04_TIMEOUT failed timeout exit-9",
+                   "E04_PAIR A completed exit0; B completed exit7", "E04_PAIR A completed exit0; B completed exit7"][index]
+        compact_done = {"action": "done", "summary": summary}
+        semantic_done = {"action": "done", "summary": summary, "then": [], "children": [],
+                         "agent": None, "prompt": None, "expect_verdict": None, "width_cap_ack": None,
+                         "revisit_of_task_id": None, "attachments": None, "join_summary": None,
+                         "reason": None, "successor_brief": None, "rationale": None, "attestation": None}
+        check(all(isinstance(s["session"], str) and s["session"] for s in (first, second))
+              and first["session"] != second["session"], "two distinct genuine provider SIDs")
+
+        def completion_content(result: dict, start: dict, a: dict, b: dict, d: dict,
+                               command: dict, generation: int) -> None:
+            callback = command["payload"]
+            semantic = json.loads(d["payload"])
+            expected_status = "blocked" if generation == 0 else "completed"
+            expected_summary = "waiting for genuine IDs" if generation == 0 else summary
+            check(type(result["id"]) is int and result["id"] > 0
+                  and result["session_id"] == start["session"] == callback["session_id"]
+                  == json.loads(a["payload"])["session_id"], "genuine result/start/callback SID")
+            check(a["task_id"] == b["task_id"] == d["task_id"] == result["task_id"]
+                  == semantic["task_id"] == callback["task_id"] == start["task"] == task
+                  and a["agent"] == b["agent"] == d["agent"] == result["agent"]
+                  == semantic["agent"] == callback["agent"] == start["agent"] == "case_manager"
+                  and a["id"] < b["id"] < d["id"], "complete ordered task/agent generation slot")
+            check(semantic["status"] == result["status"] == callback["status"] == expected_status
+                  and type(semantic["confidence"]) is int and type(result["confidence_score"]) is int
+                  and type(callback["confidence"]) is int
+                  and semantic["confidence"] == result["confidence_score"] == callback["confidence"] == 90
+                  and semantic["output_summary"] == result["output_summary"] == callback["summary"] == expected_summary
+                  and semantic["verdict"] is None and result["verdict"] is None,
+                  "original accepted result vs every emitted completion semantic field")
+            accepted = None if result["decision_json"] is None else json.loads(result["decision_json"])
+            check(accepted == (None if generation == 0 else compact_done)
+                  and semantic["decision"] == (None if generation == 0 else semantic_done)
+                  and semantic["waiting_on_job_ids"] == ([j["id"] for j in jobs] if generation == 0 else []),
+                  "closed actual NextStep defaults and original waiting list")
+            check((json.loads(result["waiting_on_job_ids"]) == ids if generation == 0 else result["waiting_on_job_ids"] is None),
+                  "accepted S1 sorted durable waits and S2 NULL")
+
+        # Original public command bodies/actors/paths, including only declared
+        # optional nulls. These are source witnesses, not a maker success flag.
+        for generation, (start, command) in enumerate(((first, record["block"]), (second, record["final_callback"]))):
+            expected_callback = dict(task_id=task, session_id=start["session"], agent="case_manager",
+                                     status="blocked" if generation == 0 else "completed", confidence=90,
+                                     summary="waiting for genuine IDs" if generation == 0 else summary)
+            if generation == 0:
+                expected_callback["waiting_on_job_ids"] = [j["id"] for j in jobs]
+            else:
+                expected_callback["decision"] = compact_done
+            supplied = dict(command["payload"])
+            if "verdict" in supplied:
+                check(supplied.pop("verdict") is None, "original null callback verdict")
+            if generation == 0 and "decision" in supplied:
+                check(supplied.pop("decision") is None, "original null blocked decision")
+            check(supplied == expected_callback and type(command["payload"]["confidence"]) is int
+                  and command in commands and command["source_sha"] == row["source_sha"]
+                  and command["provider"] == {k: start[k] for k in ("task", "session", "agent", "org", "pid")}
+                  and command["action"] == ("jobs-block" if generation == 0 else "jobs-final")
+                  and len(command["argv"]) == 6
+                  and command["argv"][1:5] == ["report-completion", "--org", "alpha", "--from-file"] and Path(command["argv"][5]).is_absolute(), "original actual callback command identity")
+            wire = [w for w in command["wire"] if w["method"] == "POST"
+                    and w["path"] == f"/api/v1/orgs/alpha/tasks/{task}/completion"]
+            check(len(wire) == 1 and wire[0]["status"] == 200 and wire[0]["response"] == {"ok": True}
+                  and wire[0]["dropped"] is False, "genuine shipping accepted completion200")
+
         snap = record["final_snapshot"]
-        check(len(snap["tasks"]) == 1 and len(snap["results"]) == 2 and [r["status"] for r in snap["results"]] == ["blocked", "completed"]
-              and [r["session_id"] for r in snap["results"]] == [first["session"], second["session"]], "actual final two-generation results")
-        check(blocked == snap["results"][0] and all(a in snap["audit"] for a in live_snapshot["audit"]),
-              "live S1 result/audit content retained through final S2 consumption")
+        # Original history is joined by unique INTEGER identity and full row,
+        # including raw payload bytes. A duplicate cannot stand in for a row.
+        for frame in (record["parked"], live_snapshot, snap):
+            check(all(type(a["id"]) is int and a["id"] > 0 for a in frame["audit"])
+                  and len({a["id"] for a in frame["audit"]}) == len(frame["audit"]), "unique positive audit identities")
+        parked_audits = {a["id"]: a for a in record["parked"]["audit"]}
+        live_audits = {a["id"]: a for a in live_snapshot["audit"]}
+        final_audits = {a["id"]: a for a in snap["audit"]}
+        check(all(identity in live_audits and live_audits[identity] == original for identity, original in parked_audits.items())
+              and all(identity in final_audits and final_audits[identity] == original for identity, original in live_audits.items()),
+              "all original parked/live audit rows and payload bytes retained")
+
+        # J1.b: real live S2, before its reads/callback, with S1 consumed once.
         live_actions = {k: [a for a in live_snapshot["audit"] if a["action"] == k] for k in
-                        ("session_start", "session_end", "completion_report", "task_blocked_on_jobs", "task_resumed_from_jobs")}
-        check([len(live_actions[k]) for k in live_actions] == [2, 1, 1, 1, 1]
-              and [json.loads(a["payload"])["session_id"] for a in live_actions["session_start"]]
-                  == [first["session"], second["session"]]
-              and json.loads(live_actions["completion_report"][0]["payload"])["session_id"] == first["session"]
-              and all(a["task_id"] == task for rows in live_actions.values() for a in rows)
-              and live_actions["completion_report"][0]["id"] < live_actions["task_blocked_on_jobs"][0]["id"]
-                  < live_actions["task_resumed_from_jobs"][0]["id"] < live_actions["session_start"][1]["id"],
-              "captured natural S2 start after consumed S1/wake and before S2 completion")
+                        ("session_start", "session_end", "completion_report", "task_blocked_on_jobs", "task_resumed_from_jobs", "orchestration_step")}
+        check([len(live_actions[k]) for k in live_actions] == [2, 1, 1, 1, 1, 0], "live exact lifecycle, no S2 end/consume/done")
+        check([json.loads(a["payload"])["session_id"] for a in live_actions["session_start"]]
+              == [first["session"], second["session"]]
+              and all(a["task_id"] == task and a["agent"] == "case_manager" for a in live_actions["session_start"]),
+              "live two actual task/agent start bindings")
+        completion_content(blocked, first, live_actions["session_start"][0], live_actions["session_end"][0],
+                           live_actions["completion_report"][0], record["block"], 0)
+        live_block, live_wake = live_actions["task_blocked_on_jobs"][0], live_actions["task_resumed_from_jobs"][0]
+        check(live_block["task_id"] == live_wake["task_id"] == task and live_block["agent"] == "case_manager"
+              and live_wake["agent"] == "orchestrator"
+              and live_actions["completion_report"][0]["id"] < live_block["id"] < live_wake["id"] < live_actions["session_start"][1]["id"],
+              "natural live S1 consume/park/wake/S2 start order")
+        check(json.loads(live_wake["payload"]) == dict(blocking_job_ids=ids, trigger="job_terminal", triggering_job_id=jobs[-1]["id"],
+              job_outcomes={j["id"]: j["oracle"]["row"]["status"] for j in jobs}), "independent live all-terminal wake map")
+
+        # J1.c: complete final generations reconstructed independently of J1.a.
+        check(len(snap["tasks"]) == 1 and len(snap["results"]) == 2
+              and all(type(r["id"]) is int and r["id"] > 0 for r in snap["results"])
+              and len({r["id"] for r in snap["results"]}) == 2
+              and snap["results"][0]["id"] < snap["results"][1]["id"]
+              and [r["status"] for r in snap["results"]] == ["blocked", "completed"]
+              and [r["session_id"] for r in snap["results"]] == [first["session"], second["session"]]
+              and snap["results"][:1] == live_snapshot["results"] == record["parked"]["results"], "distinct final results and unchanged complete S1")
         task_row = snap["tasks"][0]
-        check(task_row["status"] == "completed" and task_row["completed_at"] and task_row["parent_task_id"] is None
+        check(task_row["id"] == task and task_row["assigned_agent"] == "case_manager"
+              and task_row["status"] == "completed" and task_row["completed_at"] is not None and task_row["parent_task_id"] is None
               and task_row["orchestration_step_count"] == 2 and task_row["current_session_id"] == second["session"]
               and all(task_row[k] is None for k in ("block_kind", "active_chain", "active_fanout"))
               and json.loads(task_row["blocked_on_job_ids"]) == ids, "terminal task/historical IDs")
         actions = {k: [a for a in snap["audit"] if a["action"] == k] for k in
-                   ("session_start", "session_end", "completion_report", "task_blocked_on_jobs", "task_resumed_from_jobs")}
-        check(all(len(actions[k]) == 2 for k in ("session_start", "session_end", "completion_report"))
-              and len(actions["task_blocked_on_jobs"]) == len(actions["task_resumed_from_jobs"]) == 1, "lifecycle counts")
-        for i, session in enumerate((first["session"], second["session"])):
-            a, b, d = (actions[k][i] for k in ("session_start", "session_end", "completion_report"))
-            check(json.loads(a["payload"])["session_id"] == json.loads(d["payload"])["session_id"] == session
-                  and a["id"] < b["id"] < d["id"], "natural start/exit/consume joins")
-        wake = actions["task_resumed_from_jobs"][0]
-        check(actions["completion_report"][0]["id"] < actions["task_blocked_on_jobs"][0]["id"] < wake["id"] < actions["session_start"][1]["id"], "park before natural wake")
+                   ("session_start", "session_end", "completion_report", "task_blocked_on_jobs", "task_resumed_from_jobs", "orchestration_step")}
+        check([len(actions[k]) for k in actions] == [2, 2, 2, 1, 1, 1], "complete final lifecycle cardinalities")
+        for generation, start in enumerate((first, second)):
+            a, b, d = (actions[k][generation] for k in ("session_start", "session_end", "completion_report"))
+            completion_content(snap["results"][generation], start, a, b, d,
+                               record["block"] if generation == 0 else record["final_callback"], generation)
+        block, wake = actions["task_blocked_on_jobs"][0], actions["task_resumed_from_jobs"][0]
+        check(block["task_id"] == wake["task_id"] == task and block["agent"] == "case_manager"
+              and wake["agent"] == "orchestrator"
+              and actions["completion_report"][0]["id"] < block["id"] < wake["id"] < actions["session_start"][1]["id"], "park before natural wake")
         wp = json.loads(wake["payload"])
-        check(sorted(wp["blocking_job_ids"]) == ids and wp["trigger"] == "job_terminal" and wp["triggering_job_id"] == jobs[-1]["id"]
-              and wp["job_outcomes"] == {j["id"]: j["oracle"]["row"]["status"] for j in jobs}, "all-terminal wake mapping")
+        check(wp == dict(blocking_job_ids=ids, trigger="job_terminal", triggering_job_id=jobs[-1]["id"],
+              job_outcomes={j["id"]: j["oracle"]["row"]["status"] for j in jobs}), "independent final all-terminal wake map")
+        done_audit = actions["orchestration_step"][0]
+        check(done_audit["task_id"] == task and done_audit["agent"] == "orchestrator"
+              and done_audit["id"] > actions["completion_report"][1]["id"]
+              and json.loads(done_audit["payload"]) == dict(step_number=2, decision=dict(compact_done, then=[], children=[])),
+              "actual orchestrator final done with exclude_none defaults")
         if index >= 4:
             early = record["first_terminal"]
             check(len(early["results"]) == 1 and early["tasks"][0]["orchestration_step_count"] == 1
@@ -463,9 +567,6 @@ def validate_e04(row: dict, observations: dict, browser: list[dict], directory: 
                   and not any(a["action"] == "task_resumed_from_jobs" for a in early["audit"])
                   and [j["status"] for j in early["jobs"]].count("pending") == 1
                   and jobs[1]["action"]["at"] > checkpoints[-2]["finished"], "pair +0 no-early-resume barrier")
-        summary = ["E04_OK completed exit0", "E04_REJECT rejected E04_REJECTED_BY_REVIEW",
-                   "E04_EXIT7 completed exit7; operation nonzero", "E04_TIMEOUT failed timeout exit-9",
-                   "E04_PAIR A completed exit0; B completed exit7", "E04_PAIR A completed exit0; B completed exit7"][index]
         check(snap["results"][1]["output_summary"] == summary, "independent truthful final summary")
         rendered = record["task_browser"]
         check(all(t in rendered["text"] for t in (summary, "Recall tree", "Outcome", "completed"))
