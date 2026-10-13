@@ -1,9 +1,9 @@
 # Optional agent reasoning effort
 
 > Status: current
-> Authority: Founder THR298 seq15 approving seq11/14 and engineering seq12; TASK10678/TASK10683.
+> Authority: Founder THR298 seq15 and seq46 plain-input correction; accepted TASK11053 composed design/TASK11065 amendment/TASK11070 DESIGN PASS.
 > Current sources: `runtime/adapters/__init__.py`, `runtime/orchestrator/adapter_contract.py`, the four maintained agent guides, and bundled `manage-agent`.
-> Scope: optional static configuration and input transport. Historical TASK10314/TASK10336 designs are inventories, not additional acceptance gates.
+> Scope: optional configuration and literal input transport. Historical TASK10314/TASK10336 designs are inventories, not additional acceptance gates.
 
 ## Selection and defaults
 
@@ -16,10 +16,11 @@ pair. UI drafts bind to their selected CLI through `expected_executor`; stale
 CLI saves refuse before canonical mutation. All existing writer locks,
 invalidation and lifecycle boundaries remain.
 
-The catalog/declaration is authoritative for the finite static UI list and save
-validation. It does not inspect runtime capabilities, accounts or model support.
-A valid selection may still be rejected by the native model/account. Configured
-selection is distinct from provider-reported behavior and token-usage model.
+Built-ins accept case-preserving fullmatch `[A-Za-z][A-Za-z0-9_-]{0,31}` through shared `model_effort_args` validation; historical catalog values are metadata, not a membership gate. UI uses plain text: blank on explicit Save maps to null/default, without trimming or truncation. Explicit wire/direct empty strings refuse; CLI clear retains its existing meaning. Custom adapters still require approved declared-value membership (at most16 lowercase identifiers); legacy/model-only effort controls remain disabled with saved values visible. Token acceptance proves syntax/transport only, not native model/account support.
+
+With explicit effort, OpenCode requires nonempty provider/model slash components (additional model path segments allowed), no whitespace/control/NUL, at most one # and a nonempty embedded variant byte-equal to effort; it composes one literal `-m provider/model#effort`. Unset preserves the original model transport. Pi recognizes only its existing finite thinking suffix set; arbitrary safe colon suffixes do not become native thinking syntax. Codex keeps one literal quoted config argv element.
+
+Bounded evidence does not verify dynamic manage_agent update/enrollment at runtime (source only), native models/accounts, full task/thread/dream/wake/schedule lifecycles, host/callback or custom contained-wrapper prelaunch. General integration including callback is SKIPPED THR243seq42; former Python units are RETIRED. No ad hoc Product E2E or protected mutation/repetition proof is authorized.
 
 Task invocation selects its configured executor, model and effort from one
 canonical AgentDef byte snapshot before executor construction. An atomic save
@@ -37,14 +38,14 @@ overrides are accepted by the native provider. The same provider reaches skill
 materialization and executor construction. When effort is unset, no selection
 audit is added. Missing-agent handling and existing failure transitions remain.
 
-| CLI / verified source | Static values | Literal argv with explicit effort |
+| CLI / verified source | Historical CLI examples (not built-in limits) | Literal argv with explicit effort |
 | --- | --- | --- |
 | Claude 2.1.280 installed help | low, medium, high, xhigh, max | `--effort <level>` beside unchanged `--model <id>` when pinned |
 | Codex 0.160.0 help + [versioned enum](https://github.com/openai/codex/blob/rust-v0.160.0/codex-rs/protocol/src/openai_models.rs) / [official config reference](https://learn.chatgpt.com/docs/config-file/config-reference) | none, minimal, low, medium, high, xhigh, max, ultra, persistent | `-c model_reasoning_effort="<level>"` beside unchanged `-m <id>` when pinned |
 | Pi 0.85.1 installed help | off, minimal, low, medium, high, xhigh, max | `--thinking <level>` beside unchanged `--model <pattern>` when pinned |
 | OpenCode 2.0.12 help + [official variants](https://opencode.ai/docs/models/) | none, minimal, low, medium, high, xhigh, max | `-m provider/model#<level>` |
 
-Codex’s versioned enum also accepts arbitrary custom strings; this product deliberately exposes only its nine named static values and rejects undeclared custom strings.
+All four built-ins accept the shared grammar above, including `future_Tier-2` and explicit `none`. The historical CLI examples are retained metadata; custom declarations remain finite and authoritative.
 
 Fresh and supported resume arguments use the same selection, in adapters and
 existing inline fallback builders. Default model works for Claude/Codex/Pi.
