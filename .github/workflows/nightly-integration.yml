@@ -369,8 +369,6 @@ jobs:
     env:
       EXPECTED_SOURCE_SHA: ${{ inputs.expected_source_sha }}
       EXECUTION_TASK_ID: ${{ inputs.execution_task_id }}
-      QA_RUNNER_ENVIRONMENT: ${{ runner.environment }}
-      QA_RUNNER_NAME: ${{ runner.name }}
     steps:
       - name: Checkout exact event source without credentials
         timeout-minutes: 1
@@ -380,6 +378,9 @@ jobs:
           persist-credentials: false
       - name: Admit released task and immutable manifest before dependencies
         timeout-minutes: 1
+        env:
+          QA_RUNNER_ENVIRONMENT: ${{ runner.environment }}
+          QA_RUNNER_NAME: ${{ runner.name }}
         run: python3 -I scripts/attachment_scoped_qa.py --admit-only --task-id "$EXECUTION_TASK_ID" --expected-sha "$EXPECTED_SOURCE_SHA"
       - name: Install uv and Python 3.14
         timeout-minutes: 3
@@ -399,6 +400,8 @@ jobs:
       - name: Execute only released finite attachment recipe
         timeout-minutes: 22
         env:
+          QA_RUNNER_ENVIRONMENT: ${{ runner.environment }}
+          QA_RUNNER_NAME: ${{ runner.name }}
           UV_PROJECT_ENVIRONMENT: ${{ runner.temp }}/attachment-qa-venv
           HAPPYRANCH_TEST_REAL_PLATFORM: '1'
         run: |
