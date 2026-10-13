@@ -1294,7 +1294,7 @@ There is no second selection, new product seam or extra test unit.
 | R14.admission | `assert_finding_admission` | Negative harness admission after a valid synthetic diagnostic sink; retained first error/stage, absent child/wait, incomplete and propagated nonzero. |
 | R14.Popen | `assert_finding_popen` | Complete local subprocess dependencies reach intended provider and nested callback spawn refusal; absent child/PID/wait, first error and no acquired-child signal. |
 | R14.selector | `assert_finding_selector` | Trial reserves half its existing slice for TERM/KILL and real waits; every acquired child/stream/selector/pipe has an independent fallback even on assertion/storage failure. Both constructor and registration failures after real owned Popen; actual consuming wait, independent acquired-stream/selector closes, incomplete and first error. |
-| R15.raw | `assert_finding_raw` | Real subprocess writes invalid UTF8 and a split multibyte sequence. A pipe handshake holds the second write until the first actual retained read checkpoint. Reconstruct base64 bytes and compare exact retained/observed lengths and SHA256, separately from replacement preview. |
+| R15.raw | `assert_finding_raw` | Real subprocess writes invalid UTF8 and a split multibyte sequence. A pipe handshake holds the second write until the first actual retained read checkpoint. Reconstruct base64 bytes and compare exact retained/observed lengths and SHA256, separately from replacement preview. Require successful exit0, complete diagnostic, real owner/fallback waits and independent cleanup. Incomplete rows retain the native trial cause and the later assertion separately. |
 | R14/R15.capture | `assert_finding_capture` | Expired capture and unavailable wait retain incomplete native diagnostics exported before assertions; repeated zombie polls remain bounded, later genuine adoption/source parent wait still records transitions, and actual event saturation retains failure while real cleanup continues. Positively proved short-lived-child exit/owned reparent, unknown/UID/start/foreign-parent refusal and missing required parent wait; raw overflow; combined primary/close/publication failures; outer supervisor spawn/discovery/FIFO/source/selector/pidfd/stream/publication failures; byte/entry allocation, independent append and snapshot producers, lock timeout/caught signal/uncatchable death; queued stdout/final phase/JUnit and partial-frame refusal. |
 
 `harness_source_gate` binds the actual current harness function object to the
@@ -1463,3 +1463,42 @@ exported and remains UNKNOWN. Four releases are consumed; no rerun is released.
 Partial historical positives are not overall C1-C8, QA or test-authoring PASS.
 Startup afterA/PENDING and delegated preACK remain MISSING; before-body
 UNOBSERVED; SAME-R2 is not automatic restart proof. Merged:NO; deployed:NO.
+
+
+Fifth run38448332682/attempt1 at311f5445 FAILED. JOB4540 completed exit1/25527ms;
+view/identity/download exited0. C01/direct setup passed11.083881592s; call failed
+0.302111098s at raw equality, empty versus ff e2 82 ac. Its original counted trial
+retains TimeoutError:finding diagnostic work deadline at provider-capture, both
+streams empty, child2594 with frozen interpreter receipt and genuine owner/fallback
+waits-15. The child instruction at timeout is UNKNOWN. Teardown is incomplete;
+60 nodes never started and all123 connected observations are absent. Three prior
+supplemental rows passed at that historical head; raw is incomplete, capture is
+missing. Final exit143/complete=false/closure=false; port closed, case.closed=false.
+The earliest independent supervisor failure is PRE-proof pidfd-open ESRCH for
+pid2494/parent2493 with no after/member/exit indication; its executable is UNKNOWN.
+There are326 process events, not saturation. All five releases remain consumed.
+
+The existing R15.raw row now preserves native trial context separately from its
+assertion error. Its finite trigger remains both provider/callback invalid-UTF8
+split writes; expected behavior is exact raw bytes, two retained reads [2,4],
+exit0 and a complete diagnostic. Observable evidence is counted per-trial native
+cause, raw length/hash, actual owner/fallback consuming waits and cleanup. The
+defect it must reject is empty/partial bytes, a timeout/nonzero child or an
+incomplete diagnostic presented as healthy. This source tightening does not
+resolve startup feasibility: Python guard/import startup still shares the
+original500ms trial/half-work slice. Connected outer/terminal Python trials also
+need readiness assessment. No bound or guard was relaxed. R25 still refuses
+pre-proof disappearance; bounded shared-parent capture-before-reap coordination
+requires a minimal out-of-radius source proposal and manager resolution before
+that helper is edited. New behavior and whole-C01/selection fit remain UNEXECUTED;
+source tightening grants no readiness/behavioral acceptance or execution release.
+
+R25's SAME capture row adds one finite pre-pidfd gate: a real owning parent
+consumes its child after the initial identity read and before pidfd_open. Assert
+native ProcessLookupError/ESRCH, stage pidfd open, null after/member/exit indication,
+no accepted child, no signal, no invented role wait and closure false. This is
+the missed boundary; the retained vanished trial instead removes the child after
+pidfd acquisition. The positive post-proof terminal/reparent and UID/start/parent
+mismatch cases remain. The additional slice is at most500ms under the SAME20s
+call, making nominal slice maxima25s; this still does not establish measured fit.
+The new negative assertion is UNEXECUTED and does not fix ordinary-child discovery.

@@ -1475,6 +1475,18 @@ def _finding_subprocess(spawn):
     return local
 
 
+def _finding_failure_context(exc, trial, receipt):
+    """Keep native capture failure separate from a later assertion failure."""
+    # The context points to the existing counted export. It creates no alternate
+    # sink, diagnostic success, task/result identity or consuming-wait claim.
+    exc._attachment_finding_trial = {
+        'trial': str(trial), 'kind': receipt['kind'], 'fault': receipt['fault'],
+        'native_exception': receipt['native_exception'],
+        'diagnostic_error': receipt['diagnostic_error'],
+        'diagnostic_stage': receipt['diagnostic_stage'],
+    }
+
+
 def _finding_diagnostic_trial(root, kind, fault=None, payload=b'\xff\xe2\x82\xac'):
     """Synthetic harness-only sink/commands; never a task/result/callback claim."""
     from types import SimpleNamespace
@@ -1667,10 +1679,18 @@ def _finding_diagnostic_trial(root, kind, fault=None, payload=b'\xff\xe2\x82\xac
         assert time.monotonic()<trial_deadline, 'diagnostic trial exceeded the remaining call budget'
     except BaseException as exc:
         assertion_error=type(exc).__name__+':'+str(exc)[:1024];stage='assertion failure'
+        _finding_failure_context(exc,root,{'kind':kind,'fault':fault,
+            'native_exception':None if failure is None else type(failure).__name__+':'+str(failure)[:1024],
+            'diagnostic_error':rows[-1]['error'] if rows else None,
+            'diagnostic_stage':rows[-1]['stage'] if rows else None})
         try:export()
         except BaseException as later:exc.add_note('trial export unavailable: '+type(later).__name__)
         raise
     return rows[-1] if rows else None, {'kind':kind,'fault':fault,'failure':type(failure).__name__,
+        'failure_code':failure.code if isinstance(failure,SystemExit) else None,
+        'native_exception':type(failure).__name__+':'+str(failure)[:1024],
+        'diagnostic_error':rows[-1]['error'] if rows else None,
+        'diagnostic_stage':rows[-1]['stage'] if rows else None,
         'intended_seams':seams,'spawned':len(processes),'consuming_waits':waits,'wait_attempts':wait_attempts,
         'fallback_cleanup':cleanup_facts,'selector_closes':closes,'checkpoint_stages':calls,
         'split_read_lengths':split_reads,'stored_final':'publication' not in faults}
@@ -1711,14 +1731,22 @@ def assert_finding_raw(root):
     for kind in ('provider','callback'):
         case=root/kind;case.mkdir(mode=0o700)
         row,receipt=_finding_diagnostic_trial(case,kind,payload=payload)
-        for channel,original in (('stdout',payload),('stderr',b'\xfe')):
-            output=row['output'][channel];raw=base64.b64decode(output['raw_base64'],validate=True)
-            assert raw==original and output['raw_length']==len(original)
-            assert output['observed_raw_length']==len(original) and output['raw_sha256']==hashlib.sha256(original).hexdigest()
-            assert output['preview_utf8_replacement']==original.decode('utf-8','replace')
-            assert output['preview_utf8_replacement'].encode()!=original
-        assert row['complete'] is True and receipt['failure']=='SystemExit'
-        assert receipt['split_read_lengths']==[2,4]
+        try:
+            for channel,original in (('stdout',payload),('stderr',b'\xfe')):
+                output=row['output'][channel];raw=base64.b64decode(output['raw_base64'],validate=True)
+                assert raw==original and output['raw_length']==len(original)
+                assert output['observed_raw_length']==len(original) and output['raw_sha256']==hashlib.sha256(original).hexdigest()
+                assert output['preview_utf8_replacement']==original.decode('utf-8','replace')
+                assert output['preview_utf8_replacement'].encode()!=original
+            assert row['complete'] is True and receipt['failure']=='SystemExit'
+            assert receipt['split_read_lengths']==[2,4]
+            assert receipt['failure_code']==0 and row['parent_wait_returncode']==0
+            assert receipt['consuming_waits'] and all(value==0 for value in receipt['consuming_waits'])
+            assert row['child_state']=='waited' and row['error'] is None and row['cleanup_errors']==[]
+            assert all(fact['exception'] is None for fact in receipt['fallback_cleanup'])
+        except BaseException as exc:
+            _finding_failure_context(exc,case,receipt)
+            raise
         facts.append(receipt)
     return facts
 
@@ -2319,7 +2347,7 @@ def _finding_process_binding(root):
     """Real short-lived children, finite exact-source gates, no product claims."""
     from scripts import attachment_scoped_qa as qa
     facts = []
-    for fault in ('exited', 'vanished', 'reparent', 'reparent-late', 'uid', 'start', 'foreign-parent'):
+    for fault in ('exited', 'vanished', 'vanished-before-pidfd', 'reparent', 'reparent-late', 'uid', 'start', 'foreign-parent'):
         trial_deadline = min(_CALL_DEADLINE, time.monotonic()+.5)
         case = root/fault; case.mkdir(mode=0o700)
         sink = _finding_sink(case/'evidence')
@@ -2385,7 +2413,7 @@ def _finding_process_binding(root):
                         assert frame.f_locals['pid'] == grand
                         assert frame.f_locals['before'][:2] == qa.OwnedTree.identity(grand)[:2]
                         armed = True
-                        if fault in ('exited', 'vanished'):
+                        if fault in ('exited', 'vanished', 'vanished-before-pidfd'):
                             os.write(child_w, b'R'); released = True
                             os.write(parent_release, b'W')
                             _finding_message(ready, b'WAIT0')
@@ -2426,7 +2454,8 @@ def _finding_process_binding(root):
                         assert grand not in tree.identities and tree.errors and recorded
                         first = recorded[0][1]
                         assert first is tree.reported[0]
-                        assert type(first) is (FileNotFoundError if fault=='vanished' else ValueError)
+                        assert type(first) is (ProcessLookupError if fault=='vanished-before-pidfd' else
+                                              FileNotFoundError if fault=='vanished' else ValueError)
                         refused = next(e for e in tree.events if e['kind']=='binding_refused' and e['pid']==grand)
                         assert refused['before'] is not None and not any(e['kind']=='bound' and e['pid']==grand for e in tree.events)
                         assert any('binding context' in note for note in first.__notes__)
@@ -2434,8 +2463,14 @@ def _finding_process_binding(root):
                         if fault == 'foreign-parent':assert refused['after'][2] == 1
                         # Every acquired but untransferred child descriptor closed
                         # before publication; no signals, wait or closure invented.
-                        assert len(owned_fds)==2 and closed_fds==[owned_fds[-1]]
-                        _finding_assert_raises(lambda:os.fstat(owned_fds[-1]), OSError)
+                        if fault=='vanished-before-pidfd':
+                            import errno
+                            assert first.errno==errno.ESRCH and refused['stage']=='pidfd open'
+                            assert refused['after'] is None and refused['member'] is None and refused['exit_indicated'] is None
+                            assert len(owned_fds)==1 and not closed_fds
+                        else:
+                            assert len(owned_fds)==2 and closed_fds==[owned_fds[-1]]
+                            _finding_assert_raises(lambda:os.fstat(owned_fds[-1]), OSError)
                     assert tree.finalize_cleanup(False) is False
                     process = closed_read(sink/'processes.json', qa.FINAL_CAPS['processes.json'])
                     assert process['closure'] is False and process['direct_wait_returncode'] is None
@@ -2635,7 +2670,8 @@ def run_finding_assertions():
                     'source_hashes':_DESCRIPTOR['source_hashes'],'assertion':check.__name__,'facts':facts}
             except BaseException as exc:
                 receipts[row]={'outcome':'incomplete','error':type(exc).__name__+':'+str(exc)[:1024],
-                    'node':NODES[0],'head':_DESCRIPTOR['head'],'assertion':check.__name__}
+                    'node':NODES[0],'head':_DESCRIPTOR['head'],'assertion':check.__name__,
+                    'native_trial':getattr(exc,'_attachment_finding_trial',None)}
                 raise
     finally:
         for row in FINDING_ROWS:receipts.setdefault(row,{'outcome':'missing','reason':'assertions not completed'})
