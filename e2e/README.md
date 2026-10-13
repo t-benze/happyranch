@@ -26,7 +26,8 @@ there are no retries, new notifications or promised response SLA.
 Every cell builds the real Web on Node24 and uses
 Playwright 1.58.0/Chromium with an exact hash-locked dependency closure. This
 lane does not change Web dependencies or reuse the screenshot harness's mock
-server. `browser-events.json` is an allowlisted response/status/page-error trace;
+server. `browser-events.json` retains response/status/page-error observations
+and scoped partial response-selection/body diagnostics;
 raw headers, bootstrap bodies, HAR, browser storage and raw trace archives are
 never uploaded. PNGs contain only the rendered synthetic task state.
 
@@ -48,7 +49,30 @@ never product serializers as expected-value generators.
 Lifecycle final-state readback uses a normal browser refresh after durable
 completion, waiting for real detail and Recall responses in the same browser
 session. The shipping detail/Recall queries do not poll while mounted; this
-case does not establish automatic live-view refresh. The independent populated
+case does not establish automatic live-view refresh. `Browser.response` declares
+SPA action versus new-document observation. Its native waiter accepts only a
+GET200 on the exact current origin/port and literal API path, main frame and
+an actual Request seen while armed. Goto/reload additionally bind the real
+top-level navigation request, expected main-frame commit and subsequent API
+request start; pre-commit/old outstanding requests and undeclared redirects
+cannot satisfy it. Paired detail/Recall observers share the public action and
+earlier deadline; Recall requires the semantic query tree=true regardless of
+parameter order, while roots retain shipping pagination. Body consumers opt
+into one native body/JSON capture before the original bounded scope returns;
+metadata-only consumers acquire no body requirement. Exact content/DOM
+assertions still run, without selecting a second candidate by content.
+
+Arm/request/commit/selection/body-begin/end/error diagnostics are partial and
+unvalidated; available synthetic target JSON uses the existing sanitation
+context. Headers, storage, bootstrap bodies and arbitrary query values are
+excluded. Body/parse/action/close/crash/deadline failures propagate. Each scope
+removes only its own request/navigation listeners. Native waiter teardown stays
+library-owned: action-exception EventInfo cancellation does not prove immediate
+native listener removal before its finite timeout or existing browser close.
+E05 thread_view/thread_created freshness and Chinese PNG glyph limitations
+remain deferred; no extra collector, fetch, retry, sleep or transport is added.
+
+The independent populated
 alpha-beta-alpha cache case never reloads during org switching. The return
 first verifies the cached rendered alpha state with its prior real HTTP200
 provenance. It then navigates to the list, waits 31s for the shipping 30s query
@@ -269,6 +293,31 @@ integration is SKIPPED THR243seq42. Archived THR297 Build11 remains FAILURE
 not fix fixture/systemd/interpreter gaps. TASK10582 owns detailed reconciliation.
 PR1014 compatibility/authentic-memory obligations remain unproven.
 
+The accepted TASK11077 revision1 / TASK11080 design assessment and TASK11054
+implementation select only O1–O7 observer and J1.a–c audit-reader repair in five
+harness files. The selected scheduled run38330308418/source7dc78c0548294f9c2e14005bb7d637506df1129e
+remains FAILURE: five authenticated ZIPs/105 files/863 source blobs/13 checkout
+joins; all168 dispositions stay111 recorded-with-gaps,3 attempted-errors and
+54 unreached, with actual starts19/11/19 against39 full starts. Both corrected
+Pause closures exist on3.12/3.14;3.13 fails earlier. No E04 completes and E05/E07
+are unreached. Winning response/shared cause remains unknown; all three E04
+SID assumptions are separate source-confirmed latent defects.
+
+O1–O7 and J1.a–c reuse the existing cases/venues and add no production test seam.
+Old mounted GET near approval/reload, nested Recall ordering, body loss/invalid
+JSON, wrong method/origin/frame/query/redirect and exact live/final S1/S2 history
+are the distinct seams; deliberate negative controls remain UNEXECUTED and
+unauthorized. This source repair supplies no corrected GREEN, behavioral,
+causal/sensitivity/repetition or test-authoring PASS, intermediate DOM/process
+joins, comprehensive sanitation, complete Pause/product acceptance or full
+runtime/roughly100MiB suffix fit. Independent full review and same-head SCOPED
+STATIC QA remain required with Source Boundary Lint/Web Lint(Node24), normal
+hooks and manager guarded merge. Corrected behavior awaits the existing daily
+19UTC default-source Python3.12/3.13/3.14 evidence. General AND actual CLI callback
+integration remain SKIPPED THR243seq42; Python units remain RETIRED. All56
+variants/39 starts and budgets480/240/720/60/120/900 stay unchanged. THR291seq119
+abrupt R andseq126 E04 cap/persistent Stop implementation/acceptance remain HELD.
+
 ## Bounded Pause source increment (THR-292 / TASK-10555)
 
 `controller.main` executes the unchanged `scenarios.exercise` closure first,
@@ -442,7 +491,7 @@ first human-show line to equal returned ID, literal status and created timestamp
 a completed/failed word in the title cannot substitute. Independent literal
 exit7, timeout/-9/reason and rejection-reason lines remain required.
 
-The live-S2 frame now retains source, actual provider identity/PID-start and
+The live-S2 frame retains source, actual provider identity/PID-start and
 snapshot entry/finish times. The aggregate requires one in-progress task bound
 to S2, exactly the unchanged blocked S1 result, literal terminal job rows and
 the natural S1-consumption → wake → S2-start audit chain, with no S2 end/result.
@@ -451,6 +500,28 @@ result/audit rows must reconcile with the final durable snapshot. Missing or
 contradictory live frames fail. Completed-only
 `Store.result` is not used for S1; `Store.jobs_parked` and `jobs.final_task`
 inspect literal blocked/completed results and original historical wait IDs.
+
+The three E04 consumers (`jobs.final_task`, aggregate live S1/natural S2 and
+aggregate final two generations) bind distinct positive INTEGER result IDs
+and genuine result SIDs to original callback/provider/session_start identities.
+Ordinary session_end and completion_report audits emit no SID: exact counts,
+unique audit IDs, task/agent envelopes and ordered start < end < consume slots
+supply their generation join. Status, confidence90, original summary, null
+verdict and blocked-null/final-done decision must match the accepted result and
+original public callback. Only closed NextStep null optionals and empty
+then/children defaults are accepted. The final orchestration_step has actor
+orchestrator and its distinct exclude_none done representation after S2 consume.
+
+`final_task` captures one genuine final snapshot, attaches its sanitized copy
+to the existing durable record as partial/unvalidated before assertions, then
+validates the same original object. Failure preserves that frame and propagates;
+no replacement read or continuation is allowed. The independent aggregate
+reconstructs live and final cardinalities/semantics/wake maps from original
+commands and parked/live/final rows, checks the unchanged complete S1 result
+and every retained audit by unique ID/full original payload, and ignores maker
+validation labels. Live S2 has only S1 end/consume/result and no done step;
+final has both generations and exactly one original done step. Missing or
+contradictory evidence fails daily health despite success markers.
 
 `jobs.pending`, `run_script`, `terminal_oracle`, `final_task`, browser job methods
 and the six records map actions to literal independent SQLite/file/process/UI
@@ -472,10 +543,10 @@ Evidence/control authoring records (all four answers; production seam NO):
 | Provider jobs protocol + wrapper child witness | `jobs_command`/`provider_cli` order absolute child/exchange deadlines with one-second receipt delivery room, append partial timeout evidence before refusal, bind actual child PID/parent/argv/source/SID and enforce block/final last-CLI rule. | Equal caller/child timeouts lose streams/identity; controller impersonation or post-final CLI. Exit-only provider lacks these command/evidence boundaries; persistence and sensitivity are unexecuted. |
 | Owned submitted-script socket/sentinel | `pending`/`run_script` bind exact script/token/job to SO_PEERCRED, E2E_ROOT, PID/start/PGID, natural EOF/closure and untruncated streams. | Launch before approval, wrong peer, controller substituting timeout; baseline provider socket is a different process family. |
 | Passive observer + boot/window records | `anchor`, passive Pause archive hooks, unchanged baseline/Pause boundary assertions and `aggregate.validate_e04` recompute A0→9→12/B0→6→18, serial+1/+1 and pair+0, full tails/counters and observed source identities. | Missing/reset/evicted window, extra attempt without provider, duplicate summaries deduplicated, receipt-before-S1/after-S2 confusion; old aggregate only checked metadata. |
-| Browser jobs fixture | `job_action` captures actual unchanged-cap body, status, dialog-open no-launch; `job_terminal`/`jobs_waiting` read fresh shipping detail, output, Recall and screenshots. | Wrong dialog/action, stale outcome or exit7 laundered; existing Browser covers only ordinary tasks. |
-| Actual-content daily aggregate | `validate_e04` reads observations and browser events, resolves records and screenshots, recomputes source/boot/counter/CLI/job/audit/process/result joins, five method/path/query/HTTP200/body/stdout/durable read joins, source-timed live-S2/blocked-S1 chronology and exact human-show first header; rejects empty/hash-only/disagreeing content. | Discovery-only/error/contradictory job wire, missing live S2, title masquerading as status or forged PASS/count-only content; metadata controls cannot validate these joins. Dedicated synthetic E04 aggregate fixtures are not authored or executed; sensitivity remains MISSING. |
+| Browser jobs fixture (O1–O7) | `Browser.response` binds armed Request/document scope and captures opt-in JSON inside the original deadline; `job_action` captures actual unchanged-cap body, status, dialog-open no-launch; `job_terminal`/`jobs_waiting` read fresh shipping detail, output, Recall and screenshots. | Wrong dialog/action, stale outcome or exit7 laundered; existing Browser covers only ordinary tasks. |
+| Actual-content daily aggregate (J1.b/J1.c) | `validate_e04` independently reconstructs genuine result/start SIDs, closed semantic completion/defaults, exact live/final lifecycle and full retained history; reads observations and browser events, resolves records and screenshots, recomputes source/boot/counter/CLI/job/audit/process/result joins, five method/path/query/HTTP200/body/stdout/durable read joins, source-timed live-S2/blocked-S1 chronology and exact human-show first header; rejects empty/hash-only/disagreeing content. | Discovery-only/error/contradictory job wire, missing live S2, title masquerading as status or forged PASS/count-only content; metadata controls cannot validate these joins. Dedicated synthetic E04 aggregate fixtures are not authored or executed; sensitivity remains MISSING. |
 | Existing metadata `controls` fixture with48 manifest entries | Existing `validate` controls still exercise missing/failed/skip/source/cleanup/timing envelope, now against the48-ID manifest. They are explicitly metadata-only; daily main additionally requires actual-content validation. | An omitted E04 name slips past stale manifest; old42-ID fixture covered baseline/Pause only. No control was executed for this delivery. |
-| Failure export / redaction context | `Controller.sanitize` + private retained old/new bearer context feed `run.collect_evidence/redact` before observations/scenario/browser-event/failure export; PR1036 unknown-context withholding and reserves remain. | Old boot secret survives final-token-only redaction, or failure loses partial chain; original exporter retained only final bearer. |
+| Failure export / redaction context (J1.a) | `final_task` publishes its single sanitized partial final frame before assertions; `Controller.sanitize` + private retained old/new bearer context feed `run.collect_evidence/redact` before observations/scenario/browser-event/failure export; PR1036 unknown-context withholding and reserves remain. | Old boot secret survives final-token-only redaction, or failure loses partial chain; original exporter retained only final bearer. |
 
 Consumers are `Controller.mark/durable/evidence` → observations.json and
 scenario.json → run.py result.json/sanitized export → existing five seven-day
@@ -735,7 +806,11 @@ transport and direct Playwright callers. The watchdog uses that same end;
 C resets it to the original D after leaving its case, without a new allowance.
 The aggregate checks each generated E04 end against its actual case and the
 serialized scenario deadline, with no R allocation oracle. Browser.response
-retains the stored main-page cap (initial15, E04 at-most10, C at-most4);
+uses min(effective end at entry, entry monotonic + stored main-page cap)
+(initial15, E04 at-most10, C at-most4) for action, nested native wait, opt-in
+body retrieval/UTF8 JSON parsing and late-return checks. The existing main-thread
+bounded/setitimer enforces the same end even for body(), which has no per-call
+timeout; no exit/body deadline is renewed.
 E05's thread page retains10 and provider release retains its caller's at-most5.
 The E04 task/Recall inner_text cap remains10. Full31s cache, both Pause windows,
 all full1s/at-most50ms C observations, genuine callbacks and literal content
