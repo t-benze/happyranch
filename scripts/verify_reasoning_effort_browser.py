@@ -302,7 +302,7 @@ def main():
                 request('PUT', prefix + '/model', {'model': 'provider/model', 'reasoning_effort': 'high'})
                 open_agent()
                 expect(page.locator('#agent-reasoning-effort')).to_have_value('high')
-                for value in ('future_Tier-2', 'none', ''):
+                for value in ('future_Tier-2', 'high', 'HIGH', 'A', 'A' * 32, 'none', ''):
                     page.locator('#agent-reasoning-effort').fill(value)
                     save()
                     page.reload()
@@ -419,11 +419,23 @@ def main():
             with page.expect_response(lambda r: r.url.endswith('/agents/case_worker/model') and r.status == 422):
                 page.get_by_role('button', name='Save agent', exact=True).click()
             require(agent_path.read_bytes() == before, 'overlength UI value refuses without truncation or mutation')
-            # Browser sanitation is recorded separately from backend rejection.
+            # Chromium's insertText path (used by fill) converts LF to a space;
+            # assigning the native input value strips it. Record both separately
+            # from validation, then submit the actual delivered fill value.
+            before = agent_path.read_bytes()
             page.locator('#agent-reasoning-effort').fill('hi\ngh')
             actual = page.locator('#agent-reasoning-effort').input_value()
-            require(actual == 'high', 'single-line browser newline sanitation')
-            receipts.append({'case': 'B2-browser-sanitation', 'attempted': 'hi\ngh', 'actual_dom_value': actual, 'backend_refusal_claim': False})
+            native_value = page.evaluate('''() => { const input = document.createElement('input'); input.type = 'text'; input.value = 'hi\\ngh'; return input.value; }''')
+            receipts.append({'case': 'B2-browser-sanitation', 'attempted': 'hi\ngh', 'delivery': 'Playwright fill/Chromium insertText', 'actual_dom_value': actual, 'native_value_assignment': native_value, 'browser_version': browser.version, 'backend_refusal_claim': False})
+            retain_prefix()
+            require(actual == 'hi gh' and native_value == 'high', 'distinct Chromium newline delivery/value sanitation')
+            with page.expect_response(lambda r: r.url.endswith('/agents/case_worker/model') and r.request.method == 'PUT') as sanitation_response:
+                page.get_by_role('button', name='Save agent', exact=True).click()
+            delivered_request = sanitation_response.value.request.post_data_json
+            require(delivered_request['reasoning_effort'] == actual, 'actual DOM value delivered to backend')
+            require(sanitation_response.value.status == 422 and agent_path.read_bytes() == before, 'sanitized space-bearing value refuses without canonical mutation')
+            expect(page.locator('#agent-reasoning-effort')).to_have_value(actual)
+            receipts.append({'case': 'B2-browser-delivered-refusal', 'request': delivered_request, 'status': sanitation_response.value.status, 'before_base64': base64.b64encode(before).decode(), 'after_base64': base64.b64encode(agent_path.read_bytes()).decode()})
             open_agent()
             # C3 availability via bounded browser HTTP delivery, not fake product
             # support; canonical saved text remains visible when metadata fails.
