@@ -746,6 +746,19 @@ Founder `PUT /agents/{agent_name}/system-prompt` is a strict prompt-only CAS. It
 
 `TeamsRegistry` in `runtime/orchestrator/teams.py` is seeded from `teams.yaml` and auto-persists on `add_worker` and `remove_worker`. There is no `DEFAULT_LAYOUT`; an org without `teams.yaml` is empty.
 
+The separate online founder `POST /teams/ensure-default` creates only an absent
+empty human-founder Default. `needs_empty_default` rejects conflicting management
+before fencing; `ensure_empty_default` saves a validated candidate before updating
+the shared registry object. Canonical/cache and membership prevalidation precedes
+the durable lease. The async authority writer gate precedes teams_lock; only
+canonical save/cache update and bounded audit use the short canonical fence.
+Publication occurs through interval exit, then a read-only interval checks owned
+readiness and compares the complete current snapshot. Compatible repeat preserves
+workers and metadata without save/audit/publication. It reports incomplete authority
+rather than repairing it; existing publication/cold recovery retains ownership.
+Only absent display metadata is initialized; task routing and explicit pointers
+remain unchanged. See the current THR296 spec's separate online contract.
+
 ## Agent Lifecycle: Enrollment, Approval, and Termination
 
 - **Enrollment.** `manage-agent enroll` creates a pending agent file under `org/agents/_pending/<name>.md`. A founder (or team manager with an active session) may enroll agents only into their own team.

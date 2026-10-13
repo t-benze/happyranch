@@ -1074,6 +1074,22 @@ Missing/malformed revisions return422 `expected_revision_required`; stale bases 
 
 Teams membership editing (add/remove workers only — manager reassignment is founder-gated) is available via `PUT /settings/teams`, wrapping `TeamsRegistry` mutators with `validate_team_membership` consistency checks and 409 rollback on drift.
 
+Founder `happyranch teams ensure-default --org ORG` calls the bodyless
+`POST /teams/ensure-default` to provision only an absent empty human-founder
+Default. It preserves other teams, all existing workers and task routing;
+compatible repeat is read-only, and conflicting management refuses409. The
+JSON receipt includes created, team, both resolved pointers and authority.
+HTTP200/CLI exit0 requires ready current authority readback; HTTP202/CLI exit1
+means Default exists but publication/recovery remains incomplete. Repeating does
+not repair authority. `happyranch teams list --org ORG` reads `GET /teams`.
+The TS `ensureDefaultTeam` callable preserves the same explicit/partial contract;
+it is not automatically mounted or sent. Add Agent already renders the returned
+human team with Founder-managed labeling: refresh teams after provisioning and
+select Default without creating an agent. An old running daemon lacks the new
+capability; source acceptance/merge, loaded capability and live dropdown outcome
+are distinct. The deferred offline consultant move is a separate operation;
+no adoption/restart or agent-move authority follows from this command.
+
 **Backend:** The `GET /agents` response now includes `repos`, `system_prompt`, and `model` fields (additive, `allow_rules` remains excluded). The `PUT /agents/{agent}/model` route sets or clears the per-agent model (see below).
 
 The agent detail pane also reads `GET /agents/{agent}/cleanup-activity`. It returns at most five newest distinct own-agent tasks eligible by a historical same-agent `workspace_cleanup_triggered` audit or the exact manual first line `HAPPYRANCH SYSTEM WORKSPACE CLEANUP RUN (manual-dispatch)` (alone, LF or CRLF; no substring/prefix matching). Eligibility and deduplication precede the five-row limit. Routine reports stay on this existing agent page through ordinary completion/results, with no cleanup-report thread creation, routine posting or reuse obligation. Historical threads/messages/associations/results/audits and explicit founder-requested coordination remain intact. Manual display does not increment daemon count or grant action authority. A task's lifecycle status and latest same-agent result status remain separate; missing summaries are rendered as unavailable. This GET is a read-only projection and does not start or perform cleanup.
