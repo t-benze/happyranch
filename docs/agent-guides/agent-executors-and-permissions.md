@@ -1035,6 +1035,34 @@ never grants an exception. This is a snapshot
 with accepted later-opener/write-interruption residual, never an OS-wide-absence
 or future-non-use guarantee.
 
+The current-use scanner treats a parseable leader `Z` as evidence for that task
+only. It independently enumerates the bounded group frontier before requiring
+leader namespaces or references. Repeated PID/TID, Tgid, starttime and complete
+UID identity with repeated `Z` may omit only that task's dead references; live
+workers still require their own `cwd`, `root`, `exe`, `maps`, private fd table,
+mount/user namespaces and path resolution through their own proc root. Missing
+worker census after leader exit remains `unknown`; `Threads: 1`, a controller's
+TIDs or a guessed singleton never substitute for a complete census. Canonical
+positive ASCII TIDs, uniqueness, actual group membership and unique complete
+Pid/Tgid/Uid/State status fields are required. Malformed identities, reuse or
+credential changes refuse; ordinary live R/S transitions alone are not reuse.
+Thread membership/count observations converge within the existing pass cap
+and shared deadline, reserving final census and identity/view checks. Known
+positive use remains `blocked` even with incomplete evidence. Public result,
+coverage and row schemas, scan/Bounds compatibility and exits 0/3/2 are retained.
+
+For receipts from this revised source, `scanned` counts distinct admitted
+non-exempt group leaders; `exited` counts distinct confirmed terminal task
+identities (Tgid,TID,starttime,all four UIDs), with initially absent unbracketed
+PID census slots accounted separately; `vanished` counts deduplicated actual
+absence/closed-reference observations, including separately observed reopened
+reference incarnations. A present confirmed Z contributes one exited and zero
+vanished; leader/task-leader aliases and rediscovery do not recount it. These
+counters are different units and must not be summed as population proof.
+Historical receipts retain their original source-bound event meanings and
+bytes. This correction grants no cleanup, package refresh, deployment or
+live-process unreadability waiver.
+
 Both manual and daily procedures invoke that helper only through the supported
 task-bound host-visible HappyRanch jobs path and consume a closed-schema,
 non-truncated receipt that binds the authenticated task/session to the actual
