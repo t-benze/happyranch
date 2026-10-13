@@ -213,13 +213,16 @@ texts('Go-runtime', __import__('subprocess').check_output(['go', 'env', 'GOVERSI
 # Source maps identify emitted input modules. They do not assert whether every
 # included helper/asset or legal obligation was preserved by the bundler.
 web = (source / 'web').resolve(); node_modules = web / 'node_modules'; packages = {}
+# index.html's /src/main.tsx entry and Vite's @ alias select web/src.
+# Other source/virtual/generated inputs require explicit attribution evidence.
+first_party = web / 'src'
 # Retain only paths, hashes and fixed reasons, never metadata/source contents.
 # First 100 records, with bounded fields, survive even a later notices failure.
 web_diagnostics = {'records': [], 'omitted_records': 0, 'truncated': False}
 def web_diagnostic(inclusion, reason):
     record = {'disposition': 'LICENSE_UNRESOLVED', 'reason': reason}
     record.update({key: inclusion.get(key) for key in
-                   ('map', 'map_sha256', 'source', 'input', 'metadata', 'package_root')})
+                   ('map', 'map_sha256', 'source_root', 'source', 'input', 'metadata', 'package_root')})
     clipped = []
     for key, value in record.items():
         if isinstance(value, str) and len(value) > 512:
@@ -267,15 +270,17 @@ for map_path in sorted((web / 'dist').rglob('*.map')):
         if not isinstance(graph, dict) or not isinstance(graph.get('sources'), list):
             raise ValueError('source map must be an object with a sources array')
         source_root = graph.get('sourceRoot', '')
-        if not isinstance(source_root, str) or Path(source_root).is_absolute() or '\\' in source_root or '\x00' in source_root:
-            raise ValueError('unsafe sourceRoot')
     except (OSError, ValueError) as exc:
         base['metadata'] = base['map']
         unresolved(base, 'unusable source map: ' + type(exc).__name__)
         continue
     for src in graph['sources']:
         inclusion = base.copy(); inclusion['source'] = src if isinstance(src, str) else None
+        inclusion['source_root'] = source_root if isinstance(source_root, str) else None
         inclusion['metadata'] = base['map']
+        if not isinstance(source_root, str) or Path(source_root).is_absolute() or '\\' in source_root or '\x00' in source_root:
+            unresolved(inclusion, 'sourceRoot must be a safe relative path string')
+            continue
         if not isinstance(src, str) or not src or '\x00' in src or '\\' in src or Path(src).is_absolute():
             unresolved(inclusion, 'emitted input must be a safe relative path string')
             continue
@@ -283,13 +288,29 @@ for map_path in sorted((web / 'dist').rglob('*.map')):
         # input from its actual package to another dependency or the web app.
         path = Path(os.path.abspath(map_path.parent / source_root / src))
         inclusion['input'] = str(path)
+        try:
+            # JSON permits lone surrogates that the filesystem cannot encode.
+            # Validate both fields before any filesystem resolution/inspection.
+            os.fsencode(source_root)
+            os.fsencode(src)
+            os.fsencode(path)
+        except UnicodeEncodeError:
+            unresolved(inclusion, 'emitted input or sourceRoot is not filesystem-encodable')
+            continue
         if not path.is_relative_to(node_modules):
             try:
-                if 'node_modules' in Path(src).parts or path.resolve().is_relative_to(node_modules):
-                    unresolved(inclusion, 'dependency input escapes its lexical package boundary')
-            except (OSError, RuntimeError):
-                unresolved(inclusion, 'emitted input path cannot be safely resolved')
-            continue  # Ordinary first-party web input; no dependency attribution.
+                if 'node_modules' in Path(src).parts or 'node_modules' in Path(source_root).parts:
+                    raise ValueError('dependency input escapes its lexical package boundary')
+                if not path.is_relative_to(first_party):
+                    raise ValueError('emitted input is outside permitted first-party web/src boundary')
+                resolved = path.resolve()
+                if first_party.resolve() != first_party or not resolved.is_relative_to(first_party):
+                    raise ValueError('first-party input escapes its source boundary')
+                if 'node_modules' in resolved.relative_to(first_party).parts or not path.is_file():
+                    raise ValueError('first-party input is missing or is an unclassified dependency')
+            except (OSError, ValueError, RuntimeError) as exc:
+                unresolved(inclusion, str(exc) if isinstance(exc, ValueError) else 'emitted input path cannot be safely resolved')
+            continue  # Only positively classified first-party input may skip.
         parts = path.relative_to(node_modules).parts
         # The last node_modules segment identifies the innermost dependency,
         # including nested and scoped packages. Never climb past this boundary.

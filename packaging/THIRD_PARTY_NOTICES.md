@@ -32,8 +32,15 @@ boundary, including scoped and nested packages. Anonymous subpath format
 manifests inherit only that package's validated root name/version. Malformed,
 missing, conflicting or unsafe metadata/input/notice paths produce
 `LICENSE_UNRESOLVED` with source-map, input and metadata paths; they cannot
-inherit an enclosing dependency or web-app identity. Grouped inputs retain
-map/source/metadata hashes and original notice bytes. Failure diagnostics include
+inherit an enclosing dependency or web-app identity. Only existing inputs
+lexically and physically contained within `web/src` (the HTML entry/Vite alias
+boundary) may skip dependency attribution; missing, external, symlink-escaping
+or otherwise unclassified inputs retain per-input unresolved evidence without
+reading external metadata/notices. Both source and `sourceRoot` must be
+filesystem-encodable before inspection; rejected records preserve their
+source-map, sourceRoot, source and lexical input provenance using escaped JSON.
+Grouped inputs retain map/source/metadata hashes and original notice bytes.
+Failure diagnostics include
 `web-attribution.json`: first 100 rejected records, string fields capped at 512
 characters and serialized records capped at 2048 bytes, with explicit
 omitted-record/field truncation; the failure bundle keeps
