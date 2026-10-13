@@ -14,7 +14,10 @@ npm run build
 ```
 
 `npm run dev` serves a local preview. Every page is prerendered at build
-time; the site has no API routes, middleware, rewrites or remote images.
+time; the site has no API routes, middleware, application-defined rewrites or
+remote images. Nextra itself generates one `afterFiles` rewrite,
+`/:path*/_meta` -> `/404`, which hides the `_meta` navigation files; it appears
+in `.next/routes-manifest.json` and the standalone `server.js`.
 
 ## Relocatable package
 
@@ -30,8 +33,25 @@ tar -C .next -czf happyranch-manual.tar.gz standalone
 ```
 
 There is no `public/` directory; if one is added, copy it to
-`.next/standalone/public` as well. Run the package on any Linux x86_64 host
-with Node 24 (the bundled `sharp`/`@img` binaries are platform-specific):
+`.next/standalone/public` as well.
+
+### Platform
+
+The standalone trace copies the native binaries that `npm ci` installed for
+the build machine, so a package only runs on the OS, CPU architecture and
+libc it was built on. Build on the same OS/architecture/libc as the intended
+host; every other target needs its own build and its own run evidence.
+
+- Upstream prerequisites of the bundled native packages
+  (`@img/sharp-linux-x64`, `@img/sharp-libvips-linux-x64`): Linux, x64,
+  glibc >= 2.28. No musl (Alpine) binaries are included. Node 24 is required
+  by `engines`.
+- Observed: the current candidate was built with Node 24.19.0 / npm 11.17.0
+  on Linux x86_64 (glibc), and its relocated `server.js` was run on Node
+  24.19.0 with glibc 2.43. The glibc 2.28 minimum, other glibc versions,
+  musl, arm64, macOS and Windows were not tested.
+
+Run the package:
 
 ```bash
 tar -xzf happyranch-manual.tar.gz
