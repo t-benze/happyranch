@@ -335,6 +335,12 @@ def main():
                 page.route(pattern, hold)
                 with page.expect_request(pattern):
                     open_unready()
+                if label != 'roster-loading':
+                    # The roster must arrive while this metadata response is held.
+                    actual = roster()
+                    expect(page.get_by_label('Executor', exact=True)).to_have_value(actual['executor'])
+                    expect(page.get_by_label('Model', exact=True)).to_have_value(actual['model'] or '')
+                    expect(page.locator('#agent-reasoning-effort')).to_have_value(actual['reasoning_effort'] or '')
                 refuse_unready(label)
                 require(pending, label + ': actual response held')
                 for route in pending: route.continue_()
@@ -357,7 +363,8 @@ def main():
                 ('metadata-error', '**/api/v1/health/prereqs', None),
                 ('metadata-empty', '**/api/v1/health/prereqs', {'prereqs': []}),
             ):
-                def deliver(route, body=delivery):
+                def deliver(route, _request, *, body=delivery):
+                    # Playwright supplies Request as the second positional argument.
                     route.fulfill(status=503 if body is None else 200, content_type='application/json', body=json.dumps(body) if body is not None else '{}')
                 page.route(pattern, deliver)
                 def empty_profiles(route): route.fulfill(status=200, content_type='application/json', body='{"profiles": []}')
