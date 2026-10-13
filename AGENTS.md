@@ -627,7 +627,7 @@ These are acceptance deadlines, not a hard wall-clock limit on contextless initi
 
 **Original connector observation (THR-228 seq421).** The two failure-only snapshots reserve a separate 13-second command allowance plus one-second kill grace for `connector`, after the existing sidecar-first channels and before teardown. The helper admits four observations under one 11-second section: named unit properties (one second), original process tree (two seconds), repeated unit properties (one second), repeated process tree (two seconds), each with at most one second for owned group termination/reaping. Reads and iterations are capped: 4096-byte unit output, 128 threads per process, at most eight descendants/four levels, 512 descriptors per process, 262144-byte TCP table per process, 2048-byte process projection and 4096-byte retained section. Boot, invocation, MainPID, process start ticks, parent relations and exact unit cgroup bind the existing Go supervisor and its actual descendants, including the onefile launcher's Python worker. Repeated process, child and socket sets must agree. Only a matching owned socket inode in LISTEN at the harness-configured literal `127.0.0.1:18443` yields `listening=true`, its actual `listener_pid` and `bound_port=18443`; a complete stable scan without it yields false/null. This is sampled process-attributed listening evidence, not atomic readiness or a hard bound on kernel filesystem stalls. Missing MainPID is `failed` for a failed unit, otherwise `absent`; unavailable child/process, query/launch/parse failure, attribution loss, timeout and truncation remain explicit, with null listening and binding. Unknown StatusText is reduced to `unclassified`; raw logs, tokens, identities, argv, paths, requests, trust state and credentials are never retained. Systemd's fixed aggregate `composite healthy`, stopping and exited statuses are observations, not gate-level cause. All five original-instance readiness gates are `ok=null/loss=unavailable_internal`: the existing private child health pipe publishes only aggregate states. The separate `diagnose` CLI constructs a new supervisor, readiness evaluation and adapter; it is never called or labeled original process state. No new inspection API, listener or initialization is added. Evidence failure neither admits readiness nor changes the initiating exit or remaining cleanup attempts. Collector cases are source specifications with executable coverage unavailable after Python-unit retirement; no behavioral PASS follows.
 
-**Single N3 publication selection (THR-228 seq435).** The PR800 candidate integrates current-main lint-only `Source Boundary Lint` and `Web Lint (Node 24)` plus the existing Managed N3 package/harness/evidence job. N3 selects only a `pull_request` `synchronize` for PR800 on same-repository `task/TASK-6475` targeting main, with payload `before=590768ff22e41dd7e519011589b784d4bea7ee3d`, changed `after` equal to the event head, and `run_attempt=1`. Checkout and proof subject use that `after` SHA. Other PRs, opening/reopening, subsequent updates, main pushes, manual runs and reruns cannot renew this allocation. Current-main hooks/local `all` remain lint/static only; no general build/test lane is restored. Product E2E remains daily-only 19:00 UTC from default branch. This local candidate spends no allocation; the manager owns one publication after fresh independent full review and scoped QA, then the actual run/result before any further repair or rerun. Seq402, seq409, seq421 and seq428 remain exhausted (1/1 each), with all historical failures preserved; seq435 remains unspent (0/1) until the manager publication.
+**Single N3 publication selection (THR-228 seq435).** The PR800 candidate integrates current-main lint-only `Source Boundary Lint` and `Web Lint (Node 24)` plus the existing Managed N3 package/harness/evidence job. N3 selects only a `pull_request` `synchronize` for PR800 on same-repository `task/TASK-6475` targeting main, with payload `before=590768ff22e41dd7e519011589b784d4bea7ee3d`, changed `after` equal to the event head, and `run_attempt=1`. Checkout and proof subject use that `after` SHA. Other PRs, opening/reopening, subsequent updates, main pushes, manual runs and reruns cannot renew this allocation. Current-main hooks/local `all` remain lint/static only; no general build/test lane is restored. Product E2E remains daily-only 19:00 UTC from default branch. The manager published112f90ec after independent review and scoped QA; run38347173460/attempt1 FAILED. Seq402, seq409, seq421, seq428 and seq435 are exhausted (1/1 each), with all historical failures preserved. Current seq444 authorizes local source preparation only, no publication/run.
 
 **Credential input and pinned logging correction (THR-228 seq390).** Enrollment input strips only surrounding Go `bytes.TrimSpace` whitespace (including LF/CRLF); clean and interior bytes are unchanged. Empty/whitespace-only input refuses before engine work. Existing owner/mode/symlink checks, consumed-marker refusal and one-use commit order remain. The entire owned file-read buffer is cleared on every read result; startup clears the independent normalized buffer after every engine result. The tsnet adapter drops its AuthKey string reference immediately after every returned initialization result, including errors or an expired caller, before any readiness work. This clears owned byte buffers and releases the string reference; it does not promise erasure of upstream/Go runtime copies.
 
@@ -1102,7 +1102,7 @@ run is authorized by this cadence change.
 See [the reset coverage gap record](docs/python-test-reset.md) and
 [Local CI](docs/local-ci.md) for retained selectors and evidence limits.
 
-**PR800 task-scoped hold (THR228seq355/390/402/409/421/428/435).** Go, Web and canonical platform unit execution remains suspended and nonblocking, never PASS; Python retirement remains permanent. The seq435 candidate preserves current main's lint/static-only `local_ci.sh all/web` and automation selection. Use permitted source syntax/format/static lanes and normal hooks; no local N3, build/test campaign, ad hoc Product E2E or hosted CLI-callback execution follows. Publication and its single automatic N3 remain manager-owned after fresh independent exact-candidate review and honest scoped QA. Source-only candidate delivery does not consume that allocation.
+**PR800 task-scoped hold (THR228seq355/390/402/409/421/428/435).** Go, Web and canonical platform unit execution remains suspended and nonblocking, never PASS; Python retirement remains permanent. The seq435 candidate preserves current main's lint/static-only `local_ci.sh all/web` and automation selection. Use permitted source syntax/format/static lanes and normal hooks; no local N3, build/test campaign, ad hoc Product E2E or hosted CLI-callback execution follows. The single automatic seq435 N3 was consumed by112f90ec/run38347173460 and FAILED. Current seq444 local source preparation grants no publication or run allocation.
 
 PR800 seq428 permits only connector SYSTEMD `0222` write-bit refusal with
 read-only ACL staging, unchanged File `0077` and sidecar staged `0022`
@@ -1111,7 +1111,7 @@ mode capture through the original connector namespace inside existing budgets.
 No token read or internal readiness API follows. See the [current contract and
 four-answer cases](docs/operations/managed-remote-access-linux-package.md).
 Maker custody is LOCAL UNPUBLISHED; independent exact-head review/static QA
-precede manager's seq435 one update from590768ff and allocated automatic N3 attempt1; seq428 is consumed1/1.
+preceded the historical seq435 update112f90ec and FAILED automatic N3 attempt1; seq428 and seq435 are consumed1/1.
 No local product run/build, new trigger, privilege, sandbox or lifecycle change.
 
 Source boundary enforcement: `python scripts/check_source_boundaries.py` and
@@ -1424,7 +1424,8 @@ are source specifications only. Seq428 run38259906794 at590768ff failed after
 the expected negative ledger, without a positive-start/mode/listener result;
 reset-abort attribution is supported by retained logs/source, while historical
 sole-cause and credential-fix causality remain inference. Seq428 is consumed1/1.
-Seq435 remains manager-owned0/1; no maker publication, build or product run.
+Seq435 was consumed1/1 by the manager publication at112f90ec;
+run38347173460/attempt1 FAILED. No allocation remains for this local successor.
 
 
 **Receipt and assertion acquisition correction (TASK11084/11090/11099, SAME TASK11067).**
@@ -1495,7 +1496,7 @@ failure before any successful start) refuse the virtual and aggregate cleanup
 claims without inventing a Stop receipt; every later cleanup attempt and original
 nonzero exit remain. Barrier refusal still releases both latches in teardown.
 This unpublished source candidate requires fresh FULL independent review and
-same-head SOURCE/STATIC QA before manager publication; seq435 stays0/1. No
+same-head SOURCE/STATIC QA for local source preparation; seq435 is consumed1/1. No
 behavioral/red-green/mutation/repetition/test-authoring PASS is claimed.
 SYSTEMD0222/File0077, production sidecar/supervisor/lifecycle, sandbox, CI guards,
 original failure and all cleanup attempts remain unchanged. No whole-harness
@@ -1504,3 +1505,72 @@ Naming namespace capture includes active/pending executable agent managers and
 workers. Mainline typed human Founder managers have no agent definition and are
 excluded from that agent set; Founder remains the separate human naming owner.
 The combined I/roster/naming behavior remains unverified; see the current naming spec.
+
+
+**Local observational correction (THR-228 seq444; sole root TASK11161).**
+Seq435 is consumed1/1 at112f90ec/run38347173460/attempt1 (FAILED). All earlier
+allocations remain consumed. TASK11067 is completed history. This successor is
+LOCAL UNPUBLISHED only: no push/publication/new PR, workflow change/trigger/rerun,
+N3/build/live experiment, merge or deployment. Daily-only19UTC E2E is unchanged.
+Fresh full independent review then same-head SOURCE/STATIC QA are required.
+
+Go stderr adds only exact `connector_supervisor phase=... reason=... generation=...
+sequence=...` lines. Context marks invocation start; observation marks aggregate
+pre-READY sidecar state or pipe EOF; first marks the first local stop/exit decision;
+consequence marks later distinct decisions/admission/notify/TERM/scanner loss.
+The first reason appears once and each other phase/reason once per supervisor.
+The generation is supervisor-generated; sequence is last accepted, never rejected
+input. Setup before generation uses unavailable/0. Fixed reasons distinguish
+startup/freshness expiry, cancellation, clean unexpected/error/after-stop child
+exit, framing/read/version/generation/sequence/state rejection, regression,
+sidecar unknown/absent/unhealthy, notification failure and admission refusal.
+Unknown sidecar status or child exit never names a Python gate or OS signal.
+No health protocol, return value, Wait, terminal latch, notify order, readiness
+refresh, admission-before-TERM or Stop predicate changes. The original five
+Python gates remain unavailable after exit. A new diagnose is a new evaluation.
+
+The existing connector reservation is split, never expanded: journal command4s
+plus1s kill grace/2048B first, then live process command8s plus1s kill grace/2048B.
+Total14s/4096B remains; live internal opportunity is reduced from11s to6s and
+incomplete samples refuse. Sidecar text, state, jobs and receipt ordering stays
+first. Journal worker owns an absolute3s read/parse/exit window plus1s group reap,
+64KiB raw plus one detector,8192B frames,256 frames and at most6 retained events.
+Only closed labels pass before retained caps; no raw prose/payload/error is kept.
+All journal events require canonical unit, boot, positive bounded PID, nonzero
+invocation, unique cursor and trusted realtime/monotonic journal timestamps in
+the pre-start window. Generation/PID/sequence/monotonic drift within an invocation
+refuses. Events retain separate invocation IDs; the original invocation remains
+null/window_only because a surviving restart cannot establish the lost original.
+Missing/invalid attribution is explicit, never replacement-process evidence.
+Earlier accepted events survive parse/query/timeout/truncation loss; tail_complete
+is false on loss. A successful empty stream is empty; a nonzero grep/query remains
+query_error. No retained label proves the ultimate root cause or complete history.
+
+The source section ledger totals82s scheduled allowance and32256B accounted
+section bytes both before and after this split (sidecar text6s/4096B; sidecar
+state8s/1024B; jobs8s/8192B; receipts8s/8192B; connector14s/4096B;
+Headscale17s/4096B; connector/target properties16s/2048B; presence5s/512B).
+Legacy45s/24064B metadata omitted existing sections; it was never an enforced
+aggregate cap. Those existing keys remain for artifact readers and are flagged
+legacy_aggregate_metadata=true alongside the actual unchanged ledger; setup/kernel/output latency is not a guaranteed wall-clock bound and
+snapshot JSON wrappers are outside accounted section bytes. No larger bound is
+claimed or installed. Capture write/launch/query failure preserves originating
+exit and remaining once-only teardown; outer interruption can lose worker partial
+output and records timeout separately.
+
+Final cleanup labels now distinguish virtual_stop_binding_unconfirmed from
+virtual_removal_unconfirmed. The same active-instance pre-Stop tuple, two
+same-instance Stop receipts, MainPID0, valid current peer and unsuccessful real
+virtual dial remain required. Positive reachability vetoes removal. Missing
+address/binding/receipts/dead process alone never proves removal or residue.
+There are23 shipping plus24 final possible deduplicated refusal pairs (<4096B);
+only the final legacy residue pair splits. Run38347173460 retains no final
+virtual-removal/aggregate cleanup receipt: INCOMPLETE/UNCONFIRMED, not observed
+residue. Existing artifacts/failed receipts remain immutable.
+
+D01-D12 extend the maintained79 cases. All behavioral/unit/red-green/mutation/
+repetition/assertion/executable-QA proof remains UNEXECUTED/SUSPENDED, nonblocking
+for source preparation; integration/actual callback SKIPPED THR243seq42. Python
+units remain RETIRED. Static receipts establish source properties only. Proposed
+original-process gate transitions, durable last-transition record and doctor
+command are PROPOSAL ONLY, with no private protocol/state/API implementation.

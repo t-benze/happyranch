@@ -292,12 +292,16 @@ unit_absent() {
 }
 cleanup_refusal() {
   # Only these fixed pairs can leave cleanup. Emit each once across all resets
-  # and trap reentry: at most 2 phases x 23 identifiers, less than 4096 bytes.
+  # and trap reentry: 23 shipping pairs + 24 final pairs, less than the existing 4096 bytes.
   local phase="$1" predicate="$2" key
   case "$phase" in shipping|final) ;; *) return 1 ;; esac
   case "$predicate" in
-    reload_failed|fixture_delete_failed|fixture_absence_unconfirmed|unit_absence_unconfirmed|inventory_query_failed|inventory_malformed|unit_file_residue|inventory_scratch_failed|host_listener_residue|virtual_listener_residue|credential_path_residue|transaction_path_residue|payload_path_residue|runtime_path_residue|process_residue|process_query_failed|stage_residue|stage_query_failed|fixture_process_residue|owned_path_unconfirmed|mainpid_unconfirmed|evidence_failed|work_path_residue) ;;
+    reload_failed|fixture_delete_failed|fixture_absence_unconfirmed|unit_absence_unconfirmed|inventory_query_failed|inventory_malformed|unit_file_residue|inventory_scratch_failed|host_listener_residue|virtual_listener_residue|virtual_stop_binding_unconfirmed|virtual_removal_unconfirmed|credential_path_residue|transaction_path_residue|payload_path_residue|runtime_path_residue|process_residue|process_query_failed|stage_residue|stage_query_failed|fixture_process_residue|owned_path_unconfirmed|mainpid_unconfirmed|evidence_failed|work_path_residue) ;;
     *) return 1 ;;
+  esac
+  # Split only final evidence loss. Legacy residue remains a shipping term.
+  case "$phase:$predicate" in
+    shipping:virtual_stop_binding_unconfirmed|shipping:virtual_removal_unconfirmed|final:virtual_listener_residue) return 1 ;;
   esac
   key="$phase:$predicate"
   [[ "|${cleanup_refusals_seen:-}|" != *"|$key|"* ]] || return 0
@@ -829,12 +833,39 @@ capture_headscale_fixture() {
   fi
   rm -f "$safe_file"
 }
+capture_connector_journal() {
+  # Reserved BEFORE the live process sample; journal identity survives exit.
+  # Fixed labels only. The Python worker owns/reaps its journal child group.
+  local safe_file value bytes status=0 restore_errexit=0 loss=launch_failure python_command
+  connector_journal='{"unit":"happyranch-connector.service","events":[],"original_invocation":null,"attribution":"window_only","losses":["unattempted"],"tail_complete":false}'
+  case "$-" in *e*) restore_errexit=1 ;; esac
+  safe_file="$(mktemp "$diagnostics/.n3-connector-journal.XXXXXX")" || {
+    connector_journal="${connector_journal//unattempted/launch_failure}"; return 0
+  }
+  python_command="$(command -v python)" || { rm -f "$safe_file"; connector_journal="${connector_journal//unattempted/query_error}"; return 0; }
+  set +e
+  timeout --kill-after=1 4 sudo -n "$python_command" "$failure_capture_driver" --mode connector-journal --boot-id "$snapshot_boot_id" --since-us "$snapshot_since_us" --until-us "$sidecar_failure_until_us" >"$safe_file" 2>/dev/null
+  status=$?
+  (( restore_errexit )) && set -e || set +e
+  bytes="$(wc -c <"$safe_file")" || { rm -f "$safe_file"; connector_journal="${connector_journal//unattempted/query_error}"; return 0; }
+  if [[ ! "$bytes" =~ ^(0|[1-9][0-9]{0,17})$ ]]; then loss=query_error
+  elif (( status == 124 || status == 137 )); then loss=timeout
+  elif (( status != 0 )); then loss=query_error
+  elif (( bytes > 2048 )); then loss=truncated
+  elif (( bytes == 0 )); then loss=parse_loss
+  elif value="$(<"$safe_file")"; then
+    connector_journal="$value"; rm -f "$safe_file"; return 0
+  else loss=query_error
+  fi
+  connector_journal="${connector_journal//unattempted/$loss}"
+  rm -f "$safe_file"
+}
 capture_connector_instance() {
   # Own a reserved section, independent of sidecar/Headscale caps. Read only
   # the original unit/process tree and staged-file numeric mode in its root
   # view. Existing budgets/privilege boundary stay fixed; no token reads.
   local safe_file value bytes status=0 restore_errexit=0 python_command loss=launch_failure
-  connector_observation='{"unit":"happyranch-connector.service","binding":null,"listening":null,"bound_port":null,"status":"unavailable","loss":"unattempted","credential_mode":{"location":"systemd-daemon-token","namespace":"connector-service-root","mode":null,"observed_at_us":null,"loss":"unattempted"},"collection":{"observation_budget_seconds":11,"command_budget_seconds":13,"kill_grace_seconds":1,"output_cap_bytes":4096},"readiness_gates":{"daemon_loopback":{"ok":null,"loss":"unavailable_internal"},"credential_permissions":{"ok":null,"loss":"unavailable_internal"},"current_policy":{"ok":null,"loss":"unavailable_internal"},"bind_identity":{"ok":null,"loss":"unavailable_internal"},"trust_state":{"ok":null,"loss":"unavailable_internal"}}}'
+  connector_observation='{"unit":"happyranch-connector.service","binding":null,"listening":null,"bound_port":null,"status":"unavailable","loss":"unattempted","credential_mode":{"location":"systemd-daemon-token","namespace":"connector-service-root","mode":null,"observed_at_us":null,"loss":"unattempted"},"collection":{"observation_budget_seconds":6,"command_budget_seconds":8,"kill_grace_seconds":1,"output_cap_bytes":2048},"readiness_gates":{"daemon_loopback":{"ok":null,"loss":"unavailable_internal"},"credential_permissions":{"ok":null,"loss":"unavailable_internal"},"current_policy":{"ok":null,"loss":"unavailable_internal"},"bind_identity":{"ok":null,"loss":"unavailable_internal"},"trust_state":{"ok":null,"loss":"unavailable_internal"}}}'
   case "$-" in *e*) restore_errexit=1 ;; esac
   safe_file="$(mktemp "$diagnostics/.n3-connector-safe.XXXXXX")" || {
     connector_observation="${connector_observation//\"loss\":\"unattempted\"/\"loss\":\"launch_failure\"}"
@@ -842,13 +873,14 @@ capture_connector_instance() {
   }
   python_command="$(command -v python)" || { rm -f "$safe_file"; connector_observation="${connector_observation//\"loss\":\"unattempted\"/\"loss\":\"query_error\"}"; return 0; }
   set +e
-  # 11s internal section plus startup/parser margin and 1s outer kill grace.
-  timeout --kill-after=1 13 sudo -n "$python_command" "$failure_capture_driver" --mode connector >"$safe_file" 2>/dev/null
+  # 6s internal live sample plus margin and 1s kill grace; the other 5s
+  # and 2048B of the original connector allowance are reserved for journal labels.
+  timeout --kill-after=1 8 sudo -n "$python_command" "$failure_capture_driver" --mode connector >"$safe_file" 2>/dev/null
   status=$?
   (( restore_errexit )) && set -e || set +e
   bytes="$(wc -c <"$safe_file")" || { connector_observation="${connector_observation//\"loss\":\"unattempted\"/\"loss\":\"query_error\"}"; rm -f "$safe_file"; return 0; }
   [[ "$bytes" =~ ^(0|[1-9][0-9]{0,17})$ ]] || { connector_observation="${connector_observation//\"loss\":\"unattempted\"/\"loss\":\"query_error\"}"; rm -f "$safe_file"; return 0; }
-  if (( status == 0 )) && [[ -s "$safe_file" ]] && (( bytes <= 4096 )); then
+  if (( status == 0 )) && [[ -s "$safe_file" ]] && (( bytes <= 2048 )); then
     if value="$(<"$safe_file")"; then
       connector_observation="$value"
     else
@@ -856,7 +888,7 @@ capture_connector_instance() {
     fi
   else
     if (( status == 124 || status == 137 )); then loss=timeout
-    elif (( bytes > 4096 )); then loss=truncated
+    elif (( bytes > 2048 )); then loss=truncated
     elif (( status != 0 )); then loss=query_error
     else loss=parse_loss
     fi
@@ -897,9 +929,11 @@ capture_failure_snapshot() {
   capture_completed_jobs
   begin_observation_section 8 8192
   capture_diagnostic_receipts
-  connector_observation='{"unit":"happyranch-connector.service","binding":null,"listening":null,"bound_port":null,"status":"unavailable","loss":"unattempted","credential_mode":{"location":"systemd-daemon-token","namespace":"connector-service-root","mode":null,"observed_at_us":null,"loss":"unattempted"},"collection":{"observation_budget_seconds":11,"command_budget_seconds":13,"kill_grace_seconds":1,"output_cap_bytes":4096},"readiness_gates":{}}'
+  connector_observation='{"unit":"happyranch-connector.service","binding":null,"listening":null,"bound_port":null,"status":"unavailable","loss":"unattempted","credential_mode":{"location":"systemd-daemon-token","namespace":"connector-service-root","mode":null,"observed_at_us":null,"loss":"unattempted"},"collection":{"observation_budget_seconds":6,"command_budget_seconds":8,"kill_grace_seconds":1,"output_cap_bytes":2048},"readiness_gates":{}}'
+  connector_journal='{"unit":"happyranch-connector.service","events":[],"original_invocation":null,"attribution":"window_only","losses":["unattempted"],"tail_complete":false}'
   headscale_observation='{"process_state":"unknown","log":{"events":[],"losses":["unattempted"]},"nodes":{"peer":{"count":null,"state":"unknown"},"sidecar":{"count":null,"state":"unknown"},"losses":["unattempted"]}}'
   if [[ "$name" == first-positive-start-failure || "$name" == failure-before-teardown ]]; then
+    capture_connector_journal
     capture_connector_instance
     capture_headscale_fixture
   fi
@@ -938,7 +972,7 @@ capture_failure_snapshot() {
     observe_presence /run/credentials/happyranch-tsnet-sidecar.service -d; staging="$presence_value"; staging_loss="$presence_loss"
     snapshot_until_us="$(capture_now_us)"
     (( snapshot_until_us >= snapshot_since_us )) || snapshot_until_us="$snapshot_since_us"
-    printf '},"jobs":%s,"diagnostic_receipts":%s,"sidecar_failure_lines":%s,"credential_presence":{"source":%s,"held_source":%s,"consumed_marker":%s,"transient_dropin":%s,"staged_directory":%s},"collection":{"run_id":"%s","boot_id":"%s","window_start_us":%s,"window_end_us":%s,"journal_since_epoch_seconds":%s,"window_seconds":45,"output_cap_bytes":24064,"budget_model":"reserved-sections","source":"systemctl-filtered-sidecar-text-and-attributed-systemd-journals","sidecar_failure_capture":{"unit":"happyranch-tsnet-sidecar.service","window_start_us":%s,"window_end_us":%s,"line_cap":32,"output_cap_bytes":4096}},"observation_loss":{' "$completed_jobs" "$diagnostic_receipts" "$sidecar_failure_lines" "$source" "$held" "$marker" "$dropin" "$staging" "${run_id:-unknown}" "$snapshot_boot_id" "$snapshot_since_us" "$snapshot_until_us" "$snapshot_since_seconds" "$snapshot_since_us" "$sidecar_failure_until_us"
+    printf '},"jobs":%s,"diagnostic_receipts":%s,"sidecar_failure_lines":%s,"credential_presence":{"source":%s,"held_source":%s,"consumed_marker":%s,"transient_dropin":%s,"staged_directory":%s},"collection":{"run_id":"%s","boot_id":"%s","window_start_us":%s,"window_end_us":%s,"journal_since_epoch_seconds":%s,"window_seconds":45,"output_cap_bytes":24064,"legacy_aggregate_metadata":true,"scheduled_section_allowance_seconds":82,"section_accounted_bytes":32256,"aggregate_cap_enforced":false,"budget_model":"reserved-sections","connector_journal_capture":{"command_budget_seconds":4,"kill_grace_seconds":1,"raw_cap_bytes":65536,"frame_cap_bytes":8192,"frame_cap":256,"event_cap":6,"output_cap_bytes":2048},"connector_process_capture":{"command_budget_seconds":8,"kill_grace_seconds":1,"output_cap_bytes":2048},"source":"systemctl-filtered-sidecar-text-and-attributed-systemd-journals","sidecar_failure_capture":{"unit":"happyranch-tsnet-sidecar.service","window_start_us":%s,"window_end_us":%s,"line_cap":32,"output_cap_bytes":4096}},"observation_loss":{' "$completed_jobs" "$diagnostic_receipts" "$sidecar_failure_lines" "$source" "$held" "$marker" "$dropin" "$staging" "${run_id:-unknown}" "$snapshot_boot_id" "$snapshot_since_us" "$snapshot_until_us" "$snapshot_since_seconds" "$snapshot_since_us" "$sidecar_failure_until_us"
     for property_loss in "credential.source:$source_loss" "credential.held_source:$held_loss" "credential.consumed_marker:$marker_loss" "credential.transient_dropin:$dropin_loss" "credential.staged_directory:$staging_loss"; do
       [[ "$property_loss" == *:observed_present || "$property_loss" == *:observed_absent ]] && continue
       (( loss_first )) || printf ',' >>"$losses_file"; loss_first=0
@@ -947,7 +981,7 @@ capture_failure_snapshot() {
     cat "$losses_file"
     [[ "$jobs_loss" == observed ]] || { (( loss_first )) || printf ','; loss_first=0; printf '"jobs":"%s"' "$jobs_loss"; }
     (( loss_first )) || printf ','
-    printf '"diagnostic_receipts":%s,"sidecar_failure_lines":"%s"},"connector":%s,"headscale":%s}\n' "$diagnostic_receipt_loss" "$sidecar_failure_lines_loss" "$connector_observation" "$headscale_observation"
+    printf '"diagnostic_receipts":%s,"sidecar_failure_lines":"%s"},"connector_journal":%s,"connector":%s,"headscale":%s}\n' "$diagnostic_receipt_loss" "$sidecar_failure_lines_loss" "$connector_journal" "$connector_observation" "$headscale_observation"
   } >"$snapshot" || true
   rm -f "$losses_file"
 }
@@ -989,9 +1023,9 @@ cleanup() {
     : | sudo tee "$barrier_dir/start-release" >/dev/null
     : | sudo tee "$barrier_dir/stop-release" >/dev/null
   fi
-  bind_stop_instance final || { cleanup_failed=1; cleanup_refusal final virtual_listener_residue; }
+  bind_stop_instance final || { cleanup_failed=1; cleanup_refusal final virtual_stop_binding_unconfirmed; }
   sudo systemctl stop happyranch-managed.target || true
-  virtual_removed final || { cleanup_failed=1; cleanup_refusal final virtual_listener_residue; }
+  virtual_removed final || { cleanup_failed=1; cleanup_refusal final virtual_removal_unconfirmed; }
   (( cleanup_failed != 0 )) || evidence cleanup virtual_admission_removed_while_peer_alive || { cleanup_failed=1; cleanup_refusal final evidence_failed; }
   sudo systemctl disable happyranch-managed.target || true
   sudo systemctl reset-failed happyranch-connector.service happyranch-tsnet-sidecar.service happyranch-managed.target || true

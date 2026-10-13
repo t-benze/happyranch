@@ -30,13 +30,54 @@ type childHealth struct {
 
 type notifySender interface{ Notify(...string) error }
 
+// connectorDiagnostics records local observations, never a global root cause.
+// Values come only from fixed call sites and supervisor-owned state. One first
+// decision and one copy of each consequence bound volume even on canceled loops.
+type connectorDiagnostics struct {
+	generation string
+	sequence   uint64
+	first      bool
+	seen       map[string]bool
+}
+
+func (d *connectorDiagnostics) emit(phase, reason string) {
+	key := phase + ":" + reason
+	if d.seen == nil {
+		d.seen = make(map[string]bool)
+	}
+	if d.seen[key] {
+		return
+	}
+	d.seen[key] = true
+	generation := d.generation
+	if generation == "" {
+		generation = "unavailable"
+	}
+	fmt.Fprintf(os.Stderr, "connector_supervisor phase=%s reason=%s generation=%s sequence=%d\n", phase, reason, generation, d.sequence)
+}
+
+func (d *connectorDiagnostics) decision(reason string) {
+	if d.seen["first:"+reason] {
+		return
+	}
+	if !d.first {
+		d.first = true
+		d.emit("first", reason)
+	} else {
+		d.emit("consequence", reason)
+	}
+}
+
 func runConnectorSupervisor(argv []string) int {
+	diagnostics := &connectorDiagnostics{}
 	if len(argv) == 0 {
+		diagnostics.decision("invalid_invocation")
 		fmt.Fprintln(os.Stderr, "connector_supervisor_invalid")
 		return 2
 	}
 	notifier, err := sdnotify.New()
 	if err != nil {
+		diagnostics.decision("notifier_setup_failed")
 		fmt.Fprintln(os.Stderr, "readiness_unavailable")
 		return 1
 	}
@@ -167,14 +208,25 @@ func withoutNotifySocket(env []string) []string {
 }
 
 func removeSidecarAdmission(ctx context.Context, healthy sidecarHealthProbe, stop sidecarStop) bool {
+	return removeSidecarAdmissionObserved(ctx, healthy, stop, nil)
+}
+
+func removeSidecarAdmissionObserved(ctx context.Context, healthy sidecarHealthProbe, stop sidecarStop, diagnostics *connectorDiagnostics) bool {
+	observe := func(reason string) {
+		if diagnostics != nil {
+			diagnostics.emit("consequence", reason)
+		}
+	}
 	state := healthy(ctx)
 	if state == sidecarAbsent {
 		return true
 	}
 	if state == sidecarUnknown {
+		observe("admission_initial_unknown")
 		return false
 	}
 	if !stop(ctx) {
+		observe("admission_stop_request_failed")
 		return false
 	}
 	deadline := time.NewTimer(5 * time.Second)
@@ -184,8 +236,10 @@ func removeSidecarAdmission(ctx context.Context, healthy sidecarHealthProbe, sto
 	for {
 		select {
 		case <-ctx.Done():
+			observe("admission_cancelled")
 			return false
 		case <-deadline.C:
+			observe("admission_expired")
 			return false
 		case <-ticker.C:
 			state = healthy(ctx)
@@ -193,6 +247,7 @@ func removeSidecarAdmission(ctx context.Context, healthy sidecarHealthProbe, sto
 				return true
 			}
 			if state == sidecarUnknown {
+				observe("admission_poll_unknown")
 				return false
 			}
 		}
@@ -204,13 +259,18 @@ func removeSidecarAdmission(ctx context.Context, healthy sidecarHealthProbe, sto
 const connectorHealthJoinBound = 2 * time.Second
 
 func superviseConnector(parent context.Context, argv []string, notifier notifySender, startupDeadline, staleAfter time.Duration, started chan<- *exec.Cmd, sidecarHealthy sidecarHealthProbe, stopSidecar sidecarStop) int {
+	diagnostics := &connectorDiagnostics{}
 	generationBytes := make([]byte, 16)
 	if _, err := rand.Read(generationBytes); err != nil {
+		diagnostics.decision("generation_setup_failed")
 		return 1
 	}
 	generation := hex.EncodeToString(generationBytes)
+	diagnostics.generation = generation
+	diagnostics.emit("context", "invocation_started")
 	reader, writer, err := os.Pipe()
 	if err != nil {
+		diagnostics.decision("health_pipe_setup_failed")
 		return 1
 	}
 	defer reader.Close()
@@ -231,6 +291,7 @@ func superviseConnector(parent context.Context, argv []string, notifier notifySe
 		"HAPPYRANCH_CHILD_HEALTH_GENERATION="+generation,
 	)
 	if err := cmd.Start(); err != nil {
+		diagnostics.decision("child_start_failed")
 		writer.Close()
 		return 1
 	}
@@ -262,6 +323,7 @@ func superviseConnector(parent context.Context, argv []string, notifier notifySe
 		case <-scannerDone:
 		case <-time.After(connectorHealthJoinBound):
 			// Fail loudly rather than silently abandoning an owned helper.
+			diagnostics.emit("consequence", "scanner_join_timeout")
 			fmt.Fprintln(os.Stderr, "connector_health_scanner_join_timeout")
 		}
 	}()
@@ -295,9 +357,12 @@ func superviseConnector(parent context.Context, argv []string, notifier notifySe
 			return
 		}
 		stoppingNotified = true
-		_ = notifier.Notify("STOPPING=1", status)
+		if notifier.Notify("STOPPING=1", status) != nil {
+			diagnostics.emit("consequence", "stopping_notify_failed")
+		}
 	}
-	stopChild := func() {
+	stopChild := func(reason string) {
+		diagnostics.decision(reason)
 		terminal = true
 		notifyStopping("STATUS=connector stopping")
 		if stopping {
@@ -306,11 +371,14 @@ func superviseConnector(parent context.Context, argv []string, notifier notifySe
 		// The sidecar owns external admission.  Signal its MainPID and wait
 		// for systemd to observe it inactive before beginning connector
 		// child cleanup.  Both services retain their own MainPID ownership.
-		if !removeSidecarAdmission(context.Background(), sidecarHealthy, stopSidecar) {
+		if !removeSidecarAdmissionObserved(context.Background(), sidecarHealthy, stopSidecar, diagnostics) {
+			diagnostics.emit("consequence", "admission_removal_refused")
 			return
 		}
 		stopping = true
-		_ = cmd.Process.Signal(syscall.SIGTERM)
+		if cmd.Process.Signal(syscall.SIGTERM) != nil {
+			diagnostics.emit("consequence", "child_term_failed")
+		}
 	}
 	// observePreReady runs one pre-READY health observation bounded by the
 	// original absolute startup deadline.  A healthy result that completes
@@ -325,6 +393,7 @@ func superviseConnector(parent context.Context, argv []string, notifier notifySe
 		observationCtx, cancelObservation := context.WithDeadline(ctx, startupDeadlineAt)
 		defer cancelObservation()
 		observation := sidecarHealthy(observationCtx)
+		// Observation classification is emitted by the caller after deadline checks.
 		if ctx.Err() != nil {
 			return observation, false
 		}
@@ -336,6 +405,25 @@ func superviseConnector(parent context.Context, argv []string, notifier notifySe
 	// Each accepted pair owns an absolute freshness deadline. Anchor it at
 	// publication, so query/result/notify delivery cannot restart elapsed time.
 	var freshnessDeadlineAt time.Time
+	deadlineReason := func() string {
+		if ctx.Err() != nil {
+			return "context_cancelled"
+		}
+		if ready {
+			return "freshness_expired"
+		}
+		return "startup_expired"
+	}
+	observeSidecar := func(observation sidecarObservation) {
+		switch observation {
+		case sidecarUnknown:
+			diagnostics.emit("observation", "sidecar_unknown")
+		case sidecarAbsent:
+			diagnostics.emit("observation", "sidecar_absent")
+		case sidecarPresentUnhealthy:
+			diagnostics.emit("observation", "sidecar_unhealthy")
+		}
+	}
 	resetStale := func(publishedAt time.Time) {
 		freshnessDeadlineAt = publishedAt.Add(staleAfter)
 		if !timer.Stop() {
@@ -350,7 +438,17 @@ func superviseConnector(parent context.Context, argv []string, notifier notifySe
 	// is shared by the priority check and the blocking select so the terminal
 	// child-exit path can never be starved by a cancellation wakeup.
 	finishChildExit := func(err error) int {
-		admissionRemoved := removeSidecarAdmission(context.Background(), sidecarHealthy, stopSidecar)
+		if err != nil {
+			diagnostics.decision("child_exit_error")
+		} else if stopping {
+			diagnostics.decision("child_exit_after_stop")
+		} else {
+			diagnostics.decision("child_exit_unexpected_clean")
+		}
+		admissionRemoved := removeSidecarAdmissionObserved(context.Background(), sidecarHealthy, stopSidecar, diagnostics)
+		if !admissionRemoved {
+			diagnostics.emit("consequence", "admission_removal_refused")
+		}
 		// The terminal STOPPING notification shares the single at-most-once
 		// latch with stopChild.  ``stopping`` only records child-cleanup
 		// permission, so a refused admission stop followed by a spontaneous
@@ -400,41 +498,59 @@ func superviseConnector(parent context.Context, argv []string, notifier notifySe
 		}
 		select {
 		case <-ctx.Done():
-			stopChild()
+			stopChild("context_cancelled")
 		case <-timer.C:
-			stopChild()
+			stopChild(deadlineReason())
 		case err := <-protocolErr:
 			if err != nil {
-				stopChild()
+				reason := "health_read_failed"
+				switch err.Error() {
+				case "child_health_malformed":
+					reason = "health_malformed"
+				case "child_health_noncanonical":
+					reason = "health_noncanonical"
+				case "child_health_partial":
+					reason = "health_partial"
+				}
+				stopChild(reason)
 			}
 		case record, ok := <-records:
 			if !ok {
+				diagnostics.emit("observation", "health_pipe_closed")
 				records = nil
 				continue
 			}
 			if record.Version != 1 || record.Generation != generation || record.Sequence != sequence+1 {
-				stopChild()
+				reason := "health_sequence_rejected"
+				if record.Version != 1 {
+					reason = "health_version_rejected"
+				} else if record.Generation != generation {
+					reason = "health_generation_rejected"
+				}
+				stopChild(reason)
 				continue
 			}
 			sequence = record.Sequence
+			diagnostics.sequence = sequence
 			switch record.State {
 			case "waiting":
 				if ready {
-					stopChild()
+					stopChild("readiness_regressed")
 				}
 			case "ready":
 				if terminal || childReady || ready || stopping {
-					stopChild()
+					stopChild("ready_state_rejected")
 				} else {
 					childReady = true
 					observation, withinStartup := observePreReady()
 					if !withinStartup {
-						stopChild()
+						stopChild(deadlineReason())
 						continue
 					}
+					observeSidecar(observation)
 					if observation == sidecarPresentHealthy {
 						if ctx.Err() != nil {
-							stopChild()
+							stopChild(deadlineReason())
 							continue
 						}
 						if code, exited := fenceChildExit(); exited {
@@ -442,11 +558,11 @@ func superviseConnector(parent context.Context, argv []string, notifier notifySe
 						}
 						publishedAt := time.Now()
 						if ctx.Err() != nil || !publishedAt.Before(startupDeadlineAt) {
-							stopChild()
+							stopChild(deadlineReason())
 							continue
 						}
 						if notifier.Notify("READY=1", "STATUS=composite healthy") != nil {
-							stopChild()
+							stopChild("ready_notify_failed")
 							continue
 						}
 						ready = true
@@ -455,16 +571,17 @@ func superviseConnector(parent context.Context, argv []string, notifier notifySe
 				}
 			case "healthy":
 				if terminal || !childReady || stopping {
-					stopChild()
+					stopChild("healthy_state_rejected")
 				} else if !ready {
 					// Pre-READY composite gate.  Whichever service started
 					// first, the observation is bounded by and re-checked
 					// against the original absolute startup deadline.
 					observation, withinStartup := observePreReady()
 					if !withinStartup {
-						stopChild()
+						stopChild(deadlineReason())
 						continue
 					}
+					observeSidecar(observation)
 					if observation != sidecarPresentHealthy {
 						// Connector-first startup: retain the original absolute
 						// deadline while the independently starting sidecar
@@ -472,7 +589,7 @@ func superviseConnector(parent context.Context, argv []string, notifier notifySe
 						continue
 					}
 					if ctx.Err() != nil {
-						stopChild()
+						stopChild(deadlineReason())
 						continue
 					}
 					if code, exited := fenceChildExit(); exited {
@@ -480,11 +597,11 @@ func superviseConnector(parent context.Context, argv []string, notifier notifySe
 					}
 					publishedAt := time.Now()
 					if ctx.Err() != nil || !publishedAt.Before(startupDeadlineAt) {
-						stopChild()
+						stopChild(deadlineReason())
 						continue
 					}
 					if notifier.Notify("READY=1", "STATUS=composite healthy") != nil {
-						stopChild()
+						stopChild("ready_notify_failed")
 						continue
 					}
 					ready = true
@@ -494,7 +611,7 @@ func superviseConnector(parent context.Context, argv []string, notifier notifySe
 					// A pending timer event is not proof that its deadline
 					// remains open: query/result delivery may win the select.
 					if !time.Now().Before(freshnessDeadlineAt) {
-						stopChild()
+						stopChild(deadlineReason())
 						continue
 					}
 					observationCtx, cancelObservation := context.WithDeadline(ctx, freshnessDeadlineAt)
@@ -502,9 +619,15 @@ func superviseConnector(parent context.Context, argv []string, notifier notifySe
 					cancelObservation()
 					switch {
 					case ctx.Err() != nil || !time.Now().Before(freshnessDeadlineAt):
-						stopChild()
+						stopChild(deadlineReason())
 					case observation != sidecarPresentHealthy:
-						stopChild()
+						reason := "sidecar_unknown"
+						if observation == sidecarAbsent {
+							reason = "sidecar_absent"
+						} else if observation == sidecarPresentUnhealthy {
+							reason = "sidecar_unhealthy"
+						}
+						stopChild(reason)
 					default:
 						if code, exited := fenceChildExit(); exited {
 							return code
@@ -513,20 +636,24 @@ func superviseConnector(parent context.Context, argv []string, notifier notifySe
 						// no expired result can emit or renew WATCHDOG.
 						publishedAt := time.Now()
 						if ctx.Err() != nil || !publishedAt.Before(freshnessDeadlineAt) {
-							stopChild()
+							stopChild(deadlineReason())
 							continue
 						}
 						if notifier.Notify("WATCHDOG=1") != nil {
-							stopChild()
+							stopChild("watchdog_notify_failed")
 						} else {
 							resetStale(publishedAt)
 						}
 					}
 				}
 			case "stopping", "failed":
-				stopChild()
+				reason := "child_reported_stopping"
+				if record.State == "failed" {
+					reason = "child_reported_failed"
+				}
+				stopChild(reason)
 			default:
-				stopChild()
+				stopChild("health_state_unknown")
 			}
 		case err := <-waited:
 			return finishChildExit(err)
