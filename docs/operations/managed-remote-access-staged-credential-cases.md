@@ -63,3 +63,45 @@ token bytes, ACL identities, hashes, service capability, ownership proof or a
 readiness API. No local product exercise/build, Product E2E/Jenkins, publication,
 trigger registration, rerun, merge, deploy or permission change is authorized
 in the maker leg. Manager retains seq4280/1 and later publication after gates.
+
+## Harness continuation cases — THR228seq435 / TASK11067 / TASK11071
+
+The P/M cases above describe unchanged published590768ff credential/mode source;
+their former seq428 delivery authority is historical and consumed1/1, not a new
+allocation. The following H cases cover the current harness delta. Every row is
+SOURCE/STATIC specification; intended future level is the manager's single
+exact-head real-systemd N3 or a separately authorized behavioral proof. Neither
+has run here. No assertion sensitivity or behavioral/test-authoring PASS exists.
+
+| Case / behavior requirement | Shipping/harness seam; concrete preconditions and action | Observable expected result | Failure detection/assertion and intended level |
+| --- | --- | --- | --- |
+| H01 first reset with unloaded services | Missing-enrollment negative start has ended; call first post-leg reset when systemd has collected either service | Reset error does not abort; staging absence, completed-stop-reset snapshot, held-source restoration, denial probe, positive start remain ordered | Bare reset abort, missing independent staging/PID assertions or moved source restore is source defect; runtime N3 UNEXECUTED |
+| H02 second reset unloaded | Missing-consumed-state negative leg, marker restored, either service unloaded at second reset | Reset tolerance followed by actual managed start and active wait; no reset-derived success receipt | Bare reset or missing start/active check; runtime N3 UNEXECUTED |
+| H03 loaded failed units | Either reset sees loaded failed sidecar/connector | Clear failed request, retain all later checks; reset itself proves neither quiescence nor success | Removed process/staging/refusal assertion; static inspection only |
+| H04 loaded successful/active states | Reset returns0 while service remains active | First-leg inactive/MainPID/staging assertions refuse active/residue; second leg still requires managed restart readiness | Reset success used as absence; future N3 sensitivity UNEXECUTED |
+| H05 reset denied/query unavailable | sudo/systemctl reset request fails independently of unit state | Best-effort request remains tolerated; later successful independent state/path/start checks decide progression | ||true on required query/assertion or reset interpreted as absence; static only |
+| H06 missing-credential stop unloaded | Negative startup before first reset; stop includes collected units | Stop request cannot abort expected-negative transition; successful inactive, PID0, marker absence and peer inventory remain mandatory | Bare stop or erased subsequent assertion; future N3 UNEXECUTED |
+| H07 absent state status0 | v255 SHOW_PROPERTIES returns not-found/inactive/dead and service MainPID0 | Exact states + absent unit paths + full valid file inventory allow shipping cleanup; target has no MainPID query | Wrong target/service distinction or missing common/PID/path checks; static only |
+| H08 failed valid-looking state query | systemctl show exits1/4/other with text0/inactive/not-found | Refuse; output is never confirmed absence at nonzero status | systemctl_absent_value/inactive/MainPID admits failed output; static only; malformed query sensitivity UNEXECUTED |
+| H09 empty/malformed states/PIDs | Successful show emits empty/prose/extra line/noninteger/negative PID or unsupported active state | Refuse; inactive accepts only inactive/failed, PID must be canonical bounded integer | Empty substituted PID considered nonzero/fresh or active query failure inverted to stopped; static only |
+| H10 stopped versus active/transitional | Run negative state check and readiness-loss waits under conditional wait_for | inactive/failed only pass negative check; active/activating/deactivating/unknown never pass; positive wait still is-active success | `! active` or negated child shell remains; runtime waits UNEXECUTED |
+| H11 MainPID substitutions/fresh PID | Negative startup/shutdown check, positive PID, old/shutdown PID acquisition and automatic Restart wait | Successful numeric query first; positive PID>1, fresh PID differs from old and is active; failed output never passes comparison or drives kill | Status-hidden substitution/invalid numeric command accepted; static only |
+| H12 privileged path denial | sudo fails rather than executing existence/symlink/writability test | Negative assertion fails; diagnostic presence becomes unknown/query_error, never observed_absent | Outer sudo1 interpreted as inner false-test1; static only |
+| H13 residue/staged capability | Source/marker/drop-in/staging or transaction paths remain; staged file symlink/writable/directory writable | Existing retirement/staging/custody assertions refuse; no chmod/chown or source replay | False-test polarity or asserted path changed; future N3 UNEXECUTED |
+| H14 staging cleanup/order | First reset tolerated; staging persists or query fails before held source restoration | wait_for cannot succeed; held source remains for diagnostics; positive start not admitted | Source restored before independent staging success or expected-negative evidence/diagnostic omitted; static only |
+| H15 find query substitution | Fresh/upgrade rollback finds return nonzero with empty or partial output | Refuse before empty-output comparison; successful empty output alone passes | Hidden failed producer becomes stage absence; static only |
+| H16 conditional setup | reset_shipping_unit is the left operand of OR; any install/key/write/package install/reload/log command fails | Explicit return1 prevents setup success even though Bash disables errexit within function | Later printf hides earlier setup failure; static only, no package execution |
+| H17 shipping cleanup producer | Headscale ID-list pipeline query/parser fails; then remaining cleanup observations run | Aggregate fixed fixture_absence_unconfirmed; no hidden process-substitution success; all later cleanup attempted | Successful later query erases failed enumeration; static only |
+| H18 cleanup mutation failure | Each shipping/final delete/reload/certificate command independently fails | Fixed existing refusal, aggregate failure, remaining cleanup attempted; initiating nonzero status survives | False cleanup complete or premature exit; future failure-matrix proof UNEXECUTED |
+| H19 EXIT/INT/TERM | Original37, INT130 or TERM143 plus capture/stop/reset/delete/query failures | One saved-status teardown, all attempts; only original nonzero leaves; successful origin may fail cleanup | Re-armed errexit, replaced initiating status, second pass or dropped teardown; source only, signal proof UNEXECUTED |
+| H20 host listener/process census | Successful ss full selected-port query or ps full PID census; failure/malformed/empty census alternative | Zero listener rows/no matching PID may pass; failed query and malformed/empty PID census refuse | Negative port/kill error used as absence; static only, real census proof UNEXECUTED |
+| H21 watchdog/numeric timestamps | Ready/order/watchdog queries fail, are empty or nonnumeric; equality queried after stop | Successful canonical bounded numeric acquisition before arithmetic/equality; no empty==empty pass | Failed substitution/nonnumeric arithmetic accepted; static only |
+| H22 two CI boundaries | PR800 synchronize on same repo/task6475/main; before590768ff, changed after=head and attempt1 | Both job selection and pre-build event guard retain exact binding under seq435; other trigger/attempt refused | Different before in either boundary, removed repo/branch/attempt binding or broader trigger; static only |
+| H23 cleanup diagnostic limits | Multiple failures across shipping/final and trap reentry | Existing closed phase/predicate vocabulary, at most46 deduplicated lines/<4096B; no raw output | New arbitrary failure prose/value, unbounded tokens or capture budget drift; source only |
+| H24 remaining observation gaps | Virtual nc refusal, filesystem test internals, pre-trap failures, capture scratch/section failure | Do not infer confirmed continuous virtual/service absence, exact OS errno/custody, hard timing or complete cleanup from source | Out-of-class ambiguity recorded in inventory; no helper/product redesign or claim of behavior PASS |
+
+Malformed installer recovery, persisted-node/credential-free restart, N6,
+actual staged0400/0440 compatibility and all new causal/red-green/mutation/
+repetition/executable-QA proof remain unproved. Run38259906794 attempt1 had
+expected-negative ledger and partial cleanup with terminal=null, held source,
+and unavailable connector invocation/mode/listener; it is not these cases' PASS.

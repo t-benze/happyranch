@@ -1205,14 +1205,14 @@ sandbox grant. Late/lost capture preserves the initiating exit and all cleanup
 attempts. [Finite four-answer cases](../operations/managed-remote-access-staged-credential-cases.md)
 are SOURCE ONLY: behavior/red-green/mutation/repetition/executable QA remain
 UNEXECUTED/SUSPENDED, Python units RETIRED, general integration SKIPPED243seq42.
-Seq428 allocation remains manager-owned0/1 until the one nonforce PR800 update
-from published `8c34a6ad28fa1e9fc3892d6acc2313b11a641c85`; both CI guards retain
-all other repository/ref/event/attempt1/pre-build fences. Ordinary PR/main
-checks remain lint/static only and Product E2E daily-only19UTC.
+Seq428 allocation was consumed by run38259906794/attempt1 at590768ff,
+which failed. Its published credential/mode source remains unchanged in this
+harness-only seq435 correction; it supplied no actual staged-mode acceptance.
+Fresh independent exact-candidate gates precede the manager-owned seq435 update.
 
 **Original connector observation (THR-228 seq421).** The two failure-only snapshots reserve a separate 13-second command allowance plus one-second kill grace for `connector`, after the existing sidecar-first channels and before teardown. The helper admits four observations under one 11-second section: named unit properties (one second), original process tree (two seconds), repeated unit properties (one second), repeated process tree (two seconds), each with at most one second for owned group termination/reaping. Reads and iterations are capped: 4096-byte unit output, 128 threads per process, at most eight descendants/four levels, 512 descriptors per process, 262144-byte TCP table per process, 2048-byte process projection and 4096-byte retained section. Boot, invocation, MainPID, process start ticks, parent relations and exact unit cgroup bind the existing Go supervisor and its actual descendants, including the onefile launcher's Python worker. Repeated process, child and socket sets must agree. Only a matching owned socket inode in LISTEN at the harness-configured literal `127.0.0.1:18443` yields `listening=true`, its actual `listener_pid` and `bound_port=18443`; a complete stable scan without it yields false/null. This is sampled process-attributed listening evidence, not atomic readiness or a hard bound on kernel filesystem stalls. Missing MainPID is `failed` for a failed unit, otherwise `absent`; unavailable child/process, query/launch/parse failure, attribution loss, timeout and truncation remain explicit, with null listening and binding. Unknown StatusText is reduced to `unclassified`; raw logs, tokens, identities, argv, paths, requests, trust state and credentials are never retained. Systemd's fixed aggregate `composite healthy`, stopping and exited statuses are observations, not gate-level cause. All five original-instance readiness gates are `ok=null/loss=unavailable_internal`: the existing private child health pipe publishes only aggregate states. The separate `diagnose` CLI constructs a new supervisor, readiness evaluation and adapter; it is never called or labeled original process state. No new inspection API, listener or initialization is added. Evidence failure neither admits readiness nor changes the initiating exit or remaining cleanup attempts. Collector cases are source specifications with executable coverage unavailable after Python-unit retirement; no behavioral PASS follows.
 
-**Single N3 publication selection (THR-228 seq428).** The PR800 candidate integrates current-main lint-only `Source Boundary Lint` and `Web Lint (Node 24)` plus the existing Managed N3 package/harness/evidence job. N3 selects only a `pull_request` `synchronize` for PR800 on same-repository `task/TASK-6475` targeting main, with payload `before=8c34a6ad28fa1e9fc3892d6acc2313b11a641c85`, changed `after` equal to the event head, and `run_attempt=1`. Checkout and proof subject use that `after` SHA. Other PRs, opening/reopening, subsequent updates, main pushes, manual runs and reruns cannot renew this allocation. Current-main hooks/local `all` remain lint/static only; no general build/test lane is restored. Product E2E remains daily-only 19:00 UTC from default branch. This local candidate spends no allocation; the manager owns one publication after fresh independent full review and scoped QA, then the actual run/result before any further repair or rerun. Seq402, seq409 and seq421 remain exhausted (1/1 each), with all historical failures preserved; seq428 remains unspent (0/1) until the manager publication.
+**Single N3 publication selection (THR-228 seq435).** The PR800 candidate integrates current-main lint-only `Source Boundary Lint` and `Web Lint (Node 24)` plus the existing Managed N3 package/harness/evidence job. N3 selects only a `pull_request` `synchronize` for PR800 on same-repository `task/TASK-6475` targeting main, with payload `before=590768ff22e41dd7e519011589b784d4bea7ee3d`, changed `after` equal to the event head, and `run_attempt=1`. Checkout and proof subject use that `after` SHA. Other PRs, opening/reopening, subsequent updates, main pushes, manual runs and reruns cannot renew this allocation. Current-main hooks/local `all` remain lint/static only; no general build/test lane is restored. Product E2E remains daily-only 19:00 UTC from default branch. This local candidate spends no allocation; the manager owns one publication after fresh independent full review and scoped QA, then the actual run/result before any further repair or rerun. Seq402, seq409, seq421 and seq428 remain exhausted (1/1 each), with all historical failures preserved; seq435 remains unspent (0/1) until the manager publication.
 
 ## THR299 compatible reconciliation installation
 
@@ -1281,3 +1281,28 @@ existing SurfaceAllowList and credential/transport policy; source inspection is
 not native execution evidence. Mounted UI is a separate serial unit. Python units
 remain retired, integration SKIPPED24342, broad behavior/proof UNEXECUTED and
 FOUNDER-WAIVED139429/430; lint/static evidence is not behavioral acceptance.
+
+**Harness absent-unit correction (THR-228 seq435; sole root TASK11067).**
+Both post-negative-leg `reset-failed` requests and the missing-credential stop
+request are best effort, including valid unloaded units. They are never absence
+proof. Successful state queries, numeric MainPID, staged-path checks and expected
+peer inventory remain independent assertions before progression. Negative state
+checks accept only successful exact inactive/failed output; positive waits still
+require active. Genuine failed, empty or malformed queries refuse. Privileged
+false-test results are encoded inside the command so a sudo failure cannot
+become absence; diagnostic presence maps privilege failure to unknown/query_error.
+Substitution producers are checked before PID/empty-path comparisons. Conditional
+setup propagates every failure explicitly; shipping and final cleanup record
+mutation failures and attempt all remaining actions, preserving original exit
+and once-only EXIT/INT/TERM teardown. Source restore, refusal, one-use lifecycle,
+SYSTEMD0222/File0077, sidecar policy, sandbox and capture budgets remain unchanged.
+Successful full process/listener inventories replace negative kill/TCP errors in
+cleanup. Virtual `nc` rejection remains a limited reachability observation,
+not independently confirmed service/query absence; its ambiguity, filesystem
+probe limitations and unexecuted cleanup/lifecycle proofs remain explicit gaps.
+The [finite cases](../operations/managed-remote-access-staged-credential-cases.md)
+are source specifications only. Seq428 run38259906794 at590768ff failed after
+the expected negative ledger, without a positive-start/mode/listener result;
+reset-abort attribution is supported by retained logs/source, while historical
+sole-cause and credential-fix causality remain inference. Seq428 is consumed1/1.
+Seq435 remains manager-owned0/1; no maker publication, build or product run.
