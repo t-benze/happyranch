@@ -154,7 +154,8 @@ mkdir -p "$diagnostics"
 printf 'subject=%s\n' "${PROOF_SUBJECT_SHA:-missing}" >"$diagnostics/bootstrap.txt"
 [[ -n "${PACKAGE_TAR:-}" && -f "$PACKAGE_TAR" ]] || fail "PACKAGE_TAR missing"
 [[ "${PROOF_SUBJECT_SHA:-}" =~ ^[0-9a-f]{40}$ ]] || fail "PROOF_SUBJECT_SHA missing"
-[[ "$(ps -p 1 -o comm= | xargs)" == systemd ]] || fail "PID 1 is not systemd"
+pid1_command="$(ps -p 1 -o comm= | xargs)" || fail "PID 1 query failed"
+[[ "$pid1_command" == systemd ]] || fail "PID 1 is not systemd"
 # This precedes the product cleanup trap. Own the query here, including a
 # shell-only cancellation, without retaining raw output or shell-normalizing it.
 preflight_pid=""; preflight_signal=0; preflight_reaped=0
@@ -315,8 +316,9 @@ failure_capture_driver="$PWD/app/linux/package/n3_failure_capture.py"
 evidence_artifact="$diagnostics/execution-evidence.json"
 run_id="$(cat /proc/sys/kernel/random/uuid)"
 barrier_dir="/var/lib/happyranch-tsnet-sidecar/.n3-barrier-$run_id"
-capture_window_since_us="$(date +%s%N 2>/dev/null | cut -c1-16 || printf 0)"
-package_sha="$(sha256sum "$PACKAGE_TAR" | cut -d' ' -f1)"
+capture_window_since_us="$(date +%s%N 2>/dev/null | cut -c1-16)" || capture_window_since_us=0
+package_sha="$(sha256sum "$PACKAGE_TAR" | cut -d' ' -f1)" || fail "package digest query failed"
+[[ "$package_sha" =~ ^[0-9a-f]{64}$ ]] || fail "package digest malformed"
 python "$evidence_driver" init "$evidence_artifact" --git-head "$PROOF_SUBJECT_SHA" --package-sha256 "$package_sha" --run-id "$run_id"
 headscale_pid=""; peer_pid=""; daemon_pid=""
 safe_systemctl_value() {
@@ -341,13 +343,13 @@ begin_observation_section() {
 }
 capture_now_us() {
   local value
-  value="$(date +%s%N 2>/dev/null | cut -c1-16 || printf 0)"
+  value="$(date +%s%N 2>/dev/null | cut -c1-16)" || value=0
   [[ "$value" =~ ^[0-9]{16}$ ]] || value=0
   printf '%s' "$value"
 }
 compact_boot_id() {
   local value
-  value="$(tr -d '-' </proc/sys/kernel/random/boot_id 2>/dev/null | tr '[:upper:]' '[:lower:]' || printf unavailable)"
+  value="$(tr -d '-' </proc/sys/kernel/random/boot_id 2>/dev/null | tr '[:upper:]' '[:lower:]')" || value=unavailable
   [[ "$value" =~ ^[0-9a-f]{32}$ ]] || value=unavailable
   printf '%s' "$value"
 }
@@ -376,6 +378,7 @@ observe_systemctl_value() {
   # successful empty response, failed query, real timeout, truncation, parse
   # loss and work which was not attempted. Raw command output is never kept.
   local unit="$1" property="$2" value file status bytes cap=128 restore_errexit=0
+  local -a pipeline_status
   observation_value=unknown; observation_loss=unattempted
   observe_remaining || return 0
   (( observe_bytes_left < cap )) && cap="$observe_bytes_left"
@@ -384,9 +387,14 @@ observe_systemctl_value() {
   case "$-" in *e*) restore_errexit=1 ;; esac
   set +e
   timeout --kill-after=1 "$observe_timeout_seconds" systemctl show "$unit" -p "$property" --value 2>/dev/null | head -c "$((cap + 1))" >"$file"
-  status=${PIPESTATUS[0]}
+  pipeline_status=("${PIPESTATUS[@]}")
+  status="${pipeline_status[0]}"
+  (( status != 0 || pipeline_status[1] == 0 )) || status="${pipeline_status[1]}"
   (( restore_errexit )) && set -e || set +e
-  value="$(<"$file")"; bytes="$(wc -c <"$file")"; rm -f "$file"
+  value="$(<"$file")" || { observation_loss=query_error; rm -f "$file"; return; }
+  bytes="$(wc -c <"$file")" || { observation_loss=query_error; rm -f "$file"; return; }
+  [[ "$bytes" =~ ^(0|[1-9][0-9]{0,17})$ ]] || { observation_loss=query_error; rm -f "$file"; return; }
+  rm -f "$file"
   (( bytes > cap )) && { observe_bytes_left=0; observation_loss=truncated; return; }
   observe_bytes_left=$((observe_bytes_left - bytes))
   if (( status == 124 )); then observation_loss=timeout; return; fi
@@ -405,7 +413,8 @@ capture_completed_jobs() {
   # Completed systemd job records remain in the journal after `systemctl
   # start` returns. Retain only closed structured fields attributed to this
   # boot and positive-start window; never retain MESSAGE or other prose.
-  local journal_file helper_file field_file="" status bytes now_us field field_status field_bytes restore_errexit=0
+  local journal_file="" helper_file="" field_file="" status bytes now_us field field_status field_bytes restore_errexit=0
+  local -a pipeline_status
   case "$-" in *e*) restore_errexit=1 ;; esac
   completed_jobs='[]'; jobs_loss=unattempted
   observe_remaining || return 0
@@ -413,9 +422,12 @@ capture_completed_jobs() {
   capture_raw_files+=("$journal_file")
   set +e
   timeout --kill-after=1 "$observe_timeout_seconds" journalctl -b "$snapshot_boot_id" --since "@$snapshot_since_seconds" --output=json --output-fields=UNIT,JOB_ID,JOB_TYPE,JOB_RESULT,MESSAGE_ID,_PID,_UID,_BOOT_ID,__REALTIME_TIMESTAMP --no-pager JOB_TYPE=start UNIT=happyranch-managed.target UNIT=happyranch-connector.service UNIT=happyranch-tsnet-sidecar.service 2>/dev/null | head -c "$((observe_bytes_left + 1))" >"$journal_file"
-  status=${PIPESTATUS[0]}
+  pipeline_status=("${PIPESTATUS[@]}")
+  status="${pipeline_status[0]}"
+  (( status != 0 || pipeline_status[1] == 0 )) || status="${pipeline_status[1]}"
   (( restore_errexit )) && set -e || set +e
-  bytes="$(wc -c <"$journal_file")"
+  bytes="$(wc -c <"$journal_file")" || { completed_jobs='[]'; jobs_loss=query_error; rm -f "$journal_file" "$helper_file" "$field_file"; return; }
+  [[ "$bytes" =~ ^(0|[1-9][0-9]{0,17})$ ]] || { completed_jobs='[]'; jobs_loss=query_error; rm -f "$journal_file" "$helper_file" "$field_file"; return; }
   if (( bytes > observe_bytes_left )); then observe_bytes_left=0; jobs_loss=truncated; rm -f "$journal_file"; return; fi
   observe_bytes_left=$((observe_bytes_left - bytes))
   if (( status == 124 )); then rm -f "$journal_file"; jobs_loss=timeout; return; fi
@@ -429,7 +441,8 @@ capture_completed_jobs() {
   timeout --kill-after=1 "$observe_timeout_seconds" python "$failure_capture_driver" --mode jobs --input "$journal_file" --boot-id "$snapshot_boot_id" --since-us "$snapshot_since_us" --until-us "$now_us" >"$helper_file" 2>/dev/null
   status=$?
   (( restore_errexit )) && set -e || set +e
-  bytes="$(wc -c <"$helper_file")"
+  bytes="$(wc -c <"$helper_file")" || { completed_jobs='[]'; jobs_loss=query_error; rm -f "$journal_file" "$helper_file" "$field_file"; return; }
+  [[ "$bytes" =~ ^(0|[1-9][0-9]{0,17})$ ]] || { completed_jobs='[]'; jobs_loss=query_error; rm -f "$journal_file" "$helper_file" "$field_file"; return; }
   if (( bytes > observe_bytes_left )); then observe_bytes_left=0; rm -f "$journal_file" "$helper_file"; jobs_loss=truncated; return; fi
   observe_bytes_left=$((observe_bytes_left - bytes))
   if (( status == 124 )); then rm -f "$journal_file" "$helper_file"; jobs_loss=timeout; return; fi
@@ -441,12 +454,13 @@ capture_completed_jobs() {
     timeout --kill-after=1 "$observe_timeout_seconds" python -c 'import json,sys; value=json.load(open(sys.argv[1]))[sys.argv[2]]; allowed={"observed","empty","parse_loss","attribution_loss"}; assert isinstance(value,list) if sys.argv[2]=="jobs" else value in allowed; print(json.dumps(value,separators=(",",":")) if isinstance(value,list) else value)' "$helper_file" "$field" >"$field_file" 2>/dev/null
     field_status=$?
     (( restore_errexit )) && set -e || set +e
-    field_bytes="$(wc -c <"$field_file")"
+    field_bytes="$(wc -c <"$field_file")" || { completed_jobs='[]'; jobs_loss=query_error; rm -f "$journal_file" "$helper_file" "$field_file"; return; }
+    [[ "$field_bytes" =~ ^(0|[1-9][0-9]{0,17})$ ]] || { completed_jobs='[]'; jobs_loss=query_error; rm -f "$journal_file" "$helper_file" "$field_file"; return; }
     if (( field_bytes > observe_bytes_left )); then observe_bytes_left=0; rm -f "$journal_file" "$helper_file" "$field_file"; jobs_loss=truncated; return; fi
     observe_bytes_left=$((observe_bytes_left - field_bytes))
     if (( field_status == 124 )); then rm -f "$journal_file" "$helper_file" "$field_file"; jobs_loss=timeout; return; fi
     if (( field_status != 0 )); then rm -f "$journal_file" "$helper_file" "$field_file"; jobs_loss=parse_loss; return; fi
-    if [[ "$field" == jobs ]]; then completed_jobs="$(<"$field_file")"; else jobs_loss="$(<"$field_file")"; fi
+    if [[ "$field" == jobs ]]; then completed_jobs="$(<"$field_file")" || { completed_jobs='[]'; jobs_loss=query_error; rm -f "$journal_file" "$helper_file" "$field_file"; return; }; else jobs_loss="$(<"$field_file")" || { completed_jobs='[]'; jobs_loss=query_error; rm -f "$journal_file" "$helper_file" "$field_file"; return; }; fi
     rm -f "$field_file"
   done
   rm -f "$journal_file" "$helper_file"
@@ -470,8 +484,11 @@ capture_sidecar_failure_lines() {
   (( restore_errexit )) && set -e || set +e
   status="${pipeline_status[0]}"
   filter_status="${pipeline_status[1]}"
-  bytes="$(wc -c <"$filtered_file")"
-  lines="$(wc -l <"$filtered_file")"
+  (( status != 0 || (pipeline_status[2] == 0 && pipeline_status[3] == 0) )) || status=1
+  bytes="$(wc -c <"$filtered_file")" || { sidecar_failure_lines='[]'; sidecar_failure_lines_loss=query_error; rm -f "$filtered_file" "$json_file"; return; }
+  [[ "$bytes" =~ ^(0|[1-9][0-9]{0,17})$ ]] || { sidecar_failure_lines='[]'; sidecar_failure_lines_loss=query_error; rm -f "$filtered_file" "$json_file"; return; }
+  lines="$(wc -l <"$filtered_file")" || { sidecar_failure_lines='[]'; sidecar_failure_lines_loss=query_error; rm -f "$filtered_file" "$json_file"; return; }
+  [[ "$lines" =~ ^(0|[1-9][0-9]{0,17})$ ]] || { sidecar_failure_lines='[]'; sidecar_failure_lines_loss=query_error; rm -f "$filtered_file" "$json_file"; return; }
   if (( bytes > 4096 || lines > 32 )); then
     rm -f "$filtered_file" "$json_file"
     sidecar_failure_lines_loss=truncated
@@ -509,7 +526,7 @@ capture_sidecar_failure_lines() {
   rm -f "$filtered_file"
   if (( json_status == 124 )); then rm -f "$json_file"; sidecar_failure_lines_loss=timeout; return; fi
   if (( json_status != 0 )); then rm -f "$json_file"; sidecar_failure_lines_loss=parse_loss; return; fi
-  sidecar_failure_lines="$(<"$json_file")"
+  sidecar_failure_lines="$(<"$json_file")" || { sidecar_failure_lines='[]'; sidecar_failure_lines_loss=query_error; rm -f "$filtered_file" "$json_file"; return; }
   rm -f "$json_file"
   sidecar_failure_lines_loss=observed
 }
@@ -517,7 +534,8 @@ capture_diagnostic_receipts() {
   # The sidecar is the sole diagnostic receipt producer. Journal records are
   # accepted only when their unit, invocation, boot, and collection window all
   # match this failing run; the Python helper emits no journal prose.
-  local invocation_file journal_file helper_file field_file="" invocation status bytes now_us field_status field_bytes field restore_errexit=0
+  local invocation_file="" journal_file="" helper_file="" field_file="" invocation status bytes now_us field_status field_bytes field restore_errexit=0
+  local -a pipeline_status
   case "$-" in *e*) restore_errexit=1 ;; esac
   diagnostic_receipts='[]'; diagnostic_receipt_loss='["unattempted"]'
   observe_remaining || return 0
@@ -525,9 +543,14 @@ capture_diagnostic_receipts() {
   capture_raw_files+=("$invocation_file")
   set +e
   timeout --kill-after=1 "$observe_timeout_seconds" systemctl show happyranch-tsnet-sidecar.service -p InvocationID --value 2>/dev/null | head -c 65 >"$invocation_file"
-  status=${PIPESTATUS[0]}
+  pipeline_status=("${PIPESTATUS[@]}")
+  status="${pipeline_status[0]}"
+  (( status != 0 || pipeline_status[1] == 0 )) || status="${pipeline_status[1]}"
   (( restore_errexit )) && set -e || set +e
-  invocation="$(<"$invocation_file")"; bytes="$(wc -c <"$invocation_file")"; rm -f "$invocation_file"
+  invocation="$(<"$invocation_file")" || { diagnostic_receipts='[]'; diagnostic_receipt_loss='["query_error"]'; rm -f "$invocation_file" "$journal_file" "$helper_file" "$field_file"; return; }
+  bytes="$(wc -c <"$invocation_file")" || { diagnostic_receipts='[]'; diagnostic_receipt_loss='["query_error"]'; rm -f "$invocation_file" "$journal_file" "$helper_file" "$field_file"; return; }
+  [[ "$bytes" =~ ^(0|[1-9][0-9]{0,17})$ ]] || { diagnostic_receipts='[]'; diagnostic_receipt_loss='["query_error"]'; rm -f "$invocation_file" "$journal_file" "$helper_file" "$field_file"; return; }
+  rm -f "$invocation_file"
   if (( bytes > 64 )); then observe_bytes_left=0; diagnostic_receipt_loss='["truncated"]'; return; fi
   observe_bytes_left=$((observe_bytes_left - bytes))
   if (( status == 124 )); then diagnostic_receipt_loss='["timeout"]'; return; fi
@@ -540,9 +563,12 @@ capture_diagnostic_receipts() {
   capture_raw_files+=("$journal_file")
   set +e
   timeout --kill-after=1 "$observe_timeout_seconds" journalctl -u happyranch-tsnet-sidecar.service -b "$snapshot_boot_id" --since "@$snapshot_since_seconds" --output=json --no-pager 2>/dev/null | head -c "$((observe_bytes_left + 1))" >"$journal_file"
-  status=${PIPESTATUS[0]}
+  pipeline_status=("${PIPESTATUS[@]}")
+  status="${pipeline_status[0]}"
+  (( status != 0 || pipeline_status[1] == 0 )) || status="${pipeline_status[1]}"
   (( restore_errexit )) && set -e || set +e
-  bytes="$(wc -c <"$journal_file")"
+  bytes="$(wc -c <"$journal_file")" || { diagnostic_receipts='[]'; diagnostic_receipt_loss='["query_error"]'; rm -f "$invocation_file" "$journal_file" "$helper_file" "$field_file"; return; }
+  [[ "$bytes" =~ ^(0|[1-9][0-9]{0,17})$ ]] || { diagnostic_receipts='[]'; diagnostic_receipt_loss='["query_error"]'; rm -f "$invocation_file" "$journal_file" "$helper_file" "$field_file"; return; }
   if (( bytes > observe_bytes_left )); then
     observe_bytes_left=0
     diagnostic_receipt_loss='["truncated"]'
@@ -563,7 +589,8 @@ capture_diagnostic_receipts() {
   timeout --kill-after=1 "$observe_timeout_seconds" python "$failure_capture_driver" --input "$journal_file" --invocation-id "$invocation" --boot-id "$snapshot_boot_id" --since-us "$snapshot_since_us" --until-us "$now_us" >"$helper_file" 2>/dev/null
   status=$?
   (( restore_errexit )) && set -e || set +e
-  bytes="$(wc -c <"$helper_file")"
+  bytes="$(wc -c <"$helper_file")" || { diagnostic_receipts='[]'; diagnostic_receipt_loss='["query_error"]'; rm -f "$invocation_file" "$journal_file" "$helper_file" "$field_file"; return; }
+  [[ "$bytes" =~ ^(0|[1-9][0-9]{0,17})$ ]] || { diagnostic_receipts='[]'; diagnostic_receipt_loss='["query_error"]'; rm -f "$invocation_file" "$journal_file" "$helper_file" "$field_file"; return; }
   if (( bytes > observe_bytes_left )); then observe_bytes_left=0; rm -f "$journal_file" "$helper_file"; diagnostic_receipt_loss='["truncated"]'; return; fi
   observe_bytes_left=$((observe_bytes_left - bytes))
   if (( status == 124 )); then rm -f "$journal_file" "$helper_file"; diagnostic_receipt_loss='["timeout"]'; return; fi
@@ -575,12 +602,13 @@ capture_diagnostic_receipts() {
     timeout --kill-after=1 "$observe_timeout_seconds" python -c 'import json,sys; value=json.load(open(sys.argv[1]))[sys.argv[2]]; assert isinstance(value,list); print(json.dumps(value,separators=(",",":")))' "$helper_file" "$field" >"$field_file" 2>/dev/null
     field_status=$?
     (( restore_errexit )) && set -e || set +e
-    field_bytes="$(wc -c <"$field_file")"
+    field_bytes="$(wc -c <"$field_file")" || { diagnostic_receipts='[]'; diagnostic_receipt_loss='["query_error"]'; rm -f "$invocation_file" "$journal_file" "$helper_file" "$field_file"; return; }
+    [[ "$field_bytes" =~ ^(0|[1-9][0-9]{0,17})$ ]] || { diagnostic_receipts='[]'; diagnostic_receipt_loss='["query_error"]'; rm -f "$invocation_file" "$journal_file" "$helper_file" "$field_file"; return; }
     if (( field_bytes > observe_bytes_left )); then observe_bytes_left=0; rm -f "$journal_file" "$helper_file" "$field_file"; diagnostic_receipt_loss='["truncated"]'; return; fi
     observe_bytes_left=$((observe_bytes_left - field_bytes))
     if (( field_status == 124 )); then rm -f "$journal_file" "$helper_file" "$field_file"; diagnostic_receipt_loss='["timeout"]'; return; fi
     if (( field_status != 0 )); then rm -f "$journal_file" "$helper_file" "$field_file"; diagnostic_receipt_loss='["parse_loss"]'; return; fi
-    if [[ "$field" == receipts ]]; then diagnostic_receipts="$(<"$field_file")"; else diagnostic_receipt_loss="$(<"$field_file")"; fi
+    if [[ "$field" == receipts ]]; then diagnostic_receipts="$(<"$field_file")" || { diagnostic_receipts='[]'; diagnostic_receipt_loss='["query_error"]'; rm -f "$invocation_file" "$journal_file" "$helper_file" "$field_file"; return; }; else diagnostic_receipt_loss="$(<"$field_file")" || { diagnostic_receipts='[]'; diagnostic_receipt_loss='["query_error"]'; rm -f "$invocation_file" "$journal_file" "$helper_file" "$field_file"; return; }; fi
     rm -f "$field_file"
   done
   rm -f "$journal_file" "$helper_file"
@@ -588,7 +616,7 @@ capture_diagnostic_receipts() {
 capture_headscale_fixture() {
   # Failure-only, read-only and before teardown. The helper owns independent
   # PID/read/query/parser deadlines and terminates each child process group.
-  local safe_file status=0 restore_errexit=0
+  local safe_file value bytes status=0 restore_errexit=0
   case "$-" in *e*) restore_errexit=1 ;; esac
   headscale_observation='{"process_state":"unknown","log":{"events":[],"losses":["unattempted"]},"nodes":{"peer":{"count":null,"state":"unknown"},"sidecar":{"count":null,"state":"unknown"},"losses":["unattempted"]}}'
   safe_file="$(mktemp "$diagnostics/.n3-headscale-safe.XXXXXX")" || return 0
@@ -596,8 +624,14 @@ capture_headscale_fixture() {
   timeout --kill-after=1 16 python "$failure_capture_driver" --mode headscale --work "${work:-}" --headscale-pid "${headscale_pid:-}" >"$safe_file" 2>/dev/null
   status=$?
   (( restore_errexit )) && set -e || set +e
-  if (( status == 0 )) && [[ -s "$safe_file" ]] && (( $(wc -c <"$safe_file") <= 4096 )); then
-    headscale_observation="$(<"$safe_file")"
+  bytes="$(wc -c <"$safe_file")" || { headscale_observation='{"process_state":"unknown","log":{"events":[],"losses":["query_error"]},"nodes":{"peer":{"count":null,"state":"unknown"},"sidecar":{"count":null,"state":"unknown"},"losses":["query_error"]}}'; rm -f "$safe_file"; return 0; }
+  [[ "$bytes" =~ ^(0|[1-9][0-9]{0,17})$ ]] || { headscale_observation='{"process_state":"unknown","log":{"events":[],"losses":["query_error"]},"nodes":{"peer":{"count":null,"state":"unknown"},"sidecar":{"count":null,"state":"unknown"},"losses":["query_error"]}}'; rm -f "$safe_file"; return 0; }
+  if (( status == 0 )) && [[ -s "$safe_file" ]] && (( bytes <= 4096 )); then
+    if value="$(<"$safe_file")"; then
+      headscale_observation="$value"
+    else
+      headscale_observation='{"process_state":"unknown","log":{"events":[],"losses":["query_error"]},"nodes":{"peer":{"count":null,"state":"unknown"},"sidecar":{"count":null,"state":"unknown"},"losses":["query_error"]}}'
+    fi
   else
     local loss=launch_failure
     (( status != 124 )) || loss=timeout
@@ -609,23 +643,30 @@ capture_connector_instance() {
   # Own a reserved section, independent of sidecar/Headscale caps. Read only
   # the original unit/process tree and staged-file numeric mode in its root
   # view. Existing budgets/privilege boundary stay fixed; no token reads.
-  local safe_file status=0 restore_errexit=0 loss=launch_failure
+  local safe_file value bytes status=0 restore_errexit=0 python_command loss=launch_failure
   connector_observation='{"unit":"happyranch-connector.service","binding":null,"listening":null,"bound_port":null,"status":"unavailable","loss":"unattempted","credential_mode":{"location":"systemd-daemon-token","namespace":"connector-service-root","mode":null,"observed_at_us":null,"loss":"unattempted"},"collection":{"observation_budget_seconds":11,"command_budget_seconds":13,"kill_grace_seconds":1,"output_cap_bytes":4096},"readiness_gates":{"daemon_loopback":{"ok":null,"loss":"unavailable_internal"},"credential_permissions":{"ok":null,"loss":"unavailable_internal"},"current_policy":{"ok":null,"loss":"unavailable_internal"},"bind_identity":{"ok":null,"loss":"unavailable_internal"},"trust_state":{"ok":null,"loss":"unavailable_internal"}}}'
   case "$-" in *e*) restore_errexit=1 ;; esac
   safe_file="$(mktemp "$diagnostics/.n3-connector-safe.XXXXXX")" || {
     connector_observation="${connector_observation//\"loss\":\"unattempted\"/\"loss\":\"launch_failure\"}"
     return 0
   }
+  python_command="$(command -v python)" || { rm -f "$safe_file"; connector_observation="${connector_observation//\"loss\":\"unattempted\"/\"loss\":\"query_error\"}"; return 0; }
   set +e
   # 11s internal section plus startup/parser margin and 1s outer kill grace.
-  timeout --kill-after=1 13 sudo -n "$(command -v python)" "$failure_capture_driver" --mode connector >"$safe_file" 2>/dev/null
+  timeout --kill-after=1 13 sudo -n "$python_command" "$failure_capture_driver" --mode connector >"$safe_file" 2>/dev/null
   status=$?
   (( restore_errexit )) && set -e || set +e
-  if (( status == 0 )) && [[ -s "$safe_file" ]] && (( $(wc -c <"$safe_file") <= 4096 )); then
-    connector_observation="$(<"$safe_file")"
+  bytes="$(wc -c <"$safe_file")" || { connector_observation="${connector_observation//\"loss\":\"unattempted\"/\"loss\":\"query_error\"}"; rm -f "$safe_file"; return 0; }
+  [[ "$bytes" =~ ^(0|[1-9][0-9]{0,17})$ ]] || { connector_observation="${connector_observation//\"loss\":\"unattempted\"/\"loss\":\"query_error\"}"; rm -f "$safe_file"; return 0; }
+  if (( status == 0 )) && [[ -s "$safe_file" ]] && (( bytes <= 4096 )); then
+    if value="$(<"$safe_file")"; then
+      connector_observation="$value"
+    else
+      connector_observation="${connector_observation//\"loss\":\"unattempted\"/\"loss\":\"query_error\"}"
+    fi
   else
     if (( status == 124 || status == 137 )); then loss=timeout
-    elif (( $(wc -c <"$safe_file") > 4096 )); then loss=truncated
+    elif (( bytes > 4096 )); then loss=truncated
     elif (( status != 0 )); then loss=query_error
     else loss=parse_loss
     fi
@@ -913,16 +954,22 @@ from pathlib import Path
 from runtime.remote_access.linux_package import install_linux_package
 install_linux_package(Path(sys.argv[1]), Path('/'), system_service=True)
 PY
-[[ "$(stat -c %U:%G:%a /opt/happyranch)" == "root:root:755" ]] || fail "system-service payload root custody mismatch"
-[[ "$(stat -c %U:%G:%a /opt/happyranch/bin)" == "root:root:755" ]] || fail "system-service binary directory custody mismatch"
+payload_custody="$(stat -c %U:%G:%a /opt/happyranch)" || fail "system-service payload root custody query failed"
+[[ "$payload_custody" == "root:root:755" ]] || fail "system-service payload root custody mismatch"
+binary_directory_custody="$(stat -c %U:%G:%a /opt/happyranch/bin)" || fail "system-service binary directory custody query failed"
+[[ "$binary_directory_custody" == "root:root:755" ]] || fail "system-service binary directory custody mismatch"
 for binary in /opt/happyranch/bin/happyranch-connector /opt/happyranch/bin/happyranch-tsnet-sidecar; do
-  [[ "$(stat -c %U:%G:%a "$binary")" == "root:root:755" ]] || fail "system-service binary custody mismatch"
+  binary_custody="$(stat -c %U:%G:%a "$binary")" || fail "system-service binary custody query failed"
+  [[ "$binary_custody" == "root:root:755" ]] || fail "system-service binary custody mismatch"
   sudo -u happyranch test -x "$binary" || fail "system-service user cannot execute packaged binary"
 done
 sudo systemctl daemon-reload
-[[ "$(sudo stat -c %U:%G:%a /etc/systemd/system/happyranch-tsnet-sidecar.service.d/10-enrollment-credential.conf)" == "root:root:600" ]] || fail "transient credential drop-in custody mismatch"
-[[ "$(sudo stat -c %U:%G:%a /etc/happyranch/daemon.token)" == "root:root:600" ]] || fail "daemon credential source custody mismatch"
-[[ "$(sudo stat -c %U:%G:%a /etc/happyranch/enrollment.key)" == "root:root:600" ]] || fail "enrollment credential source custody mismatch"
+dropin_custody="$(sudo stat -c %U:%G:%a /etc/systemd/system/happyranch-tsnet-sidecar.service.d/10-enrollment-credential.conf)" || fail "transient credential drop-in custody query failed"
+[[ "$dropin_custody" == "root:root:600" ]] || fail "transient credential drop-in custody mismatch"
+daemon_source_custody="$(sudo stat -c %U:%G:%a /etc/happyranch/daemon.token)" || fail "daemon credential source custody query failed"
+[[ "$daemon_source_custody" == "root:root:600" ]] || fail "daemon credential source custody mismatch"
+enrollment_source_custody="$(sudo stat -c %U:%G:%a /etc/happyranch/enrollment.key)" || fail "enrollment credential source custody query failed"
+[[ "$enrollment_source_custody" == "root:root:600" ]] || fail "enrollment credential source custody mismatch"
 
 capture_denial_matrix() {
   local arm_id="$1"
@@ -1075,16 +1122,21 @@ connector_ready="$(systemctl_number happyranch-connector.service ActiveEnterTime
 sidecar_ready="$(systemctl_number happyranch-tsnet-sidecar.service ActiveEnterTimestampMonotonic)"
 [[ "$sidecar_ready" -le "$connector_ready" ]] || fail "connector reported composite READY before sidecar admission"
 check_staged_credential() {
-  local path="$1" directory="$2" name="$3"
+  local path="$1" directory="$2" name="$3" resolved_path file_metadata directory_metadata
   [[ "$path" == "$directory/$name" ]] || fail "staged credential provenance mismatch"
-  [[ "$(readlink -f -- "$path")" == "$path" ]] || fail "staged credential escape mismatch"
+  resolved_path="$(readlink -f -- "$path")" || fail "staged credential provenance query failed"
+  [[ "$resolved_path" == "$path" ]] || fail "staged credential escape mismatch"
   sudo test -f "$path" || fail "staged credential type mismatch"
   test_false -L "$path" || fail "staged credential symlink mismatch"
   sudo -u happyranch test -r "$path" || fail "staged credential unreadable"
   test_false -w "$path" -u happyranch || fail "staged credential service-writable"
   test_false -w "$directory" -u happyranch || fail "staged credential directory service-writable"
+  file_metadata="$(sudo env LC_ALL=C stat -c %U:%G:%a:%F "$path")" || fail "staged credential file metadata query failed"
+  directory_metadata="$(sudo env LC_ALL=C stat -c %U:%G:%a:%F "$directory")" || fail "staged credential directory metadata query failed"
+  [[ "$file_metadata" =~ ^[^:[:space:]]+:[^:[:space:]]+:[0-7]{3,4}:regular\ (empty\ )?file$ ]] || fail "staged credential file metadata malformed"
+  [[ "$directory_metadata" =~ ^[^:[:space:]]+:[^:[:space:]]+:[0-7]{3,4}:directory$ ]] || fail "staged credential directory metadata malformed"
   printf 'credential_observation name=%s file=%s directory=%s\n' \
-    "$name" "$(sudo stat -c %U:%G:%a:%F "$path")" "$(sudo stat -c %U:%G:%a:%F "$directory")"
+    "$name" "$file_metadata" "$directory_metadata" || fail "staged credential observation write failed"
 }
 check_staged_credential /run/credentials/happyranch-connector.service/daemon.token /run/credentials/happyranch-connector.service daemon.token
 check_staged_credential /run/credentials/happyranch-tsnet-sidecar.service/enrollment.key /run/credentials/happyranch-tsnet-sidecar.service enrollment.key
@@ -1222,8 +1274,11 @@ shutdown_pid="$(mainpid happyranch-tsnet-sidecar.service)"
 [[ "$shutdown_pid" != 0 ]] || fail "shutdown PID unavailable"
 sudo systemctl stop happyranch-managed.target
 ! tsnet_open || fail "TSNet admission survived target stop"
-shutdown_receipts="$(sudo journalctl -u happyranch-tsnet-sidecar.service _PID="$shutdown_pid" --no-pager -o cat | grep "lifecycle_stop_complete run=$shutdown_pid invocation=" || true)"
-[[ "$(printf '%s\n' "$shutdown_receipts" | grep -c .)" == 2 ]] || fail "same-instance Stop did not produce two receipts"
+# Successful no-match acquisition yields zero receipts; any producer/filter
+# failure refuses even when its partial output contains both expected lines.
+shutdown_receipts="$(sudo journalctl -u happyranch-tsnet-sidecar.service _PID="$shutdown_pid" --no-pager -o cat | awk -v prefix="lifecycle_stop_complete run=$shutdown_pid invocation=" 'index($0, prefix) { print }')" || fail "shutdown receipt acquisition failed"
+shutdown_receipt_count="$(printf '%s\n' "$shutdown_receipts" | awk 'length($0) > 0 { count++ } END { print count+0 }')" || fail "shutdown receipt count failed"
+[[ "$shutdown_receipt_count" == 2 ]] || fail "same-instance Stop did not produce two receipts"
 grep -qx "lifecycle_stop_complete run=$shutdown_pid invocation=1" <<<"$shutdown_receipts" || fail "missing first same-instance Stop receipt"
 grep -qx "lifecycle_stop_complete run=$shutdown_pid invocation=2" <<<"$shutdown_receipts" || fail "missing second same-instance Stop receipt"
 evidence "revocation" "stop_before_connector_cleanup"
@@ -1275,7 +1330,8 @@ PY
   wait_for "fresh $boundary virtual admission" tsnet_open
 done
 evidence "recovery" "fresh_install_rollback_reentry_each_checkpoint"
-before_manifest="$(sudo sha256sum /opt/happyranch/manifest.json)"
+before_manifest="$(sudo sha256sum /opt/happyranch/manifest.json)" || fail "retained payload digest query failed"
+[[ "$before_manifest" =~ ^[0-9a-f]{64}\ \ /opt/happyranch/manifest\.json$ ]] || fail "retained payload digest malformed"
 sudo env "PATH=$PATH" BOUNDARY=payload_published uv run python - "$PACKAGE_TAR" <<'PY'
 import os, sys
 from pathlib import Path
@@ -1290,7 +1346,9 @@ except RuntimeError:
 else:
     raise SystemExit('fault did not fire')
 PY
-[[ "$(sudo sha256sum /opt/happyranch/manifest.json)" == "$before_manifest" ]] || fail "upgrade rollback lost retained payload"
+after_manifest="$(sudo sha256sum /opt/happyranch/manifest.json)" || fail "rollback payload digest query failed"
+[[ "$after_manifest" =~ ^[0-9a-f]{64}\ \ /opt/happyranch/manifest\.json$ ]] || fail "rollback payload digest malformed"
+[[ "$after_manifest" == "$before_manifest" ]] || fail "upgrade rollback lost retained payload"
 for unit in happyranch-connector.service happyranch-tsnet-sidecar.service happyranch-managed.target; do sudo test -f "/etc/systemd/system/$unit" || fail "upgrade rollback lost $unit"; done
 evidence "recovery" "upgrade_rollback"
 evidence "recovery" "retained_payload_units"

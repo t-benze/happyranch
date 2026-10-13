@@ -161,12 +161,36 @@ mutation failures and attempt all remaining actions, preserving original exit
 and once-only EXIT/INT/TERM teardown. Source restore, refusal, one-use lifecycle,
 SYSTEMD0222/File0077, sidecar policy, sandbox and capture budgets remain unchanged.
 Successful full process/listener inventories replace negative kill/TCP errors in
-cleanup. Virtual `nc` rejection remains a limited reachability observation,
-not independently confirmed service/query absence; its ambiguity, filesystem
-probe limitations and unexecuted cleanup/lifecycle proofs remain explicit gaps.
+cleanup. Negative virtual `nc` callers remain a blocking source defect requiring SAME
+manager observation-boundary disposition before publication, not a waived gap.
+Filesystem probe limitations and unexecuted cleanup/lifecycle proofs remain gaps.
 The [finite cases](managed-remote-access-staged-credential-cases.md)
 are source specifications only. Seq428 run38259906794 at590768ff failed after
 the expected negative ledger, without a positive-start/mode/listener result;
 reset-abort attribution is supported by retained logs/source, while historical
 sole-cause and credential-fix causality remain inference. Seq428 is consumed1/1.
 Seq435 remains manager-owned0/1; no maker publication, build or product run.
+
+
+**R1/R2 acquisition correction and R3 boundary (TASK11084, SAME TASK11067).**
+Shutdown receipt acquisition now checks the complete journal/filter pipeline
+before counting and exact-line assertions; a successful no-match still fails
+the required two-receipt count. Before/after rollback digests, staged readlink
+and metadata, payload/source custody, PID1 and package provenance are acquired
+with explicit status checks before comparison or reporting. Matching or partial
+stdout from a nonzero producer refuses. Capture counters, file reads and cap
+pipeline statuses are checked even when the capture function is called under a
+conditional or cleanup with errexit suppressed; failures retain existing closed
+loss values, unknown/empty projections, section budgets and remaining teardown.
+These are source corrections with executable proof UNEXECUTED/SUSPENDED.
+R3 remains a blocking source defect: negated virtual nc failures cannot establish
+listener removal. Peer identity/status, unit/PID state and connector host18443
+observations do not observe virtual443 admission at the Stop barrier. No existing
+typed refusal observation separates dial/copy/transport errors from removal.
+The partial candidate is unpublished and MUST NOT advance to review/QA or spend
+seq435 until SAME manager resolves that observation boundary. The existing real
+probe and required predicates remain present, with their unsafe negative callers
+explicitly unresolved; no error is accepted as absence in the delivery evidence.
+SYSTEMD0222/File0077, production sidecar/supervisor/lifecycle, sandbox, CI guards,
+original failure and all cleanup attempts remain unchanged. No whole-harness
+acceptance or original staged-mode/installer/restart/N6 proof follows.
