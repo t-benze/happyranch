@@ -1462,6 +1462,19 @@ def _finding_assert_raises(action, exception=ValueError):
     raise AssertionError('required refusal absent')
 
 
+def _finding_subprocess(spawn):
+    """Complete local dependency view; shared stdlib globals stay untouched."""
+    from types import SimpleNamespace
+    # wait_receipts compares the actual stdlib wait code, not the spawn adapter.
+    spawn.wait = subprocess.Popen.wait
+    local = SimpleNamespace(**{**vars(subprocess), 'Popen': spawn})
+    assert local.PIPE is subprocess.PIPE and local.STDOUT is subprocess.STDOUT
+    assert local.TimeoutExpired is subprocess.TimeoutExpired
+    assert local.SubprocessError is subprocess.SubprocessError
+    assert local.Popen.wait is subprocess.Popen.wait
+    return local
+
+
 def _finding_diagnostic_trial(root, kind, fault=None, payload=b'\xff\xe2\x82\xac'):
     """Synthetic harness-only sink/commands; never a task/result/callback claim."""
     from types import SimpleNamespace
@@ -1480,13 +1493,15 @@ def _finding_diagnostic_trial(root, kind, fault=None, payload=b'\xff\xe2\x82\xac
     write_receipt(control/'observer'/'descriptor.json',observer,16384)
     real_popen=subprocess.Popen;real_selector=selectors.DefaultSelector
     injected={name:OSError('finding-primary-'+name) for name in faults}
-    waits=[]
+    waits=[];seams=[];acquired_selectors=[]
     class Child(real_popen):
         def wait(self,timeout=None):
             remaining=max(0,trial_deadline-time.monotonic())
             value=super().wait(timeout=remaining if timeout is None else min(timeout,remaining))
             waits.append(value);return value
     def spawn(*args,**kwargs):
+        assert kwargs['stdout'] is subprocess.PIPE and kwargs['stderr'] is subprocess.PIPE
+        seams.append('spawn')
         if 'spawn' in faults:raise injected['spawn']
         code='import os,time;os.write(1,'+repr(payload[:2])+');time.sleep(.01);os.write(1,'+repr(payload[2:])+');os.write(2,b"\\xfe")'
         if payload==b'\xff\xe2\x82\xac':
@@ -1498,9 +1513,11 @@ def _finding_diagnostic_trial(root, kind, fault=None, payload=b'\xff\xe2\x82\xac
         processes.append(child);return child
     class Selected:
         def __init__(self):
+            seams.append('selector-create')
             if 'selector-create' in faults:raise injected['selector-create']
-            self.actual=real_selector()
+            self.actual=real_selector();acquired_selectors.append(self)
         def register(self,*args):
+            seams.append('selector-register')
             if 'selector-register' in faults:raise injected['selector-register']
             return self.actual.register(*args)
         def select(self,timeout=None):
@@ -1530,7 +1547,7 @@ def _finding_diagnostic_trial(root, kind, fault=None, payload=b'\xff\xe2\x82\xac
     # product code. The actual capture/cleanup/checkpoint implementation runs.
     with _finding_patch(module,_provider_diagnostic=lambda kind:(task,sid,'dev_agent',slug,control,observer,target,identity),
         _provider_admission=admission,manifest=lambda:{'revision':_DESCRIPTOR['head'],'callback':'synthetic-unexecuted-callback'},
-        subprocess=SimpleNamespace(Popen=spawn,TimeoutExpired=subprocess.TimeoutExpired),
+        subprocess=_finding_subprocess(spawn),
         selectors=SimpleNamespace(DefaultSelector=Selected,EVENT_READ=selectors.EVENT_READ),_diagnostic_checkpoint=checkpoint):
         with _finding_patch(sys,argv=argv,stdin=__import__('io').StringIO('')), _finding_patch(os,environ=dict(os.environ,
             HAPPYRANCH_RUNTIME_SESSION_ID=sid,HAPPYRANCH_ORG_SLUG=slug,HAPPYRANCH_ATTACHMENT_OBSERVER=str(control/'observer'/'descriptor.json'))):
@@ -1564,9 +1581,13 @@ def _finding_diagnostic_trial(root, kind, fault=None, payload=b'\xff\xe2\x82\xac
         if primary not in ('publication','close') and primary:
             assert 'finding-primary-'+primary in row['error'] and not isinstance(failure,SystemExit)
         if 'close' in faults:assert row['cleanup_errors'] and not isinstance(failure,SystemExit)
+    if 'spawn' in faults:assert seams==['spawn']
+    if 'selector-create' in faults:assert seams==['spawn','selector-create']
+    if 'selector-register' in faults:assert seams==['spawn','selector-create','selector-register']
+    for selected in acquired_selectors:assert not selected.actual.get_map()
     assert time.monotonic()<trial_deadline, 'diagnostic trial exceeded the remaining call budget'
     return rows[-1] if rows else None, {'kind':kind,'fault':fault,'failure':type(failure).__name__,
-        'spawned':len(processes),'consuming_waits':waits,'selector_closes':closes,'checkpoint_stages':calls,'split_read_lengths':split_reads,'stored_final':'publication' not in faults}
+        'intended_seams':seams,'spawned':len(processes),'consuming_waits':waits,'selector_closes':closes,'checkpoint_stages':calls,'split_read_lengths':split_reads,'stored_final':'publication' not in faults}
 
 
 def assert_finding_admission(root):
@@ -1895,6 +1916,7 @@ def _finding_outer_lifecycle(root):
         faults=set(fault.split('+'));primary=fault.split('+')[0]
         case=root/fault;case.mkdir(mode=0o700);owned=[];selectors_acquired=[];published=[];pidfds=set();fifo_fds={};fifo_names=[];closed_fifos=[]
         constructions=[];injections=[];bound=[];observations=[];waits=[];gates=[];native=[]
+        injected={name:OSError('finding-primary-'+name) for name in ('spawn','selector-create','selector-register')}
         cleanup_error=PermissionError('finding-primary-tree-cleanup')
         phase_error=ValueError('finding-primary-phase-action')
         tree_error=PermissionError('finding-later-phase-tree')
@@ -1934,7 +1956,9 @@ def _finding_outer_lifecycle(root):
                 value=super().wait(timeout=remaining if timeout is None else min(timeout,remaining))
                 waits.append(value);return value
         def spawn(*args,**kwargs):
-            if 'spawn' in faults:raise OSError('finding-primary-spawn')
+            assert kwargs['stdout'] is subprocess.PIPE and kwargs['stderr'] is subprocess.STDOUT
+            assert qa.subprocess.Popen.wait is real_popen.wait
+            if 'spawn' in faults:raise injected['spawn']
             descriptor_path=next(value.split('=',1)[1] for value in args[0] if value.startswith('--attachment-qa-descriptor='))
             descriptor=closed_read(Path(descriptor_path),16384)
             frame=(json.dumps({'nonce':descriptor['nonce'],'node':NODES[0],'phase':'teardown','event':'finish'})+'\n').encode()
@@ -2022,14 +2046,16 @@ def _finding_outer_lifecycle(root):
                 super().failure(label,exc)
         class Selector:
             def __init__(self):
-                self.outer=not constructions;constructions.append(self.outer)
+                # Binding/exit observers now acquire selectors before capture.
+                self.outer=sys._getframe(1).f_code is qa.supervise.__code__
+                constructions.append(self.outer)
                 if self.outer and 'selector-create' in faults:
-                    injections.append('selector-create');raise OSError('finding-primary-selector-create')
+                    injections.append('selector-create');raise injected['selector-create']
                 self.actual=real_selector();selectors_acquired.append(self);self.registrations=0
             def register(self,*args):
                 self.registrations+=1
                 if self.outer and self.registrations==1 and 'selector-register' in faults:
-                    injections.append('selector-register');raise OSError('finding-primary-selector-register')
+                    injections.append('selector-register');raise injected['selector-register']
                 value=self.actual.register(*args)
                 if self.outer and self.registrations==3:
                     release()
@@ -2113,7 +2139,7 @@ def _finding_outer_lifecycle(root):
         cleanup_deadline=min(trial_deadline,time.monotonic()+.25)
         try:
             with _finding_patch(qa,OwnedTree=Tree,CaptureChannels=Channels,write_receipt=publish,evidence_append=append,os=OS(),
-                subprocess=SimpleNamespace(Popen=spawn,TimeoutExpired=subprocess.TimeoutExpired),
+                subprocess=_finding_subprocess(spawn),
                 selectors=SimpleNamespace(DefaultSelector=Selector,EVENT_READ=selectors.EVENT_READ)):
                 with _finding_patch(os,environ=dict(os.environ,RUNNER_TEMP=str(case))):
                     if 'discover' in faults:
@@ -2143,6 +2169,7 @@ def _finding_outer_lifecycle(root):
                 assert type(process['direct_wait_returncode']) is int and process['direct_wait_returncode']==waits[-1]
         if primary in ('spawn','discover','selector-create','selector-register','fifo-open','source-publication'):
             assert 'finding-primary-'+primary in result['error']
+        if primary in injected:assert earliest[0] is injected[primary]
         if primary in ('selector-create','selector-register'):
             assert injections==[primary] and bound==[owned[0].pid] and len(constructions)>1
             assert any(owned[0].pid in row['indicated'] for row in observations), 'independent pidfd exit observation unavailable'
@@ -2202,6 +2229,150 @@ def _finding_outer_lifecycle(root):
             'bounded_diagnostics':diagnostics,'overflow_assertions':overflow_facts})
     return facts
 
+def _finding_process_binding(root):
+    """Real short-lived children, finite exact-source gates, no product claims."""
+    from scripts import attachment_scoped_qa as qa
+    facts = []
+    for fault in ('exited', 'vanished', 'reparent', 'reparent-late', 'uid', 'start', 'foreign-parent'):
+        trial_deadline = min(_CALL_DEADLINE, time.monotonic()+.5)
+        case = root/fault; case.mkdir(mode=0o700)
+        sink = _finding_sink(case/'evidence')
+        child_r, child_w = os.pipe()
+        grand = None; released = False; parent_released = False; armed = False
+        owned_fds = []; closed_fds = []; signals = []; recorded = []; terminal = []
+        def worker(ready, release):
+            os.close(child_w)
+            pid = os.fork()
+            if pid == 0:
+                os.close(ready); os.close(release)
+                try:
+                    assert select.select([child_r], [], [], max(0, trial_deadline-time.monotonic()))[0]
+                    assert os.read(child_r, 1) == b'R'
+                    os._exit(0)
+                except BaseException:os._exit(1)
+            os.close(child_r)
+            os.write(ready, ('CHILD:'+str(pid)).encode())
+            assert select.select([release], [], [], max(0, trial_deadline-time.monotonic()))[0]
+            command = os.read(release, 1)
+            if command == b'P':return  # actual subreaper adoption, child still live
+            assert command == b'W'
+            got, status = os.waitpid(pid, 0)
+            assert got == pid and os.waitstatus_to_exitcode(status) == 0
+            os.write(ready, b'WAIT0')
+            assert select.select([release], [], [], max(0, trial_deadline-time.monotonic()))[0]
+            assert os.read(release, 1) == b'X'
+        real_os = qa.os
+        class OS:
+            def __getattr__(self, name):return getattr(real_os, name)
+            def pidfd_open(self, pid):
+                fd = real_os.pidfd_open(pid); owned_fds.append(fd); return fd
+            def close(self, fd):
+                real_os.close(fd)
+                if fd in owned_fds:closed_fds.append(fd)
+        class Signal:
+            def __getattr__(self, name):return getattr(signal, name)
+            def pidfd_send_signal(self, *args):
+                signals.append(args); raise AssertionError('binding must never signal')
+        class Tree(qa.OwnedTree):
+            def children(self, pid):
+                return super().children(pid) & {owner, grand}
+            def identity(self, pid):
+                actual = qa.OwnedTree.identity(pid)
+                if armed and pid == grand:
+                    if fault == 'uid':return actual[0]+1, actual[1], actual[2]
+                    if fault == 'start':return actual[0], actual[1]+1, actual[2]
+                    if fault == 'foreign-parent':return actual[0], actual[1], 1
+                return actual
+        with _finding_owned_worker(worker) as (owner, ready, parent_release):
+            os.close(child_r)
+            tree = None
+            try:
+                assert select.select([ready], [], [], max(0, min(.1, trial_deadline-time.monotonic())))[0]
+                message = os.read(ready, 64)
+                assert message.startswith(b'CHILD:')
+                grand = int(message[6:]); assert qa.OwnedTree.identity(grand)[2] == owner
+                with _finding_patch(qa, os=OS(), signal=Signal()):
+                    tree = Tree(sink, record=lambda label, exc:recorded.append((label, exc)))
+                    tree.bind_child(owner, tree.self_pid)
+                    def gate(frame):
+                        nonlocal armed, released, parent_released
+                        assert frame.f_locals['pid'] == grand
+                        assert frame.f_locals['before'][:2] == qa.OwnedTree.identity(grand)[:2]
+                        armed = True
+                        if fault in ('exited', 'vanished'):
+                            os.write(child_w, b'R'); released = True
+                            os.write(parent_release, b'W')
+                            _finding_message(ready, b'WAIT0')
+                            terminal.append({'actual_owner':owner, 'child':grand, 'wait_exit':0})
+                            assert not Path('/proc/'+str(grand)).exists()
+                        elif fault in ('reparent', 'reparent-late'):
+                            os.write(parent_release, b'P'); parent_released = True
+                            bound = min(trial_deadline, time.monotonic()+.1)
+                            while qa.OwnedTree.identity(grand)[2] != tree.self_pid:
+                                assert time.monotonic() < bound
+                                time.sleep(.001)
+                    anchor = ('member = pid in self.children' if fault in ('exited', 'reparent-late') else
+                              'after = self.identity(pid)' if fault == 'vanished' else 'fd = os.pidfd_open(pid)')
+                    with harness_source_gate(qa.OwnedTree.bind_child, anchor, gate) as hits:
+                        tree.discover()
+                    assert hits and not signals
+                    if fault in ('exited', 'reparent', 'reparent-late'):
+                        assert not tree.errors and grand in tree.identities
+                        entry = tree.identities[grand]
+                        assert entry['birth_parent'] == owner and entry['parent_wait'] is None
+                        assert entry['exited'] is False and entry['reaped'] is False
+                        if fault == 'exited':
+                            observation = next(e for e in tree.events if e['kind']=='binding_observation' and e['pid']==grand)
+                            assert observation['before'][:2] == observation['after'][:2]
+                            assert observation['exit_indicated'] and observation['member'] is False
+                            assert observation['terminal_identity'] is None
+                            tree.required_roles.add(grand)
+                            tree.observe_exits(owner)
+                            assert entry['removed_after_exit'] and entry['parent_wait'] is None and not entry['reaped']
+                            # The actual parent's private wait above was NOT an
+                            # admitted role receipt. Disappearance grants no wait.
+                            assert not tree.closed_identity(grand)
+                        else:
+                            assert entry['parent'] == tree.self_pid and not tree.binding_exit(entry['fd'])
+                            assert any(e['kind']=='reparent' and e['pid']==grand and e['before']==owner
+                                       and e['after']==tree.self_pid for e in tree.events)
+                    else:
+                        assert grand not in tree.identities and tree.errors and recorded
+                        first = recorded[0][1]
+                        assert first is tree.reported[0]
+                        assert type(first) is (FileNotFoundError if fault=='vanished' else ValueError)
+                        refused = next(e for e in tree.events if e['kind']=='binding_refused' and e['pid']==grand)
+                        assert refused['before'] is not None and not any(e['kind']=='bound' and e['pid']==grand for e in tree.events)
+                        assert any('binding context' in note for note in first.__notes__)
+                        if fault in ('uid', 'start'):assert refused['before'][:2] != refused['after'][:2]
+                        if fault == 'foreign-parent':assert refused['after'][2] == 1
+                        # Every acquired but untransferred child descriptor closed
+                        # before publication; no signals, wait or closure invented.
+                        assert len(owned_fds)==2 and closed_fds==[owned_fds[-1]]
+                        _finding_assert_raises(lambda:os.fstat(owned_fds[-1]), OSError)
+                    assert tree.finalize_cleanup(False) is False
+                    process = closed_read(sink/'processes.json', qa.FINAL_CAPS['processes.json'])
+                    assert process['closure'] is False and process['direct_wait_returncode'] is None
+                    assert sorted(owned_fds)==sorted(closed_fds) and not signals
+                    facts.append({'fault':fault, 'binding_events':[e for e in tree.events if e.get('pid')==grand],
+                                  'errors':tree.errors, 'actual_parent_wait':terminal, 'role_wait_admitted':False,
+                                  'closed_pidfds':len(closed_fds), 'signals':len(signals), 'closure':process['closure']})
+            finally:
+                if tree is not None and any(e.get('fd') is not None for e in tree.identities.values()):
+                    tree.finalize_cleanup(False)
+                if not released:os.write(child_w, b'R'); released = True
+                if parent_released:
+                    got, status = os.waitpid(grand, 0)
+                    assert got==grand and os.waitstatus_to_exitcode(status)==0
+                else:
+                    if not terminal:
+                        os.write(parent_release, b'W'); _finding_message(ready, b'WAIT0')
+                    os.write(parent_release, b'X')
+                os.close(child_w)
+            assert time.monotonic() < trial_deadline, 'binding trial exhausted the original call budget'
+    return facts
+
+
 def assert_finding_capture(root):
     facts={}
     for kind in ('provider','callback'):
@@ -2221,7 +2392,8 @@ def assert_finding_capture(root):
                 assert any('secondary-close' in error for error in row['cleanup_errors']) and receipt['stored_final'] is False
             facts[name]=receipt
     for name,check in (('capacity',_finding_capacity),('lock',_finding_lock_and_cleanup),
-                       ('terminal',_finding_terminal_channels),('outer',_finding_outer_lifecycle)):
+                       ('terminal',_finding_terminal_channels),('outer',_finding_outer_lifecycle),
+                       ('binding',_finding_process_binding)):
         case=root/name;case.mkdir(mode=0o700);facts[name]=check(case)
     return facts
 

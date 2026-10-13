@@ -1250,8 +1250,9 @@ retained incomplete storage. Absent-child/absent-wait and genuine spawned/
 consuming-waited cases have separate assertions. Raw reconstruction, lengths,
 digests, preview and split-read handshake assertions remain.
 
-Outer selector injection targets exactly the first construction or first
-registration on that selected outer instance. Later independent selectors work.
+Outer selector injection targets the actual `supervise` construction or first
+registration on that selected outer instance, identified by its exact caller
+code. Earlier binding/exit observers and later independent selectors work.
 A real child announces readiness through a pipe and remains held until outer
 registration succeeds or cleanup signals it. Selector failure cases require its
 live pidfd binding before failure, exactly one intended injection, a later actual
@@ -1291,10 +1292,10 @@ There is no second selection, new product seam or extra test unit.
 | Existing row | Executable assertion | Actions and observations |
 | --- | --- | --- |
 | R14.admission | `assert_finding_admission` | Negative harness admission after a valid synthetic diagnostic sink; retained first error/stage, absent child/wait, incomplete and propagated nonzero. |
-| R14.Popen | `assert_finding_popen` | Provider and nested callback spawn refusal; absent child/PID/wait, first error and no acquired-child signal. |
+| R14.Popen | `assert_finding_popen` | Complete local subprocess dependencies reach intended provider and nested callback spawn refusal; absent child/PID/wait, first error and no acquired-child signal. |
 | R14.selector | `assert_finding_selector` | Both constructor and registration failures after real owned Popen; actual consuming wait, independent acquired-stream/selector closes, incomplete and first error. |
 | R15.raw | `assert_finding_raw` | Real subprocess writes invalid UTF8 and a split multibyte sequence. A pipe handshake holds the second write until the first actual retained read checkpoint. Reconstruct base64 bytes and compare exact retained/observed lengths and SHA256, separately from replacement preview. |
-| R14/R15.capture | `assert_finding_capture` | Raw overflow; combined primary/close/publication failures; outer supervisor spawn/discovery/FIFO/source/selector/pidfd/stream/publication failures; byte/entry allocation, independent append and snapshot producers, lock timeout/caught signal/uncatchable death; queued stdout/final phase/JUnit and partial-frame refusal. |
+| R14/R15.capture | `assert_finding_capture` | Positively proved short-lived-child exit/owned reparent, unknown/UID/start/foreign-parent refusal and missing required parent wait; raw overflow; combined primary/close/publication failures; outer supervisor spawn/discovery/FIFO/source/selector/pidfd/stream/publication failures; byte/entry allocation, independent append and snapshot producers, lock timeout/caught signal/uncatchable death; queued stdout/final phase/JUnit and partial-frame refusal. |
 
 `harness_source_gate` binds the actual current harness function object to the
 admitted source-file SHA256 and an executable disassembly line. Its finite
@@ -1332,13 +1333,75 @@ is separate from the original complete61-case JUnit acceptance. Five immutable
 final reservations are consumed once in synthetic scratch; none of those
 synthetic files is a successful original process/observation/result receipt.
 
-All five rows and R17/R18 supplemental behaviors remain **UNEXECUTED** in the
-maker leg. Source authoring, AST/compile/dis inspection and lint are not
-behavioral acceptance. Root TASK-11079 retains execution ownership;
+All five rows and supplemental behaviors at the repaired head remain
+**UNEXECUTED** in the maker leg. Source authoring, AST/compile/dis inspection
+and lint are not behavioral acceptance. Root TASK-11079 retains execution ownership;
 execution is UNRELEASED. These fault, interruption, contention and negative
 assertions require fresh independent full source/readiness review, exact
 ref/head/tree/complete-manifest manager release and explicit authority for the
 bounded protected fault actions before running the existing recipe. No hosted
 rerun, automatic restart, manual Product E2E, historical release reuse or
-THR139 testing waiver follows. All184 original successful assertions remain
-MISSING and both consumed failed releases retain their original attribution.
+THR139 testing waiver follows. Complete acceptance of all184 original records
+remains MISSING. Historical
+runs38382466677/38390813932 and the third consumed run38433960287 retain their
+original attribution; partial successful phase observations below are preserved.
+
+
+R20 closes both fixture-local subprocess dependency views. Each snapshots the
+complete real stdlib module, substitutes only its local Popen adapter and retains
+that adapter's genuine stdlib `Popen.wait` metadata. PIPE, STDOUT, TimeoutExpired,
+SubprocessError and remaining dependencies retain native identity. Shared
+stdlib/product globals are unchanged. Both provider/callback spawn, constructor,
+registration and combined failure trials assert the intended seam and original
+native exception identity; real child waits and independent stream/selector
+closure remain required. Outer spawn/selector trials require the same intended
+native identity and actual pipe/STDOUT arguments. Raw-byte assertions remain.
+
+R21 records bounded before/after UID/start/parent tuples, membership, pidfd exit
+readiness, terminal identity/absence and decision stage. A new child binds only
+after matching identities around pidfd acquisition and a freshly proved current
+owner. A lost live edge receives one identity/owner/membership reread; only
+the same identity with a positively observed new proved-owner edge is accepted.
+A changed parent is accepted only under an already proved owner (or the
+same supervisor identity) with an observed current child edge. After those
+identity/ownership proofs, actual pidfd exit readiness permits a lost edge or
+later process disappearance. Neither supplies a consuming wait. Disappearance
+before the post-pidfd identity proof, changed UID/start, foreign/unproved parent,
+lost live edge or unavailable observation remains a native fail-closed error.
+Untransferred pidfds close independently; diagnostics preserve the earliest
+native failure and chronological later failures under existing caps. Required
+daemon/provider/callback role waits and closure rules are unchanged.
+
+The SAME capture row includes seven finite source-gated binding trials. Real
+pipe-held child/parent processes make exit occur after identity proof but before
+parent membership, make a child vanish before post-pidfd identity proof, and
+make the same live identity actually reparent to the proved subreaper both
+before pidfd acquisition and after the post-pidfd identity observation. Synthetic
+local identity views select UID/start/foreign-parent mismatches over a real held
+child. Assertions distinguish those facts, require no unbound signals/claims,
+close every acquired pidfd, preserve the actual earliest refused exception and
+require closure false. Even an actually observed parent wait in synthetic
+scratch is not an admitted required-role wait receipt: exit/absence without
+that receipt must still refuse required-role closure. All seven trials share the
+original call deadline and at most500ms each; no setup/call/teardown, aggregate,
+process, event, byte or entry limit grows. Whole-selection fit remains unproven.
+These assertions are authored source only; root release is still required.
+
+Actual third run38433960287/attempt1 at097d86b1 FAILED after source admission and
+frozen Ubuntu24/Python3.14.8 setup. JOB4531 completed exit1/44746ms; read-only
+watch exited1, view/identity/download exited0. Collected61: direct setup passed,
+call failed (fixture missing PIPE rather than intended spawn OSError), teardown
+passed and owned case closure true. Then-only setup and call passed
+(call13.419044869s), but teardown never completed and case closure false despite
+port_closed=true. Remaining59 nodes did not start; all123 connected receipts
+are absent. R14.admission has an actual passed historical receipt, R14.Popen
+is incomplete and the other three rows are missing. The result has
+command_exit143/exit143/complete=false/closure=false. Its earliest supervisor
+error is ValueError:owned edge changed during pidfd binding, followed in order
+by case closure, phase drain and JUnit errors. That run did not retain the
+before/after binding facts; PID reuse, reparent or exit is an UNKNOWN historical
+cause. No production regression, complete C1-C8 acceptance or overall QA PASS
+is established. Its release was consumed; these partial facts do not accept the
+repaired head. Automatic startup after A/PENDING/delegated preACK remains
+MISSING, before-body remains unobserved, and SAME-R2 supplement is not restart
+proof. New behavior remains UNEXECUTED/UNRELEASED; merged:NO, deployed:NO.

@@ -289,6 +289,7 @@ class OwnedTree:
         self.error_overflow = 0
         self.evidence = evidence
         self.self_pid = os.getpid()
+        self.self_identity = self.identity(self.self_pid)[:2]
         self.ports = {}
         self.logs = {}
         self.required_roles=set()
@@ -331,55 +332,155 @@ class OwnedTree:
             children.update(int(x) for x in (thread / "children").read_text().split())
         return children
 
+    def proved_parent(self, parent: int) -> None:
+        expected = self.self_identity if parent == self.self_pid else None
+        if parent in self.identities and not self.identities[parent]['exited']:
+            entry = self.identities[parent]
+            expected = entry['uid'], entry['start']
+        if expected is None:
+            raise ValueError('unproved binding parent')
+        if self.identity(parent)[:2] != expected:
+            raise ValueError('binding parent UID/start changed')
+
+    @staticmethod
+    def binding_exit(fd: int) -> bool:
+        # Readiness is positive exit evidence, never a consuming wait.
+        poll = selectors.DefaultSelector()
+        try:
+            poll.register(fd, selectors.EVENT_READ)
+            return bool(poll.select(0))
+        finally:
+            evidence_cleanup([poll.close])
+
+    def bind_child(self, pid: int, parent: int) -> None:
+        fd = None
+        facts = {'pid': pid, 'enumerated_parent': parent, 'before': None,
+                 'after': None, 'member': None, 'exit_indicated': None,
+                 'terminal_identity': None, 'edge_identity': None,
+                 'current_member': None, 'stage': 'initial identity'}
+        try:
+            before = self.identity(pid)
+            facts['before'] = before
+            if before[0] != os.getuid():
+                raise ValueError('binding child UID mismatch')
+            self.proved_parent(parent)
+            # A stale children listing may precede an actual owned reparent.
+            self.proved_parent(before[2])
+            if before[2] != parent and pid not in self.children(before[2]):
+                raise ValueError('binding initial owner edge unavailable')
+            facts['stage'] = 'pidfd open'
+            fd = os.pidfd_open(pid)
+            facts['stage'] = 'post-pidfd identity'
+            after = self.identity(pid)
+            facts['after'] = after
+            if before[:2] != after[:2]:
+                raise ValueError('binding child UID/start changed')
+            facts['stage'] = 'post-pidfd owner'
+            self.proved_parent(after[2])
+            facts['stage'] = 'parent membership'
+            member = pid in self.children(after[2])
+            facts['member'] = member
+            exited = self.binding_exit(fd)
+            facts['exit_indicated'] = exited
+            if exited:
+                # Both identity reads already proved this pidfd's child. A
+                # later absence can explain a lost edge, but supplies no wait.
+                facts['stage'] = 'terminal identity'
+                try: terminal = self.identity(pid)
+                except FileNotFoundError: terminal = None
+                facts['terminal_identity'] = terminal
+                if terminal is not None:
+                    if terminal[:2] != before[:2]:
+                        raise ValueError('binding terminal child UID/start changed')
+                    self.proved_parent(terminal[2])
+                    if terminal[2] != after[2]:
+                        if pid not in self.children(terminal[2]):
+                            raise ValueError('binding terminal reparent edge unavailable')
+                        after = terminal
+            elif not member:
+                # A live child can reparent after the post-pidfd identity read.
+                # Require the same identity and a fresh proved-owner edge.
+                facts['stage'] = 'live edge reread'
+                current = self.identity(pid)
+                facts['edge_identity'] = current
+                if current[:2] != before[:2]:
+                    raise ValueError('binding live child UID/start changed')
+                self.proved_parent(current[2])
+                current_member = pid in self.children(current[2])
+                facts['current_member'] = current_member
+                if current[2] == after[2] or not current_member:
+                    raise ValueError('binding live owner edge unavailable')
+                after = current
+            facts['stage'] = 'accepted exit' if exited else 'accepted edge'
+            self.event(kind='binding_observation', **facts)
+            self.identities[pid] = {'uid': before[0], 'start': before[1], 'parent': after[2],
+                'fd': fd, 'exited': False, 'reaped': False, 'birth_parent': before[2],
+                'parent_wait': None, 'removed_after_exit': False}
+            fd = None  # transfer only after identity/ownership proof
+            self.event(kind='bound', pid=pid, parent=after[2], start=before[1])
+            if before[2] != after[2]:
+                self.event(kind='reparent', pid=pid, before=before[2], after=after[2])
+        except BaseException as exc:
+            # Record the native earliest failure before diagnostics or fd close.
+            self.failure('pidfd binding', exc)
+            try:error_note(exc, 'binding context '+json.dumps(facts, sort_keys=True))
+            except BaseException as later:self.failure('binding context', later)
+            try:self.event(kind='binding_refused', **facts)
+            except BaseException as later:self.failure('binding observation', later)
+            raise
+        finally:
+            if fd is not None:
+                try:os.close(fd)
+                except BaseException as exc:self.failure('unbound pidfd close', exc)
+
     def discover(self):
         frontier, visited = [self.self_pid], set()
         # Retain known nonadopted ancestors to cover teardown/reparenting.
-        frontier.extend(pid for pid, entry in self.identities.items() if not entry["exited"])
+        frontier.extend(pid for pid, entry in self.identities.items() if not entry['exited'])
         while frontier:
             parent = frontier.pop()
             if parent in visited:
                 continue
             visited.add(parent)
             try:
-                for pid in self.children(parent):
-                    if pid not in self.identities:
-                        if len(self.identities) >= CAPS["processes"]:
-                            raise ValueError("owned process cap")
-                        before = self.identity(pid)
-                        if before[0] != os.getuid() or before[2] != parent:
-                            raise ValueError("owned edge/UID mismatch")
-                        fd = os.pidfd_open(pid)
-                        try:
-                            after = self.identity(pid)
-                            if before != after or pid not in self.children(parent):
-                                raise ValueError("owned edge changed during pidfd binding")
-                            self.identities[pid] = {"uid": before[0], "start": before[1], "parent": parent,
-                                                    "fd": fd, "exited": False, "reaped": False,"birth_parent":parent,"parent_wait":None,"removed_after_exit":False}
-                            fd=None  # ownership transferred to the retained identity
-                            self.event(kind="bound", pid=pid, parent=parent, start=before[1])
-                        except BaseException as exc:
-                            self.failure('pidfd binding',exc)
-                            raise
-                        finally:
-                            if fd is not None:
-                                try:os.close(fd)
-                                except BaseException as exc:self.failure('unbound pidfd close',exc)
-                    else:
-                        entry=self.identities[pid]
-                        current=self.identity(pid)
-                        if current[0]!=entry['uid'] or current[1]!=entry['start']:
-                            raise ValueError('owned PID identity changed')
-                        if current[2]!=entry['parent']:
-                            if current[2] not in self.identities and current[2]!=self.self_pid:
-                                raise ValueError('unobserved reparent edge')
-                            self.event(kind='reparent',pid=pid,before=entry['parent'],after=current[2])
-                            entry['parent']=current[2]
-                    frontier.append(pid)
-            except FileNotFoundError:
-                if parent == self.self_pid:
-                    raise
+                children = self.children(parent)
+            except FileNotFoundError as exc:
+                entry = self.identities.get(parent)
+                # Only an already bound, positively terminal parent may vanish.
+                if entry is not None and self.binding_exit(entry['fd']):
+                    self.event(kind='discovery_parent_absent', pid=parent,
+                               start=entry['start'], exit_indicated=True, consuming_wait=False)
+                    continue
+                self.failure('discover parent', exc)
+                continue
             except (OSError, ValueError) as exc:
-                self.failure("discover",exc)
+                self.failure('discover parent', exc)
+                continue
+            for pid in children:
+                try:
+                    if pid not in self.identities:
+                        if len(self.identities) >= CAPS['processes']:
+                            raise ValueError('owned process cap')
+                        self.bind_child(pid, parent)
+                    else:
+                        entry = self.identities[pid]
+                        try:current = self.identity(pid)
+                        except FileNotFoundError:
+                            if not self.binding_exit(entry['fd']):raise
+                            self.event(kind='discovery_child_absent', pid=pid,
+                                       start=entry['start'], exit_indicated=True, consuming_wait=False)
+                            continue
+                        if current[:2] != (entry['uid'], entry['start']):
+                            raise ValueError('owned PID identity changed')
+                        if current[2] != entry['parent']:
+                            self.proved_parent(current[2])
+                            if pid not in self.children(current[2]):
+                                raise ValueError('observed reparent edge unavailable')
+                            self.event(kind='reparent', pid=pid, before=entry['parent'], after=current[2])
+                            entry['parent'] = current[2]
+                    frontier.append(pid)
+                except (OSError, ValueError) as exc:
+                    self.failure('discover', exc)
 
     def observe_exits(self, direct_pid: int):
         for pid, entry in self.identities.items():
