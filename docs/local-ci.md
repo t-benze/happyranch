@@ -1040,16 +1040,27 @@ THR304's separate manual `attachment_scoped_qa` sibling in registered
 `nightly-integration.yml` selects only the 61 literal C1–C8 nodes plus their
 closed connected subobservations in `scripts/attachment_scoped_qa.py`. Source
 admission precedes dependencies and product imports. The implementation ref is
-`refs/heads/task/TASK-11122`; `EXECUTION_OWNER = None` deliberately refuses.
-TASK-11122 preserves the original TASK-11112 maker commits; this recovery ref
-changes no execution allocation or case manifest.
-Manager allocation, independent source/readiness review and an immutable
-final-head/manifest release are required before binding the actual execution
-owner and invoking `gh workflow run nightly-integration.yml --repo
-t-benze/happyranch --ref task/TASK-11122 -f attachment_scoped_qa=true -f
-execution_task_id=<actual released owner> -f expected_source_sha=<reviewed head>`.
-The angle-bracket arguments document missing release evidence and are not
-runnable authorization. Ubuntu24.04/Python3.14, frozen setup, retained isolated
+`refs/heads/task/TASK-11122`; `EXECUTION_OWNER = "TASK-11079"` binds the
+manager-allocated accountable execution owner for its eventual bounded run and
+evidence. TASK-11122 preserves the original TASK-11112 maker commits; this
+binding changes no case manifest or runtime identity/authority/callback contract.
+Final-head release remains pending. The sequence is manager allocation, maker
+publication of the binding, independent final-head source/readiness review,
+manager-recorded exact ref/SHA/complete-manifest release, then bounded invocation.
+The allocated root owns execution; the independent qa_engineer's later genuine
+task/session assesses the evidence separately and is not this allocation.
+Only after that release, the candidate command is:
+
+```bash
+# UNRELEASED guidance: requires the manager's exact pushed-head/manifest release.
+gh workflow run nightly-integration.yml --repo t-benze/happyranch \
+  --ref task/TASK-11122 -f attachment_scoped_qa=true \
+  -f execution_task_id=TASK-11079 -f expected_source_sha=RELEASED_40_HEX_SHA
+```
+
+`expected_source_sha` stays external and must match the released pushed head;
+the binding itself grants no dispatch permission. Ubuntu24.04/Python3.14, frozen
+setup, retained isolated
 parent/registered deterministic stubs, real platform, independent phase1200s
 aggregate watchdog, pidfd/subreaper owned-tree cleanup and capped external
 evidence apply. The 1280s backstop/35min job cap is an unproved candidate fit;

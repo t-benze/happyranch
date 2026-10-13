@@ -1,7 +1,7 @@
 """Closed THR304 source/release admission and Linux owned-process supervisor.
 
 This manual QA lane is separate from automated lint and daily Product E2E.
-EXECUTION_OWNER is intentionally unallocated; source completeness is reviewed separately.
+EXECUTION_OWNER is manager-allocated to TASK-11079; final-head review and release remain pending.
 """
 from __future__ import annotations
 
@@ -27,7 +27,7 @@ ROOT_TASK = "TASK-11079"
 # Recovery publication retains original TASK-11112 maker commits and provenance.
 IMPLEMENTATION_TASK = "TASK-11122"
 IMPLEMENTATION_REF = "refs/heads/task/TASK-11122"
-EXECUTION_OWNER = None  # Manager allocation + independent final-head source review required.
+EXECUTION_OWNER = "TASK-11079"  # Allocated owner; independent final-head review + manager release pending.
 SELECTION = "attachment-c1-c8-v1"
 TEST_PATH = "tests/integration/test_attachment_feedback_shipping.py"
 PARAMETERS = {'test_c01_delegate': ['direct', 'then-only'], 'test_c02_initial_fanout': ['plain-first', 'plain-last', 'carrier-first', 'carrier-last', 'nested-first', 'nested-last', 'nested-only-first', 'nested-only-last'], 'test_c03_uniqueness_and_count': ['direct-direct', 'direct-then', 'then-then', 'sibling-sibling', 'carrier-nested', 'nested-same-carrier', 'nested-cross-siblings', 'plain-nested', 'delegate-five', 'fanout-five', 'delegate-six', 'fanout-six', 'delegate-total-over-five', 'fanout-total-over-five'], 'test_c04_error_classes': ['too-many', 'duplicate', 'missing', 'claimed-same-tree', 'unsafe-name', 'unsupported-suffix', 'directory', 'no-suffix', 'name-201', 'invalid-key-subclass', 'malformed-ref'], 'test_c05_claim_loss': ['before-A-cancel', 'before-A-rival-feedback', 'before-A-new-step', 'after-A-cancel', 'after-A-new-step', 'B-wins-then-cancel', 'B-not-configured'], 'test_c06_receipts': ['ordinary-delegate-duplicate', 'ordinary-fanout-duplicate', 'v2-applied', 'v2-claimed-before-body', 'v2-claimed-after-A', 'v2-refused-repeat'], 'test_c07_two_opportunities': ['root-DDD', 'root-DFD', 'root-FDF', 'nonroot-DDD', 'nonroot-DFD', 'nonroot-FDF', 'valid-after-two', 'same-claim-contenders'], 'test_c08_transaction_boundary': ['missing-before-prepare', 'competing-key-claim', 'allocated-child-collision', 'writer-lock-conflict', 'missing-after-prepare']}
