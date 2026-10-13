@@ -120,6 +120,7 @@ class OwnedTree:
         self.evidence = evidence
         self.self_pid = os.getpid()
         self.ports = {}
+        self.logs = {}
         self.required_roles=set()
         self.head=None
         self.retired_cases={}
@@ -205,9 +206,14 @@ class OwnedTree:
                         result = os.waitid(os.P_PIDFD, entry["fd"], os.WEXITED | os.WNOHANG | os.WNOWAIT)
                         if result is not None:
                             self.event(kind="waitid", pid=pid, status=result.si_status, code=result.si_code)
-                            os.waitid(os.P_PIDFD, entry["fd"], os.WEXITED)
+                            consumed=os.waitid(os.P_PIDFD, entry["fd"], os.WEXITED)
+                            if (consumed.si_pid,consumed.si_status,consumed.si_code)!=(pid,result.si_status,result.si_code):
+                                raise ValueError('owned wait result changed')
+                            entry['supervisor_wait']={'owner':self.self_pid,'child':pid,'start':entry['start'],
+                                'status':consumed.si_status,'code':consumed.si_code}
                             entry["reaped"] = True
-                            self.event(kind="reaped", pid=pid)
+                            self.event(kind="reaped", pid=pid,owner=self.self_pid,start=entry['start'],
+                                       status=consumed.si_status,code=consumed.si_code)
                     except ChildProcessError:
                         # Its actual parent owns reap; this is only exit indication.
                         try:
@@ -278,6 +284,25 @@ class OwnedTree:
                     self.event(kind='callback_parent_wait',pid=pid,owner=wait['owner'],status=wait['returncode'],independently_bound=False)
                     self.errors.append('required callback identity not observed')
 
+    def register_log(self,node,log):
+        # Capture registration is not process ownership or endpoint admission.
+        path=Path(log)
+        parent=path.parent
+        if not parent.exists():
+            # tmp_home deliberately leaves exactly this directory absent so
+            # public startup still performs its real mkdir.
+            if parent.name not in ('.happyranch','daemon'):raise ValueError('unowned absent log parent')
+            parent=parent.parent
+        if (path.name!='daemon.log' or path.resolve()!=path or parent.resolve(strict=True)!=parent
+                or parent.stat().st_uid!=os.getuid()
+                or not path.is_relative_to(self.evidence.parent/'scratch')):
+            raise ValueError('owned prelaunch log path refused')
+        if str(path) not in self.logs:
+            if len(self.logs)>=8:raise ValueError('bounded log inventory refused')
+            self.logs[str(path)]={'node':node,'log':str(path),'log_identity':None}
+        elif self.logs[str(path)]['node']!=node:
+            raise ValueError('log node ownership changed')
+
     def bind_endpoint(self,pid,port,node,log,wait_log):
         self.discover()
         if pid not in self.identities or self.identities[pid]['exited']:
@@ -298,19 +323,81 @@ class OwnedTree:
                     listeners.append({'inode':values[9],'address':address,'port':port})
         if len(listeners)!=1 or listeners[0]['address'] not in ('0100007F','00000000000000000000000001000000'):
             raise ValueError('exact owned loopback socket unavailable')
+        # scripts/daemon.sh backgrounds real uv, which normally waits in Rust.
+        # Bind that exact owned launcher before it can consume the daemon wait.
+        launcher=self.identities[pid]['birth_parent']
+        if launcher not in self.identities:
+            raise ValueError('original owned uv launcher missing')
+        launcher_identity=self.identity(launcher)
+        with Path(f'/proc/{launcher}/cmdline').open('rb') as handle:raw_argv=handle.read(4097)
+        if len(raw_argv)>4096:raise ValueError('launcher argv cap')
+        argv=raw_argv.split(b'\0')
+        executable=os.readlink(f'/proc/{launcher}/exe')
+        if (launcher_identity[:2]!=(self.identities[launcher]['uid'],self.identities[launcher]['start'])
+                or launcher_identity[2]!=self.self_pid
+                or argv[1:]!=[b'run',b'python',b'-m',b'runtime.daemon',b'']
+                or Path(executable).name!='uv'):
+            raise ValueError('public uv launcher identity/argv/adoption unavailable')
         log_path=Path(log)
-        if log_path.resolve(strict=True)!=log_path or log_path.stat().st_uid!=os.getuid():
+        if (log_path.resolve(strict=True)!=log_path or log_path.stat().st_uid!=os.getuid()
+                or not log_path.is_relative_to(self.evidence.parent/'scratch')
+                or not stat.S_ISREG(log_path.lstat().st_mode)):
             raise ValueError('owned daemon log unavailable')
-        self.required_roles.add(pid)
+        if self.identity(pid)!=(self.identities[pid]['uid'],self.identities[pid]['start'],launcher):
+            raise ValueError('daemon original launcher edge changed during endpoint binding')
+        self.register_log(node,log)
+        log_identity=log_path.lstat()
+        logged=self.logs[str(log_path)]
+        if logged['log_identity'] not in (None,(log_identity.st_dev,log_identity.st_ino)):
+            raise ValueError('prelaunch log inode changed')
+        logged['log_identity']=(log_identity.st_dev,log_identity.st_ino)
+        self.required_roles.update((pid,launcher))
         self.ports[pid]={'node':node,'pid':pid,'port':port,'listener':listeners[0],'log':str(log_path),
-                          'start':self.identities[pid]['start'],'wait_log':wait_log,'wait_rows':0}
+                          'start':self.identities[pid]['start'],'wait_log':wait_log,'wait_rows':0,
+                          'launcher':launcher,'launcher_start':launcher_identity[1],
+                          'launcher_executable':executable,'launcher_argv':[x.decode() for x in argv[:-1]],
+                          'log_identity':(log_identity.st_dev,log_identity.st_ino)}
         self.event(kind='endpoint_bound',pid=pid,node=node,listener=listeners[0])
 
     def close_case(self,pid,port,node,direct_pid,deadline,*,interrupt=False):
         endpoint=self.ports.get(pid)
         if endpoint is None or endpoint['pid']!=pid or endpoint['port']!=port or endpoint['node']!=node:
             raise ValueError('unbound case endpoint closure')
-        selected={pid}
+        self.capture_logs()
+        launcher=endpoint['launcher']
+        selected={pid,launcher}
+        # Kill ONLY the bound adopted uv parent first; it cannot then reap in an
+        # unobserved Rust wait. The live daemon must become our actual child.
+        # Original PID/start/birth-parent remain unchanged in the evidence.
+        entry=self.identities[launcher]
+        if not entry['exited']:
+            current=self.identity(launcher)
+            if current!=(entry['uid'],endpoint['launcher_start'],self.self_pid):
+                raise ValueError('uv launcher ownership changed before adoption')
+            signal.pidfd_send_signal(entry['fd'],signal.SIGKILL)
+            self.event(kind='launcher_adoption_signal',pid=launcher,node=node,signal=signal.SIGKILL)
+        prior_wait=self.identities[pid].get('supervisor_wait')
+        adopted=(self.closed_identity(pid) and prior_wait is not None
+            and (prior_wait['owner'],prior_wait['child'],prior_wait['start'])==
+                (self.self_pid,pid,endpoint['start']))
+        # Fixture teardown may revisit its already interrupted endpoint. Reuse
+        # only the actual SAME-identity wait, never PID absence or port closure.
+        while not adopted and time.monotonic()<deadline:
+            self.discover()
+            try:
+                current=self.identity(pid)
+            except FileNotFoundError:
+                break
+            if current[:2]!=(self.identities[pid]['uid'],endpoint['start']):
+                raise ValueError('daemon identity changed before adoption')
+            if current[2]==self.self_pid:
+                adopted=True
+                self.event(kind='daemon_adopted',pid=pid,node=node,owner=self.self_pid,
+                           birth_parent=self.identities[pid]['birth_parent'],start=current[1])
+                break
+            time.sleep(.02)
+        if not adopted:
+            self.errors.append('required daemon adoption unavailable; no observed wait')
         for _ in range(CAPS['processes']):
             added={p for p,v in self.identities.items() if (v['parent'] in selected or v['birth_parent'] in selected)}
             if added<=selected:break
@@ -345,6 +432,7 @@ class OwnedTree:
         clean=not self.errors and all(self.closed_identity(p) for p in selected)
         return {'pid':pid,'node':node,'closed':clean,'port_closed':port_closed,'port':port,
             'owned_listener':endpoint['listener'],
+            'launcher':{key:endpoint[key] for key in ('launcher','launcher_start','launcher_executable','launcher_argv')},
             'identities':{p:{k:v for k,v in self.identities[p].items() if k!='fd'} for p in selected},
             'events':[row for row in self.events if row.get('pid') in selected]}
 
@@ -412,6 +500,38 @@ class OwnedTree:
                     self.event(kind='source_parent_wait',pid=child,owner=row['owner'],status=row['returncode'])
             endpoint['wait_rows']=len(lines)
 
+    def capture_logs(self):
+        """Checkpoint bounded owned log bytes before any closure/abort decision."""
+        for endpoint in self.logs.values():
+            path=Path(endpoint['log'])
+            try:before=path.lstat()
+            except FileNotFoundError:
+                if endpoint['log_identity'] is None:continue
+                raise ValueError('previously observed daemon log missing')
+            if endpoint['log_identity'] is None:
+                endpoint['log_identity']=(before.st_dev,before.st_ino)
+            if (path.resolve(strict=True)!=path or not stat.S_ISREG(before.st_mode)
+                    or before.st_uid!=os.getuid()
+                    or (before.st_dev,before.st_ino)!=endpoint['log_identity']):
+                raise ValueError('daemon log identity unavailable')
+            fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW)
+            try:
+                opened=os.fstat(fd)
+                if (opened.st_dev,opened.st_ino)!=(before.st_dev,before.st_ino):
+                    raise ValueError('daemon log changed during capture')
+                with os.fdopen(fd,'rb',closefd=False) as handle:
+                    data=handle.read(CAPS['daemon_log']+1)
+            finally:os.close(fd)
+            overflow=len(data)>CAPS['daemon_log']
+            dest=self.evidence/('daemon-'+hashlib.sha256(endpoint['node'].encode()).hexdigest()[:20]
+                +'-'+hashlib.sha256(str(path).encode()).hexdigest()[:12]+'.log')
+            # Our fixed owned checkpoint can be replaced; closure/history cannot.
+            temporary=dest.with_suffix('.log.tmp')
+            with temporary.open('xb') as handle:
+                os.chmod(temporary,0o600);handle.write(data[:CAPS['daemon_log']]);handle.flush();os.fsync(handle.fileno())
+            os.replace(temporary,dest)
+            if overflow:raise ValueError('daemon capture overflow; bounded prefix retained')
+
     def monitor(self):
         self.wait_receipts()
         # Refuse oversized external evidence while writers still run.
@@ -434,6 +554,8 @@ class OwnedTree:
                 raise ValueError('required daemon log overflow')
 
     def cleanup(self, child: subprocess.Popen, deadline: float) -> bool:
+        try:self.capture_logs()
+        except (OSError,ValueError) as exc:self.errors.append('log capture:'+str(exc)[:256])
         self.signal_bound(signal.SIGTERM)
         grace = min(deadline, time.monotonic()+10)
         while time.monotonic() < grace:
@@ -459,6 +581,8 @@ class OwnedTree:
             self.errors.append("direct child still live")
         self.discover()
         self.observe_exits(child.pid)
+        try:self.capture_logs()
+        except (OSError,ValueError) as exc:self.errors.append('final log capture:'+str(exc)[:256])
         clean = not self.errors and all(self.closed_identity(pid) for pid in self.identities)
         write_receipt(self.evidence / "processes.json", {"identities": {pid: {k:v for k,v in row.items() if k != "fd"}
             for pid,row in self.identities.items()}, "events": self.events, "errors": self.errors, "closure": clean, "retired_cases": self.retired_cases}, 2097152)
@@ -503,6 +627,7 @@ def supervise(binding: dict, scratch: Path) -> int:
     selector = selectors.DefaultSelector()
     selector.register(child.stdout, selectors.EVENT_READ, "output")
     selector.register(phase_fd, selectors.EVENT_READ, "phase")
+    next_capture=start
     phase_deadline, buffer, events, counts = start+60, b"", [], {"output":0, "phase":0}
     error = None
     prior_handlers={sig:signal.getsignal(sig) for sig in (signal.SIGINT,signal.SIGTERM)}
@@ -515,6 +640,8 @@ def supervise(binding: dict, scratch: Path) -> int:
             while child.poll() is None:
                 tree.discover()
                 tree.observe_exits(child.pid)
+                if time.monotonic()>=next_capture:
+                    tree.capture_logs();next_capture=time.monotonic()+.2
                 tree.monitor()
                 if time.monotonic() > min(start+1200, phase_deadline):
                     raise TimeoutError("aggregate or independent phase watchdog expired")
@@ -546,11 +673,15 @@ def supervise(binding: dict, scratch: Path) -> int:
                                 phase_deadline = time.monotonic()+PHASE_LIMITS[row["phase"]]
                             elif row.get("event") == "finish":
                                 phase_deadline = time.monotonic()+5
+                            elif row.get('event')=='daemon-log':
+                                tree.register_log(row['node'],row['daemon_log'])
+                                tree.capture_logs()
                             elif row.get('event')=='endpoint':
                                 tree.bind_endpoint(row['daemon_pid'],row['port'],row['node'],row['daemon_log'],row['wait_log'])
                             elif row.get('event') in ('interrupt','case-close'):
                                 pid=row['daemon_pid'];port=row['port'];node=row['node']
                                 interruption=row['event']=='interrupt'
+                                tree.capture_logs()
                                 tree.role_receipts(Path(row['roles']),node)
                                 closure=tree.close_case(pid,port,node,child.pid,time.monotonic()+4,interrupt=interruption)
                                 closure_path=Path(row['closure'])
@@ -559,16 +690,12 @@ def supervise(binding: dict, scratch: Path) -> int:
                                 if closure_path.parent!=evidence or closure_path.name not in expected_names:
                                     raise ValueError('closure receipt binding mismatch')
                                 write_receipt(closure_path,closure,262144)
+                                tree.capture_logs()
                                 if not closure['closed'] or not closure['port_closed']:
                                     raise ValueError('owned case tree/port closure incomplete')
                                 if not interruption:
                                     endpoint=tree.ports.pop(pid)
-                                    log_path=Path(endpoint['log'])
-                                    if log_path.exists():
-                                        data=log_path.read_bytes()
-                                        if len(data)>CAPS['daemon_log']:raise ValueError('daemon capture overflow')
-                                        dest=evidence/('daemon-'+hashlib.sha256(node.encode()).hexdigest()[:20]+'-'+str(pid)+'.log')
-                                        with dest.open('xb') as handle:os.chmod(dest,0o600);handle.write(data)
+                                    tree.logs.pop(endpoint['log'])
                                     tree.retire_case(closure,closure_path)
                             else:
                                 raise ValueError("unknown phase event")

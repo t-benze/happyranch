@@ -1044,8 +1044,14 @@ admission precedes dependencies and product imports. The implementation ref is
 manager-allocated accountable execution owner for its eventual bounded run and
 evidence. TASK-11122 preserves the original TASK-11112 maker commits; this
 binding changes no case manifest or runtime identity/authority/callback contract.
-The first exact-head release was consumed by hosted run38382466677 attempt1,
-which failed during setup for all 61 nodes before any call phase. All 184 behavioral
+Both exact-head releases are consumed: hosted run38382466677 attempt1 failed
+all 61 setups before any call; run38390813932 attempt1 at6f5b collected61,
+returned the first setup, errored its call and began incomplete teardown.
+The other60 nodes never started and all123 connected receipts were absent.
+The latter run returned143/complete=false/closure=false: daemon2529 exited
+under uv2525 without an observed daemon parent wait. Its first-call traceback,
+daemon log and provider diagnostic bodies were unavailable; the historical
+first-call cause remains unresolved. All 184 behavioral
 assertions remain MISSING; failed-run closure is not successful-case cleanup proof.
 The corrected candidate needs renewed independent review and a new exact-head
 release; prospective execution remains UNRELEASED. The sequence is manager
@@ -1114,3 +1120,31 @@ executable line remains eligible; all six phase anchors, including after-A and
 after the real ACK call, retain their boundaries and fail-closed missing-anchor
 checks. Source-only AST/compile/dis inspection executes no reconstructed callable
 and establishes no observer, callback, fit, cleanup or product assertion result.
+
+R11–R13 source repair preserves the public `scripts/daemon.sh` → real uv →
+daemon boundary. Endpoint admission binds original daemon/launcher PID/start,
+owned edges, real uv argv and listener. Closure kills only the bound adopted uv
+launcher first, verifies the SAME daemon becomes the supervisor's child, then
+signals and observes its actual pidfd wait. Original birth-parent and adoption
+remain recorded; required roles still need reap proof. Missing adoption/wait or
+port closure refuses nonzero within the unchanged deadline. This is source
+readiness, not successful-case closure evidence.
+
+Pytest exports each bounded node/phase report before teardown, and connected
+observations when recorded. The supervisor checkpoints owned daemon bytes during
+execution and before closure/refusal/abort, retaining them on failure. Actual
+provider/callback stdout/stderr bodies and original task/SID/node/source are
+retained under the existing aggregate/file limits; overflow keeps a bounded
+prefix and marks evidence incomplete. The fixture's provider entry uses existing
+registered stub/plan/callback guards and its real injected org/SID; it returns
+before pytest-parent/conftest imports. The actual executor injects org/SID and
+workspace cache, which cannot satisfy the stricter parent-only admission.
+The guarded plan owns a real Python provider child, captures bounded diagnostics
+and records its actual parent wait; it invents no callback/result. Initial and
+fresh matrix batches use that same entry. Historical first-call attribution
+still needs the missing actual traceback; no production attachment defect or
+behavioral PASS follows. Manifest61+123 and SHA256
+bb10120c35cc8750eb822bb57c136e430c366fd993b197ec027868fabf4d751c,
+all original assertions, two-opportunity accounting and phase/capture bounds stay
+unchanged. Renewed independent full source review and a new manager exact-head
+release are required before any execution; no release follows this repair.

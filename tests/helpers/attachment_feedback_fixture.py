@@ -20,12 +20,13 @@ if _descriptor_arg is not None:
         ('python','python_binary','python_prefix','python_version','python_sha256')},sort_keys=True)
     os.environ['HAPPYRANCH_ATTACHMENT_PYTHON_EVIDENCE']=_frozen['evidence']
 
-# Parent admission precedes runtime/pytest/helper imports.
-from tests.helpers.integration_stub_guard.guard import require_parent_environment
-require_parent_environment()
-from scripts.attachment_scoped_qa import EXECUTION_OWNER
-if EXECUTION_OWNER is None:
-    raise RuntimeError("THR304 missing manager execution binding; product/test imports refused")
+# The launched provider is a child context, not the pytest parent. Its exact
+# guard/manifest, callable source and product-injected SID/org are admitted below
+# before any pytest/conftest import. Parent admission remains unchanged.
+_PROVIDER_ENTRY=__name__=='__main__' and len(sys.argv)>1 and sys.argv[1] in ('provider','provider-wait','provider-supervise')
+if not _PROVIDER_ENTRY:
+    from tests.helpers.integration_stub_guard.guard import require_parent_environment
+    require_parent_environment()
 
 from contextlib import contextmanager
 from dataclasses import replace
@@ -44,15 +45,223 @@ import subprocess
 import sys
 import time
 
-import httpx
-import pytest
+from tests.helpers.integration_stub_guard.guard import manifest, validate_callback, validate_plan, validate_stub
+if _PROVIDER_ENTRY:
+    # The existing source-bound stub guard already ran in the public shell.
+    # Recheck its registered identities here; do not strip runtime variables to
+    # pretend this actual child satisfies the stricter pytest-parent contract.
+    _parent=manifest()
+    if Path(__file__).resolve()!=Path(_parent['source'])/'tests/helpers/attachment_feedback_fixture.py':
+        raise RuntimeError('provider callable source mismatch')
+    _root=Path(_parent['root'])
+    if (os.environ.get('HOME')!=str(_root/'home')
+            or os.environ.get('XDG_CONFIG_HOME')!=str(_root/'config')
+            or os.environ.get('PATH')!=os.pathsep.join((str(_root/'bin'),'/usr/bin','/bin'))
+            or os.environ.get('XDG_CACHE_HOME')!=str(Path.cwd()/'.happyranch/cache/xdg')
+            or any(key in os.environ for key in ('ANTHROPIC_API_KEY','OPENAI_API_KEY','CODEX_HOME',
+                'CLAUDE_CONFIG_DIR','HAPPYRANCH_RUNTIME','HAPPYRANCH_DAEMON_TOKEN'))):
+        raise RuntimeError('provider owned environment mismatch')
+    _child_frozen=json.loads(os.environ['HAPPYRANCH_ATTACHMENT_FROZEN_PYTHON'])
+    if (sys.prefix!=_child_frozen['python_prefix'] or sys.version!=_child_frozen['python_version']
+            or os.path.abspath(sys.executable)!=_parent['python']
+            or str(Path(sys.executable).resolve())!=_child_frozen['python_binary']
+            or hashlib.sha256(Path(sys.executable).resolve().read_bytes()).hexdigest()!=_child_frozen['python_sha256']):
+        raise RuntimeError('provider frozen interpreter drift')
+    validate_callback(_parent)
+    for _provider,_plan_key in (('claude','FAKE_CLAUDE_PLAN'),('codex','FAKE_CODEX_PLAN')):
+        validate_stub(_provider,_parent['stubs'][_provider]['path'],_parent)
+        validate_plan(os.environ[_plan_key])
+    if sys.version_info[:2]!=(3,14):raise RuntimeError('provider frozen interpreter missing')
 
 from scripts.attachment_scoped_qa import (
     CAPS, EXECUTION_OWNER, IMPLEMENTATION_REF, IMPLEMENTATION_TASK, MANIFEST_SHA256, NODES,
     PARAMETERS, PHASE_LIMITS, ROOT_TASK, SELECTION, SOURCE_FILES, SUBOBSERVATIONS,
     closed_read, sha, write_receipt,
 )
-from tests.helpers.integration_stub_guard.guard import manifest
+
+if EXECUTION_OWNER is None:raise RuntimeError('THR304 missing manager execution binding; product/test imports refused')
+
+def await_condition(predicate, seconds: float = 5):
+    deadline=time.monotonic()+seconds
+    while time.monotonic()<deadline:
+        result=predicate()
+        if result:
+            return result
+        # Readiness polling only; races use actual commit/barrier receipts.
+        time.sleep(.02)
+    raise TimeoutError("bounded attachment readiness/readback missing")
+
+
+def provider_main():
+    task,sid,agent,slug=sys.argv[2:6]
+    control=Path(sys.argv[6])
+    assert os.environ.get('HAPPYRANCH_RUNTIME_SESSION_ID')==sid and os.environ.get('HAPPYRANCH_ORG_SLUG')==slug=='test'
+    assert control.resolve(strict=True)==control and control.stat().st_uid==os.getuid()
+    observer=closed_read(Path(os.environ['HAPPYRANCH_ATTACHMENT_OBSERVER']),16384)
+    assert observer['binding']['revision']==manifest()['revision'] and observer['node'] in NODES
+    assert Path(os.environ['HAPPYRANCH_ATTACHMENT_OBSERVER'])==control/'observer'/'descriptor.json'
+    prompt=sys.stdin.read(262145)
+    if len(prompt.encode())>262144 or not task or not sid or slug!="test":
+        raise SystemExit("provider actual launch identity missing")
+    self_evaluation=None
+    token="Exact required `manager_self_evaluation` object shape, filled with this launch's bound values:"
+    if token in prompt:
+        tail=prompt.split(token,1)[1]
+        self_evaluation=json.loads(tail.split("```json\n",1)[1].split("\n```",1)[0])
+        if "what_to_escalate" in self_evaluation:
+            self_evaluation["what_to_escalate"]={"applicability":"does_not_apply","confidence":100,"uncertainty_codes":[]}
+            self_evaluation["what_not_to_escalate"]={"applicability":"applies","confidence":100,"uncertainty_codes":[]}
+        assert self_evaluation["root_task_id"]==task and self_evaluation["manager_session_id"]==sid
+    row={"task_id":task,"session_id":sid,"agent":agent,"plan_parent_pid":os.getppid(),
+         "driver_pid":os.getpid(),"prompt_sha256":hashlib.sha256(prompt.encode()).hexdigest(),
+         "self_evaluation":self_evaluation,"head":manifest()["revision"],
+         "helper_sha256":sha(Path(__file__).resolve())}
+    write_receipt(control/f"launch-{sid}.json",row,16384)
+    command=control/f"command-{sid}.json"
+    payload=await_condition(lambda: closed_read(command,16384) if command.exists() else None,20)
+    if payload=={"exit_without_callback":True}:
+        write_receipt(control/f"provider-exit-{sid}.json",{"task":task,"sid":sid,"pid":os.getpid(),"exit":1,"callback":False},4096)
+        raise SystemExit(1)
+    body=control/f"body-{sid}.json"
+    write_receipt(body,payload["body"],16384)
+    process=subprocess.Popen([manifest()["callback"],"report-completion","--org",slug,"--from-file",str(body)],
+                             stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+    diagnostic=Path(observer['wait_log']).parent/('callback-'+hashlib.sha256(observer['node'].encode()).hexdigest()[:20]+'-'+sid+'.json')
+    selector=selectors.DefaultSelector()
+    selector.register(process.stdout,selectors.EVENT_READ,'stdout')
+    selector.register(process.stderr,selectors.EVENT_READ,'stderr')
+    chunks={'stdout':bytearray(),'stderr':bytearray()};deadline=time.monotonic()+5
+    capture_error=None
+    def callback_checkpoint(complete=False):
+        temporary=diagnostic.with_suffix('.json.tmp')
+        write_receipt(temporary,{'node':observer['node'],'head':manifest()['revision'],
+            'helper_sha256':sha(Path(__file__).resolve()),'task':task,'sid':sid,
+            'stdout':bytes(chunks['stdout']).decode('utf-8','replace'),
+            'stderr':bytes(chunks['stderr']).decode('utf-8','replace'),
+            'complete':complete,'error':capture_error,'exit':process.returncode,
+            'parent_pid':os.getpid(),'child_pid':process.pid},32768)
+        os.replace(temporary,diagnostic)
+    try:
+        callback_checkpoint()
+        while selector.get_map():
+            if time.monotonic()>deadline:raise TimeoutError('bounded public callback deadline')
+            for key,_ in selector.select(.02):
+                data=os.read(key.fileobj.fileno(),4096)
+                if not data:selector.unregister(key.fileobj);continue
+                remaining=4096-sum(len(value) for value in chunks.values())
+                chunks[key.data].extend(data[:remaining])
+                if len(data)>remaining:
+                    capture_error='public callback capture overflow; bounded prefix retained'
+                    callback_checkpoint()
+                    raise RuntimeError(capture_error)
+                callback_checkpoint()
+        process.wait(timeout=max(.01,deadline-time.monotonic()))
+    except BaseException as exc:
+        capture_error=type(exc).__name__+':'+str(exc)[:1024]
+        raise
+    finally:
+        selector.close()
+        callback_checkpoint(capture_error is None and type(process.returncode) is int)
+    stdout,stderr=bytes(chunks['stdout']),bytes(chunks['stderr'])
+    from types import SimpleNamespace
+    result=SimpleNamespace(stdout=stdout,stderr=stderr,returncode=process.returncode)
+    if len(result.stdout)+len(result.stderr)>4096:
+        raise SystemExit("callback capture cap")
+    write_receipt(control/f"callback-{sid}.json",{"exit":result.returncode,
+        "stdout_sha256":hashlib.sha256(result.stdout).hexdigest(),"stderr_sha256":hashlib.sha256(result.stderr).hexdigest(),
+        "diagnostic":str(diagnostic),"parent_pid":os.getpid(),"child_pid":process.pid,"parent_wait_returncode":process.returncode},4096)
+    if not payload["exit"]:
+        await_condition(lambda:(control/f"exit-{sid}.json").exists(),20)
+    write_receipt(control/f"provider-exit-{sid}.json",{"task":task,"sid":sid,"pid":os.getpid()},4096)
+    raise SystemExit(result.returncode)
+
+
+def provider_supervise():
+    """Own the actual provider Python child, bounded bytes and real parent wait."""
+    task,sid,agent,slug=sys.argv[2:6]
+    control=Path(sys.argv[6])
+    assert os.environ.get('HAPPYRANCH_RUNTIME_SESSION_ID')==sid and os.environ.get('HAPPYRANCH_ORG_SLUG')==slug=='test'
+    assert control.resolve(strict=True)==control and control.stat().st_uid==os.getuid()
+    observer=closed_read(Path(os.environ['HAPPYRANCH_ATTACHMENT_OBSERVER']),16384)
+    assert Path(os.environ['HAPPYRANCH_ATTACHMENT_OBSERVER'])==control/'observer'/'descriptor.json'
+    assert observer['binding']['revision']==manifest()['revision'] and observer['node'] in NODES
+    evidence=Path(observer['wait_log']).parent
+    assert evidence.resolve(strict=True)==evidence and evidence.stat().st_uid==os.getuid()
+    target=evidence/('provider-'+hashlib.sha256(observer['node'].encode()).hexdigest()[:20]+'-'+sid+'.json')
+    argv=[sys.executable,'-m','tests.helpers.attachment_feedback_fixture','provider',task,sid,agent,slug,str(control)]
+    child=subprocess.Popen(argv,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+    selector=selectors.DefaultSelector()
+    selector.register(child.stdout,selectors.EVENT_READ,'stdout')
+    selector.register(child.stderr,selectors.EVENT_READ,'stderr')
+    chunks={'stdout':bytearray(),'stderr':bytearray()};waited=None;error=None
+    def checkpoint():
+        temporary=target.with_suffix('.json.tmp')
+        write_receipt(temporary,{'node':observer['node'],'head':manifest()['revision'],
+            'helper_sha256':sha(Path(__file__).resolve()),'task':task,'sid':sid,'argv':argv,
+            'parent_pid':os.getpid(),'child_pid':child.pid,'parent_wait_returncode':waited,
+            'stdout':bytes(chunks['stdout']).decode('utf-8','replace'),
+            'stderr':bytes(chunks['stderr']).decode('utf-8','replace'),
+            'complete':waited is not None and error is None,'error':error},262144)
+        os.replace(temporary,target)
+    try:
+        checkpoint()
+        while selector.get_map():
+            for key,_ in selector.select(.02):
+                data=os.read(key.fileobj.fileno(),4096)
+                if not data:selector.unregister(key.fileobj);continue
+                remaining=16384-len(chunks[key.data])
+                chunks[key.data].extend(data[:remaining])
+                if len(data)>remaining:
+                    error='provider capture overflow; bounded prefix retained'
+                    checkpoint()
+                    raise RuntimeError(error)
+                checkpoint()
+        waited=child.wait(timeout=5)
+        # This is an actual wait of our own child, including a failed launch.
+        write_receipt(control/f'provider-wait-{sid}.json',
+            {'owner':os.getpid(),'child':child.pid,'returncode':waited,'sid':sid,'task':task},4096)
+    except BaseException as exc:
+        error=type(exc).__name__+':'+str(exc)[:1024]
+        raise
+    finally:
+        selector.close()
+        if waited is None:
+            # This Popen owns the exact child. Failure cleanup never claims an
+            # unobserved wait and never synthesizes a callback/result.
+            try:
+                child.terminate();waited=child.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                child.kill();waited=child.wait(timeout=1)
+            finally:checkpoint()
+        else:checkpoint()
+        child.stdout.close();child.stderr.close()
+    raise SystemExit(waited)
+
+
+if _PROVIDER_ENTRY:
+    if sys.argv[1]=='provider-supervise':provider_supervise()
+    elif sys.argv[1]=='provider':
+        try:
+            provider_main()
+        except BaseException as exc:
+            if not isinstance(exc,SystemExit) or exc.code not in (None,0):
+                # stderr is captured by the owned provider supervisor, even if
+                # launch admission failed before a JSON launch receipt existed.
+                import traceback
+                os.write(2,traceback.format_exc(limit=12).encode()[:16384])
+            raise
+    else:
+        task,sid,parent,child,status,control=sys.argv[2:8]
+        launch=closed_read(Path(control)/f"launch-{sid}.json",16384)
+        assert launch['task_id']==task and launch['driver_pid']==int(child) and launch['plan_parent_pid']==int(parent)
+        assert os.environ.get('HAPPYRANCH_RUNTIME_SESSION_ID')==sid and os.environ.get('HAPPYRANCH_ORG_SLUG')=='test'
+        write_receipt(Path(control)/f"provider-wait-{sid}.json",
+            {'owner':int(parent),'child':int(child),'returncode':int(status),'sid':sid,'task':task},4096)
+        raise SystemExit(0)
+
+import httpx
+import pytest
+
 from tests.integration.conftest import seed_agent_definition, seed_workspace
 from tests.helpers.deterministic_plan import DeterministicPlan
 from runtime.config import Settings
@@ -64,6 +273,7 @@ from runtime.models import TaskStatus
 
 _DESCRIPTOR = None
 _OBSERVATIONS = {}
+_ACTIVE_NODE = None
 
 
 def pytest_addoption(parser):
@@ -113,6 +323,8 @@ def pytest_configure(config):
 
 
 def phase(node: str, phase_name: str, event: str, **fields):
+    global _ACTIVE_NODE
+    _ACTIVE_NODE=node
     row = {"nonce": _DESCRIPTOR["nonce"], "node": node, "phase": phase_name,
            "event": event, "pid": os.getpid(), "time_ns": time.time_ns(), **fields}
     data = (json.dumps(row,sort_keys=True)+"\n").encode()
@@ -169,17 +381,9 @@ def observe(subid: str, *, trigger, expected, observable, defect, **facts):
     if len(json.dumps(_OBSERVATIONS[subid]).encode())>16384:
         _OBSERVATIONS[subid]={"outcome":"incomplete","reason":"16KiB observer receipt cap"}
         raise RuntimeError("observer receipt overflow")
-
-
-def await_condition(predicate, seconds: float = 5):
-    deadline=time.monotonic()+seconds
-    while time.monotonic()<deadline:
-        result=predicate()
-        if result:
-            return result
-        # Readiness polling only; races use actual commit/barrier receipts.
-        time.sleep(.02)
-    raise TimeoutError("bounded attachment readiness/readback missing")
+    retain_node_receipt(_ACTIVE_NODE,
+        "observation-"+hashlib.sha256(subid.encode()).hexdigest()[:20]+".json",
+        {"id":subid,**_OBSERVATIONS[subid]},32768)
 
 
 def attachment_snapshot(root: Path, task_id: str) -> dict:
@@ -258,7 +462,12 @@ class PublicDriver:
                 item=closed_read(path,16384)
                 if item["task_id"]==task_id and item["session_id"] not in [x["session_id"] for x in self.launches]:
                     return item
-        item=await_condition(find)
+        try:item=await_condition(find)
+        except BaseException:
+            retain_node_receipt(self.node,'launch-missing-'+task_id+'.json',
+                {'node':self.node,'head':_DESCRIPTOR['head'],'task_id':task_id,
+                 'snapshot':self.snapshot(task_id),'reason':'actual launch receipt unavailable'},262144)
+            raise
         row=next(row for row in self.snapshot(task_id)["tasks"] if row["id"]==task_id)
         assert row["current_session_id"]==item["session_id"] and type(row["executor_pid"]) is int and row["executor_pid"]>0
         item["actual_provider_pid"]=row["executor_pid"]
@@ -322,65 +531,6 @@ class PublicDriver:
         return snapshot
 
 
-def provider_main():
-    task,sid,agent,slug=sys.argv[2:6]
-    control=Path(sys.argv[6])
-    prompt=sys.stdin.read(262145)
-    if len(prompt.encode())>262144 or not task or not sid or slug!="test":
-        raise SystemExit("provider actual launch identity missing")
-    self_evaluation=None
-    token="Exact required `manager_self_evaluation` object shape, filled with this launch's bound values:"
-    if token in prompt:
-        tail=prompt.split(token,1)[1]
-        self_evaluation=json.loads(tail.split("```json\n",1)[1].split("\n```",1)[0])
-        if "what_to_escalate" in self_evaluation:
-            self_evaluation["what_to_escalate"]={"applicability":"does_not_apply","confidence":100,"uncertainty_codes":[]}
-            self_evaluation["what_not_to_escalate"]={"applicability":"applies","confidence":100,"uncertainty_codes":[]}
-        assert self_evaluation["root_task_id"]==task and self_evaluation["manager_session_id"]==sid
-    row={"task_id":task,"session_id":sid,"agent":agent,"plan_parent_pid":os.getppid(),
-         "driver_pid":os.getpid(),"prompt_sha256":hashlib.sha256(prompt.encode()).hexdigest(),
-         "self_evaluation":self_evaluation,"head":manifest()["revision"],
-         "helper_sha256":sha(Path(__file__).resolve())}
-    write_receipt(control/f"launch-{sid}.json",row,16384)
-    command=control/f"command-{sid}.json"
-    payload=await_condition(lambda: closed_read(command,16384) if command.exists() else None,20)
-    if payload=={"exit_without_callback":True}:
-        write_receipt(control/f"provider-exit-{sid}.json",{"task":task,"sid":sid,"pid":os.getpid(),"exit":1,"callback":False},4096)
-        raise SystemExit(1)
-    body=control/f"body-{sid}.json"
-    write_receipt(body,payload["body"],16384)
-    process=subprocess.Popen([manifest()["callback"],"report-completion","--org",slug,"--from-file",str(body)],
-                             stdout=subprocess.PIPE,stderr=subprocess.PIPE)
-    selector=selectors.DefaultSelector()
-    selector.register(process.stdout,selectors.EVENT_READ,'stdout')
-    selector.register(process.stderr,selectors.EVENT_READ,'stderr')
-    chunks={'stdout':bytearray(),'stderr':bytearray()};deadline=time.monotonic()+5
-    try:
-        while selector.get_map():
-            if time.monotonic()>deadline:raise TimeoutError('bounded public callback deadline')
-            for key,_ in selector.select(.02):
-                data=os.read(key.fileobj.fileno(),4096)
-                if not data:selector.unregister(key.fileobj);continue
-                if sum(len(value) for value in chunks.values())+len(data)>4096:
-                    raise RuntimeError('public callback capture overflow')
-                chunks[key.data].extend(data)
-        process.wait(timeout=max(.01,deadline-time.monotonic()))
-    finally:
-        selector.close()
-    stdout,stderr=bytes(chunks['stdout']),bytes(chunks['stderr'])
-    from types import SimpleNamespace
-    result=SimpleNamespace(stdout=stdout,stderr=stderr,returncode=process.returncode)
-    if len(result.stdout)+len(result.stderr)>4096:
-        raise SystemExit("callback capture cap")
-    write_receipt(control/f"callback-{sid}.json",{"exit":result.returncode,
-        "stdout_sha256":hashlib.sha256(result.stdout).hexdigest(),"stderr_sha256":hashlib.sha256(result.stderr).hexdigest(),
-        "parent_pid":os.getpid(),"child_pid":process.pid,"parent_wait_returncode":process.returncode},4096)
-    if not payload["exit"]:
-        await_condition(lambda:(control/f"exit-{sid}.json").exists(),20)
-    write_receipt(control/f"provider-exit-{sid}.json",{"task":task,"sid":sid,"pid":os.getpid()},4096)
-    raise SystemExit(result.returncode)
-
-
 def seed_copy_observation(root: Path) -> dict:
     """Read every seed link without following directory links during traversal."""
     links={}
@@ -436,11 +586,8 @@ def attachment_runtime_seed(runtime, tmp_path, fake_claude_plan_env, fake_codex_
     seed_agent_definition(runtime,"engineering_head",executor="claude",pending=False)
     for agent in ("engineering_head","dev_agent","product_manager","qa_engineer","code_reviewer"):
         seed_workspace(runtime,agent)
-    script=("#!/bin/sh\nexec 3<&0\npython -m tests.helpers.attachment_feedback_fixture provider "
-            '\"$1\" \"$2\" \"$3\" \"$4\" '+shlex.quote(str(controls))+" <&3 &\n"
-            'attachment_child=$!\nattachment_exit=0\nwait "$attachment_child" || attachment_exit=$?\n'
-            'python -m tests.helpers.attachment_feedback_fixture provider-wait "$1" "$2" "$$" "$attachment_child" "$attachment_exit" '
-            +shlex.quote(str(controls))+'\nexit "$attachment_exit"\n')
+    script=("#!/bin/sh\nexec python -m tests.helpers.attachment_feedback_fixture provider-supervise "
+            '\"$1\" \"$2\" \"$3\" \"$4\" '+shlex.quote(str(controls))+"\n")
     for plan in (fake_claude_plan_env,fake_codex_plan_env):
         plan.write_text(script)
     # Thread followup is explicitly declined through the real callback, not an implicit success.
@@ -460,6 +607,9 @@ def attachment_runtime_seed(runtime, tmp_path, fake_claude_plan_env, fake_codex_
 @pytest.fixture
 def attachment_live_daemon(attachment_runtime_seed, runtime, request):
     request.getfixturevalue("attachment_public_observer")
+    request.getfixturevalue("tmp_home")
+    from runtime.daemon import paths as daemon_paths
+    phase(request.node.nodeid,'setup','daemon-log',daemon_log=str(daemon_paths.log_file().resolve()))
     port=request.getfixturevalue("live_daemon")
     driver=PublicDriver(port,runtime,attachment_runtime_seed,request.node.nodeid)
     pid,log,receipt=_case_endpoint(driver)
@@ -570,16 +720,6 @@ def attachment_fingerprint_comparisons(database,claim: RetryClaim,foreign_claim:
                 observable="real B returns LostClaim",defect="omitted pending ownership field",field=field)
     return pending
 
-
-if __name__=="__main__" and len(sys.argv)>1:
-    if sys.argv[1]=="provider":provider_main()
-    elif sys.argv[1]=="provider-wait":
-        task,sid,parent,child,status,control=sys.argv[2:8]
-        launch=closed_read(Path(control)/f"launch-{sid}.json",16384)
-        assert launch['task_id']==task and launch['driver_pid']==int(child) and launch['plan_parent_pid']==int(parent)
-        write_receipt(Path(control)/f"provider-wait-{sid}.json",
-            {'owner':int(parent),'child':int(child),'returncode':int(status),'sid':sid,'task':task},4096)
-        raise SystemExit(0)
 
 class PublicObserver:
     def __init__(self,descriptor,path):
@@ -807,7 +947,7 @@ def matrix_batch_runtime(original: PublicDriver, index: int):
     observer_path=observer_control/'descriptor.json';write_receipt(observer_path,descriptor,16384)
     observer=PublicObserver(descriptor,observer_path)
     plan=DeterministicPlan(base/'provider.sh')
-    plan.write_text('#!/bin/sh\nexec 3<&0\npython -m tests.helpers.attachment_feedback_fixture provider "$1" "$2" "$3" "$4" '+shlex.quote(str(controls))+' <&3 &\nattachment_child=$!\nattachment_exit=0\nwait "$attachment_child" || attachment_exit=$?\npython -m tests.helpers.attachment_feedback_fixture provider-wait "$1" "$2" "$$" "$attachment_child" "$attachment_exit" '+shlex.quote(str(controls))+'\nexit "$attachment_exit"\n')
+    plan.write_text('#!/bin/sh\nexec python -m tests.helpers.attachment_feedback_fixture provider-supervise "$1" "$2" "$3" "$4" '+shlex.quote(str(controls))+'\n')
     approved_plan=provider_plan_observation(plan)
     prerequisites={'seed':source_seed,'provider_plan':approved_plan}
     write_receipt(controls/'batch-prerequisites.json',prerequisites,16384)
@@ -821,6 +961,7 @@ def matrix_batch_runtime(original: PublicDriver, index: int):
         save_registry({provider:item['path'] for provider,item in parent['stubs'].items()})
         runtimes.register(container)
         script=Path(parent['source'])/'scripts/daemon.sh'
+        phase(original.node,'call','daemon-log',daemon_log=str(daemon_paths.log_file().resolve()))
         subprocess.run([str(script),'start'],check=True,env=_nested_daemon_env(),timeout=5)
         port=await_condition(lambda:daemon_paths.port_file().read_text().strip() if daemon_paths.port_file().exists() else None)
         driver=PublicDriver(port,root,controls,original.node)
@@ -1089,12 +1230,26 @@ def v2_lineage_readback(driver,task,first,original,second,r2):
 def pytest_runtest_makereport(item,call):
     outcome=yield
     report=outcome.get_result()
-    if report.longrepr is not None and len(str(report.longrepr).encode())>16384:
-        report.longrepr='THR304 required assertion traceback exceeded 16KiB; evidence INCOMPLETE'
-        report.outcome='failed'
-    if any(len(text.encode())>16384 for _,text in report.sections):
+    if _DESCRIPTOR is None or item.nodeid not in NODES:
+        raise RuntimeError('unbound pytest report')
+    raw='' if report.longrepr is None else str(report.longrepr)
+    sections=[];section_remaining=16384;section_overflow=False
+    for name,text in report.sections[:8]:
+        encoded=text.encode()
+        selected=encoded[:section_remaining]
+        sections.append((name,selected.decode('utf-8','replace')))
+        section_remaining-=len(selected)
+        section_overflow=section_overflow or len(encoded)>len(selected)
+    overflow=len(raw.encode())>16384 or len(report.sections)>8 or section_overflow
+    # Preserve adverse report text before a teardown/closure failure kills pytest.
+    retain_node_receipt(item.nodeid,'report-'+report.when+'.json',
+        {'node':item.nodeid,'phase':report.when,'head':_DESCRIPTOR['head'],
+         'helper_sha256':sha(Path(__file__).resolve()),'outcome':report.outcome,
+         'longrepr':raw.encode()[:16384].decode('utf-8','replace'),'sections':sections,
+         'duration':report.duration,'complete':not overflow},262144)
+    if overflow:
+        report.longrepr='THR304 bounded report prefix retained; evidence INCOMPLETE'
         report.sections=[];report.outcome='failed'
-        report.longrepr='THR304 report section overflow; evidence INCOMPLETE'
 
 
 def retain_node_receipt(node, name, value, cap=16384):
