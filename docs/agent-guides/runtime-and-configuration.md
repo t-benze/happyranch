@@ -875,9 +875,15 @@ See also: `docs/agent-guides/orchestrator-contracts.md` (resolver contract),
 
 ### Optional reasoning effort
 
+Built-ins accept case-preserving fullmatch `[A-Za-z][A-Za-z0-9_-]{0,31}` through shared `model_effort_args` validation; historical catalog values are metadata, not a membership gate. UI uses plain text: blank on explicit Save maps to null/default, without trimming or truncation. Explicit wire/direct empty strings refuse; CLI clear retains its existing meaning. Custom adapters still require approved declared-value membership (at most16 lowercase identifiers); legacy/model-only effort controls remain disabled with saved values visible. Token acceptance proves syntax/transport only, not native model/account support.
+
+With explicit effort, OpenCode requires nonempty provider/model slash components (additional model path segments allowed), no whitespace/control/NUL, at most one # and a nonempty embedded variant byte-equal to effort; it composes one literal `-m provider/model#effort`. Unset preserves the original model transport. Pi recognizes only its existing finite thinking suffix set; arbitrary safe colon suffixes do not become native thinking syntax. Codex keeps one literal quoted config argv element.
+
+Bounded evidence does not verify dynamic manage_agent update/enrollment at runtime (source only), native models/accounts, full task/thread/dream/wake/schedule lifecycles, host/callback or custom contained-wrapper prelaunch. General integration including callback is SKIPPED THR243seq42; former Python units are RETIRED. No ad hoc Product E2E or protected mutation/repetition proof is authorized.
+
 `reasoning_effort` is optional frontmatter beside `model`, never a second YAML store. Omitted updates preserve it; explicit `null` clears it. A real CLI change clears omitted model/effort; an explicit new pair is validated together. Unrelated whole-definition writes preserve the field. The residual YAML importer preserves it for the same CLI, clears it on a CLI change, and refuses incompatible model/effort before replacing canonical content.
 
-Allowed values come from the static built-in catalog or approved custom input-v2 declaration, surfaced through existing executor prerequisite metadata. Unset preserves existing model transport and emits no effort override. Static support says nothing about the chosen model/account accepting a level. OpenCode requires `provider/model`; embedded OpenCode `#variant` and recognized Pi `:thinking` must agree with explicit effort. See the [current contract](../superpowers/specs/2026-10-11-agent-reasoning-effort.md) for mappings/defaults and compatibility limits.
+Built-in tokens follow the shared grammar above; approved custom input-v2 declarations retain finite membership, surfaced through existing executor prerequisite metadata. Unset preserves existing model transport and emits no effort override. Static support says nothing about the chosen model/account accepting a level. OpenCode requires `provider/model`; embedded OpenCode `#variant` and recognized Pi `:thinking` must agree with explicit effort. See the [current contract](../superpowers/specs/2026-10-11-agent-reasoning-effort.md) for mappings/defaults and compatibility limits.
 
 ## Session Timeout Resolution
 

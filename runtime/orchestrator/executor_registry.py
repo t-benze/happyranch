@@ -640,6 +640,7 @@ def build_executor(
 
 
 def reasoning_effort_values(name: str) -> tuple[str, ...]:
+    """Historical builtin metadata; authoritative finite membership for custom adapters."""
     profile = get_registry().get_profile(name)
     if profile is None:
         return ()
@@ -656,9 +657,9 @@ def reasoning_effort_values(name: str) -> tuple[str, ...]:
 def validate_reasoning_selection(name: str, model: str | None, effort: str | None) -> None:
     if effort is None:
         return
-    if not isinstance(effort, str) or effort not in reasoning_effort_values(name):
-        raise ValueError(f"Unsupported reasoning_effort for {name}: {effort!r}")
     profile = get_registry().get_profile(name)
     if profile is not None and profile.kind == "builtin":
         from runtime.adapters import model_effort_args
         model_effort_args(profile.name, model, profile.model_arg, effort)
+    elif not isinstance(effort, str) or effort not in reasoning_effort_values(name):
+        raise ValueError(f"Unsupported reasoning_effort for {name}: {effort!r}")
