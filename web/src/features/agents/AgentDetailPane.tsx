@@ -140,8 +140,12 @@ export function AgentDetailPane({ agentName, onClose, onStartThread }: AgentDeta
   const displayExecutor = dirty.executor ?? agent?.executor ?? '—';
   const displayModel = dirty.model !== undefined ? dirty.model : (agent?.model ?? '');
   const displayEffort = dirty.reasoningEffort ?? agent?.reasoning_effort ?? '';
-  const effortValues = [...executorOptions.selectable, ...executorOptions.unavailable]
-    .find((option) => option.name === displayExecutor)?.reasoningEffortValues ?? [];
+  const effortOption = [...executorOptions.selectable, ...executorOptions.unavailable]
+    .find((option) => option.name === displayExecutor);
+  const effortSupported = effortOption?.present === true && (effortOption.kind === 'builtin' ||
+    (effortOption.kind === 'custom' && (effortOption.reasoningEffortValues?.length ?? 0) > 0));
+  const effortHelpKey = !effortSupported ? 'agents.detail.effortUnsupported'
+    : effortOption?.kind === 'custom' ? 'agents.detail.effortCustomHelp' : 'agents.detail.effortHelp';
   const displayRepos = dirty.repos ?? repos;
 
   // Is the agent's current executor (or the dirty value) available as a
@@ -515,19 +519,18 @@ export function AgentDetailPane({ agentName, onClose, onStartThread }: AgentDeta
           <label htmlFor="agent-reasoning-effort" className="text-overline text-text-muted mb-3 block tracking-wider uppercase">
             {t('agents.detail.reasoningEffort')}
           </label>
-          <select id="agent-reasoning-effort" value={displayEffort}
-            disabled={saving || effortValues.length === 0}
+          <input id="agent-reasoning-effort" type="text" value={displayEffort}
+            placeholder={t('agents.detail.effortDefault')}
+            aria-describedby="agent-reasoning-effort-help"
+            disabled={saving || !effortSupported}
             onChange={(event) => {
               setDirty((prev) => ({ ...prev, reasoningEffort: event.target.value, selectionExecutor: prev.selectionExecutor ?? displayExecutor }));
               setSaveError(null);
             }}
-            className="border-border-subtle bg-surface w-full max-w-xs rounded-md border px-3 py-1.5 text-sm">
-            <option value="">{t('agents.detail.effortDefault')}</option>
-            {displayEffort && !effortValues.includes(displayEffort) && <option value={displayEffort}>{displayEffort}</option>}
-            {effortValues.map((value) => <option key={value} value={value}>{value}</option>)}
-          </select>
-          <p className="text-text-muted mt-2 text-xs">
-            {t(effortValues.length ? 'agents.detail.effortHelp' : 'agents.detail.effortUnsupported')}
+            className="border-border-subtle bg-surface w-full max-w-xs rounded-md border px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-accent-soft" />
+          <p id="agent-reasoning-effort-help" className="text-text-muted mt-2 text-xs">
+            {t(effortHelpKey)}
+            {effortSupported && effortOption?.kind === 'custom' && ` ${effortOption.reasoningEffortValues?.join(', ')}`}
             {dirty.selectionExecutor && dirty.selectionExecutor !== displayExecutor && <span role="alert">{t('agents.error.effortExecutorChanged')}</span>}
           </p>
         </section>

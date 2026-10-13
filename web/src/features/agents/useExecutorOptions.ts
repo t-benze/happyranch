@@ -17,6 +17,7 @@ export interface ExecutorOption {
   /** The kind — builtin, custom, or unregistered_builtin (unavailable). */
   kind: 'builtin' | 'custom' | 'unregistered_builtin';
   hint: string | null;
+  /** Builtin historical examples; custom approved membership. Not builtin support. */
   reasoningEffortValues?: string[];
 }
 
