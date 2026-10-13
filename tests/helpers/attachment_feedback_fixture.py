@@ -1404,3 +1404,607 @@ def retain_role_receipts(controls,node,suffix):
     write_receipt(target,{'node':node,'head':_DESCRIPTOR['head'],'rows':rows},262144,
                   evidence=Path(_DESCRIPTOR['evidence']))
     return target
+
+# Supplemental finding checks run only inside the already released C01/direct
+# call. They are not original connected observations or product execution facts.
+@contextmanager
+def harness_source_gate(function, anchor, action, *, occurrence=1, required=True):
+    """Gate an exact current harness code line; no runtime claim or code rewrite."""
+    import dis
+    import inspect
+    path=Path(inspect.getsourcefile(function)).resolve()
+    source=Path(_DESCRIPTOR['source'])
+    name=path.relative_to(source).as_posix()
+    assert name in _DESCRIPTOR['source_hashes'] and sha(path)==_DESCRIPTOR['source_hashes'][name]
+    lines,first=inspect.getsourcelines(function)
+    matches=[first+i for i,line in enumerate(lines) if anchor in line]
+    assert len(matches)>=occurrence and occurrence>0
+    line=matches[occurrence-1]
+    assert line in {number for _,number in dis.findlinestarts(function.__code__) if number is not None}
+    prior=sys.gettrace();hits=[]
+    def trace(frame,event,arg):
+        if prior is not None:prior(frame,event,arg)
+        if frame.f_code is function.__code__ and event=='line' and frame.f_lineno==line:
+            hits.append({'source':name,'sha256':sha(path),'line':line})
+            if len(hits)==1:action(frame)
+        return trace
+    try:
+        sys.settrace(trace)
+        yield hits
+    finally:sys.settrace(prior)
+    assert hits or not required, 'required exact-source action never reached'
+
+
+@contextmanager
+def _finding_patch(owner, **values):
+    original={key:getattr(owner,key) for key in values}
+    try:
+        for key,value in values.items():setattr(owner,key,value)
+        yield
+    finally:
+        for key,value in original.items():setattr(owner,key,value)
+
+
+def _finding_sink(root):
+    from scripts import attachment_scoped_qa as qa
+    root.mkdir(mode=0o700)
+    fd=os.open(root/qa.EVIDENCE_LOCK,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600);os.close(fd)
+    return root
+
+
+def _finding_assert_raises(action, exception=ValueError):
+    try:action()
+    except exception as exc:return str(exc)
+    raise AssertionError('required refusal absent')
+
+
+def _finding_diagnostic_trial(root, kind, fault=None, payload=b'\xff\xe2\x82\xac'):
+    """Synthetic harness-only sink/commands; never a task/result/callback claim."""
+    from types import SimpleNamespace
+    module=sys.modules[__name__]
+    sink=_finding_sink(root/'evidence');control=root/'control';control.mkdir(mode=0o700)
+    target=sink/'diagnostic.json';info=sink.stat();identity=(info.st_dev,info.st_ino)
+    faults=set() if fault is None else set(fault.split('+'));primary=None if fault is None else fault.split('+')[0]
+    node=NODES[0];observer={'node':node,'binding':{'revision':_DESCRIPTOR['head']}}
+    # Synthetic identity is explicitly restricted to diagnostic scratch. No
+    # daemon assignment, result or callback is created or asserted by this trial.
+    task='synthetic-harness';sid='synthetic-harness';slug='test';processes=[];closes=[]
+    argv=['harness','provider',task,sid,'dev_agent',slug,str(control)]
+    write_receipt(control/f'command-{sid}.json',{'body':{},'exit':True},16384)
+    (control/'observer').mkdir(mode=0o700)
+    write_receipt(control/'observer'/'descriptor.json',observer,16384)
+    real_popen=subprocess.Popen;real_selector=selectors.DefaultSelector
+    def spawn(*args,**kwargs):
+        if 'spawn' in faults:raise OSError('finding-primary-spawn')
+        code='import os,time;os.write(1,'+repr(payload[:2])+');time.sleep(.01);os.write(1,'+repr(payload[2:])+');os.write(2,b"\\xfe")'
+        if payload==b'\xff\xe2\x82\xac':
+            read_fd,write_fd=os.pipe();sync_fds.append(write_fd)
+            code='import os;os.write(1,'+repr(payload[:2])+');assert os.read('+str(read_fd)+',1)==b"R";os.write(1,'+repr(payload[2:])+');os.write(2,b"\\xfe")'
+            try:child=real_popen([sys.executable,'-c',code],stdout=subprocess.PIPE,stderr=subprocess.PIPE,pass_fds=(read_fd,))
+            finally:os.close(read_fd)
+        else:child=real_popen([sys.executable,'-c',code],stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+        processes.append(child);return child
+    class Selected:
+        def __init__(self):
+            if 'selector-create' in faults:raise OSError('finding-primary-selector-create')
+            self.actual=real_selector()
+        def register(self,*args):
+            if 'selector-register' in faults:raise OSError('finding-primary-selector-register')
+            return self.actual.register(*args)
+        def __getattr__(self,name):return getattr(self.actual,name)
+        def close(self):
+            self.actual.close();closes.append('selector')
+            if 'close' in faults:raise OSError('finding-secondary-close')
+    def admission():
+        # Parent/source guard was admitted before this helper. This is solely
+        # a negative harness admission, not successful provider admission proof.
+        if 'admission' in faults:raise OSError('finding-primary-admission')
+    original_checkpoint=_diagnostic_checkpoint
+    calls=[];attempted_rows=[];sync_fds=[];split_reads=[]
+    def checkpoint(*args):
+        calls.append(args[2]['stage']);attempted_rows.append(json.loads(json.dumps(args[2])))
+        size=args[2]['output']['stdout']['raw_length']
+        if size and (not split_reads or split_reads[-1]!=size):split_reads.append(size)
+        if sync_fds and size==2:
+            fd=sync_fds.pop();os.write(fd,b'R');os.close(fd)
+        if 'publication' in faults and len(calls)>1:raise OSError('finding-primary-publication')
+        return original_checkpoint(*args)
+    failure=None;rows=[]
+    # Replace only fixture references, not shared stdlib module attributes or
+    # product code. The actual capture/cleanup/checkpoint implementation runs.
+    with _finding_patch(module,_provider_diagnostic=lambda kind:(task,sid,'dev_agent',slug,control,observer,target,identity),
+        _provider_admission=admission,manifest=lambda:{'revision':_DESCRIPTOR['head'],'callback':'synthetic-unexecuted-callback'},
+        subprocess=SimpleNamespace(Popen=spawn,TimeoutExpired=subprocess.TimeoutExpired),
+        selectors=SimpleNamespace(DefaultSelector=Selected,EVENT_READ=selectors.EVENT_READ),_diagnostic_checkpoint=checkpoint):
+        with _finding_patch(sys,argv=argv,stdin=__import__('io').StringIO('')), _finding_patch(os,environ=dict(os.environ,
+            HAPPYRANCH_RUNTIME_SESSION_ID=sid,HAPPYRANCH_ORG_SLUG=slug,HAPPYRANCH_ATTACHMENT_OBSERVER=str(control/'observer'/'descriptor.json'))):
+            try:(provider_supervise if kind=='provider' else provider_main)()
+            except BaseException as exc:failure=exc
+    for fd in sync_fds:os.close(fd)
+    if target.exists():rows.append(closed_read(target,262144))
+    if 'publication' in faults:
+        assert rows and rows[-1]['complete'] is False
+        rows.append(attempted_rows[-1])
+    assert failure is not None
+    if isinstance(failure,SystemExit):assert failure.code==0
+    if 'publication' in faults:assert isinstance(failure,OSError) and 'primary-publication' in str(failure)
+    if ('admission' in faults and kind=='provider') or 'spawn' in faults:
+        row=rows[-1];assert row['child_pid'] is None and row['parent_wait_returncode'] is None and row['child_state']=='absent'
+        assert row['complete'] is False and not processes
+    elif processes:
+        child=processes[0];row=rows[-1]
+        assert row['child_pid']==child.pid and type(row['parent_wait_returncode']) is int
+        assert row['child_state']=='waited' and child.returncode==row['parent_wait_returncode']
+        assert child.stdout.closed and child.stderr.closed
+        if fault:assert row['complete'] is False
+        if primary not in ('publication','close') and primary:
+            assert 'finding-primary-'+primary in row['error'] and not isinstance(failure,SystemExit)
+        if 'close' in faults:assert row['cleanup_errors'] and not isinstance(failure,SystemExit)
+    return rows[-1] if rows else None, {'kind':kind,'fault':fault,'failure':type(failure).__name__,
+        'spawned':len(processes),'selector_closes':closes,'checkpoint_stages':calls,'split_read_lengths':split_reads,'stored_final':'publication' not in faults}
+
+
+def assert_finding_admission(root):
+    row,facts=_finding_diagnostic_trial(root,'provider','admission')
+    assert row['stage']=='provider-admission' and 'finding-primary-admission' in row['error']
+    assert facts['failure']=='OSError' and row['complete'] is False
+    return facts
+
+
+def assert_finding_popen(root):
+    facts=[]
+    for kind in ('provider','callback'):
+        case=root/kind;case.mkdir(mode=0o700)
+        row,receipt=_finding_diagnostic_trial(case,kind,'spawn')
+        assert row['stage']==kind+'-spawn' and 'finding-primary-spawn' in row['error']
+        assert receipt['failure']=='OSError' and row['cleanup_errors']==[]
+        facts.append(receipt)
+    return facts
+
+
+def assert_finding_selector(root):
+    facts=[]
+    for kind in ('provider','callback'):
+        for fault in ('selector-create','selector-register'):
+            case=root/(kind+'-'+fault);case.mkdir(mode=0o700)
+            row,receipt=_finding_diagnostic_trial(case,kind,fault)
+            assert row['stage']==kind+'-selector' and receipt['spawned']==1 and receipt['failure']=='OSError'
+            if fault=='selector-register':assert receipt['selector_closes']==['selector']
+            facts.append(receipt)
+    return facts
+
+
+def assert_finding_raw(root):
+    facts=[];payload=b'\xff\xe2\x82\xac'
+    for kind in ('provider','callback'):
+        case=root/kind;case.mkdir(mode=0o700)
+        row,receipt=_finding_diagnostic_trial(case,kind,payload=payload)
+        for channel,original in (('stdout',payload),('stderr',b'\xfe')):
+            output=row['output'][channel];raw=base64.b64decode(output['raw_base64'],validate=True)
+            assert raw==original and output['raw_length']==len(original)
+            assert output['observed_raw_length']==len(original) and output['raw_sha256']==hashlib.sha256(original).hexdigest()
+            assert output['preview_utf8_replacement']==original.decode('utf-8','replace')
+            assert output['preview_utf8_replacement'].encode()!=original
+        assert row['complete'] is True and receipt['failure']=='SystemExit'
+        assert receipt['split_read_lengths']==[2,4]
+        facts.append(receipt)
+    return facts
+
+
+@contextmanager
+def _finding_owned_worker(action):
+    """Finite exact child edge, real waitpid; absence never stands in for wait."""
+    ready_r,ready_w=os.pipe();release_r,release_w=os.pipe()
+    pid=os.fork()
+    if pid==0:
+        os.close(ready_r);os.close(release_w)
+        try:
+            action(ready_w,release_r)
+            os._exit(0)
+        except BaseException as exc:
+            os.write(ready_w,('ERROR:'+type(exc).__name__+':'+str(exc)[:256]).encode())
+            os._exit(1)
+    os.close(ready_w);os.close(release_r);waited=None
+    try:
+        yield pid,ready_r,release_w
+    finally:
+        # Wait only on this genuine fork child. Bounded terminal wait, then
+        # exact-child kill and consuming wait if the finite action did not exit.
+        deadline=time.monotonic()+1
+        while time.monotonic()<deadline:
+            got,status=os.waitpid(pid,os.WNOHANG)
+            if got:waited=status;break
+            time.sleep(.005)
+        if waited is None:
+            os.kill(pid,signal.SIGKILL);got,waited=os.waitpid(pid,0);assert got==pid
+        os.close(ready_r);os.close(release_w)
+        assert os.waitstatus_to_exitcode(waited)==0, 'owned supplemental worker failed/nonzero'
+
+
+def _finding_message(fd,expected):
+    assert select.select([fd],[],[],.1)[0], 'finite finding gate timeout'
+    assert os.read(fd,4096)==expected
+
+
+def _finding_prewrite_refusal(action):
+    from scripts import attachment_scoped_qa as qa
+    with harness_source_gate(qa.evidence_publish,'fd=os.open(temporary',lambda frame:None,required=False) as opened:
+        with harness_source_gate(qa.evidence_publish,'if new_directory:path.parent.mkdir',lambda frame:None,required=False) as directories:
+            with harness_source_gate(qa.evidence_append,'fd=os.open(path',lambda frame:None,required=False) as appends:
+                error=_finding_assert_raises(action)
+    assert not opened and not directories and not appends, 'refusal followed a protected write/open/mkdir'
+    return error
+
+
+def _finding_capacity(root):
+    from scripts import attachment_scoped_qa as qa
+    peaks=[];gates=[]
+    def inventory(sink):
+        value=qa.evidence_usage(sink);peaks.append(value[:2]);assert value[0]<=CAPS['aggregate'] and value[1]<=4096
+        return value
+    def fill(sink,size):
+        # Synthetic scratch only; real physical inventory, never counterfeit
+        # final evidence or product receipts. Each file obeys the1MiB cap.
+        index=0
+        while size:
+            count=min(size,CAPS['metadata']);path=sink/f'padding-{index}'
+            fd=os.open(path,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
+            try:assert os.write(fd,b'x'*count)==count
+            finally:os.close(fd)
+            size-=count;index+=1
+    byte_sink=_finding_sink(root/'bytes')
+    for name in ('A','B'):qa.evidence_publish(byte_sink/name,b'x'*1024,16384,byte_sink)
+    T=CAPS['aggregate']-sum(qa.FINAL_CAPS.values())-12288
+    fill(byte_sink,T-2048);assert inventory(byte_sink)[0]==T
+    def producer(ready,release):
+        def held(frame):
+            os.write(ready,b'TEMP')
+            assert select.select([release],[],[],.1)[0]
+            assert os.read(release,1)==b'R'
+        with harness_source_gate(qa.evidence_publish,'os.replace(temporary',held) as hits:
+            qa.evidence_publish(byte_sink/'A',b'A'*8192,16384,byte_sink,replace=True)
+        assert hits
+    with _finding_owned_worker(producer) as (pid,ready,release):
+        _finding_message(ready,b'TEMP')
+        assert (byte_sink/'A').stat().st_size==1024 and (byte_sink/'A.tmp').stat().st_size==8192
+        assert inventory(byte_sink)[0]==T+8192
+        # Start a distinct real producer while A owns the permanent lock.
+        def competing(ready2,release2):
+            os.write(ready2,b'ENTER')
+            _finding_prewrite_refusal(lambda:qa.evidence_publish(byte_sink/'B',b'B'*8192,16384,byte_sink,replace=True))
+        with _finding_owned_worker(competing) as (pid2,ready2,release2):
+            _finding_message(ready2,b'ENTER')
+            def append_producer(r,w):
+                os.write(r,b'ENTER')
+                qa.evidence_append(byte_sink/'journal',b'J'*1024,2048,byte_sink)
+            with _finding_owned_worker(append_producer) as (pid3,r3,w3):
+                _finding_message(r3,b'ENTER');os.write(release,b'R')
+        gates.append({'owner':pid,'competitor':pid2,'append_producer':pid3})
+    assert (byte_sink/'B').read_bytes()==b'x'*1024 and not (byte_sink/'B.tmp').exists()
+    before=inventory(byte_sink)[0]
+    _finding_prewrite_refusal(lambda:qa.evidence_append(byte_sink/'journal',b'X'*8192,16384,byte_sink))
+    assert (byte_sink/'journal').read_bytes()==b'J'*1024 and inventory(byte_sink)[0]==before
+    (byte_sink/'padding-0').unlink()
+    qa.evidence_publish(byte_sink/'B',b'B'*8192,16384,byte_sink,replace=True)
+    assert (byte_sink/'B').read_bytes()==b'B'*8192
+    entries=_finding_sink(root/'entries')
+    for i in range(4089):
+        fd=os.open(entries/f'p-{i}',os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600);os.close(fd)
+    assert inventory(entries)[1]==4090
+    nested=entries/('a'*20)/'report.json'
+    _finding_prewrite_refusal(lambda:qa.evidence_publish(nested,b'{}',100,entries))
+    assert not nested.parent.exists() and inventory(entries)[1]==4090
+    for name in ('p-0','p-1'):
+        with harness_source_gate(qa.evidence_publish,'os.replace(temporary',lambda frame:inventory(entries)):
+            qa.evidence_publish(entries/name,b'{}',100,entries,replace=True)
+        assert (entries/name).read_bytes()==b'{}'
+    source_log=root/'snapshot-source.log'
+    fd=os.open(source_log,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
+    try:assert os.write(fd,b'S'*1024)==1024
+    finally:os.close(fd)
+    snapshot=qa.OwnedTree(entries)
+    snapshot.logs={str(source_log):{'log':str(source_log),'log_identity':None,'node':NODES[0]}}
+    def new_target(ready,release):
+        def hold(frame):
+            os.write(ready,b'TEMP');assert select.select([release],[],[],.1)[0];assert os.read(release,1)==b'R'
+        with harness_source_gate(qa.evidence_publish,'os.replace(temporary',hold):
+            qa.evidence_publish(entries/'new',b'{}',100,entries)
+    with _finding_owned_worker(new_target) as (owner,r,w):
+        _finding_message(r,b'TEMP');assert inventory(entries)[1]==4091
+        def competitor(ready,release):
+            os.write(ready,b'ENTER')
+            _finding_prewrite_refusal(lambda:qa.evidence_publish(entries/'refused-new',b'{}',100,entries))
+        def snapshot_producer(ready,release):
+            os.write(ready,b'ENTER');_finding_prewrite_refusal(snapshot.capture_logs)
+        with _finding_owned_worker(competitor) as (other,r2,w2):
+            _finding_message(r2,b'ENTER')
+            with _finding_owned_worker(snapshot_producer) as (writer,r3,w3):
+                _finding_message(r3,b'ENTER');os.write(w,b'R')
+        gates.append({'entry_owner':owner,'entry_competitor':other,'snapshot_producer':writer})
+    assert inventory(entries)[1]==4091
+    assert not (entries/'refused-new').exists() and not (entries/'refused-new.tmp').exists()
+    _finding_prewrite_refusal(lambda:qa.evidence_publish(entries/'p-0',b'XX',100,entries,replace=True))
+    assert (entries/'p-0').read_bytes()==b'{}' and not (entries/'p-0.tmp').exists()
+    assert not any(path.name.startswith('daemon-') for path in entries.iterdir())
+    for i in range(4):
+        fd=os.open(entries/f'reserved-pressure-{i}',os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600);os.close(fd)
+    assert inventory(entries)[1]==4095
+    _finding_prewrite_refusal(lambda:qa.evidence_publish(entries/'refused',b'{}',100,entries))
+    assert not (entries/'refused').exists() and not (entries/'refused.tmp').exists()
+    assert inventory(entries)[1]==4095
+    # Remove only synthetic owned filler, then reach directory+temporary peak
+    # through the exact source line while the common allocation is held.
+    for i in range(10):(entries/f'p-{i+10}').unlink()
+    def directory_peak(frame):
+        assert nested.parent.is_dir() and nested.with_name('report.json.tmp').exists()
+        inventory(entries)
+    with harness_source_gate(qa.evidence_publish,'os.replace(temporary',directory_peak) as hits:
+        qa.evidence_publish(nested,b'{}',100,entries)
+    assert hits and nested.read_bytes()==b'{}'
+    snapshot.capture_logs()
+    assert any(path.name.startswith('daemon-') and path.read_bytes()==b'S'*1024 for path in entries.iterdir())
+    return {'peaks':peaks,'gates':gates,'byte_target_restored':True,'entry_target_restored':True}
+
+
+def _finding_lock_and_cleanup(root):
+    from scripts import attachment_scoped_qa as qa
+    sink=_finding_sink(root/'lock');lock=sink/qa.EVIDENCE_LOCK;identity=(lock.stat().st_dev,lock.stat().st_ino)
+    def holder(ready,release):
+        with qa.evidence_allocation(sink):
+            os.write(ready,b'LOCKED')
+            assert select.select([release],[],[],1)[0];assert os.read(release,1)==b'R'
+    with _finding_owned_worker(holder) as (pid,ready,release):
+        _finding_message(ready,b'LOCKED');start=time.monotonic()
+        _finding_assert_raises(lambda:qa.evidence_publish(sink/'blocked',b'x',100,sink),TimeoutError)
+        elapsed=time.monotonic()-start;assert .25<=elapsed<1
+        assert not (sink/'blocked').exists() and not (sink/'blocked.tmp').exists()
+        os.write(release,b'R')
+    assert (lock.stat().st_dev,lock.stat().st_ino)==identity and qa.evidence_usage(sink)[1]==1
+    def interrupted(frame):raise InterruptedError('finding-primary-interruption')
+    with harness_source_gate(qa.evidence_publish,'os.replace(temporary',interrupted) as hits:
+        error=_finding_assert_raises(lambda:qa.evidence_publish(sink/'caught',b'x',100,sink),InterruptedError)
+    assert 'primary-interruption' in error and hits and not (sink/'caught.tmp').exists()
+    def catchable(ready,release):
+        def signal_error(signum,frame):raise InterruptedError('finding-primary-caught-signal')
+        signal.signal(signal.SIGUSR1,signal_error)
+        def signal_gate(frame):
+            os.write(ready,b'TEMP')
+            assert select.select([release],[],[],.1)[0]
+            os.read(release,1)
+        try:
+            with harness_source_gate(qa.evidence_publish,'os.replace(temporary',signal_gate):
+                qa.evidence_publish(sink/'signal-caught',b'x',100,sink)
+        except InterruptedError as exc:
+            assert 'primary-caught-signal' in str(exc) and not (sink/'signal-caught.tmp').exists()
+            os.write(ready,b'CLEAN')
+        else:raise AssertionError('caught signal absent')
+    with _finding_owned_worker(catchable) as (caught_pid,ready,release):
+        _finding_message(ready,b'TEMP');os.kill(caught_pid,signal.SIGUSR1);_finding_message(ready,b'CLEAN')
+    qa.evidence_publish(sink/'after',b'x',100,sink)
+    # An actual exact-child uncatchable interruption leaves its temp physically
+    # charged; wait status is consumed and asserted independently.
+    ready_r,ready_w=os.pipe();pid=os.fork()
+    if pid==0:
+        os.close(ready_r)
+        def killed(frame):
+            os.write(ready_w,b'TEMP');time.sleep(1);raise TimeoutError('kill gate expired')
+        try:
+            with harness_source_gate(qa.evidence_publish,'os.replace(temporary',killed):qa.evidence_publish(sink/'orphan',b'O'*100,100,sink)
+        finally:os._exit(2)
+    os.close(ready_w)
+    try:
+        _finding_message(ready_r,b'TEMP');os.kill(pid,signal.SIGKILL)
+        got,status=os.waitpid(pid,0);assert got==pid and os.waitstatus_to_exitcode(status)==-signal.SIGKILL
+    finally:os.close(ready_r)
+    assert (sink/'orphan.tmp').stat().st_size==100
+    with qa.evidence_allocation(sink):assert qa.evidence_usage(sink)[2]['orphan.tmp']==100
+    tree=qa.OwnedTree(sink)
+    assert 'interrupted evidence publication remains' in _finding_assert_raises(tree.monitor)
+    assert (lock.stat().st_dev,lock.stat().st_ino)==identity
+    return {'lock_identity':identity,'timeout_elapsed':elapsed,'caught_signal_child':caught_pid,'killed_child':pid,'consumed_status':status,'orphan_bytes':100}
+
+
+def _finding_terminal_channels(root):
+    from scripts import attachment_scoped_qa as qa
+    sink=_finding_sink(root/'channels');events=[];failures=[]
+    capture=qa.CaptureChannels(sink,events.append)
+    phase_pipe=root/'phase.fifo';junit_pipe=root/'junit.fifo'
+    for path in (phase_pipe,junit_pipe):os.mkfifo(path,0o600)
+    phase_fd=os.open(phase_pipe,os.O_RDWR|os.O_NONBLOCK);junit_fd=os.open(junit_pipe,os.O_RDWR|os.O_NONBLOCK)
+    raw=b'queued-final-stdout\xff';frame=b'{"event":"finish","phase":"teardown"}\n';xml=b'<testsuites><testsuite/></testsuites>'
+    code='import os;os.write(1,'+repr(raw)+');p=os.open('+repr(str(phase_pipe))+',os.O_WRONLY);os.write(p,'+repr(frame)+');os.close(p);j=os.open('+repr(str(junit_pipe))+',os.O_WRONLY);os.write(j,'+repr(xml)+');os.close(j)'
+    child=subprocess.Popen([sys.executable,'-c',code],stdout=subprocess.PIPE)
+    def attempt(label,action):
+        try:return action()
+        except BaseException as exc:failures.append(label+':'+str(exc));capture.failed.add(label.split(' ',1)[1])
+    try:
+        waited=child.wait(timeout=1);assert waited==0
+        for channel,fd in (('output',child.stdout.fileno()),('phase',phase_fd),('junit',junit_fd)):
+            capture.drain(channel,fd,True,attempt)
+        assert not failures and capture.junit==xml and (sink/'pytest.log').read_bytes()==raw
+        assert events==[json.loads(frame)] and all(row['complete'] for row in capture.drains.values())
+        assert capture.drains['output']['read_state']=='EOF'
+        assert capture.drains['phase']['read_state']=='EAGAIN' and capture.drains['junit']['read_state']=='EAGAIN'
+        qa.evidence_publish(sink/'cases.xml',bytes(capture.junit),CAPS['junit'],sink)
+        # These are explicitly synthetic final-reservation exercise files, not
+        # successful product observations or process/wait receipts.
+        for name,cap in qa.FINAL_CAPS.items():
+            if name!='cases.xml':qa.evidence_publish(sink/name,b'{}',cap,sink)
+        _,_,files=qa.evidence_usage(sink);assert set(qa.FINAL_CAPS)<=set(files)
+        _finding_assert_raises(lambda:qa.evidence_publish(sink/'result.json',b'{}',100,sink),FileExistsError)
+        from _pytest import junitxml
+        import xml.etree.ElementTree as ET
+        junit_source=Path(junitxml.__file__).resolve()
+        assert pytest.__version__=='9.0.3' and sha(junit_source)=='d71198950cf33bd1c7dc782167986ee130427fc57e221046e6455dc7a5b63d5a'
+        independent=qa.CaptureChannels(_finding_sink(root/'pytest-junit'),events.append)
+        def pytest_writer(ready,release):
+            writer=junitxml.LogXML(str(junit_pipe),None)
+            writer.pytest_sessionstart();writer.pytest_sessionfinish();os.write(ready,b'JUNIT')
+        with _finding_owned_worker(pytest_writer) as (junit_pid,ready,release):_finding_message(ready,b'JUNIT')
+        independent.drain('junit',junit_fd,True,attempt)
+        assert independent.drains['junit']['complete'] and not failures
+        actual_xml=bytes(independent.junit);assert actual_xml.startswith(b'<?xml')
+        parsed=ET.fromstring(actual_xml);assert parsed.tag=='testsuites' and parsed.find('testsuite').get('tests')=='0'
+        qa.evidence_publish(independent.evidence/'cases.xml',actual_xml,CAPS['junit'],independent.evidence)
+        assert (independent.evidence/'cases.xml').read_bytes()==actual_xml
+        partial=qa.CaptureChannels(sink,events.append);os.write(phase_fd,b'{"event":')
+        _finding_assert_raises(lambda:partial.drain('phase',phase_fd,True,attempt))
+        assert partial.drains['phase']['frame_complete'] is False and not partial.drains['phase']['complete']
+    finally:
+        child.stdout.close();os.close(phase_fd);os.close(junit_fd)
+    assert child.stdout.closed
+    return {'actual_wait':waited,'child':child.pid,'stdout_sha256':hashlib.sha256(raw).hexdigest(),
+        'phase_events':events,'junit_sha256':hashlib.sha256(xml).hexdigest(),'drains':capture.drains,'finals':list(qa.FINAL_CAPS),'independent_pytest_writer':{'pid':junit_pid,'source_sha256':sha(junit_source),
+        'raw_sha256':hashlib.sha256(actual_xml).hexdigest(),'drain':independent.drains['junit']}}
+
+
+def _finding_outer_lifecycle(root):
+    from scripts import attachment_scoped_qa as qa
+    from types import SimpleNamespace
+    facts=[];real_popen=subprocess.Popen;real_selector=selectors.DefaultSelector
+    for fault in ('spawn','discover','selector-create','selector-register','close','publication','selector-register+publication+pidfd-close+phase-close+junit-close','fifo-open','source-publication','output-publication','phase-parse'):
+        faults=set(fault.split('+'));primary=fault.split('+')[0]
+        case=root/fault;case.mkdir(mode=0o700);owned=[];selectors_acquired=[];published=[];pidfds=set();fifo_fds={};closed_fifos=[]
+        def spawn(*args,**kwargs):
+            if 'spawn' in faults:raise OSError('finding-primary-spawn')
+            descriptor_path=next(value.split('=',1)[1] for value in args[0] if value.startswith('--attachment-qa-descriptor='))
+            descriptor=closed_read(Path(descriptor_path),16384)
+            frame=(json.dumps({'nonce':descriptor['nonce'],'node':NODES[0],'phase':'teardown','event':'finish'})+'\n').encode()
+            if 'phase-parse' in faults:frame=b'not-json\n'+frame
+            junit_path=next(value.split('=',1)[1] for value in args[0] if value.startswith('--junitxml='))
+            code='import os;os.write(1,b"queued");p=os.open('+repr(descriptor['phase_pipe'])+',os.O_WRONLY);os.write(p,'+repr(frame)+');os.close(p);j=os.open('+repr(junit_path)+',os.O_WRONLY);os.write(j,b"<testsuites/>");os.close(j)'
+            child=real_popen([sys.executable,'-c',code],stdout=subprocess.PIPE)
+            owned.append(child)
+            if primary in ('output-publication','phase-parse'):assert child.wait(timeout=1)==0
+            return child
+        class Tree(qa.OwnedTree):
+            def discover(self):
+                super().discover();pidfds.update(row['fd'] for row in self.identities.values() if row.get('fd') is not None)
+            def children(self,pid):
+                children=super().children(pid)
+                return children & {p.pid for p in owned} if pid==self.self_pid else children
+        class Selector:
+            def __init__(self):
+                if 'selector-create' in faults:raise OSError('finding-primary-selector-create')
+                self.actual=real_selector();selectors_acquired.append(self)
+            def register(self,*args):
+                if 'selector-register' in faults:raise OSError('finding-primary-selector-register')
+                return self.actual.register(*args)
+            def __getattr__(self,name):return getattr(self.actual,name)
+            def close(self):
+                self.actual.close()
+                if 'close' in faults:raise OSError('finding-secondary-close')
+        real_os=qa.os
+        class OS:
+            def __getattr__(self,name):return getattr(real_os,name)
+            def open(self,path,*args,**kwargs):
+                if 'fifo-open' in faults and Path(path).name=='phases.fifo':raise OSError('finding-primary-fifo-open')
+                fd=real_os.open(path,*args,**kwargs)
+                if Path(path).name in ('phases.fifo','junit.fifo'):fifo_fds[fd]=Path(path).name
+                return fd
+            def close(self,fd):
+                real_os.close(fd)
+                if fd in fifo_fds:
+                    closed_fifos.append(fifo_fds[fd])
+                    if ('phase-close' in faults and fifo_fds[fd]=='phases.fifo'
+                        or 'junit-close' in faults and fifo_fds[fd]=='junit.fifo'):raise OSError('finding-secondary-fifo-close')
+                if 'pidfd-close' in faults and fd in pidfds:raise OSError('finding-secondary-pidfd-close')
+        original_write=qa.write_receipt;original_append=qa.evidence_append
+        def append(path,data,*args,**kwargs):
+            if 'output-publication' in faults and data:raise OSError('finding-primary-output-publication')
+            return original_append(path,data,*args,**kwargs)
+        def publish(path,*args,**kwargs):
+            published.append(Path(path).name)
+            if 'source-publication' in faults and Path(path).name=='source.json':raise OSError('finding-primary-source-publication')
+            if 'publication' in faults and Path(path).name=='processes.json':raise OSError('finding-primary-publication')
+            return original_write(path,*args,**kwargs)
+        binding={key:value for key,value in _DESCRIPTOR.items() if key in
+            ('source','head','tree','ref','root','manifest_sha256','source_hashes','python','python_binary','python_version','python_prefix','python_sha256')}
+        binding.update(task=EXECUTION_OWNER,run='synthetic-'+fault,attempt='1')
+        scratch=case/'attachment-qa'/binding['task']/(binding['run']+'-1')/'scratch'
+        def discover_failure(frame):raise OSError('finding-primary-discover')
+        with _finding_patch(qa,OwnedTree=Tree,write_receipt=publish,evidence_append=append,os=OS(),
+            subprocess=SimpleNamespace(Popen=spawn,TimeoutExpired=subprocess.TimeoutExpired),
+            selectors=SimpleNamespace(DefaultSelector=Selector,EVENT_READ=selectors.EVENT_READ)):
+            with _finding_patch(os,environ=dict(os.environ,RUNNER_TEMP=str(case))):
+                if 'discover' in faults:
+                    with harness_source_gate(qa.supervise,'tree.discover()',discover_failure) as gates:exit_code=qa.supervise(binding,scratch)
+                    assert gates
+                else:exit_code=qa.supervise(binding,scratch)
+        evidence=scratch.parent/'evidence';result=closed_read(evidence/'result.json',CAPS['metadata'])
+        assert exit_code!=0 and result['complete'] is False
+        assert 'phase publication' not in result['error'] and 'phases.json' in published and 'result.json' in published
+        if primary in ('spawn','fifo-open','source-publication'):assert not owned and result['command_exit'] is None and result['closure'] is False
+        else:
+            child=owned[0];assert child.returncode is not None and child.stdout.closed
+            if 'publication' not in faults:
+                process=closed_read(evidence/'processes.json',qa.FINAL_CAPS['processes.json'])
+                assert type(process['direct_wait_returncode']) is int
+        if primary in ('spawn','discover','selector-create','selector-register','fifo-open','source-publication'):
+            assert 'finding-primary-'+primary in result['error']
+        if 'publication' in faults:assert any('process publication' in e['error'] for e in result['errors'])
+        if 'pidfd-close' in faults:
+            assert any('pidfd close' in row['error'] for row in result['errors'])
+            assert result['error'].startswith('OSError:finding-primary-selector-register')
+        assert set(fifo_fds.values())==set(closed_fifos)
+        if 'phase-close' in faults and 'junit-close' in faults:
+            assert any(row['operation']=='phase fd close' for row in result['errors'])
+            assert any(row['operation']=='junit fd close' for row in result['errors'])
+        if primary in ('output-publication','phase-parse'):
+            phases=closed_read(evidence/'phases.json',qa.FINAL_CAPS['phases.json'])
+            assert set(phases['drains'])=={'output','phase','junit'}
+            assert phases['drains']['junit']['complete'] and (evidence/'cases.xml').read_bytes()==b'<testsuites/>'
+            assert any(row['event']=='finish' and row['phase']=='teardown' for row in phases['events'])
+            assert not phases['drains']['output' if primary=='output-publication' else 'phase']['complete']
+        for selected in selectors_acquired:assert not selected.actual.get_map()
+        facts.append({'fault':fault,'exit':exit_code,'first_error':result['error'],'errors':result['errors'],
+                      'spawned':[p.pid for p in owned],'publications_attempted':published})
+    return facts
+
+
+def assert_finding_capture(root):
+    facts={}
+    for kind in ('provider','callback'):
+        for fault in ('close','publication','spawn+publication','selector-register+close+publication',None):
+            name=kind+'-'+str(fault);case=root/name;case.mkdir(mode=0o700)
+            payload=b'X'*(16385 if kind=='provider' else 4097) if fault is None else b'X'
+            row,receipt=_finding_diagnostic_trial(case,kind,fault,payload)
+            if fault is None:
+                assert row['complete'] is False and 'overflow' in row['error']
+                assert row['output']['stdout']['raw_length']<=(16384 if kind=='provider' else 4096)
+                assert row['output']['stdout']['observed_raw_length']>row['output']['stdout']['raw_length']
+            if fault=='spawn+publication':
+                assert row['error'].startswith('OSError:finding-primary-spawn') and receipt['spawned']==0
+                assert receipt['stored_final'] is False
+            if fault=='selector-register+close+publication':
+                assert row['error'].startswith('OSError:finding-primary-selector-register')
+                assert any('secondary-close' in error for error in row['cleanup_errors']) and receipt['stored_final'] is False
+            facts[name]=receipt
+    for name,check in (('capacity',_finding_capacity),('lock',_finding_lock_and_cleanup),
+                       ('terminal',_finding_terminal_channels),('outer',_finding_outer_lifecycle)):
+        case=root/name;case.mkdir(mode=0o700);facts[name]=check(case)
+    return facts
+
+
+def run_finding_assertions():
+    from scripts.attachment_scoped_qa import FINDING_ROWS
+    assert _ACTIVE_NODE==NODES[0] and _DESCRIPTOR['manifest_sha256']==MANIFEST_SHA256
+    root=Path(_DESCRIPTOR['scratch'])/'finding-checks';root.mkdir(mode=0o700)
+    checks=(assert_finding_admission,assert_finding_popen,assert_finding_selector,assert_finding_raw,assert_finding_capture)
+    receipts={}
+    try:
+        for row,check in zip(FINDING_ROWS,checks,strict=True):
+            case=root/('row-'+str(len(receipts)));case.mkdir(mode=0o700)
+            try:
+                facts=check(case)
+                receipts[row]={'outcome':'passed','node':NODES[0],'head':_DESCRIPTOR['head'],
+                    'source_hashes':_DESCRIPTOR['source_hashes'],'assertion':check.__name__,'facts':facts}
+            except BaseException as exc:
+                receipts[row]={'outcome':'incomplete','error':type(exc).__name__+':'+str(exc)[:1024],
+                    'node':NODES[0],'head':_DESCRIPTOR['head'],'assertion':check.__name__}
+                raise
+    finally:
+        for row in FINDING_ROWS:receipts.setdefault(row,{'outcome':'missing','reason':'assertions not completed'})
+        write_receipt(Path(_DESCRIPTOR['evidence'])/'finding-assertions.json',receipts,262144,
+                      evidence=Path(_DESCRIPTOR['evidence']))
+    assert set(receipts)==set(FINDING_ROWS) and all(row['outcome']=='passed' for row in receipts.values())

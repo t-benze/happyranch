@@ -57,6 +57,8 @@ CAPS = {"command_log": 1048576, "junit": 1048576, "phase": 4096,
 
 # Missing immutable terminal files retain headroom while other writers run.
 # The empty lock inode is permanent, counted, and never unlinked/recreated.
+FINDING_ROWS = ('R14.admission','R14.Popen','R14.selector','R15.raw','R14/R15.capture')
+
 FINAL_CAPS = {'processes.json':2097152, 'phases.json':2097152,
               'result.json':1048576, 'observations.json':1048576, 'cases.xml':1048576}
 EVIDENCE_LOCK = '.allocation.lock'
@@ -273,6 +275,7 @@ class OwnedTree:
         self.required_roles=set()
         self.head=None
         self.retired_cases={}
+        self.direct_wait=None
 
     def event(self, **value):
         value.update(time_ns=time.time_ns())
@@ -315,13 +318,16 @@ class OwnedTree:
                         if before[0] != os.getuid() or before[2] != parent:
                             raise ValueError("owned edge/UID mismatch")
                         fd = os.pidfd_open(pid)
-                        after = self.identity(pid)
-                        if before != after or pid not in self.children(parent):
-                            os.close(fd)
-                            raise ValueError("owned edge changed during pidfd binding")
-                        self.identities[pid] = {"uid": before[0], "start": before[1], "parent": parent,
-                                                "fd": fd, "exited": False, "reaped": False,"birth_parent":parent,"parent_wait":None,"removed_after_exit":False}
-                        self.event(kind="bound", pid=pid, parent=parent, start=before[1])
+                        try:
+                            after = self.identity(pid)
+                            if before != after or pid not in self.children(parent):
+                                raise ValueError("owned edge changed during pidfd binding")
+                            self.identities[pid] = {"uid": before[0], "start": before[1], "parent": parent,
+                                                    "fd": fd, "exited": False, "reaped": False,"birth_parent":parent,"parent_wait":None,"removed_after_exit":False}
+                            fd=None  # ownership transferred to the retained identity
+                            self.event(kind="bound", pid=pid, parent=parent, start=before[1])
+                        finally:
+                            if fd is not None:evidence_cleanup([lambda:os.close(fd)])
                     else:
                         entry=self.identities[pid]
                         current=self.identity(pid)
@@ -696,214 +702,297 @@ class OwnedTree:
             if path.exists() and path.stat().st_size>CAPS['daemon_log']:
                 raise ValueError('required daemon log overflow')
 
-    def cleanup(self, child: subprocess.Popen, deadline: float) -> bool:
-        try:self.capture_logs()
-        except (OSError,ValueError) as exc:self.errors.append('log capture:'+str(exc)[:256])
-        self.signal_bound(signal.SIGTERM)
-        grace = min(deadline, time.monotonic()+10)
-        while time.monotonic() < grace:
-            self.discover()
-            self.observe_exits(child.pid)
-            if all(row["exited"] for row in self.identities.values()):
-                break
-            time.sleep(0.02)
-        self.signal_bound(signal.SIGKILL)
-        while time.monotonic() < deadline:
-            self.discover()
-            self.observe_exits(child.pid)
-            if all(row["exited"] for row in self.identities.values()):
-                break
-            time.sleep(0.02)
-        try:
-            child.wait(timeout=max(0.01, deadline-time.monotonic()))
-            if child.pid in self.identities:
-                self.identities[child.pid]["exited"] = True
-                self.identities[child.pid]["reaped"] = True
-            self.event(kind="direct_reaped", pid=child.pid, returncode=child.returncode)
-        except subprocess.TimeoutExpired:
-            self.errors.append("direct child still live")
-        self.discover()
-        self.observe_exits(child.pid)
-        try:self.capture_logs()
-        except (OSError,ValueError) as exc:self.errors.append('final log capture:'+str(exc)[:256])
-        clean = not self.errors and all(self.closed_identity(pid) for pid in self.identities)
-        write_receipt(self.evidence / "processes.json", {"identities": {pid: {k:v for k,v in row.items() if k != "fd"}
-            for pid,row in self.identities.items()}, "events": self.events, "errors": self.errors, "closure": clean, "retired_cases": self.retired_cases}, 2097152,evidence=self.evidence)
+    def cleanup(self, child: subprocess.Popen | None, deadline: float, *, finalize=True) -> bool:
+        # Every obligation is independent. A receipt failure never strands fds
+        # or prevents the actual Popen owner from attempting its consuming wait.
+        self.direct_wait = None
+        def attempt(label, action):
+            try:return action()
+            except BaseException as exc:
+                self.errors.append(label+':'+type(exc).__name__+':'+str(exc)[:256])
+                return None
+        attempt('log capture', self.capture_logs)
+        attempt('TERM bound', lambda:self.signal_bound(signal.SIGTERM))
+        if child is not None:
+            attempt('TERM direct', lambda:child.terminate() if child.poll() is None else None)
+        grace=min(deadline,time.monotonic()+10)
+        def settle(stop):
+            while time.monotonic()<stop:
+                attempt('discover',self.discover)
+                if child is not None:attempt('observe',lambda:self.observe_exits(child.pid))
+                if all(row['exited'] for row in self.identities.values()):break
+                time.sleep(.02)
+        attempt('TERM grace',lambda:settle(grace))
+        attempt('KILL bound',lambda:self.signal_bound(signal.SIGKILL))
+        if child is not None:
+            attempt('KILL direct',lambda:child.kill() if child.poll() is None else None)
+        attempt('KILL settlement',lambda:settle(deadline))
+        if child is not None:
+            def consuming_wait():
+                self.direct_wait=child.wait(timeout=max(.01,deadline-time.monotonic()))
+                if child.pid in self.identities:
+                    self.identities[child.pid]['exited']=True
+                    self.identities[child.pid]['reaped']=True
+                self.event(kind='direct_reaped',pid=child.pid,returncode=self.direct_wait)
+            attempt('direct wait',consuming_wait)
+        attempt('final discover',self.discover)
+        if child is not None:attempt('final observe',lambda:self.observe_exits(child.pid))
+        attempt('final log capture',self.capture_logs)
+        clean=(child is not None and self.direct_wait is not None and not self.errors
+               and all(self.closed_identity(pid) for pid in self.identities))
+        return self.finalize_cleanup(clean) if finalize else clean
+
+    def finalize_cleanup(self, clean):
+        # Drains can still need the exact bound pidfds for queued case-close
+        # events. Release them afterwards, before fallible receipt publication.
         for row in self.identities.values():
-            os.close(row["fd"])
-        return clean
+            if row.get('fd') is not None:
+                fd=row['fd'];row['fd']=None
+                try:os.close(fd)
+                except BaseException as exc:self.errors.append('pidfd close:'+type(exc).__name__+':'+str(exc)[:256])
+        clean=clean and not self.errors
+        try:write_receipt(self.evidence/'processes.json',
+            {'identities':{pid:{k:v for k,v in row.items() if k!='fd'} for pid,row in self.identities.items()},
+             'events':self.events,'errors':self.errors,'closure':clean,'retired_cases':self.retired_cases,
+             'direct_wait_returncode':self.direct_wait},2097152,evidence=self.evidence)
+        except BaseException as exc:self.errors.append('process publication:'+type(exc).__name__+':'+str(exc)[:256])
+        return clean and not self.errors
+
+
+class CaptureChannels:
+    """One parser for live reads and bounded residue; pipe state is not wait proof."""
+    def __init__(self, evidence, on_phase):
+        self.evidence=evidence;self.on_phase=on_phase;self.log_identity=None
+        self.counts={'output':0,'phase':0,'junit':0};self.buffer=b'';self.junit=bytearray()
+        self.drains={};self.failed=set();self.processing_deadline=None
+
+    def consume(self, channel, chunk):
+        cap={'output':CAPS['command_log'],'phase':CAPS['phases'],'junit':CAPS['junit']}[channel]
+        remaining=max(0,cap-self.counts[channel]);self.counts[channel]+=len(chunk)
+        kept=chunk[:remaining]
+        if channel=='output' and kept:
+            if self.log_identity is None:
+                self.log_identity=evidence_append(self.evidence/'pytest.log',b'',cap,self.evidence,exclusive=True)
+            evidence_append(self.evidence/'pytest.log',kept,cap,self.evidence,identity=self.log_identity)
+        elif channel=='junit':self.junit.extend(kept)
+        elif channel=='phase':
+            self.buffer+=kept
+            if len(self.buffer)>12288:raise ValueError('phase framing cap')
+            first=None
+            while b'\n' in self.buffer:
+                if self.processing_deadline is not None and time.monotonic()>self.processing_deadline:
+                    raise TimeoutError('terminal phase parsing deadline')
+                raw,self.buffer=self.buffer.split(b'\n',1)
+                if len(raw)>CAPS['phase']:raise ValueError('phase row cap')
+                try:self.on_phase(json.loads(raw))
+                except BaseException as exc:
+                    if first is None:first=exc
+                    else:first.add_note(type(exc).__name__+':'+str(exc)[:256])
+            if first is not None:raise first
+        if self.counts[channel]>cap:raise ValueError(channel+' capture overflow; bounded prefix retained')
+
+    def drain(self, channel, fd, producer_closed, attempt):
+        # O_RDWR FIFOs report EAGAIN rather than EOF even after the actual owned
+        # producer closes. That fact is recorded separately from closure/waits.
+        status={'producer_closed':producer_closed,'read_state':None,'complete':False}
+        self.drains[channel]=status
+        deadline=time.monotonic()+1
+        if channel=='phase':self.processing_deadline=deadline
+        cap={'output':CAPS['command_log'],'phase':CAPS['phases'],'junit':CAPS['junit']}[channel]
+        budget=cap+8192
+        try:
+            os.set_blocking(fd,False)
+            while budget>0 and time.monotonic()<deadline:
+                try:chunk=os.read(fd,min(8192,budget))
+                except BlockingIOError:
+                    status['read_state']='EAGAIN';break
+                if not chunk:
+                    status['read_state']='EOF';break
+                budget-=len(chunk)
+                def consume_chunk():
+                    try:self.consume(channel,chunk)
+                    except BaseException:
+                        self.failed.add(channel);raise
+                attempt('drain '+channel,consume_chunk)
+            status['frame_complete']=channel!='phase' or not self.buffer
+            status['complete']=(producer_closed and status['read_state'] in ('EOF','EAGAIN')
+                and status['frame_complete'] and channel not in self.failed and self.counts[channel]<=cap)
+            if not status['complete']:raise ValueError(channel+' terminal drain incomplete')
+        except BaseException:
+            self.failed.add(channel)
+            raise
 
 
 def supervise(binding: dict, scratch: Path) -> int:
-    # The exact new invocation directory is unique, canonical and owner-only.
-    runner_temp = Path(os.environ["RUNNER_TEMP"]).resolve(strict=True)
-    expected = runner_temp / "attachment-qa" / binding["task"] / f"{binding['run']}-{binding['attempt']}" / "scratch"
-    if scratch != expected or scratch.exists() or scratch.is_symlink():
-        raise ValueError("scratch binding/refusal")
-    scratch.parent.mkdir(parents=True, mode=0o700, exist_ok=False)
-    scratch.mkdir(mode=0o700)
-    evidence = scratch.parent / "evidence"
-    evidence.mkdir(mode=0o700)
-    lock_fd=os.open(evidence/EVIDENCE_LOCK,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
-    os.close(lock_fd)
-    junit_pipe=scratch.parent/'junit.fifo'
-    os.mkfifo(junit_pipe,0o600)
-    junit_fd=os.open(junit_pipe,os.O_RDWR|os.O_NONBLOCK)
-    junit=bytearray()
-    phase_pipe = scratch.parent / "phases.fifo"
-    os.mkfifo(phase_pipe, 0o600)
-    phase_fd = os.open(phase_pipe, os.O_RDWR | os.O_NONBLOCK)
-    start = time.monotonic()
-    descriptor = {"version": 1, **binding, "selection": SELECTION, "nodes": NODES,
-                  "nonce": os.urandom(24).hex(), "evidence": str(evidence), "scratch": str(scratch),
-                  "phase_pipe": str(phase_pipe), "start": start, "deadline": start+1200,
-                  "phase_limits": PHASE_LIMITS, "caps": CAPS}
-    descriptor_path = scratch.parent / "descriptor.json"
-    write_receipt(descriptor_path, descriptor, 16384)
-    write_receipt(evidence / "source.json", binding, 262144,evidence=evidence)
-    source, python = Path(binding["source"]), binding["python"]
-    argv = [python, "tests/helpers/integration_parent.py", "--", "pytest", "-p", "tests.helpers.attachment_feedback_fixture",
-            "-m", "integration", *NODES, f"--attachment-qa-descriptor={descriptor_path}",
-            "-v", "--tb=short", "--capture=no", "--show-capture=no", f"--basetemp={scratch/'pytest'}",
-            f"--junitxml={junit_pipe}"]
-    tree = OwnedTree(evidence)
-    tree.head=binding["head"]
-    env = dict(os.environ, TMPDIR=str(scratch), TMP=str(scratch), TEMP=str(scratch),
-               HAPPYRANCH_TEST_REAL_PLATFORM="1", PYTHONDONTWRITEBYTECODE="1")
-    child = subprocess.Popen(argv, cwd=source, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                             start_new_session=True)
-    tree.discover()
-    selector = selectors.DefaultSelector()
-    selector.register(child.stdout, selectors.EVENT_READ, "output")
-    selector.register(phase_fd, selectors.EVENT_READ, "phase")
-    selector.register(junit_fd, selectors.EVENT_READ, "junit")
-    next_capture=start
-    phase_deadline, buffer, events, counts = start+60, b"", [], {"output":0, "phase":0, "junit":0}
-    error = None
-    prior_handlers={sig:signal.getsignal(sig) for sig in (signal.SIGINT,signal.SIGTERM)}
-    def interrupted(signum,frame):
-        raise InterruptedError(f'owned supervisor received signal {signum}')
-    for sig in prior_handlers:
-        signal.signal(sig,interrupted)
+    runner_temp=Path(os.environ['RUNNER_TEMP']).resolve(strict=True)
+    expected=runner_temp/'attachment-qa'/binding['task']/f"{binding['run']}-{binding['attempt']}"/'scratch'
+    if scratch!=expected or scratch.exists() or scratch.is_symlink():raise ValueError('scratch binding/refusal')
+    evidence=scratch.parent/'evidence'
+    child=None;tree=None;selector=None;phase_fd=None;junit_fd=None;lock_fd=None;evidence_owned=False
+    start=time.monotonic();phase_deadline=start+60;events=[];clean=False;total=None
+    errors=[];first=None;prior_handlers={};channels=CaptureChannels(evidence,lambda row:on_phase(row))
+    def record(label,exc):
+        nonlocal first
+        if first is None:first=exc
+        if len(errors)<128:errors.append({'operation':label,'error':type(exc).__name__+':'+str(exc)[:1024]})
+        else:first.add_note('additional bounded lifecycle error')
+    def attempt(label,action):
+        try:return action()
+        except BaseException as exc:
+            if label.startswith('drain '):channels.failed.add(label.split(' ',1)[1])
+            record(label,exc)
+            return None
+    def on_phase(row):
+        nonlocal phase_deadline
+        if row.get("nonce") != descriptor["nonce"] or row.get("node") not in NODES:
+            raise ValueError("phase source/node/nonce mismatch")
+        if len(events)>=4096:raise ValueError("phase row count cap")
+        events.append(row)
+        if row.get("event") == "start":
+            phase_deadline = time.monotonic()+PHASE_LIMITS[row["phase"]]
+        elif row.get("event") == "finish":
+            phase_deadline = time.monotonic()+5
+        elif row.get('event')=='daemon-log':
+            tree.register_log(row['node'],row['daemon_log'])
+            tree.capture_logs()
+        elif row.get('event')=='endpoint':
+            tree.bind_endpoint(row['daemon_pid'],row['port'],row['node'],row['daemon_log'],row['wait_log'])
+        elif row.get('event') in ('interrupt','case-close'):
+            pid=row['daemon_pid'];port=row['port'];node=row['node']
+            interruption=row['event']=='interrupt'
+            tree.capture_logs()
+            tree.role_receipts(Path(row['roles']),node)
+            closure_deadline=min(time.monotonic()+4,channels.processing_deadline) if channels.processing_deadline is not None else time.monotonic()+4
+            closure=tree.close_case(pid,port,node,child.pid,closure_deadline,interrupt=interruption)
+            closure_path=Path(row['closure'])
+            stem='case-close-'+hashlib.sha256(node.encode()).hexdigest()[:20]
+            expected_names={f'closure-{pid}.json'} if interruption else {stem+'.json',stem+'-batch-1.json',stem+'-batch-2.json'}
+            if closure_path.parent!=evidence or closure_path.name not in expected_names:
+                raise ValueError('closure receipt binding mismatch')
+            write_receipt(closure_path,closure,262144,evidence=evidence)
+            tree.capture_logs()
+            if not closure['closed'] or not closure['port_closed']:
+                raise ValueError('owned case tree/port closure incomplete')
+            if not interruption:
+                endpoint=tree.ports.pop(pid)
+                tree.logs.pop(endpoint['log'])
+                tree.retire_case(closure,closure_path)
+        else:
+            raise ValueError("unknown phase event")
+    def interrupted(signum,frame):raise InterruptedError(f'owned supervisor received signal {signum}')
     try:
-        log_identity=evidence_append(evidence/'pytest.log',b'',CAPS['command_log'],evidence,exclusive=True)
+        for sig in (signal.SIGINT,signal.SIGTERM):
+            prior_handlers[sig]=signal.getsignal(sig);signal.signal(sig,interrupted)
+        scratch.parent.mkdir(parents=True,mode=0o700,exist_ok=False)
+        scratch.mkdir(mode=0o700);evidence.mkdir(mode=0o700);evidence_owned=True
+        lock_fd=os.open(evidence/EVIDENCE_LOCK,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
+        os.close(lock_fd);lock_fd=None
+        junit_pipe=scratch.parent/'junit.fifo';os.mkfifo(junit_pipe,0o600)
+        junit_fd=os.open(junit_pipe,os.O_RDWR|os.O_NONBLOCK)
+        phase_pipe=scratch.parent/'phases.fifo';os.mkfifo(phase_pipe,0o600)
+        phase_fd=os.open(phase_pipe,os.O_RDWR|os.O_NONBLOCK)
+        descriptor={'version':1,**binding,'selection':SELECTION,'nodes':NODES,
+            'nonce':os.urandom(24).hex(),'evidence':str(evidence),'scratch':str(scratch),
+            'phase_pipe':str(phase_pipe),'start':start,'deadline':start+1200,'phase_limits':PHASE_LIMITS,'caps':CAPS}
+        descriptor_path=scratch.parent/'descriptor.json'
+        write_receipt(descriptor_path,descriptor,16384)
+        write_receipt(evidence/'source.json',binding,262144,evidence=evidence)
+        argv=[binding['python'],'tests/helpers/integration_parent.py','--','pytest','-p',
+            'tests.helpers.attachment_feedback_fixture','-m','integration',*NODES,
+            f'--attachment-qa-descriptor={descriptor_path}','-v','--tb=short','--capture=no','--show-capture=no',
+            f"--basetemp={scratch/'pytest'}",f'--junitxml={junit_pipe}']
+        tree=OwnedTree(evidence);tree.head=binding['head']
+        env=dict(os.environ,TMPDIR=str(scratch),TMP=str(scratch),TEMP=str(scratch),
+                 HAPPYRANCH_TEST_REAL_PLATFORM='1',PYTHONDONTWRITEBYTECODE='1')
+        child=subprocess.Popen(argv,cwd=Path(binding['source']),env=env,stdout=subprocess.PIPE,
+                               stderr=subprocess.STDOUT,start_new_session=True)
+        tree.discover()
+        os.set_blocking(child.stdout.fileno(),False)
+        selector=selectors.DefaultSelector()
+        for fd,name in ((child.stdout,'output'),(phase_fd,'phase'),(junit_fd,'junit')):
+            selector.register(fd,selectors.EVENT_READ,name)
+        channels.log_identity=evidence_append(evidence/'pytest.log',b'',CAPS['command_log'],evidence,exclusive=True)
+        next_capture=start
         while child.poll() is None:
-            tree.discover()
-            tree.observe_exits(child.pid)
+            tree.discover();tree.observe_exits(child.pid)
             if time.monotonic()>=next_capture:
                 tree.capture_logs();next_capture=time.monotonic()+.2
             tree.monitor()
-            if time.monotonic() > min(start+1200, phase_deadline):
-                raise TimeoutError("aggregate or independent phase watchdog expired")
-            for key, _ in selector.select(0.02):
-                chunk = os.read(key.fileobj if type(key.fileobj) is int else key.fileobj.fileno(), 8192)
-                if not chunk:
-                    selector.unregister(key.fileobj)
-                    continue
-                counts[key.data] += len(chunk)
-                cap = {"output":CAPS["command_log"],"phase":CAPS["phases"],"junit":CAPS["junit"]}[key.data]
-                if key.data=="junit":
-                    junit.extend(chunk[:max(0,cap-len(junit))])
-                if counts[key.data] > cap:
-                    raise ValueError("external output/phase capture cap")
-                if key.data == "output":
-                    evidence_append(evidence/"pytest.log",chunk,CAPS["command_log"],evidence,identity=log_identity)
-                elif key.data=="phase":
-                    buffer += chunk
-                    if len(buffer) > 12288:
-                        raise ValueError("phase framing cap")
-                    while b"\n" in buffer:
-                        raw, buffer = buffer.split(b"\n",1)
-                        if len(raw) > 4096:
-                            raise ValueError("phase row cap")
-                        row=json.loads(raw)
-                        if row.get("nonce") != descriptor["nonce"] or row.get("node") not in NODES:
-                            raise ValueError("phase source/node/nonce mismatch")
-                        if len(events)>=4096:raise ValueError("phase row count cap")
-                        events.append(row)
-                        if row.get("event") == "start":
-                            phase_deadline = time.monotonic()+PHASE_LIMITS[row["phase"]]
-                        elif row.get("event") == "finish":
-                            phase_deadline = time.monotonic()+5
-                        elif row.get('event')=='daemon-log':
-                            tree.register_log(row['node'],row['daemon_log'])
-                            tree.capture_logs()
-                        elif row.get('event')=='endpoint':
-                            tree.bind_endpoint(row['daemon_pid'],row['port'],row['node'],row['daemon_log'],row['wait_log'])
-                        elif row.get('event') in ('interrupt','case-close'):
-                            pid=row['daemon_pid'];port=row['port'];node=row['node']
-                            interruption=row['event']=='interrupt'
-                            tree.capture_logs()
-                            tree.role_receipts(Path(row['roles']),node)
-                            closure=tree.close_case(pid,port,node,child.pid,time.monotonic()+4,interrupt=interruption)
-                            closure_path=Path(row['closure'])
-                            stem='case-close-'+hashlib.sha256(node.encode()).hexdigest()[:20]
-                            expected_names={f'closure-{pid}.json'} if interruption else {stem+'.json',stem+'-batch-1.json',stem+'-batch-2.json'}
-                            if closure_path.parent!=evidence or closure_path.name not in expected_names:
-                                raise ValueError('closure receipt binding mismatch')
-                            write_receipt(closure_path,closure,262144,evidence=evidence)
-                            tree.capture_logs()
-                            if not closure['closed'] or not closure['port_closed']:
-                                raise ValueError('owned case tree/port closure incomplete')
-                            if not interruption:
-                                endpoint=tree.ports.pop(pid)
-                                tree.logs.pop(endpoint['log'])
-                                tree.retire_case(closure,closure_path)
-                        else:
-                            raise ValueError("unknown phase event")
+            if time.monotonic()>min(start+1200,phase_deadline):raise TimeoutError('aggregate or independent phase watchdog expired')
+            for key,_ in selector.select(.02):
+                fd=key.fileobj if type(key.fileobj) is int else key.fileobj.fileno()
+                try:chunk=os.read(fd,8192)
+                except BlockingIOError:continue
+                if not chunk:selector.unregister(key.fileobj);continue
+                try:channels.consume(key.data,chunk)
+                except BaseException:
+                    channels.failed.add(key.data);raise
         child.wait(timeout=1)
-    except (OSError, ValueError, TimeoutError, KeyError, subprocess.SubprocessError) as exc:
-        error = type(exc).__name__+":"+str(exc)[:1024]
+    except BaseException as exc:record('acquisition/capture',exc)
     finally:
-        selector.close(); os.close(phase_fd)
-        for sig in prior_handlers:
-            signal.signal(sig,prior_handlers[sig])
-        try:
-            clean = tree.cleanup(child, min(start+1260, time.monotonic()+60))
-            # Drain bounded FIFO residue after the real owned wait attempt.
-            # Neither EOF nor disappearance can substitute for a successful wait.
-            while True:
-                try:chunk=os.read(junit_fd,8192)
-                except BlockingIOError:break
-                if not chunk:break
-                counts['junit']+=len(chunk)
-                junit.extend(chunk[:max(0,CAPS['junit']-len(junit))])
-                if counts['junit']>CAPS['junit']:
-                    if error is None:error='JUnit capture overflow; bounded prefix retained'
-                    break
-        finally:evidence_cleanup([lambda:os.close(junit_fd)])
-    if junit:evidence_publish(evidence/'cases.xml',bytes(junit),CAPS['junit'],evidence)
-    write_receipt(evidence / "phases.json", {"events": events, "capture":counts, "error":error}, 2097152,evidence=evidence)
-    # Results alone cannot satisfy missing subobservations, closure or caps.
+        # The tree's consuming wait precedes drains. An error anywhere leaves
+        # the other acquired resources and channels with their own attempts.
+        if tree is not None:
+            clean=bool(attempt('owned cleanup',lambda:tree.cleanup(child,min(start+1260,time.monotonic()+60),finalize=False)))
+        producer_closed=bool(attempt('producer closure',lambda:(child is not None and tree is not None and tree.direct_wait is not None
+                         and all(tree.closed_identity(pid) for pid in tree.identities))))
+        output_fd=None
+        if child is not None and child.stdout is not None:output_fd=attempt('stdout descriptor',child.stdout.fileno)
+        for name,fd in (('output',output_fd),
+                        ('phase',phase_fd),('junit',junit_fd)):
+            if fd is not None:attempt('terminal '+name,lambda name=name,fd=fd:channels.drain(name,fd,producer_closed,attempt))
+        if tree is not None:
+            clean=bool(attempt('process finalization',lambda:tree.finalize_cleanup(clean)))
+            for message in tree.errors:record('owned cleanup',RuntimeError(message))
+        if child is not None and child.stdout is not None:attempt('stdout close',child.stdout.close)
+        if selector is not None:attempt('selector close',selector.close)
+        for name,fd in (('phase',phase_fd),('junit',junit_fd),('lock',lock_fd)):
+            if fd is not None:attempt(name+' fd close',lambda fd=fd:os.close(fd))
+        for sig,handler in prior_handlers.items():attempt('signal restore',lambda sig=sig,handler=handler:signal.signal(sig,handler))
+    if not evidence_owned:
+        print(json.dumps({'complete':False,'storage':'unavailable','errors':errors}),file=sys.stderr)
+        return 1
+    if channels.junit:attempt('JUnit publication',lambda:evidence_publish(evidence/'cases.xml',bytes(channels.junit),CAPS['junit'],evidence))
+    attempt('phase publication',lambda:write_receipt(evidence/'phases.json',
+        {'events':events,'capture':channels.counts,'drains':channels.drains,'errors':errors},2097152,evidence=evidence))
     import xml.etree.ElementTree as ET
     complete=False
-    try:
-        xml=evidence/"cases.xml"
-        if not xml.is_file() or xml.stat().st_size > CAPS["junit"]:
-            raise ValueError("JUnit absent/oversized")
-        cases=list(ET.parse(xml).iter("testcase"))
-        observations=closed_read(evidence/"observations.json",1048576)
-        actual_nodes=tuple(TEST_PATH+"::"+case.attrib["name"] for case in cases)
-        phase_pairs={(row["node"],row["phase"],row["event"]) for row in events if row["event"] in ("start","finish")}
-        expected_pairs={(node,phase,event) for node in NODES for phase in PHASE_LIMITS for event in ("start","finish")}
-        complete=(actual_nodes==NODES and expected_pairs<=phase_pairs and all(not any(c.find(tag) is not None for tag in ("failure","error","skipped")) for c in cases)
-                  and set(observations)==set(SUBOBSERVATIONS)
-                  and all(v.get("outcome")=="passed" for v in observations.values()))
-    except (OSError, ValueError, ET.ParseError):
-        complete=False
-    with evidence_allocation(evidence):
-        total,entries,files=evidence_usage(evidence)
-        if any(name.endswith('.tmp') for name in files):
-            complete=False
-            if error is None:error='interrupted evidence publication remains'
-    complete=complete and clean and error is None
-    exit_code=child.returncode if child.returncode else (0 if complete and clean and error is None and total<=CAPS["aggregate"] else 1)
-    write_receipt(evidence/"result.json", {"exit":exit_code,"command_exit":child.returncode,"complete":complete,
-        "closure":clean,"error":error,"manifest":MANIFEST_SHA256,"bytes":total},evidence=evidence)
-    if clean:
-        # Exact scratch only; source/external evidence are retained.
-        shutil.rmtree(scratch)
-    return exit_code
+    def acceptance():
+        xml=evidence/'cases.xml'
+        if not xml.is_file() or xml.stat().st_size>CAPS['junit']:raise ValueError('JUnit absent/oversized')
+        cases=list(ET.parse(xml).iter('testcase'))
+        observations=closed_read(evidence/'observations.json',1048576)
+        findings=closed_read(evidence/'finding-assertions.json',262144)
+        actual_nodes=tuple(TEST_PATH+'::'+case.attrib['name'] for case in cases)
+        phase_pairs={(row['node'],row['phase'],row['event']) for row in events if row['event'] in ('start','finish')}
+        expected_pairs={(node,phase,event) for node in NODES for phase in PHASE_LIMITS for event in ('start','finish')}
+        return (actual_nodes==NODES and expected_pairs<=phase_pairs
+            and all(not any(c.find(tag) is not None for tag in ('failure','error','skipped')) for c in cases)
+            and set(observations)==set(SUBOBSERVATIONS) and all(v.get('outcome')=='passed' for v in observations.values())
+            and set(findings)==set(FINDING_ROWS) and all(v.get('outcome')=='passed' and v.get('head')==binding['head']
+                and v.get('node')==NODES[0] and v.get('source_hashes')==binding['source_hashes'] for v in findings.values()))
+    complete=bool(attempt('acceptance',acceptance))
+    def inventory():
+        with evidence_allocation(evidence):
+            total,entries,files=evidence_usage(evidence)
+            if any(name.endswith('.tmp') for name in files):raise ValueError('interrupted evidence publication remains')
+            return total
+    total=attempt('final inventory',inventory)
+    complete=(complete and clean and first is None and total is not None
+              and set(channels.drains)=={'output','phase','junit'} and all(row['complete'] for row in channels.drains.values()))
+    command_exit=None if child is None else child.returncode
+    exit_code=command_exit if command_exit else (0 if complete else 1)
+    before_result=len(errors)
+    attempt('result publication',lambda:write_receipt(evidence/'result.json',
+        {'exit':exit_code,'command_exit':command_exit,'complete':complete,'closure':clean,
+         'error':None if first is None else type(first).__name__+':'+str(first)[:1024],'errors':errors,
+         'manifest':MANIFEST_SHA256,'bytes':total},evidence=evidence))
+    if len(errors)>before_result:
+        print(json.dumps({'complete':False,'storage':'unavailable','errors':errors}),file=sys.stderr)
+    if first is not None:return exit_code or 1
+    if complete:
+        attempt('scratch removal',lambda:shutil.rmtree(scratch))
+    return exit_code if first is None else (exit_code or 1)
 
 
 def main() -> int:

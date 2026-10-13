@@ -1185,3 +1185,78 @@ bb10120c35cc8750eb822bb57c136e430c366fd993b197ec027868fabf4d751c,
 all original assertions, two-opportunity accounting and phase/capture bounds stay
 unchanged. Renewed independent full source review and a new manager exact-head
 release are required before any execution; no release follows this repair.
+
+R17–R19 use one protected supervisor owner from acquisition through finalization.
+Only acquired children, streams, selectors and FIFO/pidfd descriptors acquire
+cleanup obligations. A primary capture/acquisition error survives independent
+wait, close, drain and storage failures. Process receipt publication follows
+pidfd release; queued case-close frames can still use the bound pidfds before
+release. Failed storage stays unavailable, incomplete and nonzero. Stdout,
+phase and JUnit residue use the same bounded parser as live reads after actual
+owned wait attempts. EOF, FIFO EAGAIN, complete frame boundaries, producer
+closure and consuming waits are separately recorded; none proves another.
+One channel's failure cannot skip attempts on the other channels.
+
+The existing C01 `test_c01_delegate[direct]` call invokes
+`run_finding_assertions` before its original product assertions. Its five checks
+are additional finding evidence, separate from the immutable61 nodes/123
+connected observations and their original manifest. Acceptance requires all
+five exact-head/source-bound rows in `finding-assertions.json`; absent,
+incomplete, failed or wrong-source rows refuse acceptance. Exceptions propagate
+to that original pytest call, and partial rows remain missing/incomplete.
+There is no second selection, new product seam or extra test unit.
+
+| Existing row | Executable assertion | Actions and observations |
+| --- | --- | --- |
+| R14.admission | `assert_finding_admission` | Negative harness admission after a valid synthetic diagnostic sink; retained first error/stage, absent child/wait, incomplete and propagated nonzero. |
+| R14.Popen | `assert_finding_popen` | Provider and nested callback spawn refusal; absent child/PID/wait, first error and no acquired-child signal. |
+| R14.selector | `assert_finding_selector` | Both constructor and registration failures after real owned Popen; actual consuming wait, independent acquired-stream/selector closes, incomplete and first error. |
+| R15.raw | `assert_finding_raw` | Real subprocess writes invalid UTF8 and a split multibyte sequence. A pipe handshake holds the second write until the first actual retained read checkpoint. Reconstruct base64 bytes and compare exact retained/observed lengths and SHA256, separately from replacement preview. |
+| R14/R15.capture | `assert_finding_capture` | Raw overflow; combined primary/close/publication failures; outer supervisor spawn/discovery/FIFO/source/selector/pidfd/stream/publication failures; byte/entry allocation, independent append and snapshot producers, lock timeout/caught signal/uncatchable death; queued stdout/final phase/JUnit and partial-frame refusal. |
+
+`harness_source_gate` binds the actual current harness function object to the
+admitted source-file SHA256 and an executable disassembly line. Its finite
+pipe gates observe real `evidence_publish` pre-replace temporary coexistence
+and the actual supervisor discovery boundary. It does not reuse the
+runtime-only `source_barrier` or invent a result claim. Synthetic capture
+commands/sinks and negative admissions are confined to scratch, explicitly
+separate from genuine provider/callback/task authority; the original guarded
+provider entry, plans, sidecars, symlinks, child admission and public callbacks
+remain unchanged. Scoped substitutions affect harness references only and are
+restored before the original product assertions.
+
+Near-byte assertions retain old1024-byte A/B targets at
+T=33554432-7340032-12288, measure A's full8192-byte temporary, contend B and an
+independent1024-byte append producer under the same lock, and assert B's
+pre-open refusal, unchanged old target and absent rejected temporary. Append
+refusal precedes growth. Restored headroom admits B. Near-entry assertions
+start at4090 physical entries with five reserved finals: old-target replacements
+measure their temporary peak, new-directory publication refuses before mkdir,
+and a new target competes with another target plus the actual
+`OwnedTree.capture_logs` snapshot writer.4091/4095 pressure refuses growth;
+removing owned filler makes directory and snapshot publication reachable.
+Every measured inventory remains within the physical byte/entry caps.
+
+The permanent zero-byte lock's inode and counted entry survive the250ms
+nonblocking acquisition timeout and caught-signal cleanup. An exact-owned
+SIGKILL trial consumes its actual wait status; the retained orphan remains
+physically charged and `monitor` refuses completeness. These are distinct
+inputs. The terminal-channel checks distinguish stdout EOF from O_RDWR FIFO
+EAGAIN, parse queued final phase bytes and refuse a partial frame. An independent
+real pytest9.0.3 `LogXML.pytest_sessionfinish` writer, pinned to its inspected
+module SHA256, writes a synthetic empty suite into the FIFO; its actual child
+wait precedes drain and exact raw publication assertions. That transport check
+is separate from the original complete61-case JUnit acceptance. Five immutable
+final reservations are consumed once in synthetic scratch; none of those
+synthetic files is a successful original process/observation/result receipt.
+
+All five rows and R17/R18 supplemental behaviors remain **UNEXECUTED** in the
+maker leg. Source authoring, AST/compile/dis inspection and lint are not
+behavioral acceptance. Root TASK-11079 retains execution ownership;
+execution is UNRELEASED. These fault, interruption, contention and negative
+assertions require fresh independent full source/readiness review, exact
+ref/head/tree/complete-manifest manager release and explicit authority for the
+bounded protected fault actions before running the existing recipe. No hosted
+rerun, automatic restart, manual Product E2E, historical release reuse or
+THR139 testing waiver follows. All184 original successful assertions remain
+MISSING and both consumed failed releases retain their original attribution.

@@ -62,6 +62,9 @@ def graph(driver,task_id,kind):
 
 @pytest.mark.parametrize('variant',PARAMETERS['test_c01_delegate'])
 def test_c01_delegate(variant,attachment_live_daemon):
+    if variant=='direct':
+        from tests.helpers.attachment_feedback_fixture import run_finding_assertions
+        run_finding_assertions()
     driver=attachment_live_daemon;task=driver.create();first=driver.launch(task)
     bad=delegate([missing()]) if variant=='direct' else delegate(then=[{'agent':'dev_agent','prompt':'later','attachments':[missing()]}])
     accepted,_=driver.submit(first,bad)
