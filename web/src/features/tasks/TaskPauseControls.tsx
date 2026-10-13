@@ -58,13 +58,13 @@ function DrainDisclosure({ pause, org, routes, waiting }: {
           ? <Link to={`/orgs/${org}/jobs/${blocker.job_id}`} className="text-info font-mono hover:underline">{blocker.job_id}</Link>
           : taskLink(blocker.task_id)}
         <span className="text-text-primary">{Object.hasOwn(BLOCKER_KEYS, blocker.kind) ? t(BLOCKER_KEYS[blocker.kind]) : blocker.kind}</span>
-        <span className="text-text-muted ml-auto min-w-0 break-words font-mono">
+        <span className="text-text-secondary ml-auto min-w-0 break-words font-mono">
           {blocker.job_id && org && <>{taskLink(blocker.task_id)}{' · '}</>}
           {[blocker.job_id && !org ? blocker.job_id : null, blocker.owner_kind, blocker.reason].filter(Boolean).join(' · ')}
         </span>
       </li>)}
     </ul>}
-    <div className="text-text-muted mt-1 space-y-1">
+    <div className="text-text-secondary mt-1 space-y-1">
       {waiting && <p>{t('tasks.pause.waitingNote')}</p>}
       {!pause.evidence_complete && <p>{t('tasks.pause.evidenceIncomplete')}</p>}
       <p>{t('tasks.pause.observed', { stamp: formatDateShapeFor(locale, new Date(pause.observed_at), 'dateTime') })}</p>

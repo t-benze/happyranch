@@ -7,6 +7,8 @@
  * no pause controls/labels/evidence/blockers; actions, refusals and generation run on detail.
  * TASK-11158 (founder THR-292 seq77): detail header normal/pausing/paused states, keyboard disclosure,
  * mobile/desktop document order, contrast, focus ring and reduced-motion indicator.
+ * TASK-11169: expanded owner/reason, waiting/incomplete/observed notes and links each measured >= 4.5:1 on a
+ * held pausing root with task/job plus unknown evidence; the focus ring must be a visible (alpha, spread) layer.
  * Synthetic HTTP transcripts do not prove backend Pause enforcement, persistence,
  * provider containment or safe restart. No live daemon, dependency or shipping seam.
  * Composes the existing mode-A static/API server; drives owned Chrome over CDP.
@@ -29,7 +31,7 @@ const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const tr = (locale, key) => (locale === 'en' ? en : zhCN)[key];
 const quote = JSON.stringify;
 const stamp = '2026-10-11T00:00:00Z';
-const ledger = [], checks = [], screenshots = [], hung = [], browserEvents = [];
+const ledger = [], checks = [], screenshots = [], hung = [], browserEvents = [], contrast = [];
 const blockers = ['task_session','job','launch','result_processing','unknown'].map(kind => ({kind,task_id:'ROOT-PAUSING',job_id:kind==='job'?'JOB-9':null,owner_kind:'raw-owner',reason:'raw_reason',observed_at:stamp}));
 let scenario = 'populated', control = 'success', toggled = { held: false, generation: 4 };
 function projection(id, status = 'in_progress', extra = {}) {
@@ -43,7 +45,7 @@ function roots() {
     root('ROOT-PARKED','in_progress',{block_kind:'delegated'}), root('ROOT-PENDING','pending'),
     root('ROOT-PAUSING','in_progress',{pause:projection('ROOT-PAUSING','in_progress',{held:true,effective_hold:true,control_state:'pausing',blockers,evidence_complete:false})}),
     root('ROOT-PAUSED','in_progress',{pause:projection('ROOT-PAUSED','in_progress',{held:true,effective_hold:true,control_state:'paused'})}),
-    root('ROOT-DRAINING','in_progress',{pause:projection('ROOT-DRAINING','in_progress',{held:true,effective_hold:true,control_state:'pausing',blockers:[{kind:'job',task_id:'ROOT-DRAINING',job_id:'JOB-4127',owner_kind:'raw-owner',reason:'raw_reason',observed_at:stamp},{kind:'task_session',task_id:'CHILD-1',job_id:null,owner_kind:'raw-owner',reason:'raw_reason',observed_at:stamp}]})}),
+    root('ROOT-DRAINING','in_progress',{pause:projection('ROOT-DRAINING','in_progress',{held:true,effective_hold:true,control_state:'pausing',blockers:[{kind:'job',task_id:'ROOT-DRAINING',job_id:'JOB-4127',owner_kind:'raw-owner',reason:'raw_reason',observed_at:stamp},{kind:'task_session',task_id:'CHILD-1',job_id:null,owner_kind:'raw-owner',reason:'raw_reason',observed_at:stamp},{kind:'unknown',task_id:'ROOT-DRAINING',job_id:null,owner_kind:'unknown-owner',reason:'unknown_reason',observed_at:stamp}],evidence_complete:false})}),
     root('ROOT-ESCALATED','escalated',{pause:projection('ROOT-ESCALATED','escalated',{held:true,effective_hold:true,control_state:'paused'})}),
     root('ROOT-FAILED','failed',{pause:projection('ROOT-FAILED','failed',{held:true,blockers:[blockers[4]],evidence_complete:false})}),
     root('ROOT-MISSING','in_progress',{pause:undefined})];
@@ -160,7 +162,8 @@ async function main(){
     const region=id=>`document.querySelector('main [data-task-pause="${id}"]')`;
     const rect=sel=>`(()=>{const e=${sel};if(!e)return null;const r=e.getBoundingClientRect();return {top:r.top,bottom:r.bottom,left:r.left,right:r.right};})()`;
     // Canvas-resolved sRGB (computed colours are oklch) -> WCAG contrast of an element's text over its own/inherited background.
-    const contrastOf=sel=>`(()=>{const e=${sel};const c=document.createElement('canvas').getContext('2d');const rgb=v=>{c.clearRect(0,0,1,1);c.fillStyle='#000';c.fillStyle=v;c.fillRect(0,0,1,1);return [...c.getImageData(0,0,1,1).data];};let b=e,bg=[0,0,0,0];while(b&&(bg=rgb(getComputedStyle(b).backgroundColor))[3]===0)b=b.parentElement;const fg=rgb(getComputedStyle(e).color);const L=([r,g,b])=>{const f=x=>{x/=255;return x<=0.03928?x/12.92:((x+0.055)/1.055)**2.4;};return 0.2126*f(r)+0.7152*f(g)+0.0722*f(b);};const [x,y]=[L(fg),L(bg)].sort((m,n)=>n-m);return Math.round(((x+0.05)/(y+0.05))*100)/100;})()`;
+    const contrastOf=sel=>`((e)=>{const c=document.createElement('canvas').getContext('2d');const rgb=v=>{c.clearRect(0,0,1,1);c.fillStyle='#000';c.fillStyle=v;c.fillRect(0,0,1,1);return [...c.getImageData(0,0,1,1).data];};let b=e,bg=[0,0,0,0];while(b&&(bg=rgb(getComputedStyle(b).backgroundColor))[3]===0)b=b.parentElement;const fg=rgb(getComputedStyle(e).color);const L=([r,g,b])=>{const f=x=>{x/=255;return x<=0.03928?x/12.92:((x+0.055)/1.055)**2.4;};return 0.2126*f(r)+0.7152*f(g)+0.0722*f(b);};const [x,y]=[L(fg),L(bg)].sort((m,n)=>n-m);return Math.round(((x+0.05)/(y+0.05))*100)/100;})(${sel})`;
+    const ringVisible=sel=>`((e)=>{const c=document.createElement('canvas').getContext('2d');const alpha=v=>{c.clearRect(0,0,1,1);c.globalCompositeOperation='copy';c.fillStyle='rgba(0,0,0,0)';c.fillStyle=v;c.fillRect(0,0,1,1);return c.getImageData(0,0,1,1).data[3];};return [...getComputedStyle(e).boxShadow.matchAll(/((?:rgba?|oklch|oklab|lab|color)\\([^)]*\\)|#[0-9a-f]+)\\s+(-?[\\d.]+)px\\s+(-?[\\d.]+)px\\s+(-?[\\d.]+)px\\s+(-?[\\d.]+)px/gi)].some(m=>alpha(m[1])>0&&parseFloat(m[5])>=1);})(${sel})`;
     const pressKey=async(page,key,code,vk)=>{await cdp.send('Input.dispatchKeyEvent',{type:'keyDown',key,code,windowsVirtualKeyCode:vk,...(key==='Enter'?{text:'\r'}:{})},page.sessionId);await cdp.send('Input.dispatchKeyEvent',{type:'keyUp',key,code,windowsVirtualKeyCode:vk},page.sessionId);};
     for(const locale of ['en','zh-CN'])for(const [width,height]of [[390,844],[1440,900]])for(const theme of ['light','dark']){
       scenario='populated';toggled={held:false,generation:4};const name=`${locale}-${width}-${theme}`;const mobile=width<768;
@@ -185,9 +188,13 @@ async function main(){
       await shot(drain,`${name}-seq77-pausing-closed`,{locale,theme,width,height,state:'seq77 pausing, disclosure closed'});
       // Keyboard: Tab from Resume reaches the summary with a visible focus ring; Enter toggles it.
       await evaluate(drain,`(()=>{(${rootButton('ROOT-DRAINING',tr(locale,'tasks.pause.resume'))}).focus();return true;})()`);await pressKey(drain,'Tab','Tab',9);await sleep(80);
-      check(`${name} seq77 pausing: Tab focuses summary with focus-visible ring`,await evaluate(drain,`(()=>{const s=document.activeElement;return s.tagName==='SUMMARY'&&s.matches(':focus-visible')&&getComputedStyle(s).boxShadow!=='none';})()`));
+      check(`${name} seq77 pausing: Tab focuses summary with focus-visible ring`,await evaluate(drain,`(()=>{const s=document.activeElement;return s.tagName==='SUMMARY'&&s.matches(':focus-visible')&&${ringVisible('s')};})()`));
       await pressKey(drain,'Enter','Enter',13);await sleep(120);
       check(`${name} seq77 pausing: Enter opens disclosure`,await evaluate(drain,`${region('ROOT-DRAINING')}.querySelector('details').open`),true);
+      const small=await evaluate(drain,`[...${region('ROOT-DRAINING')}.querySelectorAll('details li > span:last-child, details > div > p, details a')].map(el=>({text:el.textContent.trim(),font:getComputedStyle(el).fontSize,ratio:${contrastOf('el')}}))`);
+      contrast.push({name,targets:small});const notes=[tr(locale,'tasks.pause.waitingNote'),tr(locale,'tasks.pause.evidenceIncomplete')];const observedPrefix=String(tr(locale,'tasks.pause.observed')).split('{')[0];
+      check(`${name} seq77 pausing open: owner/reason rows, waiting note, incomplete warning, observed time and links all rendered`,[small.filter(x=>/raw_reason|unknown_reason/.test(x.text)&&x.text.includes(' · ')&&!x.text.startsWith('JOB-')).length,notes.every(n=>small.some(x=>x.text===n)),small.some(x=>x.text.startsWith(observedPrefix)&&x.text.length>observedPrefix.length),['JOB-4127','CHILD-1','ROOT-DRAINING'].every(id=>small.some(x=>x.text===id))],[3,true,true,true]);
+      check(`${name} seq77 pausing open: every 12px metadata/note/link target contrast >= 4.5 on its inherited background`,small.filter(x=>!(x.ratio>=4.5)).map(x=>`${x.text} ${x.font} ${x.ratio}`),[]);
       check(`${name} seq77 pausing: genuine job/task links, no fabricated title/start/agent`,await evaluate(drain,`(()=>{const d=${region('ROOT-DRAINING')}.querySelector('details');return !!d.querySelector('a[href="/orgs/pause-org/jobs/JOB-4127"]')&&!!d.querySelector('a[href="/orgs/pause-org/tasks/CHILD-1"]')&&!/started|dev_agent/.test(d.textContent);})()`));
       check(`${name} seq77 pausing open: list rows within viewport`,await evaluate(drain,`[...${region('ROOT-DRAINING')}.querySelectorAll('li,li *')].every(e=>e.getBoundingClientRect().right<=innerWidth+1)&&document.documentElement.scrollWidth<=innerWidth+1`));
       if(mobile){const o=await evaluate(drain,`({list:${rect(`${region('ROOT-DRAINING')}.querySelector('ul')`)},rev:${rect(button(tr(locale,'tasks.detail.revisit')))}})`);check(`${name} seq77 pausing mobile open: list pushes ordinary actions down (document flow)`,o.list.bottom<=o.rev.top+1);}
@@ -242,7 +249,7 @@ async function main(){
     }
     check('zero GET /tasks/pause-overview across the whole run',overviewReads(),0);
     const assets=readdirSync(join(dist,'assets')).filter(file=>/\.(js|css)$/.test(file)).map(file=>({file,sha256:digest(readFileSync(join(dist,'assets',file)))}));
-    const receipt={boundary:'UI/transport only; synthetic HTTP, not backend enforcement/E2E',head,generated_at:new Date().toISOString(),node:{path:process.execPath,version:process.version},chrome:{path:chromeBin,...browser},dist:{path:dist,index_sha256:digest(readFileSync(join(dist,'index.html'))),assets},checks,screenshots,ledger,browserEvents,failed:checks.filter(c=>!c.pass).length};writeFileSync(join(out,'receipt.json'),JSON.stringify(receipt,null,2)+'\n');
+    const receipt={boundary:'UI/transport only; synthetic HTTP, not backend enforcement/E2E',head,generated_at:new Date().toISOString(),node:{path:process.execPath,version:process.version},chrome:{path:chromeBin,...browser},dist:{path:dist,index_sha256:digest(readFileSync(join(dist,'index.html'))),assets},checks,contrast,screenshots,ledger,browserEvents,failed:checks.filter(c=>!c.pass).length};writeFileSync(join(out,'receipt.json'),JSON.stringify(receipt,null,2)+'\n');
     console.log(`${checks.length} browser assertions; ${screenshots.length} screenshots; ${receipt.failed} failures; UI/transport ONLY`);process.exitCode=receipt.failed?1:0;
   }catch(error){writeFileSync(join(out,'failure.json'),JSON.stringify({head,boundary:'UI/transport only',error:error.stack,checks,screenshots,ledger,browserEvents},null,2)+'\n');throw error;}
   finally{for(const response of hung)response.destroy();cdp?.ws.close();if(chrome.exitCode===null&&chrome.signalCode===null)chrome.kill('SIGTERM');await new Promise(resolve=>{if(chrome.exitCode!==null||chrome.signalCode!==null)resolve();else{chrome.once('exit',resolve);setTimeout(()=>{chrome.kill('SIGKILL');resolve();},1000).unref();}});writeFileSync(join(out,'chrome-stderr.log'),Buffer.concat(chromeErrors));server.server.closeAllConnections?.();await server.close();try{rmSync(profile,{recursive:true,force:true,maxRetries:3,retryDelay:100});}catch(error){writeFileSync(join(out,'cleanup-failure.json'),JSON.stringify({profile,error:String(error)})+'\n');process.exitCode=1;}rmSync(blank);}
