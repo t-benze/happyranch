@@ -324,7 +324,17 @@ starts a real disposable daemon. The ordinary selection now retains the original
 (`effort-high`, `clear-effort`, `no-options`, `model-and-effort`) and isolated F1
 owner-validation regression: 20 function selectors / 23 parameterized cases.
 `tests/helpers/identity_names/ordinary-selection.json` names that exact composition;
-these totals describe source selection, not acceptance. Eleven exact daemon case
+these totals describe source selection, not acceptance. A10's naming-local fixture
+uses numeric `TASK-10010` and hexadecimal runtime sessions `sess-a10c`, `sess-a10d`,
+`sess-a10e` (Claude, Codex, OpenCode respectively), consistently bound through
+the real task row, executor, held HTTP route, tracker and result assertions.
+The registered provider parsers and actual source completion CLI remain unchanged.
+The naming-only artifact upload includes required hidden files within its existing
+bounded evidence directory; synthetic browser `.playwright/cli.config.json` files
+remain part of the authenticated manifest. Original run38341006191/attempt1 and
+artifact11786734062 retain their two failures and three missing files. These
+fixture/export source corrections have no observed behavioral or complete delivered
+archive result at the corrected head. Eleven exact daemon case
 IDs must match fixture receipts. Every selected JUnit outcome, including F1, is
 required; failed, skipped, missing, capped or duplicate evidence is incomplete.
 C1 retains fresh public/persisted/canonical/schema observations. C2 retains seeded

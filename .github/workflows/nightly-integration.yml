@@ -111,6 +111,7 @@ jobs:
         with:
           name: naming-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/naming-evidence/
+          include-hidden-files: true
           if-no-files-found: error
           retention-days: 14
 

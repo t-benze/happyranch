@@ -830,8 +830,9 @@ establish complete retirement or behavioral QA acceptance.
 The existing nightly workflow exposes a default-false `naming_only` input.
 It requires `all_only=false`, an exact published `naming_source_sha`, and
 `naming_image=node@sha256:<amd64-digest>`. The SHA must equal the workflow ref.
-It suppresses the manual Web lane and runs only the seventeen explicit selectors
-covering the twelve naming scenarios on a disposable Ubuntu 24.04 runner.
+It suppresses the manual Web lane and runs the twenty explicit function selectors
+(23 parameterized cases), retaining the original seventeen selectors for the twelve
+naming scenarios on a disposable Ubuntu 24.04 runner.
 `scripts/identity_names_hosted.sh` retains the source/image pins, resource bounds,
 shared deadline, cleanup reserve and bounded evidence export. The selection is
 `tests/helpers/identity_names/run.sh`; it does not collect retired Python units
@@ -839,6 +840,17 @@ or run general integration. Scheduled/default behavior and retained PR/main
 checks are unchanged. Historical attempts remain evidence and do not renew
 allocations. A corrected candidate needs attributed behavioral results and
 independent review/QA; merely publishing or dispatching it is not a pass.
+
+A10 uses numeric `TASK-10010` and provider-distinct hexadecimal runtime sessions
+(`sess-a10c`, `sess-a10d`, `sess-a10e` for Claude, Codex, OpenCode) throughout the
+real executor/CLI/HTTP callback fixture, matching the unchanged registered stub
+binding grammar. The naming upload includes hidden files from only the existing
+bounded `naming-evidence/` directory, including synthetic `.playwright/cli.config.json`
+browser configuration already covered by the export manifest. Runner-side export
+authentication and cleanup do not prove delivered-archive completeness: run
+38341006191/attempt1 remains 21 passed/two failed, with 347/350 manifest files
+present. Fixture closure and complete packaging at the corrected head remain
+UNEXECUTED/pending independent evidence; no new run is authorized by these fixes.
 
 ### Historical PR1022 recovery and browser evidence
 

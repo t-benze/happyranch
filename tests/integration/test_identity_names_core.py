@@ -723,6 +723,10 @@ def test_a10_bound_callback_continuity(tmp_path,tmp_home,monkeypatch,fake_claude
     from tests.helpers.integration_stub_guard.guard import assert_launch_witness
     node='test_a10_bound_callback_continuity'
     for case in cases(node):
+        # Keep synthetic identities within the registered provider binding ABI.
+        task_id='TASK-10010'
+        runtime_session_id={'claude':'sess-a10c','codex':'sess-a10d',
+                            'opencode':'sess-a10e'}[case]
         location=tmp_path/case
         runtime=RuntimeDir.init(location/'runtime');root=runtime.orgs_dir/'alpha'
         paths=seed(root,executor=case)
@@ -775,7 +779,7 @@ def test_a10_bound_callback_continuity(tmp_path,tmp_home,monkeypatch,fake_claude
             save_ownership()
             org.close()
             raise
-        org.db.insert_task(TaskRecord(id='TASK-CALLBACK',assigned_agent='maker',team='engineering',status=TaskStatus.IN_PROGRESS,brief='held real callback'))
+        org.db.insert_task(TaskRecord(id=task_id,assigned_agent='maker',team='engineering',status=TaskStatus.IN_PROGRESS,brief='held real callback'))
         app=create_app(state)
         async def continuity():
             deadline=asyncio.get_running_loop().time()+30
@@ -786,7 +790,7 @@ def test_a10_bound_callback_continuity(tmp_path,tmp_home,monkeypatch,fake_claude
             arrived=asyncio.Event();release=asyncio.Event();first=True
             async def held_app(scope,receive,send):
                 nonlocal first
-                if scope.get('type')=='http' and scope.get('path','').endswith('/TASK-CALLBACK/completion') and first:
+                if scope.get('type')=='http' and scope.get('path','').endswith(f'/{task_id}/completion') and first:
                     first=False;arrived.set();await release.wait()
                 await app(scope,receive,send)
             sock=socket.socket();sock.bind(('127.0.0.1',0));sock.listen(128)
@@ -794,7 +798,7 @@ def test_a10_bound_callback_continuity(tmp_path,tmp_home,monkeypatch,fake_claude
             daemon_paths.port_file().write_text(str(port))
             server=uvicorn.Server(uvicorn.Config(held_app,host='127.0.0.1',port=port,lifespan='off',log_level='error'))
             serve=asyncio.create_task(server.serve(sockets=[sock]))
-            worker=asyncio.create_task(asyncio.to_thread(org.orchestrator._run_agent,'TASK-CALLBACK','maker','naming callback continuity',runtime_session_id='sess-naming-'+case,timeout_seconds_override=20))
+            worker=asyncio.create_task(asyncio.to_thread(org.orchestrator._run_agent,task_id,'maker','naming callback continuity',runtime_session_id=runtime_session_id,timeout_seconds_override=20))
             arrival = asyncio.create_task(arrived.wait())
             primary_error = None
             def retain_worker():
@@ -826,8 +830,8 @@ def test_a10_bound_callback_continuity(tmp_path,tmp_home,monkeypatch,fake_claude
                 save_ownership()
                 assert arrived.is_set(), (
                     'A10 callback absent; bounded executor outcome retained in ownership.json')
-                session=org.db.get_task('TASK-CALLBACK').current_session_id
-                assert session and org.sessions.get_active('TASK-CALLBACK','maker')==session
+                session=org.db.get_task(task_id).current_session_id
+                assert session==runtime_session_id and org.sessions.get_active(task_id,'maker')==session
                 before=snapshot(org)
                 authority=org.workflow_authority.verify_admission_ready()
                 await rename(org,'Alex')
@@ -853,16 +857,16 @@ def test_a10_bound_callback_continuity(tmp_path,tmp_home,monkeypatch,fake_claude
                     'new_revision': 2, 'source': 'founder', 'actor': 'founder',
                 }
                 assert org.workflow_authority.verify_admission_ready()==authority
-                assert org.sessions.get_active('TASK-CALLBACK','maker')==session
+                assert org.sessions.get_active(task_id,'maker')==session
                 async with httpx.AsyncClient() as client:
-                    forged=await client.post(f'http://127.0.0.1:{port}/api/v1/orgs/alpha/tasks/TASK-CALLBACK/completion',
+                    forged=await client.post(f'http://127.0.0.1:{port}/api/v1/orgs/alpha/tasks/{task_id}/completion',
                         headers={'Authorization':'Bearer '+daemon_paths.read_token()},
                         json={'session_id':session,'agent':'Alex','status':'completed','confidence':90,'output_summary':'forged label'},timeout=remaining(5,8))
-                    assert forged.status_code==409 and not org.db.get_latest_task_result('TASK-CALLBACK','Alex',session)
+                    assert forged.status_code==409 and not org.db.get_latest_task_result(task_id,'Alex',session)
                 release.set()
                 result,report=await asyncio.wait_for(asyncio.shield(worker),remaining(8,5))
                 assert result.success and report is not None and report.agent=='maker'
-                row=org.db.get_latest_task_result('TASK-CALLBACK','maker',session)
+                row=org.db.get_latest_task_result(task_id,'maker',session)
                 assert row['agent']=='maker' and row['session_id']==session and row['output_summary']=='real owned naming callback'
                 assert_launch_witness(case)
                 return session
