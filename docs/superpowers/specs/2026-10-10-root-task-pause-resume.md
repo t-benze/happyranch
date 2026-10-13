@@ -149,7 +149,9 @@ task_session/job count as "still running"; launch/result_processing/unknown are
 generation/held and event time, not live drain observations, so necessary
 unknown/incomplete/terminal diagnostics stay in the detail disclosure; the existing
 `/orgs/:slug/audit?task_id=` link and label are unchanged. Primary Resume uses the
-existing primary button token and fonts. Separate control/evidence presentation preserves real lifecycle, waiting,
+existing primary button token and fonts. Disclosure metadata and
+notes use the existing secondary text token, not the artifact's lighter grey, so the
+12px text stays at least 4.5:1 in both themes. Separate control/evidence presentation preserves real lifecycle, waiting,
 attention and lineage; terminal drain diagnostics remain visible. Missing or
 unsafe generation/projection is unavailable. Pending controls disable repeated
 submissions across mounted views. Actions submit the displayed generation and
