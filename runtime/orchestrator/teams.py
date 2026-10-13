@@ -182,6 +182,37 @@ class TeamsRegistry:
 
     # ---- mutation (auto-persist) ----
 
+    def needs_empty_default(self) -> bool:
+        """Refuse a conflicting Default before any canonical mutation."""
+        manager = self._teams.get("default")
+        if manager is None:
+            return True
+        if manager.kind != "human" or manager.principal != "founder":
+            raise ValueError("default team already exists with a different manager")
+        return False
+
+    def ensure_empty_default(self) -> bool:
+        """Persist an absent founder team before updating the shared registry.
+
+        Compatible replay preserves workers and all metadata without a write.
+        A new display pointer is supplied only when absent; omitted-task routing
+        keeps its independent Engineering fallback. Callers own writer fencing.
+        """
+        if not self.needs_empty_default():
+            return False
+        manager = TeamManager(
+            name=None, team="default", workers=(), kind="human", principal="founder",
+        )
+        metadata = dict(self._metadata)
+        metadata.setdefault("default_team", "default")
+        candidate = TeamsRegistry(
+            {**self._teams, "default": manager}, root=self._root, metadata=metadata,
+        )
+        candidate.save()
+        self._teams["default"] = manager
+        self._metadata = metadata
+        return True
+
     def add_worker(self, team: str, agent: str) -> None:
         if team not in self._teams:
             raise KeyError(team)
