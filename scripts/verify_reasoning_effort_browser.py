@@ -237,14 +237,22 @@ def main():
             context = browser.new_context(viewport={'width': width, 'height': height}, locale='en-US')
             page = context.new_page()
             page.set_default_timeout(10000)
+            # Install exactly one navigation initializer. Repeated init scripts
+            # have unspecified ordering; every English selector needs one reset.
+            page.add_init_script("localStorage.setItem('happyranch.ui.locale', 'en')")
             page.on('request', lambda r: browser_events.append({'event': 'request', 'method': r.method, 'path': r.url.split(args.base_url)[-1], 'body': r.post_data}) if r.url.startswith(args.base_url) else None)
             page.on('response', lambda r: browser_events.append({'event': 'response', 'method': r.request.method, 'path': r.url.split(args.base_url)[-1], 'status': r.status}) if r.url.startswith(args.base_url) else None)
             page.on('pageerror', lambda error: browser_events.append({'event': 'pageerror', 'message': str(error)}))
 
+            def switch_locale(locale):
+                page.evaluate('''locale => { localStorage.setItem('happyranch.ui.locale', locale); window.dispatchEvent(new StorageEvent('storage', {key:'happyranch.ui.locale', newValue:locale, storageArea:localStorage})); }''', locale)
+                expect(page.locator('html')).to_have_attribute('lang', locale)
+
             def open_unready(locale='en'):
-                page.add_init_script(f"localStorage.setItem('happyranch.ui.locale', {json.dumps(locale)})")
                 page.goto(args.base_url + '/orgs/effort-fixture/agents/case_worker')
                 expect(page.locator('#agent-reasoning-effort')).to_be_visible()
+                expect(page.locator('html')).to_have_attribute('lang', 'en')
+                if locale != 'en': switch_locale(locale)
 
             def ready():
                 # A visible input alone does not identify the selected agent/CLI.
@@ -312,8 +320,7 @@ def main():
             def snapshot(state, locale):
                 # Locale transition uses the real browser adapter; no reload or API mutation.
                 mutation_count = sum(e['event'] == 'request' for e in browser_events)
-                page.evaluate('''locale => { localStorage.setItem('happyranch.ui.locale', locale); window.dispatchEvent(new StorageEvent('storage', {key:'happyranch.ui.locale', newValue:locale, storageArea:localStorage})); }''', locale)
-                expect(page.locator('html')).to_have_attribute('lang', locale)
+                switch_locale(locale)
                 page.locator('#agent-reasoning-effort').scroll_into_view_if_needed()
                 target = args.output / f'effort-{width}x{height}-{locale}-{state}.png'
                 page.screenshot(path=str(target))
@@ -336,11 +343,18 @@ def main():
                 with page.expect_request(pattern):
                     open_unready()
                 if label != 'roster-loading':
-                    # The roster must arrive while this metadata response is held.
+                    # Observe actual roster arrival in the selected detail header.
+                    # Metadata loading deliberately replaces the Executor select.
                     actual = roster()
-                    expect(page.get_by_label('Executor', exact=True)).to_have_value(actual['executor'])
+                    detail = page.get_by_role('heading', name='case_worker', exact=True).locator('xpath=ancestor::header/parent::section')
+                    expect(detail).to_have_count(1)
+                    expect(detail.locator(':scope > header').get_by_text(actual['executor'], exact=True)).to_be_visible()
                     expect(page.get_by_label('Model', exact=True)).to_have_value(actual['model'] or '')
                     expect(page.locator('#agent-reasoning-effort')).to_have_value(actual['reasoning_effort'] or '')
+                    expect(detail.get_by_text('Loading executor list…', exact=True)).to_be_visible()
+                    expect(page.locator('#agent-reasoning-effort-help')).to_contain_text('Loading agent and executor details')
+                    expect(detail.get_by_label('Executor', exact=True)).to_have_count(0)
+                    receipts.append({'case': 'C3-metadata-roster-arrival', 'state': label, 'header_executor': actual['executor'], 'saved_model': actual['model'], 'saved_effort': actual['reasoning_effort'], 'executor_select': 'absent while metadata held', 'loading_presentation': 'observed'})
                 refuse_unready(label)
                 require(pending, label + ': actual response held')
                 for route in pending: route.continue_()
@@ -440,14 +454,15 @@ def main():
             page.get_by_label('Model', exact=True).focus()
             node = page.get_by_label('Model', exact=True).element_handle()
             mutations = sum(e['event'] == 'request' for e in browser_events)
-            page.evaluate("localStorage.setItem('happyranch.ui.locale','zh-CN'); window.dispatchEvent(new StorageEvent('storage',{key:'happyranch.ui.locale',newValue:'zh-CN',storageArea:localStorage}));")
+            switch_locale('zh-CN')
             expect(page.get_by_label('模型', exact=True)).to_have_value('pinned-model')
             require(node.evaluate('(node) => node === document.activeElement'), 'locale switch must preserve focused input node')
             expect(page.locator('#agent-reasoning-effort')).to_have_value('future_Tier-2')
             require(sum(e['event'] == 'request' for e in browser_events) == mutations, 'locale switching draft no extra mutations')
-            page.evaluate("window.dispatchEvent(new StorageEvent('storage',{key:'happyranch.ui.locale',newValue:'en',storageArea:localStorage}));")
+            switch_locale('en')
             save()
             page.reload()
+            ready()
             expect(page.locator('#agent-reasoning-effort')).to_have_value('future_Tier-2')
             for locale in ('en', 'zh-CN'):
                 snapshot('selected', locale)
@@ -455,6 +470,7 @@ def main():
             page.locator('#agent-reasoning-effort').fill('')
             save()
             page.reload()
+            ready()
             expect(page.locator('#agent-reasoning-effort')).to_have_value('')
             require(roster()['model'] == 'pinned-model' and roster()['reasoning_effort'] is None, 'UI clear reloads unset')
             # A/B: actual SPA save/reload/edit/clear for every builtin, exporting
@@ -468,6 +484,7 @@ def main():
                     page.locator('#agent-reasoning-effort').fill(value)
                     save()
                     page.reload()
+                    ready()
                     expect(page.locator('#agent-reasoning-effort')).to_have_value(value)
                     require(roster()['reasoning_effort'] == (value or None), 'UI-save exact token/default roster')
             request('PUT', prefix + '/executor', {'executor': 'claude'})
@@ -480,7 +497,7 @@ def main():
             node = effort.element_handle()
             for locale in ('zh-CN', 'en'):
                 count = sum(e['event'] == 'request' for e in browser_events)
-                page.evaluate("locale => window.dispatchEvent(new StorageEvent('storage',{key:'happyranch.ui.locale',newValue:locale,storageArea:localStorage}))", locale)
+                switch_locale(locale)
                 require(node.evaluate('(node) => node === document.activeElement && node.selectionStart === 2 && node.selectionEnd === 7 && node.value === "future_Tier-2"'), 'effort node/focus/caret/draft preserved')
                 require(sum(e['event'] == 'request' for e in browser_events) == count, 'locale effort draft no finite reads/mutations')
                 require(page.get_by_role('button', name='Save agent' if locale == 'en' else '保存智能体', exact=True).is_enabled(), 'original save action preserved')
@@ -519,7 +536,7 @@ def main():
             expect(page.locator('#agent-reasoning-effort')).to_be_disabled()
             for locale in ('en', 'zh-CN'):
                 snapshot('unsupported', locale)
-            page.evaluate("window.dispatchEvent(new StorageEvent('storage',{key:'happyranch.ui.locale',newValue:'en',storageArea:localStorage}));")
+            switch_locale('en')
             page.get_by_label('Model', exact=True).fill('legacy-model-edit')
             with page.expect_response(lambda r: r.url.endswith('/agents/case_worker/model') and r.status == 200):
                 page.keyboard.press('Control+s')
@@ -557,6 +574,7 @@ def main():
                 page.locator('#agent-reasoning-effort').fill(value)
                 save()
                 page.reload()
+                ready()
                 expect(page.locator('#agent-reasoning-effort')).to_have_value(value)
             for value in ('future_Tier-2', 'HIGH'):
                 original = agent_path.read_bytes()
@@ -574,7 +592,7 @@ def main():
             expect(page.locator('#agent-reasoning-effort')).to_be_disabled()
             for locale in ('en', 'zh-CN'):
                 snapshot('model-only-disabled', locale)
-            page.evaluate("window.dispatchEvent(new StorageEvent('storage',{key:'happyranch.ui.locale',newValue:'en',storageArea:localStorage}));")
+            switch_locale('en')
             page.get_by_label('Model', exact=True).fill('model-only-edit')
             save()
             page.reload()
@@ -591,6 +609,7 @@ def main():
             page.locator('#agent-reasoning-effort').fill('')
             save()
             page.reload()
+            ready()
             expect(page.locator('#agent-reasoning-effort')).to_have_value('')
             require(roster()['reasoning_effort'] is None, 'saved malformed readable value clear')
             # Stale registered-name absence is synthetic read setup only.
