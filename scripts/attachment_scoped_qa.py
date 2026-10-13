@@ -247,7 +247,10 @@ class OwnedTree:
         for row in receipt['rows']:
             launch=row['launch']
             if launch['head']!=self.head:raise ValueError('foreign provider launch source')
-            for pid in (launch['provider_pid'],launch['driver_pid']):
+            provider=row.get('provider')
+            if provider is None or provider['sid']!=launch['session_id'] or provider['task']!=launch['task_id']:
+                raise ValueError('actual executor PID/SID source receipt missing')
+            for pid in (provider['pid'],launch['driver_pid']):
                 self.required_roles.add(pid)
                 if pid not in self.identities:
                     self.errors.append('required provider role identity missing')
@@ -270,6 +273,7 @@ class OwnedTree:
                     # The authenticated deterministic callback wait is actual
                     # parent evidence; it grants no pidfd signalling right.
                     self.event(kind='callback_parent_wait',pid=pid,owner=wait['owner'],status=wait['returncode'],independently_bound=False)
+                    self.errors.append('required callback identity not observed')
 
     def bind_endpoint(self,pid,port,node,log,wait_log):
         self.discover()

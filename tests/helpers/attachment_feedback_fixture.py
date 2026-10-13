@@ -219,6 +219,11 @@ class PublicDriver:
                 if item["task_id"]==task_id and item["session_id"] not in [x["session_id"] for x in self.launches]:
                     return item
         item=await_condition(find)
+        row=next(row for row in self.snapshot(task_id)["tasks"] if row["id"]==task_id)
+        assert row["current_session_id"]==item["session_id"] and type(row["executor_pid"]) is int and row["executor_pid"]>0
+        item["actual_provider_pid"]=row["executor_pid"]
+        write_receipt(self.controls/f"provider-{item['session_id']}.json",
+            {"pid":row["executor_pid"],"sid":item["session_id"],"task":task_id,"head":_DESCRIPTOR["head"]},4096)
         self.launches.append(item)
         assert item["agent"]=="engineering_head" or item["agent"] in ("dev_agent","product_manager","qa_engineer","code_reviewer")
         return item
@@ -292,7 +297,7 @@ def provider_main():
             self_evaluation["what_to_escalate"]={"applicability":"does_not_apply","confidence":100,"uncertainty_codes":[]}
             self_evaluation["what_not_to_escalate"]={"applicability":"applies","confidence":100,"uncertainty_codes":[]}
         assert self_evaluation["root_task_id"]==task and self_evaluation["manager_session_id"]==sid
-    row={"task_id":task,"session_id":sid,"agent":agent,"provider_pid":os.getppid(),
+    row={"task_id":task,"session_id":sid,"agent":agent,"plan_parent_pid":os.getppid(),
          "driver_pid":os.getpid(),"prompt_sha256":hashlib.sha256(prompt.encode()).hexdigest(),
          "self_evaluation":self_evaluation,"head":manifest()["revision"],
          "helper_sha256":sha(Path(__file__).resolve())}
@@ -482,7 +487,7 @@ if __name__=="__main__" and len(sys.argv)>1:
     elif sys.argv[1]=="provider-wait":
         task,sid,parent,child,status,control=sys.argv[2:8]
         launch=closed_read(Path(control)/f"launch-{sid}.json",16384)
-        assert launch['task_id']==task and launch['driver_pid']==int(child) and launch['provider_pid']==int(parent)
+        assert launch['task_id']==task and launch['driver_pid']==int(child) and launch['plan_parent_pid']==int(parent)
         write_receipt(Path(control)/f"provider-wait-{sid}.json",
             {'owner':int(parent),'child':int(child),'returncode':int(status),'sid':sid,'task':task},4096)
         raise SystemExit(0)
@@ -941,7 +946,7 @@ def retain_role_receipts(controls,node,suffix):
         launch=closed_read(path,16384)
         sid=launch['session_id']
         item={'launch':launch}
-        for kind in ('callback','provider-exit','provider-wait'):
+        for kind in ('provider','callback','provider-exit','provider-wait'):
             selected=controls/f'{kind}-{sid}.json'
             if selected.exists():item[kind]=closed_read(selected,4096)
         rows.append(item)
