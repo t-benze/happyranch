@@ -7,6 +7,7 @@ import re
 import time
 from contextlib import ExitStack, contextmanager
 from typing import TYPE_CHECKING, Any
+from urllib.parse import parse_qs, urlsplit
 
 from playwright.sync_api import expect, sync_playwright
 
@@ -14,6 +15,23 @@ from oracles import require
 
 if TYPE_CHECKING:
     from controller import Controller
+
+
+class _ResponseObservation:
+    """Keep native metadata separate from opt-in, bounded JSON capture."""
+    def __init__(self) -> None:
+        self.native: Any = None
+        self._json: Any = None
+        self.captured = False
+
+    @property
+    def value(self) -> Any:
+        return self.native.value
+
+    @property
+    def captured_json(self) -> Any:
+        require(self.captured, "response JSON was captured inside its original bound")
+        return self._json
 
 
 class Browser:
@@ -48,24 +66,136 @@ class Browser:
         self.controller.remaining()
 
     @contextmanager
-    def response(self, path: str) -> Any:
-        c = self.controller
+    def response(self, path: str, *, mode: str = "action", document: str | None = None,
+                 capture_json: bool = False, tree: bool = False) -> Any:
+        c, page = self.controller, self.page
         end = min(c.effective_end(), time.monotonic() + self.page_timeout)
-        # The native timer starts at entry, before the triggering action. Keep
-        # the same end through __exit__'s actual response wait and late return.
-        with c.bounded(end):
-            with self.page.expect_response(
-                lambda response: response.url.split("?")[0] == self.base + path and response.status == 200,
-                timeout=c.remaining(self.page_timeout) * 1000,
-            ) as result:
-                yield result
-                c.remaining()  # Refresh before __exit__ can block.
-            c.remaining()
+        base = urlsplit(self.base)  # Snapshot the current (possibly restarted) port.
+        require(mode in {"action", "new-document"} and (document is not None) == (mode == "new-document"),
+                "explicit response action/document scope")
+        require(path.startswith("/api/v1/orgs/") and urlsplit(path).path == path
+                and not urlsplit(path).query and not urlsplit(path).fragment, "literal API observation path")
+        target = self.base + document if document is not None else None
+        observation = _ResponseObservation()
+        trace = dict(event="response-observation", path=path, document=document, mode=mode, tree=tree,
+                     capture_json=capture_json, deadline=end, validation="partial/unvalidated", steps=[])
+        self.events.append(trace)
+        sequence, commit, navigation = 0, None, None
+        invalid = False
+        requests: dict[Any, int] = {}
+
+        def note(event: str, **metadata: Any) -> None:
+            trace["steps"].append(dict(event=event, sequence=sequence, at=time.monotonic(), **metadata))
+
+        def endpoint(url: str) -> bool:
+            parsed = urlsplit(url)
+            return (parsed.scheme, parsed.netloc, parsed.path) == (base.scheme, base.netloc, path)
+
+        def request_started(request: Any) -> None:
+            nonlocal sequence, navigation, invalid
+            sequence += 1
+            main = request.frame == page.main_frame
+            if main and request.is_navigation_request():
+                valid = (mode == "new-document" and navigation is None and request.method == "GET"
+                         and request.url == target and request.redirected_from is None)
+                if valid:
+                    navigation = request
+                else:
+                    invalid = True
+                note("navigation-request", main_frame=True, expected=valid, method=request.method)
+            if endpoint(request.url):
+                # Retain the actual armed Request object, not its URL or an ID
+                # guessed from the transport. A response for an older Request
+                # can never enter this set retroactively.
+                if main and request.method == "GET" and not invalid and (mode == "action" or commit is not None):
+                    requests[request] = sequence
+                note("request-start", main_frame=main, method=request.method,
+                     eligible=request in requests, commit=commit)
+
+        def navigated(frame: Any) -> None:
+            nonlocal sequence, commit, invalid
+            if frame != page.main_frame:
+                return
+            sequence += 1
+            valid = navigation is not None and commit is None and frame.url == target and not invalid
+            if valid:
+                commit = sequence
+            else:
+                invalid = True
+            note("commit", main_frame=True, expected=valid)
+
+        def selected(response: Any) -> bool:
+            if not endpoint(response.url):
+                return False
+            request = response.request
+            eligible = (not invalid and request in requests and request.method == "GET"
+                        and request.frame == page.main_frame and response.status == 200
+                        and request.redirected_from is None and request.redirected_to is None
+                        and (mode == "action" or commit is not None and requests[request] > commit)
+                        and (not tree or parse_qs(urlsplit(request.url).query, keep_blank_values=True).get("tree") == ["true"]))
+            note("selected" if eligible else "ineligible-response", method=request.method,
+                 status=response.status, main_frame=request.frame == page.main_frame,
+                 request_sequence=requests.get(request), commit=commit)
+            return eligible
+
+        note("arm")
+        listeners = [("request", request_started)]
+        if mode == "new-document":
+            listeners.append(("framenavigated", navigated))
+        registered = []
+        failed = False
+        try:
+            # Native ownership includes its original timeout/close/crash path.
+            # All nested scopes, action, body and parsing share the earlier end.
+            with c.bounded(end):
+                for event, listener in listeners:
+                    page.on(event, listener)
+                    registered.append((event, listener))
+                c.remaining()
+                with page.expect_response(selected, timeout=c.remaining(self.page_timeout) * 1000) as native:
+                    observation.native = native
+                    yield observation
+                    c.remaining()
+                c.remaining()
+                require(not invalid, "response document scope remained current")
+                response = observation.value
+                if capture_json:
+                    note("body-begin")
+                    c.remaining()
+                    raw = response.body()  # Exactly this selected native body, once.
+                    c.remaining()
+                    body = json.loads(raw.decode("utf-8"))
+                    c.remaining()
+                    require(not invalid, "body belongs to the selected current document scope")
+                    # Retain only the existing synthetic target body through
+                    # the existing sanitation context, before caller assertions.
+                    trace["body"] = json.loads(c.sanitize(json.dumps(body)))
+                    observation._json, observation.captured = body, True
+                    note("body-end")
+                c.remaining()
+        except BaseException as exc:
+            failed = True
+            note("body-error" if capture_json and any(s["event"] == "body-begin" for s in trace["steps"]) else "observation-error",
+                 error=type(exc).__name__)  # Never export arbitrary exception/query contents.
+            raise
+        finally:
+            cleanup_error = None
+            for event, listener in registered:
+                try:
+                    page.remove_listener(event, listener)
+                except BaseException as exc:
+                    cleanup_error = exc
+                    note("listener-cleanup-error", error=type(exc).__name__)
+            if cleanup_error is not None and not failed:
+                raise cleanup_error
+            # Cancelling native EventInfo on an action exception is not a
+            # claim of immediate Waiter teardown: its finite timer/close owns it.
 
     def open_task(self, org: str, task: str, brief: str, *, switch: bool = False,
                   cached_recall: bool = False, alien: str | None = None) -> None:
         roots = f"/api/v1/orgs/{org}/tasks/roots"
-        with self.response(roots):
+        with self.response(roots, mode="action" if switch else "new-document",
+                           document=None if switch else f"/orgs/{org}/tasks"):
             if switch:
                 self.page.get_by_role("combobox", name="Active org", exact=True).click(timeout=self.controller.remaining(self.page_timeout)*1000)
                 self.controller.remaining()
@@ -99,8 +229,8 @@ class Browser:
                             "cached detail/Recall has target-org real HTTP provenance", path)
                 self.events.append(dict(event="navigation", action="cached-return", org=org, task=task))
             else:
-                responses.enter_context(self.response(detail_path))
-                responses.enter_context(self.response(recall_path))
+                responses.enter_context(self.response(detail_path, mode="action"))
+                responses.enter_context(self.response(recall_path, mode="action", tree=True))
             link.click(timeout=self.controller.remaining(self.page_timeout)*1000)
             self.controller.remaining()
         expect(main.get_by_text(brief, exact=False).first).to_be_visible(timeout=self.controller.remaining(5)*1000)
@@ -117,7 +247,10 @@ class Browser:
         self.page.wait_for_timeout(31000)
         self.controller.remaining()
         self.events.append(dict(event="navigation", action="cache-expired-revisit", org=org, task=task))
-        with self.response(f"/api/v1/orgs/{org}/tasks/{task}"), self.response(f"/api/v1/orgs/{org}/tasks/{task}/recall"):
+        with (
+            self.response(f"/api/v1/orgs/{org}/tasks/{task}", mode="action"),
+            self.response(f"/api/v1/orgs/{org}/tasks/{task}/recall", mode="action", tree=True),
+        ):
             main.locator(f'a[href="/orgs/{org}/tasks/{task}"]').first.click(timeout=self.controller.remaining(self.page_timeout)*1000)
             self.controller.remaining()
         self.controller.phases.append(dict(name="browser-cache-revisit", seconds=time.monotonic() - begin))
@@ -131,7 +264,10 @@ class Browser:
             # this makes no claim about automatic live-view invalidation.
             require(self.page.url == f"{self.base}/orgs/{org}/tasks/{task}", "refresh owns expected task")
             self.events.append(dict(event="navigation", action="reload", org=org, task=task))
-            with self.response(f"/api/v1/orgs/{org}/tasks/{task}"), self.response(f"/api/v1/orgs/{org}/tasks/{task}/recall"):
+            with (
+                self.response(f"/api/v1/orgs/{org}/tasks/{task}", mode="new-document", document=f"/orgs/{org}/tasks/{task}"),
+                self.response(f"/api/v1/orgs/{org}/tasks/{task}/recall", mode="new-document", document=f"/orgs/{org}/tasks/{task}", tree=True),
+            ):
                 self.page.reload(timeout=self.controller.remaining(self.page_timeout)*1000)
                 self.controller.remaining()
         main = self.page.get_by_role("main")
@@ -172,10 +308,10 @@ class Browser:
     def job_open(self, job: str, status: str) -> dict:
         self.set_page_timeout(10)
         path = f"/api/v1/orgs/alpha/jobs/{job}"
-        with self.response(path) as response:
+        with self.response(path, mode="new-document", document=f"/orgs/alpha/jobs/{job}", capture_json=True) as response:
             self.page.goto(f"{self.base}/orgs/alpha/jobs/{job}", timeout=self.controller.remaining(10)*1000)
             self.controller.remaining()
-        body = response.value.json()
+        body = response.captured_json
         require(body["id"] == job and body["status"] == status, "fresh browser job state", body)
         expect(self.page.get_by_role("main").get_by_text(status, exact=True).first).to_be_visible(timeout=self.controller.remaining(5)*1000)
         self.controller.remaining()
@@ -246,7 +382,10 @@ class Browser:
 
     def jobs_waiting(self, task: str, ids: list[str]) -> dict:
         path = f"/api/v1/orgs/alpha/tasks/{task}"
-        with self.response(path) as response, self.response(path + "/recall"):
+        with (
+            self.response(path, mode="new-document", document=f"/orgs/alpha/tasks/{task}", capture_json=True) as response,
+            self.response(path + "/recall", mode="new-document", document=f"/orgs/alpha/tasks/{task}", tree=True),
+        ):
             self.page.goto(f"{self.base}/orgs/alpha/tasks/{task}", timeout=self.controller.remaining(10)*1000)
             self.controller.remaining()
         main = self.page.get_by_role("main")
@@ -255,7 +394,7 @@ class Browser:
         for job in ids:
             expect(main.get_by_text(job, exact=False).first).to_be_visible(timeout=self.controller.remaining(5)*1000)
             self.controller.remaining()
-        result = dict(body=response.value.json(), text=main.inner_text(timeout=self.controller.remaining(10)*1000), at=time.monotonic())
+        result = dict(body=response.captured_json, text=main.inner_text(timeout=self.controller.remaining(10)*1000), at=time.monotonic())
         self.controller.remaining()
         return result
 
@@ -436,7 +575,10 @@ class Browser:
         self.page.goto(url, timeout=self.controller.remaining(4)*1000)
         self.controller.remaining()
         # Real reload and real responses even if a previous React cache exists.
-        with self.response(path) as detail, self.response(path + "/recall") as recall:
+        with (
+            self.response(path, mode="new-document", document=f"/orgs/alpha/tasks/{task}", capture_json=True) as detail,
+            self.response(path + "/recall", mode="new-document", document=f"/orgs/alpha/tasks/{task}", capture_json=True, tree=True) as recall,
+        ):
             self.page.reload(timeout=c.remaining(4)*1000)
             self.controller.remaining()
         main = self.page.get_by_role("main")
@@ -451,9 +593,9 @@ class Browser:
         else:
             expect(cancel).to_be_enabled(timeout=c.remaining(4)*1000)
             self.controller.remaining()
-        record = dict(task=task, url=self.page.url, detail_url=detail.value.url, detail=detail.value.json(),
+        record = dict(task=task, url=self.page.url, detail_url=detail.value.url, detail=detail.captured_json,
                       detail_method=detail.value.request.method, detail_status=detail.value.status,
-                      recall_url=recall.value.url, recall=recall.value.json(), recall_status=recall.value.status,
+                      recall_url=recall.value.url, recall=recall.captured_json, recall_status=recall.value.status,
                       recall_method=recall.value.request.method, text=main.inner_text(timeout=self.controller.remaining(4)*1000),
                       cancel_disabled=cancel.is_disabled(timeout=self.controller.remaining(4)*1000), cancel_title=cancel.get_attribute("title", timeout=self.controller.remaining(4)*1000),
                       badges=main.get_by_text(status,exact=True).all_text_contents(), at=time.monotonic())
@@ -512,7 +654,7 @@ class Browser:
         path = "/api/v1/orgs/alpha/tasks/roots"
         self.page.goto(self.base+"/orgs/alpha/tasks",timeout=c.remaining(4)*1000)
         self.controller.remaining()
-        with self.response(path) as roots:
+        with self.response(path, mode="new-document", document="/orgs/alpha/tasks", capture_json=True) as roots:
             self.page.reload(timeout=c.remaining(4)*1000)
             self.controller.remaining()
         main = self.page.get_by_role("main")
@@ -523,7 +665,7 @@ class Browser:
         self.controller.remaining()
         self.page.screenshot(path=str(c.root/"raw/e07-list.png"),full_page=True,timeout=c.remaining(4)*1000)
         self.controller.remaining()
-        record = dict(url=self.page.url,roots_url=roots.value.url,roots=roots.value.json(),method=roots.value.request.method,
+        record = dict(url=self.page.url,roots_url=roots.value.url,roots=roots.captured_json,method=roots.value.request.method,
                       status=roots.value.status,text=main.inner_text(timeout=self.controller.remaining(4)*1000),parent_href=link.get_attribute("href", timeout=self.controller.remaining(4)*1000),
                       screenshot="e07-list.png",at=time.monotonic())
         self.controller.remaining()

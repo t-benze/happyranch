@@ -286,35 +286,104 @@ def terminal_oracle(c: Controller, task: str, job: dict) -> dict:
     return result
 
 
-def final_task(c: Controller, task: str, starts: list[dict], jobs: list[dict], summary: str) -> dict:
-    snap = c.stores["alpha"].jobs(task)
+def final_task(c: Controller, task: str, starts: list[dict], jobs: list[dict], summary: str,
+               record: dict) -> dict:
+    snap = c.stores["alpha"].jobs(task)  # One genuine frame, even if validation fails.
+    record["final_snapshot_validation"] = "partial/unvalidated"
+    record["final_snapshot"] = json.loads(c.sanitize(json.dumps(snap)))
+    require(len(starts) == 2 and all(isinstance(s["session"], str) and s["session"] for s in starts)
+            and starts[0]["session"] != starts[1]["session"], "two distinct genuine start SIDs")
     require(len(snap["tasks"]) == 1 and len(snap["results"]) == 2, "no children or extra result", snap)
     row = snap["tasks"][0]
     ids = sorted(j["id"] for j in jobs)
-    require(row["status"] == "completed" and row["completed_at"] is not None and row["assigned_agent"] == "case_manager"
-            and row["parent_task_id"] is None and row["orchestration_step_count"] == 2
-            and row["current_session_id"] == starts[1]["session"]
+    require(row["id"] == task and row["status"] == "completed" and row["completed_at"] is not None
+            and row["assigned_agent"] == "case_manager" and row["parent_task_id"] is None
+            and row["orchestration_step_count"] == 2 and row["current_session_id"] == starts[1]["session"]
             and all(row[k] is None for k in ("block_kind", "active_chain", "active_fanout"))
             and json.loads(row["blocked_on_job_ids"]) == ids, "final task retains historical wait IDs", row)
-    require([r["status"] for r in snap["results"]] == ["blocked", "completed"]
-            and [r["session_id"] for r in snap["results"]] == [s["session"] for s in starts]
-            and all(r["agent"] == "case_manager" and r["confidence_score"] == 90 for r in snap["results"]), "two genuine accepted generations")
-    require(snap["results"][0]["decision_json"] is None and snap["results"][1]["output_summary"] == summary
-            and json.loads(snap["results"][1]["decision_json"]) == dict(action="done", summary=summary), "literal final done outcome")
+    require(all(type(r["id"]) is int and r["id"] > 0 for r in snap["results"])
+            and len({r["id"] for r in snap["results"]}) == 2
+            and snap["results"][0]["id"] < snap["results"][1]["id"], "two distinct positive INTEGER results")
+    require(record["parked"]["results"] == record["live_s2"]["snapshot"]["results"] == snap["results"][:1],
+            "all original S1 result bytes retained")
+    frames = (record["parked"], record["live_s2"]["snapshot"], snap)
+    for frame in frames:
+        require(all(type(a["id"]) is int and a["id"] > 0 for a in frame["audit"])
+                and len({a["id"] for a in frame["audit"]}) == len(frame["audit"]), "unique genuine audit identities")
+    for old, new in ((frames[0], frames[1]), (frames[1], frames[2])):
+        by_id = {a["id"]: a for a in new["audit"]}
+        require(all(a["id"] in by_id and by_id[a["id"]] == a for a in old["audit"]),
+                "complete parked/live audit rows retained unchanged")
     audits = {a: [r for r in snap["audit"] if r["action"] == a] for a in
               ("session_start", "session_end", "completion_report", "task_blocked_on_jobs", "task_resumed_from_jobs", "orchestration_step")}
     require(all(len(audits[a]) == 2 for a in ("session_start", "session_end", "completion_report"))
             and all(len(audits[a]) == 1 for a in ("task_blocked_on_jobs", "task_resumed_from_jobs", "orchestration_step")), "exact lifecycle/audit counts")
+    done = dict(action="done", summary=summary)
+    # Closed NextStep.model_dump defaults, not arbitrary null/empty stripping.
+    expanded_done = dict(done, then=[], children=[], **{k: None for k in (
+        "agent", "prompt", "expect_verdict", "width_cap_ack", "revisit_of_task_id", "attachments",
+        "join_summary", "reason", "successor_brief", "rationale", "attestation")})
     for index, start in enumerate(starts):
+        command = record["block"] if index == 0 else record["final_callback"]
+        callback, result = command["payload"], snap["results"][index]
+        expected = dict(task_id=task, session_id=start["session"], agent="case_manager",
+                        status="blocked" if index == 0 else "completed", confidence=90,
+                        summary="waiting for genuine IDs" if index == 0 else summary)
+        if index == 0:
+            expected["waiting_on_job_ids"] = [j["id"] for j in jobs]
+        else:
+            expected["decision"] = done
+        # Only producer-declared null verdict/blocked-decision defaults may be
+        # explicit on the original command. No active extras are accepted.
+        supplied = dict(callback)
+        if "verdict" in supplied:
+            require(supplied.pop("verdict") is None, "original callback null verdict")
+        if index == 0 and "decision" in supplied:
+            require(supplied.pop("decision") is None, "original blocked callback null decision")
+        require(supplied == expected and type(callback["confidence"]) is int and start["task"] == task and start["agent"] == "case_manager"
+                and start["org"] == "alpha"
+                and command["provider"] == {k: start[k] for k in ("task", "session", "agent", "org", "pid")}
+                and command["action"] == ("jobs-block" if index == 0 else "jobs-final"), "original callback/start ownership")
+        wire = [w for w in command["wire"] if w["method"] == "POST"
+                and w["path"] == f"/api/v1/orgs/alpha/tasks/{task}/completion"]
+        require(len(wire) == 1 and wire[0]["status"] == 200 and wire[0]["response"] == {"ok": True}
+                and wire[0]["dropped"] is False, "original genuine accepted callback")
         a, b, d = (audits[k][index] for k in ("session_start", "session_end", "completion_report"))
-        require(json.loads(a["payload"])["session_id"] == start["session"] and json.loads(d["payload"])["session_id"] == start["session"]
-                and a["id"] < b["id"] < d["id"], "genuine callback/exit/consumption order")
+        consumed = json.loads(d["payload"])
+        # End/consume do not emit SID. The exact ordered task/agent slots
+        # bind them to the genuine result and session_start SID instead.
+        require(json.loads(a["payload"])["session_id"] == result["session_id"] == start["session"]
+                and a["task_id"] == b["task_id"] == d["task_id"] == consumed["task_id"] == result["task_id"] == task
+                and a["agent"] == b["agent"] == d["agent"] == consumed["agent"] == result["agent"] == "case_manager"
+                and a["id"] < b["id"] < d["id"], "genuine callback/exit/consumption order and identity")
+        require(consumed["status"] == result["status"] == callback["status"] == expected["status"]
+                and type(consumed["confidence"]) is int and type(result["confidence_score"]) is int
+                and consumed["confidence"] == result["confidence_score"] == callback["confidence"] == 90
+                and consumed["output_summary"] == result["output_summary"] == callback["summary"] == expected["summary"]
+                and consumed["verdict"] is None and result["verdict"] is None,
+                "literal result and consumed callback semantics")
+        accepted = json.loads(result["decision_json"]) if result["decision_json"] is not None else None
+        require(accepted == (None if index == 0 else done)
+                and consumed["decision"] == (None if index == 0 else expanded_done)
+                and consumed["waiting_on_job_ids"] == ([j["id"] for j in jobs] if index == 0 else []),
+                "closed original blocked/done semantic decision and wait list")
+        require((json.loads(result["waiting_on_job_ids"]) == ids if index == 0 else result["waiting_on_job_ids"] is None),
+                "literal accepted result historical sorted waits or final NULL")
     block, wake = audits["task_blocked_on_jobs"][0], audits["task_resumed_from_jobs"][0]
-    require(audits["completion_report"][0]["id"] < block["id"] < wake["id"] < audits["session_start"][1]["id"], "S1 park before one natural S2")
+    require(block["task_id"] == wake["task_id"] == task
+            and block["agent"] == "case_manager" and wake["agent"] == "orchestrator"
+            and audits["completion_report"][0]["id"] < block["id"] < wake["id"] < audits["session_start"][1]["id"],
+            "S1 park before one natural S2")
     p = json.loads(wake["payload"])
     require(sorted(p["blocking_job_ids"]) == ids and p["trigger"] == "job_terminal"
             and p["triggering_job_id"] == jobs[-1]["id"] and p["job_outcomes"] == {j["id"]: j["oracle"]["row"]["status"] for j in jobs},
             "literal all-terminal resume map", p)
+    step = audits["orchestration_step"][0]
+    require(step["task_id"] == task and step["agent"] == "orchestrator"
+            and step["id"] > audits["completion_report"][1]["id"]
+            and json.loads(step["payload"]) == dict(step_number=2, decision=dict(done, then=[], children=[])),
+            "actual orchestrator done audit uses exclude_none representation")
+    record["final_snapshot_validation"] = "complete"
     return snap
 
 
@@ -429,7 +498,7 @@ def exercise(c: Controller) -> None:
             c.finish("alpha", task)
             c.poll(lambda: len(c.stores["alpha"].query("SELECT id FROM audit_log WHERE task_id=? AND action='orchestration_step'", (task,))) == 1,
                    "final done consumption audit", cap=3)
-            record["final_snapshot"] = final_task(c, task, record["starts"], record["jobs"], summary)
+            final_task(c, task, record["starts"], record["jobs"], summary, record)
             previous = anchor(c, variant + ":final", 8 + 2 * index, s1)
             record["anchors"].append(previous)
             c.browser.open_task("alpha", task, variant)
