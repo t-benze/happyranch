@@ -1890,3 +1890,77 @@ product/security/negative/mutation/repetition/protected proof UNEXECUTED/
 FOUNDER-WAIVED139429/430. Static lint/source assessment is not behavioral proof.
 Fresh FULL independent review then same-final-head scoped SOURCE QA return to
 sole ROOT10693; no maker verdict/merge/operational action or trial renewal.
+
+
+## Retained native capability ancestry — K2a2b3
+
+Sole ROOT TASK10693 step56 / Founder THR139seq562/559/329 accepts capability
+encoding contract SHA25638d80c7a4cc7a3283fdea37dd6f21fb366df9c2eba5fc47415ebe2061051fc7f
+following independent DESIGN PASS11478. Unmounted
+`coding_capability_history.read_capability_history` adds the retained capability
+closure after the earlier K2a2b1/b2 checkpoints. Their historical descriptions
+of then-missing capability readers remain history; full K2a2 is still incomplete.
+
+A selected actual authorization ID resolves all seven native columns: ID=P.id,
+namespace=org/{org}/coding-capability/{P.id}, INTEGER revision1, complete canonical
+P BLOB, full-P SHA256 TEXT, literal workflow-coding-capability@1 source pin and
+exact P.created_at TEXT. ID/namespace/digest aliases conflict rather than act as
+fallbacks. Each P's OWN complete five-column native admission matches its capture
+ID/org publication namespace/INTEGER generation, H(complete P) request_digest
+and historical agent:<P.issuer.principal> operation attribution. Neither parent
+capture nor original source_admission_id substitutes for a child's admission.
+H(P) is finite; capture.grant_digest still hashes the complete upstream P or U.
+Historical attribution does not authenticate a currently acting source/service.
+
+The existing pure saved reader validates the selected complete canonical P/U/Q
+ancestry once, including immutable source ownership/admission, level/action,
+component/argv radius attenuation, refinements, queued-null versus bound SID
+and effect subject equalities. Every embedded P must then resolve to its OWN
+native row with byte-identical complete P, exact envelope, own admission and
+historical publication capture. Terminal U resolves by setup ID AND complete
+canonical subtree bytes to the actual containing issue plus complete preceding
+issuance/admission/publication history. U ID is not an authorization row alias;
+H(U) is not H(issuance wrapper). Terminal original ISSUE Q stays intact. Missing,
+duplicate/conflicting/cyclic/cross-org/wrong-type/mismatched evidence refuses
+with one category, no private bytes or SQL diagnostics and no partial history.
+
+Caller must admit the complete native/J structural schema and own one coherent
+raw-value read transaction/connection/lock. Fixed parameterized SELECTs only,
+no transaction control. All new/reused projected values gate exact SQLite storage
+class and byte length BEFORE fetch; TEXT uses BLOB byte length including NUL
+suffixes/multibyte characters. Original typeof/refusal sentinels and genuine
+nullable journal-owner NULL survive; no coercion or truncation. Each variable
+value is at most1MiB. One shared whole-call budget permits8192 accepted native
+rows,16384 traversal steps,16MiB accepted raw TEXT/BLOB bytes, setup inventory1024
+and selected capability ancestry64. One bounded overflow fetch only refuses.
+Call-local setup caching retains complete histories; no recursive budget reset.
+Enclosing/decoded saved bounds remain and can refuse before64 nodes. These raw
+byte limits do not bound total SQLite/process/decoded-copy memory.
+
+`CodingCapabilityHistory` retains source-to-selected native capability facts,
+all seven columns/original typeof/matched own admissions, and actual setup issue
+history. Later withdrawal preserves history without restoring any grant. No
+current pointer/cache/roster/store/object/network is read. Necessary timestamp
+equalities/order do not prove actual mint order, source execution, native
+allocation/task/SID/result/assignment/ancestry/policy, acting-service ownership
+or full J graph. Complete native source/action-claim/task/session/result/policy,
+run/context/binding/activation/event/replay/request/receipt/contributor/heartbeat,
+current-use/recovery/cutover readers still precede EVERY producer. No source-rule
+verifier, current permission, genuine launch or provider effect follows.
+
+Existing setup/mapping APIs and source owners are unchanged; their bounded
+private composition suffices without a new helper or owner edit. No mount/
+__init__/OrgState/producer/schema/reference/cache/recovery/migration/public/CLI/
+TS/native/auth/permission/dependency/hook change. Populated/reserved refusal
+INCLUDING validate_data=False, create-org I, document history, disabled K0 and
+unavailable K1 current resolution remain intact. Original contract9f0cab1c,
+appendix5a1baa49/cases17d50aa2 stay byte-preserved; only the four accepted native
+envelope/own-mint/full-ancestry/history-and-bounds variants are appended to task
+case evidence. Python units RETIRED; integration INCLUDING callback SKIPPED24342;
+all SQL/parser/product/security/negative/mutation/repetition/protected executable
+proof UNEXECUTED/FOUNDER-WAIVED139429/430. Static/source assessment establishes
+no behavioral or test-authoring PASS. Fresh FULL independent reviewer then
+same-final-head scoped SOURCE QA return to SAME root, with actual lint/static
+checks, normal publication/hooks and manager guarded merge. Root retains full
+K2a2–K6 and real-agent/two-org/override/backup-copy operational acceptance; human
+trial remains retired and no live operation is authorized.
