@@ -45,6 +45,7 @@ const NOTE = 'needs founder sign-off on refund_policy';
 
 function rootTask(overrides: Record<string, unknown> = {}) {
   return {
+    child_wait: {state:'waiting_children',observed_at:'2026-10-14T00:00:00Z'},
     task_id: 'TASK-77',
     team: 'engineering',
     brief: BRIEF,
@@ -231,7 +232,7 @@ describe('Tasks list i18n', () => {
     }
 
     const row = screen.getByRole('link', { name: /TASK-77/ });
-    expect(row.textContent).toContain('等待子任务');
+    expect(row.textContent).toContain('等待子任务处理');
     expect(row.textContent).toContain('子任务失败');
     expect(row.textContent).toContain('5 分钟');
     // Authored brief headline, IDs and agent name are byte-identical.
@@ -245,14 +246,14 @@ describe('Tasks list i18n', () => {
     const requests = await countRequests(async () => {
       await switchLocale('en');
       expect(screen.getByRole('link', { name: /TASK-77/ })).toBe(row);
-      expect(row.textContent).toContain('waiting on subtasks');
+      expect(row.textContent).toContain('Waiting on child work');
       expect(row.textContent).toContain('subtask failed');
       expect(row.textContent).toContain('5m');
       expect(screen.getByRole('heading', { name: 'What the org is working on' })).toBeInTheDocument();
       expect(screen.getByText('1 waiting on you')).toBeInTheDocument();
       await switchLocale('zh-CN');
       expect(screen.getByRole('link', { name: /TASK-77/ })).toBe(row);
-      expect(row.textContent).toContain('等待子任务');
+      expect(row.textContent).toContain('等待子任务处理');
     });
     expect(requests).toEqual([]);
   });
@@ -422,7 +423,7 @@ describe('Task detail i18n', () => {
 
   test('fan-out band and chain timeline: localized copy, counts/ids/join mode verbatim', async () => {
     const task = rootTask({
-      active_fanout: JSON.stringify({ status: 'spawned', width: 2, children_ids: ['TASK-78'] }),
+      active_fanout: JSON.stringify({ status: 'spawned', width: 1, children_ids: ['TASK-78'] }),
     });
     stubDetail(task, {
       active_chain: {
@@ -434,21 +435,21 @@ describe('Task detail i18n', () => {
     mount(`/orgs/${SLUG}/tasks/TASK-77`, 'zh-CN');
 
     const band = await screen.findByRole('region', { name: '扇出状态' });
-    await waitFor(() => expect(band.textContent).toContain('扇出运行中 — 已完成 1/2'));
-    expect(band.textContent).toContain('所有子任务都进入终止状态后，父任务会自动恢复。');
-    expect(band.textContent).toContain('已完成 0/1 · 1 个失败');
-    expect(band.textContent).toContain('宽度 2');
-    expect(band.textContent).toContain('汇合 all-terminal');
+    await waitFor(() => expect(band.textContent).toContain('扇出 — 等待子任务处理'));
+    expect(band.textContent).toContain('子任务行状态不能证明正在执行或结果已被处理。后续处理仍由原负责人负责；根任务暂停会阻止后续执行。');
+    expect(band.textContent).toContain('子任务终止状态：1/1 · 失败 1 项');
+    expect(band.textContent).toContain('宽度 1');
+    expect(band.textContent).toContain('汇合规则 all-terminal');
     expect(await screen.findByText('工作流链 — 第 2 步，共 2 步')).toBeInTheDocument();
     expect(screen.getByText('第 1 段（首段）')).toBeInTheDocument();
     expect(screen.getByText('APPROVE')).toBeInTheDocument();
     expect(screen.getByText('code_reviewer')).toBeInTheDocument();
-    expect(screen.getByText('阻塞于：').textContent).toBe('阻塞于：等待 2 个子任务');
+    expect(screen.getByText('阻塞于：').textContent).toBe('阻塞于：等待子任务处理');
     // Header + rail StatusBadge: raw status value, localized waiting qualifier.
-    expect(screen.getAllByText('· 等待子任务')).toHaveLength(2);
+    expect(screen.getAllByText('· 等待子任务处理')).toHaveLength(2);
     await switchLocale('en');
-    expect(band.textContent).toContain('Running fan-out — 1 of 2 done');
-    expect(screen.getByText('Blocked on:').textContent).toBe('Blocked on: waiting on 2 subtasks');
+    expect(band.textContent).toContain('Fan-out — waiting on child work');
+    expect(screen.getByText('Blocked on:').textContent).toBe('Blocked on: Waiting on child work');
   });
 
   test('cancel dialog draft survives both switches; mapped error retranslates, raw codes stay verbatim', async () => {
@@ -649,7 +650,7 @@ describe('Task detail i18n', () => {
 });
 
 describe('shared StatusBadge seam', () => {
-  test('omitting waitingLabels keeps the English qualifier for other callers in any locale', () => {
+  test('delegated alone is neutral while the localized job qualifier remains', () => {
     render(
       <>
         <StatusBadge status="in_progress" blockKind="delegated" />
@@ -657,7 +658,7 @@ describe('shared StatusBadge seam', () => {
       </>,
       { wrapper: I18nTestBoundary },
     );
-    expect(screen.getByText('· waiting on subtasks')).toBeInTheDocument();
+    expect(screen.queryByText('· Waiting on child work')).not.toBeInTheDocument();
     expect(screen.getByText('· 等待作业')).toBeInTheDocument();
   });
 });

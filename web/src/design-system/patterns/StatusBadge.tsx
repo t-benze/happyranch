@@ -5,10 +5,8 @@
  *
  * Task vocabulary follows THR-037 Change B (Path B, stored source-of-truth):
  * `blocked` is gone. `escalated` is a first-class red status; `cancelled` is a
- * muted terminal. A parent waiting on its own children/jobs stays an ACTIVE
- * (green) `in_progress` badge with a DERIVED muted qualifier ("· waiting on
- * subtasks" / "· waiting on jobs") from the `blockKind` discriminant — the
- * waiting nuance is a modifier, NOT a separate top-level status.
+ * muted terminal. A parked in_progress badge receives observed child text
+ * from its feature caller. The ordinary job default remains supported.
  *
  * Pure prop-driven.
  */
@@ -37,8 +35,9 @@ interface StatusBadgeProps {
   presentation?: 'tasks';
   /**
    * Optional localized waiting-qualifier text (without the leading `· `).
-   * Omitted keys keep the English defaults, so other callers are unchanged.
+   * Null suppresses text. Undefined retains only the ordinary job default.
    */
+  waitingQualifier?: string | null;
   waitingLabels?: Partial<Record<'delegated' | 'blocked_on_job', string>>;
 }
 
@@ -71,9 +70,11 @@ function waitingQualifier(
   status: ThreadStatus | TaskStatus,
   blockKind?: BlockKind | null,
   labels?: StatusBadgeProps['waitingLabels'],
+  resolved?: string | null,
 ): string | null {
   if (status !== 'in_progress' || !blockKind) return null;
-  if (blockKind === 'delegated') return `· ${labels?.delegated ?? 'waiting on subtasks'}`;
+  if (blockKind !== 'delegated' && blockKind !== 'blocked_on_job') return null;
+  if (resolved !== undefined) return resolved ? `· ${resolved}` : null;
   if (blockKind === 'blocked_on_job') return `· ${labels?.blocked_on_job ?? 'waiting on jobs'}`;
   return null;
 }
@@ -82,24 +83,24 @@ function label(status: ThreadStatus | TaskStatus): string {
   return status;
 }
 
-export function StatusBadge({ status, blockKind, presentation, waitingLabels }: StatusBadgeProps): JSX.Element {
+export function StatusBadge({ status, blockKind, presentation, waitingLabels, waitingQualifier: resolved }: StatusBadgeProps): JSX.Element {
   const cls = presentation === 'tasks' && status === 'in_progress' ? TONE_CLASS.info
     : presentation === 'tasks' && status === 'escalated' ? TONE_CLASS.attention
     : STATUS_STYLE[status];
-  const qualifier = waitingQualifier(status, blockKind, waitingLabels);
+  const qualifier = waitingQualifier(status, blockKind, waitingLabels, resolved);
   // Led dot for live/active states only (matches ds.css .tag led).
   const showDot =
     status === 'in_progress' || status === 'completed' || status === 'pending';
   return (
     <span
-      className={`text-mono-sm inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 font-semibold tabular-nums ${cls} ${presentation === 'tasks' ? 'tasks-status' : ''}`}
+      className={`text-mono-sm inline-flex max-w-full items-center gap-1.5 rounded-full px-2.5 py-0.5 font-semibold tabular-nums ${cls} ${presentation === 'tasks' ? 'tasks-status' : ''}`}
     >
       {showDot && (
         <span className="inline-block h-1.5 w-1.5 rounded-full bg-current opacity-70" aria-hidden />
       )}
       {label(status)}
       {qualifier && (
-        <span className="font-normal opacity-70">{qualifier}</span>
+        <span className="min-w-0 break-words font-normal opacity-70">{qualifier}</span>
       )}
     </span>
   );

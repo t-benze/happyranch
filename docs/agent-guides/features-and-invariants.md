@@ -1648,6 +1648,17 @@ no observed-only authority-v2 claim rule.
 
 ## Root task Pause and Resume (THR-292)
 
+Transient child_wait observations preserve stored lifecycle and exact report
+identity; completed reports on in_progress rows do not rewrite those rows or
+prove consumed results. Capped/unread evidence is unavailable, not empty.
+Detail unknown/job blockers say descendant cleanup unconfirmed; no terminal-job,
+exit0 or absent-PID heuristic discharges them. The future job-owned closure
+producer is excluded from TASK-11437, and historical unknowns stay fail-closed.
+Seven fanout row categories and genuine prior audit attribution never infer
+running/queued/succeeded or parent resumed/completed. Backend/protected proof
+remains unexecuted; synthetic frontend observations establish only that boundary.
+
+
 Task Pause is a separate root control with generation-checked, idempotent toggles. New Pending-root Pause is409; terminal lifecycle wins. Pausing means committed work or unavailable drain evidence remains; Paused requires complete absence of blockers. A callback, PID0 placeholder, persisted PID or passthrough CLEAN receipt cannot prove tree quiescence. Committed work can settle while held, but future steps/retries/job approvals and founder origin Continue/supersede/revisit/dispatch(resolves) are gated. Only a captured ordinary-purpose actually running session (including a normal v2-admitted manager session) retains its unreviewed auto-job exception. Cancel, job reject/stop and genuine result settlement remain available. Another accepted manager successor root remains unheld. Overview is bounded/read-only and never safe-to-restart. [Current contract](../superpowers/specs/2026-10-10-root-task-pause-resume.md).
 
 Unclaimed completion recovery retains the actual original return and SIDs while held, with no running deadline. Its 120-second deadline is pinned atomically with the accepted real admission/claim, binding and launch journal. Preclaim/admission waiting spends nothing; claimed recovery retains its expiry across Resume, duplicates, retry and restart, including committed no-launch failure. Unresolved original host/tree evidence is separately retained under the original session/owner/generation before recovery conversion. It remains an unknown drain blocker after callbacks, terminal lifecycle, restart or quiescent recovery, without owning a new producer. Known-quiescent originals add no unknown blocker, and deferred unclaimed recovery alone is not execution.

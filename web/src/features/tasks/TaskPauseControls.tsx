@@ -43,21 +43,23 @@ function DrainDisclosure({ pause, org, routes, waiting }: {
 }): JSX.Element {
   const { t, locale } = useTranslation();
   const running = pause.blockers.filter(blocker => RUNNING.has(blocker.kind)).length;
-  const other = pause.blockers.length - running;
+  const unknownJobs = pause.blockers.filter(blocker => blocker.kind === 'unknown' && blocker.owner_kind === 'job' && !!blocker.job_id).length;
+  const other = pause.blockers.length - running - unknownJobs;
   const summary = [
     running > 0 && t('tasks.pause.stillRunning', { count: running }),
+    unknownJobs > 0 && t('tasks.pause.jobCleanupCount', {count: unknownJobs}),
     other > 0 && t('tasks.pause.otherWaiting', { count: other }),
     !pause.evidence_complete && t('tasks.pause.evidenceUnknown'),
   ].filter(Boolean).join(' · ');
-  const taskLink = (id: string) => <Link to={routes.detail(id)} className="text-info font-mono hover:underline">{id}</Link>;
+  const taskLink = (id: string) => <Link to={routes.detail(id)} className="text-info break-all font-mono hover:underline">{id}</Link>;
   return <details className="order-2 min-w-0 basis-full text-xs md:order-3">
     <summary className="text-text-primary focus-visible:ring-ring w-fit cursor-pointer rounded-sm py-1 font-semibold focus-visible:ring-2 focus-visible:outline-none">{summary}</summary>
     {pause.blockers.length > 0 && <ul className="border-border-default bg-bg-raised divide-border-default mt-1 min-w-0 divide-y rounded-md border md:max-w-content-form">
       {pause.blockers.map((blocker, index) => <li key={index} className="flex min-w-0 flex-wrap items-baseline gap-x-3 gap-y-1 px-3 py-2">
         {blocker.job_id && org
-          ? <Link to={`/orgs/${org}/jobs/${blocker.job_id}`} className="text-info font-mono hover:underline">{blocker.job_id}</Link>
+          ? <Link to={`/orgs/${org}/jobs/${blocker.job_id}`} className="text-info break-all font-mono hover:underline">{blocker.job_id}</Link>
           : taskLink(blocker.task_id)}
-        <span className="text-text-primary">{Object.hasOwn(BLOCKER_KEYS, blocker.kind) ? t(BLOCKER_KEYS[blocker.kind]) : blocker.kind}</span>
+        <span className="text-text-primary">{blocker.kind === 'unknown' && blocker.owner_kind === 'job' && blocker.job_id ? t('tasks.pause.blocker.jobCleanup') : Object.hasOwn(BLOCKER_KEYS, blocker.kind) ? t(BLOCKER_KEYS[blocker.kind]) : blocker.kind}</span>
         <span className="text-text-secondary ml-auto min-w-0 break-words font-mono">
           {blocker.job_id && org && <>{taskLink(blocker.task_id)}{' · '}</>}
           {[blocker.job_id && !org ? blocker.job_id : null, blocker.owner_kind, blocker.reason].filter(Boolean).join(' · ')}
@@ -65,7 +67,8 @@ function DrainDisclosure({ pause, org, routes, waiting }: {
       </li>)}
     </ul>}
     <div className="text-text-secondary mt-1 space-y-1">
-      {waiting && <p>{t('tasks.pause.waitingNote')}</p>}
+      {waiting && <p>{t(running === 0 && pause.blockers.some(blocker => blocker.kind === 'unknown') ? 'tasks.pause.cleanupWaitingNote' : 'tasks.pause.waitingNote')}</p>}
+      {unknownJobs > 0 && <p>{t('tasks.pause.jobCleanupNote')}</p>}
       {!pause.evidence_complete && <p>{t('tasks.pause.evidenceIncomplete')}</p>}
       <p>{t('tasks.pause.observed', { stamp: formatDateShapeFor(locale, new Date(pause.observed_at), 'dateTime') })}</p>
     </div>

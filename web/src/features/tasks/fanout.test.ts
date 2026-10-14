@@ -40,7 +40,7 @@ describe('parseActiveFanout', () => {
       }),
     );
     expect(parsed?.status).toBe('spawned');
-    expect(parsed?.childrenIds).toEqual(['TASK-1', 'TASK-2']);
+    expect(parsed?.childrenIds).toBeNull();
   });
 
   // Malformed / partial active_fanout must fall back safely (→ null).
@@ -49,8 +49,6 @@ describe('parseActiveFanout', () => {
     ['not JSON', '{not json'],
     ['null literal', 'null'],
     ['unknown status', JSON.stringify({ status: 'weird', width: 3 })],
-    ['zero width', JSON.stringify({ status: 'spawned', width: 0 })],
-    ['missing width', JSON.stringify({ status: 'spawned' })],
     ['array payload', JSON.stringify([1, 2, 3])],
     ['empty string', ''],
     ['undefined', undefined],
@@ -63,7 +61,7 @@ describe('parseActiveFanout', () => {
       JSON.stringify({ status: 'spawned', width: 4 }),
     );
     expect(parsed?.plannedChildren).toEqual([]);
-    expect(parsed?.childrenIds).toEqual([]);
+    expect(parsed?.childrenIds).toBeNull();
   });
 });
 
@@ -88,76 +86,37 @@ describe('latestFanoutJoin', () => {
   test('degrades to null width when payload omits it', () => {
     expect(
       latestFanoutJoin([{ action: 'fanout_join', payload: {} }]),
-    ).toEqual({ width: null, childrenIds: [] });
+    ).toEqual({ width: null, childrenIds: null });
   });
 });
 
-describe('summarizeChildStatuses', () => {
-  const kids: TaskRecallNode[] = [
-    child('TASK-1', 'completed'),
-    child('TASK-2', 'failed'),
-    child('TASK-3', 'in_progress'),
-    child('TASK-4', 'pending'),
-    child('TASK-5', 'superseded'),
-  ];
-
-  test('counts across all direct children when unrestricted', () => {
-    const c = summarizeChildStatuses(kids);
-    expect(c.total).toBe(5);
-    expect(c.completed).toBe(2); // completed + superseded
-    expect(c.failed).toBe(1);
-    expect(c.running).toBe(1);
-    expect(c.queued).toBe(1);
-    expect(c.terminal).toBe(3); // completed + failed + superseded
+describe('summarizeChildStatuses and progressSummary', () => {
+  const statuses = ['pending','in_progress','escalated','completed','failed','cancelled','superseded'] as const;
+  const kids = statuses.map((status, i) => child(`C${i}`, status));
+  const ids = kids.map(k => k.task_id);
+  test('counts seven literal categories from exact membership', () => {
+    const counts = summarizeChildStatuses(kids, ids, 7);
+    expect(counts).toEqual({total:7,pending:1,inProgress:1,escalated:1,completed:1,failed:1,cancelled:1,superseded:1,terminal:4});
+    expect(progressSummary(counts!, 'en')).toBe('Terminal child rows: 4/7 · 1 pending row · 1 in-progress row · 1 escalated row · 1 completed row · 1 failed row · 1 cancelled row · 1 superseded row');
+    expect(progressSummary(counts!, 'zh-CN')).toBe('子任务终止状态：4/7 · 待处理 1 项 · 生命周期进行中 1 项 · 已升级 1 项 · 已完成 1 项 · 失败 1 项 · 已取消 1 项 · 已被取代 1 项');
   });
-
-  test('restricts to the given children_ids set', () => {
-    const c = summarizeChildStatuses(kids, ['TASK-1', 'TASK-3']);
-    expect(c.total).toBe(2);
-    expect(c.completed).toBe(1);
-    expect(c.running).toBe(1);
+  test('excludes unrelated direct rows without changing membership', () => {
+    expect(summarizeChildStatuses(kids, ['C1','C3'], 2)).toMatchObject({total:2,inProgress:1,completed:1,terminal:1});
   });
-
-  test('safe on undefined children', () => {
-    expect(summarizeChildStatuses(undefined).total).toBe(0);
+  test.each([undefined, [], ['C0','C0'], ['C0','missing'], ['C0',42], [' ']])('refuses incomplete/malformed membership %j', selected => {
+    expect(summarizeChildStatuses(kids, selected as string[] | undefined, 2)).toBeNull();
   });
-});
-
-describe('progressSummary', () => {
-  test('omits zero segments past the leading complete count', () => {
-    expect(
-      progressSummary({
-        total: 4,
-        completed: 4,
-        failed: 0,
-        running: 0,
-        queued: 0,
-        terminal: 4,
-      }, 'en'),
-    ).toBe('4 of 4 complete');
+  test.each([undefined,null,0,1.5,8])('refuses mismatching width %j', width => {
+    expect(summarizeChildStatuses(kids, ids, width)).toBeNull();
   });
-
-  test('includes running/failed/queued when non-zero', () => {
-    expect(
-      progressSummary({
-        total: 5,
-        completed: 1,
-        failed: 1,
-        running: 2,
-        queued: 1,
-        terminal: 2,
-      }, 'en'),
-    ).toBe('1 of 5 complete · 2 running · 1 failed · 1 queued');
+  test('missing children and duplicate selected nodes never become zero', () => {
+    expect(summarizeChildStatuses(undefined, ids, 7)).toBeNull();
+    expect(summarizeChildStatuses([...kids,kids[0]], ids, 7)).toBeNull();
   });
-
-  test('renders the same segments in zh-CN with the counts unchanged', () => {
-    const counts = { total: 5, completed: 1, failed: 1, running: 2, queued: 1, terminal: 2 };
-    expect(progressSummary(counts, 'zh-CN')).toBe(
-      '已完成 1/5 · 2 个运行中 · 1 个失败 · 1 个排队中',
-    );
-    expect(
-      progressSummary({ ...counts, failed: 0, running: 0, queued: 0, completed: 5 }, 'zh-CN'),
-    ).toBe('已完成 5/5');
+  test('zero categories omitted and explicit plural forms retained', () => {
+    const counts = summarizeChildStatuses([child('A','completed'),child('B','completed')], ['A','B'], 2)!;
+    expect(progressSummary(counts,'en')).toBe('Terminal child rows: 2/2 · 2 completed rows');
+    expect(progressSummary(counts,'zh-CN')).toBe('子任务终止状态：2/2 · 已完成 2 项');
   });
 });
 

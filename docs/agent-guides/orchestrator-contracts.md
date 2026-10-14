@@ -1030,7 +1030,7 @@ remain unchanged. See the current THR296 spec's separate online contract.
 
 Agents self-report `status="completed"|"blocked"` via `happyranch report-completion` (the report verb is unchanged — an agent still self-reports "blocked on jobs"). The orchestrator-owned `TaskStatus` on the `tasks` row is distinct, and under THR-037 Change B (Path B) is: `pending`, `in_progress`, `escalated`, `completed`, `failed`, `cancelled`, or `superseded`. (`blocked` is fully retired as of Phase 3 — see the Path-B spec.)
 
-`block_kind` is the waiting-reason discriminant for an `in_progress` task — *what it is internally waiting on*: `delegated` (waiting on child subtasks) or `blocked_on_job` (waiting on background jobs). `block_kind IS NULL` ⟺ a subprocess is running now. A parent waiting on its children/jobs stays `in_progress` (not `blocked`); the await-founder state is the top-level `escalated`.
+`block_kind` is the waiting-reason discriminant for an `in_progress` task — *what it is internally waiting on*: `delegated` (parked delegation bookkeeping) or `blocked_on_job` (waiting on background jobs). `block_kind IS NULL` has no parked reason; that marker alone does not prove a subprocess is running now. A parent waiting on its children/jobs stays `in_progress` (not `blocked`); the await-founder state is the top-level `escalated`.
 
 `superseded` is a terminal state, peer to `completed`/`failed`. An `escalated` / `in_progress(delegated)` task transitions here when a human-authorized continuation (founder `revisit`, or a founder/manager thread-dispatch) names it in lineage: the predecessor is closed (block_kind cleared, audit cites the continuation root task_id) instead of being re-run. The close never re-enqueues the superseded task; it still wakes a delegated parent via the normal parent-wake path, and the delegated close is gated on all children being terminal so no live sibling is abandoned or SIGTERM'd. It joins every terminal predicate (`TERMINAL_STATES`, `_TERMINAL_TASK_STATUSES`, `_TERMINAL_STATUS_TO_EVENT`) and is completion-class for the thread task-followup: a thread-originated task that is superseded emits its `_maybe_post_thread_followup` system message (`task_completed` kind) just like a normal completion. The thread-dispatch supersede is manager-authorized only — a worker self-dispatch naming `resolves` is rejected (`403 thread_supersede_not_authorized`); the predecessor is never auto-closed by an unauthorized dispatch. Query the backlog with `happyranch tasks --status escalated` or `happyranch tasks --status in_progress --block-kind delegated`.
 
@@ -2860,6 +2860,25 @@ no observed-only authority-v2 claim rule.
 
 
 ## Root task Pause and Resume (THR-292)
+
+Stored `in_progress/delegated` is delegation bookkeeping, not outstanding-child
+or running-process evidence. Task list, roots and detail serialize optional
+`child_wait` in the same coherent database snapshot as their parent rows. The
+closed `{state, observed_at}` observation distinguishes unresolved non-Pending
+child work (`waiting_children`), only unresolved Pending work (`pending_children`),
+nonterminal rows with an exact current completed report (`child_results_received`),
+and all-terminal or authoritatively empty children (`continuation_pending`).
+Incomplete, malformed, capped or deadline-exceeded reads are `unavailable`.
+The reader reuses the existing exact child/agent/current-SID completed-report
+predicate and terminal states. It invokes no eligibility, admission, result
+consumer or wake. At most256 direct children (query257),1000 inspected children
+and250ms additional observation work per response/page are allowed, with no
+refill. These limits do not guarantee response performance or constrain execution.
+No model/store/schema field is added and no stored status/block_kind/note changes.
+
+This observational extension does not consume results or grant runnable/joined/
+resumed status. Partial recall is never zero. Execution, chains and wakes retain
+their existing owners; current observation does not prove process quiescence.
 
 Pause gates future execution commitment of the actual root tree, not the lifecycle or accepted-result consumer. Pure preparation precedes the short final admission writer. The existing workflow authority validator is shared by public admission_writer and private draft composition; profile/publisher ownership and short lease transactions precede binding/root/DB/terminal ownership, with rollback before release and no ownership across waits. Final admitted cleanup ACTION runs unlocked under its real scheduler owner; known prompt suffix is retained and interrupted ACTION stays unknown. SAME-owner retry/recovery retains original identity and budgets and is durably rediscovered. Genuine manager supersession keeps its separate NULL-parent unheld successor; a held predecessor does not hold that root. Terminal cleanup refuses uncertain/held execution. Details: [current Pause contract](../superpowers/specs/2026-10-10-root-task-pause-resume.md).
 
