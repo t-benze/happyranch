@@ -14,11 +14,16 @@ import sys
 import time
 from typing import Any
 
+sys.dont_write_bytecode = True
+from prepare_cleanup import (CAP, EVIDENCE_CAP, acknowledgement, canonical_record,
+                             create_attempt, digest, evidence_context, validate_coverage,
+                             beneath, history_input, native_inputs, validate_eligibility, write_json)
+
 
 _ROW_KEYS = {
     "candidate", "containing", "kind", "allocated_bytes", "argv",
     "started_at", "ended_at", "terminal", "exit_code", "receipt",
-    "stdout", "stderr", "error",
+    "stdout", "stderr", "error", "ordinal", "attempt_sha256", "eligible_sha256",
 }
 _PRE_ACTION_DECISIONS = {"refused", "report_only", "inventory_only"}
 _REMOVAL_DECISIONS = {"removed_cache", "removed_worktree"}
@@ -123,12 +128,16 @@ def _anomaly_measurements(receipt: dict[str, Any]) -> bool:
     }:
         return False
     location_keys = {
-        "path", "exists", "apparent_bytes", "allocated_bytes", "measurement_error",
+        "path", "exists", "identity", "apparent_bytes", "allocated_bytes", "measurement_error",
     }
     for value in locations.values():
         if not isinstance(value, dict) or set(value) != location_keys:
             return False
-        if not isinstance(value["path"], str) or not isinstance(value["exists"], bool):
+        if not isinstance(value["path"], str) or value["exists"] not in (True, False, None):
+            return False
+        identity = value['identity']
+        if identity is not None and (not isinstance(identity, list) or len(identity) != 4
+                                     or any(not _integer(v) for v in identity)):
             return False
         error = value["measurement_error"]
         if error is not None and (not isinstance(error, str) or not error):
@@ -198,29 +207,27 @@ def _safe_terminal_row(
 
 def _completed_candidates(
     path: Path, manifest: list[dict[str, Any]], runner: Path,
+    context: dict[str, Any], *, recovery: bool = False,
 ) -> set[str]:
-    if not path.exists():
-        return set()
+    # Do not return any partial skip set. Whole namespace and journal join first.
+    rows = validate_coverage(context, manifest, recovery=recovery)
     by_candidate = {item["candidate"]: item for item in manifest}
-    completed: set[str] = set()
-    for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
-        if not line.strip():
-            continue
-        row = json.loads(line)
-        candidate = row.get("candidate") if isinstance(row, dict) else None
-        if not isinstance(candidate, str) or candidate not in by_candidate:
-            raise ValueError(f"journal row {number} is not in the current manifest")
-        if candidate in completed:
-            raise ValueError(f"journal has duplicate rows for {candidate}")
-        _safe_terminal_row(row, by_candidate[candidate], runner, number)
-        completed.add(candidate)
-    return completed
+    for number, row in enumerate(rows, 1):
+        _safe_terminal_row(row, by_candidate[row['candidate']], runner, number)
+    return {row['candidate'] for row in rows}
 
 
-def _append_durable(handle: Any, row: dict[str, Any]) -> None:
-    handle.write(json.dumps(row, sort_keys=True, separators=(",", ":")) + "\n")
+def _append_durable(handle: Any, row: dict[str, Any]) -> tuple[int, int]:
+    prefix = Path(handle.name).read_bytes()
+    encoded = (json.dumps(row, sort_keys=True, separators=(",", ":")) + "\n").encode()
+    if len(prefix) + len(encoded) > EVIDENCE_CAP:
+        raise ValueError('journal_cap')
+    handle.write(encoded.decode())
     handle.flush()
     os.fsync(handle.fileno())
+    if Path(handle.name).read_bytes() != prefix + encoded:
+        raise ValueError('journal_byte_verification_failed')
+    return len(prefix), len(prefix) + len(encoded)
 
 
 def _receipt(stdout: str) -> dict[str, Any] | None:
@@ -305,21 +312,42 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--journal", type=Path, required=True)
+    parser.add_argument("--history-exclusions", type=Path, required=True)
+    parser.add_argument("--evidence-dir", type=Path, required=True)
+    parser.add_argument("--only-candidate")
+    parser.add_argument("--only-containing")
     parser.add_argument(
         "--runner", type=Path,
         default=Path(__file__).with_name("run_cleanup_candidate.sh"),
     )
-    parser.add_argument("--max-candidates", type=int, default=100)
+    parser.add_argument("--max-candidates", type=int, default=40)
     parser.add_argument("--deadline-seconds", type=float, default=2400.0)
     parser.add_argument("--candidate-timeout-seconds", type=float, default=300.0)
     args = parser.parse_args(argv)
-    if (args.max_candidates < 1 or args.deadline_seconds <= 0
+    if (not 1 <= args.max_candidates <= CAP or args.deadline_seconds <= 0
             or args.candidate_timeout_seconds <= 0):
         parser.error("bounds must be positive")
     try:
+        if args.runner.resolve() != Path(__file__).with_name('run_cleanup_candidate.sh').resolve():
+            raise ValueError('runner_must_be_shipping_source')
+        args.runner = args.runner.resolve()
+        context = evidence_context(args.manifest, args.history_exclusions, args.journal, args.evidence_dir)
         rows = _load_manifest(args.manifest)
-        completed = _completed_candidates(args.journal, rows, args.runner)
-    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        if len(rows) > CAP:
+            raise ValueError('frozen_manifest_cap')
+        _, exclusions = history_input(args.history_exclusions)
+        if any(beneath(Path(row[k]), old) or beneath(old, Path(row[k]))
+               for row in rows for k in ('candidate', 'containing') for old in exclusions):
+            raise ValueError('manifest_history_overlap')
+        if (args.only_candidate is not None and sum(
+                row['candidate'] == args.only_candidate and row['containing'] == args.only_containing
+                for row in rows) != 1) or (args.only_candidate is None and args.only_containing is not None):
+            raise ValueError('direct_literal_identity_not_in_manifest')
+        args.evidence_dir.mkdir(parents=True, exist_ok=True)
+        namespace = args.evidence_dir / 'attempts'
+        namespace.mkdir(exist_ok=True)
+        completed = _completed_candidates(args.journal, rows, args.runner, context, recovery=True)
+    except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
         print(f"invalid input: {exc}", file=sys.stderr)
         return 2
     if not args.runner.is_file():
@@ -332,9 +360,18 @@ def main(argv: list[str] | None = None) -> int:
     exit_code = 0
     args.journal.parent.mkdir(parents=True, exist_ok=True)
     with args.journal.open("a", encoding="utf-8") as journal:
-        for item in rows:
+        for ordinal, item in enumerate(rows, 1):
             if item["candidate"] in completed:
                 continue
+            if args.only_candidate is not None and item['candidate'] != args.only_candidate:
+                continue
+            try:
+                _completed_candidates(args.journal, rows, args.runner, context)
+                if evidence_context(args.manifest, args.history_exclusions, args.journal, args.evidence_dir) != context:
+                    raise ValueError('batch_binding_drift')
+            except (OSError, ValueError, TypeError, KeyError) as exc:
+                print(f'coverage preflight failed: {exc}', file=sys.stderr)
+                return 3
             if invoked >= args.max_candidates:
                 stop_reason = "max_candidates"
                 break
@@ -343,14 +380,20 @@ def main(argv: list[str] | None = None) -> int:
                 stop_reason = "deadline"
                 break
             command = _command(args.runner, item)
+            try:
+                attempt = create_attempt(context, item, ordinal, command)
+            except (OSError, ValueError, TypeError) as exc:
+                print(f'attempt publication failed: {exc}', file=sys.stderr)
+                return 3
             row: dict[str, Any] = {
+                'ordinal': ordinal, 'attempt_sha256': digest(attempt / 'attempt.json'), 'eligible_sha256': None,
                 **item, "argv": command, "started_at": _utc_now(), "terminal": True,
             }
             process: subprocess.Popen[str] | None = None
             try:
                 process = subprocess.Popen(
                     command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                    text=True, start_new_session=True,
+                    text=True, start_new_session=True, env={**os.environ, "WC_ATTEMPT": str(attempt)},
                 )
                 try:
                     stdout, stderr = process.communicate(
@@ -379,13 +422,37 @@ def main(argv: list[str] | None = None) -> int:
                     "receipt": None, "stdout": stdout, "stderr": stderr,
                     "error": f"runner_error:{type(exc).__name__}:{termination}",
                 })
-            _append_durable(journal, row)
+            try:
+                if (attempt / 'evidence-failed').exists():
+                    row['error'] = 'native_evidence_publication_failed'
+                row['eligible_sha256'] = validate_eligibility(attempt)
+                native = {key: row[key] for key in ('exit_code', 'receipt', 'stdout', 'stderr', 'error')}
+                scratch = list(attempt.glob('gates.*'))
+                if len(scratch) != 1:
+                    raise ValueError('native_gate_namespace_missing')
+                native['native_inputs'] = native_inputs(scratch[0])
+                write_json(attempt / 'terminal-native.json', native)
+                canonical_record(attempt / 'terminal-native.json')
+                begin, end = _append_durable(journal, row)
+                # The acknowledgement is a reference, never a second outcome ledger.
+                write_json(attempt / 'ack.json', acknowledgement(attempt, args.journal, begin, end))
+            except (OSError, ValueError, TypeError, KeyError) as exc:
+                # Retain exact native outcome and independent publication cause. Fallback
+                # absence/truncation cannot repair missing positive coverage.
+                print(json.dumps({'kind': 'cleanup_terminal_publication_failure', 'row': row,
+                                  'error': f'{type(exc).__name__}:{exc}'}, sort_keys=True))
+                return 3
             invoked += 1
             halt = _halt_reason(row)
             if halt is not None:
                 stop_reason = halt
                 exit_code = 3
                 break
+            try:
+                _completed_candidates(args.journal, rows, args.runner, context)
+            except (OSError, ValueError, TypeError, KeyError) as exc:
+                print(f'post-publication preflight failed: {exc}', file=sys.stderr)
+                return 3
 
     print(json.dumps({
         "invoked": invoked,

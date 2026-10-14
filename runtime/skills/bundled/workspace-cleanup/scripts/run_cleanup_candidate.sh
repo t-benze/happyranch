@@ -14,12 +14,66 @@ _WC_SAFETY_HELPER="${_WC_RUNNER_SKILL_DIR:+$_WC_RUNNER_SKILL_DIR/scripts/worktre
 
 _wc_refuse() { printf '{"decision":"%s","reason":"%s"}\n' "${2:-refused}" "$1"; return 2; }
 
+# Every helper receipt is native bounded subprocess output, never invented API data.
+_wc_native() {
+  local sink="$1"; shift
+  local native_rc=0
+  python3 "$_WC_RUNNER_SKILL_DIR/scripts/prepare_cleanup.py" evidence-capture \
+    --output "$sink" -- "$@" || native_rc=$?
+  if [ ! -f "$sink" ]; then
+    printf 'native evidence publication failed: %s\n' "$sink" > "$WC_ATTEMPT/evidence-failed"
+    return 3
+  fi
+  return "$native_rc"
+}
+
+_wc_evidence_failure() {
+  printf '{"decision":"evidence_failure","reason":"%s"}\n' "$1"
+  return 3
+}
+
+_wc_publish_eligible() {
+  if ! WC_ELIGIBLE_SHA256="$(python3 "$_WC_RUNNER_SKILL_DIR/scripts/prepare_cleanup.py" eligible \
+        --attempt "$WC_ATTEMPT" --scratch "$WC_TMP" --measurement "$1")"; then
+    return 1
+  fi
+  export WC_ELIGIBLE_SHA256
+  python3 "$_WC_RUNNER_SKILL_DIR/scripts/prepare_cleanup.py" validate-eligible \
+    --attempt "$WC_ATTEMPT" --sha256 "$WC_ELIGIBLE_SHA256" || return 1
+  # Compare against the held boundary; snapshot refuses substitution/drift.
+  if _wc_is_cache; then
+    git -C "$CONTAINING" status --porcelain=v1 -z > "$WC_TMP/published-status" || return 1
+    cmp -s "$WC_TMP/published-status" "$cache_status_before" || return 1
+    [ "$cache_source_before" = "$(_wc_source_digest "$CONTAINING")" ] || return 1
+    python3 "$_WC_RUNNER_SKILL_DIR/scripts/prepare_cleanup.py" cache-index \
+      --containing "$CONTAINING" > "$WC_TMP/published-index.json" || return 1
+    cmp -s "$WC_TMP/published-index.json" "$WC_TMP/cache-index-before.json" || return 1
+  fi
+  _wc_snapshot_tree
+}
+
+_wc_restoration_proven() {
+  [ ! -e "$WC_ISOLATED_CANDIDATE" ] && [ ! -L "$WC_ISOLATED_CANDIDATE" ] || return 1
+  [ ! -e "$WC_ISOLATION_DIR" ] && [ ! -L "$WC_ISOLATION_DIR" ] || return 1
+  _wc_snapshot_tree || return 1
+  _wc_measure_path "$CANDIDATE" > "$WC_TMP/restored-measurement.json" || return 1
+  python3 -c 'import json,sys; b=json.loads(sys.argv[1]); a=json.load(open(sys.argv[2])); sys.exit(0 if all(b[k]==a[k] for k in ("apparent","allocated")) else 1)' \
+    "$bytes_before" "$WC_TMP/restored-measurement.json" || return 1
+  git -C "$CONTAINING" status --porcelain=v1 -z > "$WC_TMP/restored-status" || return 1
+  cmp -s "$WC_TMP/restored-status" "$cache_status_before" || return 1
+  [ "$cache_source_before" = "$(_wc_source_digest "$CONTAINING")" ] || return 1
+  python3 "$_WC_RUNNER_SKILL_DIR/scripts/prepare_cleanup.py" cache-index \
+    --containing "$CONTAINING" > "$WC_TMP/restored-index.json" || return 1
+  cmp -s "$WC_TMP/restored-index.json" "$WC_TMP/cache-index-before.json"
+}
+
 _wc_is_cache() {
   case "$(basename "$CANDIDATE")" in node_modules|.venv) return 0;; *) return 1;; esac
 }
 
 _wc_snapshot_tree() {
-  python3 "$_WC_SAFETY_HELPER" snapshot "$CANDIDATE" "$CONTAINING" \
+  WC_SNAPSHOT_NUMBER=$((${WC_SNAPSHOT_NUMBER:-0}+1))
+  _wc_native "$WC_TMP/snapshot-$WC_SNAPSHOT_NUMBER.native.json" python3 "$_WC_SAFETY_HELPER" snapshot "$CANDIDATE" "$CONTAINING" \
     "$PRIMARY" "$WORKSPACE" "$WC_TMP/tree-boundary.json" >/dev/null
 }
 
@@ -469,23 +523,28 @@ _wc_restore_isolated_cache() {
     if [ -e "$CANDIDATE" ] || [ -L "$CANDIDATE" ]; then
       return 1
     fi
-    mv -- "$WC_ISOLATED_CANDIDATE" "$CANDIDATE" || return 1
+    _wc_native "$WC_TMP/restore-mv.json" mv -- "$WC_ISOLATED_CANDIDATE" "$CANDIDATE" || return 1
   fi
   if [ -e "$WC_ISOLATION_DIR" ] || [ -L "$WC_ISOLATION_DIR" ]; then
-    rmdir -- "$WC_ISOLATION_DIR" || return 1
+    _wc_native "$WC_TMP/restore-rmdir.json" rmdir -- "$WC_ISOLATION_DIR" || return 1
   fi
   return 0
 }
 
 _wc_isolate_cache() {
-  WC_CACHE_ISOLATED=""; export WC_CACHE_ISOLATED
-  if ! WC_ISOLATION_DIR="$(mktemp -d "$CONTAINING/.workspace-cleanup-isolate.XXXXXX")"; then
+  WC_CACHE_ISOLATED=""; WC_ISOLATION_CREATED=""; export WC_CACHE_ISOLATED WC_ISOLATION_CREATED
+  if ! WC_ISOLATION_DIR="$(_wc_native "$WC_TMP/isolation-mktemp.json" \
+        mktemp -d "$CONTAINING/.workspace-cleanup-isolate.XXXXXX")"; then
     return 1
   fi
+  WC_ISOLATION_CREATED=1; export WC_ISOLATION_CREATED
   WC_ISOLATED_CANDIDATE="$WC_ISOLATION_DIR/$(basename "$CANDIDATE")"
   export WC_ISOLATION_DIR WC_ISOLATED_CANDIDATE
-  if ! mv -- "$CANDIDATE" "$WC_ISOLATED_CANDIDATE"; then
-    rmdir -- "$WC_ISOLATION_DIR" 2>/dev/null || :
+  _wc_native "$WC_TMP/isolation-directory-identity.json" python3 -c \
+    'import json,os,sys; s=os.lstat(sys.argv[1]); print(json.dumps([s.st_dev,s.st_ino,s.st_mode,s.st_uid]))' \
+    "$WC_ISOLATION_DIR" >/dev/null || return 1
+  if ! _wc_native "$WC_TMP/isolation-mv.json" mv -- "$CANDIDATE" "$WC_ISOLATED_CANDIDATE"; then
+    _wc_native "$WC_TMP/isolation-rmdir.json" rmdir -- "$WC_ISOLATION_DIR" || return 1
     return 1
   fi
   WC_CACHE_ISOLATED=1; export WC_CACHE_ISOLATED
@@ -493,12 +552,12 @@ _wc_isolate_cache() {
 }
 
 _wc_verify_post_action() {
-  python3 "$_WC_SAFETY_HELPER" post-action "$CANDIDATE" "$WC_TMP/tree-boundary.json" \
+  _wc_native "$WC_TMP/post-action.native.json" python3 "$_WC_SAFETY_HELPER" post-action "$CANDIDATE" "$WC_TMP/tree-boundary.json" \
     "${WC_ISOLATED_CANDIDATE:-}" "${WC_ISOLATION_DIR:-}" >/dev/null
 }
 
 _wc_git_preserved() {
-  python3 "$_WC_SAFETY_HELPER" preserved "$CONTAINING" "$PRIMARY" "$TASK" >/dev/null
+  _wc_native "$WC_TMP/preserved-${WC_GATE_PHASE}.json" python3 "$_WC_SAFETY_HELPER" preserved "$CONTAINING" "$PRIMARY" "$TASK" >/dev/null
 }
 
 _wc_scan_job() {
@@ -520,7 +579,7 @@ json.dump({"task_id":os.environ["ACTING_TASK"],"session_id":os.environ["SESSION_
   fi
   started_epoch="$(date -u +%s)" || return 1
   submit_json="$WC_TMP/scan-submit-$nonce.json"
-  if ! happyranch jobs submit --org "$ORG" --from-file "$payload" --json > "$submit_json" 2>/dev/null; then
+  if ! _wc_native "$submit_json.native.json" happyranch jobs submit --org "$ORG" --from-file "$payload" --json > "$submit_json" 2>/dev/null; then
     return 1
   fi
   job_id="$(python3 -c 'import json,os,re,sys
@@ -534,7 +593,7 @@ if d.get("cwd_resolved")!=os.path.realpath(os.environ["WORKSPACE"]): raise Syste
 print(job)' "$submit_json")"
   [ -n "$job_id" ] || return 1
   wait_json="$WC_TMP/scan-wait-$nonce.json"
-  if ! happyranch jobs wait "$job_id" --timeout-seconds 30 --task-id "$ACTING_TASK" \
+  if ! _wc_native "$wait_json.native.json" happyranch jobs wait "$job_id" --timeout-seconds 30 --task-id "$ACTING_TASK" \
         --session-id "$SESSION_ID" --org "$ORG" > "$wait_json" 2>/dev/null; then
     return 1
   fi
@@ -544,9 +603,9 @@ d=json.load(open(sys.argv[1])); raise SystemExit(0 if d=={"status":"completed","
   fi
   show_json="$WC_TMP/scan-show-$nonce.json"
   output_json="$WC_TMP/scan-output-$nonce.json"
-  happyranch jobs show "$job_id" --org "$ORG" --json \
+  _wc_native "$show_json.native.json" happyranch jobs show "$job_id" --org "$ORG" --json \
     --task-id "$ACTING_TASK" --session-id "$SESSION_ID" > "$show_json" 2>/dev/null || return 1
-  happyranch jobs output "$job_id" --stream both --max-bytes 1048576 \
+  _wc_native "$output_json.native.json" happyranch jobs output "$job_id" --stream both --max-bytes 1048576 \
     --org "$ORG" --json --task-id "$ACTING_TASK" --session-id "$SESSION_ID" \
     > "$output_json" 2>/dev/null || return 1
   export job_id started_epoch
@@ -730,10 +789,22 @@ _wc_anomaly_receipt() {
 b=json.loads(os.environ["WC_BEFORE"]); original=os.environ["CANDIDATE"]
 isolated=os.environ.get("WC_ISOLATED_CANDIDATE",""); isolation=os.environ.get("WC_ISOLATION_DIR","")
 def measure(path,exclude=""):
- result={"path":path,"exists":False,"apparent_bytes":0,"allocated_bytes":0,"measurement_error":None}
- if not path or not os.path.lexists(path): return result
+ result={"path":path,"exists":None,"identity":None,"apparent_bytes":None,"allocated_bytes":None,"measurement_error":None}
+ if not path:
+  if os.path.basename(original) not in ("node_modules",".venv"):
+   result.update(exists=False,apparent_bytes=0,allocated_bytes=0)
+  else: result["measurement_error"]="isolation_path_unavailable"
+  return result
  apparent=allocated=0
  try:
+  try: initial=os.lstat(path)
+  except FileNotFoundError:
+   parent=os.path.dirname(path)
+   while not os.path.exists(parent): parent=os.path.dirname(parent)
+   if os.path.basename(path) in os.listdir(parent): raise OSError("absence_unverified")
+   result.update(exists=False,apparent_bytes=0,allocated_bytes=0)
+   return result
+  result["identity"]=[initial.st_dev,initial.st_ino,initial.st_mode,initial.st_uid]
   def add(q):
    nonlocal apparent,allocated
    value=os.lstat(q); apparent+=value.st_size; allocated+=getattr(value,"st_blocks",0)*512
@@ -793,6 +864,7 @@ print(r)' "$CANDIDATE" "$CONTAINING")" || return 1
 
 _wc_run_gates() {
   local reason_prefix="${1:?reason prefix}"
+  WC_GATE_PHASE="$reason_prefix"; export WC_GATE_PHASE
 # eligibility-commands:begin
   # gate workspace-scope
   python3 -c 'import os,sys
@@ -868,13 +940,14 @@ _wc_join() {
   # pages. R7 independently reads the filtered trigger audit through complete
   # keyset pages. The first call follows the cheap candidate-local gates; the
   # second remains immediately before the full pre-action gate pass.
+  WC_JOIN_NUMBER=$((${WC_JOIN_NUMBER:-0}+1))
   local tasks="$WC_TMP/peer-tasks.json" trigger="$WC_TMP/trigger-audit.json"
   local ids="$WC_TMP/peer-ids.tsv" tid kind join_digest
-  if ! happyranch tasks --org "$ORG" --agent "$AGENT" --limit 1000 \
+  if ! _wc_native "$WC_TMP/peer-tasks-$WC_JOIN_NUMBER.native.json" happyranch tasks --org "$ORG" --agent "$AGENT" --limit 1000 \
         --all-pages --json > "$tasks" 2>/dev/null; then
     { _wc_refuse "peer_history_unavailable"; return 2; }
   fi
-  if ! happyranch audit --org "$ORG" --agent "$AGENT" \
+  if ! _wc_native "$WC_TMP/trigger-audit-$WC_JOIN_NUMBER.native.json" happyranch audit --org "$ORG" --agent "$AGENT" \
         --action workspace_cleanup_triggered --limit 1000 --all-pages --json \
         > "$trigger" 2>/dev/null; then
     { _wc_refuse "trigger_history_unavailable"; return 2; }
@@ -928,6 +1001,20 @@ if any(t not in seen and t!=acting for t in triggers): raise SystemExit(6)' \
 run_cleanup_candidate() {
   CANDIDATE="${1:?candidate}"; CONTAINING="${2:-$1}"
   export CANDIDATE CONTAINING
+  export GIT_OPTIONAL_LOCKS=0
+  if [ -z "${WC_ATTEMPT:-}" ]; then
+    # Direct Bash use is the same one-journal driver, including terminal acknowledgement.
+    if [ -z "${WC_MANIFEST:-}" ] || [ -z "${WC_HISTORY:-}" ] || \
+        [ -z "${WC_JOURNAL:-}" ] || [ -z "${WC_EVIDENCE_DIR:-}" ]; then
+      _wc_evidence_failure "bound_evidence_sink_required"; return 3
+    fi
+    python3 "$_WC_RUNNER_SKILL_DIR/scripts/run_cleanup_batch.py" \
+      --manifest "$WC_MANIFEST" --history-exclusions "$WC_HISTORY" --journal "$WC_JOURNAL" \
+      --evidence-dir "$WC_EVIDENCE_DIR" --only-candidate "$CANDIDATE" --only-containing "$CONTAINING"
+    return $?
+  fi
+  python3 "$_WC_RUNNER_SKILL_DIR/scripts/prepare_cleanup.py" attempt-check \
+    --attempt "$WC_ATTEMPT" || { _wc_evidence_failure "attempt_binding_invalid"; return 3; }
   case "${CLEANUP_MARKER:-}" in
     "HAPPYRANCH SYSTEM WORKSPACE CLEANUP RUN (manual-dispatch)"|\
     "HAPPYRANCH SYSTEM WORKSPACE CLEANUP RUN (daemon-triggered)") ;;
@@ -952,11 +1039,11 @@ run_cleanup_candidate() {
     { _wc_refuse "task_mapping_branch"; return 2; }
   fi
 
-  if ! WC_TMP="$(mktemp -d "${TMPDIR:-/tmp}/wc.XXXXXX")"; then
+  if ! WC_TMP="$(mktemp -d "$WC_ATTEMPT/gates.XXXXXX")"; then
     { _wc_refuse "scratch"; return 2; }
   fi
   TASK_JSON="$WC_TMP/task.json"; export TASK_JSON
-  if ! happyranch recall --org "$ORG" "$TASK" > "$TASK_JSON" 2>/dev/null; then
+  if ! _wc_native "$WC_TMP/task.native.json" happyranch recall --org "$ORG" "$TASK" > "$TASK_JSON" 2>/dev/null; then
     { _wc_refuse "authoritative_task_unavailable"; return 2; }
   fi
   local owner task_status bytes_before cache_status_before cache_source_before
@@ -1003,22 +1090,31 @@ run_cleanup_candidate() {
       if ! cache_source_before="$(_wc_source_digest "$CONTAINING")"; then
         { _wc_refuse "cache_source_digest_unavailable"; return 2; }
       fi
+      python3 "$_WC_RUNNER_SKILL_DIR/scripts/prepare_cleanup.py" cache-index \
+        --containing "$CONTAINING" > "$WC_TMP/cache-index-before.json" || { _wc_refuse "cache_index_unavailable"; return 2; }
       if ! _wc_snapshot_tree; then
         { _wc_refuse "action_boundary_changed"; return 2; }
       fi
+      if ! _wc_publish_eligible "$bytes_before"; then
+        _wc_evidence_failure "eligibility_publication_or_revalidation_failed"; return 3
+      fi
       if ! _wc_isolate_cache; then
         if [ "${WC_CACHE_ISOLATED:-}" = "1" ]; then
-          if _wc_restore_isolated_cache >/dev/null 2>&1; then
+          _wc_restore_isolated_cache || { _wc_anomaly_receipt "isolation_restore_failed" "$bytes_before" "isolation_anomaly"; return 3; }
+        fi
+        # Directory creation is mutation. An unset rename marker proves nothing.
+        if [ "${WC_ISOLATION_CREATED:-}" = "1" ]; then
+          if _wc_restoration_proven; then
             { _wc_refuse "action_isolation_changed"; return 2; }
           fi
-          _wc_anomaly_receipt "isolation_restore_failed" "$bytes_before" "isolation_anomaly"
+          _wc_anomaly_receipt "isolation_residue_or_restoration_unproven" "$bytes_before" "isolation_anomaly"
           return 3
         fi
-        { _wc_refuse "action_isolation_changed"; return 2; }
+        _wc_evidence_failure "isolation_creation_unproven"; return 3
       fi
       if ! _wc_delete_isolated_cache; then
         if [ ! -e "${WC_DELETE_STARTED:-}" ]; then
-          if ! _wc_restore_isolated_cache >/dev/null 2>&1; then
+          if ! _wc_restore_isolated_cache || ! _wc_restoration_proven; then
             _wc_anomaly_receipt "isolation_restore_failed" "$bytes_before" "isolation_anomaly"
             return 3
           fi
@@ -1043,6 +1139,11 @@ run_cleanup_candidate() {
       if [ "$cache_source_before" != "$(_wc_source_digest "$CONTAINING")" ]; then
         _wc_action_failure "post_action_source_or_status_changed" "$bytes_before"; return $?
       fi
+      python3 "$_WC_RUNNER_SKILL_DIR/scripts/prepare_cleanup.py" cache-index \
+        --containing "$CONTAINING" > "$WC_TMP/cache-index-after.json" || { _wc_action_failure "post_action_index_unavailable" "$bytes_before"; return $?; }
+      if ! cmp -s "$WC_TMP/cache-index-before.json" "$WC_TMP/cache-index-after.json"; then
+        _wc_action_failure "post_action_index_changed" "$bytes_before"; return $?
+      fi
       if ! _wc_verify_post_action; then
         _wc_action_failure "post_action_candidate_or_protected_changed" "$bytes_before"; return $?
       fi
@@ -1052,6 +1153,9 @@ run_cleanup_candidate() {
     *)
       if ! _wc_snapshot_tree; then
         { _wc_refuse "action_boundary_changed"; return 2; }
+      fi
+      if ! _wc_publish_eligible "$bytes_before"; then
+        _wc_evidence_failure "eligibility_publication_or_revalidation_failed"; return 3
       fi
       WC_DELETE_STARTED="$WC_TMP/worktree-remove-invoked"; export WC_DELETE_STARTED
       if ! printf 'git-worktree-remove-invoked\n' > "$WC_DELETE_STARTED"; then

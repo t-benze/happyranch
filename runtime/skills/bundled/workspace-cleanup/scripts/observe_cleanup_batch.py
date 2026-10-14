@@ -38,7 +38,8 @@ def capture_command(argv: list[str], cwd: Path, timeout: float = 10,
     process = None
     try:
         process = subprocess.Popen(argv, cwd=cwd, stdout=subprocess.PIPE,
-                                   stderr=subprocess.PIPE, start_new_session=True)
+                                   stderr=subprocess.PIPE, start_new_session=True,
+                                   env={**os.environ, 'GIT_OPTIONAL_LOCKS': '0'})
         with selectors.DefaultSelector() as selector:
             selector.register(process.stdout, selectors.EVENT_READ, 'stdout')
             selector.register(process.stderr, selectors.EVENT_READ, 'stderr')
@@ -347,9 +348,12 @@ def run_observed_batch(manifest: Path, journal: Path, history: Path, evidence_di
                        candidate_timeout_seconds: int) -> int:
     if not 1 <= max_candidates <= CAP or not 1 <= deadline_seconds <= 1200 or not 1 <= candidate_timeout_seconds <= 180:
         raise ValueError('unsupported_batch_bounds')
+    from prepare_cleanup import evidence_context
+    context = evidence_context(manifest, history, journal, evidence_dir)
     evidence_dir.mkdir(parents=True, exist_ok=True)
     sequence: dict[str, Any] = {'batch_started': False, 'batch': None, 'postcheck': None,
-                                'complete': False, 'write_errors': [], 'persisted_artifacts': []}
+                                'complete': False, 'write_errors': [], 'persisted_artifacts': [],
+                                'coverage_context': context}
 
     def retain(name: str, value: Any) -> bool:
         try:
@@ -371,7 +375,8 @@ def run_observed_batch(manifest: Path, journal: Path, history: Path, evidence_di
     if sequence['baseline']['complete']:
         sequence['batch_started'] = True
         command = [sys.executable, str(SCRIPTS / 'run_cleanup_batch.py'), '--manifest', str(manifest),
-                   '--journal', str(journal), '--max-candidates', str(max_candidates),
+                   '--journal', str(journal), '--history-exclusions', str(history),
+                   '--evidence-dir', str(evidence_dir), '--max-candidates', str(max_candidates),
                    '--deadline-seconds', str(deadline_seconds), '--candidate-timeout-seconds', str(candidate_timeout_seconds)]
         sequence['environment'] = {**before['binding'], 'TMPDIR': os.environ.get('TMPDIR')}
         sequence['batch'] = capture_command(command, Path(before['binding']['WORKSPACE']),
@@ -396,7 +401,14 @@ def run_observed_batch(manifest: Path, journal: Path, history: Path, evidence_di
                 raise ValueError('batch_incomplete')
         except (ValueError, TypeError) as exc:
             sequence['batch_summary_error'] = str(exc)
-        sequence['complete'] = (batch['exit_code'] == 0 and batch['error'] is None
+        try:
+            from run_cleanup_batch import _completed_candidates, _load_manifest
+            admitted = _completed_candidates(journal, _load_manifest(manifest),
+                                            SCRIPTS / 'run_cleanup_candidate.sh', context)
+            sequence['acknowledged_candidates'] = len(admitted)
+        except (OSError, ValueError, TypeError, KeyError) as exc:
+            sequence['coverage_error'] = str(exc)
+        sequence['complete'] = ('coverage_error' not in sequence and batch['exit_code'] == 0 and batch['error'] is None
                                 and 'batch_summary_error' not in sequence and post['complete']
                                 and not sequence['write_errors'])
     sequence['halt_reason'] = ('complete' if sequence['complete'] else 'baseline_incomplete'
@@ -558,6 +570,20 @@ def summarize_publication(inventory: dict[str, Any], sequence: dict[str, Any],
                           task: dict[str, Any], result: dict[str, Any],
                           audit: dict[str, Any], preparation: dict[str, Any] | None = None,
                           evidence_errors: list[str] | None = None) -> dict[str, Any]:
+    evidence_errors = list(evidence_errors or [])
+    if sequence:
+        try:
+            from prepare_cleanup import evidence_context
+            from run_cleanup_batch import _completed_candidates, _load_manifest
+            context = sequence['coverage_context']
+            fresh = evidence_context(Path(context['manifest_path']), Path(context['history_path']),
+                                     Path(context['journal_path']), Path(context['evidence_root']))
+            if context != fresh:
+                raise ValueError('sequence_binding_drift')
+            _completed_candidates(Path(context['journal_path']), _load_manifest(Path(context['manifest_path'])),
+                                  SCRIPTS / 'run_cleanup_candidate.sh', context, recovery=True)
+        except (OSError, ValueError, TypeError, KeyError) as exc:
+            evidence_errors.append('terminal_coverage:' + str(exc))
     status = task.get('status')
     native_inventory = (inventory.get('complete') is True and isinstance(inventory.get('candidates'), list)
                         and all(successful_receipts(inventory.get(key)) for key in

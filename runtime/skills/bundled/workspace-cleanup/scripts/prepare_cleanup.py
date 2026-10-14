@@ -255,6 +255,297 @@ def prepare(inventory_path: Path, history_path: Path, output_dir: Path,
     return report
 
 
+# Local task-output evidence only. These records grant no cleanup authority.
+EVIDENCE_CAP = 16 * 1024 * 1024
+PACKAGE_NAMES = ('../SKILL.md', 'prepare_cleanup.py', 'run_cleanup_candidate.sh',
+                 'run_cleanup_batch.py', 'observe_cleanup_batch.py',
+                 'check_path_use.py', 'worktree_safety.py')
+
+
+def package_identity() -> dict[str, str]:
+    scripts = Path(__file__).resolve().parent
+    return {name: digest(scripts / name) for name in PACKAGE_NAMES}
+
+
+def canonical_record(path: Path) -> Any:
+    if path.is_symlink() or not path.is_file():
+        raise ValueError('canonical_record_missing:' + str(path))
+    value = read_json(path)
+    pending = path.with_name('.' + path.name + '.pending')
+    if pending.exists() or pending.is_symlink():
+        if pending.is_symlink() or pending.read_bytes() != path.read_bytes():
+            raise ValueError('conflicting_pending:' + str(path))
+    return value
+
+
+def evidence_context(manifest: Path, history: Path, journal: Path,
+                     root: Path) -> dict[str, Any]:
+    bound = binding()
+    for path in (manifest, history, journal, root):
+        if not path.is_absolute() or path.resolve() != path:
+            raise ValueError('evidence_path_not_literal')
+    if not beneath(root, Path(bound['WORKSPACE']) / 'output' / bound['ACTING_TASK']):
+        raise ValueError('evidence_sink_outside_current_output')
+    history_value, _ = history_input(history)
+    return {'binding': bound, 'manifest_path': str(manifest),
+            'manifest_sha256': digest(manifest), 'history_path': str(history),
+            'history_sha256': digest(history), 'history_sources': history_value['sources'],
+            'journal_path': str(journal), 'evidence_root': str(root),
+            'package_sha256': package_identity()}
+
+
+def create_attempt(context: dict[str, Any], item: dict[str, Any], ordinal: int,
+                   argv: list[str]) -> Path:
+    root = Path(context['evidence_root']) / 'attempts'
+    root.mkdir(exist_ok=True)
+    path = root / str(ordinal)
+    path.mkdir()  # An existing namespace, including pending alone, never retries.
+    write_json(path / 'attempt.json', {'version': 1, 'context': context,
+               'ordinal': ordinal, 'item': item, 'argv': argv})
+    canonical_record(path / 'attempt.json')
+    return path
+
+
+def validate_attempt(path: Path, context: dict[str, Any] | None = None) -> dict[str, Any]:
+    value = canonical_record(path / 'attempt.json')
+    if not isinstance(value, dict) or set(value) != {'version', 'context', 'ordinal', 'item', 'argv'}:
+        raise ValueError('attempt_schema')
+    if value['version'] != 1 or type(value['ordinal']) is not int or value['ordinal'] < 1:
+        raise ValueError('attempt_ordinal')
+    held = value['context']
+    fresh = evidence_context(Path(held['manifest_path']), Path(held['history_path']),
+                             Path(held['journal_path']), Path(held['evidence_root']))
+    if held != fresh or (context is not None and held != context):
+        raise ValueError('attempt_binding_drift')
+    expected = Path(held['evidence_root']) / 'attempts' / str(value['ordinal'])
+    if path != expected or path.resolve() != path:
+        raise ValueError('attempt_path_drift')
+    if value['argv'] != ['bash', str(Path(__file__).with_name('run_cleanup_candidate.sh').resolve()),
+                          value['item']['candidate'], value['item']['containing']]:
+        raise ValueError('attempt_argv')
+    return value
+
+
+def cache_index(containing: Path) -> dict[str, Any]:
+    import subprocess
+    import stat
+    import base64
+    result = subprocess.run(['git', '-C', str(containing), 'rev-parse', '--git-path', 'index'],
+                            capture_output=True, text=True, env={**os.environ, 'GIT_OPTIONAL_LOCKS': '0'})
+    if result.returncode or result.stderr or len(result.stdout.splitlines()) != 1:
+        raise ValueError('cache_index_path_unavailable')
+    index = Path(result.stdout.strip())
+    if not index.is_absolute():
+        index = containing / index
+    index = index.absolute()
+    paths = [index, *sorted(index.parent.glob('sharedindex.*'))]
+    if len(paths) > 64:
+        raise ValueError('cache_shared_index_cap')
+    rows = []
+    total = 0
+    for path in paths:
+        st = path.lstat()
+        if not stat.S_ISREG(st.st_mode) or path.is_symlink():
+            raise ValueError('cache_index_type')
+        total += st.st_size
+        if total > EVIDENCE_CAP:
+            raise ValueError('cache_index_cap')
+        data = path.read_bytes()
+        after = path.lstat()
+        identity = lambda x: [x.st_dev, x.st_ino, x.st_mode, x.st_uid, x.st_gid, x.st_size, x.st_mtime_ns]
+        if identity(st) != identity(after) or len(data) != st.st_size:
+            raise ValueError('cache_index_changed_during_read')
+        rows.append({'path': str(path), 'identity': identity(st),
+                     'sha256': hashlib.sha256(data).hexdigest(),
+                     'bytes_base64': base64.b64encode(data).decode('ascii')})
+    return {'path_receipt': {'argv': result.args, 'exit_code': result.returncode,
+                            'stdout': result.stdout, 'stderr': result.stderr}, 'files': rows}
+
+
+def native_inputs(scratch: Path) -> list[dict[str, str]]:
+    import base64
+    entries = []
+    total = 0
+    # Keep the complete native files; their encoded bytes are evidence, not references
+    # replacing an unavailable receipt. Each gate pass has its own archive.
+    paths = sorted(scratch.rglob('*'))
+    if len(paths) > 4096:
+        raise ValueError('gate_evidence_entry_cap')
+    for path in paths:
+        if path.is_symlink():
+            raise ValueError('gate_evidence_symlink')
+        if path.is_dir():
+            continue
+        if path.is_symlink() or not path.is_file():
+            raise ValueError('gate_evidence_type')
+        data = path.read_bytes()
+        total += len(data)
+        if total > EVIDENCE_CAP // 2:
+            raise ValueError('gate_evidence_cap')
+        entries.append({'name': str(path.relative_to(scratch)), 'sha256': hashlib.sha256(data).hexdigest(),
+                        'bytes_base64': base64.b64encode(data).decode('ascii')})
+    return entries
+
+
+def publish_eligibility(attempt: Path, scratch: Path, measurement: str) -> str:
+    import base64
+    value = validate_attempt(attempt)
+    if value['item']['candidate'] != os.environ['CANDIDATE'] or value['item']['containing'] != os.environ['CONTAINING']:
+        raise ValueError('runner_literal_identity_drift')
+    entries = native_inputs(scratch)
+    names = {row['name'] for row in entries}
+    if not {'task.json', 'tree-boundary.json', 'peer-tasks.json', 'trigger-audit.json'} <= names:
+        raise ValueError('gate_evidence_missing')
+    write_json(attempt / 'eligible.json', {'version': 1, 'attempt_sha256': digest(attempt / 'attempt.json'),
+               'item': value['item'], 'action': 'isolate_cache' if value['item']['kind'] == 'cache' else 'git_worktree_remove',
+               'measurement': json.loads(measurement), 'native_inputs': entries})
+    canonical_record(attempt / 'eligible.json')
+    return digest(attempt / 'eligible.json')
+
+
+def validate_eligibility(attempt: Path, expected: str | None = None) -> str | None:
+    import base64
+    path = attempt / 'eligible.json'
+    if not path.exists():
+        if expected is not None or path.with_name('.eligible.json.pending').exists():
+            raise ValueError('eligibility_unpublished')
+        return None
+    value = canonical_record(path)
+    owner = validate_attempt(attempt)
+    if not isinstance(value, dict) or set(value) != {'version', 'attempt_sha256', 'item', 'action', 'measurement', 'native_inputs'}:
+        raise ValueError('eligibility_schema')
+    if (value['version'] != 1 or value['attempt_sha256'] != digest(attempt / 'attempt.json')
+            or value['item'] != owner['item'] or value['action'] != (
+                'isolate_cache' if owner['item']['kind'] == 'cache' else 'git_worktree_remove')):
+        raise ValueError('eligibility_binding')
+    seen = set()
+    for row in value['native_inputs']:
+        if not isinstance(row, dict) or set(row) != {'name', 'sha256', 'bytes_base64'} or row['name'] in seen:
+            raise ValueError('native_input_schema')
+        seen.add(row['name'])
+        data = base64.b64decode(row['bytes_base64'], validate=True)
+        if hashlib.sha256(data).hexdigest() != row['sha256']:
+            raise ValueError('native_input_digest')
+    actual = digest(path)
+    if expected is not None and actual != expected:
+        raise ValueError('eligibility_digest_drift')
+    return actual
+
+
+def acknowledgement(attempt: Path, journal: Path, start: int, end: int) -> dict[str, Any]:
+    owner = validate_attempt(attempt)
+    data = journal.read_bytes()
+    if len(data) > EVIDENCE_CAP or len(data) != end or not 0 <= start < end or not data.endswith(b'\n'):
+        raise ValueError('journal_range_or_cap')
+    return {'version': 1, 'context': owner['context'], 'ordinal': owner['ordinal'],
+            'attempt_sha256': digest(attempt / 'attempt.json'), 'eligible_sha256': validate_eligibility(attempt),
+            'journal_path': str(journal), 'prefix_bytes': end,
+            'prefix_sha256': hashlib.sha256(data).hexdigest(), 'row_start': start, 'row_end': end,
+            'row_sha256': hashlib.sha256(data[start:end]).hexdigest()}
+
+
+def validate_coverage(context: dict[str, Any], manifest: list[dict[str, Any]],
+                      *, recovery: bool = False) -> list[dict[str, Any]]:
+    root = Path(context['evidence_root'])
+    namespace = root / 'attempts'
+    journal = Path(context['journal_path'])
+    if not namespace.is_dir() or namespace.is_symlink():
+        raise ValueError('attempt_namespace_missing')
+    paths = sorted(namespace.iterdir(), key=lambda p: p.name)
+    if len(paths) > CAP or any(not p.is_dir() or p.is_symlink() for p in paths):
+        raise ValueError('attempt_namespace_unknown_or_cap')
+    data = journal.read_bytes() if journal.exists() else b''
+    if len(data) > EVIDENCE_CAP or (data and not data.endswith(b'\n')):
+        raise ValueError('journal_truncated_or_cap')
+    lines = data.splitlines(keepends=True)
+    if len(lines) != len(paths):
+        raise ValueError('attempt_terminal_coverage_missing')
+    by_candidate = {item['candidate']: (n, item) for n, item in enumerate(manifest, 1)}
+    rows = []
+    seen = set()
+    offset = 0
+    for number, line in enumerate(lines, 1):
+        row = json.loads(line)
+        ordinal = row.get('ordinal')
+        if type(ordinal) is not int or ordinal < 1 or ordinal > len(manifest):
+            raise ValueError('terminal_ordinal')
+        path = namespace / str(ordinal)
+        owner = validate_attempt(path, context)
+        candidate = row.get('candidate')
+        if candidate in seen or candidate not in by_candidate:
+            raise ValueError('terminal_duplicate_or_unknown')
+        seen.add(candidate)
+        expected_ordinal, item = by_candidate[candidate]
+        if ordinal != expected_ordinal or owner['item'] != item or owner['argv'] != row.get('argv'):
+            raise ValueError('terminal_literal_binding')
+        allowed = {'attempt.json', '.attempt.json.pending', 'eligible.json', '.eligible.json.pending',
+                   'ack.json', '.ack.json.pending', 'terminal-native.json', '.terminal-native.json.pending'}
+        children = list(path.iterdir())
+        scratch = [p for p in children if p.name.startswith('gates.') and p.is_dir() and not p.is_symlink()]
+        if len(scratch) != 1 or any(p.is_symlink() or (p.name not in allowed and p not in scratch) for p in children):
+            raise ValueError('attempt_namespace_extra_or_missing')
+        ack = canonical_record(path / 'ack.json')
+        end = offset + len(line)
+        expected = {'version': 1, 'context': context, 'ordinal': ordinal,
+                    'attempt_sha256': digest(path / 'attempt.json'), 'eligible_sha256': validate_eligibility(path),
+                    'journal_path': str(journal), 'prefix_bytes': end,
+                    'prefix_sha256': hashlib.sha256(data[:end]).hexdigest(),
+                    'row_start': offset, 'row_end': end, 'row_sha256': hashlib.sha256(line).hexdigest()}
+        if ack != expected or row.get('attempt_sha256') != expected['attempt_sha256'] or row.get('eligible_sha256') != expected['eligible_sha256']:
+            raise ValueError('terminal_acknowledgement_mismatch')
+        native = canonical_record(path / 'terminal-native.json')
+        expected_native = {key: row[key] for key in ('exit_code', 'receipt', 'stdout', 'stderr', 'error')}
+        expected_native['native_inputs'] = native_inputs(scratch[0])
+        if native != expected_native:
+            raise ValueError('native_terminal_mismatch')
+        if row.get('exit_code') not in (0, 2) or row.get('error') is not None:
+            raise ValueError('native_terminal_failure')
+        if row['exit_code'] == 0 and expected['eligible_sha256'] is None:
+            raise ValueError('removal_without_eligibility')
+        rows.append(row)
+        offset = end
+    if recovery and paths:
+        # Later readers need the enclosing native outcome, never an inferred active prefix.
+        sequence = canonical_record(root / 'sequence.json')
+        batch = canonical_record(root / 'batch.json')
+        after = canonical_record(root / 'after.json')
+        before = canonical_record(root / 'before.json')
+        if (sequence.get('binding') != context['binding'] or sequence.get('batch') != batch
+                or not successful_receipts([batch]) or not sequence.get('complete')
+                or sequence.get('write_errors') or sequence.get('unknown_postcondition')
+                or sequence.get('coverage_context') != context or after.get('complete') is not True
+                or before.get('complete') is not True):
+            raise ValueError('enclosing_observation_incomplete')
+        for pending in root.glob('.*.pending'):
+            canonical_record(root / pending.name[1:-len('.pending')])
+    return rows
+
+
+def evidence_cli(args: argparse.Namespace) -> int:
+    if args.command == 'evidence-capture':
+        from observe_cleanup_batch import capture_command
+        argv = args.argv[1:] if args.argv[:1] == ['--'] else args.argv
+        value = capture_command(argv, Path.cwd(), timeout=45)
+        value['interpreter'] = sys.executable
+        value['python_version'] = sys.version
+        write_json(args.output, value)
+        sys.stdout.write(value['stdout'])
+        sys.stderr.write(value['stderr'])
+        return value['exit_code'] if value['error'] is None and value['exit_code'] is not None else 3
+    if args.command == 'cache-index':
+        print(json.dumps(cache_index(args.containing), sort_keys=True))
+        return 0
+    if args.command == 'eligible':
+        print(publish_eligibility(args.attempt, args.scratch, args.measurement))
+        return 0
+    if args.command == 'validate-eligible':
+        validate_attempt(args.attempt)
+        validate_eligibility(args.attempt, args.sha256)
+        return 0
+    validate_attempt(args.attempt)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest='command', required=True)
@@ -266,10 +557,25 @@ def main(argv: list[str] | None = None) -> int:
     retention = commands.add_parser('retention')
     retention.add_argument('--task-json', type=Path, required=True)
     retention.add_argument('--floor-seconds', type=int, required=True)
+    for name in ('attempt-check', 'eligible', 'validate-eligible'):
+        sub = commands.add_parser(name)
+        sub.add_argument('--attempt', type=Path, required=True)
+        if name == 'eligible':
+            sub.add_argument('--scratch', type=Path, required=True)
+            sub.add_argument('--measurement', required=True)
+        if name == 'validate-eligible':
+            sub.add_argument('--sha256', required=True)
+    index = commands.add_parser('cache-index')
+    index.add_argument('--containing', type=Path, required=True)
+    capture = commands.add_parser('evidence-capture')
+    capture.add_argument('--output', type=Path, required=True)
+    capture.add_argument('argv', nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
     try:
         if any(isinstance(value, Path) and not value.is_absolute() for value in vars(args).values()):
             raise ValueError('input_and_output_paths_must_be_absolute')
+        if args.command not in ('retention', 'prepare'):
+            return evidence_cli(args)
         if args.command == 'retention':
             return 0 if retention_eligible(read_json(args.task_json), args.floor_seconds,
                                            dt.datetime.now(dt.timezone.utc)) else 2

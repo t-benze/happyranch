@@ -629,6 +629,29 @@ not add a directory-fsync/crash-durability guarantee. On observer write failure,
 report retains its native batch/source/binding/write causes, blocks even against
 success-valued pending bytes, and separately retains admitted-result/pending facts.
 A missing canonical sequence also produces blocked intent with an evidence error.
+The local evidence ordering is attempt envelope → fresh native gates → canonical
+eligibility → first mutation → native terminal outcome → verified fsynced journal
+append → canonical reference-only acknowledgement → whole-coverage admission.
+The batch journal is the sole ordered outcome ledger. Direct Bash use needs the
+same bound manifest/history/journal/evidence sink; stdout alone grants no action.
+Cache isolation-directory creation is mutation. Failed rename/rmdir causes and
+separate original/cache/directory identity and measurements survive; only positive
+restoration/absence/source/status/raw-index proof admits safe refusal. Residue or
+uncertainty halts. Git read observations suppress optional index refresh.
+
+Each attempt and acknowledgement uses the existing exclusive pending write,
+flush/fsync/close and exclusive hard-link publisher. A canonical file with its
+identical expected staging sibling is valid; pending alone, conflict or collision
+is not. Acknowledgements reference binding, envelope/eligibility identities and
+exact journal prefix/row range/hash/ordinal, without a second success ledger.
+Batch resume and report preflight the entire bounded namespace and journal before
+any skip/admission; orphan or unacknowledged terminal evidence blocks, including
+when fallback is missing/truncated. Explicit native failure/interruption wins over
+readable files. Same-batch acknowledged prefix progress and later enclosing native
+batch/sequence/postcheck completeness are separate prerequisites. No automatic
+recovery or directory-fsync/crash-atomic guarantee follows. Historical bytes remain
+historical, with missing new-contract proof explicit; never rebind or retry them.
+
 A genuine bound completion callback is the final session action. This repair grants no cleanup allocation.
 
 The scan runs only as a task-bound host-visible HappyRanch job. The procedure

@@ -399,6 +399,67 @@ physical bytes remain unknown. Retain the exact native journal and authenticate
 actual jobs show/output identity, binding, stored command/cwd, timestamps,
 terminal status and exit, complete output totals/truncation independently.
 
+## Local attempt and publication evidence
+
+The local evidence ordering is attempt envelope → fresh native gates → canonical
+eligibility → first mutation → native terminal outcome → verified fsynced journal
+append → canonical reference-only acknowledgement → whole-coverage admission.
+The batch journal is the sole ordered outcome ledger. Direct Bash use needs the
+same bound manifest/history/journal/evidence sink; stdout alone grants no action.
+Cache isolation-directory creation is mutation. Failed rename/rmdir causes and
+separate original/cache/directory identity and measurements survive; only positive
+restoration/absence/source/status/raw-index proof admits safe refusal. Residue or
+uncertainty halts. Git read observations suppress optional index refresh.
+
+Each attempt and acknowledgement uses the existing exclusive pending write,
+flush/fsync/close and exclusive hard-link publisher. A canonical file with its
+identical expected staging sibling is valid; pending alone, conflict or collision
+is not. Acknowledgements reference binding, envelope/eligibility identities and
+exact journal prefix/row range/hash/ordinal, without a second success ledger.
+Batch resume and report preflight the entire bounded namespace and journal before
+any skip/admission; orphan or unacknowledged terminal evidence blocks, including
+when fallback is missing/truncated. Explicit native failure/interruption wins over
+readable files. Same-batch acknowledged prefix progress and later enclosing native
+batch/sequence/postcheck completeness are separate prerequisites. No automatic
+recovery or directory-fsync/crash-atomic guarantee follows. Historical bytes remain
+historical, with missing new-contract proof explicit; never rebind or retry them.
+
+Direct Bash requires absolute `WC_MANIFEST`, `WC_HISTORY`, `WC_JOURNAL` and
+`WC_EVIDENCE_DIR` under the current `WORKSPACE/output/ACTING_TASK` sink,
+beside the existing environment binding. It dispatches the packaged batch for
+that exact candidate; `WC_ATTEMPT` is reserved for the batch-to-runner handoff.
+The frozen manifest supplies the exact containing path/kind/allocated bytes.
+`attempts/<manifest-ordinal>/attempt.json` binds literal argv, current binding,
+manifest/history/native source hashes and package identity; `eligible.json`
+retains complete bounded native gate inputs and held snapshot/measurements.
+`terminal-native.json` retains the original outcome and complete gate/action
+inputs; `ack.json` references only the sole journal bytes and evidence identities.
+Any orphan, unexpected entry, pending-only publication or failed native input
+capture halts. Complete inputs exceeding the existing bounds refuse, never trim.
+Eligibility is revalidated against the held source and recursive boundary before
+mutation. Source/status/index and positive postconditions remain action gates.
+
+### Compact input collection within existing readers
+
+Use a new task-output collector command, never rewrite original native stdout.
+Retain every complete native assigned-task and filtered trigger page/command
+separately, with original argv/cwd/times/exits/streams/totals/cursors. Validate
+terminal cursors, exact totals, unique owner IDs, repeated stable page evidence
+and required peer/history coverage before producing a compact collection receipt.
+The compact command's own stdout may project each listing to task_id,
+assigned_agent, status and completed_at and required peer/trigger facts, with
+original native files and hashes retained as provenance. Its stdout is its own
+native receipt; never relabel another CLI's stdout as compact. Include repository
+and measurement receipts, binding and complete original history in the WHOLE
+inventory byte count (≤16MiB), not only the candidate array. Missing pages,
+truncation, changed hashes or unknown history refuse. Hashes alone are not native
+coverage. The reader still requires actual argv/cwd/exit/stdout/stderr/error receipt
+fields; reference-only receipts are unsupported. If collection cannot meet that
+contract, return the exact reader/projection boundary before action. Historical
+oversized/incomplete inputs are not repaired or rebound. Frozen launch deadline,
+authentic ACTIVE host/job/callback evidence and runtime-loaded provenance remain
+separate operational prerequisites; these source changes grant no allocation.
+
 ## Delivered procedure (executable control flow)
 
 Execute the bundled Bash program directly; do not copy, source, extract, or
@@ -416,10 +477,11 @@ sibling helper.
 
 `CANDIDATE` is the literal cache or worktree path and `CONTAINING` is its
 registered containing worktree (the same path for a whole-worktree candidate).
-The script uses the environment contract above and prints one JSON receipt. It
-returns `0` only for a verified removal and `2` only for a refusal whose final
-state has no outstanding mutation: either the cache was never moved, or it was
-moved into private isolation and successfully restored. Exit `3` is the anomaly
+Direct use dispatches the bound one-journal driver; native runner output remains
+in its terminal evidence. The candidate operation returns `0` only for a verified removal and `2` only for a refusal whose final
+state has no outstanding mutation, established by positive original-cache,
+isolation-absence, source/status/raw-index and measurement proof after any
+isolation-directory creation, rename or restoration. Exit `3` is the anomaly
 family. A restoration failure before recursive deletion is the distinct
 `isolation_anomaly` / `isolation_restore_failed`; once descriptor-rooted
 deletion begins, or `git worktree remove` is invoked, every later failure is
@@ -436,6 +498,7 @@ submission procedure:
 ```bash
 python3 "$SKILL/scripts/run_cleanup_batch.py" \
   --manifest "$MANIFEST" --journal "$JOURNAL" \
+  --history-exclusions "$HISTORY" --evidence-dir "$EVIDENCE_DIR" \
   --max-candidates 40 --deadline-seconds 1200 --candidate-timeout-seconds 180
 ```
 
@@ -447,7 +510,8 @@ The manifest is a JSON array or JSONL with exactly `candidate`, `containing`,
 `kind` (`worktree` or `cache`), and inventory `allocated_bytes`. The driver
 orders worktrees first and caches second, largest first within each class with
 literal-path tie-breaking. It invokes this runner once per candidate with
-literal argv and fsyncs a terminal journal row after every attempt. Only a
+literal argv, publishes the attempt envelope, then verifies/fsyncs a terminal
+journal row and publishes its acknowledgement after every attempt. Only a
 closed-schema exit-2 pre-action receipt (`refused`, `report_only`, or
 `inventory_only`) and a closed-schema exit-0 verified-removal receipt permit the
 next candidate. Any exit `3`, timeout, signal death, unreceipted nonzero exit,
@@ -455,7 +519,9 @@ malformed/missing output, exit/receipt mismatch, runner exception, or other
 unclassifiable result is journaled and halts the batch with a nonzero exit. Each
 runner owns a new process session; timeout sends SIGTERM then SIGKILL to the
 whole process group, reaps the runner, and records whether group survival could
-be ruled out before halting. Re-running skips only a unique, valid terminal row
+be ruled out before halting. A later reader requires complete enclosing native
+observation/sequence and whole-namespace acknowledgement coverage before it
+skips a unique, valid terminal row
 whose candidate, containing worktree, kind, allocated bytes, and exact argv
 match the current manifest. A stale, malformed, unsafe, duplicate, or conflicting
 journal row fails closed before any runner starts. Bounds stop only between
