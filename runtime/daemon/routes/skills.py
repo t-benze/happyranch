@@ -10,6 +10,8 @@ Per the THR-092 v3 endpoint spec (engineering_manager-2026-07-13-skills-web-v1-e
 """
 from __future__ import annotations
 
+from runtime.orchestrator.producer_move import native_writer
+
 import hashlib
 import logging
 from pathlib import Path
@@ -1165,83 +1167,84 @@ class SkillRecoverRequest(BaseModel):
 @router.post("/skills/recover", status_code=200)
 def skill_recover(body: SkillRecoverRequest, org: OrgDep) -> dict:
     """Fail-closed operator recovery for a B2 custom-skill package."""
-    import shutil
+    with native_writer(org.db, publisher='skill_recovery'):
+        import shutil
 
-    from runtime.infrastructure.artifact_store import ArtifactStore
-    from runtime.orchestrator._paths import OrgPaths
-    from runtime.platform.isolation import detect_platform_isolation
-    from runtime.skills.canonical_store import CanonicalSkillStore, CanonicalStoreError, _make_writable_for_removal
+        from runtime.infrastructure.artifact_store import ArtifactStore
+        from runtime.orchestrator._paths import OrgPaths
+        from runtime.platform.isolation import detect_platform_isolation
+        from runtime.skills.canonical_store import CanonicalSkillStore, CanonicalStoreError, _make_writable_for_removal
 
-    if not body.version.isdecimal() or str(int(body.version)) != body.version:
-        raise HTTPException(status_code=400, detail="version must be the B2 version ID")
-    conn = getattr(org.db, "_conn", org.db)
-    record = conn.execute(
-        """SELECT s.id AS skill_id, s.current_version_id, s.retired_at,
-                  v.content_hash, v.content_artifact_key, v.validation_state
-             FROM custom_skills s JOIN custom_skill_versions v ON v.skill_id = s.id
-            WHERE s.org_slug = ? AND s.slug = ? AND v.id = ?""",
-        (org.slug, body.slug, int(body.version)),
-    ).fetchone()
-    if record is None:
-        _recover_audit_event_mandatory(org.db, slug=body.slug, agent="operator", ok=False,
-            detail=f"No B2 custom-skill version found for {body.slug}@{body.version}", reason_codes=["b2_provenance_not_found"])
-        raise HTTPException(status_code=404, detail="B2 custom-skill version not found")
-    if record["current_version_id"] != int(body.version):
-        _recover_audit_event_mandatory(org.db, skill_id=record["skill_id"], slug=body.slug, agent="operator", ok=False,
-            detail="Recovery refused because the requested B2 version is not current", reason_codes=["stale_current_version"])
-        raise HTTPException(status_code=409, detail="Recovery requires the current B2 custom-skill version")
-    if record["retired_at"] is not None or record["validation_state"] != "valid":
-        _recover_audit_event_mandatory(org.db, skill_id=record["skill_id"], slug=body.slug, agent="operator", ok=False,
-            detail="Recovery refused because the current B2 custom-skill version is ineligible", reason_codes=["ineligible_current_version"])
-        raise HTTPException(status_code=409, detail="Current B2 custom-skill version is not eligible for recovery")
-    if record["content_hash"] != body.content_hash:
-        _recover_audit_event_mandatory(org.db, skill_id=record["skill_id"], slug=body.slug, agent="operator", ok=False,
-            detail="B2 version content hash does not match recovery request", reason_codes=["hash_mismatch"])
-        raise HTTPException(status_code=400, detail="content_hash does not match B2 version provenance")
-    artifact_key = record["content_artifact_key"]
-    try:
-        artifact_bytes = ArtifactStore(OrgPaths(org.root).artifacts_dir).read(artifact_key)
-    except Exception as exc:
-        _recover_audit_event_mandatory(org.db, skill_id=record["skill_id"], slug=body.slug, agent="operator", ok=False,
-            detail=f"B2 content artifact unavailable: {exc}", reason_codes=["artifact_not_found"])
-        raise HTTPException(status_code=400, detail="B2 content artifact is unavailable") from exc
-    if hashlib.sha256(artifact_bytes).hexdigest() != body.content_hash:
-        _recover_audit_event_mandatory(org.db, skill_id=record["skill_id"], slug=body.slug, agent="operator", ok=False,
-            detail="B2 content artifact hash does not match version provenance", reason_codes=["artifact_hash_mismatch"])
-        raise HTTPException(status_code=400, detail="B2 content artifact does not match version provenance")
+        if not body.version.isdecimal() or str(int(body.version)) != body.version:
+            raise HTTPException(status_code=400, detail="version must be the B2 version ID")
+        conn = getattr(org.db, "_conn", org.db)
+        record = conn.execute(
+            """SELECT s.id AS skill_id, s.current_version_id, s.retired_at,
+                      v.content_hash, v.content_artifact_key, v.validation_state
+                 FROM custom_skills s JOIN custom_skill_versions v ON v.skill_id = s.id
+                WHERE s.org_slug = ? AND s.slug = ? AND v.id = ?""",
+            (org.slug, body.slug, int(body.version)),
+        ).fetchone()
+        if record is None:
+            _recover_audit_event_mandatory(org.db, slug=body.slug, agent="operator", ok=False,
+                detail=f"No B2 custom-skill version found for {body.slug}@{body.version}", reason_codes=["b2_provenance_not_found"])
+            raise HTTPException(status_code=404, detail="B2 custom-skill version not found")
+        if record["current_version_id"] != int(body.version):
+            _recover_audit_event_mandatory(org.db, skill_id=record["skill_id"], slug=body.slug, agent="operator", ok=False,
+                detail="Recovery refused because the requested B2 version is not current", reason_codes=["stale_current_version"])
+            raise HTTPException(status_code=409, detail="Recovery requires the current B2 custom-skill version")
+        if record["retired_at"] is not None or record["validation_state"] != "valid":
+            _recover_audit_event_mandatory(org.db, skill_id=record["skill_id"], slug=body.slug, agent="operator", ok=False,
+                detail="Recovery refused because the current B2 custom-skill version is ineligible", reason_codes=["ineligible_current_version"])
+            raise HTTPException(status_code=409, detail="Current B2 custom-skill version is not eligible for recovery")
+        if record["content_hash"] != body.content_hash:
+            _recover_audit_event_mandatory(org.db, skill_id=record["skill_id"], slug=body.slug, agent="operator", ok=False,
+                detail="B2 version content hash does not match recovery request", reason_codes=["hash_mismatch"])
+            raise HTTPException(status_code=400, detail="content_hash does not match B2 version provenance")
+        artifact_key = record["content_artifact_key"]
+        try:
+            artifact_bytes = ArtifactStore(OrgPaths(org.root).artifacts_dir).read(artifact_key)
+        except Exception as exc:
+            _recover_audit_event_mandatory(org.db, skill_id=record["skill_id"], slug=body.slug, agent="operator", ok=False,
+                detail=f"B2 content artifact unavailable: {exc}", reason_codes=["artifact_not_found"])
+            raise HTTPException(status_code=400, detail="B2 content artifact is unavailable") from exc
+        if hashlib.sha256(artifact_bytes).hexdigest() != body.content_hash:
+            _recover_audit_event_mandatory(org.db, skill_id=record["skill_id"], slug=body.slug, agent="operator", ok=False,
+                detail="B2 content artifact hash does not match version provenance", reason_codes=["artifact_hash_mismatch"])
+            raise HTTPException(status_code=400, detail="B2 content artifact does not match version provenance")
 
-    store = CanonicalSkillStore(settings=settings, isolation=detect_platform_isolation())
-    package_path = store.canonical_path(body.slug, body.version, body.content_hash)
-    if not package_path.exists():
-        _recover_audit_event_mandatory(org.db, skill_id=record["skill_id"], slug=body.slug, agent="operator", ok=False,
-            detail="Canonical package is absent; next materialization will build it", reason_codes=["package_not_found_on_disk"])
-        raise HTTPException(status_code=404, detail="Canonical package is absent; nothing to recover")
-    expected_tree_hash = hashlib.sha256(b"SKILL.md\x00" + artifact_bytes + b"\x00").hexdigest()
-    try:
-        target_valid = store.compute_tree_hash(body.slug, body.version, body.content_hash) == expected_tree_hash
-    except CanonicalStoreError:
-        target_valid = False
-    if target_valid:
-        _recover_audit_event_mandatory(org.db, skill_id=record["skill_id"], slug=body.slug, agent="operator", ok=False,
-            detail="Recovery refused because the B2 canonical package is valid", reason_codes=["valid_target_refused"])
-        raise HTTPException(status_code=409, detail="Canonical package is valid; refusing to delete it")
-    try:
-        org.db.insert_skill_validation_event(skill_id=record["skill_id"], slug=body.slug, agent="operator",
-            source="operator_recovery", severity="info", ok=True, version=body.version,
-            findings=["Operator recovery removed a corrupted B2 canonical package."], reason_codes=["operator_recovery"])
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail="Recovery audit persistence failed; canonical package was not deleted") from exc
-    try:
-        _make_writable_for_removal(package_path)
-        shutil.rmtree(package_path)
-    except Exception as exc:
-        _recover_audit_event_mandatory(org.db, skill_id=record["skill_id"], slug=body.slug, agent="operator", ok=False,
-            detail=f"Failed to delete corrupted B2 canonical package: {exc}", reason_codes=["deletion_failed"])
-        raise HTTPException(status_code=500, detail="Failed to delete corrupted canonical package") from exc
-    return {"ok": True, "action": "recovered", "slug": body.slug, "version": body.version,
-            "content_hash": body.content_hash, "canonical_path": str(package_path), "skill_id": record["skill_id"],
-            "artifact_key": artifact_key,
-            "message": "Corrupted B2 canonical package deleted; next materialization rebuilds from verified B2 artifact provenance."}
+        store = CanonicalSkillStore(settings=settings, isolation=detect_platform_isolation())
+        package_path = store.canonical_path(body.slug, body.version, body.content_hash)
+        if not package_path.exists():
+            _recover_audit_event_mandatory(org.db, skill_id=record["skill_id"], slug=body.slug, agent="operator", ok=False,
+                detail="Canonical package is absent; next materialization will build it", reason_codes=["package_not_found_on_disk"])
+            raise HTTPException(status_code=404, detail="Canonical package is absent; nothing to recover")
+        expected_tree_hash = hashlib.sha256(b"SKILL.md\x00" + artifact_bytes + b"\x00").hexdigest()
+        try:
+            target_valid = store.compute_tree_hash(body.slug, body.version, body.content_hash) == expected_tree_hash
+        except CanonicalStoreError:
+            target_valid = False
+        if target_valid:
+            _recover_audit_event_mandatory(org.db, skill_id=record["skill_id"], slug=body.slug, agent="operator", ok=False,
+                detail="Recovery refused because the B2 canonical package is valid", reason_codes=["valid_target_refused"])
+            raise HTTPException(status_code=409, detail="Canonical package is valid; refusing to delete it")
+        try:
+            org.db.insert_skill_validation_event(skill_id=record["skill_id"], slug=body.slug, agent="operator",
+                source="operator_recovery", severity="info", ok=True, version=body.version,
+                findings=["Operator recovery removed a corrupted B2 canonical package."], reason_codes=["operator_recovery"])
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail="Recovery audit persistence failed; canonical package was not deleted") from exc
+        try:
+            _make_writable_for_removal(package_path)
+            shutil.rmtree(package_path)
+        except Exception as exc:
+            _recover_audit_event_mandatory(org.db, skill_id=record["skill_id"], slug=body.slug, agent="operator", ok=False,
+                detail=f"Failed to delete corrupted B2 canonical package: {exc}", reason_codes=["deletion_failed"])
+            raise HTTPException(status_code=500, detail="Failed to delete corrupted canonical package") from exc
+        return {"ok": True, "action": "recovered", "slug": body.slug, "version": body.version,
+                "content_hash": body.content_hash, "canonical_path": str(package_path), "skill_id": record["skill_id"],
+                "artifact_key": artifact_key,
+                "message": "Corrupted B2 canonical package deleted; next materialization rebuilds from verified B2 artifact provenance."}
 
 
 @agent_skills_router.post("/skills/agent", status_code=201)

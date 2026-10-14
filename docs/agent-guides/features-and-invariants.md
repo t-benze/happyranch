@@ -1,14 +1,14 @@
 # Features And Invariants
 
-## Approved online team move — C1 task/host and C2 thread source (THR296seq135)
+## Approved online team move — C1–C3 native admission source (THR296seq135)
 
 B supplies private durable storage; C1 connects holds to task allocation/claim,
 preparation and final Pause/host commitment. Causal task/workflow closure and
 actual retry/callback/cleanup ownership participate; unknown quiescence stays
-reserved. C3/D producer/recovery/startup/old-reader closure remains absent.
+reserved. D complete operation/recovery/startup/old-reader closure remains absent.
 Same-key/body replay is read-only; changed body/active conflict/stale CAS refuse.
 Precommit refusal may release empty progress; postcommit repair retains its hold
-without TTL. No public commands or COMPLETE writer exist until full C2-D closure and
+without TTL. No public commands or COMPLETE writer exist until D closure and
 actual canonical/context/reset/ready-authority validation. Manage-agent cannot
 transfer teams. Preserve histories/IDs/paths/permissions and Engineering routing.
 History validation shares the writer's finite forward/repair edges, requires the
@@ -65,6 +65,24 @@ under a winning hold; callback/drain/new-launch and general participant guards
 remain unchanged. Watermarks, delivery ranges/tokens and runtime SID are retained;
 unknown cleanup remains a blocker. Deferred re-entry cannot reuse the evicted SID.
 These archive/eviction/re-entry behavioral observations remain UNEXECUTED.
+
+C3 now registers dream/wake/schedule/job native source, permanent org/agent and
+owning session before preparation, rechecks actual claims and final host/direct
+launch, and retains original retry budgets/SID/enqueue age on safe deferral.
+Pending work stays native; recurring schedule occurrences retain distinct
+history. Existing queue/timer release seams deduplicate redelivery; reapers
+preserve held or uncertain owners. Complete C3 causal census covers job waits,
+active bindings, remote attempts/workspaces, pending enrollment and writer tails;
+terminal rows or missing trackers never prove cleanup. Native profile/workflow,
+roster/name/settings/skill/policy/cleanup writers reserve affected IDs and
+source/target membership, keeping their original synchronization and journals.
+Strict bounded version1 producer/writer audits append in existing audit_log;
+earlier uncertainty survives later clean outcomes. No extra table, permission
+or auth change, remote engine, move/reset/publication service or COMPLETE writer.
+D composes the canonical capture/coherent publication reader and complete early
+startup/recovery/old-reader guard; D/E/F remain outstanding. APPLY_AVAILABLE=False.
+All behavior/migration/recovery remains UNEXECUTED; integration SKIPPED24342,
+Python units RETIRED, no new cases/fixtures or activation/live-operation authority.
 
 See the [approved contract](../superpowers/specs/2026-10-14-online-team-move.md).
 Behavior/recovery remains UNEXECUTED; source/static acceptance is separate.

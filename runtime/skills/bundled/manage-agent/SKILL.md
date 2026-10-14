@@ -22,8 +22,7 @@ Team transfers and manager demotion remain outside manage-agent. Update retains
 the existing team/role. Founder THR296seq135 approved a separate coordinated
 online consultant move under TASK11345. C1 supplies task/host holds and preserves
 real callback/retry/cleanup ownership; it changes no permission generator or
-manage-agent admission. C3/D producer/recovery/old-reader closure is still
-required. No move command/route or apply/COMPLETE writer is available and no live
+manage-agent admission. D recovery/old-reader closure is still required. No move command/route or apply/COMPLETE writer is available and no live
 move is authorized. Later complete source requires founder admission.
 Admission refusal preserves pending work. Retry handoff retains each uncertain
 attempt separately; provider return is not containment proof. Pause attribution
@@ -91,6 +90,24 @@ read/resolve projections. Agent roster/enrollment `name` and canonical `revision
 retain their meanings; `addressable_name`, `name_revision` and `naming_status` are
 additive metadata, null/unavailable when names cannot be read. Never use a label
 as manage-agent's name, callback actor or expected canonical-definition revision.
+C3 now registers dream/wake/schedule/job native source, permanent org/agent and
+owning session before preparation, rechecks actual claims and final host/direct
+launch, and retains original retry budgets/SID/enqueue age on safe deferral.
+Pending work stays native; recurring schedule occurrences retain distinct
+history. Existing queue/timer release seams deduplicate redelivery; reapers
+preserve held or uncertain owners. Complete C3 causal census covers job waits,
+active bindings, remote attempts/workspaces, pending enrollment and writer tails;
+terminal rows or missing trackers never prove cleanup. Native profile/workflow,
+roster/name/settings/skill/policy/cleanup writers reserve affected IDs and
+source/target membership, keeping their original synchronization and journals.
+Strict bounded version1 producer/writer audits append in existing audit_log;
+earlier uncertainty survives later clean outcomes. No extra table, permission
+or auth change, remote engine, move/reset/publication service or COMPLETE writer.
+D composes the canonical capture/coherent publication reader and complete early
+startup/recovery/old-reader guard; D/E/F remain outstanding. APPLY_AVAILABLE=False.
+All behavior/migration/recovery remains UNEXECUTED; integration SKIPPED24342,
+Python units RETIRED, no new cases/fixtures or activation/live-operation authority.
+
 Operator rename accepts only addressable_name and positive expected_name_revision,
 with raw binding-key denial and the shared bearer limitation. The operator CLI is now described above; no agent-session rename authority is added. Mention delivery, CLI targets, fresh prompts and UI enrichment use current names at human boundaries. Names do not
 change allowed tools, execution permissions, task/session principals or workspace

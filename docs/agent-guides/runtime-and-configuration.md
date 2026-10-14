@@ -1,6 +1,6 @@
 # Runtime And Configuration
 
-## Approved online team move — C1 task/host and C2 thread source (THR296seq135)
+## Approved online team move — C1–C3 native admission source (THR296seq135)
 
 The optional team_move_operations table is explicit org-owned storage, never
 generic Database/runtime-audit bootstrap or startup installation in B. Exact
@@ -71,6 +71,24 @@ under a winning hold; callback/drain/new-launch and general participant guards
 remain unchanged. Watermarks, delivery ranges/tokens and runtime SID are retained;
 unknown cleanup remains a blocker. Deferred re-entry cannot reuse the evicted SID.
 These archive/eviction/re-entry behavioral observations remain UNEXECUTED.
+
+C3 now registers dream/wake/schedule/job native source, permanent org/agent and
+owning session before preparation, rechecks actual claims and final host/direct
+launch, and retains original retry budgets/SID/enqueue age on safe deferral.
+Pending work stays native; recurring schedule occurrences retain distinct
+history. Existing queue/timer release seams deduplicate redelivery; reapers
+preserve held or uncertain owners. Complete C3 causal census covers job waits,
+active bindings, remote attempts/workspaces, pending enrollment and writer tails;
+terminal rows or missing trackers never prove cleanup. Native profile/workflow,
+roster/name/settings/skill/policy/cleanup writers reserve affected IDs and
+source/target membership, keeping their original synchronization and journals.
+Strict bounded version1 producer/writer audits append in existing audit_log;
+earlier uncertainty survives later clean outcomes. No extra table, permission
+or auth change, remote engine, move/reset/publication service or COMPLETE writer.
+D composes the canonical capture/coherent publication reader and complete early
+startup/recovery/old-reader guard; D/E/F remain outstanding. APPLY_AVAILABLE=False.
+All behavior/migration/recovery remains UNEXECUTED; integration SKIPPED24342,
+Python units RETIRED, no new cases/fixtures or activation/live-operation authority.
 
 See the [approved contract](../superpowers/specs/2026-10-14-online-team-move.md).
 Behavior/recovery remains UNEXECUTED; source/static acceptance is separate.

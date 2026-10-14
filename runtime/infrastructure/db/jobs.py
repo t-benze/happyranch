@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from runtime.infrastructure.producer_admission import native_owner_uncommitted
+
 from runtime.infrastructure.db._shared import _synchronized
 from runtime.models import TaskStatus
 
@@ -28,6 +30,9 @@ class JobsMixin:
         self._conn.commit()
 
     def _insert_job_uncommitted(self, r: "JobRecord") -> None:
+        admission = native_owner_uncommitted(self)
+        if admission is not None:
+            admission.check_job_uncommitted(r)
         self._conn.execute(
             """INSERT INTO jobs (
                 id, task_id, agent_name, title, rationale, script_text,
@@ -351,6 +356,11 @@ class JobsMixin:
         stdout_path: str,
         stderr_path: str,
     ) -> bool:
+        admission = native_owner_uncommitted(self)
+        if admission is not None:
+            record = self.get_job(job_id)
+            if record is not None:
+                admission.check_job_uncommitted(record)
         cur = self._conn.execute(
             "UPDATE jobs SET "
             "status='running', reviewed_by=?, reviewed_at=?, started_at=?, "
@@ -400,7 +410,9 @@ class JobsMixin:
         rows = self._conn.execute(
             "SELECT id FROM jobs WHERE status='running'"
         ).fetchall()
-        ids = [r["id"] for r in rows]
+        admission = native_owner_uncommitted(self)
+        ids = [r['id'] for r in rows if admission is None or not admission.preserve_uncommitted(
+            'job', r['id'], self.get_job(r['id']).agent_name)]
         if not ids:
             return []
         self._conn.executemany(

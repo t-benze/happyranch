@@ -1,6 +1,10 @@
 """Nightly dream scheduling decisions."""
 from __future__ import annotations
 
+from runtime.orchestrator.producer_move import native_writer, native_claim, owner_for
+from runtime.orchestrator.team_move import DeferredTeamMove
+
+
 import asyncio
 import logging
 import time
@@ -97,6 +101,10 @@ def should_schedule_for_agent(
 
 
 def _available_agents(org_state) -> list[str]:
+    registry = getattr(org if 'org' in locals() else org_state, 'teams', None)
+    if registry is not None:
+        root = (org if 'org' in locals() else org_state).root
+        return [agent for agent in registry.all_agents() if (root / 'workspaces' / agent).exists()]
     paths = OrgPaths(root=org_state.root)
     agents = []
     for agent in prompt_loader.list_agents(paths):
@@ -125,6 +133,12 @@ def schedule_due_dreams(*, org, now, startup: bool = False) -> int:
     recorded so the steady-state loop will not pick it up later the same day.
     The steady-state loop (``startup=False``) always enqueues due dreams.
     """
+    admission = owner_for(org.db)
+    if admission is not None:
+        try:
+            admission.redeliver_after_release(org)
+        except DeferredTeamMove:
+            pass
     org_cfg = load_org_config(OrgPaths(root=org.root))
     # THR-095 F2: resolve dreaming from DB (override) → dataclass defaults.
     cfg = resolve_org_setting_dreaming(org.db, code_default=DreamingConfig())
@@ -134,59 +148,79 @@ def schedule_due_dreams(*, org, now, startup: bool = False) -> int:
     selected = select_dream_agents(_available_agents(org), cfg)
     count = 0
     for agent in selected:
-        local_date, _scheduled = _scheduled_datetime(now, cfg, tz)
-        existing = org.db.get_dream_for_agent_date(agent, local_date)
-        decision = should_schedule_for_agent(
-            agent_name=agent,
-            now=now,
-            config=cfg,
-            existing_for_date=existing,
-            tz=tz,
-        )
-        if not decision.should_schedule:
-            continue
-        dream_id = org.db.next_dream_id()
-        base = dict(
-            id=dream_id,
-            agent_name=agent,
-            local_date=decision.local_date,
-            scheduled_for=decision.scheduled_for,
-            window_start=_window_start(org, agent, now),
-            window_end=now,
-        )
-        if startup and not cfg.catch_up_on_startup:
-            # Missed run at startup, catch-up disabled: record a skipped row so
-            # the steady-state loop's existing-row guard suppresses re-scheduling
-            # today. Not enqueued, not counted.
-            org.db.insert_dream(DreamRecord(status=DreamStatus.SKIPPED, **base))
-            continue
-        org.db.insert_dream(DreamRecord(**base))
-        AuditLogger(org.db).log_dream_scheduled(dream_id, agent, local_date=decision.local_date)
+        admission = owner_for(org.db)
+        key = ('dream', agent)
+        effective_startup = startup or bool(admission and key in admission.startup_deferred)
+        held = False
         try:
-            loop = asyncio.get_running_loop()
-            loop.create_task(_enqueue(org, dream_id))
-        except RuntimeError:
-            # No running loop (synchronous callers/tests): enqueue directly via
-            # the unbounded queue. Avoids asyncio.run(), which resets the
-            # process-global event loop to None and breaks later sync code that
-            # calls asyncio.get_event_loop().
-            org.dream_queue.put_nowait(DreamJob(org_slug=org.slug, dream_id=dream_id))
-        count += 1
+            with native_writer(org.db, publisher='dream_scheduler', agents=(agent,), durable=False):
+                local_date, _scheduled = _scheduled_datetime(now, cfg, tz)
+                existing = org.db.get_dream_for_agent_date(agent, local_date)
+                decision = should_schedule_for_agent(
+                    agent_name=agent,
+                    now=now,
+                    config=cfg,
+                    existing_for_date=existing,
+                    tz=tz,
+                )
+                if not decision.should_schedule:
+                    continue
+                dream_id = org.db.next_dream_id()
+                base = dict(
+                    id=dream_id,
+                    agent_name=agent,
+                    local_date=decision.local_date,
+                    scheduled_for=decision.scheduled_for,
+                    window_start=_window_start(org, agent, now),
+                    window_end=now,
+                )
+                if effective_startup and not cfg.catch_up_on_startup:
+                    # Missed run at startup, catch-up disabled: record a skipped row so
+                    # the steady-state loop's existing-row guard suppresses re-scheduling
+                    # today. Not enqueued, not counted.
+                    org.db.insert_dream(DreamRecord(status=DreamStatus.SKIPPED, **base))
+                    continue
+                org.db.insert_dream(DreamRecord(**base))
+                AuditLogger(org.db).log_dream_scheduled(dream_id, agent, local_date=decision.local_date)
+                try:
+                    loop = asyncio.get_running_loop()
+                    loop.create_task(_enqueue(org, dream_id))
+                except RuntimeError:
+                    # No running loop (synchronous callers/tests): enqueue directly via
+                    # the unbounded queue. Avoids asyncio.run(), which resets the
+                    # process-global event loop to None and breaks later sync code that
+                    # calls asyncio.get_event_loop().
+                    org.dream_queue.put_nowait(DreamJob(org_slug=org.slug, dream_id=dream_id))
+                count += 1
+        except DeferredTeamMove:
+            held = True
+            if admission is not None and effective_startup:
+                admission.startup_deferred.add(key)
+            continue
+        finally:
+            if admission is not None and not held:
+                admission.startup_deferred.discard(key)
     return count
 
 
 def recover_running_dreams(org) -> int:
-    changed = 0
-    for dream in org.db.list_dreams(limit=500):
-        if dream.status == DreamStatus.RUNNING:
-            org.db.update_dream(
-                dream.id,
-                status=DreamStatus.FAILED,
-                error="daemon_restart",
-                ended_at=datetime.now(timezone.utc),
-            )
-            changed += 1
-    return changed
+    with org.db._lock:
+        changed = 0
+        for dream in [org.db.get_dream(row['id']) for row in org.db._conn.execute("SELECT id FROM dreams WHERE status='running'")]:
+            admission = owner_for(org.db)
+            if admission is not None:
+                with org.db._lock:
+                    if admission.preserve_uncommitted('dream', dream.id, dream.agent_name):
+                        continue
+            if dream.status == DreamStatus.RUNNING:
+                org.db.update_dream(
+                    dream.id,
+                    status=DreamStatus.FAILED,
+                    error="daemon_restart",
+                    ended_at=datetime.now(timezone.utc),
+                )
+                changed += 1
+        return changed
 
 
 async def dream_scheduler_loop(state, *, interval_seconds: int = 60) -> None:

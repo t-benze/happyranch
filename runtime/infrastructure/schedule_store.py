@@ -8,6 +8,8 @@ THR-105 Phase 1 — inert additive store; no scheduler/runner/wiring yet.
 """
 from __future__ import annotations
 
+from runtime.infrastructure.producer_admission import native_owner_uncommitted
+
 import json
 import logging
 import sqlite3
@@ -59,9 +61,10 @@ _UPDATABLE = {
 
 
 class ScheduleStore:
-    def __init__(self, conn: sqlite3.Connection, lock: threading.RLock) -> None:
+    def __init__(self, conn: sqlite3.Connection, lock: threading.RLock, *, db=None) -> None:
         self._conn = conn
         self._lock = lock
+        self._db = db
 
     # ------------------------------------------------------------------ id alloc
 
@@ -119,6 +122,9 @@ class ScheduleStore:
 
     def insert(self, record: ScheduleRecord) -> None:
         with self._lock:
+            admission = native_owner_uncommitted(self._db)
+            if admission is not None:
+                admission.check_uncommitted(agents=(record.agent_name,))
             self._conn.execute(
                 """INSERT INTO schedules (
                     id, agent_name, team, kind, fire_at, recurrence, timezone,
@@ -255,6 +261,12 @@ class ScheduleStore:
         """
         updated_at = self._utc(now if now is not None else _now()).isoformat()
         with self._lock:
+            admission = native_owner_uncommitted(self._db)
+            if admission is not None:
+                row = self._conn.execute('SELECT agent_name FROM schedules WHERE id=?', (schedule_id,)).fetchone()
+                if row is None:
+                    return False
+                admission.check_uncommitted(agents=(row['agent_name'],))
             cursor = self._conn.execute(
                 "UPDATE schedules SET status = ?, updated_at = ? "
                 "WHERE id = ? AND status = ?",
@@ -294,6 +306,11 @@ class ScheduleStore:
             values.append(value)
         values.append(schedule_id)
         with self._lock:
+            admission = native_owner_uncommitted(self._db)
+            if admission is not None and set(fields).intersection(('fire_at', 'recurrence', 'timezone', 'expires_at', 'indefinite')):
+                row = self._conn.execute('SELECT agent_name,status FROM schedules WHERE id=?', (schedule_id,)).fetchone()
+                if row is not None and row['status'] != 'firing':
+                    admission.check_uncommitted(agents=(row['agent_name'],))
             self._conn.execute(
                 f"UPDATE schedules SET {', '.join(assignments)} WHERE id = ?",
                 values,
@@ -309,14 +326,20 @@ class ScheduleStore:
         Returns a list of ``(schedule_id, agent_name)`` tuples for every
         recovered row so the caller can emit ``schedule_failed`` audit rows.
         """
-        recovered: list[tuple[str, str]] = []
-        for record in self.list(limit=500):
-            if record.status == ScheduleStatus.FIRING:
-                self.update(
-                    record.id,
-                    status=ScheduleStatus.FAILED,
-                    error="daemon_restart",
-                    updated_at=_now(),
-                )
-                recovered.append((record.id, record.agent_name))
-        return recovered
+        with self._lock:
+            recovered: list[tuple[str, str]] = []
+            for record in [self._row_to_model(r) for r in self._conn.execute("SELECT * FROM schedules WHERE status='firing'")]:
+                admission = native_owner_uncommitted(self._db)
+                if admission is not None:
+                    with self._lock:
+                        if admission.preserve_uncommitted('schedule', record.id, record.agent_name):
+                            continue
+                if record.status == ScheduleStatus.FIRING:
+                    self.update(
+                        record.id,
+                        status=ScheduleStatus.FAILED,
+                        error="daemon_restart",
+                        updated_at=_now(),
+                    )
+                    recovered.append((record.id, record.agent_name))
+            return recovered

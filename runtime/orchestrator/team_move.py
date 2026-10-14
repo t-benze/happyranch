@@ -1,6 +1,6 @@
 """Org-owned task/thread preparation and launch exclusion; apply remains unavailable.
 
-C3/D still own other claims, whole-operation census, release and recovery.
+D still owns whole-operation decision, release and recovery.
 No optional schema is installed here; absent-layout ordinary tasks remain valid.
 """
 from __future__ import annotations
@@ -17,8 +17,7 @@ _task_tail: ContextVar[list | None] = ContextVar("team_move_task_tail", default=
 
 CAPABILITY_VERSION = 1
 APPLY_AVAILABLE = False
-NOT_INTEGRATED = ("other_producers_writers",
-                  "canonical_context_publication_recovery", "startup_launcher_downgrade")
+NOT_INTEGRATED = ("canonical_context_publication_recovery", "startup_launcher_downgrade")
 
 # Required D completion readback; labels are a contract, never Boolean proofs.
 COMPLETION_REQUIREMENTS = (
@@ -123,8 +122,8 @@ class TeamMoveCoordinator:
     retries/fallback/terminal host cleanup. A durable hold is not a mutex lease:
     no TTL, timeout or missing PID releases it. Held agents stay outside host
     FIFO; unaffected traffic keeps normal admission. Captured running thread
-    drain is C2-owned and gives no new claim entitlement. Other producer claims
-    and whole-operation recovery remain C3/D-owned.
+    drain is C2-owned and gives no new claim entitlement. Remaining producer/writer claims are C3-owned;
+    whole-operation recovery remains D-owned.
     """
     def __init__(self, store: TeamMoveStore) -> None:
         # Construction is DB-owned, before any producer uses the gate. This
@@ -140,6 +139,8 @@ class TeamMoveCoordinator:
             store.db._team_move_coordinator = self
             from runtime.orchestrator.thread_move import ThreadMoveAdmission
             self.threads = ThreadMoveAdmission(self)
+            from runtime.orchestrator.producer_move import ProducerMoveAdmission
+            self.producers = ProducerMoveAdmission(self)
 
     @classmethod
     def for_org(cls, store: TeamMoveStore) -> TeamMoveCoordinator:

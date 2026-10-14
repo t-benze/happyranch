@@ -11,6 +11,8 @@ short and never span snapshot capture or filesystem publication.
 """
 from __future__ import annotations
 
+from runtime.orchestrator.producer_move import native_writer
+
 import asyncio
 import hashlib
 import json
@@ -758,60 +760,7 @@ class WorkflowAuthorityCoordinator:
         publisher: str,
     ) -> Iterator[_SupportedWriterInterval]:
         """Own a synchronous writer batch while leasing only mutations."""
-        with self._publisher_lock:
-            interval = _SupportedWriterInterval(self, publisher=publisher)
-            try:
-                yield interval
-            except BaseException:
-                if interval.fenced:
-                    self.publish_after_supported_change(
-                        publisher=f"{publisher}:compensation",
-                        fence_journal_id=interval.fence_journal_id,
-                        publisher_invocation=interval.publisher_invocation,
-                    )
-                raise
-            else:
-                if interval.fenced:
-                    self.publish_after_supported_change(
-                        publisher=publisher,
-                        fence_journal_id=interval.fence_journal_id,
-                        publisher_invocation=interval.publisher_invocation,
-                    )
-
-        # The one-shot compatibility writer discovers workspace YAML while
-        # owning only its process gate. Reconcile its completed canonical batch
-        # after that gate releases, so profile acquisition never reverses the
-        # profile -> org publisher order and discovery never runs under leases.
-        if (
-            publisher == "agent_yaml_frontmatter_migration"
-            and interval.fenced and self._profile_coordinator is not None
-        ):
-            try:
-                self._profile_coordinator.reconcile_supported_roster_batch(
-                    self, completed_writer_invocation=interval.publisher_invocation,
-                )
-            except Exception:
-                logger.exception(
-                    "profile closure remains fenced after supported roster batch org=%s",
-                    self._org_slug,
-                )
-
-    @asynccontextmanager
-    async def async_writer_interval(
-        self,
-        *,
-        publisher: str,
-    ) -> AsyncIterator[_SupportedWriterInterval]:
-        """Own one async writer through its terminal success/compensation.
-
-        The process gate may span awaits, scans, clone/network work, or host
-        bootstrap. Durable ownership is acquired separately by
-        ``canonical_change`` and therefore never spans those operations.
-        Every async participating route uses this outer lock, while the
-        thread lock also serializes synchronous startup and thread-pool
-        writers with the interval.
-        """
-        async with self._async_writer_lock:
+        with native_writer(self._db, publisher=publisher):
             with self._publisher_lock:
                 interval = _SupportedWriterInterval(self, publisher=publisher)
                 try:
@@ -831,6 +780,61 @@ class WorkflowAuthorityCoordinator:
                             fence_journal_id=interval.fence_journal_id,
                             publisher_invocation=interval.publisher_invocation,
                         )
+
+            # The one-shot compatibility writer discovers workspace YAML while
+            # owning only its process gate. Reconcile its completed canonical batch
+            # after that gate releases, so profile acquisition never reverses the
+            # profile -> org publisher order and discovery never runs under leases.
+            if (
+                publisher == "agent_yaml_frontmatter_migration"
+                and interval.fenced and self._profile_coordinator is not None
+            ):
+                try:
+                    self._profile_coordinator.reconcile_supported_roster_batch(
+                        self, completed_writer_invocation=interval.publisher_invocation,
+                    )
+                except Exception:
+                    logger.exception(
+                        "profile closure remains fenced after supported roster batch org=%s",
+                        self._org_slug,
+                    )
+
+    @asynccontextmanager
+    async def async_writer_interval(
+        self,
+        *,
+        publisher: str,
+    ) -> AsyncIterator[_SupportedWriterInterval]:
+        """Own one async writer through its terminal success/compensation.
+
+        The process gate may span awaits, scans, clone/network work, or host
+        bootstrap. Durable ownership is acquired separately by
+        ``canonical_change`` and therefore never spans those operations.
+        Every async participating route uses this outer lock, while the
+        thread lock also serializes synchronous startup and thread-pool
+        writers with the interval.
+        """
+        with native_writer(self._db, publisher=publisher):
+            async with self._async_writer_lock:
+                with self._publisher_lock:
+                    interval = _SupportedWriterInterval(self, publisher=publisher)
+                    try:
+                        yield interval
+                    except BaseException:
+                        if interval.fenced:
+                            self.publish_after_supported_change(
+                                publisher=f"{publisher}:compensation",
+                                fence_journal_id=interval.fence_journal_id,
+                                publisher_invocation=interval.publisher_invocation,
+                            )
+                        raise
+                    else:
+                        if interval.fenced:
+                            self.publish_after_supported_change(
+                                publisher=publisher,
+                                fence_journal_id=interval.fence_journal_id,
+                                publisher_invocation=interval.publisher_invocation,
+                            )
 
     @contextmanager
     def supported_change(self, *, publisher: str) -> Iterator[None]:

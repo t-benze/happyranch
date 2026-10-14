@@ -1272,6 +1272,7 @@ async def founder_create_agent(
     # ---- team mutation + agent file write, under the same locks ----
     async with _consumer_writer_interval(
         org, publisher="founder_create_agent", consumer=body.name, executor=body.executor,
+        teams=(body.team or body.new_team,),
     ) as authority_change:
         async with org.teams_lock:
             _require_naming_id(org, body.name)
@@ -1986,7 +1987,7 @@ def _require_naming_id(org, name):
 
 
 @asynccontextmanager
-async def _consumer_writer_interval(org, *, publisher, consumer, executor=None, preserve=False):
+async def _consumer_writer_interval(org, *, publisher, consumer, executor=None, preserve=False, teams=()):
     coordinator = getattr(org, "_profile_coordinator", None)
     if coordinator is None:
         async with org.workflow_authority.async_writer_interval(publisher=publisher) as interval:
@@ -1996,7 +1997,7 @@ async def _consumer_writer_interval(org, *, publisher, consumer, executor=None, 
     try:
         async with coordinator.consumer_writer(
             org=org, publisher=publisher, consumer=consumer,
-            executor=executor, preserve=preserve,
+            executor=executor, preserve=preserve, teams=teams,
         ) as interval:
             async with naming_writer(org, interval):
                 yield interval

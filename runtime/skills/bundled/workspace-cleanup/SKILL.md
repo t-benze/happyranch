@@ -5,6 +5,8 @@ description: Shared daily/manual own-workspace cleanup contract — bounded, Git
 
 # workspace-cleanup
 
+An online team-move hold reserves affected agents and source/target membership. The native cleanup trigger defers before work allocation, without advancing an occurrence; real cleanup tasks and unknown process/workspace tails block the move. Never delete another owner’s workspace, clear uncertainty or fabricate settlement to free a hold. Existing cleanup authority and all preservation gates remain. Apply is unavailable; behavior remains UNEXECUTED.
+
 The one shared workspace-cleanup skill for every agent, including no-repo
 agents. It is invoked two ways, and both use exactly this contract:
 

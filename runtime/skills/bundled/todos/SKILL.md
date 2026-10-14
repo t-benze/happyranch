@@ -18,6 +18,8 @@ Human Todo-list filters accept current names; `schedules create/spawn` payload a
 
 # Todos — Agent-owned scheduled commitments (THR-105 v2)
 
+An online team-move hold preserves pending schedules before claim and missed/expiry bookkeeping. The native owner reevaluates ordinary deadlines after release with current context; never shift recurrence, invent catch-up or create a replacement schedule. Stable permanent-ID schedules can remain; retired-team content or unsupported bindings need explicit owner resolution. Firing/session ownership blocks a move. Apply is unavailable; behavior remains UNEXECUTED.
+
 Agents may create `one_shot`, `weekly`, and `recurring` self-scheduled Todos via the
 `schedules create` callback. This is a **self-only, explicit-instruction,
 session-bound** operation available to every valid in-org agent. You cannot

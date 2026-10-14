@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from runtime.infrastructure.producer_admission import native_owner_uncommitted
+
 from runtime.infrastructure.db._shared import _late_database_now as _now, _parse_dt, _synchronized
 from runtime.models import DreamKbCandidate, DreamRecord, DreamStatus
 
@@ -40,6 +42,9 @@ class DreamsMixin:
 
     @_synchronized
     def insert_dream(self, dream: DreamRecord) -> None:
+        admission = native_owner_uncommitted(self)
+        if admission is not None:
+            admission.check_uncommitted(agents=(dream.agent_name,))
         self._conn.execute(
             """INSERT INTO dreams (
                 id, agent_name, local_date, scheduled_for, window_start, window_end,
@@ -159,6 +164,11 @@ class DreamsMixin:
         status no longer matched (e.g. a concurrent termination set it to
         SKIPPED). Extra fields are persisted only on a successful transition.
         """
+        admission = native_owner_uncommitted(self)
+        if move is not None and new_status == DreamStatus.RUNNING:
+            row = self._conn.execute('SELECT agent_name FROM dreams WHERE id=?', (dream_id,)).fetchone()
+            if row is not None:
+                admission.check_uncommitted(agents=(row['agent_name'],))
         allowed = {
             "started_at", "ended_at", "summary", "transcript_path",
             "new_learnings_count", "kb_candidate_count", "founder_thread_id",

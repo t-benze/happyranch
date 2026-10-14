@@ -13,6 +13,8 @@ that transitions the row.
 """
 from __future__ import annotations
 
+from runtime.orchestrator.team_move import DeferredTeamMove
+
 import asyncio
 import time
 from datetime import datetime, timezone
@@ -150,13 +152,14 @@ endpoint creates the root task on your own team, targeted to you as executor.
 """
 
 
-async def run_schedule(
+async def _run_schedule(
     *,
     org_state,
     schedule_id: str,
     settings: Settings = global_settings,
     executor_factory: Callable | None = None,
     host_supervisor: HostSessionSupervisor | None = None,
+    _move_owner=None,
 ) -> None:
     """Run one schedule fire session.
 
@@ -250,6 +253,8 @@ async def run_schedule(
             agent_name=record.agent_name,
             task_id=schedule_id,
         )
+    except DeferredTeamMove:
+        raise
     except Exception as e:
         _failure_transition(store, record, now, f"materialization_failed: {e}")
         org_state.db.insert_audit_log(
@@ -311,6 +316,11 @@ async def run_schedule(
         else _build_executor_for_provider(executor_name, settings, paths)
     )
 
+    from runtime.orchestrator.producer_move import bind_producer_executor
+    if _move_owner is not None:
+        _move_owner.executor, _move_owner.model = executor_name, model_name
+    executor = bind_producer_executor(executor, _move_owner)
+
     # ── D7B: CustomAdapterExecutor invocation context ──────────────────
     if hasattr(executor, 'set_invocation_context'):
         executor.set_invocation_context(
@@ -352,6 +362,8 @@ async def run_schedule(
                 org_slug=org_state.slug,
                 timeout_seconds=settings.session_timeout_seconds,
             )
+        except DeferredTeamMove:
+            raise
         except Exception as exc:
             _failure_transition(
                 store, record, datetime.now(timezone.utc),
@@ -405,14 +417,17 @@ async def run_schedule(
             AdmissionRequest(
                 org=org_state.slug,
                 invocation_kind="schedule",
+                move_reservation=_move_owner,
+                on_started=(lambda _pid: _move_owner.on_started()) if _move_owner is not None else None,
                 agent_id=record.agent_name,
                 logical_id=schedule_id,
                 executor_profile=executor_name,
-                enqueued_at=time.monotonic(),
+                enqueued_at=_move_owner.enqueued_at if _move_owner is not None else time.monotonic(),
             ),
             launch_spec=launch_spec,
             launch_body=_launch_body,
             pre_launch_validator=_pre_launch_validator,
+            final_prelaunch_validator=_move_owner,
         ),
     )
     # ``outcome.payload`` is the launch body's LaunchResult; its own
@@ -472,3 +487,14 @@ async def run_schedule(
         action="schedule_failed",
         payload={"reason": error},
     )
+
+
+async def run_schedule(
+    *, org_state, schedule_id: str, settings: Settings = global_settings,
+    executor_factory: Callable | None = None,
+    host_supervisor: HostSessionSupervisor | None = None,
+) -> None:
+    from runtime.orchestrator.producer_move import run_native_producer
+    await run_native_producer(org_state, 'schedule', schedule_id, lambda owner: _run_schedule(
+        org_state=org_state, schedule_id=schedule_id, settings=settings,
+        executor_factory=executor_factory, host_supervisor=host_supervisor, _move_owner=owner))

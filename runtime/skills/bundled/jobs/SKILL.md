@@ -5,6 +5,8 @@ description: Run a script in the background or request founder review; manage th
 
 # jobs
 
+An online team-move hold defers new affected job creation/approval/run under its native task/session/job owner. Pending/running jobs, actual wait/resume callbacks and unknown process/remote-workspace cleanup block the move. A safe already-approved no-launch deferral keeps its exact runner and approval; do not approve/reject/stop or resubmit it to clear a hold. Terminal job status alone is not process-tree quiescence. No move/apply authority follows; behavior remains UNEXECUTED.
+
 ## THR-247 recovery-turn exception
 
 A server-designated completion-recovery binding must not submit a new job. It

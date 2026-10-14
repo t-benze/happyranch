@@ -1,6 +1,9 @@
 """Script request endpoints (spec §5)."""
 from __future__ import annotations
 
+from runtime.orchestrator.producer_move import owner_for
+from runtime.orchestrator.team_move import DeferredTeamMove
+
 import asyncio
 import hashlib
 import json as _json
@@ -895,12 +898,13 @@ def _settle_pause_job(org, task_id: str, job_id: str, *, no_launch_proven: bool 
             store.save_journal_uncommitted(row)
 
 
-async def _run_job_core(
+async def _run_job_core_impl(
     org, *, job_id: str,
     cwd_override: str | None, timeout_override: int | None,
     trigger: str = "founder",
     trigger_actor: str | None = None,
     submit_session_id: str | None = None,
+    _move_owner=None,
 ) -> dict:
     """Shared core for HTTP and in-process run paths.
 
@@ -1113,7 +1117,10 @@ async def _run_job_core(
                 publish=_sync_publish,
                 task_id=record.task_id,
                 workspace_root=str(workspace_root),
+                move_owner=_move_owner,
             )
+        except DeferredTeamMove:
+            raise
         except FileNotFoundError:
             finished = _now_iso()
             try:
@@ -1195,7 +1202,34 @@ async def _run_job_core(
             )
 
     from runtime.daemon.jobs_runner import register_runner_task
-    register_runner_task(job_id, asyncio.create_task(_run_and_persist()))
+    async def owned_run(owner):
+        nonlocal _move_owner
+        _move_owner = owner
+        deferred = failed = False
+        primary = None
+        try:
+            await _run_and_persist()
+        except DeferredTeamMove:
+            deferred = True
+        except BaseException as exc:
+            primary = exc
+            failed = True
+            raise
+        finally:
+            if owner is not None:
+                try:
+                    owner.finish(deferred=deferred, failed=failed)
+                except BaseException as settlement:
+                    if primary is None:
+                        raise
+                    primary.add_note(f'job native ownership settlement failed: {settlement}')
+                if deferred:
+                    owner.admission.deferred_jobs[job_id] = owned_run
+                else:
+                    owner.admission.deferred_jobs.pop(job_id, None)
+    if _move_owner is not None:
+        _move_owner.detached = True
+    register_runner_task(job_id, asyncio.create_task(owned_run(_move_owner)))
 
     return {
         "id": job_id,
@@ -1290,3 +1324,21 @@ async def job_events_stream(slug: str, job_id: str, org: OrgDep) -> StreamingRes
                 next_task.cancel()
 
     return StreamingResponse(gen(), media_type="text/event-stream")
+
+
+async def _run_job_core(org, *, job_id: str, cwd_override: str | None,
+    timeout_override: int | None, trigger: str = 'founder',
+    trigger_actor: str | None = None, submit_session_id: str | None = None) -> dict:
+    admission = owner_for(org.db)
+    owner = None
+    try:
+        if admission is not None:
+            owner = admission.reserve('job', job_id)
+        return await _run_job_core_impl(org, job_id=job_id, cwd_override=cwd_override,
+            timeout_override=timeout_override, trigger=trigger, trigger_actor=trigger_actor,
+            submit_session_id=submit_session_id, _move_owner=owner)
+    except DeferredTeamMove as exc:
+        return {'id': job_id, 'status': 'pending', 'deferred': True, 'code': exc.code}
+    finally:
+        if owner is not None and not getattr(owner, 'detached', False):
+            owner.finish(deferred=True)

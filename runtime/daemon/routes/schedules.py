@@ -8,6 +8,8 @@ User-facing label: Todos.  Internal primitive: Schedule / SCHEDULE-NNN.
 """
 from __future__ import annotations
 
+from runtime.orchestrator.team_move import DeferredTeamMove
+
 import os
 import tempfile
 from datetime import datetime, timezone
@@ -472,6 +474,8 @@ def _write_schedule_transcript(
         with os.fdopen(fd, "wb") as f:
             f.write(body.encode("utf-8"))
         os.replace(tmp_name, target)
+    except DeferredTeamMove:
+        raise
     except Exception:
         if os.path.exists(tmp_name):
             os.unlink(tmp_name)
@@ -534,6 +538,8 @@ async def spawn_schedule(
                 assigned_agent=agent,
             ))
             created.append(task_id)
+        except DeferredTeamMove:
+            raise
         except Exception as exc:  # pragma: no cover
             raise HTTPException(
                 status_code=500,

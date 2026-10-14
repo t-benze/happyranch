@@ -93,6 +93,9 @@ Contract-relevant bounds (all documented in the workspace-cleanup behavior tests
 """
 from __future__ import annotations
 
+from runtime.orchestrator.producer_move import native_writer
+from runtime.orchestrator.team_move import DeferredTeamMove
+
 import asyncio
 import logging
 import os
@@ -1195,137 +1198,138 @@ async def trigger_cleanup(
     Historical reports/associations stay unchanged. New trigger audits retain
     all six keys with ``report_thread_id`` null.
     """
-    if now_utc is None:
-        now_utc = datetime.now(timezone.utc)
+    with native_writer(org.db, publisher='workspace_cleanup', agents=(agent,)):
+        if now_utc is None:
+            now_utc = datetime.now(timezone.utc)
 
-    from runtime.orchestrator._paths import OrgPaths
+        from runtime.orchestrator._paths import OrgPaths
 
-    team = org.teams.team_for_agent(agent)
-    if team is None:
-        logger.error(
-            "workspace cleanup: agent %s has no team in org %s",
-            agent, org.slug,
-        )
-        org.db.insert_audit_log(
-            task_id="workspace-cleanup:skipped",
-            agent=agent,
-            action="workspace_cleanup_skipped",
-            payload={"reason": "agent_team_unresolved", "agent": agent},
-        )
-        return None
-
-    try:
-        await asyncio.get_running_loop().run_in_executor(
-            None,
-            lambda: report_registered_agent_task_scratch(
-                db=org.db, sessions=org.sessions, agent=agent,
-                workspace=OrgPaths(root=org.root).workspaces_dir / agent,
-            ),
-        )
-    except Exception:
-        logger.exception("task scratch cleanup report failed for %s", agent)
-
-    # Bounded, fail-open measurement of THE AGENT'S OWN workspace — the gate
-    # for the >= 1 GiB founder threshold and the advisory snapshot packed at
-    # trigger time. A disk gauge must never block the run; it runs in a
-    # thread executor so the daemon event loop is never stalled by the
-    # (deadline-bounded) traversal. NO task id is selected before this
-    # awaited measurement (TASK-6043 finding 3).
-    loop = asyncio.get_running_loop()
-    snapshot = await loop.run_in_executor(
-        None,
-        lambda: measure_workspace_context(
-            OrgPaths(root=org.root).workspaces_dir / agent,
-            db=org.db,
-            sessions=org.sessions,
-        ),
-    )
-    if (
-        snapshot.available
-        and snapshot.workspaces_bytes < _MIN_WORKSPACE_TRIGGER_BYTES
-    ):
-        org.db.insert_audit_log(
-            task_id="workspace-cleanup:skipped",
-            agent=agent,
-            action="workspace_cleanup_skipped",
-            payload={
-                "reason": "workspace_below_threshold",
-                "agent": agent,
-                "workspaces_bytes": snapshot.workspaces_bytes,
-            },
-        )
-        return None
-
-    # Per-agent triggered-run counter (first-two report-only bookkeeping),
-    # derived from the owning agent's daemon-marked cleanup task rows via the
-    # authoritative marker-filtered query. An indeterminate history (lookup
-    # error) fails closed: a dedup-blind daemon must not double-fire, reset
-    # the first-two counter (TASK-6043 finding 1).
-    history = _cleanup_task_history(org.db, agent)
-    if history.indeterminate:
-        org.db.insert_audit_log(
-            task_id="workspace-cleanup:skipped",
-            agent=agent,
-            action="workspace_cleanup_skipped",
-            payload={"reason": "history_indeterminate", "agent": agent},
-        )
-        return None
-    run_number = history.count + 1
-
-    # Allocate only after awaited measurement. No awaits separate allocation,
-    # composition and ordinary insertion under the existing producer lock.
-    async with org.db_lock:
-        task_id = org.db.next_task_id()
-        brief = compose_cleanup_brief(
-            org_slug=org.slug, agent=agent, task_id=task_id,
-            run_number=run_number, snapshot=snapshot,
-        )
-        try:
-            org.db.insert_task(TaskRecord(
-                id=task_id, brief=brief, team=team, assigned_agent=agent,
-            ))
-        except Exception:
-            # Ordinary insertion failed: do not enqueue or fabricate a
-            # successful trigger. Preserve the existing skip/retry behavior.
-            logger.exception(
-                "workspace cleanup: task insert failed for org %s agent %s "
-                "(task %s) — insert failed, no run enqueued",
-                org.slug, agent, task_id,
+        team = org.teams.team_for_agent(agent)
+        if team is None:
+            logger.error(
+                "workspace cleanup: agent %s has no team in org %s",
+                agent, org.slug,
             )
             org.db.insert_audit_log(
                 task_id="workspace-cleanup:skipped",
                 agent=agent,
                 action="workspace_cleanup_skipped",
+                payload={"reason": "agent_team_unresolved", "agent": agent},
+            )
+            return None
+
+        try:
+            await asyncio.get_running_loop().run_in_executor(
+                None,
+                lambda: report_registered_agent_task_scratch(
+                    db=org.db, sessions=org.sessions, agent=agent,
+                    workspace=OrgPaths(root=org.root).workspaces_dir / agent,
+                ),
+            )
+        except Exception:
+            logger.exception("task scratch cleanup report failed for %s", agent)
+
+        # Bounded, fail-open measurement of THE AGENT'S OWN workspace — the gate
+        # for the >= 1 GiB founder threshold and the advisory snapshot packed at
+        # trigger time. A disk gauge must never block the run; it runs in a
+        # thread executor so the daemon event loop is never stalled by the
+        # (deadline-bounded) traversal. NO task id is selected before this
+        # awaited measurement (TASK-6043 finding 3).
+        loop = asyncio.get_running_loop()
+        snapshot = await loop.run_in_executor(
+            None,
+            lambda: measure_workspace_context(
+                OrgPaths(root=org.root).workspaces_dir / agent,
+                db=org.db,
+                sessions=org.sessions,
+            ),
+        )
+        if (
+            snapshot.available
+            and snapshot.workspaces_bytes < _MIN_WORKSPACE_TRIGGER_BYTES
+        ):
+            org.db.insert_audit_log(
+                task_id="workspace-cleanup:skipped",
+                agent=agent,
+                action="workspace_cleanup_skipped",
                 payload={
-                    "reason": "task_insert_failed",
+                    "reason": "workspace_below_threshold",
                     "agent": agent,
-                    "task_id": task_id,
+                    "workspaces_bytes": snapshot.workspaces_bytes,
                 },
             )
             return None
-    enqueue(org.slug, task_id)
 
-    org.db.insert_audit_log(
-        task_id=task_id,
-        agent=agent,
-        action="workspace_cleanup_triggered",
-        payload={
-            "report_thread_id": None,
-            "measurement_available": snapshot.available,
-            "measurement_reason": snapshot.reason,
-            "measurement_truncated": snapshot.truncated,
-            "run_number": run_number,
-            "brief_kind": (
-                "report_only" if run_number <= _REPORT_ONLY_RUN_LIMIT
-                else "cleanup"
-            ),
-        },
-    )
-    logger.info(
-        "workspace cleanup triggered for org %s: agent %s task %s (run #%s)",
-        org.slug, agent, task_id, run_number,
-    )
-    return task_id
+        # Per-agent triggered-run counter (first-two report-only bookkeeping),
+        # derived from the owning agent's daemon-marked cleanup task rows via the
+        # authoritative marker-filtered query. An indeterminate history (lookup
+        # error) fails closed: a dedup-blind daemon must not double-fire, reset
+        # the first-two counter (TASK-6043 finding 1).
+        history = _cleanup_task_history(org.db, agent)
+        if history.indeterminate:
+            org.db.insert_audit_log(
+                task_id="workspace-cleanup:skipped",
+                agent=agent,
+                action="workspace_cleanup_skipped",
+                payload={"reason": "history_indeterminate", "agent": agent},
+            )
+            return None
+        run_number = history.count + 1
+
+        # Allocate only after awaited measurement. No awaits separate allocation,
+        # composition and ordinary insertion under the existing producer lock.
+        async with org.db_lock:
+            task_id = org.db.next_task_id()
+            brief = compose_cleanup_brief(
+                org_slug=org.slug, agent=agent, task_id=task_id,
+                run_number=run_number, snapshot=snapshot,
+            )
+            try:
+                org.db.insert_task(TaskRecord(
+                    id=task_id, brief=brief, team=team, assigned_agent=agent,
+                ))
+            except Exception:
+                # Ordinary insertion failed: do not enqueue or fabricate a
+                # successful trigger. Preserve the existing skip/retry behavior.
+                logger.exception(
+                    "workspace cleanup: task insert failed for org %s agent %s "
+                    "(task %s) — insert failed, no run enqueued",
+                    org.slug, agent, task_id,
+                )
+                org.db.insert_audit_log(
+                    task_id="workspace-cleanup:skipped",
+                    agent=agent,
+                    action="workspace_cleanup_skipped",
+                    payload={
+                        "reason": "task_insert_failed",
+                        "agent": agent,
+                        "task_id": task_id,
+                    },
+                )
+                return None
+        enqueue(org.slug, task_id)
+
+        org.db.insert_audit_log(
+            task_id=task_id,
+            agent=agent,
+            action="workspace_cleanup_triggered",
+            payload={
+                "report_thread_id": None,
+                "measurement_available": snapshot.available,
+                "measurement_reason": snapshot.reason,
+                "measurement_truncated": snapshot.truncated,
+                "run_number": run_number,
+                "brief_kind": (
+                    "report_only" if run_number <= _REPORT_ONLY_RUN_LIMIT
+                    else "cleanup"
+                ),
+            },
+        )
+        logger.info(
+            "workspace cleanup triggered for org %s: agent %s task %s (run #%s)",
+            org.slug, agent, task_id, run_number,
+        )
+        return task_id
 
 
 # ── per-org tick + async loop ─────────────────────────────────────────────
@@ -1393,12 +1397,16 @@ async def _tick_org(
                 # (including fail-closed skips inside trigger_cleanup) carry
                 # audit rows, so the daily loop never spams the ledger.
                 continue
-            await trigger_cleanup(
-                org,
-                agent=agent,
-                enqueue=lambda slug, tid: _enqueue_task(state, slug, tid),
-                now_utc=now_utc,
-            )
+            try:
+                await trigger_cleanup(
+                    org,
+                    agent=agent,
+                    enqueue=lambda slug, tid: _enqueue_task(state, slug, tid),
+                    now_utc=now_utc,
+                )
+            except DeferredTeamMove:
+                continue
+
         if not truncated:
             break
         offset += _MAX_WORKSPACES

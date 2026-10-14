@@ -453,8 +453,8 @@ class Database(
             # Working-hours CRUD lives in its own module but shares THIS connection
             # and lock so the single-connection serialization invariant (see
             # `_synchronized`) is preserved across both surfaces.
-            self.work_hours = WorkHoursStore(self._conn, self._lock)
-            self.schedules = ScheduleStore(self._conn, self._lock)
+            self.work_hours = WorkHoursStore(self._conn, self._lock, db=self)
+            self.schedules = ScheduleStore(self._conn, self._lock, db=self)
         except BaseException:
             # Database owns the connection as soon as connect() succeeds.  A
             # fail-closed schema check or interrupted migration can raise before

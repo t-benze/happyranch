@@ -5,6 +5,8 @@ description: Use this skill only when the daemon starts a private scheduled drea
 
 # dream
 
+During an online team-move hold, the native scheduler/runner retains due or pending work without consuming its occurrence. Running work is a blocker. Let the real dream owner revalidate and issue its genuine callback; never create a replacement occurrence, fake completion or reset a window. Source behavior remains UNEXECUTED and apply is unavailable.
+
 This is a private reflection invocation. It is not a task, thread, or thread.
 
 ## Procedure
