@@ -1010,7 +1010,7 @@ run_cleanup_candidate() {
     fi
     python3 "$_WC_RUNNER_SKILL_DIR/scripts/run_cleanup_batch.py" \
       --manifest "$WC_MANIFEST" --history-exclusions "$WC_HISTORY" --journal "$WC_JOURNAL" \
-      --evidence-dir "$WC_EVIDENCE_DIR" --only-candidate "$CANDIDATE" --only-containing "$CONTAINING"
+      --evidence-dir "$WC_EVIDENCE_DIR" --max-candidates 40 --only-candidate "$CANDIDATE" --only-containing "$CONTAINING"
     return $?
   fi
   python3 "$_WC_RUNNER_SKILL_DIR/scripts/prepare_cleanup.py" attempt-check \

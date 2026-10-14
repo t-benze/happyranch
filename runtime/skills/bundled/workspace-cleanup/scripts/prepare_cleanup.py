@@ -267,6 +267,12 @@ def package_identity() -> dict[str, str]:
     return {name: digest(scripts / name) for name in PACKAGE_NAMES}
 
 
+def same_evidence(first: Any, second: Any) -> bool:
+    # Python equality equates bool/int and int/float; closed JSON evidence must not.
+    return json.dumps(first, sort_keys=True, separators=(',', ':')) == json.dumps(
+        second, sort_keys=True, separators=(',', ':'))
+
+
 def canonical_record(path: Path) -> Any:
     if path.is_symlink() or not path.is_file():
         raise ValueError('canonical_record_missing:' + str(path))
@@ -310,12 +316,12 @@ def validate_attempt(path: Path, context: dict[str, Any] | None = None) -> dict[
     value = canonical_record(path / 'attempt.json')
     if not isinstance(value, dict) or set(value) != {'version', 'context', 'ordinal', 'item', 'argv'}:
         raise ValueError('attempt_schema')
-    if value['version'] != 1 or type(value['ordinal']) is not int or value['ordinal'] < 1:
+    if type(value['version']) is not int or value['version'] != 1 or type(value['ordinal']) is not int or value['ordinal'] < 1:
         raise ValueError('attempt_ordinal')
     held = value['context']
     fresh = evidence_context(Path(held['manifest_path']), Path(held['history_path']),
                              Path(held['journal_path']), Path(held['evidence_root']))
-    if held != fresh or (context is not None and held != context):
+    if not same_evidence(held, fresh) or (context is not None and not same_evidence(held, context)):
         raise ValueError('attempt_binding_drift')
     expected = Path(held['evidence_root']) / 'attempts' / str(value['ordinal'])
     if path != expected or path.resolve() != path:
@@ -415,7 +421,7 @@ def validate_eligibility(attempt: Path, expected: str | None = None) -> str | No
     if not isinstance(value, dict) or set(value) != {'version', 'attempt_sha256', 'item', 'action', 'measurement', 'native_inputs'}:
         raise ValueError('eligibility_schema')
     if (value['version'] != 1 or value['attempt_sha256'] != digest(attempt / 'attempt.json')
-            or value['item'] != owner['item'] or value['action'] != (
+            or not same_evidence(value['item'], owner['item']) or value['action'] != (
                 'isolate_cache' if owner['item']['kind'] == 'cache' else 'git_worktree_remove')):
         raise ValueError('eligibility_binding')
     seen = set()
@@ -493,7 +499,7 @@ def validate_coverage(context: dict[str, Any], manifest: list[dict[str, Any]],
             raise ValueError('terminal_duplicate_or_unknown')
         seen.add(candidate)
         expected_ordinal, item = by_candidate[candidate]
-        if ordinal != expected_ordinal or owner['item'] != item or owner['argv'] != row.get('argv'):
+        if ordinal != expected_ordinal or not same_evidence(owner['item'], item) or owner['argv'] != row.get('argv'):
             raise ValueError('terminal_literal_binding')
         allowed = {'attempt.json', '.attempt.json.pending', 'eligible.json', '.eligible.json.pending',
                    'ack.json', '.ack.json.pending', 'terminal-native.json', '.terminal-native.json.pending'}
@@ -508,12 +514,12 @@ def validate_coverage(context: dict[str, Any], manifest: list[dict[str, Any]],
                     'journal_path': str(journal), 'prefix_bytes': end,
                     'prefix_sha256': hashlib.sha256(data[:end]).hexdigest(),
                     'row_start': offset, 'row_end': end, 'row_sha256': hashlib.sha256(line).hexdigest()}
-        if ack != expected or row.get('attempt_sha256') != expected['attempt_sha256'] or row.get('eligible_sha256') != expected['eligible_sha256']:
+        if not same_evidence(ack, expected) or row.get('attempt_sha256') != expected['attempt_sha256'] or row.get('eligible_sha256') != expected['eligible_sha256']:
             raise ValueError('terminal_acknowledgement_mismatch')
         native = canonical_record(path / 'terminal-native.json')
         expected_native = {key: row[key] for key in ('exit_code', 'receipt', 'stdout', 'stderr', 'error')}
         expected_native['native_inputs'] = native_inputs(scratch[0])
-        if native != expected_native:
+        if not same_evidence(native, expected_native):
             raise ValueError('native_terminal_mismatch')
         if row.get('exit_code') not in (0, 2) or row.get('error') is not None:
             raise ValueError('native_terminal_failure')

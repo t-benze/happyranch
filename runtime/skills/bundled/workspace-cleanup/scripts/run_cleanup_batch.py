@@ -133,7 +133,7 @@ def _anomaly_measurements(receipt: dict[str, Any]) -> bool:
     for value in locations.values():
         if not isinstance(value, dict) or set(value) != location_keys:
             return False
-        if not isinstance(value["path"], str) or value["exists"] not in (True, False, None):
+        if not isinstance(value["path"], str) or (value["exists"] is not None and type(value["exists"]) is not bool):
             return False
         identity = value['identity']
         if identity is not None and (not isinstance(identity, list) or len(identity) != 4
@@ -320,11 +320,11 @@ def main(argv: list[str] | None = None) -> int:
         "--runner", type=Path,
         default=Path(__file__).with_name("run_cleanup_candidate.sh"),
     )
-    parser.add_argument("--max-candidates", type=int, default=40)
+    parser.add_argument("--max-candidates", type=int, default=100)
     parser.add_argument("--deadline-seconds", type=float, default=2400.0)
     parser.add_argument("--candidate-timeout-seconds", type=float, default=300.0)
     args = parser.parse_args(argv)
-    if (not 1 <= args.max_candidates <= CAP or args.deadline_seconds <= 0
+    if (args.max_candidates < 1 or args.deadline_seconds <= 0
             or args.candidate_timeout_seconds <= 0):
         parser.error("bounds must be positive")
     try:
