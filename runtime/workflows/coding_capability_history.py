@@ -109,9 +109,9 @@ def _native_capability(conn: sqlite3.Connection, org_slug: str,
         'typeof(authority_digest),typeof(source_pin),typeof(created_at) '
         'FROM workflow_authorization_revisions WHERE id=? OR namespace=? OR '
         'authority_digest=(SELECT authority_digest FROM workflow_authorization_revisions WHERE id=? LIMIT 1) '
-        'LIMIT 2', (authorization_id, namespace, authorization_id), 1))
+        'LIMIT 2', (authorization_id, namespace, authorization_id), 1, budget))
     _check(len(rows) == 1)
-    values = budget.row(rows[0], _TYPES)
+    values = budget.row(rows[0], _TYPES, counted=True)
     _check(values[0] == authorization_id and values[1] == namespace
            and values[2] == 1 and values[4] == _digest(values[3])
            and values[5] == _SOURCE_PIN)
@@ -119,9 +119,15 @@ def _native_capability(conn: sqlite3.Connection, org_slug: str,
 
 
 def _history(conn: sqlite3.Connection, org_slug: str,
-             authorization_id: str) -> CodingCapabilityHistory:
-    budget = _Budget()
-    setups = _SetupHistoryReader(conn, org_slug, budget)
+             authorization_id: str, *, budget: _Budget | None = None,
+             setups: _SetupHistoryReader | None = None) -> CodingCapabilityHistory:
+    # Private call-local composition; the public API creates its own budget.
+    if budget is None:
+        budget = _Budget()
+    if setups is None:
+        setups = _SetupHistoryReader(conn, org_slug, budget)
+    _check(type(setups) is _SetupHistoryReader and setups.conn is conn
+           and setups.org_slug == org_slug and setups.budget is budget)
     values = _native_capability(conn, org_slug, authorization_id, budget)
     # Parse the selected COMPLETE contained ancestry once. Exact native byte
     # equality below then binds each already-validated P, with no recursive

@@ -3546,3 +3546,65 @@ same-final-head scoped SOURCE QA return to SAME root, with actual lint/static
 checks, normal publication/hooks and manager guarded merge. Root retains full
 K2a2–K6 and real-agent/two-org/override/backup-copy operational acceptance; human
 trial remains retired and no live operation is authorized.
+
+
+### Retained native source identities — K2a2b4
+
+ROOT10693 step60 / Founder139562/559/329 accepts TASK11484 appendix
+4ee1d1819d3b58ff1350b192d6438fa8ed8bf99ba7cc06abfb0fe315fb4312e1/cases
+f55f71a1db09cf708dbad083cd8c955cd5241cf5f244586eaa3b19d7909c24ae after DESIGN11485.
+Unmounted `coding_source_history.read_source_native_records` composes genuine
+source-level P and complete native P/U/own-admission/publication history, sharing
+one call budget/setup cache with the existing unchanged public readers. It returns
+exactly immutable capability_history, source_task_record, ancestor_task_records,
+session_start_audit_record and same_session_result_records.
+
+Complete27 task/18 result/6 audit columns retain native storage classes/NULLs,
+empty free text, all UTF8/JSON bytes, original timestamp spelling and finite REAL
+cost. Source/parent-to-NULL rows are TODAY'S coherent records; ancestry includes
+source within20 and follows no revisit alias. Missing/cyclic/foreign-team ancestry
+refuses. The original source task/principal/SID selects exactly one native
+manager_decision session_start under its closed owner grammar and the entire
+bounded same-SID result inventory. Selected allocating INTEGER/full result must
+match the source tuple and full closed workflow_start command/INITIAL work radius, never
+latest result/action label alone. Nonallocating NULL selection proves neither
+original callback absence nor absence of a later callback. Current assignment/SID,
+tracker reconstruction, source admission/claim/current policy are separate facts.
+
+Caller independently admits complete native/J structure and holds one raw-value
+connection/transaction/lock; fixed parameterized SELECTs only, no await/transaction
+control/DTO/default/converter. Original typeof/native byte gates precede fetch,
+including multibyte/NUL suffixes; each new native row's combined variable bytes
+must fit remaining budget. Singleton keyset pages renew that gate; bounded task
+uniqueness probe prevents LIMIT1 conflict masking. Every fetched/rejected/overflow
+candidate shares8192 rows/16384 steps/16MiB raw bytes,1MiB per value,P64/setup1024/
+source20. Nullable/empty/finite-REAL accounting does not weaken existing mandatory
+setup/admission validation. This is not a total process/SQLite/copy memory bound.
+Category-only coding_source_history_invalid returns no partial records/private SQL.
+
+Fixed callback C0/source C1 captures and independent historical consumer remain
+unimplemented here: independently admitted C0/C1 compare exactly25 named fields
+and preserve both timestamp observations only at the first boundary; ALL27 C1=C2
+must agree after preflight, so intervening heartbeat refuses with zero partial
+coding allocation/debit/publication. Full27 replay and version-aware heartbeat
+handoff remain mandatory after bootstrap. Complete captures/J/native/authority/
+invocation/Pause/move/host/recovery/cutover consumers must precede EVERY producer.
+No capture/native writer/public mount or live authority follows. F–J/refusal,
+create-org I/document history, disabled K0 and unavailable K1 remain unchanged.
+FIRST FULL independent reviewer, same-final-head scoped SOURCE QA, static local
+all/hosted lint, normal hooks/nonforce push and manager guarded merge remain.
+Python units RETIRED; integration INCLUDING callback SKIPPED24342; all SQL/parser/
+product/native/security/negative/mutation/repetition/executable proof UNEXECUTED/
+FOUNDER-WAIVED139429/430. Root retains K2a2–K6 and operational acceptance.
+
+Native result `learnings` is nullable free TEXT, inserted unchanged by its owner:
+NULL, empty, prose and UTF8 bytes remain exact in EVERY same-SID result. Only
+owner-serialized JSON columns undergo JSON validation; all native storage/UTF8/
+prefetch per-value and shared-byte gates remain. The selected allocating callback's
+full original work repository/object-format/base/paths matches the INITIAL source
+P exactly, taken from the first node of the already validated complete native
+source-to-selected lineage. Same-issuer source refinements may narrow paths and
+retain that original callback; the selected P and all parent attenuation checks
+remain intact. A callback matching only a narrower child, conflicting identity,
+missing native ancestor or widening refuses; no caller-picked ancestor, broad
+subset substitute, extra query, historical rewrite or current grant follows.

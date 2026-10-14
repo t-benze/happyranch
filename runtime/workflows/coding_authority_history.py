@@ -14,6 +14,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import math
 import re
 import sqlite3
 from collections.abc import Iterator
@@ -103,9 +104,38 @@ class _Budget:
         self.traversed += 1
         _check(self.traversed <= _TRAVERSAL_LIMIT)
 
-    def row(self, row: tuple, types: tuple[str, ...]) -> tuple:
+    def candidate(self) -> None:
         self.accepted_rows += 1
         _check(self.accepted_rows <= _CALL_ROW_LIMIT)
+
+    @property
+    def remaining_bytes(self) -> int:
+        return _BYTE_LIMIT - self.consumed
+
+    def native_row(self, row: tuple, allowed: tuple[tuple[str, ...], ...]) -> tuple:
+        """Already charged candidate; native TEXT is projected as raw BLOB.
+
+        Nullable/empty free text and finite REAL are native-record facts only.
+        The existing mandatory setup/admission row path below stays strict.
+        """
+        count = len(allowed)
+        _check(len(row) == 2 * count)
+        values, types = row[:count], row[count:]
+        native = {'text': bytes, 'integer': int, 'real': float, 'null': type(None)}
+        for value, storage, choices in zip(values, types, allowed):
+            _check(storage in choices and type(value) is native[storage])
+            if storage == 'text':
+                _check(len(value) <= _VALUE_LIMIT)
+                _check(value.decode('utf8').encode('utf8') == value)
+                self.consumed += len(value)
+                _check(self.consumed <= _BYTE_LIMIT)
+            elif storage == 'real':
+                _check(math.isfinite(value))
+        return values
+
+    def row(self, row: tuple, types: tuple[str, ...], *, counted: bool = False) -> tuple:
+        if not counted:
+            self.candidate()
         count = len(types)
         _check(len(row) == 2 * count and row[count:] == types)
         values = row[:count]
@@ -121,7 +151,7 @@ class _Budget:
 
 
 def _rows(conn: sqlite3.Connection, sql: str, args: tuple,
-          maximum: int) -> Iterator[tuple]:
+          maximum: int, budget: _Budget | None = None) -> Iterator[tuple]:
     # All SQL call sites below are fixed-table literal parameterized SELECTs.
     # Cursor-local factory preserves caller configuration, never normalizes
     # native NULL/BLOB/TEXT/INTEGER or materializes an unbounded result set.
@@ -139,6 +169,8 @@ def _rows(conn: sqlite3.Connection, sql: str, args: tuple,
         cursor.execute(sql, args)
         count = 0
         while (row := cursor.fetchone()) is not None:
+            if budget is not None:
+                budget.candidate()
             count += 1
             _check(count <= maximum)
             yield row
@@ -162,9 +194,9 @@ def _capture_admission(conn: sqlite3.Connection, expected: dict,
         "CASE WHEN typeof(request_digest)='text' AND length(CAST(request_digest AS BLOB))<=1048576 THEN request_digest ELSE NULL END,"
         "CASE WHEN typeof(admitted_by)='text' AND length(CAST(admitted_by AS BLOB))<=1048576 THEN admitted_by ELSE NULL END,"
         'typeof(id),typeof(namespace),typeof(generation),typeof(request_digest),typeof(admitted_by) '
-        'FROM workflow_admission_records WHERE id=? LIMIT 2', (expected['id'],), 1))
+        'FROM workflow_admission_records WHERE id=? LIMIT 2', (expected['id'],), 1, budget))
     _check(len(rows) == 1)
-    actual = budget.row(rows[0], ('text', 'text', 'integer', 'text', 'text'))
+    actual = budget.row(rows[0], ('text', 'text', 'integer', 'text', 'text'), counted=True)
     _check(actual == tuple(expected[key] for key in (
         'id', 'namespace', 'generation', 'request_digest', 'admitted_by')))
     evidence = capture['profile_evidence']
@@ -189,7 +221,7 @@ def _capture_admission(conn: sqlite3.Connection, expected: dict,
         'FROM workflow_publication_journals WHERE id=? OR '
         '(namespace=? AND generation=? AND snapshot_digest=?) LIMIT 3',
         (_VALUE_LIMIT, pointer['journal_id'], ready['namespace'], ready['generation'],
-         ready['snapshot_digest']), 1))
+         ready['snapshot_digest']), 1, budget))
     _check(len(journals) == 1)
     # All twelve native columns are retained and type-checked; the nullable
     # file-phase owner stays NULL or TEXT exactly as stored, never coerced.
@@ -197,7 +229,7 @@ def _capture_admission(conn: sqlite3.Connection, expected: dict,
     _check(owner_type in ('null', 'text'))
     journal = budget.row(journals[0], (
         'text', 'text', 'integer', 'integer', 'blob', 'text', 'text', 'text',
-        'integer', 'text', 'text', owner_type))
+        'integer', 'text', 'text', owner_type), counted=True)
     (identity, namespace, generation, previous, raw, digest, publisher, invocation,
      fence, state, recovery, owner) = journal
     _token(identity)
@@ -243,9 +275,9 @@ def _inventory(conn: sqlite3.Connection, org_slug: str,
         'typeof(authority_digest),typeof(source_pin),typeof(created_at) '
         'FROM workflow_authorization_revisions WHERE substr(namespace,1,?)=? '
         'ORDER BY namespace,revision,id LIMIT ?',
-        (_VALUE_LIMIT, len(prefix), prefix, _ROW_LIMIT + 1), _ROW_LIMIT):
+        (_VALUE_LIMIT, len(prefix), prefix, _ROW_LIMIT + 1), _ROW_LIMIT, budget):
         identity, namespace, revision, raw, digest, source, created_at = budget.row(
-            row, ('text', 'text', 'integer', 'blob', 'text', 'text', 'text'))
+            row, ('text', 'text', 'integer', 'blob', 'text', 'text', 'text'), counted=True)
         _token(identity)
         _integer(revision, 1)
         _check(source == _SOURCE_PIN and digest == _digest(raw)
