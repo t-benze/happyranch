@@ -118,6 +118,7 @@ def _read(conn: sqlite3.Connection, org_slug: str, authorization_id: str) -> Cod
     captures = []
     owners = set()
     admissions = set()
+    allocating_results = set()
     selected = None
     for audit in _inventory(conn, _CAPTURE_SQL, (), _AUDIT_COLUMNS, _AUDIT_TYPES, budget):
         capture = _decode_capture(audit, org_slug, budget)
@@ -127,6 +128,10 @@ def _read(conn: sqlite3.Connection, org_slug: str, authorization_id: str) -> Cod
         if capture.phase == 'source':
             _check(capture.source_admission_id not in admissions)
             admissions.add(capture.source_admission_id)
+            if capture.result_record is not None:
+                result_id = capture.result_record._value('id')
+                _check(result_id not in allocating_results)
+                allocating_results.add(result_id)
         captures.append(capture)
         if capture.phase == 'source' and (
                 capture.source_admission_id == source_admission_id
