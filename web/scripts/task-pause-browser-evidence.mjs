@@ -150,7 +150,7 @@ async function api(req,res) {
     return end({changed:true,pause:projection('ROOT-RUN','in_progress',{...toggled,effective_hold:held,control_state:held?'paused':'unheld'})});
   }
   const match=url.pathname.match(/\/tasks\/([^/]+)(?:\/(recall))?$/);
-  if(match && correctionOnly && correctionFixture(match[1])){const fixture=correctionFixture(match[1]);if(match[2]){if(match[1].endsWith('loading'))await sleep(600);if(match[1].endsWith('error'))return end({detail:'synthetic recall unavailable'},503);return end(fixture.recall);}return end({task:fixture.task,pause:fixture.task.pause,results:[],audit_log:fixture.audit,revisit_chain:[],direct_revisits:[],active_chain:null,work_status:{applicable:false,state:'not_applicable',label:'Not applicable',reason:null}});}
+  if(match && correctionOnly && correctionFixture(match[1])){const fixture=correctionFixture(match[1]);if(match[2]){if(match[1].endsWith('loading'))await sleep(600);if(match[1].endsWith('error'))return end({detail:'synthetic recall unavailable'},503);return end(fixture.recall);}return end({task:fixture.task,pause:fixture.task.pause,results:[],audit_log:fixture.audit,revisit_chain:[],direct_revisits:[],active_chain:['UI-A01','UI-A04'].includes(match[1])?{step_index:1,first_leg_expect_verdict:'APPROVE',legs:[{agent:'code_reviewer',expect_verdict:'PASS'}]}:null,work_status:{applicable:false,state:'not_applicable',label:'Not applicable',reason:null}});}
   if(match){const task=match[1]==='CHILD-1'?root('CHILD-1','in_progress',{parent_task_id:'ROOT-PAUSING',pause:projection('ROOT-PAUSING','in_progress',{held:true,effective_hold:true,control_state:'pausing',blockers,evidence_complete:false})}):roots().find(t=>t.task_id===match[1]);
     if(match[2])return end({task_id:match[1],assigned_agent:'dev_agent',brief:task?.brief??'raw',status:task?.status??'pending',output_summary:null,children:[]});
     return end({task,pause:task?.pause,results:[],audit_log:[],revisit_chain:[],direct_revisits:[],active_chain:null,work_status:{applicable:false,state:'not_applicable',label:'Not applicable',reason:null}});
@@ -440,6 +440,13 @@ async function main(){
             await evaluate(page,`(()=>{const p=[...document.querySelectorAll('[data-task-pause] p')].find(e=>e.textContent===${quote(tr(locale,'tasks.pause.jobCleanupNote'))});p.scrollIntoView({block:'center'});return true;})()`);
             await shot(page,`${locale}-B01-note`,{case:'B01/U01',locale,width,height,theme,state:'cleanup-unconfirmed note reached by actual scrolling'});
 
+          }
+          if(id==='UI-A01'||id==='UI-A04') {
+            const key=id==='UI-A01'?'tasks.waiting.continuationPending':'tasks.waiting.pendingChildren';
+            check(`${locale} ${id} timeline same observed reason`,await evaluate(page,`[...document.querySelectorAll('section')].some(e=>e.textContent.includes(${quote(tr(locale,'tasks.detail.blockedOn').split('{')[0])})&&e.textContent.includes(${quote(tr(locale,key))}))`));
+            await evaluate(page,`(()=>{const h=[...document.querySelectorAll('h3')].find(e=>e.textContent.includes(${quote(locale==='en'?'Workflow chain':'工作流链')}));h.scrollIntoView({block:'center'});return true;})()`);
+            await shot(page,`${locale}-${id}-timeline`,{case:id,locale,width,height,theme,state:'real chain timeline with current read qualifier'});
+            await evaluate(page,"document.querySelector('h1').scrollIntoView({block:'start'})");
           }
           if(id==='UI-A02')check(`${locale} A02 separate Paused`,actual.header?.includes(tr(locale,'tasks.pause.paused')));
           if(['UI-A08-empty','UI-A08-legacy','UI-A08-malformed'].includes(id))check(`${locale} ${id} no false subtasks`,!/waiting on subtasks|· 等待子任务$/.test(actual.header));
