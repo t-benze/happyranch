@@ -584,17 +584,19 @@ def _run_git(directory: Path, object_format: str, oid: str, mode: str,
             raise WorkflowRepositoryError('storage_unavailable', execution_unknown=True,
                 process_id=os.getpid(), private_storage=str(directory)) from None
         try:
-            if process.poll() is None:
-                process.kill()
-            process.wait(timeout=max(0, budget.deadline - time.monotonic()))
+            try:
+                if process.poll() is None:
+                    process.kill()
+                process.wait(timeout=max(0, budget.deadline - time.monotonic()))
+            finally:
+                for stream in (process.stdin, process.stdout, process.stderr):
+                    if stream is not None:
+                        stream.close()
         except BaseException:
+            # Stream-close failure must not erase unknown nested reap ownership.
             # Retain exact private owner and storage; do not imply quiescence.
             raise WorkflowRepositoryError('storage_unavailable', execution_unknown=True,
                 process_id=process.pid, private_storage=str(directory)) from None
-        finally:
-            for stream in (process.stdin, process.stdout, process.stderr):
-                if stream is not None:
-                    stream.close()
 
 
 class _Objects:
