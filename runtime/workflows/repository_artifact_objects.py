@@ -542,13 +542,14 @@ def _copy(objects: int, target: Path, object_format: str, budget: _Budget) -> No
 def _run_git(directory: Path, object_format: str, oid: str, mode: str,
              output_limit: int, budget: _Budget) -> bytes:
     budget.check()
-    process = subprocess.Popen([sys.executable, '-I', str(Path(__file__).absolute()),
-        '--git-child', str(directory), object_format, mode], cwd=directory,
-        env=_git_environment(), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE, close_fds=True)
+    process = None
     output = bytearray()
     error_size = 0
     try:
+        process = subprocess.Popen([sys.executable, '-I', str(Path(__file__).absolute()),
+            '--git-child', str(directory), object_format, mode], cwd=directory,
+            env=_git_environment(), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, close_fds=True)
         process.stdin.write(oid.encode('ascii') + b'\n')
         process.stdin.close()
         with selectors.DefaultSelector() as selector:
@@ -576,11 +577,16 @@ def _run_git(directory: Path, object_format: str, oid: str, mode: str,
         budget.check()
         return bytes(output)
     finally:
+        if process is None:
+            # Interrupted launch has no affirmative no-launch/reap witness.
+            # Retain the reader's group owner even if the nested PID is unknown.
+            raise WorkflowRepositoryError('storage_unavailable', execution_unknown=True,
+                process_id=os.getpid(), private_storage=str(directory)) from None
         try:
             if process.poll() is None:
                 process.kill()
             process.wait(timeout=max(0, budget.deadline - time.monotonic()))
-        except (OSError, subprocess.TimeoutExpired):
+        except BaseException:
             # Retain exact private owner and storage; do not imply quiescence.
             raise WorkflowRepositoryError('storage_unavailable', execution_unknown=True,
                 process_id=process.pid, private_storage=str(directory)) from None
@@ -833,10 +839,12 @@ def _resolve_objects(*, paths: OrgPaths, binding: RepositoryBinding,
         raise WorkflowRepositoryError('content_bounds')
     private = Path(tempfile.mkdtemp(prefix='workflow-object-only-'))
     process = None
+    launch_reserved = False
     quiescent = False
     output = bytearray()
     try:
         budget.check()
+        launch_reserved = True
         process = subprocess.Popen([sys.executable, '-I', str(Path(__file__).absolute()),
             '--reader-child', str(private), str(budget.deadline)], cwd=private,
             env=_git_environment(), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
@@ -901,7 +909,7 @@ def _resolve_objects(*, paths: OrgPaths, binding: RepositoryBinding,
     except WorkflowRepositoryError:
         raise
     except (OSError, ValueError, subprocess.SubprocessError):
-        raise WorkflowRepositoryError('storage_unavailable', execution_unknown=process is not None,
+        raise WorkflowRepositoryError('storage_unavailable', execution_unknown=launch_reserved,
             process_id=None if process is None else process.pid, private_storage=str(private)) from None
     finally:
         if process is not None:
@@ -925,6 +933,10 @@ def _resolve_objects(*, paths: OrgPaths, binding: RepositoryBinding,
                 for stream in (process.stdin, process.stdout, process.stderr):
                     if stream is not None:
                         stream.close()
+        elif launch_reserved:
+            # No returned process handle is not proof that launch never happened.
+            raise WorkflowRepositoryError('storage_unavailable', execution_unknown=True,
+                private_storage=str(private)) from None
         elif private.exists():
             try:
                 shutil.rmtree(private)
