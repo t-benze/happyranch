@@ -3608,3 +3608,56 @@ retain that original callback; the selected P and all parent attenuation checks
 remain intact. A callback matching only a narrower child, conflicting identity,
 missing native ancestor or widening refuses; no caller-picked ancestor, broad
 subset substitute, extra query, historical rewrite or current grant follows.
+
+### Original source-capture history — K2a2b5
+
+ROOT10693 step63 / Founder139562/559/329 selects accepted TASK11484 appendix
+4ee1d1819d3b58ff1350b192d6438fa8ed8bf99ba7cc06abfb0fe315fb4312e1 and cases
+f55f71a1db09cf708dbad083cd8c955cd5241cf5f244586eaa3b19d7909c24ae after DESIGN11485.
+Unmounted `coding_source_admission_history.read_source_admission_history` consumes
+the fixed `coding_source_admission` / `workflow-coding-source-admission@1` audits.
+It returns immutable original source/callback captures, explicit INITIAL native P
+and native identity links, and allocating full-decision fingerprint. Selection by
+authorization_id keeps the complete selected attenuation but never substitutes a
+refinement's own mint admission or a mapping capture for the original source P.
+The existing five-field native identity API and its free-text learnings/INITIAL
+work-radius behavior remain intact through private shared-budget composition.
+
+Closed phase/owner/claim/budget and lossless typed27-task/18-result rows retain
+NULL/empty UTF8 bytes, strict signed INTEGER and finite binary64 bits, complete
+ordered original parent-to-NULL ancestry, original command and raw native audit
+JSON bytes (which need not be canonical). Native immutable task identity/parent,
+full result/decision and genuine unique manager_decision session-start links are
+checked separately from today's mutable assignment/SID/counters. Allocating C0
+and C1 compare exactly25 named load-bearing fields in every source/ancestor row;
+both original updated_at/last_heartbeat observations remain independently valid
+and retained. Nonallocating captured NULL means absence at that admitted boundary,
+never absence of later callbacks or allocating permission. Source claim/invocation
+ID/frozen limits are retained facts; actual invocation/Pause and policy proof is
+still separate. Zero max_revise_rounds keeps its native meaning.
+
+One coherent caller-owned raw SQLite transaction/lock; SELECT only. Complete
+bounded fixed-action audit inventory exposes duplicate/conflicting/foreign owners
+without JSON-selection predicates or latest-row fallback. Native typeof and each
+row's remaining row/byte ceilings gate payloads BEFORE fetch. Shared8192 fetched
+candidates/16384 traversal steps/16MiB byte budget includes conservative decoded
+byte copies, with1MiB per value/whole raw audit, source20/P64/setup1024. These are
+not total SQLite/process/JSON-object memory limits. Missing required captures
+raise coding_source_capture_unavailable; invalid evidence raises category-only
+coding_source_history_invalid, without private details or partial return.
+
+This delivers the historical capture consumer only. Callback/source capture
+WRITERS, direct mapping-history capture selection, C1=C2 ALL27 writer equality,
+full J run_started/source-baseline/replay/native meaningful-writer and heartbeat
+bridges, actual invocation/Pause/move/host/terminal/outer cleanup, historical and
+current policy/source_rule/base/permission and recovery/cutover readers remain
+mandatory BEFORE EVERY producer. No J validator, complete source authorization,
+valid-run Boolean, native/public/CLI/TS mount or producer permission is supplied.
+F–J/populated/reserved refusal including validate_data=False, create-org I,
+document histories, disabled K0/unavailable K1 and protected owners stay unchanged.
+FIRST independent FULL review, then same-final-head scoped SOURCE QA, then SAME
+ROOT10693; static local all/Source Boundary Lint/Web Lint(Node24), normal hooks,
+nonforce push and manager guarded merge remain. Python units RETIRED; integration
+INCLUDING callback SKIPPED24342; SQL/parser/product/security/protected/executable
+proof UNEXECUTED/FOUNDER-WAIVED139429/430. Root retains K2a2–K6, real-agent/two-org/
+override/backup-copy operational acceptance. No live action or trial renewal.
