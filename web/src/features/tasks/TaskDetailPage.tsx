@@ -304,7 +304,7 @@ function SubtaskRow({ node, depth = 0 }: SubtaskRowProps): JSX.Element {
   const summary = snippet(node.output_summary, 96);
   return (
     <div className={`${ml}`}>
-      <div className="border-border-default flex items-start gap-2 border-l-2 py-1.5 pl-3 text-sm">
+      <div className="border-border-default flex flex-wrap items-start gap-2 border-l-2 py-1.5 pl-3 text-sm sm:flex-nowrap">
         <span
           className={`mt-1.5 inline-block h-2 w-2 shrink-0 rounded-full ${
             node.status === 'completed'
@@ -331,7 +331,7 @@ function SubtaskRow({ node, depth = 0 }: SubtaskRowProps): JSX.Element {
             </p>
           )}
         </div>
-        <div className="flex shrink-0 items-center gap-2">
+        <div className="flex w-full min-w-0 max-w-full flex-wrap items-center gap-2 pl-4 break-all sm:w-auto sm:shrink-0 sm:pl-0 [&>a]:min-w-0 [&>a]:max-w-full">
           <IdBadge kind="task" id={node.task_id} to={routes.detail(node.task_id)} />
           <StatusBadge status={node.status} />
         </div>

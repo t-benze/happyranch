@@ -29,6 +29,12 @@ const correctionOnly = process.argv.includes('--correction-only');
 const slice = arg('slice','agents');
 const view = arg('view','pane');
 const selectedLocales = arg('locale', null) ? [arg('locale')] : ['en','zh-CN'];
+// Detail correction selections are independent: --viewport 390x844|1440x900,
+// --cases comma-separated existing fixture IDs. Omission keeps all finite cases.
+const detailViewports = arg('viewport', null) ? [arg('viewport')] : ['390x844','1440x900'];
+if(selectedLocales.some(locale=>!['en','zh-CN'].includes(locale)))throw new Error('unsupported locale');
+if(detailViewports.some(viewport=>!['390x844','1440x900'].includes(viewport)))throw new Error('unsupported detail viewport');
+const selectedDetailCases = arg('cases', null)?.split(',');
 const drawerDist = arg('drawer-dist', null) ? resolve(arg('drawer-dist')) : null;
 const chromeBin = arg('chrome', '/usr/bin/google-chrome');
 const digest = data => createHash('sha256').update(data).digest('hex');
@@ -222,7 +228,7 @@ async function main(){
       await cdp.send('Page.navigate',{url:server.url+route},sessionId);return page;
     }
     const close=page=>cdp.send('Target.closeTarget',{targetId:page.targetId});
-    async function shot(page,name,metadata){await cdp.send('Page.bringToFront',{},page.sessionId);await sleep(100);const {data}=await cdp.send('Page.captureScreenshot',{format:'png',captureBeyondViewport:false},page.sessionId);const bytes=Buffer.from(data,'base64');const file=join(out,`${name}.png`);writeFileSync(file,bytes);screenshots.push({file,sha256:digest(bytes),source_head:head,dist_index_sha256:digest(readFileSync(join(venueDist,'index.html'))),...metadata});}
+    async function shot(page,name,metadata){await cdp.send('Page.bringToFront',{},page.sessionId);await sleep(100);const {data}=await cdp.send('Page.captureScreenshot',{format:'png',captureBeyondViewport:false},page.sessionId);const bytes=Buffer.from(data,'base64');const file=join(out,`${name}.png`);writeFileSync(file,bytes);screenshots.push({file,sha256:digest(bytes),pixel_width:bytes.readUInt32BE(16),pixel_height:bytes.readUInt32BE(20),source_head:head,dist_index_sha256:digest(readFileSync(join(venueDist,'index.html'))),...metadata});}
     const rootButton=(id,label)=>`[...document.querySelectorAll('main [data-task-pause="${id}"] button')].find(b=>b.textContent.trim()===${quote(label)})`;
     const button=label=>`[...document.querySelectorAll('button')].find(b=>b.textContent.trim()===${quote(label)})`;
     // Panel absence in BOTH locales (removed presentation must not reappear under either catalog).
@@ -409,15 +415,40 @@ async function main(){
     }
     if(correctionOnly && slice==='detail') {
       const cases=['UI-A01','UI-A02','UI-A04','UI-A07-1','UI-A05-1','UI-A07-2','UI-A07-3','UI-A08-empty','UI-A08-legacy','UI-A08-malformed',...['in_progress','completed','failed','cancelled','superseded'].map(s=>'UI-A09-'+s),...['missing-id','duplicate-id','malformed-id','missing-node','duplicate-node','wrong-root','null-node','bad-status','missing-recall','width','missing-width','empty-ids','zero-width','mismatch-width','loading','error'].flatMap(s=>['UI-A08-bad-'+s,'UI-A08-joined-bad-'+s])];
-      for(const locale of selectedLocales) {
-        const width=locale==='en'?1440:390,height=locale==='en'?900:844,theme=locale==='en'?'dark':'light';
+      if(selectedDetailCases?.some(id=>!cases.includes(id)))throw new Error('unsupported detail case');
+      for(const locale of selectedLocales) for(const viewport of detailViewports) {
+        const [width,height]=viewport.split('x').map(Number),theme=width===1440?'dark':'light';
+        const name=`${locale}-${viewport}`;
         const list=await open('/orgs/pause-org/tasks',locale,width,height,theme);await wait(list,"!!document.querySelector('a[href=\"/orgs/pause-org/tasks/UI-A01\"]')");
         check(`${locale} A01 list continuation`,await evaluate(list,`document.querySelector('a[href="/orgs/pause-org/tasks/UI-A01"]').textContent.includes(${quote(tr(locale,'tasks.waiting.continuationPending'))})`));
-        check(`${locale} list pause free`,await evaluate(list,listPauseFree));await shot(list,`${locale}-correction-list`,{case:'A01/A10',locale,width,height,theme,state:'ordinary list'});await close(list);
-        for(const id of cases) {
+        check(`${name} list pause free`,await evaluate(list,listPauseFree));
+        for(const [id,key]of [['UI-A01','tasks.waiting.continuationPending'],['UI-A04','tasks.waiting.pendingChildren']]) {
+          await evaluate(list,`document.querySelector('a[href="/orgs/pause-org/tasks/${id}"]').scrollIntoView({block:'center'})`);await sleep(100);
+          const subtitle=await evaluate(list,`(()=>{const row=document.querySelector('a[href="/orgs/pause-org/tasks/${id}"]');const text=${quote(tr(locale,key))};const e=[...row.querySelectorAll('*')].find(e=>e.textContent.trim()===text);const r=e.getBoundingClientRect(),style=getComputedStyle(e);return {text:e.textContent,bounds:{left:r.left,right:r.right,top:r.top,bottom:r.bottom},visible:r.left>=0&&r.right<=innerWidth&&r.top>=0&&r.bottom<=innerHeight&&e.scrollWidth<=e.clientWidth+1&&style.visibility==='visible'&&style.display!=='none'};})()`);
+          check(`${name} ${id} subtitle visible and unclipped`,subtitle.visible);
+          check(`${name} list page fits`,await evaluate(list,'document.documentElement.scrollWidth<=innerWidth+1'));
+          await shot(list,`${name}-list-${id}`,{case:'A01/A04/A10/U01',locale,width,height,theme,state:'qualifying row scrolled into viewport',subtitle});
+        }
+        await close(list);
+        for(const id of selectedDetailCases??cases) {
           const fixture=correctionFixture(id);const page=await open('/orgs/pause-org/tasks/'+id,locale,width,height,theme);
           await wait(page,`!!document.querySelector('h1')&&document.body.textContent.includes(${quote(fixture.task.brief)})`);await sleep(80);
           const actual=await evaluate(page,"({header:document.querySelector('header')?.textContent,band:document.querySelector('section[aria-label=\"'+(document.documentElement.lang==='en'?'Fan-out status':'扇出状态')+'\"]')?.textContent,bar:document.querySelector('section[aria-label] [role=img]')?.getAttribute('aria-label'),recall:document.body.textContent})");
+          check(`${name} ${id} detail page fits`,await evaluate(page,'document.documentElement.scrollWidth<=innerWidth+1'));
+          const qualifierKey={continuation_pending:'continuationPending',pending_children:'pendingChildren',waiting_children:'childWork',child_results_received:'childResultsReceived'}[fixture.task.child_wait?.state];
+          if(qualifierKey) {
+            const qualifier=tr(locale,'tasks.waiting.'+qualifierKey);
+            check(`${name} ${id} header qualifier`,actual.header?.includes(qualifier));
+            if(width===1440)check(`${name} ${id} desktop rail qualifier`,await evaluate(page,`document.querySelector('aside[aria-label=${quote(tr(locale,'tasks.rail.label'))}]').textContent.includes(${quote(qualifier)})`));
+          }
+          if(id==='UI-A08-joined-bad-width') {
+            await evaluate(page,`[...document.querySelectorAll('h3')].find(e=>e.textContent.trim()===${quote(tr(locale,'tasks.detail.subtasks.heading'))}).scrollIntoView({block:'start'})`);await sleep(100);
+            const rows=await evaluate(page,`(()=>{const section=[...document.querySelectorAll('h3')].find(e=>e.textContent.trim()===${quote(tr(locale,'tasks.detail.subtasks.heading'))}).closest('section');const rect=e=>{const r=e.getBoundingClientRect();return {left:r.left,right:r.right,top:r.top,bottom:r.bottom};};return [...section.querySelectorAll('a')].map(a=>{const row=a.closest('.border-l-2'),group=a.parentElement,status=group.lastElementChild;const id=rect(a),state=rect(status),bounds=rect(row);return {id:a.textContent,href:a.getAttribute('href'),status:status.textContent,idBounds:id,statusBounds:state,rowBounds:bounds,unclipped:[a,status,row].every(e=>e.scrollWidth<=e.clientWidth+1)&&[id,state,bounds].every(r=>r.left>=0&&r.right<=innerWidth&&r.top>=0&&r.bottom<=innerHeight)};});})()`);
+            check(`${name} ${id} full execution IDs and literal states`,rows.map(row=>[row.id,row.href,row.status]),fixture.recall.children.map(child=>[child.task_id,'/orgs/pause-org/tasks/'+child.task_id,child.status]));
+            check(`${name} ${id} execution rows visible and unclipped`,rows.every(row=>row.unclipped));
+            await shot(page,`${name}-${id}-execution-rows`,{case:'A08/U01',locale,width,height,theme,state:'same long-ID execution rows',rows});
+            await evaluate(page,"document.querySelector('h1').scrollIntoView({block:'start'})");
+          }
           if(id.includes('A07')||id.includes('A05')) {
             const state=fixture.task.child_wait.state;const keys={waiting_children:'waitingChildren',child_results_received:'resultsReceived',continuation_pending:'continuationPending'};
             check(`${locale} ${id} parent projection headline`,actual.band?.includes(tr(locale,'tasks.fanout.'+keys[state])));
@@ -436,32 +467,32 @@ async function main(){
             check(`${locale} B01 no running inference`,await evaluate(page,"!/still running|仍在运行/.test(document.querySelector('[data-task-pause] summary').textContent)"));
             const fits=await evaluate(page,"[...document.querySelectorAll('[data-task-pause] li,[data-task-pause] li *')].filter(e=>{const r=e.getBoundingClientRect();return r.width>0&&(r.left< -1||r.right>innerWidth+1);}).map(e=>e.textContent)");
             check(`${locale} U01 long raw IDs fit`,fits,[]);
-            await shot(page,`${locale}-B01-long-id`,{case:'B01/U01',locale,width,height,theme,state:'expanded actual raw ID'});
+            await shot(page,`${name}-B01-long-id`,{case:'B01/U01',locale,width,height,theme,state:'expanded actual raw ID'});
             await evaluate(page,`(()=>{const p=[...document.querySelectorAll('[data-task-pause] p')].find(e=>e.textContent===${quote(tr(locale,'tasks.pause.jobCleanupNote'))});p.scrollIntoView({block:'center'});return true;})()`);
-            await shot(page,`${locale}-B01-note`,{case:'B01/U01',locale,width,height,theme,state:'cleanup-unconfirmed note reached by actual scrolling'});
+            await shot(page,`${name}-B01-note`,{case:'B01/U01',locale,width,height,theme,state:'cleanup-unconfirmed note reached by actual scrolling'});
 
           }
           if(id==='UI-A01'||id==='UI-A04') {
             const key=id==='UI-A01'?'tasks.waiting.continuationPending':'tasks.waiting.pendingChildren';
             check(`${locale} ${id} timeline same observed reason`,await evaluate(page,`[...document.querySelectorAll('section')].some(e=>e.textContent.includes(${quote(tr(locale,'tasks.detail.blockedOn').split('{')[0])})&&e.textContent.includes(${quote(tr(locale,key))}))`));
             await evaluate(page,`(()=>{const h=[...document.querySelectorAll('h3')].find(e=>e.textContent.includes(${quote(locale==='en'?'Workflow chain':'工作流链')}));h.scrollIntoView({block:'center'});return true;})()`);
-            await shot(page,`${locale}-${id}-timeline`,{case:id,locale,width,height,theme,state:'real chain timeline with current read qualifier'});
+            await shot(page,`${name}-${id}-timeline`,{case:id,locale,width,height,theme,state:'real chain timeline with current read qualifier'});
             await evaluate(page,"document.querySelector('h1').scrollIntoView({block:'start'})");
           }
           if(id==='UI-A02')check(`${locale} A02 separate Paused`,actual.header?.includes(tr(locale,'tasks.pause.paused')));
           if(['UI-A08-empty','UI-A08-legacy','UI-A08-malformed'].includes(id))check(`${locale} ${id} no false subtasks`,!/waiting on subtasks|· 等待子任务$/.test(actual.header));
           const controls=ledger.filter(x=>x.method!=='GET'&&!x.path.endsWith('/auth/bootstrap'));check(`${locale} ${id} read only transcript`,controls,[]);
           if(id==='UI-A01')await evaluate(page,"document.querySelector('h1').scrollIntoView({block:'start'})");
-          if(!/^UI-A08-(joined-)?bad-/.test(id)||id.endsWith('null-node')||id==='UI-A08-joined-bad-width')await shot(page,`${locale}-${id}`,{case:id,locale,width,height,theme,state:fixture.task.child_wait??'legacy',actual});
+          if(!/^UI-A08-(joined-)?bad-/.test(id)||id.endsWith('null-node')||id==='UI-A08-joined-bad-width')await shot(page,`${name}-${id}`,{case:id,locale,width,height,theme,state:fixture.task.child_wait??'legacy',actual});
           await close(page);
         }
-        for(const id of ['CHILD-1','ROOT-PENDING','ROOT-FAILED','ROOT-RUN']) {
+        for(const id of selectedDetailCases?[]:['CHILD-1','ROOT-PENDING','ROOT-FAILED','ROOT-RUN']) {
           const page=await open('/orgs/pause-org/tasks/'+id,locale,width,height,theme);
           await wait(page,`!!document.querySelector('[data-task-pause="${id}"]')||document.body.textContent.includes('Authored ${id}')`);
           const region=`document.querySelector('[data-task-pause="${id}"]')`;
           if(id==='CHILD-1'){check(`${locale} A11 inherited root only`,await evaluate(page,`${region}.querySelector('a')?.getAttribute('href')`),'/orgs/pause-org/tasks/ROOT-PAUSING');check(`${locale} A11 no child control`,await evaluate(page,`${region}.querySelector('button')===null`));}
           if(id==='ROOT-PENDING'||id==='ROOT-FAILED')check(`${locale} A09/A11 no terminal/pending control`,await evaluate(page,`${region}?.querySelector('button')??null`),null);
-          await shot(page,`${locale}-${id}`,{case:'A09/A11',locale,width,height,theme,state:id});await close(page);
+          await shot(page,`${name}-${id}`,{case:'A09/A11',locale,width,height,theme,state:id});await close(page);
         }
       }
     }
