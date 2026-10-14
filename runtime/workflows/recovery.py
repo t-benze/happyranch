@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Literal, Any
 
 from runtime.infrastructure.workflow_schema import validate_workflow_schema
-from runtime.infrastructure.workflow_coding_schema import CODING_TABLES, validate_empty_coding_data
+from runtime.infrastructure.workflow_coding_schema import has_coding_schema_objects, validate_empty_coding_data
 
 
 @dataclass(frozen=True)
@@ -33,10 +33,11 @@ def classify_task(db: Any, task_id: str, *, org_slug: str | None) -> WorkflowTas
             validate_empty_coding_data(conn, layout='recovery')
             tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_schema WHERE type='table'")
                       if row[0].startswith('workflow_')}
-            if tables.intersection(CODING_TABLES):
+            if has_coding_schema_objects(conn):
                 if org_slug is None:
                     return WorkflowTaskOwnership("reconciliation_required")
-                # Even partial/empty coding tables require the complete reader.
+                # Unknown/case-changed tables, views, indexes and triggers must
+                # reach the complete reader before either legacy return.
                 validate_workflow_schema(conn, expected_org_slug=org_slug)
             if not tables:
                 return WorkflowTaskOwnership("legacy")

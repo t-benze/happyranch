@@ -1778,13 +1778,13 @@ def migrate_document_revision_schema(conn: sqlite3.Connection, *, expected_org_s
 
 
 def coding_migration_guidance() -> str:
-    return ('Use a compatible reader. Coding migration is operationally unavailable: '
-            'workflow_coding_connection_binding_unavailable; a supported actual-opened-file '
-            'identity API is required. scripts/migrate_workflow_coding_schema.py --runtime-root '
-            '<absolute-runtime-root> --org <org-slug> --check currently refuses before writer open; '
-            'operator confirmation cannot override missing binding. A future operational migration '
-            'still requires exact I, documented daemon stop and reconciled host/producer/outer-tail, '
+    return ('Use a compatible reader. Run scripts/migrate_workflow_coding_schema.py --runtime-root '
+            '<absolute-runtime-root> --org <org-slug> --check read-only (exit 3 if migration needed, '
+            'exit 0 if compatible empty J). Writes require --confirm-cooperative-offline, exact I, '
+            'documented daemon stop and reconciled host/producer/outer-tail, '
             'publication/profile/source/Pause/team-move ownership under cooperative offline control. '
+            'Observed path/file/lifecycle drift or unavailable observations refuse; direct same-user '
+            'file/DB swapping is outside this cooperative guarantee. Migration behavior is unexecuted. '
             'Startup/reopen/enable never installs J. Even empty J blocks pre-J downgrade; '
             'populated coding requires K2a2.')
 
@@ -1906,25 +1906,19 @@ def _coding_retained_rows(conn: sqlite3.Connection) -> dict[str, tuple]:
             for table, rows in _retained_rows(conn).items()}
 
 
-def _coding_org_identity(conn: sqlite3.Connection, *, expected_org_slug: str) -> tuple:
-    """Refuse until a supported API binds this connection's actual opened file.
+def _coding_org_identity(conn: sqlite3.Connection, *, expected_org_slug: str,
+                         expected_path: str) -> tuple:
+    """Cooperative G-pattern pathname/file observation, not native FD proof.
 
-    Path checks are prerequisites only, NOT opened-file identity evidence.
-    Python sqlite3.Connection exposes neither sqlite3_file_control nor its
-    native descriptor. HAS_MOVED requires the actual SQLite connection handle;
-    PRAGMA database_list plus lstat cannot replace it. No permitted bridge is
-    shipped, so coding migration is operationally unavailable before writes.
-    See CPython v3.14.4 Modules/_sqlite/connection.c and SQLite file_control API.
+    Compare SQLite's exact main path to the caller's independently resolved
+    owned org path. Regular/single-link/uid/device/inode/mode observations
+    bracket the PRAGMA read; known drift and unavailable observations refuse.
+    Direct same-user swaps between observations remain outside D5's guarantee.
     """
     import os
     import stat
     from pathlib import Path
-    databases = [tuple(row) for row in conn.execute('PRAGMA database_list')]
-    main = [row for row in databases if row[1] == 'main']
-    if len(main) != 1 or not main[0][2] or any(row[1] not in ('main', 'temp') or
-            (row[1] == 'temp' and row[2]) for row in databases):
-        raise ValueError('workflow_coding_migration_requires_owned_org_database')
-    path = Path(main[0][2])
+    path = Path(expected_path)
     if (not path.is_absolute() or path.name != 'happyranch.db'
             or path.parent.name != expected_org_slug or path.parent.parent.name != 'orgs'
             or path.resolve(strict=True) != path):
@@ -1932,29 +1926,43 @@ def _coding_org_identity(conn: sqlite3.Connection, *, expected_org_slug: str) ->
     info = path.lstat()
     if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != os.getuid():
         raise ValueError('workflow_coding_migration_org_identity_invalid')
-    raise ValueError('workflow_coding_connection_binding_unavailable: supported actual-opened-file '
-                     'identity API required; PRAGMA filename and path stat are insufficient')
+    identity = (str(path), info.st_dev, info.st_ino, info.st_mode)
+    databases = [tuple(row) for row in conn.execute('PRAGMA database_list')]
+    main = [row for row in databases if row[1] == 'main']
+    if len(main) != 1 or main[0][2] != str(path) or any(row[1] not in ('main', 'temp') or
+            (row[1] == 'temp' and row[2]) for row in databases):
+        raise ValueError('workflow_coding_migration_requires_owned_org_database')
+    after = path.lstat()
+    if (path.resolve(strict=True) != path or not stat.S_ISREG(after.st_mode)
+            or after.st_nlink != 1 or after.st_uid != os.getuid()
+            or (str(path), after.st_dev, after.st_ino, after.st_mode) != identity):
+        raise ValueError('workflow_coding_migration_org_identity_changed')
+    return identity
 
 
 def migrate_coding_schema(conn: sqlite3.Connection, *, expected_org_slug: str,
+                          expected_path: str, source_identity: tuple,
                           offline_check: Callable[[], None]) -> Literal['migrated', 'ready']:
     """Explicit org-owned I-to-J only; FK ON throughout, no live Database owner.
 
-    Operationally BLOCKED by _coding_org_identity until supported actual-file
-    binding exists. Its categorical refusal occurs before BEGIN/DDL; retained
-    migration logic is NOT a delivered operational path. Any future supported
-    binding must preserve original RO-to-RW identity continuity and recheck after
-    exclusive acquisition/before commit alongside cooperative offline evidence.
-    No runtime calls this primitive; no pathname or caller Boolean supplies proof.
+    The script's ORIGINAL pre-open/RO baseline remains authoritative across RW
+    reopen, exclusive acquisition and commit; never adopt the writer as a new
+    baseline. Offline observations augment explicit operator no-restart control.
+    No runtime calls this primitive; same-user direct mutation is not excluded.
     """
     if conn.in_transaction or conn.execute('PRAGMA foreign_keys').fetchone()[0] != 1:
         raise ValueError('workflow_coding_migration_requires_idle_foreign_keys')
-    identity = _coding_org_identity(conn, expected_org_slug=expected_org_slug)
+    identity = _coding_org_identity(conn, expected_org_slug=expected_org_slug, expected_path=expected_path)
+    if identity != source_identity:
+        raise ValueError('workflow_coding_migration_org_identity_changed')
     try:
         conn.execute('BEGIN')
         layout = validate_workflow_schema(conn, expected_org_slug=expected_org_slug)
         _validate_release_database(conn, layout, expected_org_slug=expected_org_slug)
         if layout == 'J':
+            offline_check()
+            if _coding_org_identity(conn, expected_org_slug=expected_org_slug, expected_path=expected_path) != source_identity:
+                raise ValueError('workflow_coding_migration_org_identity_changed')
             conn.rollback()
             return 'ready'
         if layout != 'I':
@@ -1965,7 +1973,7 @@ def migrate_coding_schema(conn: sqlite3.Connection, *, expected_org_slug: str,
         conn.rollback()
         conn.execute('BEGIN EXCLUSIVE')
         offline_check()
-        if _coding_org_identity(conn, expected_org_slug=expected_org_slug) != identity:
+        if _coding_org_identity(conn, expected_org_slug=expected_org_slug, expected_path=expected_path) != source_identity:
             raise ValueError('workflow_coding_migration_org_identity_changed')
         if validate_workflow_schema(conn, expected_org_slug=expected_org_slug) != 'I':
             raise ValueError('workflow_coding_migration_source_changed')
@@ -1983,10 +1991,11 @@ def migrate_coding_schema(conn: sqlite3.Connection, *, expected_org_slug: str,
                 or any(after[table] != rows for table, rows in retained.items())
                 or any(after[table] for table in CODING_TABLES)):
             raise ValueError('workflow_coding_migration_retained_relation_mismatch')
+        _validate_coding_source_idle(conn, expected_org_slug=expected_org_slug)
         if conn.execute('PRAGMA foreign_keys').fetchone()[0] != 1 or conn.execute('PRAGMA foreign_key_check').fetchone():
             raise ValueError('workflow_coding_migration_foreign_key_mismatch')
         offline_check()
-        if _coding_org_identity(conn, expected_org_slug=expected_org_slug) != identity:
+        if _coding_org_identity(conn, expected_org_slug=expected_org_slug, expected_path=expected_path) != source_identity:
             raise ValueError('workflow_coding_migration_org_identity_changed')
         conn.commit()
         return 'migrated'

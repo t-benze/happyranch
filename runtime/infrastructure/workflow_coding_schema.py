@@ -96,12 +96,25 @@ CODING_VALUES = {
     'kind': ('code-change',),
     'artifact_kind': ('code-change',),
     'source_kind': ('coding-manager-result',),
+    'business_purpose': ('coding-replacement-selection@1',),
     'action': ('workflow_start',),
     'identity': ('release/happyranch/coding',),
     'release_identity': ('release/happyranch/coding',),
     'namespace': ('release/happyranch',),
 }
 CODING_NAMESPACE_COLUMNS = ('namespace', 'authority_namespace', 'org_namespace')
+
+
+def has_coding_schema_objects(conn: sqlite3.Connection) -> bool:
+    """Detect the reserved family regardless of object kind, spelling or rows.
+
+    tbl_name also covers indexes/triggers with unrelated names on coding tables.
+    This is a validation trigger, never a filtered schema compatibility reader.
+    """
+    return any(str(name).casefold().startswith('workflow_coding_')
+               or str(name).casefold() == 'workflow_coding'
+               for row in conn.execute('SELECT name,tbl_name FROM sqlite_schema')
+               for name in row)
 
 
 def _coding_scalar(key: str, value: object, *, incomplete: bool = False) -> bool:
@@ -241,7 +254,7 @@ def validate_empty_coding_data(conn: sqlite3.Connection, *, layout: str) -> None
 
     Central callers already matched the complete independent schema. Recovery
     also calls this on generic/no-workflow or partial schemas, then requires full
-    schema validation if ANY coding table exists, even empty. Missing workflow
+    schema validation if ANY coding-family object exists, even empty. Missing workflow
     tables do not skip native task/result/audit scans. No install or task effects.
     Document content, briefs, findings and summaries are not discriminators.
     """

@@ -1522,43 +1522,56 @@ retain compatible J code or a separately approved verified pre-J backup. No
 stripping, automatic migration or old-reader downgrade claim follows.
 
 The operator source `scripts/migrate_workflow_coding_schema.py --runtime-root
-/absolute/runtime --org ORG [--check] [--confirm-cooperative-offline]` is
-OPERATIONALLY BLOCKED by R4. Every invocation currently refuses (exit1) before
-writer open with `workflow_coding_connection_binding_unavailable`; ready replay
-and --check cannot claim exit0/3. Path/marker/lstat prerequisites are not an
-independent binding to SQLite's actual opened file. Python sqlite3.Connection
-has no supported file-control/descriptor bridge; its audit handle is the Python
-object, not a native SQLite handle. No raw-pointer/ctypes/native-extension,
-dependency or VFS change is supplied. The explicit migration is not delivered
-as an available operation. ROOT10693 must resolve one minimal dependency: a
-supported coding-only actual-connection API for independently opened-file
-identity plus moved/unlinked status. Unsupported binding must still refuse.
+/absolute/runtime --org ORG [--check] [--confirm-cooperative-offline]` implements
+the approved cooperative offline I→J path. All invocations open read-only first:
+valid I --check returns3 (migration needed), compatible empty J replay returns0,
+and invalid or unavailable observations return1. Only exact I with explicit
+cooperative offline confirmation can reopen mode=rw. The independently resolved
+owned org path and pre-open device/inode/mode observation bind the RO PRAGMA
+main path; ORIGINAL identity survives RO close/RW reopen, is compared before
+and after writer open, after BEGIN EXCLUSIVE and before commit. Main/path and
+attachment checks, regular/single-link/current uid, org root/slug/marker and
+symlink constraints retain the shipped G pattern. Missing observations or known
+path/file/lifecycle drift refuse with original-owner remediation; the writer's
+replacement file never becomes a new source baseline.
 
-Retained migration source requires the original RO identity to remain equal on
-RW reopen, after BEGIN EXCLUSIVE and before commit; a replacement writer may
-never become the new source baseline. A future supported binding also needs
-separately authorized operator cooperative offline control: documented daemon
-stop, reconciled hosts/outer tails and exclusion of cooperative restarts/
-publication/profile/move until return. Neither a confirmation flag nor PID
-absence, TTL, terminal labels or producer_settled uncertainty supplies binding
-or releases ownership. Complete source-idle checks retain publication/profile,
-F5/draft/recovery/source claims, Pause release and team-move reservations with
-original-owner remediation. Exact I/source SQL types/rowids/bytes/FKs, unchanged
-retained equality, four empty additions, complete independent J validation,
-FK ON and rollback remain required. These retained branches are source-only
-and currently unreachable past the binding refusal; no migration-safety proof
-or OS isolation claim follows. Earlier scripts keep their original targets.
+This is cooperative pathname/file observation, not independent native descriptor
+proof or hostile/direct same-user swap protection. Founder270 approving265/269
+and Founder562 preserve that limit. Step43 withdraws step41/42's excess native
+opened-file bridge requirement; their categorical binding_unavailable refusal,
+FAILED11447 and adverse11446/11448 receipts remain historical. No native bridge,
+extension/dependency/VFS/raw-pointer/ctypes change is supplied or needed under
+this model. Direct same-user file/DB swapping between observations remains a
+disclosed cooperative limit; source-only delivery cannot certify its behavior.
+
+Writes additionally require documented daemon stop, reconciled hosts/outer tails
+and exclusion of cooperative restarts/publication/profile/move until return.
+Neither confirmation nor PID absence, TTL, terminal labels or producer_settled
+uncertainty releases ownership. Complete source-idle checks retain publication/
+profile, F5/draft/recovery/source claims, Pause release and team-move reservations.
+Exact I/source SQL types/rowids/bytes/FKs, unchanged retained equality, four empty
+additions, complete independent J validation, FK ON and rollback remain required.
+The primitive receives the script's original source identity and independently
+compares it, never derives a replacement baseline. Runnable source is supplied;
+valid check/replay/migration/rollback and drift refusal remain UNEXECUTED, with
+no migration-safety or OS isolation claim. Earlier scripts keep original targets.
 
 The finite shared discriminator inventory covers typed scalar fields and
 structured metadata using the same rules. Malformed lexical member scanning
 recognizes complete, escaped, duplicate and incomplete reserved envelopes
 without searching quoted document prose. Authority `source_pin` and coding
 setup namespaces are checked independently of canonical/hash-valid bytes,
-including orphan rows and current authority pointers. Recovery.classify_task
-runs the empty/reserved boundary under its existing lock/error fence before
-no-workflow and no-root/draft/F5 legacy returns; any coding tables, even partial
-or empty, also require the full schema reader. Unknown/malformed coding returns
-reconciliation_required, with no coding ownership, task writer or dispatch.
+including orphan rows and current authority pointers. Typed scalar/native
+`business_purpose=coding-replacement-selection@1` participates in the same
+valid/malformed/duplicate/escaped/incomplete metadata rules. Ordinary
+worker_execution/session purpose and free document prose remain noncoding.
+Recovery.classify_task runs the empty/reserved boundary under its existing lock/error fence before
+no-workflow and no-root/draft/F5 legacy returns; any coding-family schema
+object, including unknown/case-changed names or wrong types, also requires the
+complete central reader. Names and owning-table names are each checked for
+tables/views/indexes/triggers; no old ownership alias is needed. Missing org identity
+reconciles categorically before either legacy return. Unknown/malformed coding
+returns reconciliation_required, with no coding ownership, task writer or dispatch.
 Ordinary noncoding legacy and the existing document draft/F5 paths remain.
 
 K0 stays disabled; K1 current resolution still refuses before private decode or
