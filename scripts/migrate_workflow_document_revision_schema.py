@@ -47,10 +47,10 @@ def main(argv: list[str] | None = None) -> int:
         layout = validate_workflow_schema(conn, expected_org_slug=args.org_slug)
         _validate_release_database(conn, layout, expected_org_slug=args.org_slug)
         conn.rollback()
-        if layout not in ('H', 'I'):
+        if layout not in ('H', 'I', 'J'):
             raise ValueError('workflow_document_revision_requires_h; use the separately approved G then H migrations first')
-        if layout == 'I':
-            print('already-compatible: layout I; compatible reader required')
+        if layout in ('I', 'J'):
+            print(f'already-compatible: layout {layout}; compatible reader required')
             return 0
         if args.check:
             print('migration-required: ' + revision_migration_guidance())

@@ -2283,3 +2283,99 @@ readiness is delivered. Python units RETIRED; integration/callback SKIPPED24342;
 behavior/security/protected proof UNEXECUTED/FOUNDER-WAIVED139429/430. Source-only
 review/static checks cannot establish reader-security or behavioral acceptance.
 See [the current K0/K1 contract](../superpowers/specs/2026-10-14-ordered-coding-workflow.md).
+
+## Empty-only coding schema — K2a1
+
+Founder THR139seq562 approving559/329 and sole ROOT TASK10693 authorize this
+bounded source slice. Layout J is exact I plus `workflow_coding_mappings`,
+`workflow_coding_runs`, `workflow_coding_attempts`, `workflow_coding_events`:
+3987 UTF8 SQL bytes/SHA256
+`2c4b556671ef76582cdcbaed1e68d8575d9648ce29773f52c3d947ceaeeb0d70`,32 event
+kinds,17 expected automatic constraint indexes (4/2/7/4), no explicit index or
+marker. F–I DDL/history and document @1–@4/r1/r2/one-human formats remain literal.
+The complete owned-layout reader and every metadata/cutover path admit J ONLY
+with all four coding tables empty and valid retained I/document/native data.
+Partial/extra/changed layout, any populated coding table, reserved coding
+format/pin/import/source ownership or native coding audit without its readers
+refuses; it never returns legacy. Arbitrary document content is not a family
+discriminator; formats/kinds are checked in owned metadata. K2a2 must supply complete populated saved-data
+readers before any coding producer, including setup/import/mappings.
+
+Independent whole reference selection retains all six layouts F–J, all four
+fresh/v0/v2/v2-organic histories, naming0/1, Pause and team-move combinations,
+the five-component cache key and whole historical preimages. No candidate SQL
+baseline or object filter is permitted. Failed reference construction remains
+unavailable. Authority-v2 remains observed-only; generic Database/runtime-audit
+remain workflow-free. The proven-empty J initializer primitive serves reference
+construction, validating the two completed native remote-schema marker rows and
+requiring every operational table empty; no schema object is excluded from
+comparison. Actual create-org still explicitly initializes I. Startup/reopen/
+enable validate, never install J; I remains usable for document work and gives
+actionable offline guidance. Empty J uses the existing I draft/submission/handoff/
+revision and document drain readers. Any J, even empty, blocks pre-J downgrade;
+retain compatible J code or a separately approved verified pre-J backup. No
+stripping, automatic migration or old-reader downgrade claim follows.
+
+The operator source `scripts/migrate_workflow_coding_schema.py --runtime-root
+/absolute/runtime --org ORG [--check] [--confirm-cooperative-offline]` implements
+the approved cooperative offline I→J path. All invocations open read-only first:
+valid I --check returns3 (migration needed), compatible empty J replay returns0,
+and invalid or unavailable observations return1. Only exact I with explicit
+cooperative offline confirmation can reopen mode=rw. The independently resolved
+owned org path and pre-open device/inode/mode observation bind the RO PRAGMA
+main path; ORIGINAL identity survives RO close/RW reopen, is compared before
+and after writer open, after BEGIN EXCLUSIVE and before commit. Main/path and
+attachment checks, regular/single-link/current uid, org root/slug/marker and
+symlink constraints retain the shipped G pattern. Missing observations or known
+path/file/lifecycle drift refuse with original-owner remediation; the writer's
+replacement file never becomes a new source baseline.
+
+This is cooperative pathname/file observation, not independent native descriptor
+proof or hostile/direct same-user swap protection. Founder270 approving265/269
+and Founder562 preserve that limit. Step43 withdraws step41/42's excess native
+opened-file bridge requirement; their categorical binding_unavailable refusal,
+FAILED11447 and adverse11446/11448 receipts remain historical. No native bridge,
+extension/dependency/VFS/raw-pointer/ctypes change is supplied or needed under
+this model. Direct same-user file/DB swapping between observations remains a
+disclosed cooperative limit; source-only delivery cannot certify its behavior.
+
+Writes additionally require documented daemon stop, reconciled hosts/outer tails
+and exclusion of cooperative restarts/publication/profile/move until return.
+Neither confirmation nor PID absence, TTL, terminal labels or producer_settled
+uncertainty releases ownership. Complete source-idle checks retain publication/
+profile, F5/draft/recovery/source claims, Pause release and team-move reservations.
+Exact I/source SQL types/rowids/bytes/FKs, unchanged retained equality, four empty
+additions, complete independent J validation, FK ON and rollback remain required.
+The primitive receives the script's original source identity and independently
+compares it, never derives a replacement baseline. Runnable source is supplied;
+valid check/replay/migration/rollback and drift refusal remain UNEXECUTED, with
+no migration-safety or OS isolation claim. Earlier scripts keep original targets.
+
+The finite shared discriminator inventory covers typed scalar fields and
+structured metadata using the same rules. Malformed lexical member scanning
+recognizes complete, escaped, duplicate and incomplete reserved envelopes
+without searching quoted document prose. Authority `source_pin` and coding
+setup namespaces are checked independently of canonical/hash-valid bytes,
+including orphan rows and current authority pointers. Typed scalar/native
+`business_purpose=coding-replacement-selection@1` participates in the same
+valid/malformed/duplicate/escaped/incomplete metadata rules. Ordinary
+worker_execution/session purpose and free document prose remain noncoding.
+Recovery.classify_task runs the empty/reserved boundary under its existing lock/error fence before
+no-workflow and no-root/draft/F5 legacy returns; any coding-family schema
+object, including unknown/case-changed names or wrong types, also requires the
+complete central reader. Names and owning-table names are each checked for
+tables/views/indexes/triggers; no old ownership alias is needed. Missing org identity
+reconciles categorically before either legacy return. Unknown/malformed coding
+returns reconciliation_required, with no coding ownership, task writer or dispatch.
+Ordinary noncoding legacy and the existing document draft/F5 paths remain.
+
+K0 stays disabled; K1 current resolution still refuses before private decode or
+object I/O. No capability/setup/import/mapping/adoption/start/stage/native task/
+event/audit producer, new route/DTO/native permission/dependency/hook, live SQL,
+rollout/deploy/restart/assignment or trial renewal is delivered. Source inspection
+and lint/static receipts cannot prove migration, readers, security, behavior or
+upgrade safety: all remain UNEXECUTED. Python units RETIRED; general integration
+INCLUDING callback SKIPPED24342; broad/negative/mutation/repetition/protected proof
+UNEXECUTED/FOUNDER-WAIVED139429/430. Full independent review, same-final-head scoped
+QA and Source Boundary Lint + Web Lint(Node24)/local all remain required, followed
+by manager guarded merge. Root owns K2a2–K6 and operational/real-agent acceptance.

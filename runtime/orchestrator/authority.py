@@ -825,7 +825,7 @@ def _release_schema_digest(layout: str = "F", history: str = "fresh", naming_ver
     unavailable construction fails closed.
     """
     global _release_schema_digest_cache
-    if (layout not in ("F", "E", "G", "H", "I") or history not in _RELEASE_REFERENCE_HISTORIES
+    if (layout not in ("F", "E", "G", "H", "I", "J") or history not in _RELEASE_REFERENCE_HISTORIES
             or type(naming_version) is not int or naming_version not in (0, 1)):
         return "unavailable"
     if _release_schema_digest_cache is None:

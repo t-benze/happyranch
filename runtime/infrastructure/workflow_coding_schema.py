@@ -1,0 +1,289 @@
+"""Exact additive J definitions and K2a1's closed empty-coding boundary.
+
+Populated coding readers belong to K2a2, before any producer. This module
+neither installs a schema nor resolves repositories or current authority.
+"""
+from __future__ import annotations
+
+import json
+import sqlite3
+
+# Accepted TASK10693 step34: 3987 UTF8 bytes, SHA256
+# 2c4b556671ef76582cdcbaed1e68d8575d9648ce29773f52c3d947ceaeeb0d70.
+CANONICAL_WORKFLOW_CODING_DDL = """\
+CREATE TABLE workflow_coding_mappings (
+  id TEXT PRIMARY KEY,
+  org_slug TEXT NOT NULL,
+  release_identity TEXT NOT NULL CHECK(release_identity='release/happyranch/coding'),
+  generation INTEGER NOT NULL CHECK(typeof(generation)='integer' AND generation>0),
+  principal TEXT NOT NULL,
+  operation_key TEXT NOT NULL,
+  request_digest TEXT NOT NULL,
+  mapping_bytes BLOB NOT NULL CHECK(typeof(mapping_bytes)='blob' AND length(mapping_bytes) BETWEEN 1 AND 1048576),
+  mapping_digest TEXT NOT NULL UNIQUE,
+  created_at TEXT NOT NULL,
+  UNIQUE(org_slug,release_identity,generation),
+  UNIQUE(org_slug,principal,operation_key)
+);
+CREATE TABLE workflow_coding_runs (
+  instance_id TEXT PRIMARY KEY REFERENCES workflow_instances(id),
+  mapping_id TEXT NOT NULL REFERENCES workflow_coding_mappings(id),
+  cas_version INTEGER NOT NULL CHECK(typeof(cas_version)='integer' AND cas_version>0),
+  current_revision INTEGER NOT NULL CHECK(typeof(current_revision)='integer' AND current_revision BETWEEN 0 AND 3),
+  state TEXT NOT NULL CHECK(state IN ('development','code_review','qa','manager_closeout','held','complete','cancelled')),
+  current_attempt_id TEXT REFERENCES workflow_coding_attempts(id),
+  last_event_id TEXT REFERENCES workflow_coding_events(id),
+  UNIQUE(instance_id,current_attempt_id)
+);
+CREATE TABLE workflow_coding_attempts (
+  id TEXT PRIMARY KEY,
+  instance_id TEXT NOT NULL REFERENCES workflow_coding_runs(instance_id),
+  revision INTEGER NOT NULL CHECK(typeof(revision)='integer' AND revision BETWEEN 1 AND 3),
+  stage TEXT NOT NULL CHECK(stage IN ('development','code_review','qa','manager_closeout')),
+  attempt_sequence INTEGER NOT NULL CHECK(typeof(attempt_sequence)='integer' AND attempt_sequence>0),
+  assignment_generation INTEGER NOT NULL CHECK(typeof(assignment_generation)='integer' AND assignment_generation>0),
+  predecessor_id TEXT REFERENCES workflow_coding_attempts(id),
+  task_id TEXT NOT NULL UNIQUE REFERENCES tasks(id),
+  principal TEXT NOT NULL,
+  session_id TEXT,
+  result_id INTEGER UNIQUE REFERENCES task_results(id),
+  submission_id TEXT REFERENCES workflow_submissions(id),
+  review_request_id TEXT UNIQUE REFERENCES workflow_review_requests(id),
+  state TEXT NOT NULL CHECK(state IN ('queued','claimed','running','uncertain','blocked','failed','completed','cancelled','superseded')),
+  scope_bytes BLOB NOT NULL CHECK(typeof(scope_bytes)='blob' AND length(scope_bytes) BETWEEN 1 AND 1048576),
+  scope_digest TEXT NOT NULL UNIQUE,
+  UNIQUE(instance_id,revision,stage,attempt_sequence),
+  UNIQUE(instance_id,stage,assignment_generation),
+  CHECK(predecessor_id IS NULL OR predecessor_id!=id)
+);
+CREATE TABLE workflow_coding_events (
+  id TEXT PRIMARY KEY,
+  instance_id TEXT NOT NULL REFERENCES workflow_coding_runs(instance_id),
+  event_seq INTEGER NOT NULL CHECK(typeof(event_seq)='integer' AND event_seq>0),
+  attempt_id TEXT REFERENCES workflow_coding_attempts(id),
+  org_slug TEXT NOT NULL,
+  principal TEXT NOT NULL,
+  operation_key TEXT NOT NULL,
+  request_digest TEXT NOT NULL,
+  event_kind TEXT NOT NULL CHECK(event_kind IN ('run_started','stage_queued','session_bound','launch_reserved','launch_observed','artifact_staged','review_staged','callback_recorded','terminal_recorded','advance','return','replacement','held','paused','resumed','cancelled','ci_observed','merge_reserved','merge_observed','contribution_recorded','host_reconciled','cleanup_settled','manager_completed','manager_control_queued','manager_control_session_bound','manager_control_launch_reserved','manager_control_launch_observed','manager_control_selected','manager_control_callback_recorded','manager_control_terminal_recorded','manager_control_cleanup_settled','manager_control_settled')),
+  previous_digest TEXT,
+  event_bytes BLOB NOT NULL CHECK(typeof(event_bytes)='blob' AND length(event_bytes) BETWEEN 1 AND 16777216),
+  event_digest TEXT NOT NULL UNIQUE,
+  created_at TEXT NOT NULL,
+  UNIQUE(instance_id,event_seq),
+  UNIQUE(org_slug,principal,operation_key)
+);
+"""
+
+CODING_TABLES = (
+    'workflow_coding_mappings', 'workflow_coding_runs',
+    'workflow_coding_attempts', 'workflow_coding_events',
+)
+
+
+# One finite inventory drives scalar, decoded and incomplete-envelope checks.
+# release-input@1 is shared source provenance, NOT a coding discriminator.
+CODING_PREFIXES = {
+    'format': ('workflow-coding-', 'workflow-coding@', 'workflow-code-change@'),
+    'compiler_pin': ('workflow-coding-',),
+    'validator_pin': ('workflow-coding-',),
+    'source_pin': ('workflow-coding-',),
+    'action': ('coding_',),
+}
+CODING_VALUES = {
+    'format': ('coding-scope@1', 'coding-replacement-selection@1'),
+    'source_pin': ('coding-capability-issuer@1',),
+    'kind': ('code-change',),
+    'artifact_kind': ('code-change',),
+    'source_kind': ('coding-manager-result',),
+    'business_purpose': ('coding-replacement-selection@1',),
+    'action': ('workflow_start',),
+    'identity': ('release/happyranch/coding',),
+    'release_identity': ('release/happyranch/coding',),
+    'namespace': ('release/happyranch',),
+}
+CODING_NAMESPACE_COLUMNS = ('namespace', 'authority_namespace', 'org_namespace')
+
+
+def has_coding_schema_objects(conn: sqlite3.Connection) -> bool:
+    """Detect the reserved family regardless of object kind, spelling or rows.
+
+    tbl_name also covers indexes/triggers with unrelated names on coding tables.
+    This is a validation trigger, never a filtered schema compatibility reader.
+    """
+    return any(str(name).casefold().startswith('workflow_coding_')
+               or str(name).casefold() == 'workflow_coding'
+               for row in conn.execute('SELECT name,tbl_name FROM sqlite_schema')
+               for name in row)
+
+
+def _coding_scalar(key: str, value: object, *, incomplete: bool = False) -> bool:
+    """Reserved values only in typed fields; ID/name/prose mentions grant nothing."""
+    if isinstance(value, bytes):
+        value = value.decode('utf8', errors='replace')
+    if not isinstance(value, str):
+        return False
+    if key == 'action' and value.lower().startswith('coding_'):
+        return True  # Preserve the former scalar audit LIKE discriminator.
+    if key in CODING_NAMESPACE_COLUMNS:
+        key = 'namespace'
+        parts = value.split('/')
+        if (len(parts) >= 3 and parts[0] == 'org' and parts[1]
+                and (parts[2] == 'coding-setup' or (incomplete and parts[2]
+                     and 'coding-setup'.startswith(parts[2])))):
+            return True
+    prefixes = CODING_PREFIXES.get(key, ())
+    values = CODING_VALUES.get(key, ())
+    return (value.startswith(prefixes) or value in values
+            or (incomplete and any(item.startswith(value) for item in (*prefixes, *values))))
+
+
+def _coding_value(value: object) -> bool:
+    """Recognize reserved typed metadata, not mentions in document prose."""
+    if isinstance(value, dict):
+        return any(_coding_scalar(key, item) or _coding_value(item)
+                   for key, item in value.items())
+    if isinstance(value, list):
+        return any(_coding_value(item) for item in value)
+    return False
+
+
+def _metadata_string(text: str, start: int) -> tuple[str, int, bool]:
+    """Consume ONE JSON string without mistaking its prose for object members.
+
+    Decode escaped keys/values even if the containing object never closes.
+    On an invalid/truncated escape retain its decoded prefix and consume the
+    rest of that string; absence of complete JSON never erases a discriminator.
+    This lexer is not a retained-family validity reader.
+    """
+    parts: list[str] = []
+    index = start + 1
+    valid = True
+    escapes = {'"': '"', '\\': '\\', '/': '/', 'b': '\b', 'f': '\f',
+               'n': '\n', 'r': '\r', 't': '\t'}
+    while index < len(text):
+        char = text[index]
+        index += 1
+        if char == '"':
+            return ''.join(parts), index, valid
+        if char == '\\':
+            if index == len(text):
+                break
+            escape = text[index]
+            index += 1
+            if escape == 'u':
+                digits = text[index:index + 4]
+                if len(digits) == 4 and all(digit in '0123456789abcdefABCDEF' for digit in digits):
+                    if valid:
+                        parts.append(chr(int(digits, 16)))
+                    index += 4
+                else:
+                    valid = False
+            elif escape in escapes:
+                if valid:
+                    parts.append(escapes[escape])
+            else:
+                valid = False
+        elif ord(char) < 32:
+            valid = False
+        elif valid:
+            parts.append(char)
+    return ''.join(parts), index, False
+
+
+def _malformed_coding_value(text: str) -> bool:
+    """Visit every lexical member, including duplicate and unclosed objects.
+
+    Only structured envelopes participate. Quoted document prose is consumed
+    as one string, never searched for embedded JSON snippets or coding words.
+    The same finite scalar inventory handles every successful-decoder family.
+    """
+    text = text.lstrip(' \t\r\n\ufeff')
+    if not text.startswith(('{', '[')):
+        return False
+    index = 0
+    while index < len(text):
+        if text[index] != '"':
+            index += 1
+            continue
+        key, index, key_complete = _metadata_string(text, index)
+        following = index
+        while following < len(text) and text[following] in ' \t\r\n':
+            following += 1
+        if not key_complete or following == len(text) or text[following] != ':':
+            continue
+        following += 1
+        while following < len(text) and text[following] in ' \t\r\n':
+            following += 1
+        if following < len(text) and text[following] == '"':
+            item, index, complete = _metadata_string(text, following)
+            if _coding_scalar(key, item, incomplete=not complete):
+                return True
+    return False
+
+
+def _refuse_coding_metadata(raw: object, *, location: str) -> None:
+    if not isinstance(raw, (bytes, str)):
+        return  # Existing retained-family readers check their required types.
+    if len(raw) > 16777216:
+        raise ValueError(f'workflow_coding_boundary_scan_bound: {location}')
+    try:
+        # Check EVERY duplicate-key value; later document values cannot erase
+        # a reserved value even when the outer object subsequently truncates.
+        def pairs(items: list[tuple[str, object]]) -> dict:
+            if any(_coding_scalar(key, value) or _coding_value(value) for key, value in items):
+                raise ValueError(f'workflow_coding_data_unsupported: {location}; K2a2 reader required')
+            return dict(items)
+        value = json.loads(raw, object_pairs_hook=pairs)
+        if _coding_value(value):
+            raise ValueError(f'workflow_coding_data_unsupported: {location}; K2a2 reader required')
+    except (UnicodeError, json.JSONDecodeError):
+        # Mirror JSON's supported UTF8/16/32 input encodings even when the
+        # envelope truncates. A malformed byte envelope cannot lose its family
+        # merely because the successful decoder would recognize its encoding.
+        text = raw.decode(json.detect_encoding(raw), errors='replace') if isinstance(raw, bytes) else raw
+        if _malformed_coding_value(text):
+            raise ValueError(f'workflow_coding_data_unsupported: {location}; malformed coding metadata') from None
+        return  # Family discrimination only, never a legacy validity PASS.
+    except RecursionError as exc:
+        raise ValueError(f'workflow_coding_boundary_scan_bound: {location}') from exc
+
+
+def validate_empty_coding_data(conn: sqlite3.Connection, *, layout: str) -> None:
+    """Refuse populated/reserved data before central AND recovery early returns.
+
+    Central callers already matched the complete independent schema. Recovery
+    also calls this on generic/no-workflow or partial schemas, then requires full
+    schema validation if ANY coding-family object exists, even empty. Missing workflow
+    tables do not skip native task/result/audit scans. No install or task effects.
+    Document content, briefs, findings and summaries are not discriminators.
+    """
+    tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_schema WHERE type='table'")}
+    for table in CODING_TABLES:
+        if table not in tables:
+            if layout == 'J':
+                raise ValueError(f'workflow_coding_data_unsupported: missing {table}')
+            continue
+        if conn.execute(f'SELECT 1 FROM {table} LIMIT 1').fetchone() is not None:
+            raise ValueError(f'workflow_coding_data_unsupported: {table}; K2a2 reader required')
+    for table in sorted(tables):
+        if not (table.startswith('workflow_') or table in ('tasks', 'task_results', 'audit_log')):
+            continue
+        quoted = str(table).replace('"', '""')
+        columns = [row[1] for row in conn.execute(f'PRAGMA table_xinfo("{quoted}")')]
+        scalar = [column for column in columns if column in CODING_PREFIXES
+                  or column in CODING_VALUES or column in CODING_NAMESPACE_COLUMNS]
+        structured = [column for column in columns
+                      if (column.endswith(('_bytes', '_json')) or column == 'payload')
+                      and column not in ('submission_bytes', 'candidate_bytes')]
+        selected_columns = scalar + structured
+        if not selected_columns:
+            continue
+        selected = ','.join('"' + column.replace('"', '""') + '"' for column in selected_columns)
+        for row in conn.execute(f'SELECT {selected} FROM "{quoted}"'):
+            for column, raw in zip(selected_columns, row, strict=True):
+                if column in scalar:
+                    if _coding_scalar(column, raw):
+                        raise ValueError(f'workflow_coding_data_unsupported: {table}.{column}; coding reader required')
+                else:
+                    _refuse_coding_metadata(raw, location=f'{table}.{column}')
