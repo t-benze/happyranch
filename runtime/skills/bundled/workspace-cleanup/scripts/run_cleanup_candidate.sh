@@ -507,7 +507,10 @@ try:
     if os.listdir(isolation_fd):
         raise RuntimeError("isolation_residual")
     os.rmdir(os.path.basename(isolation_dir), dir_fd=containing_fd)
-except (OSError, RuntimeError, ValueError, KeyError, TypeError):
+except (OSError, RuntimeError, ValueError, KeyError, TypeError) as exc:
+    print(json.dumps({"kind": "cleanup_descriptor_failure", "error": type(exc).__name__,
+                      "errno": getattr(exc, "errno", None), "cause": str(exc)},
+                     sort_keys=True), file=sys.stderr)
     raise SystemExit(6)
 finally:
     for descriptor in (isolated_fd, isolation_fd, containing_fd):
