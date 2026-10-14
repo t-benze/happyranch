@@ -435,7 +435,7 @@ async function main(){
           await wait(page,`!!document.querySelector('h1')&&document.body.textContent.includes(${quote(fixture.task.brief)})`);await sleep(80);
           const actual=await evaluate(page,"({header:document.querySelector('header')?.textContent,band:document.querySelector('section[aria-label=\"'+(document.documentElement.lang==='en'?'Fan-out status':'扇出状态')+'\"]')?.textContent,bar:document.querySelector('section[aria-label] [role=img]')?.getAttribute('aria-label'),recall:document.body.textContent})");
           check(`${name} ${id} detail page fits`,await evaluate(page,'document.documentElement.scrollWidth<=innerWidth+1'));
-          const qualifierKey={continuation_pending:'continuationPending',pending_children:'pendingChildren',waiting_children:'childWork',child_results_received:'childResultsReceived'}[fixture.task.child_wait?.state];
+          const qualifierKey={continuation_pending:'continuationPending',pending_children:'pendingChildren',waiting_children:'children',child_results_received:'resultsReceived'}[fixture.task.child_wait?.state];
           if(qualifierKey) {
             const qualifier=tr(locale,'tasks.waiting.'+qualifierKey);
             check(`${name} ${id} header qualifier`,actual.header?.includes(qualifier));
