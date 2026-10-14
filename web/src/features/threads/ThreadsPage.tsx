@@ -625,7 +625,7 @@ export function ThreadsPage(): JSX.Element {
   // Send mutation lives at the page level so the Composer pattern is pure.
   const sendFollowUp = useSendFollowUp(threadId ?? '');
   const preflight = usePreflightAddresses();
-  const composerIdentityOptions = useIdentityOptions(composerAgents, true);
+  const composerIdentityOptions = useIdentityOptions(composerAgents);
   const abortReplies = useAbortReplies(threadId ?? '');
   // THR-209 rename + pin mutations live at the page level; the detail toolbar
   // controls drive them.

@@ -128,6 +128,87 @@ async function enterName(editor: HTMLElement, value: string) {
 }
 
 describe('naming v1 shipping UI — mocked HTTP', () => {
+  test.each(['founder', 'Boss'])('thread-detail hints exclude human %s while human recipients remain available', async (founderName) => {
+    const f = fixture();
+    f.records.alpha.find((i) => i.kind === 'founder')!.addressable_name = founderName;
+    mount('/orgs/alpha/threads/THR-MOCK');
+    const user = userEvent.setup();
+    const composer = await screen.findByRole('textbox', { name: t('threads.page.composer.textareaAria') });
+    await user.type(composer, '@');
+    await screen.findByRole('option', { name: /Alpha · agent_a/ });
+    expect(screen.getAllByRole('option')).toHaveLength(1);
+    for (const prefix of [founderName.slice(0, 2), founderName, 'founder', 'Other', 'agent_b']) {
+      await user.clear(composer); await user.type(composer, `@${prefix}`);
+      expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
+    }
+    await user.clear(composer);
+    await user.click(screen.getByRole('link', { name: 'Mock compose' }));
+    await user.click(await screen.findByRole('button', { name: /New thread/i }));
+    const recipient = within(screen.getByRole('dialog')).getByLabelText(t('threads.newThread.recipientsLabel'));
+    await user.type(recipient, founderName);
+    const human = await screen.findByRole('option', { name: new RegExp(`${founderName}.*Human`) });
+    await user.click(human);
+    expect(recipient).toHaveValue('founder, ');
+    expect(f.effects).toEqual([]);
+  });
+
+  test.each(['Enter', 'Tab', 'mouse'])('thread-detail eligible current-name and ID hints insert with %s', async (selection) => {
+    const f = fixture(); mount('/orgs/alpha/threads/THR-MOCK');
+    const user = userEvent.setup();
+    const composer = await screen.findByRole('textbox', { name: t('threads.page.composer.textareaAria') });
+    await user.type(composer, '@');
+    await screen.findByRole('option', { name: /Alpha · agent_a/ });
+    expect(screen.getAllByRole('option')).toHaveLength(1);
+    for (const prefix of ['Al', 'agent_a']) {
+      await user.clear(composer); await user.type(composer, `@${prefix}`);
+      const option = await screen.findByRole('option', { name: /Alpha · agent_a/ });
+      if (selection === 'mouse') await user.click(option);
+      else await user.keyboard(`{ArrowDown}{${selection}}`);
+      await waitFor(() => expect(composer).toHaveValue('@Alpha '));
+      expect(composer).toHaveFocus();
+      expect((composer as HTMLTextAreaElement).selectionStart).toBe(7);
+      expect((composer as HTMLTextAreaElement).selectionEnd).toBe(7);
+      expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
+      expect(f.effects).toEqual([]);
+    }
+  });
+
+  test('thread-detail unavailable agent name keeps the eligible ID fallback', async () => {
+    const f = fixture();
+    f.records.alpha.find((i) => i.canonical_id === 'agent_a')!.addressable_name = null;
+    mount('/orgs/alpha/threads/THR-MOCK');
+    const user = userEvent.setup();
+    const composer = await screen.findByRole('textbox', { name: t('threads.page.composer.textareaAria') });
+    await user.type(composer, '@');
+    await screen.findByRole('option', { name: 'agent_a core' });
+    expect(screen.getAllByRole('option')).toHaveLength(1);
+    await user.keyboard('{Enter}');
+    await waitFor(() => expect(composer).toHaveValue('@agent_a '));
+    expect(composer).toHaveFocus();
+    expect(f.effects).toEqual([]);
+  });
+
+  test.each(['Boss', 'founder'])('thread-detail manually typed @%s preserves literal preflight and send', async (address) => {
+    const f = fixture();
+    server.use(http.post('/api/v1/orgs/:slug/threads/THR-MOCK/send', async ({ params, request }) => {
+      f.effects.push({ kind: 'send', slug: String(params.slug), body: await request.json() });
+      return HttpResponse.json({ seq: 1, thread_id: 'THR-MOCK' });
+    }));
+    mount('/orgs/alpha/threads/THR-MOCK');
+    const user = userEvent.setup();
+    const composer = await screen.findByRole('textbox', { name: t('threads.page.composer.textareaAria') });
+    const literal = `Literal @${address}`;
+    await user.type(composer, literal);
+    expect(composer).toHaveValue(literal);
+    expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
+    await user.keyboard('{Enter}');
+    await waitFor(() => expect(f.effects).toHaveLength(1));
+    expect(f.effects[0]).toMatchObject({ kind: 'send', slug: 'alpha', body: { body_markdown: literal } });
+    expect(f.resolves).toContainEqual({ slug: 'alpha', body: { context: 'lookup', addresses: [address] } });
+    await waitFor(() => expect(composer).toHaveValue(''));
+    expect(composer).toHaveFocus();
+  });
+
   test.each(['managed', 'user_authored'] as const)('scenario 9 frontend consumer: %s skill rows keep canonical identity and node through label refresh', async (type) => {
     const f = fixture();
     const assignments = [{ agent: 'agent_a', assigned: true, effective: true, state: 'effective' }];
