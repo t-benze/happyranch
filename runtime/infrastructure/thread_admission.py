@@ -157,5 +157,12 @@ class ThreadAdmissionStore:
             self._validate_append(prior, state)
             if prior == state:
                 return
+        payload = json.loads(raw)
+        # AuditMixin writes json.dumps(payload), including ASCII escaping and
+        # spaces. Bound and validate those ACTUAL durable bytes before INSERT,
+        # not just Pydantic's compact in-memory serialization.
+        audit_raw = json.dumps(payload)
+        if len(audit_raw.encode("utf8")) > 16384 or ThreadLifecycle.model_validate_json(audit_raw, strict=True) != state:
+            raise ValueError("thread audit writer representation bound")
         self.db.insert_audit_log_uncommitted(task_id=inv.thread_id, agent=inv.agent_name,
-            action="thread_move_lifecycle", payload=json.loads(raw))
+            action="thread_move_lifecycle", payload=payload)
