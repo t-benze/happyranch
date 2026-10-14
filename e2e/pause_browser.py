@@ -41,14 +41,17 @@ class PauseBrowser:
         page = self.b.page
         self.locale(locale)
         offset = len(self.b.events)
-        label = ({"pausing": "Pausing", "paused": "Paused"} if locale == "en"
-                 else {"pausing": "暂停中", "paused": "已暂停"})[state]
+        # THR-292 seq77: the detail header hold indicator reads "Waiting for current work to finish" while pausing.
+        label = ({"pausing": "Waiting for current work to finish", "paused": "Paused"} if locale == "en"
+                 else {"pausing": "正在等待当前工作完成", "paused": "已暂停"})[state]
         resume, pause = ("Resume", "Pause") if locale == "en" else ("恢复", "暂停")
         overview_title = "Task pause overview" if locale == "en" else "任务暂停概览"
         # Exact state labels (authored briefs such as PAUSE_*_ROOT must not collide) plus pause-only phrases.
-        pause_labels = ["Not held", "Pausing", "Paused"] if locale == "en" else ["未暂停", "暂停中", "已暂停"]
-        pause_phrases = (["Drain evidence", "Hold inherited from root", "drain blocker"]
-                         if locale == "en" else ["排空证据", "继承根任务", "排空阻塞项"])
+        # Retired seq45 labels stay in the absence check alongside the current seq77 header copy.
+        pause_labels = (["Not held", "Pausing", "Waiting for current work to finish", "Paused"] if locale == "en"
+                        else ["未暂停", "暂停中", "正在等待当前工作完成", "已暂停"])
+        pause_phrases = (["Drain evidence", "Hold inherited from root", "drain blocker", "still running"]
+                         if locale == "en" else ["排空证据", "继承根任务", "排空阻塞项", "仍在运行"])
         roots_path = "/api/v1/orgs/alpha/tasks/roots"
         overview_path = "/api/v1/orgs/alpha/tasks/pause-overview"
         overview_reads: list[str] = []

@@ -164,7 +164,11 @@ Use `happyranch tasks --org ORG --pause-overview` for the read-only Task pause o
 
 
 In the browser, Pause/Resume, Pausing/Paused state and drain blockers appear only
-on each task's own detail page. The Tasks list shows ordinary lifecycle status and
+on each task's own detail page, in its header action row beside Revisit, Cancel and
+View audit. While pausing, an amber "Waiting for current work to finish" indicator
+and a secondary Resume appear; a collapsed disclosure lists the work still running
+or still to resolve, linking each task or job. Once paused, a Paused indicator sits
+beside a primary Resume. The Tasks list shows ordinary lifecycle status and
 navigation without pause controls or labels, and there is no separate pause
 overview panel. Use the CLI overview above for an organization-wide observation. Pending roots show
 no Pause action. Task/session, job, launch, result-processing and unknown blockers

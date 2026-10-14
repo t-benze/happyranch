@@ -10,8 +10,8 @@ activity.
 
 For v1, task submission is **CLI-only**. The web UI is for monitoring,
 responding, and retrieving outputs after work starts. Web task creation is
-deferred (not yet in v1 scope); see the founder-decisions note in
-[the manual index](../00-README.md).
+deferred (not yet in v1 scope); see what v1 covers in
+[the manual index](../).
 
 ## Dispatch from the CLI
 
@@ -81,6 +81,6 @@ Go to [Your First Task - End to End](../03-first-task-workflow/01-your-first-tas
 
 ## Pause and Resume
 
-After your root task is In Progress, `happyranch pause TASK --org ORG` holds future steps in that actual task tree. A Pending root cannot yet be paused. Already committed work finishes; Pausing shows remaining work or unknown evidence, while Paused requires complete drain evidence. `happyranch resume TASK --org ORG` releases the hold using the current generation; it does not restart a completed session. In the browser, use **Pause** on an In Progress root's task detail page; the Tasks list shows no pause controls. **Resume** is an explicit action during Pausing or Paused; it does not revive ended tasks or resolve escalation. Descendants show their inherited hold and link the actual root, with no independent controls. Missing control evidence is shown as unavailable. Existing Cancel and read-only actions remain available. A conflict refreshes the data; review it before deliberately acting again.
+After your root task is In Progress, `happyranch pause TASK --org ORG` holds future steps in that actual task tree. A Pending root cannot yet be paused. Already committed work finishes; Pausing shows remaining work or unknown evidence, while Paused requires complete drain evidence. `happyranch resume TASK --org ORG` releases the hold using the current generation; it does not restart a completed session. In the browser, use **Pause** in the header of an In Progress root's task detail page; the Tasks list shows no pause controls. While pausing, the header shows "Waiting for current work to finish" with a collapsed list of the remaining work; once paused it shows **Paused** beside **Resume**. **Resume** is an explicit action during Pausing or Paused; it does not revive ended tasks or resolve escalation. Descendants show their inherited hold and link the actual root, with no independent controls. Missing control evidence is shown as unavailable. Existing Cancel and read-only actions remain available. A conflict refreshes the data; review it before deliberately acting again.
 
 A successful session that omitted its callback keeps its one recovery opportunity while held. The 120-second deadline starts when that recovery is actually admitted, and Resume or restart cannot renew an admitted recovery. Missing closure evidence from the original execution remains visible even after a recovery finishes or the task reaches its terminal status.

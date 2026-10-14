@@ -10,5 +10,12 @@ const withNextra = nextra({
 })
 
 export default withNextra({
-  reactStrictMode: true
+  reactStrictMode: true,
+  // Emit a self-contained server in .next/standalone with only the traced
+  // runtime files, so the relocatable package does not ship the build-time
+  // dependency tree (see README.md "Relocatable package").
+  output: 'standalone',
+  // Trace from this directory so a lockfile elsewhere in the repository
+  // cannot move server.js below .next/standalone/<subpath>.
+  outputFileTracingRoot: import.meta.dirname
 })

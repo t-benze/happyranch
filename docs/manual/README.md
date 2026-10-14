@@ -1,0 +1,63 @@
+# HappyRanch End-User Manual
+
+Standalone Nextra 3 (Pages Router) docs site on Next.js 15 and React 18.
+Content lives in `pages/`; screenshots that do not exist yet are
+`![placeholder: ...](TODO)` markers rendered as "Screenshot coming" cards.
+
+## Build
+
+Requires Node 24 and the committed lockfile.
+
+```bash
+npm ci
+npm run build
+```
+
+`npm run dev` serves a local preview. Every page is prerendered at build
+time; the site has no API routes, middleware, application-defined rewrites or
+remote images. Nextra itself generates one `afterFiles` rewrite,
+`/:path*/_meta` -> `/404`, which hides the `_meta` navigation files; it appears
+in `.next/routes-manifest.json` and the standalone `server.js`.
+
+## Relocatable package
+
+`next.config.mjs` sets `output: 'standalone'`, so the build emits
+`.next/standalone/` holding `server.js`, the prerendered pages and only the
+runtime files Next.js traced. Build-time packages (Nextra's MDX/KaTeX/Mermaid
+toolchain and their dependencies) are not part of it. Assemble the package
+from a clean build:
+
+```bash
+cp -R .next/static .next/standalone/.next/static
+tar -C .next -czf happyranch-manual.tar.gz standalone
+```
+
+There is no `public/` directory; if one is added, copy it to
+`.next/standalone/public` as well.
+
+### Platform
+
+The standalone trace copies the native binaries that `npm ci` installed for
+the build machine, so a package only runs on the OS, CPU architecture and
+libc it was built on. Build on the same OS/architecture/libc as the intended
+host; every other target needs its own build and its own run evidence.
+
+- Upstream prerequisites of the bundled native packages
+  (`@img/sharp-linux-x64`, `@img/sharp-libvips-linux-x64`): Linux, x64,
+  glibc >= 2.28. No musl (Alpine) binaries are included. Node 24 is required
+  by `engines`.
+- Observed: the current candidate was built with Node 24.19.0 / npm 11.17.0
+  on Linux x86_64 (glibc), and its relocated `server.js` was run on Node
+  24.19.0 with glibc 2.43. The glibc 2.28 minimum, other glibc versions,
+  musl, arm64, macOS and Windows were not tested.
+
+Run the package:
+
+```bash
+tar -xzf happyranch-manual.tar.gz
+cd standalone
+HOSTNAME=127.0.0.1 PORT=3000 node server.js
+```
+
+`npm start` (`next start`) is for local previews only; it prints a warning
+under `output: 'standalone'`. Use `node server.js` for the package.
