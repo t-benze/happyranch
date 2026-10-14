@@ -1,3 +1,4 @@
+import { childWaitState, resolveTaskWaitingQualifier, taskWaitingLabels } from '@/shared/tasks/child-wait';
 import { IdentityName } from '@/shared/identities/IdentityName';
 /**
  * Task detail — Direction-A Pasture, full-page surface.
@@ -44,7 +45,6 @@ import {
   latestFanoutJoin,
   summarizeChildStatuses,
   snippet,
-  type ActiveFanout,
   type ChildStatusCounts,
   type FanoutPlannedChild,
   type JoinedFanout,
@@ -148,34 +148,31 @@ interface ChainTimelineBlockInfo {
 
 type BlockedJobEntry = { job_id: string; status: string };
 
-/** Derive a human-readable blocker name from the task block context.
- *  THR-037 Change B: escalation is a top-level status now (not a block_kind),
- *  so it no longer appears here — only the in_progress waiting reasons do.
- *
- *  When fanout is present:
- *  - `spawned` fan-out replaces bare "delegation" with descriptive
- *    "waiting on N subtasks".
- *  (pending_review removed per THR-012 msg 129/131 — no fan-out review gate.)
- *  Otherwise, ordinary block_kind/blocked_on_jobs display is preserved. */
-function deriveBlockerName(
-  blockKind: string | null | undefined,
-  blockedOnJobs: BlockedJobEntry[] | null | undefined,
-  fanout: ActiveFanout | null | undefined,
-  t: Translate,
-): string | undefined {
-  // Active spawned fan-out: children are alive, parent waits for all to
-  // become terminal. Show width-aware delegation copy.
-  if (fanout?.status === 'spawned' && blockKind === 'delegated') {
-    return t('tasks.detail.blocker.fanout', { count: fanout.width });
+/** Timeline uses the same current projection as the header/rail, without count inference. */
+function deriveBlockerName(task: TaskRecord, blockedOnJobs: BlockedJobEntry[] | null | undefined, t: Translate): string | undefined {
+  if (task.block_kind === 'delegated') return resolveTaskWaitingQualifier(task, taskWaitingLabels(t)) ?? t('tasks.waiting.childUnavailable');
+  if (blockedOnJobs && blockedOnJobs.length > 0) return t('tasks.detail.blocker.jobs', {ids: blockedOnJobs.map(e => e.job_id).join(', ')});
+  if (task.block_kind === 'blocked_on_job') return t('tasks.detail.blocker.blockedOnJob');
+  return task.block_kind ?? undefined;
+}
+
+/** Validate the whole selected recursive tree; never filter partial recall into zero. */
+function selectedRecall(raw: unknown, taskId: string): TaskRecallNode | null {
+  const supported = new Set(['pending', 'in_progress', 'escalated', 'completed', 'failed', 'cancelled', 'superseded']);
+  const stack: unknown[] = [raw];
+  const ids = new Set<string>();
+  while (stack.length) {
+    const value = stack.pop();
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+    const node = value as TaskRecallNode;
+    if (typeof node.task_id !== 'string' || !node.task_id.trim() || ids.has(node.task_id)
+      || !supported.has(node.status) || typeof node.brief !== 'string' || !Array.isArray(node.children)
+      || (node.output_summary != null && typeof node.output_summary !== 'string')
+      || (node.assigned_agent != null && typeof node.assigned_agent !== 'string')) return null;
+    ids.add(node.task_id);
+    stack.push(...node.children);
   }
-  if (blockedOnJobs && blockedOnJobs.length > 0) {
-    const jobIds = blockedOnJobs.map((e) => e.job_id);
-    return t('tasks.detail.blocker.jobs', { ids: jobIds.join(', ') });
-  }
-  if (blockKind === 'delegated') return t('tasks.detail.blocker.delegation');
-  if (blockKind === 'blocked_on_job') return t('tasks.detail.blocker.blockedOnJob');
-  // An unknown block_kind is a raw machine value: verbatim.
-  return blockKind ?? undefined;
+  return (raw as TaskRecallNode).task_id === taskId ? raw as TaskRecallNode : null;
 }
 
 /** Localized label for a KNOWN derived flavor; an unknown one stays verbatim. */
@@ -307,7 +304,7 @@ function SubtaskRow({ node, depth = 0 }: SubtaskRowProps): JSX.Element {
   const summary = snippet(node.output_summary, 96);
   return (
     <div className={`${ml}`}>
-      <div className="border-border-default flex items-start gap-2 border-l-2 py-1.5 pl-3 text-sm">
+      <div className="border-border-default flex flex-wrap items-start gap-2 border-l-2 py-1.5 pl-3 text-sm sm:flex-nowrap">
         <span
           className={`mt-1.5 inline-block h-2 w-2 shrink-0 rounded-full ${
             node.status === 'completed'
@@ -334,7 +331,7 @@ function SubtaskRow({ node, depth = 0 }: SubtaskRowProps): JSX.Element {
             </p>
           )}
         </div>
-        <div className="flex shrink-0 items-center gap-2">
+        <div className="flex w-full min-w-0 max-w-full flex-wrap items-center gap-2 pl-4 break-all sm:w-auto sm:shrink-0 sm:pl-0 [&>a]:min-w-0 [&>a]:max-w-full">
           <IdBadge kind="task" id={node.task_id} to={routes.detail(node.task_id)} />
           <StatusBadge status={node.status} />
         </div>
@@ -616,6 +613,7 @@ function useChainWithBlock(slug: string | undefined, taskId: string | undefined)
     queryKey: ['task-chain-block', slug, taskId],
     queryFn: () => getTask(slug as string, taskId as string),
     select: (r): ChainWithBlock => {
+      if (r.task?.task_id !== taskId) throw new Error('task_selection_mismatch');
       const rr = r as Record<string, unknown>;
       const bj = rr.blocked_on_jobs;
       const blockedOnJobs: BlockedJobEntry[] | null =
@@ -822,11 +820,8 @@ export function TaskStatusCard({
             <span className="inline-flex max-w-full flex-wrap">
               <StatusBadge
                 status={task.status}
-                blockKind={task.block_kind}
-                waitingLabels={{
-                  delegated: t('tasks.waiting.subtasks'),
-                  blocked_on_job: t('tasks.waiting.jobs'),
-                }}
+                blockKind={task.block_kind} waitingLabels={{blocked_on_job: t('tasks.waiting.jobs')}}
+                waitingQualifier={resolveTaskWaitingQualifier(task, taskWaitingLabels(t))}
               />
             </span>
           </RailRow>
@@ -912,7 +907,8 @@ export function TaskDetailPage(): JSX.Element {
   const taskId = taskIdParam ?? '';
   const routes = useTasksRoutes();
   const { t, render } = useTranslation();
-  const task = useTask(taskId);
+  const taskQuery = useTask(taskId);
+  const task = {...taskQuery, data: !taskQuery.isError && taskQuery.data?.task_id === taskId ? taskQuery.data : undefined};
   const recall = useTaskRecall(taskId);
   const jobsQuery = useJobsList({ task_id: taskId, status: 'all', limit: 100 });
   const chainQuery = useChainWithBlock(slug, taskId);
@@ -953,14 +949,15 @@ export function TaskDetailPage(): JSX.Element {
   const escalationSecondary = isAuthorityV2Refusal
     ? projectedEscalation.secondary
     : null;
-  const recallNode = recall.data && isAuthorityV2Refusal
+  const validRecall = !recall.isError ? selectedRecall(recall.data, taskId) : null;
+  const recallNode = validRecall && isAuthorityV2Refusal
     ? {
-        ...recall.data,
+        ...validRecall,
         output_summary: [escalationPrimary, escalationSecondary]
           .filter((value): value is string => !!value)
           .join('\n\n') || null,
       }
-    : recall.data;
+    : validRecall;
   const brief = task.data?.brief ?? '';
   // §G derived escalated flavor (graceful: null → plain "escalated").
   const escalationFlavor = isEscalated ? chainQuery.data?.escalationFlavor ?? null : null;
@@ -981,19 +978,18 @@ export function TaskDetailPage(): JSX.Element {
       (task.data.status === 'blocked' && task.data.block_kind === 'escalated')
         ? t('tasks.detail.blocker.escalation')
         : deriveBlockerName(
-            task.data.block_kind,
+            task.data,
             chainQuery.data?.blockedOnJobs ?? null,
-            fanoutCtx,
             t,
           );
     return { isBlocked: true, blockerName };
-  }, [task.data, chainQuery.data, fanoutCtx, t]);
+  }, [task.data, chainQuery.data, t]);
 
   // ── Fan-out status band derivation ──────────────────────────────────────
   // Three lifecycle states, all DERIVED from data already fetched. Regular
   // (non-fan-out) tasks produce `null` and render no band. Honesty rules from
   // the TASK-1696 Step 0 note are enforced in fanout.ts (no fabricated data).
-  const recallChildren = recall.data?.children;
+  const recallChildren = validRecall?.children;
   const joinedFanout = chainQuery.data?.joinedFanout ?? null;
   interface FanoutBandData {
     mode: FanoutMode;
@@ -1003,12 +999,11 @@ export function TaskDetailPage(): JSX.Element {
   }
   let fanoutBand: FanoutBandData | null = null;
   if (fanoutCtx?.status === 'spawned') {
-    // Running: progress counts from recall children, restricted to this
-    // fan-out's own children_ids when the payload records them.
+    // Spawned metadata identifies the context; exact membership admits current row counts.
     fanoutBand = {
-      mode: 'running',
+      mode: 'spawned',
       width: fanoutCtx.width,
-      counts: summarizeChildStatuses(recallChildren, fanoutCtx.childrenIds),
+      counts: summarizeChildStatuses(recallChildren, fanoutCtx.childrenIds, fanoutCtx.width),
       plannedChildren: [],
     };
   } else if (joinedFanout) {
@@ -1017,7 +1012,7 @@ export function TaskDetailPage(): JSX.Element {
     fanoutBand = {
       mode: 'joined',
       width: joinedFanout.width,
-      counts: summarizeChildStatuses(recallChildren, joinedFanout.childrenIds),
+      counts: summarizeChildStatuses(recallChildren, joinedFanout.childrenIds, joinedFanout.width),
       plannedChildren: [],
     };
   }
@@ -1089,18 +1084,15 @@ export function TaskDetailPage(): JSX.Element {
             <div className="min-w-0 flex-1">
           {/* Header — identity card */}
           <header className="border-border-default border-b pb-4">
-            <h1 className="flex items-center gap-2">
+            <h1 className="flex flex-wrap items-center gap-2">
               <span className="font-display text-h1 text-text-primary font-medium">
                 {taskId}
               </span>
               {task.data && (
                 <StatusBadge
                   status={task.data.status}
-                  blockKind={task.data.block_kind}
-                  waitingLabels={{
-                    delegated: t('tasks.waiting.subtasks'),
-                    blocked_on_job: t('tasks.waiting.jobs'),
-                  }}
+                  blockKind={task.data.block_kind} waitingLabels={{blocked_on_job: t('tasks.waiting.jobs')}}
+                  waitingQualifier={resolveTaskWaitingQualifier(task.data, taskWaitingLabels(t))}
                 />
               )}
               {escalationFlavor && (
@@ -1186,13 +1178,17 @@ export function TaskDetailPage(): JSX.Element {
                 )}
               </div>
             )}
+            {task.data?.status === 'in_progress' && task.data.block_kind === 'delegated'
+              && (!childWaitState(task.data) || childWaitState(task.data) === 'unavailable')
+              && <p className="text-text-secondary mt-2 text-xs">{t('tasks.waiting.childUnavailable')}</p>}
             <TaskPauseControls task={task.data} routes={routes} actions={headerActions} />
           </header>
 
-          {/* Fan-out status band — pending / running / joined. Only mounted
+          {/* Fan-out status band — spawned / prior audit join. Only mounted
               when real fan-out evidence exists; regular tasks render nothing. */}
-          {fanoutBand && (
+          {fanoutBand && task.data && (
             <FanoutBand
+              task={task.data}
               mode={fanoutBand.mode}
               width={fanoutBand.width}
               counts={fanoutBand.counts}
@@ -1219,7 +1215,8 @@ export function TaskDetailPage(): JSX.Element {
               />
             )}
 
-            {recall.data && <ExecutionSubtasks recall={recall.data} />}
+            {validRecall ? <ExecutionSubtasks recall={validRecall} />
+              : <p className="text-text-muted mt-5 text-xs">{t('tasks.detail.recall.unavailable')}</p>}
 
             <section className="mt-5">
               <h3 className="text-text-secondary mb-2 text-xs font-semibold tracking-wider uppercase">
@@ -1228,7 +1225,7 @@ export function TaskDetailPage(): JSX.Element {
               {recallNode ? (
                 <TaskRecallTree node={recallNode} />
               ) : (
-                <p className="text-text-muted text-xs">{t('tasks.detail.recall.loading')}</p>
+                <p className="text-text-muted text-xs">{t('tasks.detail.recall.unavailable')}</p>
               )}
             </section>
 

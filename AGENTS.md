@@ -1489,6 +1489,22 @@ Stop and escalate before touching permission-model generation, auth or credentia
 
 ## Root task Pause and Resume (THR-292)
 
+TASK-11437's bounded correction adds only coherent serializer child_wait
+observations (256/query257 per parent,1000 inspected children/250ms per response,
+no refill), exact current completed-report recognition and neutral unavailable
+fallback. Delegated alone is no outstanding-child/running proof. EN/ZH ordinary
+qualifiers reach list/detail/header/rail/timeline and both actual agent cards;
+worse rollups suppress parent reasons. Fanout counts require exact selected IDs/
+width and seven literal row categories; prior audit join never proves resumed/
+completed parent. Unknown/job detail blockers read descendant cleanup unconfirmed
+and retain raw IDs/reasons and fail-closed uncertainty. No Pause UI on lists or
+agent cards. Only AgentDetailDrawer's local100vw cap is added; shared Drawer,
+providers/routes/config, execution/consumption/wakes/stores remain unchanged.
+Backend/protected proof remains unexecuted; finite synthetic frontend observations
+are separate from lint gates and behavioral Pause acceptance. No live control,
+deployment/restart or historical closure is authorized. See the current Pause spec.
+
+
 Root Pause/Resume (THR-292) is an org-owned control, separate from TaskStatus/BlockKind. New Pause requires a NULL-parent in_progress root; Pending refuses409 without claiming it. Descendants inherit only actual ancestry. Final producer commitment arbitrates with the hold before ordinary/v2/workflow admission and binding. Committed work and genuine results drain; every retry retains the original SID/G/count/owner and budget and checks again. Unknown host/tree/ACTION evidence remains a blocker, including terminal diagnostics. Only actual ordinary-purpose running sessions (including normal v2-admitted manager sessions) captured by that hold generation retain the unreviewed job exception; founder work-starting origin actions refuse before mutation. Separate manager successor roots remain unheld. Org-only installation leaves generic Database/runtime-audit unchanged and requires a compatible reader for rollback. Read-only overview/CLI/TS contract is in docs/superpowers/specs/2026-10-10-root-task-pause-resume.md; PR2 owns web controls. Python unit source/gates are RETIRED under THR-291 seq40, never PASS; fresh product E2E remains PENDING. Required current CI and independent exact-head review/QA remain.
 
 Pause reads all current non-recovery tracker bindings inside the serialized root/DB writer and keeps the short tracker mutex through COMMIT. Durable positively-running evidence, exact current task/agent/SID and server-admitted ordinary purpose must agree. New or moved bindings are considered there; ended or replaced SIDs are excluded. Advisory pre-request snapshots never decide capture. The tracker mutex is a leaf lock: no binding lease is acquired beneath root/DB, and no await, host/provider operation or backoff runs under these locks. Duplicate Pause preserves capture; Resume followed by a new Pause replaces previous-generation capture.

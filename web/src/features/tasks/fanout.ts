@@ -4,7 +4,7 @@
  * Presentation-only. Every value here is DERIVED from data the task-detail
  * and recall contracts already return — no new backend fields are assumed:
  *
- *  - `active_fanout` (JSON string on the TaskRecord) → pending/running band
+ *  - `active_fanout` (JSON string on the TaskRecord) → spawned band
  *    context: status, width, planned children (children_details), spawned
  *    child ids (children_ids).
  *  - the latest `fanout_join` audit row (on the task-detail envelope) →
@@ -34,13 +34,12 @@ export interface FanoutPlannedChild {
  *  block_kind display. */
 export interface ActiveFanout {
   status: 'spawned';
-  width: number;
+  width: number | null;
   /** Planned children for a pending fan-out (children_details). Empty when
    *  the payload does not carry structured planned-child metadata. */
   plannedChildren: FanoutPlannedChild[];
-  /** Spawned child task ids for a running fan-out (children_ids). Empty when
-   *  absent — the caller then falls back to all direct recall children. */
-  childrenIds: string[];
+  /** Exact selected IDs; null preserves missing/malformed membership. */
+  childrenIds: string[] | null;
 }
 
 function coerceString(v: unknown): string | null {
@@ -61,9 +60,11 @@ function parsePlannedChildren(raw: unknown): FanoutPlannedChild[] {
   return out;
 }
 
-function parseChildIds(raw: unknown): string[] {
-  if (!Array.isArray(raw)) return [];
-  return raw.filter((v): v is string => typeof v === 'string' && !!v);
+function parseChildIds(raw: unknown): string[] | null {
+  if (!Array.isArray(raw) || raw.length === 0
+    || raw.some(v => typeof v !== 'string' || !v.trim())
+    || new Set(raw).size !== raw.length) return null;
+  return raw;
 }
 
 /** Parse a task's `active_fanout` JSON string into a sanitized display
@@ -79,8 +80,8 @@ export function parseActiveFanout(raw: unknown): ActiveFanout | null {
   if (!parsed || typeof parsed !== 'object') return null;
   const rec = parsed as Record<string, unknown>;
   const status = typeof rec.status === 'string' ? rec.status : '';
-  const width = typeof rec.width === 'number' ? rec.width : 0;
-  if (status !== 'spawned' || width <= 0) {
+  const width = typeof rec.width === 'number' ? rec.width : null;
+  if (status !== 'spawned') {
     return null;
   }
   return {
@@ -96,7 +97,7 @@ export interface JoinedFanout {
   /** Planned width from the join payload, or null when not recorded. */
   width: number | null;
   /** Child task ids recorded on the join payload (may be empty). */
-  childrenIds: string[];
+  childrenIds: string[] | null;
 }
 
 /** Pull the most recent `fanout_join` audit row and extract width/children_ids.
@@ -118,90 +119,57 @@ export function latestFanoutJoin(auditLog: unknown[] | undefined): JoinedFanout 
   return null;
 }
 
-/** Terminal/progress counts across a set of recall children. */
+/** Seven disjoint current row-lifecycle categories, never execution/success proof. */
 export interface ChildStatusCounts {
   total: number;
+  pending: number;
+  inProgress: number;
+  escalated: number;
   completed: number;
   failed: number;
-  /** in_progress (running) children. */
-  running: number;
-  /** pending + any non-terminal, non-running status. */
-  queued: number;
-  /** completed + failed + cancelled + superseded. */
+  cancelled: number;
+  superseded: number;
   terminal: number;
 }
+const CATEGORIES = ['pending', 'inProgress', 'escalated', 'completed', 'failed', 'cancelled', 'superseded'] as const;
+const CATEGORY: Partial<Record<TaskStatus, typeof CATEGORIES[number]>> = {
+  pending: 'pending', in_progress: 'inProgress', escalated: 'escalated',
+  completed: 'completed', failed: 'failed', cancelled: 'cancelled', superseded: 'superseded',
+};
 
-const TERMINAL: ReadonlySet<TaskStatus> = new Set<TaskStatus>([
-  'completed',
-  'failed',
-  'cancelled',
-  'superseded',
-]);
-
-/** Summarize the direct children's statuses. When `restrictIds` is provided
- *  and non-empty, only children whose task_id is in that set are counted
- *  (matching a fan-out's own `children_ids`); otherwise all direct children
- *  are counted. Nested grandchildren (e.g. auto-created follow-ups) are not
- *  counted toward fan-out width — only the top-level fan-out siblings are. */
+/** Only complete exact selected membership admits numbers. No all-child fallback. */
 export function summarizeChildStatuses(
   children: TaskRecallNode[] | undefined,
-  restrictIds?: string[],
-): ChildStatusCounts {
+  selectedIds: string[] | null | undefined,
+  width: number | null | undefined,
+): ChildStatusCounts | null {
+  const ids = parseChildIds(selectedIds);
+  if (!Array.isArray(children) || !ids || !Number.isSafeInteger(width) || !width
+    || width < 1 || width !== ids.length) return null;
   const counts: ChildStatusCounts = {
-    total: 0,
-    completed: 0,
-    failed: 0,
-    running: 0,
-    queued: 0,
-    terminal: 0,
+    total: ids.length, pending: 0, inProgress: 0, escalated: 0, completed: 0,
+    failed: 0, cancelled: 0, superseded: 0, terminal: 0,
   };
-  if (!Array.isArray(children)) return counts;
-  const restrict =
-    restrictIds && restrictIds.length > 0 ? new Set(restrictIds) : null;
-  for (const c of children) {
-    if (restrict && !restrict.has(c.task_id)) continue;
-    counts.total += 1;
-    switch (c.status) {
-      case 'completed':
-      case 'superseded':
-        counts.completed += 1;
-        break;
-      case 'failed':
-        counts.failed += 1;
-        break;
-      case 'cancelled':
-        // terminal but not a success or an error worth its own segment
-        break;
-      case 'in_progress':
-        counts.running += 1;
-        break;
-      default:
-        counts.queued += 1;
-        break;
-    }
-    if (TERMINAL.has(c.status)) counts.terminal += 1;
+  for (const id of ids) {
+    const matches = children.filter(child => child && child.task_id === id);
+    if (matches.length !== 1) return null;
+    const child = matches[0];
+    if (!Array.isArray(child.children) || typeof child.brief !== 'string'
+      || !Object.hasOwn(CATEGORY, child.status)) return null;
+    const category = CATEGORY[child.status]!;
+    counts[category] += 1;
   }
+  counts.terminal = counts.completed + counts.failed + counts.cancelled + counts.superseded;
   return counts;
 }
 
-/** Compact "N of M complete · a running · b failed · c queued" progress line
- *  in an explicit display locale. Omits any zero segment past the leading
- *  complete count. */
+/** All segments/summary use the same literal current row categories. */
 export function progressSummary(counts: ChildStatusCounts, locale: Locale): string {
-  const parts = [
-    translate(locale, 'tasks.fanout.progress.complete', {
-      completed: counts.completed,
-      total: counts.total,
-    }),
-  ];
-  if (counts.running > 0) {
-    parts.push(translate(locale, 'tasks.fanout.progress.running', { count: counts.running }));
-  }
-  if (counts.failed > 0) {
-    parts.push(translate(locale, 'tasks.fanout.progress.failed', { count: counts.failed }));
-  }
-  if (counts.queued > 0) {
-    parts.push(translate(locale, 'tasks.fanout.progress.queued', { count: counts.queued }));
+  const parts = [translate(locale, 'tasks.fanout.progress.terminal', {
+    terminal: counts.terminal, total: counts.total,
+  })];
+  for (const category of CATEGORIES) {
+    if (counts[category] > 0) parts.push(translate(locale, `tasks.fanout.progress.${category}`, {count: counts[category]}));
   }
   return parts.join(' · ');
 }

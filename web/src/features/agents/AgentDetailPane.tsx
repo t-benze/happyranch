@@ -1,3 +1,4 @@
+import { resolveTaskWaitingQualifier, taskWaitingLabels } from '@/shared/tasks/child-wait';
 import { AddressableNameEditor } from '@/shared/identities/AddressableNameEditor';
 import { useIdentityPresentation } from '@/hooks/identities';
 import { IdentityName } from '@/shared/identities/IdentityName';
@@ -697,6 +698,7 @@ export function AgentDetailPane({ agentName, onClose, onStartThread }: AgentDeta
                 <li key={task.task_id}>
                   <TaskCard
                     task={task}
+                    waitingQualifier={resolveTaskWaitingQualifier(task, taskWaitingLabels(t))}
                     agentLabel={task.assigned_agent ? <IdentityName canonicalId={task.assigned_agent} /> : undefined}
                     to={taskRoutes.detail(task.task_id)}
                     density={density}
@@ -710,10 +712,6 @@ export function AgentDetailPane({ agentName, onClose, onStartThread }: AgentDeta
                       },
                       supersedes: (id) => render('tasks.row.supersedes', { id }),
                       supersededBy: (id) => render('tasks.row.supersededBy', { id }),
-                      waiting: {
-                        delegated: t('tasks.waiting.subtasks'),
-                        blocked_on_job: t('tasks.waiting.jobs'),
-                      },
                     }}
                   />
                 </li>

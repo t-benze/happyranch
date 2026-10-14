@@ -1,3 +1,4 @@
+import { resolveTaskWaitingQualifier, taskWaitingLabels } from '@/shared/tasks/child-wait';
 /**
  * TaskListRow — Direction-A Pasture single-line, aligned-column root-task row
  * (THR-030 TASKS-01 / TASKS-02, THR-046 msg-11). Flat columns: STATUS
@@ -92,7 +93,6 @@ const ROLLUP_LABEL_KEY: Record<string, MessageKey> = {
   cancelled: 'tasks.rollup.cancelled',
   superseded: 'tasks.rollup.superseded',
 };
-
 function rollupLabel(status: TaskStatus, t: Translate): string {
   return Object.prototype.hasOwnProperty.call(ROLLUP_LABEL_KEY, status)
     ? t(ROLLUP_LABEL_KEY[status])
@@ -119,23 +119,6 @@ function SubtaskRollup({ status }: { status: TaskStatus }): JSX.Element {
       {t('tasks.row.subtaskRollup', { status: rollupLabel(status, t) })}
     </span>
   );
-}
-
-/**
- * Derived waiting qualifier for the TITLE second-line context. Mirrors
- * StatusBadge's waitingQualifier logic but kept local — the row deliberately
- * does not reach into StatusBadge internals. Returns null when there is
- * nothing to name (not in_progress, or no block_kind).
- */
-function waitingContext(
-  status: TaskStatus,
-  blockKind: TaskRecord['block_kind'],
-  t: Translate,
-): string | null {
-  if (status !== 'in_progress' || !blockKind) return null;
-  if (blockKind === 'delegated') return t('tasks.waiting.subtasks');
-  if (blockKind === 'blocked_on_job') return t('tasks.waiting.jobs');
-  return null;
 }
 
 function directRevisits(task: TaskRecord): string[] {
@@ -189,7 +172,7 @@ export interface TaskListRowProps {
 export function TaskListRow({ task, to, taskRoutes }: TaskListRowProps): JSX.Element {
   const { t, render } = useTranslation();
   const rollup = severityRollupStatus(task);
-  const waiting = waitingContext(task.status, task.block_kind, t);
+  const waiting = resolveTaskWaitingQualifier(task, taskWaitingLabels(t));
   const agent = task.assigned_agent;
   const thread = threadRef(task);
   const revisits = directRevisits(task);

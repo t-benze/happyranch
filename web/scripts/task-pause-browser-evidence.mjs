@@ -25,6 +25,17 @@ const arg = (key, fallback) => { const i = process.argv.indexOf(`--${key}`); ret
 const dist = resolve(arg('dist', 'dist'));
 const out = resolve(arg('out', '/tmp/task-pause-evidence'));
 const head = arg('head', 'unknown');
+const correctionOnly = process.argv.includes('--correction-only');
+const slice = arg('slice','agents');
+const view = arg('view','pane');
+const selectedLocales = arg('locale', null) ? [arg('locale')] : ['en','zh-CN'];
+// Detail correction selections are independent: --viewport 390x844|1440x900,
+// --cases comma-separated existing fixture IDs. Omission keeps all finite cases.
+const detailViewports = arg('viewport', null) ? [arg('viewport')] : ['390x844','1440x900'];
+if(selectedLocales.some(locale=>!['en','zh-CN'].includes(locale)))throw new Error('unsupported locale');
+if(detailViewports.some(viewport=>!['390x844','1440x900'].includes(viewport)))throw new Error('unsupported detail viewport');
+const selectedDetailCases = arg('cases', null)?.split(',');
+const drawerDist = arg('drawer-dist', null) ? resolve(arg('drawer-dist')) : null;
 const chromeBin = arg('chrome', '/usr/bin/google-chrome');
 const digest = data => createHash('sha256').update(data).digest('hex');
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -32,6 +43,7 @@ const tr = (locale, key) => (locale === 'en' ? en : zhCN)[key];
 const quote = JSON.stringify;
 const stamp = '2026-10-11T00:00:00Z';
 const ledger = [], checks = [], screenshots = [], hung = [], browserEvents = [], contrast = [];
+const agentReads = [];
 const blockers = ['task_session','job','launch','result_processing','unknown'].map(kind => ({kind,task_id:'ROOT-PAUSING',job_id:kind==='job'?'JOB-9':null,owner_kind:'raw-owner',reason:'raw_reason',observed_at:stamp}));
 let scenario = 'populated', control = 'success', toggled = { held: false, generation: 4 };
 function projection(id, status = 'in_progress', extra = {}) {
@@ -50,13 +62,83 @@ function roots() {
     root('ROOT-FAILED','failed',{pause:projection('ROOT-FAILED','failed',{held:true,blockers:[blockers[4]],evidence_complete:false})}),
     root('ROOT-MISSING','in_progress',{pause:undefined})];
 }
+const childWait = state => ({state,observed_at:stamp});
+const agentStates = ['continuation_pending','pending_children','waiting_children','child_results_received',null,'unavailable','bad-enum','bad-stamp','bad-shape','job','worse','terminal-worse'];
+function agentTasks() {return agentStates.map((state,i)=>root(`UI-CARD-${i}`,'in_progress',{
+  brief:`Synthetic card ${state ?? 'legacy'}`,block_kind:'delegated',
+  ...(state ? {child_wait:childWait(state)} : {}),
+  ...(state==='bad-stamp'?{child_wait:{state:'waiting_children',observed_at:'invalid'}}:{}),
+  ...(state==='bad-shape'?{child_wait:{...childWait('waiting_children'),extra:true}}:{}),
+  ...(state==='job'?{block_kind:'blocked_on_job',child_wait:null}:{}),
+  ...(state==='worse'?{severity_rollup:'failed',child_wait:childWait('continuation_pending')}:{}),
+  ...(state==='terminal-worse'?{status:'completed',severity_rollup:'in_progress',child_wait:childWait('continuation_pending')}:{}),
+}));}
+function correctionFixture(id) {
+  if(!id.startsWith('UI-')) return null;
+  const cases={
+    'UI-A01':['continuation_pending',Array(21).fill('completed')],
+    'UI-A02':['continuation_pending',Array(21).fill('completed')],
+    'UI-A04':['pending_children',['pending','completed']],
+    'UI-A07-1':['waiting_children',['in_progress','completed']],
+    'UI-A05-1':['child_results_received',['in_progress','completed']],
+    'UI-A07-2':['waiting_children',['pending','escalated']],
+    'UI-A07-3':['continuation_pending',['completed','failed','cancelled','superseded']],
+    'UI-A08-empty':['continuation_pending',[]],
+    'UI-A08-legacy':[null,[]],
+    'UI-A08-malformed':['bad-enum',[]],
+  };
+  const historical=id.startsWith('UI-A09-')||id.startsWith('UI-A08-joined-bad-');
+  const invalid=id.startsWith('UI-A08-bad-')||id.startsWith('UI-A08-joined-bad-');
+  const [waitState,statuses] = cases[id] ?? ['continuation_pending',['completed','failed','cancelled','superseded']];
+  const parentStatus=id.startsWith('UI-A09-')?id.slice('UI-A09-'.length):'in_progress';
+  const kids=statuses.map((status,i)=>({task_id:`${id}-C${i}`,brief:`Synthetic ${status}`,status,children:[]}));
+  let selected=kids.map(c=>c.task_id), width=selected.length;
+  let recall={task_id:id,brief:`Synthetic ${id}`,status:parentStatus,children:kids};
+  if(invalid){const variant=id.replace(/^UI-A08-(joined-)?bad-/,'');
+    if(variant==='missing-id')selected=selected.concat('UI-MISSING');
+    if(variant==='duplicate-id')selected=[selected[0],selected[0]];
+    if(variant==='malformed-id')selected=[selected[0],42];
+    if(variant==='missing-node')recall.children=kids.slice(1);
+    if(variant==='duplicate-node')recall.children=kids.concat(kids[0]);
+    if(variant==='wrong-root')recall.task_id='UI-WRONG';
+    if(variant==='null-node')recall.children=[null];
+    if(variant==='bad-status')recall.children=[{...kids[0],status:'unsupported'},...kids.slice(1)];
+    if(variant==='missing-recall')recall=null;
+    if(variant==='width')width=1.5;
+    if(variant==='zero-width')width=0;
+    if(variant==='mismatch-width')width=3;
+    if(variant==='loading'||variant==='error')recall=null;
+    if(variant==='missing-width')width=null;
+    if(variant==='empty-ids')selected=[];
+  }
+  if(id==='UI-A07-1')recall.children.push({task_id:'UI-UNSELECTED',brief:'Unrelated direct child',status:'completed',children:[]});
+  const unknown=Array.from({length:16},(_,i)=>({kind:'unknown',task_id:id,job_id:i===0?'UI-JOB-LONG-DESCENDANT-CLEANUP-REFERENCE-000000000000000000000000':`UI-JOB-${i}`,owner_kind:'job',reason:'descendant_cleanup_unconfirmed',observed_at:stamp}));
+  const pause=projection(id,parentStatus,{held:true,effective_hold:true,control_state:id==='UI-A01'||id==='UI-A05-1'?'pausing':'paused',blockers:id==='UI-A01'?unknown:id==='UI-A05-1'?[{kind:'result_processing',task_id:id,job_id:null,owner_kind:'task',reason:'result_not_consumed',observed_at:stamp}]:[],evidence_complete:id!=='UI-A01'&&id!=='UI-A05-1'});
+  const task=root(id,parentStatus,{block_kind:'delegated',pause,child_wait:waitState?childWait(waitState):undefined,
+    ...(historical?{child_wait:parentStatus==='in_progress'?childWait('continuation_pending'):null}:{}),
+    ...(!historical&&(invalid||id.includes('A07')||id.includes('A05'))?{active_fanout:JSON.stringify({status:'spawned',width,children_ids:selected})}:{})});
+  return {task,recall,audit:historical?[{action:'fanout_join',payload:{width,children_ids:selected}}]:[]};
+}
 async function api(req,res) {
   const url=new URL(req.url,'http://isolated');
   let raw=''; for await(const chunk of req) raw+=chunk;
   const entry={method:req.method,path:url.pathname,search:url.search,body:raw?JSON.parse(raw):null,observed_at:new Date().toISOString()};ledger.push(entry);
-  const end=(body,status=200)=>{entry.status=status;res.writeHead(status,{'Content-Type':'application/json'});res.end(JSON.stringify(body));};
+  const end=(body,status=200)=>{entry.status=status;if(entry.agentTasks)entry.payload=body;res.writeHead(status,{'Content-Type':'application/json'});res.end(JSON.stringify(body));};
   if(url.pathname.endsWith('/auth/bootstrap')) return end({token:'ui-transport-only-token'});
   if(url.pathname==='/api/v1/orgs') return end({orgs:[{slug:'pause-org',root:'/synthetic-only'}],broken:[]});
+  if(correctionOnly && /\/orgs\/[^/]+\/tasks$/.test(url.pathname)) {
+    const match=req.method==='GET'&&url.pathname==='/api/v1/orgs/pause-org/tasks'
+      && url.searchParams.get('assigned_agent')==='dev_agent'&&url.searchParams.get('limit')==='20';
+    if(!match)return end({detail:'wrong selected org/agent/limit'},400);
+    entry.agentTasks=true;agentReads.push(entry);return end({tasks:agentTasks(),next_cursor:null});
+  }
+  if(correctionOnly&&url.pathname==='/api/v1/orgs/pause-org/agents')return end({agents:[{name:'dev_agent',role:'worker',team:'engineering',executor:'claude',model:null,repos:{},description:'Synthetic selected agent',system_prompt:'# Synthetic prompt',revision:'a'.repeat(64)}]});
+  if(url.pathname.endsWith('/identities'))return end({identities:[]});
+  if(url.pathname.endsWith('/health/prereqs'))return end({prereqs:[]});
+  if(url.pathname.endsWith('/executors/runtime/profiles'))return end({profiles:[]});
+  if(url.pathname.endsWith('/teams'))return end({teams:[]});
+  if(url.pathname.endsWith('/cleanup-activity'))return end({activities:[]});
+  if(url.pathname.endsWith('/memory/entries/'))return end({entries:[]});
   if(url.pathname.endsWith('/dashboard/summary')) return end({org_age_days:1});
   if(url.pathname.endsWith('/events')) {entry.status=200;res.writeHead(200,{'Content-Type':'text/event-stream'});res.write(': UI fixture\n\n');hung.push(res);return;}
   if(url.pathname.endsWith('/tasks/roots')) {
@@ -65,7 +147,7 @@ async function api(req,res) {
     if(!attention&&scenario==='loading') await sleep(750);
     if(!attention&&scenario==='error') return end({detail:'raw_read_error'},503);
     if(scenario==='empty') return end({tasks:[],next_cursor:null});
-    return end({tasks:attention?roots().filter(t=>t.status==='escalated'):roots(),next_cursor:null});
+    return end({tasks:correctionOnly?[...roots(),...['UI-A01','UI-A02','UI-A04','UI-A08-empty','UI-A08-legacy'].map(id=>correctionFixture(id).task)]:attention?roots().filter(t=>t.status==='escalated'):roots(),next_cursor:null});
   }
   if(req.method==='POST' && /\/ROOT-RUN\/(pause|resume)$/.test(url.pathname)) {
     await sleep(180);
@@ -74,6 +156,7 @@ async function api(req,res) {
     return end({changed:true,pause:projection('ROOT-RUN','in_progress',{...toggled,effective_hold:held,control_state:held?'paused':'unheld'})});
   }
   const match=url.pathname.match(/\/tasks\/([^/]+)(?:\/(recall))?$/);
+  if(match && correctionOnly && correctionFixture(match[1])){const fixture=correctionFixture(match[1]);if(match[2]){if(match[1].endsWith('loading'))await sleep(600);if(match[1].endsWith('error'))return end({detail:'synthetic recall unavailable'},503);return end(fixture.recall);}return end({task:fixture.task,pause:fixture.task.pause,results:[],audit_log:fixture.audit,revisit_chain:[],direct_revisits:[],active_chain:['UI-A01','UI-A04'].includes(match[1])?{step_index:1,first_leg_expect_verdict:'APPROVE',legs:[{agent:'code_reviewer',expect_verdict:'PASS'}]}:null,work_status:{applicable:false,state:'not_applicable',label:'Not applicable',reason:null}});}
   if(match){const task=match[1]==='CHILD-1'?root('CHILD-1','in_progress',{parent_task_id:'ROOT-PAUSING',pause:projection('ROOT-PAUSING','in_progress',{held:true,effective_hold:true,control_state:'pausing',blockers,evidence_complete:false})}):roots().find(t=>t.task_id===match[1]);
     if(match[2])return end({task_id:match[1],assigned_agent:'dev_agent',brief:task?.brief??'raw',status:task?.status??'pending',output_summary:null,children:[]});
     return end({task,pause:task?.pause,results:[],audit_log:[],revisit_chain:[],direct_revisits:[],active_chain:null,work_status:{applicable:false,state:'not_applicable',label:'Not applicable',reason:null}});
@@ -85,12 +168,48 @@ class CDP {
   constructor(url){this.ws=new WebSocket(url);this.id=0;this.pending=new Map();this.ready=new Promise((ok,fail)=>{this.ws.onopen=ok;this.ws.onerror=()=>fail(new Error('CDP connection failed'));});this.ws.onmessage=event=>{const message=JSON.parse(event.data);if(['Runtime.exceptionThrown','Network.loadingFailed'].includes(message.method))browserEvents.push(message);const pending=this.pending.get(message.id);if(pending){this.pending.delete(message.id);message.error?pending.reject(new Error(JSON.stringify(message.error))):pending.resolve(message.result);}};}
   async send(method,params={},sessionId){await this.ready;const id=++this.id;const result=new Promise((resolve,reject)=>{const timer=setTimeout(()=>{this.pending.delete(id);reject(new Error(`CDP timeout: ${method}`));},10000);this.pending.set(id,{resolve:value=>{clearTimeout(timer);resolve(value);},reject:error=>{clearTimeout(timer);reject(error);}});});this.ws.send(JSON.stringify({id,method,params,...(sessionId?{sessionId}:{})}));return result;}
 }
+// Disposable real component venue: no shipping route/provider/config mutation.
+function prepareDrawer() {
+  const scratch = resolve('web/.screenshot-harness-tmp/TASK-11445');
+  mkdirSync(scratch, { recursive: true });
+  const files = {
+    'index.html': '<!doctype html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head><body><div id="root"></div><script type="module" src="./drawer.tsx"></script></body></html>',
+    'drawer.tsx': `import React from 'react';
+import { createRoot } from 'react-dom/client';
+import { BrowserRouter, Routes, Route } from 'react-router-dom';
+import { I18nProvider } from '@/hooks/i18n';
+import { AppProvider } from '@/design-system/providers/AppProvider';
+import { OrgProvider } from '@/lib/orgSlug';
+import { AgentDetailDrawer } from '@/features/agents/AgentDetailDrawer';
+import { bootstrapDocumentLocale } from '@/lib/i18n';
+import '@/styles.css';
+const initialResolution = bootstrapDocumentLocale({mode:'full'});
+document.documentElement.dataset.theme = localStorage.getItem('happyranch.theme') || 'light';
+createRoot(document.getElementById('root')!).render(<I18nProvider mode="full" initialResolution={initialResolution}><AppProvider><BrowserRouter><Routes><Route path="/orgs/:slug/agents/:agentName" element={<OrgProvider><AgentDetailDrawer agentName="dev_agent" /></OrgProvider>} /></Routes></BrowserRouter></AppProvider></I18nProvider>);
+`,
+    'drawer.vite.config.mjs': `import { mergeConfig } from 'vite';
+import config from '../../vite.config.ts';
+import { fileURLToPath } from 'node:url';
+import { renameSync } from 'node:fs';
+import { join } from 'node:path';
+export default mergeConfig(config, {plugins:[{name:'disposable-root-html',writeBundle(options,bundle){for(const key of Object.keys(bundle)){if(key.endsWith('/index.html'))renameSync(join(options.dir,key),join(options.dir,'index.html'));}}}],build:{rollupOptions:{input:fileURLToPath(new URL('./index.html',import.meta.url))}}});
+`,
+  };
+  mkdirSync(join(out,'drawer-inputs'),{recursive:true});
+  for (const [name, bytes] of Object.entries(files)) {
+    writeFileSync(join(scratch,name),bytes);writeFileSync(join(out,'drawer-inputs',name),bytes);
+  }
+  writeFileSync(join(out,'drawer-inputs','manifest.json'),JSON.stringify(Object.entries(files).map(([file,bytes])=>({file,sha256:digest(bytes)})),null,2)+'\n');
+  console.log(scratch);
+}
 async function main(){
   if(!existsSync(join(dist,'index.html')))throw new Error('ordinary production dist required');
   mkdirSync(out,{recursive:true});
-  const profile=mkdtempSync('/tmp/pause-ui-');
-  const blank=join(dist,'pause-locale-switch.html');if(existsSync(blank))throw new Error('refuse overwrite blank page');writeFileSync(blank,'<!doctype html><title>Isolated locale storage writer</title>');
-  const server=await createServer({root:dist,api:[{path:/^\/api\//,handler:api}]});
+  const venueDist=correctionOnly&&view==='drawer'?drawerDist:dist;
+  if(!venueDist||!existsSync(join(venueDist,'index.html')))throw new Error('selected component dist required');
+  const profile=mkdtempSync('/tmp/TASK-11445-pause-ui-');
+  const blank=join(venueDist,'pause-locale-switch.html');if(existsSync(blank))throw new Error('refuse overwrite blank page');writeFileSync(blank,'<!doctype html><title>Isolated locale storage writer</title>');
+  const server=await createServer({root:venueDist,api:[{path:/^\/api\//,handler:api}]});
   const chrome=spawn(chromeBin,['--headless=new','--remote-debugging-port=0',`--user-data-dir=${profile}`,'--no-sandbox','--no-first-run','--no-proxy-server','--disable-gpu','--disable-dev-shm-usage','--disable-background-networking','--disable-crash-reporter','--disable-breakpad','--disable-extensions','about:blank'],{stdio:['ignore','ignore','pipe'],env:{...process.env,TMPDIR:profile,XDG_CONFIG_HOME:join(profile,'config'),XDG_CACHE_HOME:join(profile,'cache')}});
   const chromeErrors=[];chrome.stderr.on('data',chunk=>chromeErrors.push(chunk));
   let cdp;
@@ -109,7 +228,7 @@ async function main(){
       await cdp.send('Page.navigate',{url:server.url+route},sessionId);return page;
     }
     const close=page=>cdp.send('Target.closeTarget',{targetId:page.targetId});
-    async function shot(page,name,metadata){await cdp.send('Page.bringToFront',{},page.sessionId);await sleep(100);const {data}=await cdp.send('Page.captureScreenshot',{format:'png',captureBeyondViewport:false},page.sessionId);const bytes=Buffer.from(data,'base64');const file=join(out,`${name}.png`);writeFileSync(file,bytes);screenshots.push({file,sha256:digest(bytes),...metadata});}
+    async function shot(page,name,metadata){await cdp.send('Page.bringToFront',{},page.sessionId);await sleep(100);const {data}=await cdp.send('Page.captureScreenshot',{format:'png',captureBeyondViewport:false},page.sessionId);const bytes=Buffer.from(data,'base64');const file=join(out,`${name}.png`);writeFileSync(file,bytes);screenshots.push({file,sha256:digest(bytes),pixel_width:bytes.readUInt32BE(16),pixel_height:bytes.readUInt32BE(20),source_head:head,dist_index_sha256:digest(readFileSync(join(venueDist,'index.html'))),...metadata});}
     const rootButton=(id,label)=>`[...document.querySelectorAll('main [data-task-pause="${id}"] button')].find(b=>b.textContent.trim()===${quote(label)})`;
     const button=label=>`[...document.querySelectorAll('button')].find(b=>b.textContent.trim()===${quote(label)})`;
     // Panel absence in BOTH locales (removed presentation must not reappear under either catalog).
@@ -123,6 +242,7 @@ async function main(){
       const {targetId}=await cdp.send('Target.createTarget',{url:server.url+'/pause-locale-switch.html'});const {sessionId}=await cdp.send('Target.attachToTarget',{targetId,flatten:true});await cdp.send('Runtime.enable',{},sessionId);await wait({sessionId},`location.href===${quote(server.url+'/pause-locale-switch.html')} && document.readyState==='complete'`);
       await evaluate({sessionId},`localStorage.setItem('happyranch.ui.locale',${quote(locale)})`);await cdp.send('Target.closeTarget',{targetId});await cdp.send('Page.bringToFront',{},page.sessionId);await wait(page,`document.documentElement.lang===${quote(locale)}`);await sleep(100);
     }
+    if(!correctionOnly){
     for(const locale of ['en','zh-CN'])for(const [width,height]of [[390,844],[1440,900]])for(const theme of ['light','dark']){
       scenario='populated';toggled={held:false,generation:4};const name=`${locale}-${width}-${theme}`;
       const page=await open('/orgs/pause-org/tasks',locale,width,height,theme);await wait(page,"!!document.querySelector('[data-tasks-responsive-list] a[href=\"/orgs/pause-org/tasks/ROOT-RUN\"]') && !!document.querySelector('[data-tasks-responsive-list] a[href=\"/orgs/pause-org/tasks/ROOT-FAILED\"]')");await sleep(200);
@@ -251,11 +371,137 @@ async function main(){
       const name=`${locale}-${width}-${theme}`;
       scenario='populated';const child=await open('/orgs/pause-org/tasks/CHILD-1',locale,width,height,theme);await wait(child,"!!document.querySelector('[data-task-pause=\"CHILD-1\"]')");check(`${name} child has inherited root link`,await evaluate(child,"document.querySelector('[data-task-pause] a').getAttribute('href')"),'/orgs/pause-org/tasks/ROOT-PAUSING');check(`${name} child inherited explanation`,await evaluate(child,`document.querySelector('[data-task-pause]').textContent.includes(${quote(String(tr(locale,'tasks.pause.inherited')).split('{')[0].trim())})`));check(`${name} child has no controls`,await evaluate(child,"document.querySelector('[data-task-pause] button')===null"));check(`${name} child fits`,await evaluate(child,'document.documentElement.scrollWidth <= innerWidth + 1'));await shot(child,`${name}-child`,{locale,width,height,theme,state:'child inherited'});await close(child);
     }
+    }
+    if(correctionOnly && slice==='agents') {
+      // Wrong selections are HTTP negative observations, not backend authority proof.
+      for(const query of ['assigned_agent=other&limit=20','assigned_agent=dev_agent&limit=19','assigned_agent=dev_agent']) {
+        const response=await fetch(server.url+'/api/v1/orgs/pause-org/tasks?'+query);check('R1a wrong selection '+query,response.status,400);
+      }
+      check('R1a wrong org',(await fetch(server.url+'/api/v1/orgs/wrong/tasks?assigned_agent=dev_agent&limit=20')).status,400);
+      for(const locale of ['en','zh-CN'])for(const [width,height]of [[390,844],[1440,900]]) {
+        const theme=width===390?'light':'dark';const name=`${view}-${locale}-${width}-${theme}`;
+        const start=ledger.length;const page=await open('/orgs/pause-org/agents/dev_agent',locale,width,height,theme);
+        await wait(page,"!!document.querySelector('a[href=\"/orgs/pause-org/tasks/UI-CARD-11\"]')");await sleep(350);
+        const card=id=>`document.querySelector('a[href="/orgs/pause-org/tasks/UI-CARD-${id}"]')`;
+        const expected=locale==='en'?['Continuation pending','Child work pending','Waiting on child work','Child results received; continuation pending']:['等待后续处理','子任务待执行','等待子任务处理','已收到子任务结果，等待后续处理'];
+        for(let i=0;i<4;i++)check(`${name} A10 state ${i}`,await evaluate(page,`${card(i)}.textContent.includes(${quote('· '+expected[i])})`));
+        for(let i=4;i<9;i++)check(`${name} A10 neutral ${i}`,await evaluate(page,`${card(i)}.querySelector('span.font-normal.opacity-70')===null`));
+        check(`${name} job preserved`,await evaluate(page,`${card(9)}.textContent.includes(${quote('· '+tr(locale,'tasks.waiting.jobs'))})`));
+        for(const i of [10,11])check(`${name} worse rollup ${i}`,await evaluate(page,`${card(i)}.querySelector('span.font-normal.opacity-70')===null`));
+        check(`${name} no pause/card disclosure`,await evaluate(page,`!document.querySelector('[data-task-pause]')&&![...document.querySelectorAll('button')].some(b=>['Pause','Resume','暂停','恢复'].includes(b.textContent.trim()))&&!document.querySelector('details')`));
+        check(`${name} no overview read`,ledger.slice(start).filter(x=>x.path.endsWith('/pause-overview')).length,0);
+        check(`${name} actual selected request/payload`,ledger.slice(start).filter(x=>x.agentTasks&&x.status===200).map(x=>[x.path,new URLSearchParams(x.search).get('assigned_agent'),new URLSearchParams(x.search).get('limit'),x.payload.tasks.map(t=>t.task_id)]),[['/api/v1/orgs/pause-org/tasks','dev_agent','20',agentTasks().map(t=>t.task_id)]]);
+        if(view==='drawer')check(`${name} drawer effective clamp`,await evaluate(page,`(()=>{const r=document.querySelector('[role="dialog"]').getBoundingClientRect();return [Math.round(r.left),Math.round(r.right),Math.round(r.width)];})()`),[width===390?0:792,width,width===390?390:648]);
+        // Capture real card regions after scrolling. Check both bounds and clipping ancestors.
+        for(const i of [0,1,4,5,6,7,8]) {
+          await evaluate(page,`${card(i)}.scrollIntoView({block:'center'})`);await sleep(70);
+          const bounds=await evaluate(page,`(()=>{const e=${card(i)},r=e.getBoundingClientRect(),bad=[];for(const n of [e,...e.querySelectorAll('*')]){const b=n.getBoundingClientRect();if(b.width>0&&(b.left< -1||b.right>innerWidth+1))bad.push(n.tagName+':'+Math.round(b.right));}for(let a=e.parentElement;a;a=a.parentElement){if(getComputedStyle(a).overflowX!=='visible'&&a.scrollWidth>a.clientWidth+1)bad.push('clip:'+a.tagName);}return {bad,visible:r.top>=-1&&r.bottom<=innerHeight+1,top:r.top,bottom:r.bottom};})()`);
+          check(`${name} card ${i} horizontal bounds`,bounds.bad,[]);check(`${name} card ${i} reachable`,bounds.visible);
+          await shot(page,`${name}-card${i}`,{case:'A10/U01',view,locale,width,height,theme,state:agentStates[i],bounds,venue: view==='drawer'?'real component/providers':'shipping route'});
+        }
+        await evaluate(page,`(()=>{${card(0)}.scrollIntoView({block:'center'});${card(0)}.focus();return true;})()`);
+        await cdp.send('Input.dispatchKeyEvent',{type:'keyDown',key:'Tab',code:'Tab',windowsVirtualKeyCode:9},page.sessionId);
+        await cdp.send('Input.dispatchKeyEvent',{type:'keyUp',key:'Tab',code:'Tab',windowsVirtualKeyCode:9},page.sessionId);
+        check(`${name} keyboard card focus`,await evaluate(page,`(()=>{window.selectedCard=document.activeElement;return selectedCard===${card(1)}&&selectedCard.matches(':focus-visible');})()`));
+        for(const next of [locale==='en'?'zh-CN':'en',locale]) {
+          const from=ledger.length;await switchLocale(page,next);
+          check(`${name}->${next} same focused card`,await evaluate(page,`selectedCard===${card(1)}&&document.activeElement===selectedCard`));
+          check(`${name}->${next} zero locale HTTP`,ledger.slice(from),[]);
+          check(`${name}->${next} translated same card`,await evaluate(page,`selectedCard.textContent.includes(${quote(next==='en'?'Child work pending':'子任务待执行')})`));
+        }
+        await shot(page,`${name}-focus`,{case:'U01',view,locale,width,height,theme,state:'focused actual task link'});
+        await close(page);
+      }
+    }
+    if(correctionOnly && slice==='detail') {
+      const cases=['UI-A01','UI-A02','UI-A04','UI-A07-1','UI-A05-1','UI-A07-2','UI-A07-3','UI-A08-empty','UI-A08-legacy','UI-A08-malformed',...['in_progress','completed','failed','cancelled','superseded'].map(s=>'UI-A09-'+s),...['missing-id','duplicate-id','malformed-id','missing-node','duplicate-node','wrong-root','null-node','bad-status','missing-recall','width','missing-width','empty-ids','zero-width','mismatch-width','loading','error'].flatMap(s=>['UI-A08-bad-'+s,'UI-A08-joined-bad-'+s])];
+      if(selectedDetailCases?.some(id=>!cases.includes(id)))throw new Error('unsupported detail case');
+      for(const locale of selectedLocales) for(const viewport of detailViewports) {
+        const [width,height]=viewport.split('x').map(Number),theme=width===1440?'dark':'light';
+        const name=`${locale}-${viewport}`;
+        const list=await open('/orgs/pause-org/tasks',locale,width,height,theme);await wait(list,"!!document.querySelector('a[href=\"/orgs/pause-org/tasks/UI-A01\"]')");
+        check(`${locale} A01 list continuation`,await evaluate(list,`document.querySelector('a[href="/orgs/pause-org/tasks/UI-A01"]').textContent.includes(${quote(tr(locale,'tasks.waiting.continuationPending'))})`));
+        check(`${name} list pause free`,await evaluate(list,listPauseFree));
+        for(const [id,key]of [['UI-A01','tasks.waiting.continuationPending'],['UI-A04','tasks.waiting.pendingChildren']]) {
+          await evaluate(list,`document.querySelector('a[href="/orgs/pause-org/tasks/${id}"]').scrollIntoView({block:'center'})`);await sleep(100);
+          const subtitle=await evaluate(list,`(()=>{const row=document.querySelector('a[href="/orgs/pause-org/tasks/${id}"]');const text=${quote(tr(locale,key))};const e=[...row.querySelectorAll('*')].find(e=>e.textContent.trim()===text);const r=e.getBoundingClientRect(),style=getComputedStyle(e);return {text:e.textContent,bounds:{left:r.left,right:r.right,top:r.top,bottom:r.bottom},visible:r.left>=0&&r.right<=innerWidth&&r.top>=0&&r.bottom<=innerHeight&&e.scrollWidth<=e.clientWidth+1&&style.visibility==='visible'&&style.display!=='none'};})()`);
+          check(`${name} ${id} subtitle visible and unclipped`,subtitle.visible);
+          check(`${name} list page fits`,await evaluate(list,'document.documentElement.scrollWidth<=innerWidth+1'));
+          await shot(list,`${name}-list-${id}`,{case:'A01/A04/A10/U01',locale,width,height,theme,state:'qualifying row scrolled into viewport',subtitle});
+        }
+        await close(list);
+        for(const id of selectedDetailCases??cases) {
+          const fixture=correctionFixture(id);const page=await open('/orgs/pause-org/tasks/'+id,locale,width,height,theme);
+          await wait(page,`!!document.querySelector('h1')&&document.body.textContent.includes(${quote(fixture.task.brief)})`);await sleep(80);
+          const actual=await evaluate(page,"({header:document.querySelector('header')?.textContent,band:document.querySelector('section[aria-label=\"'+(document.documentElement.lang==='en'?'Fan-out status':'扇出状态')+'\"]')?.textContent,bar:document.querySelector('section[aria-label] [role=img]')?.getAttribute('aria-label'),recall:document.body.textContent})");
+          check(`${name} ${id} detail page fits`,await evaluate(page,'document.documentElement.scrollWidth<=innerWidth+1'));
+          const qualifierKey={continuation_pending:'continuationPending',pending_children:'pendingChildren',waiting_children:'children',child_results_received:'resultsReceived'}[fixture.task.child_wait?.state];
+          if(qualifierKey) {
+            const qualifier=tr(locale,'tasks.waiting.'+qualifierKey);
+            check(`${name} ${id} header qualifier`,actual.header?.includes(qualifier));
+            if(width===1440)check(`${name} ${id} desktop rail qualifier`,await evaluate(page,`document.querySelector('aside[aria-label=${quote(tr(locale,'tasks.rail.label'))}]').textContent.includes(${quote(qualifier)})`));
+          }
+          if(id==='UI-A08-joined-bad-width') {
+            await evaluate(page,`[...document.querySelectorAll('h3')].find(e=>e.textContent.trim()===${quote(tr(locale,'tasks.detail.subtasks.heading'))}).scrollIntoView({block:'start'})`);await sleep(100);
+            const rows=await evaluate(page,`(()=>{const section=[...document.querySelectorAll('h3')].find(e=>e.textContent.trim()===${quote(tr(locale,'tasks.detail.subtasks.heading'))}).closest('section');const rect=e=>{const r=e.getBoundingClientRect();return {left:r.left,right:r.right,top:r.top,bottom:r.bottom};};return [...section.querySelectorAll('a')].map(a=>{const row=a.closest('.border-l-2'),group=a.parentElement,status=group.lastElementChild;const id=rect(a),state=rect(status),bounds=rect(row);return {id:a.textContent,href:a.getAttribute('href'),status:status.textContent,idBounds:id,statusBounds:state,rowBounds:bounds,unclipped:[a,status,row].every(e=>e.scrollWidth<=e.clientWidth+1)&&[id,state,bounds].every(r=>r.left>=0&&r.right<=innerWidth&&r.top>=0&&r.bottom<=innerHeight)};});})()`);
+            check(`${name} ${id} full execution IDs and literal states`,rows.map(row=>[row.id,row.href,row.status]),fixture.recall.children.map(child=>[child.task_id,'/orgs/pause-org/tasks/'+child.task_id,child.status]));
+            check(`${name} ${id} execution rows visible and unclipped`,rows.every(row=>row.unclipped));
+            await shot(page,`${name}-${id}-execution-rows`,{case:'A08/U01',locale,width,height,theme,state:'same long-ID execution rows',rows});
+            await evaluate(page,"document.querySelector('h1').scrollIntoView({block:'start'})");
+          }
+          if(id.includes('A07')||id.includes('A05')) {
+            const state=fixture.task.child_wait.state;const keys={waiting_children:'waitingChildren',child_results_received:'resultsReceived',continuation_pending:'continuationPending'};
+            check(`${locale} ${id} parent projection headline`,actual.band?.includes(tr(locale,'tasks.fanout.'+keys[state])));
+            const expected=id==='UI-A07-2'? (locale==='en'?'Terminal child rows: 0/2 · 1 pending row · 1 escalated row':'子任务终止状态：0/2 · 待处理 1 项 · 已升级 1 项') : id==='UI-A07-3'?(locale==='en'?'Terminal child rows: 4/4 · 1 completed row · 1 failed row · 1 cancelled row · 1 superseded row':'子任务终止状态：4/4 · 已完成 1 项 · 失败 1 项 · 已取消 1 项 · 已被取代 1 项'):(locale==='en'?'Terminal child rows: 1/2 · 1 in-progress row · 1 completed row':'子任务终止状态：1/2 · 生命周期进行中 1 项 · 已完成 1 项');
+            check(`${locale} ${id} literal summary`,actual.band?.includes(expected));check(`${locale} ${id} accessible bar agrees`,actual.bar,expected);
+            check(`${locale} ${id} bar proportions`,await evaluate(page,`[...document.querySelector('section[aria-label] [role=img]').children].map(e=>parseFloat(e.style.width))`),id==='UI-A07-3'?[25,25,25,25]:[50,50]);
+          }
+          if(id.startsWith('UI-A09-')){check(`${locale} ${id} historical join`,actual.band?.includes(tr(locale,'tasks.fanout.joined')));check(`${locale} ${id} independent parent`,actual.header?.includes(fixture.task.status));check(`${locale} ${id} no resumed inference`,!/Parent resumed|父任务已恢复|succeeded/.test(actual.band));}
+          if(/^UI-A08-(joined-)?bad-/.test(id)){check(`${locale} ${id} unavailable counts`,actual.band?.includes(tr(locale,'tasks.fanout.countsUnavailable')));check(`${locale} ${id} no numeric bar`,actual.bar??null,null);check(`${locale} ${id} no summary/width`,!/Terminal child rows|子任务终止状态|Width |宽度 /.test(actual.band));}
+          if(id==='UI-A01'){
+            await evaluate(page,"document.querySelector('[data-task-pause] summary').focus()");
+            await cdp.send('Input.dispatchKeyEvent',{type:'keyDown',key:'Enter',code:'Enter',windowsVirtualKeyCode:13,text:'\r'},page.sessionId);
+            await cdp.send('Input.dispatchKeyEvent',{type:'keyUp',key:'Enter',code:'Enter',windowsVirtualKeyCode:13},page.sessionId);
+            check(`${locale} U01 keyboard disclosure`,await evaluate(page,"document.querySelector('[data-task-pause] details').open"));
+            check(`${locale} B01 unknown job cleanup`,await evaluate(page,`document.querySelector('[data-task-pause]').textContent.includes(${quote(tr(locale,'tasks.pause.blocker.jobCleanup'))})`));
+            check(`${locale} B01 no running inference`,await evaluate(page,"!/still running|仍在运行/.test(document.querySelector('[data-task-pause] summary').textContent)"));
+            const fits=await evaluate(page,"[...document.querySelectorAll('[data-task-pause] li,[data-task-pause] li *')].filter(e=>{const r=e.getBoundingClientRect();return r.width>0&&(r.left< -1||r.right>innerWidth+1);}).map(e=>e.textContent)");
+            check(`${locale} U01 long raw IDs fit`,fits,[]);
+            await shot(page,`${name}-B01-long-id`,{case:'B01/U01',locale,width,height,theme,state:'expanded actual raw ID'});
+            await evaluate(page,`(()=>{const p=[...document.querySelectorAll('[data-task-pause] p')].find(e=>e.textContent===${quote(tr(locale,'tasks.pause.jobCleanupNote'))});p.scrollIntoView({block:'center'});return true;})()`);
+            await shot(page,`${name}-B01-note`,{case:'B01/U01',locale,width,height,theme,state:'cleanup-unconfirmed note reached by actual scrolling'});
+
+          }
+          if(id==='UI-A01'||id==='UI-A04') {
+            const key=id==='UI-A01'?'tasks.waiting.continuationPending':'tasks.waiting.pendingChildren';
+            check(`${locale} ${id} timeline same observed reason`,await evaluate(page,`[...document.querySelectorAll('section')].some(e=>e.textContent.includes(${quote(tr(locale,'tasks.detail.blockedOn').split('{')[0])})&&e.textContent.includes(${quote(tr(locale,key))}))`));
+            await evaluate(page,`(()=>{const h=[...document.querySelectorAll('h3')].find(e=>e.textContent.includes(${quote(locale==='en'?'Workflow chain':'工作流链')}));h.scrollIntoView({block:'center'});return true;})()`);
+            await shot(page,`${name}-${id}-timeline`,{case:id,locale,width,height,theme,state:'real chain timeline with current read qualifier'});
+            await evaluate(page,"document.querySelector('h1').scrollIntoView({block:'start'})");
+          }
+          if(id==='UI-A02')check(`${locale} A02 separate Paused`,actual.header?.includes(tr(locale,'tasks.pause.paused')));
+          if(['UI-A08-empty','UI-A08-legacy','UI-A08-malformed'].includes(id))check(`${locale} ${id} no false subtasks`,!/waiting on subtasks|· 等待子任务$/.test(actual.header));
+          const controls=ledger.filter(x=>x.method!=='GET'&&!x.path.endsWith('/auth/bootstrap'));check(`${locale} ${id} read only transcript`,controls,[]);
+          if(id==='UI-A01')await evaluate(page,"document.querySelector('h1').scrollIntoView({block:'start'})");
+          if(!/^UI-A08-(joined-)?bad-/.test(id)||id.endsWith('null-node')||id==='UI-A08-joined-bad-width')await shot(page,`${name}-${id}`,{case:id,locale,width,height,theme,state:fixture.task.child_wait??'legacy',actual});
+          await close(page);
+        }
+        for(const id of selectedDetailCases?[]:['CHILD-1','ROOT-PENDING','ROOT-FAILED','ROOT-RUN']) {
+          const page=await open('/orgs/pause-org/tasks/'+id,locale,width,height,theme);
+          await wait(page,`!!document.querySelector('[data-task-pause="${id}"]')||document.body.textContent.includes('Authored ${id}')`);
+          const region=`document.querySelector('[data-task-pause="${id}"]')`;
+          if(id==='CHILD-1'){check(`${locale} A11 inherited root only`,await evaluate(page,`${region}.querySelector('a')?.getAttribute('href')`),'/orgs/pause-org/tasks/ROOT-PAUSING');check(`${locale} A11 no child control`,await evaluate(page,`${region}.querySelector('button')===null`));}
+          if(id==='ROOT-PENDING'||id==='ROOT-FAILED')check(`${locale} A09/A11 no terminal/pending control`,await evaluate(page,`${region}?.querySelector('button')??null`),null);
+          await shot(page,`${name}-${id}`,{case:'A09/A11',locale,width,height,theme,state:id});await close(page);
+        }
+      }
+    }
     check('zero GET /tasks/pause-overview across the whole run',overviewReads(),0);
     const assets=readdirSync(join(dist,'assets')).filter(file=>/\.(js|css)$/.test(file)).map(file=>({file,sha256:digest(readFileSync(join(dist,'assets',file)))}));
-    const receipt={boundary:'UI/transport only; synthetic HTTP, not backend enforcement/E2E',head,generated_at:new Date().toISOString(),node:{path:process.execPath,version:process.version},chrome:{path:chromeBin,...browser},dist:{path:dist,index_sha256:digest(readFileSync(join(dist,'index.html'))),assets},checks,contrast,screenshots,ledger,browserEvents,failed:checks.filter(c=>!c.pass).length};writeFileSync(join(out,'receipt.json'),JSON.stringify(receipt,null,2)+'\n');
+    const receipt={boundary:'UI/transport only; synthetic HTTP, not backend enforcement/E2E',head,generated_at:new Date().toISOString(),node:{path:process.execPath,version:process.version},chrome:{path:chromeBin,...browser},dist:{path:dist,index_sha256:digest(readFileSync(join(dist,'index.html'))),assets},venue:{view,path:venueDist,index_sha256:digest(readFileSync(join(venueDist,'index.html'))),assets:readdirSync(join(venueDist,'assets')).filter(f=>/\.(js|css)$/.test(f)).map(file=>({file,sha256:digest(readFileSync(join(venueDist,'assets',file)))}))},origin:server.url,profile,agentReads,checks,contrast,screenshots,ledger,browserEvents,failed:checks.filter(c=>!c.pass).length};writeFileSync(join(out,'receipt.json'),JSON.stringify(receipt,null,2)+'\n');
     console.log(`${checks.length} browser assertions; ${screenshots.length} screenshots; ${receipt.failed} failures; UI/transport ONLY`);process.exitCode=receipt.failed?1:0;
   }catch(error){writeFileSync(join(out,'failure.json'),JSON.stringify({head,boundary:'UI/transport only',error:error.stack,checks,screenshots,ledger,browserEvents},null,2)+'\n');throw error;}
   finally{for(const response of hung)response.destroy();cdp?.ws.close();if(chrome.exitCode===null&&chrome.signalCode===null)chrome.kill('SIGTERM');await new Promise(resolve=>{if(chrome.exitCode!==null||chrome.signalCode!==null)resolve();else{chrome.once('exit',resolve);setTimeout(()=>{chrome.kill('SIGKILL');resolve();},1000).unref();}});writeFileSync(join(out,'chrome-stderr.log'),Buffer.concat(chromeErrors));server.server.closeAllConnections?.();await server.close();try{rmSync(profile,{recursive:true,force:true,maxRetries:3,retryDelay:100});}catch(error){writeFileSync(join(out,'cleanup-failure.json'),JSON.stringify({profile,error:String(error)})+'\n');process.exitCode=1;}rmSync(blank);}
 }
-main().catch(error=>{console.error(error.stack);process.exitCode=1;});
+if(process.argv.includes('--prepare-drawer')) prepareDrawer();
+else main().catch(error=>{console.error(error.stack);process.exitCode=1;});
