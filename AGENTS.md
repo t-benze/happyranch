@@ -1724,43 +1724,52 @@ by manager guarded merge. Root owns K2a2–K6 and operational/real-agent accepta
 
 ## Saved coding grammar source — K2a2a
 
-Sole ROOT TASK10693, manager step45 and Founder THR139seq562/559/329
+Sole ROOT TASK10693, manager step48 and Founder THR139seq562/559/329
 bound `runtime/workflows/coding_saved_records.py` to pure, unmounted saved-record
-inspection. Setup issue/withdraw commands preserve explicit null withdrawal;
-mapping values/commands preserve original bytes, all selectors and generations,
-fixed shipped K0 definition digest, four distinct agent roles, bounded eligible
-sets and contextual underscore RoleKeys. Coding repository capsules retain K1's
-org/key/origin identity, explicit owner membership and adoption pairing without
-widening the document/K1 role grammar. Parsing grants no adoption or authority.
+inspection. All eight entry points check complete canonical bytes, strict types,
+bounds and contained equalities. Original command bytes/IDs/CAS/selectors remain
+intact; contextual coding repository roles preserve K1 identity/owner invariants
+without widening document/K1 readers. Parsing creates no adoption or authority.
 
-Mapping-record/setup/capability/issuance envelope readers check the specified
-fields and equalities but **refuse** dependent captures with
-`coding_saved_authority_serialization_unavailable`. The one missing contract
-delta is the closed coding serialization of B2 `profile_evidence` and D1's
-issuance `issuer`/`admission`: existing native capture types, admission rows and
-Founder provenance do not specify those persisted nested coding values. No opaque
-authority dictionaries, guessed serialization, resolver or trusted flag are
-accepted. These are partial source readers, not complete K2a2a acceptance or
-populated J compatibility. Full original command bytes/digests are retained;
-there is no second reduced persisted form or digest-only replay.
+Accepted TASK11459 B2/D1 appendix SHA256
+`5a1baa4967ffefb07967d1aa5e5771b6048801bfcd71b37d690ab74aa3722c9b`
+closes ready/pointer/profiles/full mirror, exact Founder provenance and complete
+five-column native admission plus capture on issue AND withdrawal. Native v1/v2
+snapshots retain their complete original projection and ordering; reconstruction
+includes all consumers, generations and digests. Genuine empty profiles differ
+from missing evidence; other-namespace/removed/unbound/unused mirror rows remain
+validated. Historical pointer/journal/fence are retained, never read from today.
 
-All full relational/native↔J/event/history readers remain required before any
-producer: native admission, source/result claim and task/session ancestry;
-setup pointer/withdrawal and parent/action/radius attenuation; mapping generation
-continuity and authentic adoption; run/context/binding/activation/task/request/
-receipt/contributor closure; journal replay/CAS, host/cleanup/provider/effect
-ownership; current selected access and all archived/current consumers. These
-source grammars establish no authentic issuer, active grant or valid graph.
-There is no store/roster/object/provider/network I/O. Empty paths/commands or
-null provider/SID grant no corresponding current-use authority.
+Grant selection is position-specific: setup/issuance terminates in full original
+issue/withdraw Q; mapping uses closed M with 1–8 ordered distinct complete U
+setups; capability selects its permitted U/P parent. Complete preimages/hash,
+ID/parent/time/source ownership, source versus mint admission, level/action,
+queued-null versus actual bound SID and component/argv radius attenuation are
+checked without format fallback or truncation. Each ancestry ends at U→issue Q,
+with at most64 capability nodes/16MiB decoded ancestry and original1MiB limits.
+Mapping cannot union one repository's setup onto another. U subtree digest is
+not the containing native issuance-wrapper digest. Fixed repository/base/head
+and provider subject are separate from navigation. Saved ready/Founder strings,
+a hash or a parsed grant never prove authentic native rows or current access.
 
-K2a1 continues rejecting every populated/reserved coding row, including with
-`validate_data=False`; complete F–I/J literals/references/cache/migration/recovery
-source is unchanged. K0 stays disabled, K1 current resolution unavailable,
-create-org I and startup validate-only. No producer, mounting, new transport,
-authority issuance, allocation, execution, migration or rollout is enabled.
-Python tests are RETIRED; integration including callback SKIPPED24342; all
-behavioral/security/negative/mutation/repetition/protected/executable proof is
-UNEXECUTED/FOUNDER-WAIVED139429/430. AST/raw-byte/static inspection and required
-lint/static checks supply no behavioral or test-authoring PASS. Independent FULL
-review followed by same-final-head scoped SOURCE QA remain required.
+Full relational/native↔J/event/history readers remain required BEFORE every
+producer: identical genuine admissions and historical cache_installed journals,
+setup issuance-subtree/native-wrapper/pointer/withdrawal, source result/start
+claim and native task/session/parent chronology, mapped role eligibility and
+independence, mapping generation/adoption authenticity, run/context/binding/
+activation/request/receipt/contributor closure, journal replay/CAS and host/
+cleanup/provider/effect ownership. Current-use owners revalidate every setup/
+ancestor/grant, cancellation/Pause/move and actual executor permissions after
+waits. Valid revoked history permits no new launch/disclosure/effect. No store,
+roster, object, provider, DB or network I/O, resolver or trusted flag is supplied.
+
+K2a1 still refuses ALL populated/reserved coding data including validate_data=False;
+F–I/J schema/reference/cache/recovery/migration owners, create-org I and document
+history are unchanged. K0 stays disabled and K1 current resolution unavailable.
+No mount, native admission insertion, producer, transport/auth/permission change,
+live setup/migration/assignment/deployment/restart or retired trial follows.
+Python units RETIRED; integration INCLUDING callback SKIPPED24342; behavior/
+security/negative/mutation/repetition/protected/executable proof UNEXECUTED/
+FOUNDER-WAIVED139429/430. AST/raw-byte inspection and lint/static checks establish
+no behavioral or test-authoring PASS. Fresh FULL independent review then
+same-final-head scoped SOURCE QA and manager guarded merge remain required.
