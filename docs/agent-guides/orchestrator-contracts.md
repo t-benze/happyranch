@@ -3355,3 +3355,57 @@ security/negative/mutation/repetition/protected/executable proof UNEXECUTED/
 FOUNDER-WAIVED139429/430. AST/raw-byte inspection and lint/static checks establish
 no behavioral or test-authoring PASS. Fresh FULL independent review then
 same-final-head scoped SOURCE QA and manager guarded merge remain required.
+
+
+## Retained native setup issuance history — K2a2b1
+
+Sole ROOT TASK10693 step50 / Founder THR139seq562/559/329 adds unmounted
+`coding_authority_history.read_setup_issuance_history`. The caller must admit
+the complete native schema and own a coherent read transaction/connection/lock
+with raw native storage values. Fixed-table parameterized SELECTs only; no
+BEGIN, commit, writer, repair, resolver or injected truth flag is supplied.
+The org-wide setup namespace inventory checks complete canonical issuance
+wrappers, exact native types, source pin `coding-capability-issuer@1`, namespace,
+ID/revision/time, full original command, expected-revision CAS and unique
+Founder operation keys/setup subtrees. The selected native authorization ID
+resolves one contiguous same-namespace prefix with a genuine prior issue for
+withdrawal. Setup IDs and authorization row IDs are distinct identities.
+
+For every issue AND withdrawal in that prefix, the complete five-column native
+admission matches the saved command digest/Founder principal/org publication
+namespace/generation/ID. The named complete twelve-column historical journal
+must match namespace/generation/expected generation, exact full snapshot
+bytes/digest/profile fence and cache_installed state, without native NULL/type
+coercion. The shipped pure readers reconstruct saved v1/v2 snapshot/profile/full
+mirror evidence, including genuine empty profiles. Neither today's pointer,
+cache, roster nor mirror is historical proof. Exact setup_bytes are the issue's
+canonical subtree; its digest differs from the native issuance-wrapper digest.
+Valid old issuance remains history after withdrawal and never restores activity.
+
+All three SELECTs gate every projected value by exact native storage class
+before Python fetch: TEXT plus byte length via CAST AS BLOB (including multibyte
+characters and embedded-NUL suffixes), BLOB plus byte length, INTEGER scalar
+only. Invalid/oversize values return a bounded NULL refusal sentinel while
+original typeof evidence stays intact. Genuine nullable file_phase_owner NULL
+is preserved; accepted values retain exact historical bytes/types without
+coercion or truncation. Each projected text/BLOB value is at most1MiB.
+Inventory admits at most1024 org setup rows; one additional bounded row can be
+fetched only to refuse overflow. After each bounded fetch, the shared budget
+enforces16MiB cumulative accepted raw native text/BLOB bytes across inventory
+and required admission/journal reads. This is retained-byte accounting, not a
+total process-memory ceiling: SQLite engine work, rejected fetched rows and
+decoded/copied structures are outside that accounting. Overflow/missing/
+mismatched/ambiguous/malformed/unsupported evidence refuses categorically.
+Only the selected prefix's admissions/journals are established, not unrelated/
+later histories. No live human, current grant, source task/SID/result or populated-J
+admission follows. Full capability/task/result/session ancestry, mapping/J/run/
+event/receipt/heartbeat and current-use closure remain NEXT serial units before
+any producer; K2a2 is incomplete. No mount/OrgState/DDL/reference/cache/recovery/
+migration/selector or public/CLI/TS/auth/permission/dependency/hook change.
+K2a1 populated/reserved refusal INCLUDING validate_data=False, create-org I,
+document history, disabled K0 and unavailable K1 current resolution stay intact.
+Python units RETIRED; integration INCLUDING callback SKIPPED24342; behavior/
+security/migration/negative/mutation/repetition/protected proof UNEXECUTED/
+FOUNDER-WAIVED139429/430. Source/static evidence is not behavioral acceptance.
+Fresh FULL independent review then same-final-head scoped SOURCE QA return to
+sole ROOT10693; no operational action or trial renewal is authorized.
