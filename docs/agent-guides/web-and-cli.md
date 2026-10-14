@@ -2661,7 +2661,7 @@ source within20 and follows no revisit alias. Missing/cyclic/foreign-team ancest
 refuses. The original source task/principal/SID selects exactly one native
 manager_decision session_start under its closed owner grammar and the entire
 bounded same-SID result inventory. Selected allocating INTEGER/full result must
-match the source tuple and full closed workflow_start command/work radius, never
+match the source tuple and full closed workflow_start command/INITIAL work radius, never
 latest result/action label alone. Nonallocating NULL selection proves neither
 original callback absence nor absence of a later callback. Current assignment/SID,
 tracker reconstruction, source admission/claim/current policy are separate facts.
@@ -2691,3 +2691,15 @@ all/hosted lint, normal hooks/nonforce push and manager guarded merge remain.
 Python units RETIRED; integration INCLUDING callback SKIPPED24342; all SQL/parser/
 product/native/security/negative/mutation/repetition/executable proof UNEXECUTED/
 FOUNDER-WAIVED139429/430. Root retains K2a2–K6 and operational acceptance.
+
+Native result `learnings` is nullable free TEXT, inserted unchanged by its owner:
+NULL, empty, prose and UTF8 bytes remain exact in EVERY same-SID result. Only
+owner-serialized JSON columns undergo JSON validation; all native storage/UTF8/
+prefetch per-value and shared-byte gates remain. The selected allocating callback's
+full original work repository/object-format/base/paths matches the INITIAL source
+P exactly, taken from the first node of the already validated complete native
+source-to-selected lineage. Same-issuer source refinements may narrow paths and
+retain that original callback; the selected P and all parent attenuation checks
+remain intact. A callback matching only a narrower child, conflicting identity,
+missing native ancestor or widening refuses; no caller-picked ancestor, broad
+subset substitute, extra query, historical rewrite or current grant follows.

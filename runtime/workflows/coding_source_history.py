@@ -335,7 +335,9 @@ def _results(conn: sqlite3.Connection, capability: dict,
                and row._text('session_id') == issuer['session_id'])
         _token(row._text('status'))
         _timestamp(row._text('created_at'))
-        _native_json(row, ('decision_json', 'learnings', 'risks_flagged', 'waiting_on_job_ids', 'local_ci'), budget)
+        # Native learnings is nullable free TEXT, inserted unchanged by its
+        # owner. Its storage/UTF8/raw-byte gates still apply to EVERY result.
+        _native_json(row, ('decision_json', 'risks_flagged', 'waiting_on_job_ids', 'local_ci'), budget)
         if row._value('id') == issuer['result_id']:
             _check(selected is None)
             _start_decision(row, capability, budget)
@@ -375,6 +377,13 @@ def read_source_native_records(conn: sqlite3.Connection, *, expected_org_slug: s
         capability = json.loads(history.selected.authority_bytes)
         _check(capability['level'] == 'source')
         issuer = capability['issuer']
+        # _history binds the COMPLETE native lineage in source-to-selected
+        # order. Its first source P terminates at authentic U; refinements
+        # retain the same issuer/result but may narrow paths. The original
+        # callback must match that initial P exactly, not the narrower child.
+        budget.step()
+        initial_source = json.loads(history.capabilities[0].authority_bytes)
+        _check(initial_source['level'] == 'source' and initial_source['issuer'] == issuer)
         source = _task(conn, issuer['task_id'], budget)
         chain = [source]
         seen = {issuer['task_id']}
@@ -387,7 +396,7 @@ def read_source_native_records(conn: sqlite3.Connection, *, expected_org_slug: s
             chain.append(row)
             parent = row._text('parent_task_id')
         start = _session_start(conn, issuer, budget)
-        results = _results(conn, capability, budget)
+        results = _results(conn, initial_source, budget)
         return CodingSourceNativeRecords(history, source, tuple(chain[1:]), start, results)
     except (sqlite3.Error, CodingSavedRecordError, CodingAuthorityHistoryError,
             CodingCapabilityHistoryError, ValueError, TypeError, KeyError,
