@@ -780,6 +780,9 @@ def _build_resolution(*, paths: OrgPaths, binding: RepositoryBinding,
     finally:
         if private is not None and not retain:
             try:
+                # A deadline refusal may already have consumed the one-shot
+                # alarm. Do not begin removal once its cleanup budget is gone.
+                budget.check()
                 shutil.rmtree(private)
             except WorkflowRepositoryError as error:
                 # The alarm also bounds cleanup. Interrupted removal is not
