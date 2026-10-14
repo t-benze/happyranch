@@ -255,6 +255,7 @@ def _store(paths: OrgPaths, binding: RepositoryBinding, proof: RepositoryAdoptio
            configured_origin: str, budget: _Budget):
     """Open every absolute component no-follow; no resolve()/common-dir fallback."""
     if (type(paths) is not OrgPaths or not paths.workspaces_dir.is_absolute()
+            or paths.root.name != binding.org_slug
             or proof.repository_id != binding.repository_id
             or _digest(configured_origin.encode('utf8')) != binding.origin_digest):
         raise WorkflowRepositoryError('binding_unavailable')
@@ -270,6 +271,12 @@ def _store(paths: OrgPaths, binding: RepositoryBinding, proof: RepositoryAdoptio
         objects_fd = stack.enter_context(_directory(git_fd, 'objects', budget))
         for name in ('commondir', 'gitdir', 'shallow'):
             _absent(git_fd, name, budget)
+        try:
+            packed_refs = _regular(git_fd, 'packed-refs', budget, COMMIT_LIMIT)
+        except FileNotFoundError:
+            packed_refs = b''
+        if b' refs/replace/' in packed_refs:
+            raise WorkflowRepositoryError('content_unsupported')
         for name, forbidden in (('info', 'grafts'), ('refs', 'replace')):
             try:
                 child = stack.enter_context(_directory(git_fd, name, budget))
@@ -642,6 +649,10 @@ class _Objects:
             if depth >= DEPTH_LIMIT or oid in ancestors:
                 raise WorkflowRepositoryError('content_bounds')
             tree = self.read(oid, 'tree')
+            if not tree and prefix:
+                # Empty nested trees carry a directory change that the closed
+                # regular-blob manifest cannot represent; never silently skip.
+                raise WorkflowRepositoryError('content_unsupported')
             pos = 0
             previous = None
             names = set()

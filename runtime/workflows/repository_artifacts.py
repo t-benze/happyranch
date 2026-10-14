@@ -161,7 +161,7 @@ class RepositoryBinding(_Record):
     def identity(self) -> RepositoryBinding:
         expected = 'workflow-repository:' + _digest(_canonical(
             [self.org_slug, self.repo_key, self.origin_digest]))
-        if self.repository_id != expected:
+        if self.repository_id != expected or self.authority.namespace != 'org/' + self.org_slug:
             raise ValueError('repository_binding_identity')
         if (len({r.role for r in self.recipients}) != len(self.recipients)
                 or len({(r.kind, r.principal) for r in self.recipients}) != len(self.recipients)
@@ -357,6 +357,7 @@ def _match_adoption(binding: RepositoryBinding, adoption: RepositoryAdoption,
             or adoption.operation_id != proof.operation_id
             or adoption.adopted_by != proof.issuer.principal
             or adoption.authority != proof.authority
+            or proof.authority.namespace != binding.authority.namespace
             or adoption.store_identity_digest != _digest(_canonical(proof.store_identity.model_dump()))
             or binding.origin_digest != proof.configured_origin_digest):
         raise ValueError('repository_adoption_identity')
