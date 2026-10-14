@@ -60,6 +60,16 @@ reading external metadata/notices. Both source and `sourceRoot` must be
 filesystem-encodable before inspection; rejected records preserve their
 source-map, sourceRoot, source and lexical input provenance using escaped JSON.
 Grouped inputs retain map/source/metadata hashes and original notice bytes.
+
+The [notice index](THIRD_PARTY_NOTICES.md) documents the two byte-preserved
+offline originals and exact pinned identities in `packaging/notice-data/`.
+Installed originals take precedence. The CPython fallback requires matching
+effective toolchain and three stdlib hashes in both Analysis lanes; the ten
+Radix fallbacks require pinned metadata and every actual emitted source hash.
+Unsafe paths, corrupt inputs and conflicts refuse retention. Scroll-bar 2.3.8
+remains missing, all six unresolved labels remain, and strict license verification
+still blocks ZIP/release finalization with `closure_complete=false`.
+
 Failure diagnostics include
 `web-attribution.json`: first 100 rejected records, string fields capped at 512
 characters and serialized records capped at 2048 bytes, with explicit

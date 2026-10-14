@@ -220,15 +220,33 @@ for dist in importlib.metadata.distributions():
     components.append({'component': name, 'version': dist.version, 'inclusion': included,
                        'scope': 'bootloader_and_freezer_support' if name.lower() == 'pyinstaller' else 'Analysis_RECORD_members',
                        'notices': notices, 'disposition': 'RETAINED_TEXT' if notices else 'LICENSE_MISSING'})
+# Installed originals take precedence; only this exact authenticated CPython
+# identity/source pair may use the offline original when LICENSE.txt is absent.
+notice_helpers = __import__('runpy').run_path(str(_SPEC_DIR / 'notice-data/retained_notices.py'))
 python_notice = Path(sys.base_prefix) / 'LICENSE.txt'
-if python_notice.is_file():
-    shutil.copyfile(python_notice, notice_root / 'Python-LICENSE.txt')
-    components.append({'component': 'Python interpreter/stdlib', 'version': sys.version,
-                       'inclusion': ['PyInstaller Python runtime'], 'disposition': 'RETAINED_TEXT',
-                       'notices': [{'source': str(python_notice), 'sha256': hashlib.sha256(python_notice.read_bytes()).hexdigest(),
-                                    'destination': 'Contents/Resources/licenses/python/Python-LICENSE.txt'}]})
-else:
-    components.append({'component': 'Python interpreter/stdlib', 'disposition': 'LICENSE_MISSING', 'notices': []})
+python_component = {'component': 'Python interpreter/stdlib', 'version': sys.version,
+                    'inclusion': ['PyInstaller Python runtime'],
+                    'disposition': 'LICENSE_MISSING', 'notices': []}
+try:
+    provenance = {'origin': 'installed_original'}
+    source_root = Path(sys.base_prefix)
+    if not python_notice.exists() and not python_notice.is_symlink():
+        import platform
+        import sysconfig
+        effective = {'implementation': sys.implementation.name, 'executable': sys.executable,
+                     'version': sys.version, 'platform': sys.platform, 'machine': platform.machine()}
+        toolchain = json.loads(notice_helpers['safe_bytes'](evidence / 'python-toolchain.json', evidence))
+        source_root = _SPEC_DIR / 'notice-data'
+        python_notice, provenance = notice_helpers['python_original'](
+            source_root, effective, toolchain, Path(sysconfig.get_path('stdlib')), analysis)
+    notice = notice_helpers['retain'](python_notice, source_root,
+                                     notice_root / 'Python-LICENSE.txt', notice_root)
+    notice['destination'] = 'Contents/Resources/licenses/python/Python-LICENSE.txt'
+    notice['provenance'] = provenance
+    python_component.update(disposition='RETAINED_TEXT', notices=[notice])
+except (OSError, ValueError, KeyError, TypeError, RuntimeError) as exc:
+    python_component['reason'] = str(exc)
+components.append(python_component)
 components += [{'component': name, 'disposition': 'LICENSE_UNRESOLVED', 'notices': []}
                for name in ('PYTHON_NATIVE', 'BOOTLOADER_EXCEPTION_MAPPING', 'GO_LINKED_GRAPH',
                             'WEB_EMITTED_CLOSURE', 'NATIVE_REDISTRIBUTION', 'ASSET_ATTRIBUTION')]

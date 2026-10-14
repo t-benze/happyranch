@@ -11,7 +11,7 @@ exclusion evidence before `BUILD_ONLY_NOT_SHIPPED` can be recorded.
 | --- | --- | --- |
 | First-party Swift/C/Python/resources | Exact root Apache 2.0 LICENSE → Resources/licenses/LICENSE; SHA256 cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30 | Build checks exact resource bytes; preserve per-file attribution |
 | Python distributions selected by daemon/CLI Analysis | Actual installed LICENSE/NOTICE/COPYING/copyright files → licenses/python/NAME/VERSION; RECORD inputs and hashes retained | Missing text is LICENSE_MISSING; actual native/stdlib inclusion still requires reconciliation |
-| Python runtime/stdlib | Effective interpreter LICENSE.txt → licenses/python/Python-LICENSE.txt | Missing text is LICENSE_MISSING; embedded native vendor obligations unresolved |
+| Python runtime/stdlib | Effective interpreter LICENSE.txt, or exact authenticated offline CPython fallback → licenses/python/Python-LICENSE.txt | Missing text is LICENSE_MISSING; embedded native vendor obligations unresolved |
 | PyInstaller bootloader/support | Effective distribution original license and redistribution-exception texts → licenses/python/PyInstaller/VERSION | LICENSE_UNRESOLVED:BOOTLOADER_EXCEPTION_MAPPING until actual bootloader/source/exception mapping is reconciled |
 | Go runtime and compiled dependencies | GOROOT original texts and real readonly go-list dependency module LICENSE/NOTICE → licenses/go | LICENSE_UNRESOLVED:GO_LINKED_GRAPH until fresh archive-member/final link inclusion is reconciled |
 | Generated web assets | Emitted source-map package input graph, original installed package notices → licenses/web | LICENSE_UNRESOLVED:WEB_EMITTED_CLOSURE; source maps alone do not resolve minifier/static helpers or all assets |
@@ -40,6 +40,38 @@ reading external metadata/notices. Both source and `sourceRoot` must be
 filesystem-encodable before inspection; rejected records preserve their
 source-map, sourceRoot, source and lexical input provenance using escaped JSON.
 Grouped inputs retain map/source/metadata hashes and original notice bytes.
+
+Offline notice inputs live in `packaging/notice-data/identity-map.json` with two
+unchanged originals: CPython LICENSE (13936 bytes, SHA256
+`3b2f81fe21d181c499c59a256c8e1968455d6689d269aa85373bfb6af41da3bf`)
+at revision `0cc81280367df838c4b199f8f0378837165071c2`, and Radix LICENSE
+(1063 bytes, SHA256
+`0e80a2d229d2fd4fc7e8636142ec5d0ff0bc031f14c15b682e2ac01dfd5b5138`)
+at revision `fcef0668a5c827e5a4baac405474d75680f9a4eb`.
+Installed originals retain precedence. When effective CPython `LICENSE.txt` is
+absent, the fallback requires the exact recorded implementation/toolchain,
+matching current toolchain evidence, and threading/contextlib/string source
+hashes in the actual stdlib and both daemon/CLI Analysis lanes. A version label
+alone cannot admit retention. A missing or mismatched identity remains
+`LICENSE_MISSING` with its reason.
+
+Only the ten explicit Radix package/version entries may use the offline notice
+when package-local originals are absent. Each actual emitted input must match
+the pinned package metadata and source hash; unknown/changed inputs or added
+subpath manifests refuse fallback. Published stable versions differ from the
+upstream `-rc.9` metadata: official registry gitHead and exact published
+source-map contents authenticate that revision. The map preserves both
+identities, archive integrity and source bindings. No network request, install
+hook, dependency/version change or generic notice template is involved.
+Symlinked/escaping paths, corrupt offline originals or conflicting destination
+bytes refuse retention. Mapping rows preserve original/retained hashes,
+destinations and provenance. `react-remove-scroll-bar` 2.3.8 remains missing;
+its tarball lacks a full notice and its recorded upstream revision is unresolved.
+All six named unresolved labels and `closure_complete=false` remain. Source
+retention does not establish current native binary custody, legal acceptance
+or complete emitted closure; strict license verification still blocks ZIP and
+release finalization.
+
 Failure diagnostics include
 `web-attribution.json`: first 100 rejected records, string fields capped at 512
 characters and serialized records capped at 2048 bytes, with explicit

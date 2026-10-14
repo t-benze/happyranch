@@ -321,6 +321,8 @@ python3 - "$SOURCE" "$APP" "$OUTPUT" <<'PYNOTICES'
 import hashlib, json, os, re, shutil, sys
 from pathlib import Path
 source, app, output = map(Path, sys.argv[1:])
+notice_data = source / 'packaging/notice-data'
+notice_helpers = __import__('runpy').run_path(str(notice_data / 'retained_notices.py'))
 mapping = json.loads((output / 'scratch/freeze-work/license-mapping.json').read_text())
 components = mapping['components']
 def sha(p):
@@ -363,6 +365,7 @@ first_party = web / 'src'
 # Retain only paths, hashes and fixed reasons, never metadata/source contents.
 # First 100 records, with bounded fields, survive even a later notices failure.
 web_diagnostics = {'records': [], 'omitted_records': 0, 'truncated': False}
+refused_package_roots = set()
 def web_diagnostic(inclusion, reason):
     record = {'disposition': 'LICENSE_UNRESOLVED', 'reason': reason}
     record.update({key: inclusion.get(key) for key in
@@ -386,6 +389,8 @@ def web_diagnostic(inclusion, reason):
     web_diagnostics['truncated'] |= bool(clipped) or web_diagnostics['omitted_records'] > 0
     (output / 'diagnostics/web-attribution.json').write_text(json.dumps(web_diagnostics, indent=2) + '\n')
 def unresolved(inclusion, reason):
+    if inclusion.get('package_root'):
+        refused_package_roots.add(Path(inclusion['package_root']))
     components.append({'component': inclusion.get('source') or inclusion['map'], 'scope': 'web',
                        'disposition': 'LICENSE_UNRESOLVED', 'reason': reason,
                        'inclusion': [inclusion.copy()], 'notices': []})
@@ -517,8 +522,25 @@ for root, row in sorted(packages.items()):
                     raise ValueError('notice destination escapes app boundary')
                 if dest.exists() and (not dest.is_file() or sha(dest) != sha(p)):
                     raise ValueError('conflicting notice bytes for package identity')
-        texts(name, version, root, 'web', row['inputs'])
-    except (OSError, ValueError) as exc:
+        installed = [p for p in root.iterdir() if p.is_file() and
+                     any(n in p.name.lower() for n in ('license', 'notice', 'copying', 'copyright'))]
+        if installed:
+            texts(name, version, root, 'web', row['inputs'])
+        else:
+            if root in refused_package_roots:
+                raise ValueError('offline notice cannot resolve an already refused package input')
+            recovered = notice_helpers['radix_original'](notice_data, name, version, root, row['inputs'])
+            if recovered is None:
+                texts(name, version, root, 'web', row['inputs'])
+            else:
+                original, provenance = recovered
+                target = app / 'Contents/Resources/licenses/web' / name / version / 'LICENSE'
+                notice = notice_helpers['retain'](original, notice_data, target, app)
+                notice['provenance'] = provenance
+                components.append({'component': name, 'version': version, 'scope': 'web',
+                                   'inclusion': row['inputs'], 'notices': [notice],
+                                   'disposition': 'RETAINED_TEXT'})
+    except (OSError, ValueError, RuntimeError) as exc:
         for inclusion in row['inputs']:
             unresolved(inclusion, str(exc) if isinstance(exc, ValueError) else 'notice retention failed: ' + type(exc).__name__)
 # Always preserve the legal closure gaps from the frozen input mapping.
