@@ -1363,15 +1363,31 @@ uncredited. Provider resume IDs are never used for this purpose.
 The report neither begins collection nor recommends push, alias, embedding, or
 ranking changes.
 The backend and canonical CLI share the pure `memory_telemetry_report` reducer.
-They acquire `session_start`, impressions, reads and searches before any empty or
-short return. Backend acquisition uses one synchronized SELECT statement snapshot;
-CLI exhausts real `/audit` pages at limit5000 in two complete sweeps and compares
-relevant audit identities/content and `/agents` roles at one aware UTC cutoff.
+They acquire complete bounded tasks and relevant memory/lifecycle/control audits,
+including session starts/ends, runtime identity/launch/terminal and actual job
+resumes, before any empty or short return. Backend acquisition uses a coherent
+multi-table SELECT-only evidence snapshot. CLI exhausts `/tasks` pages at limit200
+and relevant `/audit` action pages at limit5000 in two complete sweeps, comparing
+tasks, audit identities/content and `/agents` roles at one aware UTC cutoff.
+Task pages follow `(created_at, id)` descending; the last ID remains the transport
+cursor resolved by the server. No-epoch diagnostic reads filter unrelated audit
+actions without changing the100000-row bound. Accepted epochs retain complete
+unfiltered task/result/job/audit acquisition, original outputs and serving bookends.
 Events at or after that cutoff are excluded. Backdated/content/role drift,
 cursor/schema errors, HTTP/decoder/timeout or SELECT failures refuse with
 `acquisition_unavailable`; CLI writes only that category to stderr and exits1,
 with no partial JSON. Unavailable `/agents` stays explicitly unknown and allows
 safe descriptive counts; it never supplies functional cohort authority.
+
+D exposes `by_session_kind` and `session_lifecycle` in JSON/text, with disjoint
+`first_launch`, `job_resume`, `retry`, `retry_job_resume`, `other_continuation`
+and `unknown` categories. Natural and excluded intervals first establish unique
+SID-less end ownership; recovery remains excluded from natural counts and source
+validation. Audit IDs order retirement even at tied timestamps. Any credited
+read or search after end, terminal or a later natural same-task start closes
+eligibility while valid earlier credits remain. Missing/ambiguous evidence yields
+unknown/null hard-zero fields; absent kinds say `no_observed_population`, never
+PASS. D-only reporting cannot repair A's unresolved live-foreign SID attribution.
 
 Structural returned-data corruption produces the full empty-metrics error object
 (null first event, days0, empty aggregate/by_agent/by_role/read_counts, explicit
