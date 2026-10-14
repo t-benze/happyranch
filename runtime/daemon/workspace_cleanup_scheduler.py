@@ -1092,9 +1092,11 @@ def compose_cleanup_brief(
             "final-ledger.jsonl, and report.md. Do not act on an inventory "
             "row. Immediately before each possible action, rebuild that "
             "exact row from current filesystem, Git, task/session, "
-            "PR/protection, and OS process evidence; append the final row "
-            "before action; act only when that same row says eligible. Any "
-            "uncertainty is a skip.",
+            "PR/protection, and OS process evidence. Use the shared bound "
+            "attempt/eligibility publisher before the first mutation and "
+            "the sole ordered terminal journal plus canonical publication "
+            "acknowledgement afterward. Eligibility is not an outcome or "
+            "reusable permission. Evidence failure halts further actions.",
             "",
             "Current-use evidence follows the shared workspace-cleanup skill "
             "and the approved THR-259 seq171/seq185 rule: an authoritative "
