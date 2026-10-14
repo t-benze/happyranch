@@ -248,7 +248,8 @@ class ThreadMoveAdmission:
             self.check_agent_uncommitted(inv.agent_name)
             # These are trusted persisted permanent owners. No request actor,
             # logical-ID parsing, prompt file or display name supplies identity.
-            if not self.db.get_thread(inv.thread_id) or not self.db.is_thread_participant(inv.thread_id, inv.agent_name):
+            thread = self.db.get_thread(inv.thread_id)
+            if thread is None or thread.status != "open" or not self.db.is_thread_participant(inv.thread_id, inv.agent_name):
                 raise DeferredTeamMove("team_move_thread_identity_unavailable")
             if inv.id in self.live:
                 raise DeferredTeamMove("team_move_thread_owner_live")
@@ -282,7 +283,8 @@ class ThreadMoveAdmission:
                     or (delivery.running_from_seq, delivery.running_through_seq) !=
                     (owner.claim.running_from_seq, owner.claim.running_through_seq)):
                 raise DeferredTeamMove("team_move_thread_running_claim_changed")
-        if not self.db.is_thread_participant(inv.thread_id, inv.agent_name):
+        thread = self.db.get_thread(inv.thread_id)
+        if thread is None or thread.status != "open" or not self.db.is_thread_participant(inv.thread_id, inv.agent_name):
             raise DeferredTeamMove("team_move_thread_participant_changed")
 
     def callback_uncommitted(self, token: str) -> None:
@@ -354,6 +356,9 @@ class ThreadMoveAdmission:
                     code = "thread_cleanup_unknown" if state.unknown else ("thread_running" if owner and owner.attempt_open and owner.state.attempts[-1].launched else "thread_preparation_or_lost_owner")
                 elif inv.status is ThreadInvocationStatus.PENDING:
                     code = "thread_pending_obligation" if inv.started_at is None or (state and state.deferred) else "thread_legacy_owner_unknown"
+                if code and (self.db.get_thread(inv.thread_id) is None
+                        or not self.db.is_thread_participant(inv.thread_id, inv.agent_name)):
+                    code = "thread_identity_unavailable"
                 if code:
                     result.append(dict(code=code, invocation_id=inv.id, thread_id=inv.thread_id,
                         agent_id=inv.agent_name, session_id=inv.session_id,
