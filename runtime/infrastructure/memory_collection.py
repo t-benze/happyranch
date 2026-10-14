@@ -842,7 +842,7 @@ def loaded_identity(org: Any) -> dict:
                  _serving_revision, _check_serving_snapshot, _now, serving_observation, loaded_identity]
     from runtime.infrastructure.memory_telemetry_report import reduce_report, reduce_collection_report, _session_diagnostics
     from runtime.infrastructure.audit_logger import AuditLogger
-    from cli.commands.learning import cmd_memory_report, _compute_report, _print_report
+    from cli.commands.learning import cmd_memory_report, _compute_report, _print_report, _paginate, _report_projection, _fetch_agent_roles
     functions.extend([org.orchestrator._log_step_result, org.memory_collection.reconcile_acceptance,
                       org.memory_collection.context.memory_collection_observation,
                       inspect.unwrap(Database.read_memory_collection_evidence), Database.append_memory_collection_transition,
@@ -856,7 +856,7 @@ def loaded_identity(org: Any) -> dict:
                       _referenced_probe_jobs, _local_job_outputs, _registered_cohort, validate_epoch_candidate, prepare_acceptance, reconcile_acceptance, acquire_collection_report,
                       _collection_pages, _http_collection_capture, acquire_http_collection_report,
                       current_epoch_references, reduce_report, reduce_collection_report, _session_diagnostics, AuditLogger.compute_memory_telemetry_report,
-                      cmd_memory_report, _compute_report, _print_report])
+                      cmd_memory_report, _compute_report, _print_report, _paginate, _report_projection, _fetch_agent_roles])
     code_rows = []
     compiled: dict[str, CodeType] = {}
     def fingerprint(function: Any) -> None:
