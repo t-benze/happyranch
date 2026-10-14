@@ -1,4 +1,5 @@
 import { ImageZoom } from 'nextra/components'
+import { ManualSearch } from './components/ManualSearch'
 import { ScreenshotPlaceholder } from './components/ScreenshotPlaceholder'
 
 // HappyRanch brand mark — the leaf/sprig glyph lifted from the marketing
@@ -91,6 +92,12 @@ export default {
         </svg>
       </a>
     )
+  },
+  // Nextra's search box with the first-query readiness fix: a query typed
+  // while the index loads gets its results once it is ready, and a failed
+  // index load shows an error and retries. See components/ManualSearch.jsx.
+  search: {
+    component: ManualSearch
   },
   logo: (
     <span className="hr-brand">

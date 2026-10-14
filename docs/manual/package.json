@@ -12,6 +12,8 @@
     "start": "next start"
   },
   "dependencies": {
+    "@headlessui/react": "2.2.10",
+    "flexsearch": "0.7.43",
     "next": "15.5.27",
     "nextra": "3.3.1",
     "nextra-theme-docs": "3.3.1",
