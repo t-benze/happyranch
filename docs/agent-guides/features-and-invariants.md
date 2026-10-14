@@ -1870,28 +1870,45 @@ revision and document drain readers. Any J, even empty, blocks pre-J downgrade;
 retain compatible J code or a separately approved verified pre-J backup. No
 stripping, automatic migration or old-reader downgrade claim follows.
 
-The explicit operator source is `scripts/migrate_workflow_coding_schema.py
---runtime-root /absolute/runtime --org ORG --check` (read-only:0 for valid empty
-J,3 for exact I needing migration,1 for refusal). Only under separately authorized
-operator control, use the same command without `--check` and with
-`--confirm-cooperative-offline`. That flag affirms documented daemon stop,
-reconciled hosts/outer tails and external exclusion of cooperative restarts/
-publications/profile/move producers until return; it is not an OS isolation proof
-or authority grant. Owned runtime/org markers, no-follow ordinary DB identity,
-registered daemon lifecycle and removed PID/port files are rechecked. PID absence,
-TTL, terminal task labels and producer_settled uncertainty never release an owner.
-Complete source ownership checks include publication/profile leases and journals,
-queued/active F5/draft work, recovery/source result processing, Pause entries and
-release work, and team-move operations/reservations. Unknown closure refuses with
-original-owner remediation. Legacy recovery effect claims without a persisted
-host-closure reader remain unknown and refuse, even on terminal native tasks.
-Exact I and retained SQL types/rowids/bytes/FKs are
-validated before and after exclusive writer acquisition; any source change
-refuses. Add only four empty tables atomically with FK enforcement ON, validate
-independent complete J and exact retained equality, recheck offline identity,
-then commit; every failure rolls back. Valid J replay is read-only and needs no
-fresh offline migration. Earlier scripts report the actual already-compatible
-layout and keep their original migration targets.
+The operator source `scripts/migrate_workflow_coding_schema.py --runtime-root
+/absolute/runtime --org ORG [--check] [--confirm-cooperative-offline]` is
+OPERATIONALLY BLOCKED by R4. Every invocation currently refuses (exit1) before
+writer open with `workflow_coding_connection_binding_unavailable`; ready replay
+and --check cannot claim exit0/3. Path/marker/lstat prerequisites are not an
+independent binding to SQLite's actual opened file. Python sqlite3.Connection
+has no supported file-control/descriptor bridge; its audit handle is the Python
+object, not a native SQLite handle. No raw-pointer/ctypes/native-extension,
+dependency or VFS change is supplied. The explicit migration is not delivered
+as an available operation. ROOT10693 must resolve one minimal dependency: a
+supported coding-only actual-connection API for independently opened-file
+identity plus moved/unlinked status. Unsupported binding must still refuse.
+
+Retained migration source requires the original RO identity to remain equal on
+RW reopen, after BEGIN EXCLUSIVE and before commit; a replacement writer may
+never become the new source baseline. A future supported binding also needs
+separately authorized operator cooperative offline control: documented daemon
+stop, reconciled hosts/outer tails and exclusion of cooperative restarts/
+publication/profile/move until return. Neither a confirmation flag nor PID
+absence, TTL, terminal labels or producer_settled uncertainty supplies binding
+or releases ownership. Complete source-idle checks retain publication/profile,
+F5/draft/recovery/source claims, Pause release and team-move reservations with
+original-owner remediation. Exact I/source SQL types/rowids/bytes/FKs, unchanged
+retained equality, four empty additions, complete independent J validation,
+FK ON and rollback remain required. These retained branches are source-only
+and currently unreachable past the binding refusal; no migration-safety proof
+or OS isolation claim follows. Earlier scripts keep their original targets.
+
+The finite shared discriminator inventory covers typed scalar fields and
+structured metadata using the same rules. Malformed lexical member scanning
+recognizes complete, escaped, duplicate and incomplete reserved envelopes
+without searching quoted document prose. Authority `source_pin` and coding
+setup namespaces are checked independently of canonical/hash-valid bytes,
+including orphan rows and current authority pointers. Recovery.classify_task
+runs the empty/reserved boundary under its existing lock/error fence before
+no-workflow and no-root/draft/F5 legacy returns; any coding tables, even partial
+or empty, also require the full schema reader. Unknown/malformed coding returns
+reconciliation_required, with no coding ownership, task writer or dispatch.
+Ordinary noncoding legacy and the existing document draft/F5 paths remain.
 
 K0 stays disabled; K1 current resolution still refuses before private decode or
 object I/O. No capability/setup/import/mapping/adoption/start/stage/native task/

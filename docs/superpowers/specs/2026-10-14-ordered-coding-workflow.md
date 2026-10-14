@@ -1,6 +1,7 @@
 # Ordered coding workflow — K0/K1 and K2a1 empty-only J source
 
-> Status: K0 disabled catalog, K1 internal source, K2a1 empty-only J/migration source;
+> Status: K0 disabled catalog, K1 internal source, K2a1 empty-only J source;
+> migration operationally BLOCKED pending supported actual-file connection binding;
 > populated K2a2 readers and K2b–K6 remain separately scoped work.
 > Authority: Founder THR139seq562 approving seq559, confirmed563; sole ROOT TASK10693.
 > Controlling amended design: manager step34 ordered-coding-contract.md,
@@ -244,28 +245,45 @@ revision and document drain readers. Any J, even empty, blocks pre-J downgrade;
 retain compatible J code or a separately approved verified pre-J backup. No
 stripping, automatic migration or old-reader downgrade claim follows.
 
-The explicit operator source is `scripts/migrate_workflow_coding_schema.py
---runtime-root /absolute/runtime --org ORG --check` (read-only:0 for valid empty
-J,3 for exact I needing migration,1 for refusal). Only under separately authorized
-operator control, use the same command without `--check` and with
-`--confirm-cooperative-offline`. That flag affirms documented daemon stop,
-reconciled hosts/outer tails and external exclusion of cooperative restarts/
-publications/profile/move producers until return; it is not an OS isolation proof
-or authority grant. Owned runtime/org markers, no-follow ordinary DB identity,
-registered daemon lifecycle and removed PID/port files are rechecked. PID absence,
-TTL, terminal task labels and producer_settled uncertainty never release an owner.
-Complete source ownership checks include publication/profile leases and journals,
-queued/active F5/draft work, recovery/source result processing, Pause entries and
-release work, and team-move operations/reservations. Unknown closure refuses with
-original-owner remediation. Legacy recovery effect claims without a persisted
-host-closure reader remain unknown and refuse, even on terminal native tasks.
-Exact I and retained SQL types/rowids/bytes/FKs are
-validated before and after exclusive writer acquisition; any source change
-refuses. Add only four empty tables atomically with FK enforcement ON, validate
-independent complete J and exact retained equality, recheck offline identity,
-then commit; every failure rolls back. Valid J replay is read-only and needs no
-fresh offline migration. Earlier scripts report the actual already-compatible
-layout and keep their original migration targets.
+The operator source `scripts/migrate_workflow_coding_schema.py --runtime-root
+/absolute/runtime --org ORG [--check] [--confirm-cooperative-offline]` is
+OPERATIONALLY BLOCKED by R4. Every invocation currently refuses (exit1) before
+writer open with `workflow_coding_connection_binding_unavailable`; ready replay
+and --check cannot claim exit0/3. Path/marker/lstat prerequisites are not an
+independent binding to SQLite's actual opened file. Python sqlite3.Connection
+has no supported file-control/descriptor bridge; its audit handle is the Python
+object, not a native SQLite handle. No raw-pointer/ctypes/native-extension,
+dependency or VFS change is supplied. The explicit migration is not delivered
+as an available operation. ROOT10693 must resolve one minimal dependency: a
+supported coding-only actual-connection API for independently opened-file
+identity plus moved/unlinked status. Unsupported binding must still refuse.
+
+Retained migration source requires the original RO identity to remain equal on
+RW reopen, after BEGIN EXCLUSIVE and before commit; a replacement writer may
+never become the new source baseline. A future supported binding also needs
+separately authorized operator cooperative offline control: documented daemon
+stop, reconciled hosts/outer tails and exclusion of cooperative restarts/
+publication/profile/move until return. Neither a confirmation flag nor PID
+absence, TTL, terminal labels or producer_settled uncertainty supplies binding
+or releases ownership. Complete source-idle checks retain publication/profile,
+F5/draft/recovery/source claims, Pause release and team-move reservations with
+original-owner remediation. Exact I/source SQL types/rowids/bytes/FKs, unchanged
+retained equality, four empty additions, complete independent J validation,
+FK ON and rollback remain required. These retained branches are source-only
+and currently unreachable past the binding refusal; no migration-safety proof
+or OS isolation claim follows. Earlier scripts keep their original targets.
+
+The finite shared discriminator inventory covers typed scalar fields and
+structured metadata using the same rules. Malformed lexical member scanning
+recognizes complete, escaped, duplicate and incomplete reserved envelopes
+without searching quoted document prose. Authority `source_pin` and coding
+setup namespaces are checked independently of canonical/hash-valid bytes,
+including orphan rows and current authority pointers. Recovery.classify_task
+runs the empty/reserved boundary under its existing lock/error fence before
+no-workflow and no-root/draft/F5 legacy returns; any coding tables, even partial
+or empty, also require the full schema reader. Unknown/malformed coding returns
+reconciliation_required, with no coding ownership, task writer or dispatch.
+Ordinary noncoding legacy and the existing document draft/F5 paths remain.
 
 K0 stays disabled; K1 current resolution still refuses before private decode or
 object I/O. No capability/setup/import/mapping/adoption/start/stage/native task/
@@ -295,7 +313,7 @@ assertion, SQL, runtime or cold-compatibility experiment was executed.
 | Existing I document @1–@4/r1/r2 and one-human histories on empty J | All old bytes, human commands, receipts/results/contributors and interpretation retain I dispatch; ordinary old chain/fanout remains native | Same _validate_draft_data/_validate_submission_data/_validate_author_handoff_data/validate_revision_storage, readiness helpers and cutover branches; future authentic archived F–I cases with J-compatible binary |
 | One row in EACH of mappings/runs/attempts/events; orphan coding pins/import/context/provenance/submitted/join/scope/native result action/audit; unsupported coding ownership/format | Every installed reader including validate_data=False refuses categorically; no partial graph admission or legacy fallback | validate_empty_coding_data called after complete layout comparison for F–J, J retained validators forced; future isolated negative source-seeded DBs only after authorization |
 | F–J × four histories × naming0/1 × Pause × team move, including cache identity and unavailable construction | Independent full five-component references preserve every old preimage; any missing reference refuses, all192 combinations have source branches | _release_schema_digest only J allowlist delta; _validate_release_database full SQL digest; future complete isolated whole-reference/cold matrix, not executed |
-| Exact idle I→J, read-only complete-J replay, FKs, retained types/rowids/bytes | One exclusive transaction adds only four empty tables, no marker/explicit-index/retained-row rewrite; validated J replay opens read-only and returns0; failed target/equality/FK check rolls back | migrate_coding_schema/_coding_org_identity/_coding_retained_rows and explicit operator script; future stopped disposable runtime/registered daemon home with authentic retained document/native data |
+| Exact idle I→J, read-only complete-J replay, FKs, retained types/rowids/bytes | Current binding_unavailable refuses before writer open, including replay/--check; no exit0/3 or migration success claimed. Future supported binding must retain four empty additions, FK ON/full target/equality and rollback | migrate_coding_schema/_coding_org_identity/_coding_retained_rows and explicit operator script; future separately admitted stopped disposable runtime with authentic retained data AND independent opened-file binding |
 | Unknown publication/profile/F5/draft/recovery/source-claim/Pause/host/outer-tail/team-move owner; source DB/file/lifecycle/rows change before/after acquisition or target validation failure | Concrete original-owner refusal; no PID/TTL/terminal-label release, no DDL committed, retained rows unchanged after rollback | _validate_coding_source_idle + operator cooperative offline_check + BEGIN EXCLUSIVE/source equality/before-commit identity/except rollback; future isolated controlled owner/change/failure barriers |
 | Startup/reopen/enable/current create-org and pre-J reader/downgrade | Startup validates only; create-org stays I; old reader refuses J, even empty; downgrade preflight gives coding_schema_requires_compatible_reader | OrgState guidance/unchanged install path, routes/orgs I call read-only, cutover _read/document scans/downgrade; future archived preceding-reader vs exact empty J and cold no-upgrade observation |
 
@@ -307,3 +325,61 @@ coding CAS/callback/heartbeat/control remains K2a2/K3. C12's literal lint checks
 are this publication's observed engineering gates, never a new CI/merge producer.
 C16 actual agent mappings/override/rejection/revision/gated merge and operational
 acceptance remain same-root prerequisites with no new execution allocation.
+
+
+### C15 R1–R4 correction — finite discriminator and negative-consumer inventory
+
+Manager step41 accepts independent11446 R1–R4 under Founder139562/559/329;
+unchanged accepted11414/11430 C15 and applicable C01/C09/C12/C16 are reused.
+This inventory describes source assessment; none of these cases executed.
+Shared `_coding_scalar` drives scalar scans, successful object-pairs decoding
+and malformed-envelope lexical member decoding. There is no second regex list.
+All retained structured `_bytes`/`_json`/`payload` columns in workflow tables and
+native tasks/task_results/audit_log are inspected; submission_bytes and
+candidate_bytes remain arbitrary content, not typed metadata.
+
+| Typed discriminator | Complete finite value rule | Actual scalar location / structured location |
+| --- | --- | --- |
+| format | workflow-coding-*, workflow-coding@*, workflow-code-change@*; coding-scope@1 and coding-replacement-selection@1 | Typed format in every saved scope/definition/context/provenance/request/proof/join/event/authority/control/native metadata; covers all accepted @1 families and refuses unsupported later family versions |
+| compiler_pin / validator_pin | workflow-coding-* | workflow_template_drafts and workflow_template_versions; the same typed fields in metadata |
+| source_pin | coding-capability-issuer@1 or workflow-coding-* | workflow_authorization_revisions and template draft/version source_pin; typed metadata, including orphan authority with canonical/hash-valid bytes. Shared release-input@1 alone is not coding |
+| namespace / authority_namespace / org_namespace | release/happyranch or org/{nonempty-slug}/coding-setup subtree, including incomplete key suffix | Template identities/drafts/versions, authorization revisions/active pointers, authority pointers/publication journals/leases/admission records, profile dependencies, activation/dispatch/draft authority_namespace; matching typed metadata, irrespective of attached instance |
+| kind / artifact_kind | code-change | Typed metadata, including native decisions; arbitrary prose or role/principal names are not discriminators |
+| source_kind | coding-manager-result | workflow_contexts.source_kind and typed metadata |
+| action | workflow_start; coding_* (retains prior scalar audit LIKE case tolerance) | task_results.decision_json/action metadata and audit_log.action/payload; no parsing of task brief/summary/findings |
+| identity / release_identity | release/happyranch/coding | Typed release metadata and coding mapping scalar (any mapping row already refuses) |
+| coding tables | Any row in each of the four literal J tables | Full/metadata/recovery scans. Partial/empty coding schema still requires complete central schema validation before recovery legacy |
+
+For each typed family, the finite negative selection includes complete scalar
+and structured identity, nested array/object identity, escaped key/value,
+duplicate coding→document and document→coding values, missing outer closing
+brace/comma-tail and incomplete quoted value, including UTF8/16/32 byte
+envelopes supported by the successful JSON decoder. The lexer consumes quoted prose
+as one token; it does not search inside descriptions or interpret raw document
+content as member metadata. Invalid/truncated escapes retain only their decoded
+prefix; a reserved or still-possibly-reserved incomplete typed value refuses.
+Oversized/deep metadata refuses, never truncates a row prefix into acceptance.
+
+| Correction / scenario and action | O: observable expected result | D: deliberate defect to expose later | G: exact missing guard/dependency | S: actual shipping seam and final denial oracle |
+| --- | --- | --- | --- | --- |
+| R1 every inventory entry in incomplete/duplicate/escaped native decision, including action=workflow_start, kind/artifact_kind=code-change, source_kind=coding-manager-result; compare ordinary prose containing the same words/quoted snippets | Full/metadata readers reject unsupported coding; recovery yields reconciliation_required. Ordinary document strings stay outside typed discrimination | Remove an inventory entry or restore partial fallback regex/last-key-wins | Shared scalar and lexical member discriminator before malformed-native absence | _refuse_coding_metadata→validate_empty_coding_data→_validate_installed/classify_task; no dispatch/claim/schema/task effect, no fabricated legacy validity PASS |
+| R2 canonical/hash-valid orphan authority with reserved source_pin, setup namespace alone or both; current pointer with no linked document instance | Unsupported coding authority refuses regardless of canonical/hash integrity or old closure absence | Inspect authority_bytes only or omit scalar authority/pointer namespace | Complete typed scalar inventory independent of stored canonical-byte decoder | All workflow scalar columns→_coding_scalar; native malformed BLOB scalar cannot hide a reserved family; neither setup reader nor issuer/write exists |
+| R3 no workflow tables but reserved native result/audit; valid old F–I with orphan coding and no draft/F5 alias; populated/partial/empty J with no old ownership; schema/scan error or unknown org | Every relevant early path reconciles/refuses before legacy; generic noncoding remains legacy, valid retained document draft/F5 still follows original owners | Move the guard after no-tables/no-roots legacy, or validate only old aliases | Pre-return empty/reserved scan and complete coding schema validation under existing lock/error fence | classify_task→runner.enqueue_task/jobs.submit/run_step prelaunch/completion/startup recover_owned_task; no queue/dispatch/coding task owner; all consumers read-only |
+| R4 current unsupported binding, including --check/replay; future same-content file replacement at RO→RW gap, moved/unlinked open file, after-exclusive/precommit identity drift | Current operator refuses exit1 before writer open and primitive before BEGIN/DDL. Operational migration stays BLOCKED. Future supported binding must independently refuse wrong actual-file identity across every barrier | Return PRAGMA+lstat as proof, accept Boolean witness, reset identity to reopened writer, or skip exclusive/precommit check | Supported actual-connection identity/moved API absent from Python sqlite3; minimal new bridge requires explicit manager protected-radius disposition | _coding_org_identity→operator RO identity→RW comparison→migrate_coding_schema after exclusive/precommit; no success or filesystem/SQL experiment now |
+
+Future level: independent scoped reader/recovery/cold migration checks in an
+explicitly admitted disposable venue; runtime/security/SQL execution remains
+UNEXECUTED. Future isolation: distinct synthetic orgs and private DB/source paths,
+separate stopped runtime plus registered daemon home and genuinely reconciled
+host/outer-tail owners; no shared live daemon/org/store/port or production swaps.
+Resource owner: ROOT10693 obtains the minimal supported binding and separately
+authorizes any venue/execution; original source/host/publication owners reconcile
+uncertainty; independent QA owns observations, maker never supplies a verdict.
+C01 preserves actual-org binding without claiming mappings/override; C09 adds
+unavailable-binding/RO→RW/no-alias recovery boundaries without coding CAS or
+callback implementation; C12 remains exact-head lint/static only, with genuine
+pending/failure evidence; C16 real-agent/revision/mapping/override/operational
+acceptance stays root-owned. Python units RETIRED; integration INCLUDING callback
+SKIPPED24342; behavior/security/migration-safety/negative/mutation/repetition/
+protected/executable proof UNEXECUTED/FOUNDER-WAIVED139429/430. No test-authoring
+or behavioral PASS follows from this four-answer source case amendment.

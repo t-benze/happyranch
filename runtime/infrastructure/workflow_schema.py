@@ -1778,13 +1778,15 @@ def migrate_document_revision_schema(conn: sqlite3.Connection, *, expected_org_s
 
 
 def coding_migration_guidance() -> str:
-    return ('Use a J-compatible reader; stop the daemon through its documented lifecycle and '
-            'reconcile every owned host/producer/outer tail, publication/profile/source claim and '
-            'Pause/team-move reservation. Then run scripts/migrate_workflow_coding_schema.py '
-            '--runtime-root <absolute-runtime-root> --org <org-slug> --check; only under an '
-            'operator-maintained cooperative offline boundary, run without --check with '
-            '--confirm-cooperative-offline. Exact I source required; startup/reopen/enable never '
-            'installs J. Even empty J blocks pre-J downgrade; populated coding requires K2a2.')
+    return ('Use a compatible reader. Coding migration is operationally unavailable: '
+            'workflow_coding_connection_binding_unavailable; a supported actual-opened-file '
+            'identity API is required. scripts/migrate_workflow_coding_schema.py --runtime-root '
+            '<absolute-runtime-root> --org <org-slug> --check currently refuses before writer open; '
+            'operator confirmation cannot override missing binding. A future operational migration '
+            'still requires exact I, documented daemon stop and reconciled host/producer/outer-tail, '
+            'publication/profile/source/Pause/team-move ownership under cooperative offline control. '
+            'Startup/reopen/enable never installs J. Even empty J blocks pre-J downgrade; '
+            'populated coding requires K2a2.')
 
 
 def _validate_coding_source_idle(conn: sqlite3.Connection, *, expected_org_slug: str) -> None:
@@ -1905,7 +1907,15 @@ def _coding_retained_rows(conn: sqlite3.Connection) -> dict[str, tuple]:
 
 
 def _coding_org_identity(conn: sqlite3.Connection, *, expected_org_slug: str) -> tuple:
-    """Actual owned org file only; no generic/runtime-audit/attached DB."""
+    """Refuse until a supported API binds this connection's actual opened file.
+
+    Path checks are prerequisites only, NOT opened-file identity evidence.
+    Python sqlite3.Connection exposes neither sqlite3_file_control nor its
+    native descriptor. HAS_MOVED requires the actual SQLite connection handle;
+    PRAGMA database_list plus lstat cannot replace it. No permitted bridge is
+    shipped, so coding migration is operationally unavailable before writes.
+    See CPython v3.14.4 Modules/_sqlite/connection.c and SQLite file_control API.
+    """
     import os
     import stat
     from pathlib import Path
@@ -1922,16 +1932,20 @@ def _coding_org_identity(conn: sqlite3.Connection, *, expected_org_slug: str) ->
     info = path.lstat()
     if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != os.getuid():
         raise ValueError('workflow_coding_migration_org_identity_invalid')
-    return str(path), info.st_dev, info.st_ino, info.st_mode, info.st_uid
+    raise ValueError('workflow_coding_connection_binding_unavailable: supported actual-opened-file '
+                     'identity API required; PRAGMA filename and path stat are insufficient')
 
 
 def migrate_coding_schema(conn: sqlite3.Connection, *, expected_org_slug: str,
                           offline_check: Callable[[], None]) -> Literal['migrated', 'ready']:
     """Explicit org-owned I-to-J only; FK ON throughout, no live Database owner.
 
-    The script owns affirmative cooperative daemon/host offline observation and
-    actual opened-org identity. Recheck after exclusive acquisition and before
-    commit. No runtime calls this primitive, and ready J replay never writes.
+    Operationally BLOCKED by _coding_org_identity until supported actual-file
+    binding exists. Its categorical refusal occurs before BEGIN/DDL; retained
+    migration logic is NOT a delivered operational path. Any future supported
+    binding must preserve original RO-to-RW identity continuity and recheck after
+    exclusive acquisition/before commit alongside cooperative offline evidence.
+    No runtime calls this primitive; no pathname or caller Boolean supplies proof.
     """
     if conn.in_transaction or conn.execute('PRAGMA foreign_keys').fetchone()[0] != 1:
         raise ValueError('workflow_coding_migration_requires_idle_foreign_keys')

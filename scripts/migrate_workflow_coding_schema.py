@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Explicit cooperative offline org-only I-to-empty-J migration; never startup."""
+"""I-to-empty-J SOURCE; operationally unavailable until actual-file binding ships.
+
+All invocations refuse before writer open, including --check and ready replay.
+A path stat is not proof of the SQLite connection's independently opened file.
+"""
 from __future__ import annotations
 
 import argparse
@@ -10,10 +14,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from scripts.migrate_workflow_submission_schema import (  # noqa: E402
-    _identity, _lifecycle_snapshot, resolve_org_database,
+    _lifecycle_snapshot, resolve_org_database,
 )
 from runtime.infrastructure.workflow_schema import (  # noqa: E402
-    _validate_release_database, coding_migration_guidance,
+    _coding_org_identity, _validate_release_database, coding_migration_guidance,
     migrate_coding_schema, validate_workflow_schema,
 )
 
@@ -22,7 +26,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--runtime-root', type=Path, required=True)
     parser.add_argument('--org', required=True)
-    parser.add_argument('--check', action='store_true', help='Read-only; exit 3 if exact I needs migration')
+    parser.add_argument('--check', action='store_true', help='Read-only; currently refuses (exit 1): actual-file connection binding unavailable')
     parser.add_argument('--confirm-cooperative-offline', action='store_true', help=(
         'Operator affirms documented daemon stop, all hosts/outer tails reconciled, '
         'and no cooperative daemon/host/publication/profile/move restart until return. '
@@ -37,8 +41,10 @@ def main(argv: list[str] | None = None) -> int:
         conn = sqlite3.connect(path.as_uri() + '?mode=ro', uri=True, timeout=1.0)
         conn.row_factory = sqlite3.Row
         conn.execute('PRAGMA foreign_keys=ON')
-        identity = _identity(path, conn)
-        if identity[:2] != (before.st_dev, before.st_ino):
+        # This binding currently refuses categorically. Do not call the older
+        # path-only _identity or treat its tuple as opened-connection proof.
+        identity = _coding_org_identity(conn, expected_org_slug=args.org)
+        if identity[1:3] != (before.st_dev, before.st_ino):
             raise ValueError('org_database_identity_changed')
         conn.execute('BEGIN')
         layout = validate_workflow_schema(conn, expected_org_slug=args.org)
@@ -65,13 +71,17 @@ def main(argv: list[str] | None = None) -> int:
         conn = sqlite3.connect(path.as_uri() + '?mode=rw', uri=True, timeout=1.0)
         conn.row_factory = sqlite3.Row
         conn.execute('PRAGMA foreign_keys=ON')
+        # Retain the ORIGINAL read-only identity across the reopen gap. A new
+        # writer's own identity cannot become a replacement source baseline.
+        if _coding_org_identity(conn, expected_org_slug=args.org) != identity:
+            raise ValueError('workflow_coding_offline_source_identity_changed')
 
         def offline_check() -> None:
-            # Resolution revalidates owned runtime/org markers, symlinks and
-            # actual opened DB identity. Cooperative no-restart is maintained
-            # externally by the operator, not inferred from these files.
+            # Resolution supplies owned markers/path prerequisites only. A
+            # future supported connection binding must independently recheck
+            # actual opened identity; cooperative no-restart stays external.
             if (resolve_org_database(args.runtime_root, args.org) != path
-                    or _identity(path, conn) != identity
+                    or _coding_org_identity(conn, expected_org_slug=args.org) != identity
                     or _lifecycle_snapshot(args.runtime_root) != offline):
                 raise ValueError('workflow_coding_offline_source_identity_changed')
 
