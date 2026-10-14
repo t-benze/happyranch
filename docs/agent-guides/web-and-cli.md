@@ -2233,3 +2233,27 @@ existing SurfaceAllowList and credential/transport policy; source inspection is
 not native execution evidence. Mounted UI is a separate serial unit. Python units
 remain retired, integration SKIPPED24342, broad behavior/proof UNEXECUTED and
 FOUNDER-WAIVED139429/430; lint/static evidence is not behavioral acceptance.
+
+
+## Disabled coding release catalog — K0
+
+`happyranch workflows release-template coding --version 1 --org ORG --json`
+uses the existing bearer client to GET
+`/api/v1/orgs/{slug}/workflows/release-templates/coding/1`. Org selection retains
+the existing CLI rules; no session or stage supplement is consumed. The CLI
+validates the closed receipt and exact canonical decoded bytes before output;
+parser errors exit2, transport/server/receipt errors exit1, valid catalog output
+exit0. This is catalog success only, always `enabled:false` with
+`reason:release_catalog_only`. The served `workflow-release-template@1` has only
+format, identity, version, definition_bytes_base64, definition_digest,
+compiler_pin, validator_pin, source_pin and readiness. The ordinary org GET is
+classified included for unchanged native handling; no TS/provider/web initiation
+caller is shipped in K0. Authentication and existing-org resolution precede the
+package read. Unknown kind/version is404;503 resource_unavailable and500
+resource_corrupt expose only category, not a resource path.
+
+See [the current ordered-coding K0 contract](../superpowers/specs/2026-10-14-ordered-coding-workflow.md).
+Independent final-head source review/scoped QA and lint/static checks remain
+separate gates. Python units RETIRED; integration including callback SKIPPED24342;
+behavioral/negative/mutation/repetition/protected proof UNEXECUTED /
+FOUNDER-WAIVED139429/430. No package/native build or ad hoc daily E2E is authorized.

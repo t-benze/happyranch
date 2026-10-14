@@ -1791,3 +1791,23 @@ Naming namespace capture includes active/pending executable agent managers and
 workers. Mainline typed human Founder managers have no agent definition and are
 excluded from that agent set; Founder remains the separate human naming owner.
 The combined I/roster/naming behavior remains unverified; see the current naming spec.
+
+
+## Disabled coding release catalog — K0
+
+K0 is a release catalog, always disabled. The pure reader accepts only the fixed
+634-byte canonical `workflow-coding-definition@1` preimage (SHA256
+`6ee02be98738d3c95fe584b165abe07d0dbef66e510133c117ee0d62c953cad8`), rejecting
+missing/duplicate/unknown keys, scalar type substitutions, bounds violations,
+nonfinite/BOM/noncanonical bytes and any changed pin. It uses only the constant
+package resource, never DB/defaults or a configurable path. Projection and GET
+perform no workflow writes, template import, task allocation or readiness lookup.
+`enabled:false,reason:release_catalog_only` cannot become runnable from catalog
+bytes, labels, hashes or successful reads. Existing document/code-admission refusal
+and all historical families retain their meaning.
+
+See [the current ordered-coding K0 contract](../superpowers/specs/2026-10-14-ordered-coding-workflow.md).
+Independent final-head source review/scoped QA and lint/static checks remain
+separate gates. Python units RETIRED; integration including callback SKIPPED24342;
+behavioral/negative/mutation/repetition/protected proof UNEXECUTED /
+FOUNDER-WAIVED139429/430. No package/native build or ad hoc daily E2E is authorized.
