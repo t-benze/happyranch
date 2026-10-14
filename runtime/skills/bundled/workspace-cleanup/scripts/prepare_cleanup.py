@@ -361,7 +361,9 @@ def cache_index(containing: Path) -> dict[str, Any]:
         identity = lambda x: [x.st_dev, x.st_ino, x.st_mode, x.st_uid, x.st_gid, x.st_size, x.st_mtime_ns]
         if identity(st) != identity(after) or len(data) != st.st_size:
             raise ValueError('cache_index_changed_during_read')
-        rows.append({'path': str(path), 'identity': identity(st),
+        # Git may touch a split shared-index mtime even with optional locks off.
+        # Keep it in the individual read bracket, not stable inode/byte identity.
+        rows.append({'path': str(path), 'identity': identity(st)[:-1],
                      'sha256': hashlib.sha256(data).hexdigest(),
                      'bytes_base64': base64.b64encode(data).decode('ascii')})
     return {'path_receipt': {'argv': result.args, 'exit_code': result.returncode,

@@ -410,6 +410,9 @@ Cache isolation-directory creation is mutation. Failed rename/rmdir causes and
 separate original/cache/directory identity and measurements survive; only positive
 restoration/absence/source/status/raw-index proof admits safe refusal. Residue or
 uncertainty halts. Git read observations suppress optional index refresh.
+Raw index/shared-index preservation compares device/inode/mode/owner/size and
+exact bytes; mtime brackets each read but Git's shared-index timestamp touch
+is not a byte or inode change.
 
 Each attempt and acknowledgement uses the existing exclusive pending write,
 flush/fsync/close and exclusive hard-link publisher. A canonical file with its
