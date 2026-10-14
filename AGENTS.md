@@ -27,6 +27,25 @@ Python units RETIRED, integration/callback SKIPPED24342; behavioral/protected pr
 UNEXECUTED/FOUNDER-WAIVED139429/430. Source review is not behavioral acceptance.
 
 
+**Bounded repository artifact source K1 — Founder THR139seq562/329, ROOT TASK10693.**
+`repository_artifacts.py` supplies closed canonical saved binding/adoption/presentation
+readers; the private `repository_artifact_objects.py` supplies bounded no-follow
+adopted-primary-store copies, sanitized typed Git reads, recomputed object hashes
+and complete raw base/head tree manifests. Saved validation proves historical
+integrity only. OrgState mounts `WorkflowRepositoryArtifactService`; its current
+resolve operation categorically refuses before decode or object I/O because K2b's
+authenticated adoption/current authority producer is absent. No constructor flag,
+caller Boolean, record/digest or injected callback authorizes content access.
+K0 readiness remains false and code activation still refuses before allocation.
+Current document formats/producers, routes/CLI/DTOs/schema/receipt/recovery and
+native permissions are unchanged. Later coding writers must ship complete selected
+read/stage/prelaunch/receipt/closeout consumers with before-I/O admission and
+post-await authority revalidation. No live adoption/setup, execution or coding
+readiness is delivered. Python units RETIRED; integration/callback SKIPPED24342;
+behavior/security/protected proof UNEXECUTED/FOUNDER-WAIVED139429/430. Source-only
+review/static checks cannot establish reader-security or behavioral acceptance.
+See [the current K0/K1 contract](docs/superpowers/specs/2026-10-14-ordered-coding-workflow.md).
+
 **Naming v1 core, API and routing source (THR-293 seq14/22/34).** One daemon controls each org.
 OrgState admits the existing generic/workflow/canonical source before installing
 an org-only, atomic three-table naming extension. Generic Database and
