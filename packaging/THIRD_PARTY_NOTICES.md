@@ -54,6 +54,14 @@ no-follow bounded read for parsing and hashing; unsafe or malformed metadata
 refuses promptly. Shared Go notice collection preserves installed bytes and
 records unsafe notice inputs as unresolved.
 
+Emitted dependency source hashing uses a separate 16 MiB per-file limit and
+64 KiB streaming reads, with lexical/package and ancestor checks, no-follow,
+nonblocking open, single-link regular-file validation and stable size/timestamps.
+Empty regular JavaScript modules retain the SHA256 of empty bytes. The limit
+provides over 13 times the maximum size (1,236,999 bytes) in the authenticated
+1,043-source retained mapping; notice, manifest and pinned fallback limits stay
+unchanged. Any source refusal persists for its owner across later inputs/maps.
+
 Offline notice inputs live in `packaging/notice-data/identity-map.json` with two
 unchanged originals: CPython LICENSE (13936 bytes, SHA256
 `3b2f81fe21d181c499c59a256c8e1968455d6689d269aa85373bfb6af41da3bf`)

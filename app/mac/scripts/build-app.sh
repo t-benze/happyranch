@@ -318,7 +318,7 @@ STAGE=notices
 cp -R "$OUTPUT/scratch/freeze-work/notices" "$APP/Contents/Resources/licenses/python"
 cp "$SOURCE/packaging/THIRD_PARTY_NOTICES.md" "$APP/Contents/Resources/licenses/THIRD_PARTY_NOTICES.md"
 python3 - "$SOURCE" "$APP" "$OUTPUT" <<'PYNOTICES'
-import hashlib, json, os, re, shutil, sys
+import hashlib, json, os, re, shutil, stat, sys
 from pathlib import Path
 source, app, output = map(Path, sys.argv[1:])
 notice_data = source / 'packaging/notice-data'
@@ -327,6 +327,31 @@ mapping = json.loads((output / 'scratch/freeze-work/license-mapping.json').read_
 components = mapping['components']
 def sha(p):
     return hashlib.sha256(p.read_bytes()).hexdigest()
+def emitted_source_sha256(path, root):
+    # Source modules have a separate policy from 256 KiB notice/manifest reads.
+    # 16 MiB gives >13x headroom over the largest of 1043 retained mapped inputs.
+    limit = 16 * 1024 * 1024
+    notice_helpers['safe_path'](path, root)
+    with os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK), 'rb') as stream:
+        before = os.fstat(stream.fileno())
+        if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1 or before.st_size > limit:
+            raise ValueError('EMITTED_SOURCE_UNVERIFIABLE: ' + str(path))
+        digest = hashlib.sha256(); size = 0
+        while True:
+            chunk = stream.read(min(65536, limit + 1 - size))
+            if not chunk:
+                break
+            size += len(chunk)
+            if size > limit:
+                raise ValueError('EMITTED_SOURCE_UNVERIFIABLE: ' + str(path))
+            digest.update(chunk)
+        after = os.fstat(stream.fileno())
+        if (size != before.st_size or after.st_nlink != 1
+                or (before.st_size, before.st_mtime_ns, before.st_ctime_ns)
+                != (after.st_size, after.st_mtime_ns, after.st_ctime_ns)):
+            raise ValueError('EMITTED_SOURCE_UNVERIFIABLE: ' + str(path))
+    # Empty regular JavaScript is a valid module; retain its exact empty digest.
+    return digest.hexdigest()
 def notice_candidates(root):
     # Include unsafe entries too: a notice-named FIFO/directory is not absence.
     return [p for p in sorted(root.iterdir()) if
@@ -534,7 +559,7 @@ for map_path in sorted((web / 'dist').rglob('*.map')):
                     raise ValueError('nested metadata identity conflicts with package owner')
             inclusion['metadata'] = str(root / 'package.json')
             inclusion['metadata_chain'] = manifests
-            inclusion['source_sha256'] = hashlib.sha256(notice_helpers['safe_bytes'](path, root)).hexdigest()
+            inclusion['source_sha256'] = emitted_source_sha256(path, root)
             packages.setdefault(root, {'identity': owner, 'inputs': []})['inputs'].append(inclusion)
         except (OSError, ValueError, RuntimeError) as exc:
             unresolved(inclusion, str(exc) if isinstance(exc, ValueError) else 'package input inspection failed: ' + type(exc).__name__)
