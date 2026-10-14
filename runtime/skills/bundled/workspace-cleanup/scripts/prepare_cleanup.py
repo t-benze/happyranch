@@ -395,12 +395,63 @@ def native_inputs(scratch: Path) -> list[dict[str, str]]:
     return entries
 
 
+def capture_failure(value: Any) -> str | None:
+    required = {'argv', 'cwd', 'started_at', 'ended_at', 'exit_code', 'stdout', 'stderr', 'error'}
+    if (not isinstance(value, dict) or not required <= set(value)
+            or not isinstance(value['argv'], list) or not value['argv']
+            or any(not isinstance(arg, str) for arg in value['argv'])
+            or any(not isinstance(value[key], str) for key in ('cwd', 'started_at', 'ended_at', 'stdout', 'stderr'))):
+        return 'capture_receipt_incomplete'
+    if value['error'] is not None:
+        return 'capture_error:' + str(value['error'])
+    if type(value['exit_code']) is not int or value['exit_code'] < 0:
+        return 'capture_exit_unestablished:' + str(value['exit_code'])
+    try:
+        if aware_instant(value['ended_at']) < aware_instant(value['started_at']):
+            return 'capture_timestamp_order'
+    except (ValueError, TypeError):
+        return 'capture_timestamp_unestablished'
+    return None
+
+
+def native_capture_failure(entries: list[dict[str, str]]) -> str | None:
+    import base64
+    archived = {row['name']: base64.b64decode(row['bytes_base64'], validate=True) for row in entries}
+    for row in entries:
+        data = archived[row['name']]
+        if hashlib.sha256(data).hexdigest() != row['sha256']:
+            raise ValueError('native_input_digest')
+        name = row['name']
+        pending = Path(name).name.startswith('.') and name.endswith('.pending')
+        canonical_name = str(Path(name).with_name(Path(name).name[1:-len('.pending')])) if pending else name
+        # These are all current capture sinks, including action/restoration sinks.
+        capture_sink = (canonical_name.endswith('.native.json') or canonical_name.startswith('preserved-')
+                        or canonical_name in {'restore-mv.json', 'restore-rmdir.json', 'isolation-mktemp.json',
+                                    'isolation-directory-identity.json', 'isolation-mv.json', 'isolation-rmdir.json'})
+        if capture_sink and pending and archived.get(canonical_name) != data:
+            return name + ':capture_publication_unestablished'
+        try:
+            value = json.loads(data)
+        except (ValueError, UnicodeError):
+            if capture_sink:
+                return name + ':capture_receipt_unreadable'
+            continue
+        if capture_sink or (isinstance(value, dict) and {'argv', 'error', 'stdout', 'stderr'} <= set(value)):
+            failure = capture_failure(value)
+            if failure is not None:
+                return name + ':' + failure
+    return None
+
+
 def publish_eligibility(attempt: Path, scratch: Path, measurement: str) -> str:
     import base64
     value = validate_attempt(attempt)
     if value['item']['candidate'] != os.environ['CANDIDATE'] or value['item']['containing'] != os.environ['CONTAINING']:
         raise ValueError('runner_literal_identity_drift')
     entries = native_inputs(scratch)
+    failure = native_capture_failure(entries)
+    if failure is not None or (attempt / 'evidence-failed').exists():
+        raise ValueError('native_capture_uncertain:' + str(failure))
     names = {row['name'] for row in entries}
     if not {'task.json', 'tree-boundary.json', 'peer-tasks.json', 'trigger-audit.json'} <= names:
         raise ValueError('gate_evidence_missing')
@@ -434,6 +485,9 @@ def validate_eligibility(attempt: Path, expected: str | None = None) -> str | No
         data = base64.b64decode(row['bytes_base64'], validate=True)
         if hashlib.sha256(data).hexdigest() != row['sha256']:
             raise ValueError('native_input_digest')
+    failure = native_capture_failure(value['native_inputs'])
+    if failure is not None:
+        raise ValueError('native_capture_uncertain:' + failure)
     actual = digest(path)
     if expected is not None and actual != expected:
         raise ValueError('eligibility_digest_drift')
@@ -507,6 +561,10 @@ def validate_coverage(context: dict[str, Any], manifest: list[dict[str, Any]],
                    'ack.json', '.ack.json.pending', 'terminal-native.json', '.terminal-native.json.pending'}
         children = list(path.iterdir())
         scratch = [p for p in children if p.name.startswith('gates.') and p.is_dir() and not p.is_symlink()]
+        if len(scratch) == 1:
+            failure = native_capture_failure(native_inputs(scratch[0]))
+            if failure is not None:
+                raise ValueError('native_capture_uncertain:' + failure)
         if len(scratch) != 1 or any(p.is_symlink() or (p.name not in allowed and p not in scratch) for p in children):
             raise ValueError('attempt_namespace_extra_or_missing')
         ack = canonical_record(path / 'ack.json')
@@ -523,6 +581,9 @@ def validate_coverage(context: dict[str, Any], manifest: list[dict[str, Any]],
         expected_native['native_inputs'] = native_inputs(scratch[0])
         if not same_evidence(native, expected_native):
             raise ValueError('native_terminal_mismatch')
+        failure = native_capture_failure(expected_native['native_inputs'])
+        if failure is not None:
+            raise ValueError('native_capture_uncertain:' + failure)
         if row.get('exit_code') not in (0, 2) or row.get('error') is not None:
             raise ValueError('native_terminal_failure')
         if row['exit_code'] == 0 and expected['eligible_sha256'] is None:
@@ -551,13 +612,20 @@ def evidence_cli(args: argparse.Namespace) -> int:
     if args.command == 'evidence-capture':
         from observe_cleanup_batch import capture_command
         argv = args.argv[1:] if args.argv[:1] == ['--'] else args.argv
-        value = capture_command(argv, Path.cwd(), timeout=45)
+        # Inherit the candidate's cancellation group. Only outer observers own
+        # a separate group; native action children must not escape that lifetime.
+        value = capture_command(argv, Path.cwd(), timeout=45, own_group=False)
         value['interpreter'] = sys.executable
         value['python_version'] = sys.version
         write_json(args.output, value)
         sys.stdout.write(value['stdout'])
         sys.stderr.write(value['stderr'])
         return value['exit_code'] if value['error'] is None and value['exit_code'] is not None else 3
+    if args.command == 'capture-check':
+        failure = capture_failure(canonical_record(args.output))
+        if failure is not None:
+            raise ValueError(failure)
+        return 0
     if args.command == 'cache-index':
         print(json.dumps(cache_index(args.containing), sort_keys=True))
         return 0
@@ -596,6 +664,8 @@ def main(argv: list[str] | None = None) -> int:
     capture = commands.add_parser('evidence-capture')
     capture.add_argument('--output', type=Path, required=True)
     capture.add_argument('argv', nargs=argparse.REMAINDER)
+    check = commands.add_parser('capture-check')
+    check.add_argument('--output', type=Path, required=True)
     args = parser.parse_args(argv)
     try:
         if any(isinstance(value, Path) and not value.is_absolute() for value in vars(args).values()):

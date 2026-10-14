@@ -642,6 +642,17 @@ batch/sequence/postcheck completeness are separate prerequisites. No automatic
 recovery or directory-fsync/crash-atomic guarantee follows. Historical bytes remain
 historical, with missing new-contract proof explicit; never rebind or retry them.
 
+Captured native uncertainty (output cap, timeout, spawn/capture failure, signal or
+failed publication) is distinct from a fully captured ordinary nonzero gate
+denial. The writer and every eligibility/coverage/resume/report reader retain
+the native cause and block action or next admission, even with healthy enclosing
+files or missing fallback. Native action/capture children inherit the candidate
+cancellation group. The batch stops and reconciles its owned group before
+terminal observations; outer capture allows that cleanup before forced kill.
+Residual or unproven survival is unknown and unsafe, never clean completion or
+permission to retry. Possible mutation remains partial/unknown without reuse.
+
+
 **Owning-branch cleanup authority.** For daemon-managed workspace cleanup, an existing owning origin task branch is authoritative: if it does not contain the candidate commit, or its containment evidence fails, cleanup refuses without falling through to owning-task or any-task merged-PR proofs.
 
 The current-use scanner treats a parseable leader `Z` as evidence for that task

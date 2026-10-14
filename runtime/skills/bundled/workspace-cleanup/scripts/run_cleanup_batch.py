@@ -17,7 +17,8 @@ from typing import Any
 sys.dont_write_bytecode = True
 from prepare_cleanup import (CAP, EVIDENCE_CAP, acknowledgement, canonical_record,
                              create_attempt, digest, evidence_context, validate_coverage,
-                             beneath, history_input, native_inputs, validate_eligibility, write_json)
+                             beneath, history_input, native_inputs, native_capture_failure,
+                             validate_eligibility, write_json)
 
 
 _ROW_KEYS = {
@@ -258,25 +259,43 @@ def _group_exists(process_group: int) -> bool:
 
 def _terminate_group(
     process: subprocess.Popen[str], stdout: str | bytes | None, stderr: str | bytes | None,
+    *, grace_seconds: float = 0.1,
 ) -> tuple[str, str, str]:
     process_group = process.pid
-    for group_signal in (signal.SIGTERM, signal.SIGKILL):
-        try:
-            os.killpg(process_group, group_signal)
-        except ProcessLookupError:
-            pass
-        if group_signal == signal.SIGTERM:
-            time.sleep(0.1)
+    try:
+        os.killpg(process_group, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    # Outer capture gives the batch time to reconcile its separately owned
+    # candidate group before escalation. Candidate capture children inherit it.
+    deadline = time.monotonic() + grace_seconds
+    while _group_exists(process_group) and time.monotonic() < deadline:
+        process.poll()
+        time.sleep(0.01)
+    try:
+        os.killpg(process_group, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    drain_unknown = False
     try:
         tail_stdout, tail_stderr = process.communicate(timeout=2.0)
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as exc:
         try:
             os.killpg(process_group, signal.SIGKILL)
         except ProcessLookupError:
             pass
-        tail_stdout, tail_stderr = process.communicate()
-    captured_stdout = _text(stdout) + _text(tail_stdout)
-    captured_stderr = _text(stderr) + _text(tail_stderr)
+        try:
+            tail_stdout, tail_stderr = process.communicate(timeout=2.0)
+        except subprocess.TimeoutExpired as final:
+            tail_stdout, tail_stderr = final.stdout or exc.stdout, final.stderr or exc.stderr
+            drain_unknown = True
+            for stream in (process.stdout, process.stderr):
+                if stream is not None:
+                    stream.close()
+            process.poll()
+    # communicate returns the whole stream, including TimeoutExpired's prefix.
+    captured_stdout = _text(tail_stdout) if tail_stdout is not None else _text(stdout)
+    captured_stderr = _text(tail_stderr) if tail_stderr is not None else _text(stderr)
     deadline = time.monotonic() + 2.0
     while _group_exists(process_group) and time.monotonic() < deadline:
         try:
@@ -286,7 +305,7 @@ def _terminate_group(
         time.sleep(0.05)
     error = (
         "timeout_group_survival_unverified"
-        if _group_exists(process_group) else "timeout_group_terminated"
+        if drain_unknown or _group_exists(process_group) else "timeout_group_terminated"
     )
     return captured_stdout, captured_stderr, error
 
@@ -392,16 +411,29 @@ def main(argv: list[str] | None = None) -> int:
                 **item, "argv": command, "started_at": _utc_now(), "terminal": True,
             }
             process: subprocess.Popen[str] | None = None
+            pending_signal = None
+            def interrupted(signum: int, frame: Any) -> None:
+                nonlocal pending_signal
+                pending_signal = signum
+                if process is None:
+                    return  # Ownership must be assigned before cancellation.
+                raise InterruptedError('batch_signal:' + str(signum))
+            old_handlers = {sig: signal.signal(sig, interrupted) for sig in (signal.SIGTERM, signal.SIGINT)}
             try:
                 process = subprocess.Popen(
                     command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                     text=True, start_new_session=True, env={**os.environ, "WC_ATTEMPT": str(attempt)},
                 )
+                if pending_signal is not None:
+                    raise InterruptedError('batch_signal:' + str(pending_signal))
                 try:
                     stdout, stderr = process.communicate(
                         timeout=args.candidate_timeout_seconds,
                     )
                     error = None
+                    if _group_exists(process.pid):
+                        stdout, stderr, termination = _terminate_group(process, stdout, stderr)
+                        error = 'runner_group_residue:' + termination
                 except subprocess.TimeoutExpired as exc:
                     stdout, stderr, error = _terminate_group(process, exc.stdout, exc.stderr)
                 receipt = _receipt(stdout)
@@ -411,7 +443,11 @@ def main(argv: list[str] | None = None) -> int:
                     "stderr": stderr, "error": error,
                 })
             except Exception as exc:
-                if process is not None and process.poll() is None:
+                # The wrapper may already be reaped while an owned child lives.
+                # Do not let repeated TERM interrupt the actual containment stop.
+                for sig in old_handlers:
+                    signal.signal(sig, signal.SIG_IGN)
+                if process is not None:
                     try:
                         stdout, stderr, termination = _terminate_group(process, "", "")
                     except Exception:
@@ -422,17 +458,24 @@ def main(argv: list[str] | None = None) -> int:
                     "ended_at": _utc_now(),
                     "exit_code": process.returncode if process is not None else None,
                     "receipt": None, "stdout": stdout, "stderr": stderr,
-                    "error": f"runner_error:{type(exc).__name__}:{termination}",
+                    "error": f"runner_error:{type(exc).__name__}:{exc}:{termination}",
                 })
+            finally:
+                for sig, handler in old_handlers.items():
+                    signal.signal(sig, handler)
             try:
                 if (attempt / 'evidence-failed').exists():
-                    row['error'] = 'native_evidence_publication_failed'
+                    row['error'] = (row['error'] + ';' if row['error'] else '') + 'native_capture_or_publication_uncertain'
                 row['eligible_sha256'] = validate_eligibility(attempt)
                 native = {key: row[key] for key in ('exit_code', 'receipt', 'stdout', 'stderr', 'error')}
                 scratch = list(attempt.glob('gates.*'))
                 if len(scratch) != 1:
                     raise ValueError('native_gate_namespace_missing')
                 native['native_inputs'] = native_inputs(scratch[0])
+                failure = native_capture_failure(native['native_inputs'])
+                if failure is not None:
+                    row['error'] = (row['error'] + ';' if row['error'] else '') + 'native_capture_uncertain:' + failure
+                    native['error'] = row['error']
                 write_json(attempt / 'terminal-native.json', native)
                 canonical_record(attempt / 'terminal-native.json')
                 begin, end = _append_durable(journal, row)

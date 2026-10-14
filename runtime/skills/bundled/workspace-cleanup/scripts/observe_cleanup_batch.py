@@ -31,15 +31,27 @@ REQUEST_KEYS = {'task_id', 'session_id', 'title', 'script', 'interpreter', 'rati
 
 
 def capture_command(argv: list[str], cwd: Path, timeout: float = 10,
-                    cap: int = COMMAND_CAP) -> dict[str, Any]:
+                    cap: int = COMMAND_CAP, *, own_group: bool = True) -> dict[str, Any]:
     receipt: dict[str, Any] = {'argv': argv, 'cwd': str(cwd), 'started_at': dt.datetime.now(dt.timezone.utc).isoformat(),
                               'exit_code': None, 'stdout': '', 'stderr': '', 'error': None}
     streams = {'stdout': bytearray(), 'stderr': bytearray()}
     process = None
+    old_handlers = {}
+    pending_signal = None
+    if own_group:
+        def interrupted(signum: int, frame: Any) -> None:
+            nonlocal pending_signal
+            pending_signal = signum
+            if process is None:
+                return  # Finish assigning ownership if interrupted during spawn.
+            raise InterruptedError('capture_signal:' + str(signum))
+        old_handlers = {sig: signal.signal(sig, interrupted) for sig in (signal.SIGTERM, signal.SIGINT)}
     try:
         process = subprocess.Popen(argv, cwd=cwd, stdout=subprocess.PIPE,
-                                   stderr=subprocess.PIPE, start_new_session=True,
+                                   stderr=subprocess.PIPE, start_new_session=own_group,
                                    env={**os.environ, 'GIT_OPTIONAL_LOCKS': '0'})
+        if pending_signal is not None:
+            raise InterruptedError('capture_signal:' + str(pending_signal))
         with selectors.DefaultSelector() as selector:
             selector.register(process.stdout, selectors.EVENT_READ, 'stdout')
             selector.register(process.stderr, selectors.EVENT_READ, 'stderr')
@@ -58,20 +70,40 @@ def capture_command(argv: list[str], cwd: Path, timeout: float = 10,
                         raise ValueError('command_output_cap:' + key.data)
             process.wait(timeout=max(.01, deadline - time.monotonic()))
         receipt['exit_code'] = process.returncode
+        if own_group:
+            from run_cleanup_batch import _group_exists, _terminate_group
+            if _group_exists(process.pid):
+                _, _, termination = _terminate_group(process, '', '')
+                receipt['error'] = 'capture_group_residue:' + termination
     except (OSError, ValueError, TimeoutError, subprocess.TimeoutExpired) as exc:
         receipt['error'] = str(exc)
         if process is not None:
-            try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            process.wait(timeout=5)
+            for sig in old_handlers:
+                signal.signal(sig, signal.SIG_IGN)
+            if own_group:
+                from run_cleanup_batch import _terminate_group
+                tail_stdout, tail_stderr, termination = _terminate_group(process, '', '', grace_seconds=3)
+                for key, tail in (('stdout', tail_stdout), ('stderr', tail_stderr)):
+                    value = streams[key]
+                    value.extend(tail.encode('utf-8')[:max(0, cap - len(value))])
+                receipt['error'] += ':' + termination
+            else:
+                # Never signal the inherited candidate group from inside it.
+                # Batch reconciliation stops any residual descendants before
+                # recording a terminal observation or admitting another item.
+                try:
+                    process.kill()
+                except ProcessLookupError:
+                    pass
+                process.wait(timeout=5)
             receipt['exit_code'] = process.returncode
     finally:
         if process is not None:
             for stream in (process.stdout, process.stderr):
                 if stream is not None:
                     stream.close()
+        for sig, handler in old_handlers.items():
+            signal.signal(sig, handler)
     receipt.update({key: bytes(value).decode('utf-8', errors='replace') for key, value in streams.items()})
     receipt['ended_at'] = dt.datetime.now(dt.timezone.utc).isoformat()
     return receipt
