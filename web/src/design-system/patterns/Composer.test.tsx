@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useState } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -359,5 +359,31 @@ describe('Composer / abort replies', () => {
     );
     await user.click(screen.getByRole('button', { name: /Abort reply/i }));
     expect(onAbort).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('Composer / explicit prose caret', () => {
+  it.each(['mail@design', '`@design`', '```\n@design', '\\@design', '@design. suffix'])('suppresses literal/terminated hint at %j', async (body) => {
+    render(<Composer agents={TEST_AGENTS} threadId="THR-lexer" orgSlug="test-org" onSend={NOOP_SEND} />);
+    const ta = screen.getByRole<HTMLTextAreaElement>('textbox', {name:/compose/i});
+    fireEvent.change(ta,{target:{value:body}});
+    const caret = body.startsWith('@design.') ? 8 : body.indexOf('@design') + 7;
+    ta.focus(); ta.setSelectionRange(caret,caret); fireEvent.click(ta);
+    expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
+    expect(ta).toHaveValue(body); expect(ta).toHaveFocus();
+    expect(NOOP_SEND).not.toHaveBeenCalled();
+  });
+  it('quote-exit hint insertion preserves suffix, draft, caret and focus', async () => {
+    const user=userEvent.setup();
+    render(<Composer agents={TEST_AGENTS} threadId="THR-lexer" orgSlug="test-org" onSend={NOOP_SEND} />);
+    const ta=screen.getByRole<HTMLTextAreaElement>('textbox',{name:/compose/i});
+    const prefix=' > ```\n> @design_dev_1\n';
+    fireEvent.change(ta,{target:{value:prefix+'@de suffix'}});
+    ta.focus(); ta.setSelectionRange(prefix.length+3,prefix.length+3); fireEvent.click(ta);
+    await user.click(await screen.findByRole('option',{name:/design_lead/}));
+    expect(ta).toHaveValue(prefix+'@design_lead  suffix');
+    expect(ta).toHaveFocus();
+    expect([ta.selectionStart,ta.selectionEnd]).toEqual([prefix.length+13,prefix.length+13]);
+    expect(NOOP_SEND).not.toHaveBeenCalled();
   });
 });

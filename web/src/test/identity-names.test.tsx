@@ -209,6 +209,33 @@ describe('naming v1 shipping UI — mocked HTTP', () => {
     expect(composer).toHaveFocus();
   });
 
+  test.each(['503','per-token'] as const)('follow-up %s alias failure keeps draft/file and zero uploads; known nonparticipant ID stays reachable', async (failure) => {
+    const f=fixture(); const resolves: string[][]=[];
+    server.use(http.post('/api/v1/orgs/alpha/identities/resolve',async ({request})=>{
+      const body=await request.json() as ResolveBody; resolves.push(body.addresses);
+      return failure==='503' ? HttpResponse.json({detail:{code:'naming_unavailable'}},{status:503})
+        : HttpResponse.json({resolutions:body.addresses.map(address=>({address,status:'naming_unavailable',identity:null,eligible:false}))});
+    }), http.post('/api/v1/orgs/alpha/threads/THR-MOCK/send',async ({request})=>{
+      f.effects.push({kind:'send',slug:'alpha',body:await request.json()});
+      return HttpResponse.json({seq:1,thread_id:'THR-MOCK'});
+    }));
+    mount('/orgs/alpha/threads/THR-MOCK'); const user=userEvent.setup();
+    const composer=await screen.findByRole('textbox',{name:t('threads.page.composer.textareaAria')});
+    await user.type(composer,'email@OldAlpha `@OldAlpha` plus @Alpha');
+    await user.upload(screen.getByLabelText(t('threads.page.composer.attach')),new File(['proof'],'proof.txt',{type:'text/plain'}));
+    await user.click(screen.getByRole('button',{name:t('threads.page.composer.send')}));
+    await screen.findByText(/Naming service is unavailable/);
+    expect(f.effects).toEqual([]); expect(resolves).toEqual([['Alpha']]);
+    expect(composer).toHaveValue('email@OldAlpha `@OldAlpha` plus @Alpha');
+    expect(screen.getByText('proof.txt')).toBeInTheDocument();
+    await user.click(screen.getByRole('button',{name:t('threads.page.composer.removeAttachment')}));
+    await user.clear(composer); await user.type(composer,'@agent_b');
+    expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
+    await user.keyboard('{Enter}');
+    await waitFor(()=>expect(f.effects).toHaveLength(1));
+    expect(f.effects[0]).toMatchObject({kind:'send',body:{body_markdown:'@agent_b'}});
+  });
+
   test.each(['managed', 'user_authored'] as const)('scenario 9 frontend consumer: %s skill rows keep canonical identity and node through label refresh', async (type) => {
     const f = fixture();
     const assignments = [{ agent: 'agent_a', assigned: true, effective: true, state: 'effective' }];
@@ -297,13 +324,13 @@ describe('naming v1 shipping UI — mocked HTTP', () => {
     expect(JSON.stringify(f.records.alpha)).toBe(before);
   });
 
-  test('scenario 5: former token inside quoted/email body stops associated upload and compose; draft and file remain', async () => {
+  test('scenario 5: genuine former token in quoted prose stops associated upload and compose; draft and file remain', async () => {
     const f = fixture(); mount('/orgs/alpha/threads'); const user = userEvent.setup();
     await user.click(await screen.findByRole('button', { name: /New thread/i }));
     const dialog = screen.getByRole('dialog');
     await user.type(within(dialog).getByLabelText(t('threads.newThread.subjectLabel')), 'Literal');
     await user.type(within(dialog).getByLabelText(t('threads.newThread.recipientsLabel')), 'agent_a');
-    const body = '> quoted: mail@OldAlpha and @Alpha';
+    const body = '> quoted: mail@OldAlpha, `@OldAlpha` and @OldAlpha @Alpha';
     await user.type(within(dialog).getByLabelText(t('threads.newThread.bodyLabel')), body);
     await user.upload(within(dialog).getByLabelText(t('threads.newThread.attachFiles')), new File(['proof'], 'proof.txt', { type: 'text/plain' }));
     await user.click(within(dialog).getByRole('button', { name: t('threads.newThread.send') }));

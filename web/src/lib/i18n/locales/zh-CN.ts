@@ -20,7 +20,7 @@ export const zhCN: Record<MessageKey, MessageValue> = {
   "identity.grammar": "使用 1–64 个 ASCII 字母、数字、下划线或连字符，以字母或数字开头。输入按原样提交。",
   "identity.loading": "正在加载身份信息…",
   "identity.loadError": "身份信息刷新失败。永久 ID 仍然可用。",
-  "identity.unavailable": "名称服务不可用。请使用已知永久 ID；编辑前请重新读取身份信息。",
+  "identity.unavailable": "名称服务不可用，无法核验当前名称寻址。请重试，或使用目标接收者的已知永久 ID。",
   "identity.absent": "此身份不存在，无法改名。",
   "identity.saved": "已保存。当前：{current}（版本 {revision}）。",
   "identity.stale": "名称已变更。当前：{current}（版本 {revision}）。草稿已保留。请核对后明确重新提交。",

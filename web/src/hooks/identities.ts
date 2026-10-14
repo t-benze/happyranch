@@ -58,3 +58,13 @@ export function useIdentityOptions(agents: readonly { name: string; team: string
   });
   return options;
 }
+
+/** Owner-projected IDs for body fallback; independent of the eligible hint roster. */
+export function useKnownAgentIds(agents: readonly { name: string }[]): string[] {
+  const query = useIdentities();
+  return useMemo(() => [...new Set([
+    ...agents.map(a => a.name),
+    ...(query.isError ? [] : query.data?.identities ?? [])
+      .filter(i => i.kind === 'agent' && i.lifecycle !== 'absent').map(i => i.canonical_id),
+  ])], [agents, query.data, query.isError]);
+}

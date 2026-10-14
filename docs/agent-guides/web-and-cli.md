@@ -20,10 +20,23 @@ owners retain eligibility/authorization. Human task/thread/enrollment/Todo/dream
 wake output enriches IDs with explicitly current labels; raw JSON, callback
 actors, session proofs, automated targets and historical bodies remain canonical.
 
+
+New-message body admission excludes email/word interiors, escaped tokens and
+supported inline/fenced code; ordinary quoted prose remains eligible. Literal-only
+bodies perform no body naming lookup. Genuine body aliases fail closed on service
+failure, including empty explicit recipients and per-token unavailability. Known
+actual canonical IDs retain owner checks; ID-shaped aliases supply no evidence.
+Observed Former refusal precedes later chunk failures. en/zh-CN service wording
+asks for retry or a known intended-recipient ID, with no body rewrite, automatic
+retry/send or locale-triggered effect. Historical messages/delivery and release
+measurement keep their original interpretation. The exact finite scanner contract
+is in the current identity-names core spec (THR293seq174).
+
 Before CLI-managed send/reply or multipart/shared compose uploads, preflight
 recognized former body tokens and compose recipients. Forward validates final
-quoted+note text. Quoted and email-interior matches follow the unchanged parser;
-unknown body text stays intact. Preflight is a read, not a reservation across
+quoted+note text. Ordinary quoted prose remains eligible; email/word interiors,
+escaped tokens and supported code remain literal. Unknown body text stays intact.
+Preflight is a read, not a reservation across
 HTTP uploads/sends. A rename between requests can leave an independent upload
 before the server refuses the message; no rollback/protocol/journal is added.
 
@@ -1914,7 +1927,8 @@ invite resolve omits `thread_id` because that optional scope means existing
 participants; the actual invite endpoint retains final action eligibility.
 Recognized former body/recipient tokens stop UI-managed associated attachment
 uploads when caught by separate preflight. Unknown body @text remains literal,
-including the existing quoted/email token parser behavior. This read is not a
+with ordinary quotes eligible and email/code/escaped tokens excluded. This read
+is not a
 reservation: final server admission may reject after an intervening rename, and
 already-completed uploads are not claimed rolled back. New en/zh-CN text uses
 existing controls/tokens. The naming browser adapter captures 390×844/1440×900

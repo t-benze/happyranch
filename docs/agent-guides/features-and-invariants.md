@@ -486,8 +486,20 @@ former names report current names without forwarding. Founder transport stays
 naming ID operations preserve original owner checks. Human Name · ID output is
 explicitly current enrichment, not a historical snapshot or JSON/history rewrite.
 
+
+New-message body admission excludes email/word interiors, escaped tokens and
+supported inline/fenced code; ordinary quoted prose remains eligible. Literal-only
+bodies perform no body naming lookup. Genuine body aliases fail closed on service
+failure, including empty explicit recipients and per-token unavailability. Known
+actual canonical IDs retain owner checks; ID-shaped aliases supply no evidence.
+Observed Former refusal precedes later chunk failures. en/zh-CN service wording
+asks for retry or a known intended-recipient ID, with no body rewrite, automatic
+retry/send or locale-triggered effect. Historical messages/delivery and release
+measurement keep their original interpretation. The exact finite scanner contract
+is in the current identity-names core spec (THR293seq174).
+
 All associated CLI upload paths preflight former body/recipient tokens; final
-forwarded text is checked using the unchanged quoted/email-interior grammar.
+forwarded text is checked using the same explicit-prose scanner as new message admission.
 Unknown text remains intact. A read preflight is no reservation and uploads are
 independent; server action admission can refuse after an intervening rename.
 Current task/full/resumed/fallback/dream/wake/schedule context refreshes labels
@@ -1685,7 +1697,8 @@ invite resolve omits `thread_id` because that optional scope means existing
 participants; the actual invite endpoint retains final action eligibility.
 Recognized former body/recipient tokens stop UI-managed associated attachment
 uploads when caught by separate preflight. Unknown body @text remains literal,
-including the existing quoted/email token parser behavior. This read is not a
+with ordinary quotes eligible and email/code/escaped tokens excluded. This read
+is not a
 reservation: final server admission may reject after an intervening rename, and
 already-completed uploads are not claimed rolled back. New en/zh-CN text uses
 existing controls/tokens. The naming browser adapter captures 390×844/1440×900

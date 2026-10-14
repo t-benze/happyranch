@@ -16,9 +16,9 @@ Design contract:
       uv run python -m runtime.infrastructure.thread_release_measurement \
           --db <org>/happyranch.db --epoch 2026-08-26T14:25:23Z --mode all
 
-* STDLIB-ONLY. No new dependency. Reuses the pure resolver
-  ``runtime/infrastructure/thread_mentions.py`` (parse_mentions / valid_mentions /
-  resolve_wake_set) for the pre-change replay.
+* STDLIB-ONLY. No new dependency. Freezes the original regex extraction locally
+  and reuses only valid_mentions / resolve_wake_set from thread_mentions.py
+  for the pre-change replay. NEW-message parsing cannot change old measurements.
 * DETERMINISTIC. All windows are half-open ``[start, end)`` over parsed UTC
   datetimes; ``as_of`` is explicit (defaults to now only at the CLI boundary,
   never inside the measurement functions). Every population that claims the
@@ -75,6 +75,8 @@ release result (THR-198 seq 129).
 """
 
 from __future__ import annotations
+
+import re
 
 import argparse
 import calendar
@@ -856,14 +858,19 @@ def replay_baseline(
     }
 
     from runtime.infrastructure.thread_mentions import (  # pure, local
-        parse_mentions, resolve_wake_set, valid_mentions,
+        resolve_wake_set, valid_mentions,
     )
 
     mentioned: set[tuple[str, int]] = set()
     wake_sets: dict[tuple[str, int], list[str]] = {}
     for row in in_window:
         roster = _roster_at_write(conn, row["thread_id"], row["created_at"])
-        parsed = parse_mentions(row["body_markdown"])
+        # Historical baseline interpretation is frozen; never use the NEW
+        # message lexer or retroactively rewrite/replay durable mentions.
+        parsed = list(dict.fromkeys(re.findall(
+            r"@([A-Za-z0-9][A-Za-z0-9_-]*(?:\.[A-Za-z0-9_-]+)*)",
+            row["body_markdown"] or "",
+        )))
         valid = valid_mentions(parsed, roster, row["speaker"])
         if valid:
             mentioned.add((row["thread_id"], row["seq"]))
