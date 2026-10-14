@@ -345,8 +345,10 @@ def main(argv: list[str] | None = None) -> int:
             raise ValueError('direct_literal_identity_not_in_manifest')
         args.evidence_dir.mkdir(parents=True, exist_ok=True)
         namespace = args.evidence_dir / 'attempts'
+        prior_invocation = namespace.exists() or namespace.is_symlink() or args.journal.exists()
         namespace.mkdir(exist_ok=True)
-        completed = _completed_candidates(args.journal, rows, args.runner, context, recovery=True)
+        completed = _completed_candidates(args.journal, rows, args.runner, context,
+                                          recovery=prior_invocation)
     except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
         print(f"invalid input: {exc}", file=sys.stderr)
         return 2

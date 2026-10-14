@@ -529,8 +529,9 @@ def validate_coverage(context: dict[str, Any], manifest: list[dict[str, Any]],
             raise ValueError('removal_without_eligibility')
         rows.append(row)
         offset = end
-    if recovery and paths:
-        # Later readers need the enclosing native outcome, never an inferred active prefix.
+    if recovery:
+        # Even an empty prior namespace can follow failed envelope publication.
+        # Later readers need the enclosing native outcome, never an inferred fresh run.
         sequence = canonical_record(root / 'sequence.json')
         batch = canonical_record(root / 'batch.json')
         after = canonical_record(root / 'after.json')

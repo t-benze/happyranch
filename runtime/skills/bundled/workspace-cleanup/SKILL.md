@@ -426,6 +426,8 @@ readable files. Same-batch acknowledged prefix progress and later enclosing nati
 batch/sequence/postcheck completeness are separate prerequisites. No automatic
 recovery or directory-fsync/crash-atomic guarantee follows. Historical bytes remain
 historical, with missing new-contract proof explicit; never rebind or retry them.
+An existing empty attempt namespace or journal also requires enclosing native
+recovery proof: failed envelope-directory creation cannot become a fresh run.
 
 Direct Bash requires absolute `WC_MANIFEST`, `WC_HISTORY`, `WC_JOURNAL` and
 `WC_EVIDENCE_DIR` under the current `WORKSPACE/output/ACTING_TASK` sink,
