@@ -24,6 +24,7 @@ import tempfile
 import time
 import zlib
 from contextlib import ExitStack, contextmanager
+from collections.abc import Iterator
 
 
 def _git_child() -> None:
@@ -119,7 +120,7 @@ def _same(a: os.stat_result, b: os.stat_result) -> bool:
 
 
 @contextmanager
-def _directory(parent: int, name: str, budget: _Budget):
+def _directory(parent: int, name: str, budget: _Budget) -> Iterator[int]:
     budget.check()
     try:
         fd = os.open(name, _DIR_FLAGS, dir_fd=parent)
@@ -252,7 +253,7 @@ def _config(raw: bytes, object_format: str) -> str:
 
 @contextmanager
 def _store(paths: OrgPaths, binding: RepositoryBinding, proof: RepositoryAdoptionProof,
-           configured_origin: str, budget: _Budget):
+           configured_origin: str, budget: _Budget) -> Iterator[int]:
     """Open every absolute component no-follow; no resolve()/common-dir fallback."""
     if (type(paths) is not OrgPaths or not paths.workspaces_dir.is_absolute()
             or paths.root.name != binding.org_slug
