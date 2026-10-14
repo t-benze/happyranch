@@ -93,7 +93,6 @@ const ROLLUP_LABEL_KEY: Record<string, MessageKey> = {
   cancelled: 'tasks.rollup.cancelled',
   superseded: 'tasks.rollup.superseded',
 };
-
 function rollupLabel(status: TaskStatus, t: Translate): string {
   return Object.prototype.hasOwnProperty.call(ROLLUP_LABEL_KEY, status)
     ? t(ROLLUP_LABEL_KEY[status])

@@ -78,7 +78,6 @@ function waitingQualifier(
   if (blockKind === 'blocked_on_job') return `· ${labels?.blocked_on_job ?? 'waiting on jobs'}`;
   return null;
 }
-
 function label(status: ThreadStatus | TaskStatus): string {
   return status;
 }
