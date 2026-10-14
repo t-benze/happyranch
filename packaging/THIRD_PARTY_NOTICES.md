@@ -41,6 +41,19 @@ filesystem-encodable before inspection; rejected records preserve their
 source-map, sourceRoot, source and lexical input provenance using escaped JSON.
 Grouped inputs retain map/source/metadata hashes and original notice bytes.
 
+All notice-named entries are checked before declaring installed originals
+absent, including FIFOs and directories. Every installed source and existing
+destination must be a bounded (at most 256 KiB), nonempty regular file with one
+link and no symlinked/escaping path. All of an owner's notices and destinations
+are validated before copying any; unsafe entries or conflicting destinations
+produce `LICENSE_UNRESOLVED` without fallback. Safe installed bytes are retained
+exactly, and identical safe destinations are left untouched. An earlier refused
+emitted input prevents later inputs from admitting any notice for that owner.
+Root and encountered nested package manifests use the same nonblocking,
+no-follow bounded read for parsing and hashing; unsafe or malformed metadata
+refuses promptly. Shared Go notice collection preserves installed bytes and
+records unsafe notice inputs as unresolved.
+
 Offline notice inputs live in `packaging/notice-data/identity-map.json` with two
 unchanged originals: CPython LICENSE (13936 bytes, SHA256
 `3b2f81fe21d181c499c59a256c8e1968455d6689d269aa85373bfb6af41da3bf`)

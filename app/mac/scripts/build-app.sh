@@ -327,20 +327,49 @@ mapping = json.loads((output / 'scratch/freeze-work/license-mapping.json').read_
 components = mapping['components']
 def sha(p):
     return hashlib.sha256(p.read_bytes()).hexdigest()
+def notice_candidates(root):
+    # Include unsafe entries too: a notice-named FIFO/directory is not absence.
+    return [p for p in sorted(root.iterdir()) if
+            any(n in p.name.lower() for n in ('license', 'notice', 'copying', 'copyright'))]
 def texts(name, version, root, layer, inclusion):
-    notices = []
-    for p in sorted(root.iterdir()):
-        if not p.is_file() or not any(n in p.name.lower() for n in ('license', 'notice', 'copying', 'copyright')):
-            continue
-        dest = Path('Contents/Resources/licenses') / layer / name / version / p.name
-        if dest.is_absolute() or '..' in dest.parts:
-            raise SystemExit('NOTICE_PATH_UNSAFE')
-        target = app / dest
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(p, target)
-        notices.append({'source': str(p), 'source_sha256': sha(p), 'destination': str(dest), 'sha256': sha(target)})
-    components.append({'component': name, 'version': version, 'scope': layer, 'inclusion': inclusion,
-                       'notices': notices, 'disposition': 'RETAINED_TEXT' if notices else 'LICENSE_MISSING'})
+    notices = []; prepared = []
+    try:
+        # Validate the complete owner's sources and destinations before writing
+        # any notice. Preserve installed bytes, including shared Go callers.
+        for p in notice_candidates(root):
+            data = notice_helpers['safe_bytes'](p, root)
+            dest = Path('Contents/Resources/licenses') / layer / name / version / p.name
+            target = app / dest
+            notice_helpers['safe_path'](target, app)
+            if target.exists() and notice_helpers['safe_bytes'](target, app) != data:
+                raise ValueError('NOTICE_DESTINATION_CONFLICT')
+            prepared.append((p, dest, target, data))
+        for p, dest, target, data in prepared:
+            # An identical safe existing destination is never rewritten.
+            if not target.exists():
+                target.parent.mkdir(parents=True, exist_ok=True)
+                notice_helpers['safe_path'](target, app)
+                with target.open('xb') as stream:
+                    stream.write(data)
+            if notice_helpers['safe_bytes'](target, app) != data:
+                raise ValueError('NOTICE_RETAINED_HASH_MISMATCH')
+            digest = hashlib.sha256(data).hexdigest()
+            notices.append({'source': str(p), 'source_sha256': digest,
+                            'destination': str(dest), 'sha256': digest})
+    except (OSError, ValueError, RuntimeError) as exc:
+        reason = str(exc) if isinstance(exc, ValueError) else 'notice retention failed: ' + type(exc).__name__
+        if layer == 'web':
+            refused_package_roots.add(root)
+            for item in inclusion:
+                web_diagnostic(item, reason)
+        components.append({'component': name, 'version': version, 'scope': layer,
+                           'inclusion': inclusion, 'notices': [],
+                           'disposition': 'LICENSE_UNRESOLVED',
+                           'reason': reason})
+        return
+    components.append({'component': name, 'version': version, 'scope': layer,
+                       'inclusion': inclusion, 'notices': notices,
+                       'disposition': 'RETAINED_TEXT' if notices else 'LICENSE_MISSING'})
 # Stream go list's real dependency objects; Main maps to the root license.
 decoder = json.JSONDecoder()
 data = (output / 'diagnostics/go-deps.json').read_text(); modules = {}
@@ -486,13 +515,15 @@ for map_path in sorted((web / 'dist').rglob('*.map')):
                     if metadata_path.is_symlink() or not metadata_path.resolve().is_relative_to(root):
                         raise ValueError('metadata escapes package boundary or is symlinked')
                     try:
-                        meta = json.loads(metadata_path.read_text())
+                        metadata_bytes = notice_helpers['safe_bytes'](metadata_path, root)
+                        meta = json.loads(metadata_bytes)
                     except (OSError, ValueError) as exc:
                         raise ValueError('unusable package metadata: ' + type(exc).__name__) from None
                     if not isinstance(meta, dict):
                         raise ValueError('package metadata is not an object')
                     found = identity(meta) if current == root or 'name' in meta or 'version' in meta else None
-                    manifests.append({'path': str(metadata_path), 'sha256': sha(metadata_path), 'identity': found})
+                    manifests.append({'path': str(metadata_path),
+                                      'sha256': hashlib.sha256(metadata_bytes).hexdigest(), 'identity': found})
                 if current == root:
                     break
                 current = current.parent
@@ -503,32 +534,19 @@ for map_path in sorted((web / 'dist').rglob('*.map')):
                     raise ValueError('nested metadata identity conflicts with package owner')
             inclusion['metadata'] = str(root / 'package.json')
             inclusion['metadata_chain'] = manifests
-            inclusion['source_sha256'] = sha(path)
+            inclusion['source_sha256'] = hashlib.sha256(notice_helpers['safe_bytes'](path, root)).hexdigest()
             packages.setdefault(root, {'identity': owner, 'inputs': []})['inputs'].append(inclusion)
         except (OSError, ValueError, RuntimeError) as exc:
             unresolved(inclusion, str(exc) if isinstance(exc, ValueError) else 'package input inspection failed: ' + type(exc).__name__)
 for root, row in sorted(packages.items()):
     name, version = row['identity']
     try:
-        # Validate all candidates before copying any text from this owner.
-        for p in sorted(root.iterdir()):
-            if not any(n in p.name.lower() for n in ('license', 'notice', 'copying', 'copyright')):
-                continue
-            if p.is_symlink() or not p.resolve().is_relative_to(root):
-                raise ValueError('notice escapes package boundary or is symlinked')
-            if p.is_file():
-                dest = app / 'Contents/Resources/licenses/web' / name / version / p.name
-                if not dest.resolve().is_relative_to(app.resolve()) or dest.is_symlink():
-                    raise ValueError('notice destination escapes app boundary')
-                if dest.exists() and (not dest.is_file() or sha(dest) != sha(p)):
-                    raise ValueError('conflicting notice bytes for package identity')
-        installed = [p for p in root.iterdir() if p.is_file() and
-                     any(n in p.name.lower() for n in ('license', 'notice', 'copying', 'copyright'))]
+        if root in refused_package_roots:
+            raise ValueError('notice cannot resolve an already refused package input')
+        installed = notice_candidates(root)
         if installed:
             texts(name, version, root, 'web', row['inputs'])
         else:
-            if root in refused_package_roots:
-                raise ValueError('offline notice cannot resolve an already refused package input')
             recovered = notice_helpers['radix_original'](notice_data, name, version, root, row['inputs'])
             if recovered is None:
                 texts(name, version, root, 'web', row['inputs'])
