@@ -17,9 +17,17 @@ async def thread_breaker_scheduler_loop(state, *, interval_seconds: float = 5.0)
     while True:
         for org in list(state.orgs.values()):
             try:
+                move = getattr(org.db, "_team_move_coordinator", None)
+                if move is not None:
+                    for token in await asyncio.to_thread(move.threads.runnable_tokens):
+                        await org.thread_queue.put_once(ThreadJob(org_slug=org.slug, invocation_token=token))
                 keys = {}
                 deliveries = await asyncio.to_thread(org.db.list_reply_delivery_states)
                 for delivery in deliveries:
+                    if move is not None:
+                        with org.db._lock:
+                            if move.threads.held_uncommitted(delivery.agent_name) is not None:
+                                continue
                     agent = load_agent(OrgPaths(root=org.root), delivery.agent_name)
                     if agent is None:
                         continue

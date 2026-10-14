@@ -768,8 +768,36 @@ outer-tail owner is visited even if another settlement fails.
 
 Installed-layout unowned legacy producers refuse before claim/preparation; absent
 layout preserves normal operation. No schema installation, public apply or COMPLETE
-writer. C2/C3/D and supported launcher downgrade refusal remain NOT INTEGRATED; a table cannot make
+writer. C3/D and supported launcher downgrade refusal remain NOT INTEGRATED; a table cannot make
 a prefeature reader recognize a hold. Manage-agent cannot transfer teams.
+C2 now reserves trusted thread/participant/INTEGER invocation/SID ownership before
+preparation, then composes final claims and launch with the short gate, DB and
+host terminal ordering. All purposes and actual host/direct429, eviction and
+bounded-nudge paths participate. The existing thread audit owner stores strict
+bounded append-only attempt/deferral evidence; no schema or task-Pause format
+changes. Unknown prior retries stay blockers after later clean outcomes.
+Captured actual running turns alone may settle under WAITING; no drain label
+admits new work. Queue dedup spans queued/in-flight work, typed deferrals release
+notification ownership, and complete durable runnable discovery/redelivery keeps
+pending tokens/ranges/probe/catchup obligations intact. Native thread recovery
+and raw reapers preserve held/C2-owned history. Participant/session writes
+cooperate during future forward reset; messages remain admissible. The bounded
+thread census/drain and post-release seams are available to D, whose complete
+startup/containment/operation/old-reader closure remains absent. No public apply
+or COMPLETE writer; APPLY_AVAILABLE stays false. Behavior remains UNEXECUTED,
+integration SKIPPED24342; no new product tests/fixtures or activation authority.
+Native archive admission precedes delivery discard, BOOTSTRAP reaping, status,
+participant resets, their audits and the archive system message in one DB-owned
+transaction serialized against a forward decision. Refusal leaves all those
+obligations and history unchanged; transcript files/events follow COMMIT.
+Authentic provider eviction audit and compare-and-clear of the attempted stale
+SID commit before fallback phase selection/admission. Only the actual live
+producer's durable launched/settled initial attempt can record that observation
+under a winning hold; callback/drain/new-launch and general participant guards
+remain unchanged. Watermarks, delivery ranges/tokens and runtime SID are retained;
+unknown cleanup remains a blocker. Deferred re-entry cannot reuse the evicted SID.
+These archive/eviction/re-entry behavioral observations remain UNEXECUTED.
+
 Normal source acceptance does not authorize activation/live move. Preserve all
 IDs/paths/history/frozen bindings/permissions and Engineering omitted-owner
 routing. No new tests/fixtures, retired Python units, ad hoc E2E or protected

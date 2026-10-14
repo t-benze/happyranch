@@ -344,6 +344,9 @@ class ThreadsMixin:
         self, thread_id: str, agent_name: str
     ) -> bool:
         """Hard-delete a participant row. Returns True if a row was deleted."""
+        move = getattr(self, "_team_move_coordinator", None)
+        if move is not None:
+            move.threads.participant_write_uncommitted(agent_name)
         cursor = self._conn.execute(
             "DELETE FROM thread_participants WHERE thread_id = ? AND agent_name = ?",
             (thread_id, agent_name),
@@ -359,23 +362,49 @@ class ThreadsMixin:
         summary: str,
         audit_scope_id: str,
         audit_agent: str,
-    ) -> None:
-        """Archive a thread and invalidate every participant's resume state in
-        ONE database transaction: the ``ARCHIVED`` status flip, the
-        participant session resets (id NULL, watermark 0), and the
-        ``thread_session_invalidated`` audit row commit atomically. A failure
-        at any step rolls back the whole archive, leaving the thread OPEN
-        with every session row and no audit residue.
+        append_archive_message: bool = False,
+    ) -> int | None:
+        """Own the complete native archive transaction, including admission.
 
-        THR-200: the thread is closed; if it is ever re-opened, every
-        participant resumes from a fresh full-prompt launch instead of a
-        stale provider session.
+        The DB RLock serializes the first affected-participant check through
+        COMMIT against a move decision on this same DB owner. No move gate is
+        acquired beneath DB. Refusal or failure leaves status, resume pointers,
+        delivery obligations, breaker/exchange continuity and audits unchanged.
+        Standalone discard/reaper callers keep their own commit ownership.
+        Transcript filesystem work and event publication follow this commit.
         """
         self._conn.execute("BEGIN IMMEDIATE")
         try:
-            self._set_thread_status_archived_uncommitted(
-                thread_id, summary=summary,
+            thread = self.get_thread(thread_id)
+            if thread is not None and thread.status is ThreadStatus.ARCHIVED:
+                self._conn.commit()
+                return None
+            move = getattr(self, "_team_move_coordinator", None)
+            if move is not None:
+                # Include durable owners touched by discard even if a legacy
+                # obligation no longer has a current participant row.
+                owners = self._conn.execute(
+                    "SELECT agent_name FROM thread_participants WHERE thread_id=? "
+                    "UNION SELECT agent_name FROM thread_invocations WHERE thread_id=? "
+                    "AND status='pending' AND purpose IN ('reply','bootstrap') "
+                    "UNION SELECT agent_name FROM thread_reply_delivery_state WHERE thread_id=? "
+                    "UNION SELECT agent_name FROM thread_reply_breaker_episodes WHERE thread_id=? "
+                    "UNION SELECT d.agent_name FROM thread_exchange_deferrals d "
+                    "JOIN thread_reply_exchange e ON e.thread_id=d.thread_id "
+                    "AND e.exchange_id=d.exchange_id WHERE d.thread_id=? "
+                    "AND d.state='held' AND e.state='open'",
+                    (thread_id,) * 5,
+                ).fetchall()
+                for owner in owners:
+                    move.threads.participant_write_uncommitted(owner["agent_name"])
+            self._discard_reply_delivery_uncommitted(
+                thread_id, decline_reason="archive_started",
             )
+            self._reap_pending_invocations_uncommitted(
+                thread_id, purposes=[ThreadInvocationPurpose.BOOTSTRAP],
+                decline_reason="archive_started",
+            )
+            self._set_thread_status_archived_uncommitted(thread_id, summary=summary)
             rows = self._reset_thread_sessions_for_thread_uncommitted(thread_id)
             if rows:
                 self.insert_audit_log_uncommitted(
@@ -384,8 +413,15 @@ class ThreadsMixin:
                     action="thread_session_invalidated",
                     payload={"reason": "archive", "rows": rows},
                 )
+            seq = None
+            if append_archive_message:
+                seq = self._append_thread_message_uncommitted(
+                    thread_id=thread_id, speaker="founder", kind=ThreadMessageKind.SYSTEM,
+                    system_payload={"kind_tag": "archived", "summary": summary},
+                )
             self._conn.commit()
-        except Exception:
+            return seq
+        except BaseException:
             self._conn.rollback()
             raise
 
@@ -607,6 +643,9 @@ class ThreadsMixin:
 
         Returns True if the row was updated (was pending), False otherwise.
         """
+        move = getattr(self, "_team_move_coordinator", None)
+        if move is not None:
+            move.threads.callback_uncommitted(token)
         cursor = self._conn.execute(
             "UPDATE thread_invocations SET status = 'declined', "
             "consumed_at = ?, decline_reason = ? "
@@ -639,6 +678,9 @@ class ThreadsMixin:
     def record_dispatch_on_invocation(
         self, token: str, *, task_id: str
     ) -> bool:
+        move = getattr(self, "_team_move_coordinator", None)
+        if move is not None:
+            move.threads.callback_uncommitted(token)
         cursor = self._conn.execute(
             "UPDATE thread_invocations SET dispatched_task_id = ? "
             "WHERE invocation_token = ? AND status = 'pending' "

@@ -3773,6 +3773,9 @@ class TasksMixin:
         now = _now().isoformat()
         try:
             self._conn.execute("BEGIN IMMEDIATE")
+            move = getattr(self, "_team_move_coordinator", None)
+            if move is not None:
+                move.threads.callback_uncommitted(token)
             row = self._conn.execute(
                 """SELECT i.triggering_seq, i.dispatched_task_id,
                           m.system_payload_json

@@ -1820,6 +1820,10 @@ async def dispatch_from_thread_endpoint(
             async with org.db_lock:
                 from runtime.orchestrator.task_pause import origin_guard
                 with origin_guard(org, resolves):
+                    with org.db._lock:
+                        move = getattr(org.db, "_team_move_coordinator", None)
+                        if move is not None:
+                            move.threads.callback_uncommitted(body.invocation_token)
                     cur_inv = org.db.get_pending_invocation(body.invocation_token)
                     if cur_inv is None or cur_inv.dispatched_task_id is not None:
                         raise HTTPException(status_code=409, detail={"code": "dispatch_already_used"})
@@ -2554,29 +2558,21 @@ async def archive_thread_endpoint(
 
     archived_at = datetime.now(timezone.utc)
     async with org.db_lock:
-        org.db.discard_reply_delivery(
-            thread_id, decline_reason="archive_started",
-        )
-        org.db.reap_pending_invocations(
-            thread_id,
-            purposes=[ThreadInvocationPurpose.BOOTSTRAP],
-            decline_reason="archive_started",
-        )
-        # THR-200: archive flips the thread to ARCHIVED and invalidates every
-        # participant's resumable provider session state (id NULL, watermark 0)
-        # in ONE database-owned transaction together with the lifecycle audit —
-        # a reset/audit failure rolls back the whole archive, leaving the
-        # thread OPEN with every session row and no audit residue.
-        org.db.archive_thread_and_reset_sessions(
+        # Complete native admission/discard/reaper/status/reset/audit/message
+        # transaction. A winning committed hold refuses BEFORE any durable
+        # archive effect, serialized by the native DB owner through COMMIT.
+        sys_seq = org.db.archive_thread_and_reset_sessions(
             thread_id, summary=summary,
             audit_scope_id=thread_id, audit_agent="founder",
+            append_archive_message=True,
         )
+        if sys_seq is None:
+            current = org.db.get_thread(thread_id)
+            return {
+                "thread_id": thread_id, "status": "archived",
+                "transcript_path": current.transcript_path, "idempotent": True,
+            }
         participants = [p.agent_name for p in org.db.list_thread_participants(thread_id)]
-        sys_seq = org.db.append_thread_message(
-            thread_id=thread_id, speaker="founder",
-            kind=ThreadMessageKind.SYSTEM,
-            system_payload={"kind_tag": "archived", "summary": summary},
-        )
 
     # Write transcript file synchronously (was the finalizer's job).
     msgs = org.db.list_thread_messages(thread_id, limit=10000)

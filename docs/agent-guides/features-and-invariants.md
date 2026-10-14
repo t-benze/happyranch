@@ -1,11 +1,11 @@
 # Features And Invariants
 
-## Approved online team move — C1 task/host source (THR296seq135)
+## Approved online team move — C1 task/host and C2 thread source (THR296seq135)
 
 B supplies private durable storage; C1 connects holds to task allocation/claim,
 preparation and final Pause/host commitment. Causal task/workflow closure and
 actual retry/callback/cleanup ownership participate; unknown quiescence stays
-reserved. C2/C3/D producer/recovery/startup/old-reader closure remains absent.
+reserved. C3/D producer/recovery/startup/old-reader closure remains absent.
 Same-key/body replay is read-only; changed body/active conflict/stale CAS refuse.
 Precommit refusal may release empty progress; postcommit repair retains its hold
 without TTL. No public commands or COMPLETE writer exist until full C2-D closure and
@@ -37,6 +37,34 @@ permission to replay an unknown entry. A refused save retains failed ownership
 and propagates unless an original exception is already unwinding; then that
 original exception carries the settlement failure note and log. Every collected
 outer-tail owner is visited even if another settlement fails.
+
+C2 now reserves trusted thread/participant/INTEGER invocation/SID ownership before
+preparation, then composes final claims and launch with the short gate, DB and
+host terminal ordering. All purposes and actual host/direct429, eviction and
+bounded-nudge paths participate. The existing thread audit owner stores strict
+bounded append-only attempt/deferral evidence; no schema or task-Pause format
+changes. Unknown prior retries stay blockers after later clean outcomes.
+Captured actual running turns alone may settle under WAITING; no drain label
+admits new work. Queue dedup spans queued/in-flight work, typed deferrals release
+notification ownership, and complete durable runnable discovery/redelivery keeps
+pending tokens/ranges/probe/catchup obligations intact. Native thread recovery
+and raw reapers preserve held/C2-owned history. Participant/session writes
+cooperate during future forward reset; messages remain admissible. The bounded
+thread census/drain and post-release seams are available to D, whose complete
+startup/containment/operation/old-reader closure remains absent. No public apply
+or COMPLETE writer; APPLY_AVAILABLE stays false. Behavior remains UNEXECUTED,
+integration SKIPPED24342; no new product tests/fixtures or activation authority.
+Native archive admission precedes delivery discard, BOOTSTRAP reaping, status,
+participant resets, their audits and the archive system message in one DB-owned
+transaction serialized against a forward decision. Refusal leaves all those
+obligations and history unchanged; transcript files/events follow COMMIT.
+Authentic provider eviction audit and compare-and-clear of the attempted stale
+SID commit before fallback phase selection/admission. Only the actual live
+producer's durable launched/settled initial attempt can record that observation
+under a winning hold; callback/drain/new-launch and general participant guards
+remain unchanged. Watermarks, delivery ranges/tokens and runtime SID are retained;
+unknown cleanup remains a blocker. Deferred re-entry cannot reuse the evicted SID.
+These archive/eviction/re-entry behavioral observations remain UNEXECUTED.
 
 See the [approved contract](../superpowers/specs/2026-10-14-online-team-move.md).
 Behavior/recovery remains UNEXECUTED; source/static acceptance is separate.
@@ -1383,7 +1411,9 @@ Traps:
   a database-owned transaction: the participant reset and its
   `thread_session_invalidated` audit commit atomically (termination runs
   reset+audit inside the existing terminate-cleanup transaction; archive wraps
-  the status flip, every participant reset, and the audit in one transaction).
+  admission, delivery discard/BOOTSTRAP reaping, breaker/exchange suppression,
+  status flip, every participant reset, native audits and the archive message
+  in one transaction).
   A reset/audit failure leaves no partial lifecycle state — a failed switch is
   rolled back (no new executor installed) and a failed archive leaves the
   thread OPEN with every session row unmodified. Participant removal deletes

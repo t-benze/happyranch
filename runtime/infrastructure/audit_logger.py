@@ -1,7 +1,13 @@
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from runtime.infrastructure.database import Database
 from runtime.models import CompletionReport, TokenUsage
+
+
+if TYPE_CHECKING:
+    from runtime.orchestrator.thread_move import ThreadPreparation
 
 
 class AuditLogger:
@@ -1237,9 +1243,10 @@ class AuditLogger:
         executor: str,
         stale_session_id: str,
         error: str,
+        _move_owner: ThreadPreparation | None = None,
     ) -> None:
-        """Fires when a resume reported session-not-found and we rebuilt a fresh
-        full-context session. Watch frequency: high rates mean the agent CLI's
+        """Records an exact session-not-found observation before fresh fallback
+        admission, even when that launch is deferred. High rates mean the CLI's
         local session TTL is shorter than our typical inter-turn gap.
 
         THR-200: this is now the single transactional seam — the audit row and
@@ -1253,6 +1260,7 @@ class AuditLogger:
             stale_session_id=stale_session_id,
             error=error,
             executor=executor,
+            _move_owner=_move_owner,
         )
 
     def log_thread_task_followup_enqueued(

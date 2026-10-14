@@ -1125,6 +1125,10 @@ def _run_command(
                             error="completion recovery live budget expired before provider launch",
                             failure_category="pre_launch",
                         )
+            from runtime.orchestrator.thread_move import current_thread_preparation
+            thread_owner = current_thread_preparation()
+            if thread_owner is not None:
+                thread_owner.before_selflaunch()
             try:
                 proc = isolation.launch_executor(
                     cmd,
@@ -1202,6 +1206,10 @@ def _run_command(
             invocation = current_invocation()
             if invocation is not None:
                 invocation.direct_terminal()
+            from runtime.orchestrator.thread_move import current_thread_preparation
+            thread_owner = current_thread_preparation()
+            if thread_owner is not None:
+                thread_owner.direct_terminal()
         full_stdout = stdout or ""
         full_stderr = stderr or ""
         stdout_tail = full_stdout[-_TAIL_BYTES:]
@@ -2353,6 +2361,10 @@ class CustomAdapterExecutor:
                     adapter_input.prompt = _SESSION_LIFETIME_PREAMBLE + invocation.prompt_reader()
                     input_json = adapter_input.model_dump_json()
 
+                from runtime.orchestrator.thread_move import current_thread_preparation
+                thread_owner = current_thread_preparation()
+                if thread_owner is not None:
+                    thread_owner.before_selflaunch()
                 try:
                     proc = subprocess.Popen(
                         [self._adapter_executable],
@@ -2411,6 +2423,10 @@ class CustomAdapterExecutor:
                 invocation = current_invocation()
                 if invocation is not None:
                     invocation.direct_terminal()
+                from runtime.orchestrator.thread_move import current_thread_preparation
+                thread_owner = current_thread_preparation()
+                if thread_owner is not None:
+                    thread_owner.direct_terminal()
             full_stdout = stdout or ""
             full_stderr = stderr or ""
             stdout_tail = full_stdout[-_TAIL_BYTES:]

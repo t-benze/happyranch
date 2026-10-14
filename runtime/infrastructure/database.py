@@ -1544,6 +1544,9 @@ class Database(
         self, thread_id: str, agent_name: str, *, added_by: str
     ) -> bool:
         """Insert a participant. Returns True if inserted, False if duplicate."""
+        move = getattr(self, "_team_move_coordinator", None)
+        if move is not None:
+            move.threads.participant_write_uncommitted(agent_name)
         try:
             self._conn.execute(
                 "INSERT INTO thread_participants (thread_id, agent_name, added_at, added_by) "
@@ -1813,6 +1816,9 @@ class Database(
     ) -> bool:
         """Insert a thread participant WITHOUT committing (caller owns the
         transaction). Returns True if inserted, False if duplicate."""
+        move = getattr(self, "_team_move_coordinator", None)
+        if move is not None:
+            move.threads.participant_write_uncommitted(agent_name)
         try:
             self._conn.execute(
                 "INSERT INTO thread_participants (thread_id, agent_name, added_at, added_by) "
@@ -1979,6 +1985,9 @@ class Database(
 
     @_synchronized
     def consume_invocation(self, token: str) -> bool:
+        move = getattr(self, "_team_move_coordinator", None)
+        if move is not None:
+            move.threads.callback_uncommitted(token)
         cursor = self._conn.execute(
             "UPDATE thread_invocations SET status = 'consumed', "
             "consumed_at = ? WHERE invocation_token = ? AND status = 'pending'",
@@ -2013,6 +2022,9 @@ class Database(
     def fail_invocation(
         self, token: str, *, status: ThreadInvocationStatus, decline_reason: str
     ) -> bool:
+        move = getattr(self, "_team_move_coordinator", None)
+        if move is not None:
+            move.threads.settlement_uncommitted(token)
         cursor = self._conn.execute(
             "UPDATE thread_invocations SET status = ?, decline_reason = ?, "
             "consumed_at = ? WHERE invocation_token = ? AND status = 'pending'",
@@ -2030,6 +2042,10 @@ class Database(
         executor: str | None = None,
         model: str | None = None,
     ) -> None:
+        move = getattr(self, "_team_move_coordinator", None)
+        if move is not None:
+            from runtime.orchestrator.team_move import DeferredTeamMove
+            raise DeferredTeamMove("team_move_thread_preparation_missing")
         self._conn.execute(
             "UPDATE thread_invocations SET started_at = ?, session_id = ?, "
             "executor = ?, model = ? "
@@ -2095,6 +2111,22 @@ class Database(
         purposes: list[ThreadInvocationPurpose] | None = None,
         decline_reason: str,
     ) -> int:
+        """Standalone reaper commits; compound archive uses the leaf below."""
+        rows = self._reap_pending_invocations_uncommitted(
+            thread_id, purposes=purposes, decline_reason=decline_reason,
+        )
+        self._conn.commit()
+        return rows
+
+    @_synchronized
+    def _reap_pending_invocations_uncommitted(
+        self,
+        thread_id: str,
+        *,
+        purposes: list[ThreadInvocationPurpose] | None = None,
+        decline_reason: str,
+    ) -> int:
+        """Caller owns DB lock and transaction; never commit a partial archive."""
         now = _now().isoformat()
         if purposes is None:
             cursor = self._conn.execute(
@@ -2113,11 +2145,7 @@ class Database(
                 f"AND purpose IN ({placeholders})",
                 values,
             )
-        self._conn.commit()
         return cursor.rowcount
-
-
-
 
     @_synchronized
     def set_thread_pinned(self, thread_id: str, *, pinned: bool) -> None:

@@ -26,7 +26,7 @@ class ThreadQueue:
         self._published_once_tokens: set[str] = set()
 
     async def put(self, job: ThreadJob) -> None:
-        await self._q.put(job)
+        await self.put_once(job)
 
     async def put_once(self, job: ThreadJob) -> None:
         # The queue is unbounded, so put_nowait cannot suspend between enqueue
@@ -61,6 +61,7 @@ async def thread_worker_loop(state, settings: Settings) -> None:
     Multiple workers can run in parallel; each picks the next available job.
     """
     from runtime.daemon.thread_runner import run_invocation
+    from runtime.orchestrator.team_move import DeferredTeamMove
 
     while True:
         all_orgs = list(state.orgs.values())
@@ -81,6 +82,9 @@ async def thread_worker_loop(state, settings: Settings) -> None:
                     settings=settings,
                     host_supervisor=state.host_supervisor,
                 )
+            except DeferredTeamMove as exc:
+                org.thread_queue.release_once(job)
+                logger.info("thread admission deferred: %s", exc.code)
             except asyncio.CancelledError:
                 org.thread_queue.release_once(job)
                 raise
