@@ -8,6 +8,10 @@ Precommit refusal may release empty progress; postcommit repair retains its hold
 without TTL. No public commands or COMPLETE writer exist until C1-D closure and
 actual canonical/context/reset/ready-authority validation. Manage-agent cannot
 transfer teams. Preserve histories/IDs/paths/permissions and Engineering routing.
+History validation shares the writer's finite forward/repair edges, requires the
+initial empty WAITING reservation and phase-local decision/receipt evidence,
+and forbids terminal resurrection. Repair returns only to its interrupted phase;
+retained recovery ownership remains required. Unchanged replay adds no audit.
 See the [approved contract](../superpowers/specs/2026-10-14-online-team-move.md).
 Behavior/recovery remains UNEXECUTED; source/static acceptance is separate.
 

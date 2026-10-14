@@ -6,6 +6,12 @@ The optional team_move_operations table is explicit org-owned storage, never
 generic Database/runtime-audit bootstrap or startup installation in B. Exact
 owned layout/all-record validation and complete independent release references
 include its presence without modifying naming/pause/workflow/v2 history.
+All three whole-release consumers (workflow validation, legacy authority evidence
+and naming installation/reconciliation) select validated optional presence.
+Naming captures workflow/naming/pause/move layouts in one coherent read view,
+builds independent references outside the short SQL transaction, then compares
+the entire database again within that transaction. Absence remains supported;
+malformed presence refuses without installation, stripping or history repair.
 The startup and runtime/launcher downgrade requirements are DATA ONLY in B. D
 must discover/recover before partial-roster validation/publication/admission and
 refuse incompatible readers. An additive table cannot teach prefeature binaries

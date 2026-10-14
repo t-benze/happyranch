@@ -414,6 +414,33 @@ def _validate_stage(phase: Phase, progress: Progress, resume: str | None) -> Non
         raise TeamMoveError("team_move_early_context")
 
 
+def _transition_resume_phase(current: Phase, phase: Phase, resume: str | None) -> str | None:
+    """Finite edge contract shared by committed-history reads and CAS writes.
+
+    Unchanged replay returns before this function in the writer; it is never
+    another audit transition. Recovery ownership/progress is validated separately.
+    """
+    if current in TERMINAL or phase is Phase.COMPLETE:
+        raise TeamMoveError("team_move_completion_unavailable" if phase is Phase.COMPLETE else "team_move_terminal")
+    if current is Phase.WAITING:
+        if phase not in {Phase.COMMIT_DECIDED, Phase.REFUSED, Phase.ABANDONED}:
+            raise TeamMoveError("team_move_illegal_transition")
+    elif current is Phase.REPAIR_REQUIRED:
+        if phase is Phase.REPAIR_REQUIRED:
+            pass
+        elif phase.value == resume:
+            resume = None
+        else:
+            raise TeamMoveError("team_move_illegal_recovery")
+    elif phase is Phase.REPAIR_REQUIRED:
+        resume = current.value
+    elif phase != current and (
+        current not in FORWARD_PHASES[:-1] or phase != FORWARD_PHASES[FORWARD_PHASES.index(current) + 1]
+    ):
+        raise TeamMoveError("team_move_illegal_transition")
+    return resume
+
+
 def validate_team_move_schema(conn: sqlite3.Connection, *, org_slug: str | None = None) -> bool:
     """Absent is compatible; partial/extra/unsupported or corrupt fails closed.
 
@@ -478,6 +505,9 @@ def _validate_audit_history(conn: sqlite3.Connection, row: dict, *, budget: int)
         raise TeamMoveError("team_move_audit_history")
     audits = conn.execute("SELECT agent,action,payload" + predicate, parameters)
     last = None
+    resume = None
+    recovered = False
+    empty_progress_digest = _digest(_bytes(_empty_progress()))
     admission = json.loads(row["admission_bytes"])
     keys = {"operation_id", "request_digest", "phase", "state_revision", "admission", "progress_digest", "decision_digest", "diagnostic_digest", "receipt_digest"}
     for revision, audit in enumerate(audits, 1):
@@ -491,21 +521,46 @@ def _validate_audit_history(conn: sqlite3.Connection, row: dict, *, budget: int)
                 or payload["request_digest"] != row["request_digest"] or payload["admission"] != admission
                 or (revision == 1 and payload["phase"] != "waiting")):
             raise TeamMoveError("team_move_audit_history")
-        Phase(payload["phase"])
+        phase = Phase(payload["phase"])
         if any(value is not None and (
                 not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None
         ) for value in (payload["progress_digest"], payload["decision_digest"],
                         payload["diagnostic_digest"], payload["receipt_digest"])):
             raise TeamMoveError("team_move_audit_digest")
-        if last is not None and last["decision_digest"] is not None and payload["decision_digest"] != last["decision_digest"]:
-            raise TeamMoveError("team_move_audit_decision_rewrite")
+        if phase is Phase.COMPLETE:
+            raise TeamMoveError("team_move_completion_reader_unavailable")
+        precommit = phase in {Phase.WAITING, Phase.REFUSED, Phase.ABANDONED}
+        if (payload["progress_digest"] is None
+                or (precommit and payload["progress_digest"] != empty_progress_digest)
+                or ((payload["decision_digest"] is None) != precommit)
+                or ((payload["receipt_digest"] is not None) != (phase in TERMINAL))
+                or (phase in TERMINAL | {Phase.REPAIR_REQUIRED} and payload["diagnostic_digest"] is None)
+                or (revision == 1 and payload["diagnostic_digest"] is not None)):
+            raise TeamMoveError("team_move_audit_lifecycle")
+        if last is not None:
+            previous = Phase(last["phase"])
+            resume = _transition_resume_phase(previous, phase, resume)
+            if last["decision_digest"] is not None and payload["decision_digest"] != last["decision_digest"]:
+                raise TeamMoveError("team_move_audit_decision_rewrite")
+            if previous is Phase.REPAIR_REQUIRED and phase is not Phase.REPAIR_REQUIRED:
+                recovered = True
+            if phase is previous and all(payload[k] == last[k] for k in (
+                "progress_digest", "decision_digest", "diagnostic_digest", "receipt_digest"
+            )):
+                raise TeamMoveError("team_move_audit_unchanged_replay")
         last = payload
     if (last is None or last["phase"] != row["phase"]
             or last["progress_digest"] != _digest(row["progress_bytes"])
             or last["decision_digest"] != (_digest(row["decision_bytes"]) if row["decision_bytes"] else None)
             or last["diagnostic_digest"] != row["diagnostic_digest"]
-            or last["receipt_digest"] != row["receipt_digest"]):
+            or last["receipt_digest"] != row["receipt_digest"]
+            or resume != row["resume_phase"]):
         raise TeamMoveError("team_move_audit_state")
+    # The audit preserves digests, not old progress bodies. A recovery return
+    # requires retained ownership evidence in the final monotonic progress;
+    # _validate_row authenticates its chain shape, not native quiescence.
+    if recovered and not _decode(Progress, row["progress_bytes"]).recovery:
+        raise TeamMoveError("team_move_recovery_owner_required")
     return total
 
 
@@ -661,25 +716,9 @@ class TeamMoveStore:
             if row["decision_bytes"] is not None and next_decision != row["decision_bytes"]:
                 raise TeamMoveError("team_move_decision_rewrite")
             _monotonic(old_progress, next_progress)
-            resume = row["resume_phase"]
-            if current is Phase.WAITING:
-                if phase not in {Phase.COMMIT_DECIDED, Phase.REFUSED, Phase.ABANDONED}:
-                    raise TeamMoveError("team_move_illegal_transition")
-            elif current is Phase.REPAIR_REQUIRED:
-                if phase == Phase.REPAIR_REQUIRED:
-                    pass
-                elif phase.value == resume:
-                    if not next_progress.recovery:
-                        raise TeamMoveError("team_move_recovery_owner_required")
-                    resume = None
-                else:
-                    raise TeamMoveError("team_move_illegal_recovery")
-            elif phase is Phase.REPAIR_REQUIRED:
-                resume = current.value
-            elif phase != current and (
-                current not in FORWARD_PHASES[:-1] or phase != FORWARD_PHASES[FORWARD_PHASES.index(current) + 1]
-            ):
-                raise TeamMoveError("team_move_illegal_transition")
+            resume = _transition_resume_phase(current, phase, row["resume_phase"])
+            if current is Phase.REPAIR_REQUIRED and phase is not Phase.REPAIR_REQUIRED and not next_progress.recovery:
+                raise TeamMoveError("team_move_recovery_owner_required")
             if phase in {Phase.REFUSED, Phase.ABANDONED}:
                 if next_decision is not None or next_progress != _empty_progress() or diagnostic is None:
                     raise TeamMoveError("team_move_unsafe_release")

@@ -278,14 +278,17 @@ def reconcile_namespace(org, namespace, *, install=False):
     if install:
         from runtime.infrastructure.workflow_schema import validate_workflow_schema
         from runtime.infrastructure.task_pause_controls import validate_pause_schema
+        from runtime.infrastructure.team_move_store import validate_team_move_schema
         from runtime.orchestrator.authority import _release_schema_digest, _RELEASE_REFERENCE_HISTORIES
         with org.db.coherent_read_view() as conn:
             layout = validate_workflow_schema(conn, expected_org_slug=org.slug)
             version = validate_names(conn, org_slug=org.slug)
             pause_layout = validate_pause_schema(conn, org_slug=org.slug, allow_absent=True)
+            team_move_layout = validate_team_move_schema(conn, org_slug=org.slug)
         # Temporary complete reference construction may do filesystem work.
         # It must finish before acquisition of the short org SQL transaction.
-        references = tuple(_release_schema_digest(layout, history, version, pause_layout=pause_layout)
+        references = tuple(_release_schema_digest(layout, history, version, pause_layout=pause_layout,
+                                                 team_move_layout=team_move_layout)
                            for history in _RELEASE_REFERENCE_HISTORIES)
         if 'unavailable' in references:
             raise NamingError('naming_release_reference_unavailable')
