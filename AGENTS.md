@@ -1800,12 +1800,22 @@ cache, roster nor mirror is historical proof. Exact setup_bytes are the issue's
 canonical subtree; its digest differs from the native issuance-wrapper digest.
 Valid old issuance remains history after withdrawal and never restores activity.
 
-Inventory is bounded to1024 org setup rows, 1MiB per native text/BLOB value and
-16MiB aggregate retained native text/BLOB bytes, including required journal reads.
-Overflow/missing/mismatched/ambiguous/malformed/unsupported evidence refuses
-categorically; bounded projections never accept truncated evidence. Only the
-selected prefix's admissions/journals are established, not unrelated/later
-histories. No live human, current grant, source task/SID/result or populated-J
+All three SELECTs gate every projected value by exact native storage class
+before Python fetch: TEXT plus byte length via CAST AS BLOB (including multibyte
+characters and embedded-NUL suffixes), BLOB plus byte length, INTEGER scalar
+only. Invalid/oversize values return a bounded NULL refusal sentinel while
+original typeof evidence stays intact. Genuine nullable file_phase_owner NULL
+is preserved; accepted values retain exact historical bytes/types without
+coercion or truncation. Each projected text/BLOB value is at most1MiB.
+Inventory admits at most1024 org setup rows; one additional bounded row can be
+fetched only to refuse overflow. After each bounded fetch, the shared budget
+enforces16MiB cumulative accepted raw native text/BLOB bytes across inventory
+and required admission/journal reads. This is retained-byte accounting, not a
+total process-memory ceiling: SQLite engine work, rejected fetched rows and
+decoded/copied structures are outside that accounting. Overflow/missing/
+mismatched/ambiguous/malformed/unsupported evidence refuses categorically.
+Only the selected prefix's admissions/journals are established, not unrelated/
+later histories. No live human, current grant, source task/SID/result or populated-J
 admission follows. Full capability/task/result/session ancestry, mapping/J/run/
 event/receipt/heartbeat and current-use closure remain NEXT serial units before
 any producer; K2a2 is incomplete. No mount/OrgState/DDL/reference/cache/recovery/

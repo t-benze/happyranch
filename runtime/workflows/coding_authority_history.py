@@ -115,9 +115,14 @@ def _rows(conn: sqlite3.Connection, sql: str, args: tuple,
     # All SQL call sites below are fixed-table literal parameterized SELECTs.
     # Cursor-local factory preserves caller configuration, never normalizes
     # native NULL/BLOB/TEXT/INTEGER or materializes an unbounded result set.
-    # CASE bounds TEXT by original UTF8 bytes as well as BLOBs before
-    # allocation. Oversize becomes NULL and fails its original storage type;
-    # original embedded NULs/bytes remain intact, never a substr projection.
+    # Every projected value has an exact native storage-class gate. TEXT
+    # uses BLOB length (including multibyte/NUL suffixes); BLOB uses byte
+    # length; INTEGER returns only a native scalar. Invalid/oversize values
+    # become NULL, retaining original typeof evidence for refusal. Genuine
+    # nullable owner NULL stays NULL; no bytes are coerced or truncated.
+    # These gates bound each value before fetch, not SQLite engine memory.
+    # _Budget accounts aggregate accepted raw bytes after each bounded fetch;
+    # a refused row and decoded/copied structures are not retained-byte totals.
     cursor = conn.cursor()
     cursor.row_factory = None
     try:
@@ -134,10 +139,11 @@ def _rows(conn: sqlite3.Connection, sql: str, args: tuple,
 def _admission(conn: sqlite3.Connection, issuance: dict, budget: _Budget) -> None:
     expected = issuance['admission']['record']
     rows = list(_rows(conn,
-        'SELECT CASE WHEN length(CAST(id AS BLOB))<=1048576 THEN id ELSE NULL END,'
-        'CASE WHEN length(CAST(namespace AS BLOB))<=1048576 THEN namespace ELSE NULL END,generation,'
-        'CASE WHEN length(CAST(request_digest AS BLOB))<=1048576 THEN request_digest ELSE NULL END,'
-        'CASE WHEN length(CAST(admitted_by AS BLOB))<=1048576 THEN admitted_by ELSE NULL END,'
+        "SELECT CASE WHEN typeof(id)='text' AND length(CAST(id AS BLOB))<=1048576 THEN id ELSE NULL END,"
+        "CASE WHEN typeof(namespace)='text' AND length(CAST(namespace AS BLOB))<=1048576 THEN namespace ELSE NULL END,"
+        "CASE WHEN typeof(generation)='integer' THEN generation ELSE NULL END,"
+        "CASE WHEN typeof(request_digest)='text' AND length(CAST(request_digest AS BLOB))<=1048576 THEN request_digest ELSE NULL END,"
+        "CASE WHEN typeof(admitted_by)='text' AND length(CAST(admitted_by AS BLOB))<=1048576 THEN admitted_by ELSE NULL END,"
         'typeof(id),typeof(namespace),typeof(generation),typeof(request_digest),typeof(admitted_by) '
         'FROM workflow_admission_records WHERE id=? LIMIT 2', (expected['id'],), 1))
     _check(len(rows) == 1)
@@ -151,16 +157,18 @@ def _admission(conn: sqlite3.Connection, issuance: dict, budget: _Budget) -> Non
     pointer = evidence['pointer']
     ready = evidence['ready']
     journals = list(_rows(conn,
-        'SELECT CASE WHEN length(CAST(id AS BLOB))<=1048576 THEN id ELSE NULL END,'
-        'CASE WHEN length(CAST(namespace AS BLOB))<=1048576 THEN namespace ELSE NULL END,'
-        'generation,expected_generation,'
-        'CASE WHEN length(snapshot_bytes)<=? THEN snapshot_bytes ELSE NULL END,'
-        'CASE WHEN length(CAST(snapshot_digest AS BLOB))<=1048576 THEN snapshot_digest ELSE NULL END,'
-        'CASE WHEN length(CAST(publisher AS BLOB))<=1048576 THEN publisher ELSE NULL END,'
-        'CASE WHEN length(CAST(publisher_invocation AS BLOB))<=1048576 THEN publisher_invocation ELSE NULL END,'
-        'profile_fence,CASE WHEN length(CAST(state AS BLOB))<=1048576 THEN state ELSE NULL END,'
-        'CASE WHEN length(CAST(recovery_owner AS BLOB))<=1048576 THEN recovery_owner ELSE NULL END,'
-        'CASE WHEN length(CAST(file_phase_owner AS BLOB))<=1048576 THEN file_phase_owner ELSE NULL END,'
+        "SELECT CASE WHEN typeof(id)='text' AND length(CAST(id AS BLOB))<=1048576 THEN id ELSE NULL END,"
+        "CASE WHEN typeof(namespace)='text' AND length(CAST(namespace AS BLOB))<=1048576 THEN namespace ELSE NULL END,"
+        "CASE WHEN typeof(generation)='integer' THEN generation ELSE NULL END,"
+        "CASE WHEN typeof(expected_generation)='integer' THEN expected_generation ELSE NULL END,"
+        "CASE WHEN typeof(snapshot_bytes)='blob' AND length(snapshot_bytes)<=? THEN snapshot_bytes ELSE NULL END,"
+        "CASE WHEN typeof(snapshot_digest)='text' AND length(CAST(snapshot_digest AS BLOB))<=1048576 THEN snapshot_digest ELSE NULL END,"
+        "CASE WHEN typeof(publisher)='text' AND length(CAST(publisher AS BLOB))<=1048576 THEN publisher ELSE NULL END,"
+        "CASE WHEN typeof(publisher_invocation)='text' AND length(CAST(publisher_invocation AS BLOB))<=1048576 THEN publisher_invocation ELSE NULL END,"
+        "CASE WHEN typeof(profile_fence)='integer' THEN profile_fence ELSE NULL END,"
+        "CASE WHEN typeof(state)='text' AND length(CAST(state AS BLOB))<=1048576 THEN state ELSE NULL END,"
+        "CASE WHEN typeof(recovery_owner)='text' AND length(CAST(recovery_owner AS BLOB))<=1048576 THEN recovery_owner ELSE NULL END,"
+        "CASE WHEN typeof(file_phase_owner)='text' AND length(CAST(file_phase_owner AS BLOB))<=1048576 THEN file_phase_owner ELSE NULL END,"
         'typeof(id),typeof(namespace),typeof(generation),typeof(expected_generation),'
         'typeof(snapshot_bytes),typeof(snapshot_digest),typeof(publisher),typeof(publisher_invocation),'
         'typeof(profile_fence),typeof(state),typeof(recovery_owner),typeof(file_phase_owner) '
@@ -207,15 +215,17 @@ def _history(conn: sqlite3.Connection, org_slug: str,
     revisions: set[tuple[str, int]] = set()
     # Org-wide enumeration is required for (org,human:founder,key) replay and
     # setup-subtree uniqueness, rather than trusting a caller's selected dict.
-    # CASE caps each SQLite BLOB before Python allocation; streaming and the
-    # shared budget bound the complete inventory plus required journal reads.
+    # Every CASE gates type and caps variable-size values before Python fetch.
+    # The shared budget counts accepted raw inventory/admission/journal bytes;
+    # the bounded overflow row is fetched only to refuse, never retained.
     for row in _rows(conn,
-        'SELECT CASE WHEN length(CAST(id AS BLOB))<=1048576 THEN id ELSE NULL END,'
-        'CASE WHEN length(CAST(namespace AS BLOB))<=1048576 THEN namespace ELSE NULL END,revision,'
-        'CASE WHEN length(authority_bytes)<=? THEN authority_bytes ELSE NULL END,'
-        'CASE WHEN length(CAST(authority_digest AS BLOB))<=1048576 THEN authority_digest ELSE NULL END,'
-        'CASE WHEN length(CAST(source_pin AS BLOB))<=1048576 THEN source_pin ELSE NULL END,'
-        'CASE WHEN length(CAST(created_at AS BLOB))<=1048576 THEN created_at ELSE NULL END,'
+        "SELECT CASE WHEN typeof(id)='text' AND length(CAST(id AS BLOB))<=1048576 THEN id ELSE NULL END,"
+        "CASE WHEN typeof(namespace)='text' AND length(CAST(namespace AS BLOB))<=1048576 THEN namespace ELSE NULL END,"
+        "CASE WHEN typeof(revision)='integer' THEN revision ELSE NULL END,"
+        "CASE WHEN typeof(authority_bytes)='blob' AND length(authority_bytes)<=? THEN authority_bytes ELSE NULL END,"
+        "CASE WHEN typeof(authority_digest)='text' AND length(CAST(authority_digest AS BLOB))<=1048576 THEN authority_digest ELSE NULL END,"
+        "CASE WHEN typeof(source_pin)='text' AND length(CAST(source_pin AS BLOB))<=1048576 THEN source_pin ELSE NULL END,"
+        "CASE WHEN typeof(created_at)='text' AND length(CAST(created_at AS BLOB))<=1048576 THEN created_at ELSE NULL END,"
         'typeof(id),typeof(namespace),typeof(revision),typeof(authority_bytes),'
         'typeof(authority_digest),typeof(source_pin),typeof(created_at) '
         'FROM workflow_authorization_revisions WHERE substr(namespace,1,?)=? '
@@ -281,9 +291,13 @@ def read_setup_issuance_history(conn: sqlite3.Connection, *, expected_org_slug: 
     """Resolve one retained native identity and its complete historical prefix.
 
     Complete native schema admission and a caller-owned coherent read snapshot
-    are prerequisites. At most1024 org setup rows, 1MiB per native value and
-    16MiB aggregate retained native text/BLOB bytes; overflow refuses without
-    truncation. Org-wide wrapper inventory establishes unique operations and
+    are prerequisites. At most1024 accepted org setup rows, 1MiB per native
+    text/BLOB value before fetch, and exact native INTEGER scalar projections.
+    Original typeof accompanies every value, including nullable owner NULL.
+    After each bounded fetch, 16MiB aggregate accepted raw text/BLOB bytes is
+    enforced; this is not a total memory/SQLite/decoded-copy ceiling. A bounded
+    overflow row is fetched only to refuse; no evidence is truncated/coerced.
+    Org-wide wrapper inventory establishes unique operations and
     setup subtrees. Admissions/journals are proved for every revision through
     the selected row only, not unrelated or later histories. The selected
     issue's exact setup_bytes are its subtree, never authority_bytes/digest.
