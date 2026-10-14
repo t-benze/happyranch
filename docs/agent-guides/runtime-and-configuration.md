@@ -1488,3 +1488,69 @@ readiness is delivered. Python units RETIRED; integration/callback SKIPPED24342;
 behavior/security/protected proof UNEXECUTED/FOUNDER-WAIVED139429/430. Source-only
 review/static checks cannot establish reader-security or behavioral acceptance.
 See [the current K0/K1 contract](../superpowers/specs/2026-10-14-ordered-coding-workflow.md).
+
+## Empty-only coding schema — K2a1
+
+Founder THR139seq562 approving559/329 and sole ROOT TASK10693 authorize this
+bounded source slice. Layout J is exact I plus `workflow_coding_mappings`,
+`workflow_coding_runs`, `workflow_coding_attempts`, `workflow_coding_events`:
+3987 UTF8 SQL bytes/SHA256
+`2c4b556671ef76582cdcbaed1e68d8575d9648ce29773f52c3d947ceaeeb0d70`,32 event
+kinds,17 expected automatic constraint indexes (4/2/7/4), no explicit index or
+marker. F–I DDL/history and document @1–@4/r1/r2/one-human formats remain literal.
+The complete owned-layout reader and every metadata/cutover path admit J ONLY
+with all four coding tables empty and valid retained I/document/native data.
+Partial/extra/changed layout, any populated coding table, reserved coding
+format/pin/import/source ownership or native coding audit without its readers
+refuses; it never returns legacy. Arbitrary document content is not a family
+discriminator; formats/kinds are checked in owned metadata. K2a2 must supply complete populated saved-data
+readers before any coding producer, including setup/import/mappings.
+
+Independent whole reference selection retains all six layouts F–J, all four
+fresh/v0/v2/v2-organic histories, naming0/1, Pause and team-move combinations,
+the five-component cache key and whole historical preimages. No candidate SQL
+baseline or object filter is permitted. Failed reference construction remains
+unavailable. Authority-v2 remains observed-only; generic Database/runtime-audit
+remain workflow-free. The proven-empty J initializer primitive serves reference
+construction, validating the two completed native remote-schema marker rows and
+requiring every operational table empty; no schema object is excluded from
+comparison. Actual create-org still explicitly initializes I. Startup/reopen/
+enable validate, never install J; I remains usable for document work and gives
+actionable offline guidance. Empty J uses the existing I draft/submission/handoff/
+revision and document drain readers. Any J, even empty, blocks pre-J downgrade;
+retain compatible J code or a separately approved verified pre-J backup. No
+stripping, automatic migration or old-reader downgrade claim follows.
+
+The explicit operator source is `scripts/migrate_workflow_coding_schema.py
+--runtime-root /absolute/runtime --org ORG --check` (read-only:0 for valid empty
+J,3 for exact I needing migration,1 for refusal). Only under separately authorized
+operator control, use the same command without `--check` and with
+`--confirm-cooperative-offline`. That flag affirms documented daemon stop,
+reconciled hosts/outer tails and external exclusion of cooperative restarts/
+publications/profile/move producers until return; it is not an OS isolation proof
+or authority grant. Owned runtime/org markers, no-follow ordinary DB identity,
+registered daemon lifecycle and removed PID/port files are rechecked. PID absence,
+TTL, terminal task labels and producer_settled uncertainty never release an owner.
+Complete source ownership checks include publication/profile leases and journals,
+queued/active F5/draft work, recovery/source result processing, Pause entries and
+release work, and team-move operations/reservations. Unknown closure refuses with
+original-owner remediation. Legacy recovery effect claims without a persisted
+host-closure reader remain unknown and refuse, even on terminal native tasks.
+Exact I and retained SQL types/rowids/bytes/FKs are
+validated before and after exclusive writer acquisition; any source change
+refuses. Add only four empty tables atomically with FK enforcement ON, validate
+independent complete J and exact retained equality, recheck offline identity,
+then commit; every failure rolls back. Valid J replay is read-only and needs no
+fresh offline migration. Earlier scripts report the actual already-compatible
+layout and keep their original migration targets.
+
+K0 stays disabled; K1 current resolution still refuses before private decode or
+object I/O. No capability/setup/import/mapping/adoption/start/stage/native task/
+event/audit producer, new route/DTO/native permission/dependency/hook, live SQL,
+rollout/deploy/restart/assignment or trial renewal is delivered. Source inspection
+and lint/static receipts cannot prove migration, readers, security, behavior or
+upgrade safety: all remain UNEXECUTED. Python units RETIRED; general integration
+INCLUDING callback SKIPPED24342; broad/negative/mutation/repetition/protected proof
+UNEXECUTED/FOUNDER-WAIVED139429/430. Full independent review, same-final-head scoped
+QA and Source Boundary Lint + Web Lint(Node24)/local all remain required, followed
+by manager guarded merge. Root owns K2a2–K6 and operational/real-agent acceptance.

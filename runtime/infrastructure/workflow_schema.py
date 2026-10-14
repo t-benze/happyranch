@@ -599,16 +599,18 @@ def _validate_installed(
 
     from runtime.infrastructure.workflow_coding_schema import validate_empty_coding_data
     validate_empty_coding_data(conn, layout=layout)
+    # Unknown native admission owners (including coding without its reader)
+    # never become a legacy observation on an earlier workflow layout.
+    from runtime.infrastructure.task_pause_controls import validate_pause_schema
+    validate_pause_schema(conn, org_slug=expected_org_slug, allow_absent=True)
     # Empty-only J still requires all retained I/document/native readers even
     # on cutover's metadata path. The flag never bypasses the new boundary.
     if layout == "J":
         validate_data = True
         _validate_source_data(conn)
         from runtime.identities.schema import validate_names
-        from runtime.infrastructure.task_pause_controls import validate_pause_schema
         from runtime.infrastructure.team_move_store import validate_team_move_schema
         validate_names(conn, org_slug=expected_org_slug)
-        validate_pause_schema(conn, org_slug=expected_org_slug, allow_absent=True)
         validate_team_move_schema(conn, org_slug=expected_org_slug)
 
     versions = [
@@ -1008,10 +1010,27 @@ def initialize_complete_org_schema(database: Database, *, expected_org_slug: str
             raise ValueError('workflow_fresh_creation_requires_empty_workflow_layout')
         if layout == "J":
             # Independent reference/fresh primitive only; the real create-org
-            # owner still selects I. No populated native database is fresh.
+            # owner still selects I. Native generic initialization has exactly
+            # two completed remote-schema marker rows, not operational work.
+            # Validate those independently; inspect every other table too.
+            from runtime.infrastructure.remote_job_schema import (
+                COMPLETE_STAGE, IDENTITY_MIGRATION_NAME, MIGRATION_NAME,
+                validate_identity_enrollment_schema_preflight, validate_remote_job_schema_preflight,
+            )
+            validate_identity_enrollment_schema_preflight(conn)
+            validate_remote_job_schema_preflight(conn)
             for table, in conn.execute("SELECT name FROM sqlite_schema WHERE type='table'"):
                 quoted = str(table).replace('"', '""')
-                if conn.execute(f'SELECT 1 FROM "{quoted}" LIMIT 1').fetchone() is not None:
+                if table == 'remote_runner_schema_migrations':
+                    markers = [tuple(row) for row in conn.execute(f'SELECT * FROM "{quoted}" ORDER BY name')]
+                    if (len(markers) != 2 or {(row[0], row[1]) for row in markers} !=
+                            {(IDENTITY_MIGRATION_NAME, COMPLETE_STAGE), (MIGRATION_NAME, COMPLETE_STAGE)}):
+                        raise ValueError('workflow_coding_fresh_creation_native_marker_mismatch')
+                    for row in markers:
+                        timestamp = datetime.fromisoformat(row[2])
+                        if timestamp.tzinfo is None or timestamp.utcoffset().total_seconds() != 0:
+                            raise ValueError('workflow_coding_fresh_creation_native_marker_mismatch')
+                elif conn.execute(f'SELECT 1 FROM "{quoted}" LIMIT 1').fetchone() is not None:
                     raise ValueError('workflow_coding_fresh_creation_requires_empty_native_database')
         _install_foundation(conn, expected_org_slug=expected_org_slug)
         _execute_ddl(conn, _revision_draft_ddl() if layout in ("I", "J") else CANONICAL_WORKFLOW_DRAFT_DDL)
@@ -1784,9 +1803,15 @@ def _validate_coding_source_idle(conn: sqlite3.Connection, *, expected_org_slug:
         ('workflow_request_task_bridges', "state NOT IN ('cancelled','completed')"),
         ('workflow_draft_dispatch_intents', "state NOT IN ('cancelled','failed','completed')"),
         ('tasks', "status NOT IN ('completed','failed','cancelled','superseded') OR "
-                  "active_chain IS NOT NULL OR active_fanout IS NOT NULL OR blocked_on_job_ids IS NOT NULL OR pid IS NOT NULL"),
+                  "active_chain IS NOT NULL OR active_fanout IS NOT NULL OR blocked_on_job_ids IS NOT NULL OR executor_pid IS NOT NULL"),
         ('task_completion_recoveries', "state!='callback_consumed' OR settled_at IS NULL"),
         ('jobs', "status NOT IN ('completed','failed','rejected','cancelled')"),
+        ('thread_invocations', "status NOT IN ('consumed','declined','timeout','failed')"),
+        ('dreams', "status NOT IN ('completed','failed','timeout','skipped')"),
+        ('work_hours', "status NOT IN ('completed','failed','timeout','skipped')"),
+        ('schedules', "active=1 OR session_id IS NOT NULL OR status NOT IN ('fired','paused','cancelled','expired','failed','timeout')"),
+        ('remote_job_attempts', "state!='terminal'"),
+        ('remote_runner_workspaces', "active_attempt_id IS NOT NULL OR state IN ('leased','recreate_pending','uncertain')"),
     ):
         if conn.execute(f'SELECT 1 FROM {table} WHERE {predicate} LIMIT 1').fetchone():
             refuse(table)
@@ -1861,7 +1886,15 @@ def _validate_coding_source_idle(conn: sqlite3.Connection, *, expected_org_slug:
     for recovery in _records(conn, 'SELECT * FROM workflow_recovery_claims'):
         # Effect-recorded is not a standalone quiescence certificate.
         task = conn.execute('SELECT 1 FROM tasks WHERE id=?', (recovery['record_id'],)).fetchone()
-        if task is None:
+        if task is None or recovery['record_class'] == 'legacy_task':
+            # An effect-recorded legacy claim lacks a persisted host closure
+            # reader. Terminal/PID/expiry labels cannot replace that evidence.
+            refuse('workflow_recovery_claims:' + recovery['record_id'])
+        drafts = conn.execute('SELECT id FROM workflow_draft_dispatch_intents WHERE task_id=?',
+                              (recovery['record_id'],)).fetchall()
+        bridges = conn.execute('SELECT request_id FROM workflow_request_task_bridges WHERE task_id=?',
+                               (recovery['record_id'],)).fetchall()
+        if len(drafts) + len(bridges) != 1:
             refuse('workflow_recovery_claims:' + recovery['record_id'])
 
 

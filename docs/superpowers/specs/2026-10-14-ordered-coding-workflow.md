@@ -1,6 +1,7 @@
-# Ordered coding workflow — K0 catalog and K1 bounded repository source
+# Ordered coding workflow — K0/K1 and K2a1 empty-only J source
 
-> Status: K0 disabled catalog and K1 internal source; K2–K6 remain separately scoped work.
+> Status: K0 disabled catalog, K1 internal source, K2a1 empty-only J/migration source;
+> populated K2a2 readers and K2b–K6 remain separately scoped work.
 > Authority: Founder THR139seq562 approving seq559, confirmed563; sole ROOT TASK10693.
 > Controlling amended design: manager step34 ordered-coding-contract.md,
 > 195999 bytes, SHA256 `9f0cab1c4c2fb42610801ba77e38bab9d7c90c7314adbcb5e146228593e944a3`.
@@ -210,3 +211,99 @@ repetition/protected/executable-QA proof UNEXECUTED/FOUNDER-WAIVED139429/430.
 Independent FULL code review then honest same-final-head scoped QA remain
 required; no maker review, QA or merge. Static-only all/hosted checks and normal
 hooks/nonforce publication are required, with guarded manager merge later.
+
+## Empty-only coding schema — K2a1
+
+Founder THR139seq562 approving559/329 and sole ROOT TASK10693 authorize this
+bounded source slice. Layout J is exact I plus `workflow_coding_mappings`,
+`workflow_coding_runs`, `workflow_coding_attempts`, `workflow_coding_events`:
+3987 UTF8 SQL bytes/SHA256
+`2c4b556671ef76582cdcbaed1e68d8575d9648ce29773f52c3d947ceaeeb0d70`,32 event
+kinds,17 expected automatic constraint indexes (4/2/7/4), no explicit index or
+marker. F–I DDL/history and document @1–@4/r1/r2/one-human formats remain literal.
+The complete owned-layout reader and every metadata/cutover path admit J ONLY
+with all four coding tables empty and valid retained I/document/native data.
+Partial/extra/changed layout, any populated coding table, reserved coding
+format/pin/import/source ownership or native coding audit without its readers
+refuses; it never returns legacy. Arbitrary document content is not a family
+discriminator; formats/kinds are checked in owned metadata. K2a2 must supply complete populated saved-data
+readers before any coding producer, including setup/import/mappings.
+
+Independent whole reference selection retains all six layouts F–J, all four
+fresh/v0/v2/v2-organic histories, naming0/1, Pause and team-move combinations,
+the five-component cache key and whole historical preimages. No candidate SQL
+baseline or object filter is permitted. Failed reference construction remains
+unavailable. Authority-v2 remains observed-only; generic Database/runtime-audit
+remain workflow-free. The proven-empty J initializer primitive serves reference
+construction, validating the two completed native remote-schema marker rows and
+requiring every operational table empty; no schema object is excluded from
+comparison. Actual create-org still explicitly initializes I. Startup/reopen/
+enable validate, never install J; I remains usable for document work and gives
+actionable offline guidance. Empty J uses the existing I draft/submission/handoff/
+revision and document drain readers. Any J, even empty, blocks pre-J downgrade;
+retain compatible J code or a separately approved verified pre-J backup. No
+stripping, automatic migration or old-reader downgrade claim follows.
+
+The explicit operator source is `scripts/migrate_workflow_coding_schema.py
+--runtime-root /absolute/runtime --org ORG --check` (read-only:0 for valid empty
+J,3 for exact I needing migration,1 for refusal). Only under separately authorized
+operator control, use the same command without `--check` and with
+`--confirm-cooperative-offline`. That flag affirms documented daemon stop,
+reconciled hosts/outer tails and external exclusion of cooperative restarts/
+publications/profile/move producers until return; it is not an OS isolation proof
+or authority grant. Owned runtime/org markers, no-follow ordinary DB identity,
+registered daemon lifecycle and removed PID/port files are rechecked. PID absence,
+TTL, terminal task labels and producer_settled uncertainty never release an owner.
+Complete source ownership checks include publication/profile leases and journals,
+queued/active F5/draft work, recovery/source result processing, Pause entries and
+release work, and team-move operations/reservations. Unknown closure refuses with
+original-owner remediation. Legacy recovery effect claims without a persisted
+host-closure reader remain unknown and refuse, even on terminal native tasks.
+Exact I and retained SQL types/rowids/bytes/FKs are
+validated before and after exclusive writer acquisition; any source change
+refuses. Add only four empty tables atomically with FK enforcement ON, validate
+independent complete J and exact retained equality, recheck offline identity,
+then commit; every failure rolls back. Valid J replay is read-only and needs no
+fresh offline migration. Earlier scripts report the actual already-compatible
+layout and keep their original migration targets.
+
+K0 stays disabled; K1 current resolution still refuses before private decode or
+object I/O. No capability/setup/import/mapping/adoption/start/stage/native task/
+event/audit producer, new route/DTO/native permission/dependency/hook, live SQL,
+rollout/deploy/restart/assignment or trial renewal is delivered. Source inspection
+and lint/static receipts cannot prove migration, readers, security, behavior or
+upgrade safety: all remain UNEXECUTED. Python units RETIRED; general integration
+INCLUDING callback SKIPPED24342; broad/negative/mutation/repetition/protected proof
+UNEXECUTED/FOUNDER-WAIVED139429/430. Full independent review, same-final-head scoped
+QA and Source Boundary Lint + Web Lint(Node24)/local all remain required, followed
+by manager guarded merge. Root owns K2a2–K6 and operational/real-agent acceptance.
+
+### Existing C15 case record — bounded K2a1 coverage
+
+The accepted11414/11430 case design and manager step40 acceptance are reused.
+The original C15 O/D/G/S, shipping seam, expected observable and future cold venue
+are preserved below verbatim. These are design answers; no deliberate defect,
+assertion, SQL, runtime or cold-compatibility experiment was executed.
+
+| Case / input | Public observable / O | D | G | S | Future level | Environment | Isolation | Resource / prerequisite owner | Final transition / denial-no-effect oracle |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| C15 old I docs/@1..@4/one-human proposal, authentic old chain/fanout and new coding data; old binary/J + native heartbeat/PID/zombie/completion versus unknown load-bearing drift | Original bytes/chain advancement unchanged; document human choices work; old J reader refuses, no startup upgrade; legitimate native writer observations fold, unknown load-bearing drift refuses | Rewrite H/I or let coding task advance legacy active_chain; ignore SID/counter/cancel/PID drift or filter schema objects as timestamp workaround | New complete-layout/coding-version readers absent; coding whole native field/heartbeat and meaningful writer bridges absent | schema complete references/cutover scans/revisions old branch/recovery/run_step4979/chain.compute_advance_action; B2a native writer/audit→complete saved/reference/cold reader | Independent saved/reference/source inspection; later separately authorized cold compatibility | Genuine archived F–I document/proposal/old-chain data + complete J and mixed corrupt graphs; compatible archived readers; full raw native 27-column captures and independent fixed heartbeat audit records under matching J code | Whole layout×history×naming×Pause×move references; disposable DB/binaries, no SQL executed now | Schema/authority/reference/cutover source owners; engineering_manager admits future venue, independent QA checks integrity; native task/heartbeat/PID/zombie owners supply exact writer attribution | Whole authentic source accepted only by own family; orphan/mixed/cycle/fork/bootstrap-pointer corruption refuses without repair; even empty J pre-J refusal; document/human/old-chain behavior/bytes preserved; coding owner never legacy advances, startup never installs, historical integrity never current access; authenticated independent heartbeat folds without history rewrite and preserves saved validity, full native identity/ancestry/SID/counters/cancel/ownership equal; unknown/unattributed load-bearing drift refuses; whole-schema comparisons remain complete with no object filter; preceding reader refuses new coding authority/control/native-audit values |
+
+| C15 K2a1 scenario | Expected observable at actual shipping seam | Source inspected / future isolated venue |
+| --- | --- | --- |
+| Exact empty J vs missing/extra/changed table/column/CHECK/FK/automatic-index definition | _validate_installed matches independent whole owned layout; mismatches refuse before legacy dispatch or writes | _canonical_layout/_layout/validate_empty_coding_data; future disposable owned org DB and independent literal comparison, never candidate-derived baseline |
+| Existing I document @1–@4/r1/r2 and one-human histories on empty J | All old bytes, human commands, receipts/results/contributors and interpretation retain I dispatch; ordinary old chain/fanout remains native | Same _validate_draft_data/_validate_submission_data/_validate_author_handoff_data/validate_revision_storage, readiness helpers and cutover branches; future authentic archived F–I cases with J-compatible binary |
+| One row in EACH of mappings/runs/attempts/events; orphan coding pins/import/context/provenance/submitted/join/scope/native result action/audit; unsupported coding ownership/format | Every installed reader including validate_data=False refuses categorically; no partial graph admission or legacy fallback | validate_empty_coding_data called after complete layout comparison for F–J, J retained validators forced; future isolated negative source-seeded DBs only after authorization |
+| F–J × four histories × naming0/1 × Pause × team move, including cache identity and unavailable construction | Independent full five-component references preserve every old preimage; any missing reference refuses, all192 combinations have source branches | _release_schema_digest only J allowlist delta; _validate_release_database full SQL digest; future complete isolated whole-reference/cold matrix, not executed |
+| Exact idle I→J, read-only complete-J replay, FKs, retained types/rowids/bytes | One exclusive transaction adds only four empty tables, no marker/index/row rewrite; validated J replay opens read-only and returns0; failed target/equality/FK check rolls back | migrate_coding_schema/_coding_org_identity/_coding_retained_rows and explicit operator script; future stopped disposable runtime/registered daemon home with authentic retained document/native data |
+| Unknown publication/profile/F5/draft/recovery/source-claim/Pause/host/outer-tail/team-move owner; source DB/file/lifecycle/rows change before/after acquisition or target validation failure | Concrete original-owner refusal; no PID/TTL/terminal-label release, no DDL committed, retained rows unchanged after rollback | _validate_coding_source_idle + operator cooperative offline_check + BEGIN EXCLUSIVE/source equality/before-commit identity/except rollback; future isolated controlled owner/change/failure barriers |
+| Startup/reopen/enable/current create-org and pre-J reader/downgrade | Startup validates only; create-org stays I; old reader refuses J, even empty; downgrade preflight gives coding_schema_requires_compatible_reader | OrgState guidance/unchanged install path, routes/orgs I call read-only, cutover _read/document scans/downgrade; future archived preceding-reader vs exact empty J and cold no-upgrade observation |
+
+Each row is SOURCE INSPECTED only; behavioral/security/reader/migration/upgrade
+safety and future venue results remain UNEXECUTED. No test source is added.
+C01 applies here only to exact org identity, never actual mappings/override.
+C09 applies only to migration read-only replay/source-change/rollback boundaries;
+coding CAS/callback/heartbeat/control remains K2a2/K3. C12's literal lint checks
+are this publication's observed engineering gates, never a new CI/merge producer.
+C16 actual agent mappings/override/rejection/revision/gated merge and operational
+acceptance remain same-root prerequisites with no new execution allocation.

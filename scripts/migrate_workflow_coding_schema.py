@@ -7,8 +7,6 @@ import sqlite3
 import sys
 from pathlib import Path
 
-import yaml
-
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from scripts.migrate_workflow_submission_schema import (  # noqa: E402
@@ -63,6 +61,7 @@ def main(argv: list[str] | None = None) -> int:
                 or not any(item[0] == 'runtimes.yaml' and item[1] is not None for item in offline)):
             raise ValueError('workflow_coding_documented_daemon_stop_unproven')
         conn.close()
+        conn = None
         conn = sqlite3.connect(path.as_uri() + '?mode=rw', uri=True, timeout=1.0)
         conn.row_factory = sqlite3.Row
         conn.execute('PRAGMA foreign_keys=ON')

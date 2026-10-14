@@ -91,6 +91,8 @@ def _coding_value(value: object) -> bool:
                     return True
                 if key in ('compiler_pin', 'validator_pin') and item.startswith('workflow-coding-'):
                     return True
+                if key in ('kind', 'artifact_kind') and item == 'code-change':
+                    return True
                 if key == 'source_kind' and item == 'coding-manager-result':
                     return True
                 if key == 'action' and item == 'workflow_start':
@@ -134,8 +136,8 @@ def validate_empty_coding_data(conn: sqlite3.Connection, *, layout: str) -> None
     Caller first matches the complete independent owned schema. Scan all
     structured workflow metadata plus native result decisions/audit metadata,
     so a coding-family orphan cannot be misclassified as legacy. Oversized
-    metadata refuses; row traversal is complete, never a truncated prefix. Arbitrary briefs/findings/summary
-    prose are not ownership discriminators.
+    metadata refuses; row traversal is complete, never a truncated prefix.
+    Document content, briefs, findings and summaries are not discriminators.
     """
     if layout == 'J':
         for table in CODING_TABLES:
@@ -158,7 +160,8 @@ def validate_empty_coding_data(conn: sqlite3.Connection, *, layout: str) -> None
     for table in tables:
         quoted = str(table).replace('"', '""')
         columns = [row[1] for row in conn.execute(f'PRAGMA table_xinfo("{quoted}")')
-                   if row[1].endswith(('_bytes', '_json')) or row[1] == 'payload']
+                   if (row[1].endswith(('_bytes', '_json')) or row[1] == 'payload')
+                   and row[1] not in ('submission_bytes', 'candidate_bytes')]
         if not columns:
             continue
         selected = ','.join('"' + column.replace('"', '""') + '"' for column in columns)
