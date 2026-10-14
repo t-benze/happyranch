@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
+import sys
 import uuid
 from copy import deepcopy
 from contextlib import contextmanager
@@ -446,8 +448,10 @@ class TaskInvocation:
                 original["id"] = unknown_owner = uuid.uuid4().hex
                 original["phase"] = "unknown"
                 original["started_at"] = original["captured_generation"] = None
-                original["context"].update(execution_unknown=True, producer_settled=True,
-                    origin_owner_id=self.identity)
+                # The copied admitted fields retain attribution. The new id
+                # also names the retained reservation after journal COMMIT;
+                # no extra context key is part of the strict Pause format.
+                original["context"].update(execution_unknown=True, producer_settled=True)
                 row["journal"]["entries"].append(original)
                 entry["context"].pop("execution_unknown", None)
             entry["retry"] = {"ordinal": ordinal, "budget": budget, "boundary": boundary,
@@ -637,6 +641,7 @@ def release_live(invocation: TaskInvocation, *, failed: bool = False) -> None:
 
 def settle_live(invocation: TaskInvocation, *, failed: bool = False, cleanup: Any = None) -> None:
     """Close durable attribution only after reconcile and actual outer cleanup."""
+    original_error = sys.exception()
     reservation = invocation.move_reservation
     if failed and reservation is not None:
         reservation.failed_cleanup()
@@ -645,10 +650,28 @@ def settle_live(invocation: TaskInvocation, *, failed: bool = False, cleanup: An
             with invocation.store.writer(invocation.task.id) as (_, row):
                 entry = invocation._entry(row)
                 entry["context"]["execution_unknown"] = True
-                entry["context"]["cleanup_tail"] = dict(
+                facts = dict(
                     reason="producer_tail_failed" if cleanup is None or cleanup.kind != "unknown" else cleanup.reason,
                     processes=[] if cleanup is None else list(cleanup.processes))
+                # Append diagnostics within the existing 64KiB UTF8 suffix
+                # allowance. Never overwrite earlier cleanup facts or use
+                # these lines as process/quiescence proof. Unknown entries
+                # cannot be adopted as deferred retry/recovery preparations.
+                lines = entry["context"].setdefault("cleanup", {"suffix_lines": []})["suffix_lines"]
+                available = 65536 - sum(len(line.encode()) for line in lines)
+                diagnostic = "\nProducer tail cleanup unknown: " + json.dumps(facts, sort_keys=True) + "\n"
+                truncated = len(diagnostic.encode()) > available
+                if truncated:
+                    marker = " [truncated]\n"
+                    diagnostic = (diagnostic.encode()[:max(0, available - len(marker))].decode("utf8", errors="ignore")
+                                  + marker) if available >= len(marker) else ""
+                if diagnostic:
+                    lines.append(diagnostic)
                 invocation.store.save_journal_uncommitted(row)
+            if truncated:
+                logging.getLogger(__name__).warning(
+                    "task %s session %s owner %s cleanup suffix capacity; new diagnostics truncated: %s",
+                    invocation.task.id, invocation.session_id, invocation.identity, facts)
         with invocation.store.db._lock:
             row = invocation.store.row_uncommitted(invocation.store.root_uncommitted(invocation.task.id)["id"])
             phase = invocation._entry(row)["phase"]
@@ -656,10 +679,19 @@ def settle_live(invocation: TaskInvocation, *, failed: bool = False, cleanup: An
         # existing redelivery owner. Failure must first become durable unknown.
         if failed or phase not in {"retry_deferred", "recovery_deferred"}:
             invocation.close()
-    except BaseException:
+    except BaseException as exc:
+        failed = True
         if reservation is not None:
             reservation.failed_cleanup()
-        raise
+        if original_error is None:
+            raise
+        # Finalization must retain the original launch/reconcile/cleanup
+        # exception. A refused save is a failed retained settlement, never a
+        # successful release; expose it without replacing the original cause.
+        original_error.add_note(f"Pause tail settlement failed for {invocation.identity}: {exc!r}")
+        logging.getLogger(__name__).exception(
+            "task %s session %s owner %s Pause tail settlement failed; original error preserved",
+            invocation.task.id, invocation.session_id, invocation.identity)
     finally:
         invocation.orch._team_moves.release_task(invocation, failed=failed)
 

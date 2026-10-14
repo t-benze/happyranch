@@ -30,6 +30,11 @@ attempt separately; provider return is not containment proof. Pause attribution
 settles only after workflow reconciliation and an explicit safe outer-cleanup
 disposition; failed/unknown cleanup stays attributable. These source contracts
 remain behaviorally UNEXECUTED and grant no operational move authority.
+Retry attribution stays in the existing validated entry fields, with journal
+COMMIT before reservation handoff. Failed-tail reason/process diagnostics append
+to existing bounded cleanup suffix lines without erasing earlier facts or
+proving quiescence. Persistence refusal retains failed ownership and preserves
+an original exception. The closed Pause journal format is unchanged.
 Do not substitute termination/re-enrollment, direct roster writes or ambient
 agent credentials. See docs/superpowers/specs/2026-10-14-online-team-move.md in
 the release source; this prose grants no execution/permission change.

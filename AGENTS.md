@@ -754,6 +754,17 @@ workflow reconciliation and the actual outer cleanup batch. Its explicit disposi
 distinguishes safe no-action/preservation from halted, unreaped, action/report failure
 or unknown teardown; uncertainty retains the exact task/session owner and cleanup
 facts, without changing the normal terminal result or expanding cleanup authority.
+Retry attribution uses the existing entry id, task/agent/SID, owner identity,
+fingerprint, generation and retry fields; the retained reservation adopts that
+entry id only after journal COMMIT. The closed Pause journal format is unchanged.
+Failed-tail diagnostics append to existing `cleanup.suffix_lines` within its
+65536-byte UTF8 allowance, preserving earlier lines; excess new diagnostics are
+explicitly truncated and logged. `execution_unknown` retains ownership independently
+of diagnostic capacity. These lines are diagnostics, never quiescence proof or
+permission to replay an unknown entry. A refused save retains failed ownership
+and propagates unless an original exception is already unwinding; then that
+original exception carries the settlement failure note and log. Every collected
+outer-tail owner is visited even if another settlement fails.
 
 Installed-layout unowned legacy producers refuse before claim/preparation; absent
 layout preserves normal operation. No schema installation, public apply or COMPLETE

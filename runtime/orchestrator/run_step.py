@@ -1238,8 +1238,14 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
         finally:
             _task_tail.reset(tail_token)
             from runtime.orchestrator.task_pause import settle_live
+            settlement_errors = []
             for invocation, failed in tail:
-                settle_live(invocation, failed=failed or tail_failed, cleanup=disposition)
+                try:
+                    settle_live(invocation, failed=failed or tail_failed, cleanup=disposition)
+                except BaseException as exc:
+                    settlement_errors.append(exc)
+            if settlement_errors:
+                raise BaseExceptionGroup("task Pause tail settlement failed", settlement_errors)
 
 
 def _run_step_owned(orch: "Orchestrator", task_id: str, metadata: dict | None = None) -> None:

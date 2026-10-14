@@ -38,6 +38,17 @@ workflow reconciliation and the actual outer cleanup batch. Its explicit disposi
 distinguishes safe no-action/preservation from halted, unreaped, action/report failure
 or unknown teardown; uncertainty retains the exact task/session owner and cleanup
 facts, without changing the normal terminal result or expanding cleanup authority.
+Retry attribution uses the existing entry id, task/agent/SID, owner identity,
+fingerprint, generation and retry fields; the retained reservation adopts that
+entry id only after journal COMMIT. The closed Pause journal format is unchanged.
+Failed-tail diagnostics append to existing `cleanup.suffix_lines` within its
+65536-byte UTF8 allowance, preserving earlier lines; excess new diagnostics are
+explicitly truncated and logged. `execution_unknown` retains ownership independently
+of diagnostic capacity. These lines are diagnostics, never quiescence proof or
+permission to replay an unknown entry. A refused save retains failed ownership
+and propagates unless an original exception is already unwinding; then that
+original exception carries the settlement failure note and log. Every collected
+outer-tail owner is visited even if another settlement fails.
 
 The task-specific deferred notification seam retains tagged metadata and can redeliver through the existing generation-aware/deduplicating queue owner only after durable release. It does not consume result/callback tokens, allocate tasks, release the operation or recover startup. D must join persistent task/Pause/workflow, session/host/remote and writer evidence; an empty process-local reservation registry is never clearance. C2 owns all thread claims/delivery/drain/breaker/probe behavior; C3 owns dream/wake/schedule/job/remote/cleanup and writers. Their host constructors carry permanent identity only in C1, which does not close those producer claims. D's whole-operation release, startup/partial-roster recovery and supported old-reader/launcher downgrade guard remain absent. APPLY_AVAILABLE stays literal false, with no apply/COMPLETE writer.
 
