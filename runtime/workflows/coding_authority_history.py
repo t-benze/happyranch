@@ -27,6 +27,8 @@ from runtime.workflows.coding_saved_records import (
 _VALUE_LIMIT = 1048576
 _ROW_LIMIT = 1024
 _BYTE_LIMIT = 16 * _VALUE_LIMIT
+_CALL_ROW_LIMIT = 8192
+_TRAVERSAL_LIMIT = 16384
 _INTEGER_MAX = 9223372036854775807
 _SOURCE_PIN = 'coding-capability-issuer@1'
 _REFUSAL = 'coding_authority_history_invalid'
@@ -94,8 +96,16 @@ def _integer(value: object, minimum: int = 0) -> None:
 @dataclass
 class _Budget:
     consumed: int = 0
+    accepted_rows: int = 0
+    traversed: int = 0
+
+    def step(self) -> None:
+        self.traversed += 1
+        _check(self.traversed <= _TRAVERSAL_LIMIT)
 
     def row(self, row: tuple, types: tuple[str, ...]) -> tuple:
+        self.accepted_rows += 1
+        _check(self.accepted_rows <= _CALL_ROW_LIMIT)
         count = len(types)
         _check(len(row) == 2 * count and row[count:] == types)
         values = row[:count]
@@ -138,6 +148,13 @@ def _rows(conn: sqlite3.Connection, sql: str, args: tuple,
 
 def _admission(conn: sqlite3.Connection, issuance: dict, budget: _Budget) -> None:
     expected = issuance['admission']['record']
+    _capture_admission(conn, expected, issuance['admission']['capture'], budget)
+
+
+def _capture_admission(conn: sqlite3.Connection, expected: dict,
+                       capture: dict, budget: _Budget) -> None:
+    # Private composition only: callers first parse the complete saved owner
+    # and derive all five expected columns from its original command/capture.
     rows = list(_rows(conn,
         "SELECT CASE WHEN typeof(id)='text' AND length(CAST(id AS BLOB))<=1048576 THEN id ELSE NULL END,"
         "CASE WHEN typeof(namespace)='text' AND length(CAST(namespace AS BLOB))<=1048576 THEN namespace ELSE NULL END,"
@@ -150,9 +167,6 @@ def _admission(conn: sqlite3.Connection, issuance: dict, budget: _Budget) -> Non
     actual = budget.row(rows[0], ('text', 'text', 'integer', 'text', 'text'))
     _check(actual == tuple(expected[key] for key in (
         'id', 'namespace', 'generation', 'request_digest', 'admitted_by')))
-    # The pure reader already binds complete Q, Founder provenance and the
-    # org publication pin to this five-column record, also for withdrawal.
-    capture = issuance['admission']['capture']
     evidence = capture['profile_evidence']
     pointer = evidence['pointer']
     ready = evidence['ready']
@@ -200,14 +214,13 @@ def _admission(conn: sqlite3.Connection, issuance: dict, budget: _Budget) -> Non
            and generation == previous + 1 and raw == snapshot == bytes.fromhex(ready['snapshot_bytes_hex'])
            and digest == _digest(raw) == ready['snapshot_digest'] == pointer['snapshot_digest']
            and fence == pointer['profile_fence'] and state == 'cache_installed')
-    # read_saved_issuance reconstructs the complete saved v1/v2 snapshot,
+    # The shipped saved readers reconstruct the complete v1/v2 snapshot,
     # profiles and full mirror. Today's cache/roster/mirror are not witnesses.
 
 
-def _history(conn: sqlite3.Connection, org_slug: str,
-             authorization_id: str) -> SetupIssuanceHistory:
+def _inventory(conn: sqlite3.Connection, org_slug: str,
+               budget: _Budget) -> list[tuple[HistoricalSetupIssuance, dict, dict]]:
     prefix = f'org/{org_slug}/coding-setup/'
-    budget = _Budget()
     inventory: list[tuple[HistoricalSetupIssuance, dict, dict]] = []
     operations: set[str] = set()
     setups: set[str] = set()
@@ -257,11 +270,13 @@ def _history(conn: sqlite3.Connection, org_slug: str,
             setups.add(setup_id)
         inventory.append((HistoricalSetupIssuance(
             identity, namespace, revision, raw, digest, created_at, setup_bytes), record, command))
-    selected = [entry for entry in inventory if entry[0].authorization_id == authorization_id]
-    _check(len(selected) == 1)
-    target = selected[0][0]
-    required = [entry for entry in inventory
-                if entry[0].namespace == target.namespace and entry[0].revision <= target.revision]
+    return inventory
+
+
+def _verify_prefix(conn: sqlite3.Connection,
+                   required: list[tuple[HistoricalSetupIssuance, dict, dict]],
+                   target: HistoricalSetupIssuance, budget: _Budget,
+                   verified: set[str]) -> SetupIssuanceHistory:
     # Ordered SQL plus complete prefix: no gap/fork/newest-row fallback.
     _check(len(required) == target.revision)
     prior_issue = False
@@ -269,6 +284,7 @@ def _history(conn: sqlite3.Connection, org_slug: str,
     admission_ids: set[str] = set()
     result: list[HistoricalSetupIssuance] = []
     for expected_revision, (entry, record, command) in enumerate(required, 1):
+        budget.step()
         _check(entry.revision == expected_revision
                and command['expected_authorization_revision'] == expected_revision - 1)
         timestamp = datetime.fromisoformat(entry.created_at.replace('Z', '+00:00'))
@@ -281,9 +297,70 @@ def _history(conn: sqlite3.Connection, org_slug: str,
         admission_id = record['admission']['record']['id']
         _check(admission_id not in admission_ids)
         admission_ids.add(admission_id)
-        _admission(conn, record, budget)
+        if entry.authorization_id not in verified:
+            _admission(conn, record, budget)
+            verified.add(entry.authorization_id)
         result.append(entry)
     return SetupIssuanceHistory(tuple(result))
+
+
+class _SetupHistoryReader:
+    """Call-local native lookup; no injected records, resolver or new budget.
+
+    Inventory and verified admissions are reused within the caller's one
+    snapshot only. Full setup bytes select the actual containing issuance;
+    a setup ID is never treated as an authorization ID or wrapper digest.
+    """
+
+    def __init__(self, conn: sqlite3.Connection, org_slug: str, budget: _Budget) -> None:
+        self.conn = conn
+        self.org_slug = org_slug
+        self.budget = budget
+        self.loaded = False
+        self.identities: dict[str, HistoricalSetupIssuance] = {}
+        self.setups: dict[str, HistoricalSetupIssuance] = {}
+        self.namespaces: dict[str, list[tuple[HistoricalSetupIssuance, dict, dict]]] = {}
+        self.histories: dict[str, SetupIssuanceHistory] = {}
+        self.verified: set[str] = set()
+
+    def _load(self) -> None:
+        if self.loaded:
+            return
+        for entry, record, command in _inventory(self.conn, self.org_slug, self.budget):
+            self.budget.step()
+            self.identities[entry.authorization_id] = entry
+            self.namespaces.setdefault(entry.namespace, []).append((entry, record, command))
+            if entry.setup_bytes is not None:
+                self.setups[record['setup']['id']] = entry
+        self.loaded = True
+
+    def history(self, authorization_id: str) -> SetupIssuanceHistory:
+        self.budget.step()
+        self._load()
+        _check(authorization_id in self.identities)
+        if authorization_id not in self.histories:
+            target = self.identities[authorization_id]
+            required = []
+            for entry in self.namespaces[target.namespace]:
+                self.budget.step()
+                if entry[0].revision <= target.revision:
+                    required.append(entry)
+            self.histories[authorization_id] = _verify_prefix(
+                self.conn, required, target, self.budget, self.verified)
+        return self.histories[authorization_id]
+
+    def setup(self, setup_id: str, setup_bytes: bytes) -> SetupIssuanceHistory:
+        self.budget.step()
+        self._load()
+        _check(setup_id in self.setups)
+        target = self.setups[setup_id]
+        _check(target.setup_bytes == setup_bytes)
+        return self.history(target.authorization_id)
+
+
+def _history(conn: sqlite3.Connection, org_slug: str,
+             authorization_id: str) -> SetupIssuanceHistory:
+    return _SetupHistoryReader(conn, org_slug, _Budget()).history(authorization_id)
 
 
 def read_setup_issuance_history(conn: sqlite3.Connection, *, expected_org_slug: str,

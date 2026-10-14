@@ -505,3 +505,66 @@ security/migration/negative/mutation/repetition/protected proof UNEXECUTED/
 FOUNDER-WAIVED139429/430. Source/static evidence is not behavioral acceptance.
 Fresh FULL independent review then same-final-head scoped SOURCE QA return to
 sole ROOT10693; no operational action or trial renewal is authorized.
+
+
+## Retained mapping history and setup links — K2a2b2
+
+Sole ROOT TASK10693 step53 / Founder THR139seq562/559/329 adds unmounted
+`coding_mapping_history.read_mapping_history`. Caller admission of the complete
+native/J structural schema and one coherent raw-value read snapshot/connection/
+lock precede this SELECT-only call. It neither starts nor ends a transaction.
+The selected native mapping ID resolves its complete same-org/release generation
+prefix, never the current default. All ten native columns and original typeof
+labels are retained, with full saved mapping bytes/digest, original complete
+command/digest/key, strict INTEGER generation and expected_generation CAS,
+original time and operation principal independently compared. Attribution follows
+`WorkflowTemplatePrincipal.operation_principal`: agent:<issuer.principal>,
+separate from raw role IDs and human:founder issuance provenance. Missing/gapped/
+forked/conflicting operations refuse; no newest-row or same-digest fallback.
+
+For each required mapping, its actual complete five-column admission matches the
+original command digest/agent operation principal/capture namespace/generation/
+ID. Its historical twelve-column publication journal matches full snapshot bytes/
+digest/profile fence/expected generation/cache_installed and original nullable
+owner. Shipped `read_saved_mapping_record` checks complete canonical mapping/
+command/adoption/M grammar, setup prior-source and adoption times, repository
+radius and all binding/adoption/capture pin equalities. Each M.setup resolves by
+setup ID AND full canonical bytes to one genuine issuance.setup subtree, then
+its complete earlier issuance/admission/publication prefix. The private native
+setup composition shares the existing history owner; wrapper hash is distinct
+from setup hash. Founder issue/withdraw semantics and authentic later withdrawal
+remain historical facts; this read never restores a grant. No current pointer,
+roster, cache, filesystem/store scan, adoption or remote-origin attestation.
+
+Every projected value in all four fixed-table parameterized SELECTs gates exact
+SQLite storage class BEFORE fetch: TEXT byte length via CAST AS BLOB, BLOB byte
+length, native INTEGER scalar; genuine owner NULL remains NULL. Invalid/oversize
+values become bounded NULL refusal sentinels with original typeof evidence, not
+coercion/truncation. Per text/BLOB value at most1MiB; each mapping/setup inventory
+at most1024 rows plus one bounded overflow fetch solely for refusal. Across the
+whole composed call one shared budget limits8192 accepted native rows,16384
+traversal steps and16MiB cumulative accepted raw text/BLOB bytes after bounded
+fetch. Call-local indexed inventory/verified history can avoid repeated reads;
+no per-root/recursion budget reset. SQL engine work, rejected-row and decoded/
+copied structures are outside this accounting; no total memory ceiling claim.
+Existing `read_setup_issuance_history` signature/result and retained semantics
+remain unchanged; its established smaller inventories fit these added call caps.
+
+Return values establish complete inventory grammar/attribution/operation
+uniqueness and selected mapping-prefix admissions/publications plus the required
+setup issuance prefixes only. They do not authenticate actual issuer task/SID/
+policy/source_rule/current grant/capability/J graph or live store observations.
+Full capability/native task/result/session/ancestry/J/run/event/request/receipt/
+contributor/heartbeat/current-use/recovery/cutover readers still precede EVERY
+producer; K2a2 remains incomplete. No mount/__init__/OrgState/schema/reference/
+cache/recovery/migration/selector/producer/public/CLI/TS/native/auth/permission/
+dependency/hook change. Populated/reserved coding refusal INCLUDING
+validate_data=False, create-org I, document history, disabled K0 and unavailable
+K1 current resolution remain intact. Root retains K2a2–K6 and genuine-agent/
+two-org/override/backup-copy operational delivery. Accepted C01/C03/C09/C14/C15/
+C16 and appendix variants remain source-scoped; no new case study/execution.
+Python units RETIRED; integration INCLUDING callback SKIPPED24342; parser/SQL/
+product/security/negative/mutation/repetition/protected proof UNEXECUTED/
+FOUNDER-WAIVED139429/430. Static lint/source assessment is not behavioral proof.
+Fresh FULL independent review then same-final-head scoped SOURCE QA return to
+sole ROOT10693; no maker verdict/merge/operational action or trial renewal.
