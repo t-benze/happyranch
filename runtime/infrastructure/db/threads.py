@@ -344,6 +344,9 @@ class ThreadsMixin:
         self, thread_id: str, agent_name: str
     ) -> bool:
         """Hard-delete a participant row. Returns True if a row was deleted."""
+        move = getattr(self, "_team_move_coordinator", None)
+        if move is not None:
+            move.threads.participant_write_uncommitted(agent_name)
         cursor = self._conn.execute(
             "DELETE FROM thread_participants WHERE thread_id = ? AND agent_name = ?",
             (thread_id, agent_name),
@@ -607,6 +610,9 @@ class ThreadsMixin:
 
         Returns True if the row was updated (was pending), False otherwise.
         """
+        move = getattr(self, "_team_move_coordinator", None)
+        if move is not None:
+            move.threads.callback_uncommitted(token)
         cursor = self._conn.execute(
             "UPDATE thread_invocations SET status = 'declined', "
             "consumed_at = ?, decline_reason = ? "
@@ -639,6 +645,9 @@ class ThreadsMixin:
     def record_dispatch_on_invocation(
         self, token: str, *, task_id: str
     ) -> bool:
+        move = getattr(self, "_team_move_coordinator", None)
+        if move is not None:
+            move.threads.callback_uncommitted(token)
         cursor = self._conn.execute(
             "UPDATE thread_invocations SET dispatched_task_id = ? "
             "WHERE invocation_token = ? AND status = 'pending' "

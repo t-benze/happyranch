@@ -1381,6 +1381,7 @@ class HostSessionSupervisor:
 
         grace = self._policy.cleanup_grace_seconds if grace_seconds is None else grace_seconds
         task_invocation = final_prelaunch_validator if hasattr(final_prelaunch_validator, "_task_pause_commit") else None
+        thread_invocation = final_prelaunch_validator if hasattr(final_prelaunch_validator, "_thread_move_commit") else None
         attempt = 0
         retry_limit = self._max_retry_attempts
         retry_schedule = tuple(self._backoff_seconds[i] if i < len(self._backoff_seconds) else 0.0 for i in range(retry_limit))
@@ -1397,13 +1398,16 @@ class HostSessionSupervisor:
                 age = max(0.0, self._monotonic() - request.enqueued_at) if request.enqueued_at is not None else 0.0
                 task_invocation.retry_attempt(boundary="host", ordinal=0, budget=retry_limit, schedule=retry_schedule,
                     enqueued_at=(datetime.now(timezone.utc) - timedelta(seconds=age)).isoformat())
+        if thread_invocation is not None:
+            attempt, retry_schedule = thread_invocation.retry_schedule("host", tuple(retry_schedule))
+            retry_limit = len(retry_schedule)
         while True:
             if request.move_reservation is not None:
                 reservation = request.move_reservation
                 if (request.org != reservation.identity.org_slug
                         or request.agent_id != reservation.identity.agent_id
-                        or task_invocation is None
-                        or task_invocation.move_reservation is not reservation):
+                        or (task_invocation is None and thread_invocation is None)
+                        or (task_invocation or thread_invocation).move_reservation is not reservation):
                     from runtime.orchestrator.team_move import DeferredTeamMove
                     raise DeferredTeamMove("team_move_host_owner_mismatch")
                 # A held task never enters the host FIFO or spends a slot.
@@ -1440,10 +1444,18 @@ class HostSessionSupervisor:
                 # once; run the caller's terminal hook (best-effort, with
                 # None — no outcome exists) so per-invocation state is
                 # never left behind, then re-raise unchanged.
+                if thread_invocation is not None:
+                    try:
+                        thread_invocation.terminal(None)
+                    except BaseException as settlement:
+                        exc.add_note(f"thread terminal evidence failed: {settlement}")
+                        logger.exception("Thread terminal evidence failed while preserving primary error")
                 if on_terminal is not None:
                     self._invoke_terminal_hook(on_terminal, None, request.move_reservation)
                 raise
             else:
+                if thread_invocation is not None:
+                    thread_invocation.terminal(outcome)
                 # Final terminal path only: NOT invoked for a retry-worthy
                 # attempt that still has budget (the invocation continues
                 # and the caller-owned control must survive the retry sleep
@@ -1467,6 +1479,8 @@ class HostSessionSupervisor:
                     task_invocation.host_terminal(outcome)
                     task_invocation.retry_attempt(boundary="host", ordinal=attempt,
                                                   budget=retry_limit, backoff=backoff, schedule=retry_schedule)
+                if thread_invocation is not None:
+                    thread_invocation.next_attempt(attempt)
                 if backoff > 0:
                     self._sleep(backoff)
                 request = request.with_retry_attempt(attempt)
@@ -1568,6 +1582,8 @@ class HostSessionSupervisor:
         # window, and immediately before the existing atomic commitment. It
         # is opt-in so ordinary callers do not re-run their validators here.
         task_commit = getattr(final_prelaunch_validator, "_task_pause_commit", None)
+        if task_commit is None:
+            task_commit = getattr(final_prelaunch_validator, "_thread_move_commit", None)
         if task_commit is not None:
             from runtime.orchestrator.task_pause import DeferredRootPause
             try:
@@ -1621,18 +1637,25 @@ class HostSessionSupervisor:
         if ctx.terminal_reason() is not None:
             self._finish_and_reconcile(ctx)
             return self._outcome(request, ctx, attempt)
-        if request.on_started is not None:
+        if request.on_started is not None and (
+                not hasattr(final_prelaunch_validator, "_thread_move_commit") or running.process is not None):
             request.on_started(running.root_pid)
 
         # ── sampling ──────────────────────────────────────────────
         sampler = self._start_sampler(running, ctx)
 
         # ── launch body ───────────────────────────────────────────
+        deferred_thread_admission = None
         try:
             result = launch_body(running)
         except Exception as exc:  # launch body never replaces terminal state
-            ctx.set_error(f"launch body raised: {exc}")
-            ctx.freeze_terminal(TerminalReason.FAILURE)
+            from runtime.orchestrator.team_move import DeferredTeamMove
+            if hasattr(final_prelaunch_validator, "_thread_move_commit") and isinstance(exc, DeferredTeamMove):
+                deferred_thread_admission = exc
+                ctx.freeze_terminal(TerminalReason.CANCELLED)
+            else:
+                ctx.set_error(f"launch body raised: {exc}")
+                ctx.freeze_terminal(TerminalReason.FAILURE)
         else:
             ctx.set_launch_result(result)
         finally:
@@ -1640,6 +1663,11 @@ class HostSessionSupervisor:
 
         # ── finish + residue + publish (idempotent w/ cancel) ─
         self._finish_and_reconcile(ctx)
+        if deferred_thread_admission is not None:
+            # Cleanup/receipt publication still precedes lease release. Typed
+            # deferral escapes without a provider failure or native callback.
+            final_prelaunch_validator.terminal(self._outcome(request, ctx, attempt))
+            raise deferred_thread_admission
         return self._outcome(request, ctx, attempt)
 
     def _abandon_pre_launch(

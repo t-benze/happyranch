@@ -509,6 +509,9 @@ class SessionsMixin:
         last_resumed_seq: int,
     ) -> None:
         """Persist the resumable session id + delta watermark for a participant."""
+        move = getattr(self, "_team_move_coordinator", None)
+        if move is not None:
+            move.threads.participant_write_uncommitted(agent_name)
         self._conn.execute(
             "UPDATE thread_participants SET agent_session_id = ?, last_resumed_seq = ? "
             "WHERE thread_id = ? AND agent_name = ?",
@@ -536,6 +539,9 @@ class SessionsMixin:
         must not advance delivery state; the next wake re-attempts the same
         required range (the id being NULL forces a full-prompt launch).
         """
+        move = getattr(self, "_team_move_coordinator", None)
+        if move is not None:
+            move.threads.participant_write_uncommitted(agent_name)
         payload = {
             "executor": executor,
             "stale_session_id": stale_session_id,
@@ -575,6 +581,9 @@ class SessionsMixin:
         termination) where any later thread resume must start fresh with a
         full-prompt launch.
         """
+        move = getattr(self, "_team_move_coordinator", None)
+        if move is not None:
+            move.threads.participant_write_uncommitted(agent_name)
         self._conn.execute(
             "UPDATE thread_participants SET agent_session_id = NULL, "
             "last_resumed_seq = 0 WHERE thread_id = ? AND agent_name = ?",
@@ -630,6 +639,9 @@ class SessionsMixin:
         """UPDATE every participant row owned by ``agent_name`` WITHOUT
         committing. The owning transaction (``reset_thread_sessions_for_agent``,
         ``terminate_agent_cleanups``) commits or rolls back."""
+        move = getattr(self, "_team_move_coordinator", None)
+        if move is not None:
+            move.threads.participant_write_uncommitted(agent_name)
         cursor = self._conn.execute(
             "UPDATE thread_participants SET agent_session_id = NULL, "
             "last_resumed_seq = 0 WHERE agent_name = ?",
@@ -679,6 +691,10 @@ class SessionsMixin:
         """UPDATE every participant row of one thread WITHOUT committing. The
         owning transaction (``reset_thread_sessions_for_thread``,
         ``archive_thread_and_reset_sessions``) commits or rolls back."""
+        move = getattr(self, "_team_move_coordinator", None)
+        if move is not None:
+            for participant in self.list_thread_participants(thread_id):
+                move.threads.participant_write_uncommitted(participant.agent_name)
         cursor = self._conn.execute(
             "UPDATE thread_participants SET agent_session_id = NULL, "
             "last_resumed_seq = 0 WHERE thread_id = ?",

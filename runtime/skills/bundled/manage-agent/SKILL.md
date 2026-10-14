@@ -22,7 +22,7 @@ Team transfers and manager demotion remain outside manage-agent. Update retains
 the existing team/role. Founder THR296seq135 approved a separate coordinated
 online consultant move under TASK11345. C1 supplies task/host holds and preserves
 real callback/retry/cleanup ownership; it changes no permission generator or
-manage-agent admission. C2/C3/D producer/recovery/old-reader closure is still
+manage-agent admission. C3/D producer/recovery/old-reader closure is still
 required. No move command/route or apply/COMPLETE writer is available and no live
 move is authorized. Later complete source requires founder admission.
 Admission refusal preserves pending work. Retry handoff retains each uncertain
@@ -35,6 +35,23 @@ COMMIT before reservation handoff. Failed-tail reason/process diagnostics append
 to existing bounded cleanup suffix lines without erasing earlier facts or
 proving quiescence. Persistence refusal retains failed ownership and preserves
 an original exception. The closed Pause journal format is unchanged.
+C2 now reserves trusted thread/participant/INTEGER invocation/SID ownership before
+preparation, then composes final claims and launch with the short gate, DB and
+host terminal ordering. All purposes and actual host/direct429, eviction and
+bounded-nudge paths participate. The existing thread audit owner stores strict
+bounded append-only attempt/deferral evidence; no schema or task-Pause format
+changes. Unknown prior retries stay blockers after later clean outcomes.
+Captured actual running turns alone may settle under WAITING; no drain label
+admits new work. Queue dedup spans queued/in-flight work, typed deferrals release
+notification ownership, and complete durable runnable discovery/redelivery keeps
+pending tokens/ranges/probe/catchup obligations intact. Native thread recovery
+and raw reapers preserve held/C2-owned history. Participant/session writes
+cooperate during future forward reset; messages remain admissible. The bounded
+thread census/drain and post-release seams are available to D, whose complete
+startup/containment/operation/old-reader closure remains absent. No public apply
+or COMPLETE writer; APPLY_AVAILABLE stays false. Behavior remains UNEXECUTED,
+integration SKIPPED24342; no new product tests/fixtures or activation authority.
+
 Do not substitute termination/re-enrollment, direct roster writes or ambient
 agent credentials. See docs/superpowers/specs/2026-10-14-online-team-move.md in
 the release source; this prose grants no execution/permission change.

@@ -448,6 +448,7 @@ def _sweep_on_startup(
 
         # 6a. Activate per-pair reply delivery state for every OPEN thread
         # (idempotent cutover: seeds/coalesces legacy pending REPLYs).
+        move = getattr(db, "_team_move_coordinator", None)
         recovered_tokens: list[str] = []
         for thread_id in db.list_open_thread_ids():
             db.cutover_thread_reply_delivery_state(thread_id)
@@ -475,6 +476,8 @@ def _sweep_on_startup(
         # Own the whole raw UPDATE-to-commit transaction; never carry the lock
         # into process termination/waits above.
         with db._lock:
+            protected_ids = move.threads.recovery_protected_ids() if move is not None else ()
+            exclusions = " AND id NOT IN (" + ",".join("?" for _ in protected_ids) + ")" if protected_ids else ""
             db._conn.execute(
                 "UPDATE thread_invocations SET status = 'failed', "
                 "decline_reason = ?, consumed_at = ? "
@@ -484,16 +487,16 @@ def _sweep_on_startup(
                 " WHERE queued_invocation_token IS NOT NULL) "
                 "AND invocation_token NOT IN "
                 "(SELECT running_invocation_token FROM thread_reply_delivery_state "
-                " WHERE running_invocation_token IS NOT NULL)",
-                ("daemon_restart", _now),
+                " WHERE running_invocation_token IS NOT NULL)" + exclusions,
+                ("daemon_restart", _now, *protected_ids),
             )
 
-            # 6d. Preserve the generic reaper for BOOTSTRAP and TASK_FOLLOWUP exactly.
+            # 6d. Original reaper applies only outside held/C2-owned obligations.
             cursor = db._conn.execute(
                 "UPDATE thread_invocations SET status = 'failed', "
                 "decline_reason = ?, consumed_at = ? "
-                "WHERE status = 'pending' AND purpose IN ('bootstrap', 'task_followup')",
-                ("daemon_restart", _now),
+                "WHERE status = 'pending' AND purpose IN ('bootstrap', 'task_followup')" + exclusions,
+                ("daemon_restart", _now, *protected_ids),
             )
             db._conn.commit()
         logger.debug(
@@ -501,7 +504,9 @@ def _sweep_on_startup(
             "invocations; recovered %d reply-delivery tokens",
             cursor.rowcount, len(recovered_tokens),
         )
-        return recovered_tokens
+        if move is not None:
+            recovered_tokens.extend(move.threads.runnable_tokens())
+        return list(dict.fromkeys(recovered_tokens))
     except BaseException:
         root_tail_failed = True
         raise

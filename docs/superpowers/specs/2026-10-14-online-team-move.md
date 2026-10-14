@@ -6,12 +6,12 @@ Founder THR-296 seq135 (2026-10-14T05:17:20Z), “@engineering_manager start the
 
 Slice B implements the private durable store, closed request/state/progress/receipt contract, optional layout validation and independent whole-release schema reference selection. C1 binds the org-owned coordinator to actual task allocation, preparation and final Pause/host commitment; its projection remains diagnostic. The installer is explicit and org-only; production startup never calls it. Its only external caller in B constructs disposable release-reference databases. Existing installed optional layouts are validated without installation or row rewriting. Generic Database/runtime-audit remain extension-free.
 
-There is no public apply/preview/show/recover route or CLI command, background operation, operational completion writer or available-feature claim. C1 task admission exclusion is active in source whenever a valid durable hold exists. `APPLY_AVAILABLE=False`; `COMPLETE` writes and its unsupported read contract fail closed until D supplies the actual native evidence validator. Source/static acceptance is separate from behavior, activation and live-operation acceptance. A table alone cannot make a prefeature reader recognize a hold.
+There is no public apply/preview/show/recover route or CLI command, background operation, operational completion writer or available-feature claim. C1 task and C2 thread admission exclusion are active in source whenever a valid durable hold exists. `APPLY_AVAILABLE=False`; `COMPLETE` writes and its unsupported read contract fail closed until D supplies the actual native evidence validator. Source/static acceptance is separate from behavior, activation and live-operation acceptance. A table alone cannot make a prefeature reader recognize a hold.
 
 | Serial unit | Required closure; source status |
 |---|---|
 | C1 | Task allocation/claim and preparation, causal task closure, workflow producers/final-launch, Pause/tracker/host retry ownership: integrated in source; behavioral evidence UNEXECUTED. Installed-layout legacy unowned producers refuse before claim/preparation. |
-| C2 | Thread claim/delivery, bootstrap/followup, breaker/probe/exchange, pending redelivery and captured running-turn drain: NOT INTEGRATED. |
+| C2 | Thread preparation/final claim/launch, all purposes, durable deferred obligations/attempts, probe admission, census and captured running-turn drain seams: integrated in source; behavior UNEXECUTED. Full operation startup and containment recovery remain D. |
 | C3 | Dream/wake/schedule/job/remote/cleanup and roster/enrollment/profile/skill/name/policy writers: NOT INTEGRATED. |
 | D | Pure native preview, canonical files/cache, two audited resets, context/skills, batch profile publisher, bounded recovery, early startup and supported runtime/launcher downgrade refusal: NOT INTEGRATED. |
 | E | Founder-controlled API/client/CLI and supported runbook: NOT INTEGRATED; depends on D and complete admission closure. |
@@ -50,9 +50,100 @@ and propagates unless an original exception is already unwinding; then that
 original exception carries the settlement failure note and log. Every collected
 outer-tail owner is visited even if another settlement fails.
 
-The task-specific deferred notification seam retains tagged metadata and can redeliver through the existing generation-aware/deduplicating queue owner only after durable release. It does not consume result/callback tokens, allocate tasks, release the operation or recover startup. D must join persistent task/Pause/workflow, session/host/remote and writer evidence; an empty process-local reservation registry is never clearance. C2 owns all thread claims/delivery/drain/breaker/probe behavior; C3 owns dream/wake/schedule/job/remote/cleanup and writers. Their host constructors carry permanent identity only in C1, which does not close those producer claims. D's whole-operation release, startup/partial-roster recovery and supported old-reader/launcher downgrade guard remain absent. APPLY_AVAILABLE stays literal false, with no apply/COMPLETE writer.
+The task-specific deferred notification seam retains tagged metadata and can redeliver through the existing generation-aware/deduplicating queue owner only after durable release. It does not consume result/callback tokens, allocate tasks, release the operation or recover startup. D must join persistent task/Pause/workflow, session/host/remote and writer evidence; an empty process-local reservation registry is never clearance. C2 below connects thread claims/delivery/drain/breaker/probe owners; C3 owns dream/wake/schedule/job/remote/cleanup and writers. Their host constructors carry permanent identity only in C1, which does not close those producer claims. D's whole-operation release, startup/partial-roster recovery and supported old-reader/launcher downgrade guard remain absent. APPLY_AVAILABLE stays literal false, with no apply/COMPLETE writer.
 
-C1 review/QA uses the plan section8 SOURCE/POLICY/STATIC acceptance. Race, hold/deferral/redelivery, callback/quiescence, recovery/startup and compatibility behavior remains UNEXECUTED; integration SKIPPED THR243seq42. No new unit/integration cases or fixtures, retired units, ad hoc E2E, protected experiments, synthetic/live tasks, DB installation/migration, move or activation is authorized by this source slice.
+C1/C2 review/QA uses the plan section8 SOURCE/POLICY/STATIC acceptance. Race, hold/deferral/redelivery, callback/quiescence, recovery/startup and compatibility behavior remains UNEXECUTED; integration SKIPPED THR243seq42. No new unit/integration cases or fixtures, retired units, ad hoc E2E, protected experiments, synthetic/live tasks, DB installation/migration, move or activation is authorized by this source slice.
+
+## C2 thread admission and deferred obligations
+
+C2 integrates actual REPLY, BOOTSTRAP and TASK_FOLLOWUP producers. One org-owned
+thread admission owner resolves permanent identity from the persisted INTEGER
+invocation, thread and participant before agent files, role/prompt/permissions or
+skills are prepared. Notifications are never launch authority. The runner peeks
+the reply range without starting it; final commitment under move gate → DB
+transaction → host terminal leaf rechecks the snapshot, atomically claims and
+stamps lifecycle with possible-launch evidence. Changed ranges defer for current
+context preparation. Special purposes use their actual invocation row in that
+same commitment, without a reply-delivery row. Existing claim/settlement meanings
+and immutable invocation/session/participant/attachment/history identities stay.
+
+The private `thread_move_lifecycle` action appends closed version1 snapshots in
+the existing real thread audit scope, using its uncommitted writer in the owning
+claim/evidence transaction. It borrows neither task Pause nor workflow journals
+and adds no schema. Fields bind org, INTEGER invocation, permanent agent, thread,
+actual SID and preparation ID; phase is initial/fallback/nudge, finite original
+retry schedule/ordinal/boundary and immutable per-attempt IDs/provider/model,
+possible launch, actual launched observation, settlement and quiescence. Deferred,
+producer-settled and failed-cleanup facts are distinct. Snapshots are at most16KiB
+and64 attempts; strict serializer/readers reject unknown/duplicate fields, owner
+mismatch, missing initial preparation, changed identity/budget, removed attempts,
+rewritten settled evidence and erased uncertainty. Bounds refuse; they never
+truncate a census or certify idle. No full invocation credential is added to this
+new evidence. The existing genuine reasoning-selection audit stays with its
+actual lifecycle commitment.
+
+Held work stays outside host FIFO and final launch. The actual builtin and custom
+self-launch bodies revalidate after throttle, including supervised passthrough.
+An empty host fallback handle is not a launched-process observation. A narrowly
+proven refusal immediately before self-Popen can settle that no-launch attempt;
+an interrupted/crashed or unknown attempt cannot use that proof. Host teardown,
+residue, receipt publication and lease release keep their ordering; typed
+admission errors escape launch-body handlers without provider failure,
+auto-decline, callback consumption, acknowledgement or breaker failure. Genuine
+provider failures retain the native breaker classification. Missing/passthrough
+cleanup and an earlier uncertain retry remain named durable blockers even after
+a later clean receipt. Launch-observation persistence failure keeps unknown
+ownership and does not interrupt actual containment cleanup.
+
+Provider429 and host retry copies keep their existing finite budgets. Selecting
+fallback or the one allowed nudge persists that phase before a winning hold can
+defer it. Safe redelivery re-prepares from current context with the same genuine
+invocation/SID, immutable claimed range if already admitted, and retained phase
+and retry ordinal. It cannot restart the budget or silently replay an uncertain
+attempt. Known original provider-session eviction retains its existing audited
+invalidation; C2 adds no resume reset or restoration. Clean no-callback nudge
+failure keeps the native post-launch-contract classification. Unknown original
+ownership requires the actual recovery/containment owner, not another model run.
+
+Queue put and put_once use the same queued/in-flight token dedup owner. Deferral,
+cancellation and exception release notification ownership; success acknowledges
+only that notification. Durable pending tokens, required-through ranges and
+catchup/probe records remain authoritative. The existing breaker timer performs
+complete durable runnable discovery and republishes safe obligations after hold
+release; D also has an explicit post-release redelivery seam. Queue awaits occur
+outside gate/DB. Probe admission skips each held pair before leasing/minting,
+without consuming cooldown or preventing unrelated work. Messages and normal
+obligation/coalescing/exchange writes continue under their native owners.
+
+D's capture seam accepts only a committed WAITING owner with drain consent and
+records exact actual currently launched preparations; capture grants no retry or
+new launch entitlement. Only that live captured turn may post its genuine
+reply/decline, dispatch or normal terminal settlement under the hold. New final
+launches always check the hold. A bounded drain interface (at most30 seconds)
+returns actual remaining blockers; it neither releases the operation nor writes a
+forward decision. Complete thread census joins durable lifecycle/attempts,
+pending invocations, required ranges, running delivery, probe leases, open
+exchanges and held/released catchup obligations. Ended tokens/SIDs, a clean later
+attempt or empty process-local state prove no idle. Restart loses live capture
+eligibility; unknown containment remains blocked, never reconstructed from a
+label. D still owes complete host/session/remote joins and owned operation deadline
+and forward-commit decisions.
+
+Startup's existing thread recovery, cutover and raw reply/bootstrap/followup
+reapers preserve held and C2-owned obligations before rewriting a token or status.
+Safe deferred/unstarted work can be rediscovered through the same queue owner;
+lost preparation/process/cleanup evidence stays diagnostic. Participant creation,
+removal and resume/reset writes cooperate under DB ownership during the future
+forward-commit/reset window. Ordinary messages/delivery obligations continue.
+The actual operation-scoped reset writer and early partial-roster attachment,
+full startup/launcher/old-reader compatibility remain D, not C2. No canonical
+move/reset/publication service, public route/CLI or COMPLETE writer is enabled.
+`APPLY_AVAILABLE` remains literal false. C3/D/E/F and independent final-head
+review, SOURCE/POLICY/STATIC QA and manager guarded merge remain outstanding.
+
+Behavioral/race/retry/drain/callback/recovery/compatibility observations remain
+UNEXECUTED. General integration SKIPPED THR243seq42; no new cases, parameters,
+fixtures, retired Python units, ad hoc E2E or protected execution is authorized.
 
 ## Exact resulting roster and preservation
 

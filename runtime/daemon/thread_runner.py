@@ -947,11 +947,51 @@ def _qualifying_breaker_failure(result: ExecutorResult | None) -> str | None:
 
 
 async def run_invocation(
+    *, org_state, invocation_token: str, settings: Settings,
+    host_supervisor: HostSessionSupervisor | None = None,
+) -> None:
+    from runtime.orchestrator.thread_move import ThreadMoveAdmission
+    from runtime.orchestrator.team_move import DeferredTeamMove, TeamMoveCoordinator
+    from runtime.infrastructure.team_move_store import TeamMoveStore
+    move = getattr(org_state.db, "_team_move_coordinator", None)
+    if move is None:
+        move = TeamMoveCoordinator.for_org(TeamMoveStore(org_state.db, org_state.slug))
+    admission: ThreadMoveAdmission = move.threads
+    owner = admission.reserve(invocation_token)
+    if owner is None:
+        return
+    deferred = failed = False
+    try:
+        await _run_invocation_owned(org_state=org_state, invocation_token=invocation_token,
+            settings=settings, host_supervisor=host_supervisor, move_owner=owner)
+    except DeferredTeamMove:
+        deferred = True
+        raise
+    except BaseException:
+        failed = True
+        raise
+    finally:
+        import sys
+        primary = sys.exception()
+        try:
+            owner.finish(deferred=deferred, failed=failed)
+        except BaseException as settlement:
+            owner.owner_live = False
+            # Retain process-local attribution when durable settlement refuses.
+            if primary is not None:
+                primary.add_note(f"C2 lifecycle settlement failed: {settlement}")
+                logger.exception("C2 lifecycle settlement failed while preserving primary error")
+            else:
+                raise
+
+
+async def _run_invocation_owned(
     *,
     org_state,
     invocation_token: str,
     settings: Settings,
     host_supervisor: HostSessionSupervisor | None = None,
+    move_owner: object,
 ) -> None:
     """Execute one thread invocation end-to-end.
 
@@ -962,9 +1002,11 @@ async def run_invocation(
     ``HostSessionSupervisor`` the invocation runs through it (admission lease,
     atomic ownership at grant, real backend launch into containment, opaque
     cancellation, containment cleanup before exactly-once lease release); when
-    it is ``None`` (tests / idle state) the legacy uncontained path is used
-    unchanged.
+    it is ``None`` the self-launch path uses the same final admission hook
+    and retains unknown containment evidence rather than claiming quiescence.
     """
+    from runtime.orchestrator.team_move import DeferredTeamMove
+    from runtime.orchestrator.thread_move import bind_thread_preparation
     inv = org_state.db.get_pending_invocation(invocation_token)
     if inv is None:
         logger.info("run_invocation: token %s already non-pending", invocation_token[:8])
@@ -999,15 +1041,14 @@ async def run_invocation(
         model_name = agent_def.model
         reasoning_effort = agent_def.reasoning_effort
 
-    # GitHub #688 Slice B: a conversational REPLY must pass the durable
-    # queued→running CAS before any prompt/subprocess work. A stale/duplicate
-    # queue notification no-ops here. BOOTSTRAP/TASK_FOLLOWUP keep the legacy
-    # direct path (no delivery-state row).
+    # C2 snapshots the authoritative range without claiming it. Preparation
+    # is already reserved; final launch atomically rechecks this snapshot and
+    # transfers queued→running. A winning hold leaves the token unclaimed.
+    # BOOTSTRAP/TASK_FOLLOWUP retain their separate durable invocation owners.
     claim: "ThreadReplyClaim | None" = None
     if inv.purpose is ThreadInvocationPurpose.REPLY:
-        claim = org_state.db.claim_conversational_reply(
-            invocation_token, executor=executor_name, model=model_name,
-        )
+        claim = org_state.db.peek_conversational_reply(invocation_token)
+        move_owner.claim = claim
         if claim is None:
             logger.info(
                 "run_invocation: token %s stale/duplicate REPLY (claim CAS miss)",
@@ -1118,7 +1159,9 @@ async def run_invocation(
     # FAIL-CLOSED: a materialization error must persist a terminal failure
     # and return BEFORE executor spawn — no half-populated skills dir may
     # pass as complete (REVISE TASK-2829).
-    session_id = f"sess-{uuid.uuid4().hex}"
+    session_id = move_owner.session_id
+    move_owner.executor, move_owner.model = executor_name, model_name
+    move_owner.reasoning_effort = reasoning_effort
     try:
         skills_root = settings.project_root / "runtime" / "skills"
         expected_specs = materialize_workspace_skills(
@@ -1142,6 +1185,8 @@ async def run_invocation(
             agent_name=inv.agent_name,
             task_id=inv.thread_id,
         )
+    except DeferredTeamMove:
+        raise
     except (SystemContractMaterializationError, Exception) as e:
         decline_reason = str(e)
         if not isinstance(e, SystemContractMaterializationError):
@@ -1220,6 +1265,7 @@ async def run_invocation(
         )
         can_resume = (
             resume_capable
+            and move_owner.state.phase == "initial"
             and stored_sid
             and last_seq > 0
             and (claim is None or (
@@ -1282,18 +1328,6 @@ async def run_invocation(
             prompt += "\n" + escalation_note
         prompt += range_note
 
-        org_state.db.stamp_invocation_started(
-            invocation_token,
-            session_id=session_id,
-            executor=executor_name,
-            model=model_name,
-        )
-        if reasoning_effort is not None:
-            org_state.db.insert_audit_log(inv.thread_id, inv.agent_name, "thread_reasoning_selection", {"invocation_token": invocation_token, "session_id": session_id, "executor": executor_name, "model": model_name, "reasoning_effort": reasoning_effort})
-        await _publish_invocation_event(
-            org_state, thread_id=inv.thread_id, agent_name=inv.agent_name,
-            seq=inv.triggering_seq, kind="invocation_started", status="working",
-        )
         audit = AuditLogger(org_state.db)
 
         def _settle_failure(
@@ -1337,11 +1371,23 @@ async def run_invocation(
             org_state.db.insert_audit_log(inv.thread_id, inv.agent_name, action, payload)
 
         def _invoke(run_prompt: str, resume: str | None) -> _InvokeResult:
+            with bind_thread_preparation(move_owner):
+                try:
+                    return _invoke_bound(run_prompt, resume)
+                finally:
+                    if host_supervisor is None:
+                        move_owner.direct_terminal()
+
+        def _invoke_bound(run_prompt: str, resume: str | None) -> _InvokeResult:
             launched = False
 
             def _on_started(_pid: int) -> None:
                 nonlocal launched
                 launched = True
+                move_owner.on_started()
+                loop.call_soon_threadsafe(lambda: asyncio.create_task(_publish_invocation_event(
+                    org_state, thread_id=inv.thread_id, agent_name=inv.agent_name, seq=inv.triggering_seq,
+                    kind="invocation_started", status="working")))
 
             def _post_launch_exception(exc: Exception) -> _InvokeResult:
                 return _InvokeResult(result=ExecutorResult(
@@ -1353,7 +1399,7 @@ async def run_invocation(
                     provider_launched=True,
                 ))
 
-            def _pre_launch_validator():
+            def _pre_launch_validator() -> None:
                 validate_workspace_skills_integrity(
                     workspace, expected_specs,
                     settings=settings,
@@ -1362,7 +1408,7 @@ async def run_invocation(
                     task_id=inv.thread_id,
                 )
             if host_supervisor is None:
-                # ── Legacy uncontained path (unchanged) ──
+                # ── Self-launch with C2 final admission and unknown cleanup ──
                 run_kwargs = dict(
                     workspace=Path(workspace), prompt=run_prompt,
                     session_id=session_id, timeout_seconds=timeout,
@@ -1376,6 +1422,8 @@ async def run_invocation(
                     run_kwargs["resume_session_id"] = resume
                 try:
                     return _InvokeResult(result=executor.run(**run_kwargs))
+                except DeferredTeamMove:
+                    raise
                 except Exception as exc:
                     if launched:
                         return _post_launch_exception(exc)
@@ -1434,6 +1482,8 @@ async def run_invocation(
                     run_kwargs["resume_session_id"] = resume
                 try:
                     res = executor.run(**run_kwargs)
+                except DeferredTeamMove:
+                    raise
                 except Exception as exc:
                     # A real contained process is launched before launch_body;
                     # passthrough executors publish the same fact via on_started.
@@ -1454,11 +1504,14 @@ async def run_invocation(
                     payload=res,
                 )
 
+            move_owner.last_spec = launch_spec
             outcome = host_supervisor.run(
                 AdmissionRequest(
                     org=org_state.slug,
                     invocation_kind="thread",
-                    agent_id=inv.agent_name,
+                    agent_id=move_owner.identity.agent_id,
+                    move_reservation=move_owner,
+                    on_started=_on_started,
                     logical_id=inv.thread_id,
                     executor_profile=executor_name,
                     enqueued_at=time.monotonic(),
@@ -1466,6 +1519,7 @@ async def run_invocation(
                 launch_spec=launch_spec,
                 launch_body=_launch_body,
                 pre_launch_validator=_pre_launch_validator,
+                final_prelaunch_validator=move_owner,
             )
             launch = outcome.payload
             if launch is None:
@@ -1542,7 +1596,11 @@ async def run_invocation(
             )
 
         # Spawn subprocess in a thread pool (executors are synchronous).
-        fallback_executed = False  # tracks session-not-found eviction fallback
+        fallback_executed = move_owner.state.phase != "initial"
+        if move_owner.state.phase != "initial":
+            resume_sid = None
+        if move_owner.state.phase == "nudge":
+            prompt += "\nYou MUST post exactly one genuine terminal reply or decline for this invocation.\n"
         try:
             loop = asyncio.get_event_loop()
             phase = await loop.run_in_executor(None, lambda: _invoke(prompt, resume_sid))
@@ -1565,6 +1623,7 @@ async def run_invocation(
                 # untouched — the next wake re-attempts the same range from
                 # a full prompt instead of a doomed resume against a stale
                 # provider session.
+                move_owner.start_phase("fallback")
                 audit.log_agent_session_evicted_fallback(
                     inv.thread_id, agent_name=inv.agent_name, executor=executor_name,
                     stale_session_id=resume_sid,
@@ -1603,6 +1662,8 @@ async def run_invocation(
                     await _settle_no_launch(phase)
                     return
                 result = phase.result
+        except DeferredTeamMove:
+            raise
         except Exception as exc:
             _settle_or_fail_reply(
                 org_state, invocation_token=invocation_token, claim=claim,
@@ -1758,12 +1819,15 @@ async def run_invocation(
                 invocation_token[:8], retry_resume_sid,
             )
 
+            move_owner.start_phase("nudge")
             retry_exc: Exception | None = None
             retry_phase: _InvokeResult | None = None
             try:
                 retry_phase = await loop.run_in_executor(
                     None, lambda: _invoke(retry_prompt, retry_resume_sid),
                 )
+            except DeferredTeamMove:
+                raise
             except Exception as exc:
                 logger.warning(
                     "run_invocation: token %s nudge re-invoke crashed: %s",
@@ -1893,13 +1957,15 @@ async def run_invocation(
             reason = "invocation_timeout"
             status = ThreadInvocationStatus.TIMEOUT
         else:
-            reason = f"no_callback: rc={rc}"
+            reason = (f"no_callback_after_reprompt: rc={rc}"
+                if move_owner.state.phase == "nudge" and result.success else f"no_callback: rc={rc}")
             detail = _executor_error_detail(result, rc)
             if detail:
                 reason = f"{reason} — {detail}"
             status = ThreadInvocationStatus.FAILED
 
-        _settle_failure(result, status=status, reason=reason)
+        _settle_failure(result, status=status, reason=reason,
+            category="post_launch_contract" if move_owner.state.phase == "nudge" and result.success else None)
         # Spec §6: silent decline — no thread_messages row, no turns_used increment.
         # The invocation row status (timeout/failed) and decline_reason are the record.
         AuditLogger(org_state.db).log_thread_invocation_failed(

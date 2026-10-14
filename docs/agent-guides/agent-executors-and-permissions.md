@@ -1,12 +1,12 @@
 # Agent Executors And Permissions
 
-## Approved online team move — C1 task/host source (THR296seq135)
+## Approved online team move — C1 task/host and C2 thread source (THR296seq135)
 
 Manage-agent update retains team/role and cannot transfer or demote agents.
 The approved eventual online move reuses native rendering/permission/reset
 owners without changing execution enforcement or explicit allow rules. C1 adds task/host business admission exclusion, not executor permission
 enforcement. Permanent agent identity comes from trusted task ownership and
-survives host retries. C2/C3/D materialization/publisher/other-producer/recovery
+survives host retries. C3/D materialization/publisher/other-producer/recovery
 closure remains absent. Shared founder bearer cannot prove human presence. No ambient agent
 credential, name, type/model or source acceptance grants move authority.
 Move admission deferral propagates through the inner launch handler to the existing
@@ -31,6 +31,23 @@ permission to replay an unknown entry. A refused save retains failed ownership
 and propagates unless an original exception is already unwinding; then that
 original exception carries the settlement failure note and log. Every collected
 outer-tail owner is visited even if another settlement fails.
+
+C2 now reserves trusted thread/participant/INTEGER invocation/SID ownership before
+preparation, then composes final claims and launch with the short gate, DB and
+host terminal ordering. All purposes and actual host/direct429, eviction and
+bounded-nudge paths participate. The existing thread audit owner stores strict
+bounded append-only attempt/deferral evidence; no schema or task-Pause format
+changes. Unknown prior retries stay blockers after later clean outcomes.
+Captured actual running turns alone may settle under WAITING; no drain label
+admits new work. Queue dedup spans queued/in-flight work, typed deferrals release
+notification ownership, and complete durable runnable discovery/redelivery keeps
+pending tokens/ranges/probe/catchup obligations intact. Native thread recovery
+and raw reapers preserve held/C2-owned history. Participant/session writes
+cooperate during future forward reset; messages remain admissible. The bounded
+thread census/drain and post-release seams are available to D, whose complete
+startup/containment/operation/old-reader closure remains absent. No public apply
+or COMPLETE writer; APPLY_AVAILABLE stays false. Behavior remains UNEXECUTED,
+integration SKIPPED24342; no new product tests/fixtures or activation authority.
 
 See the [approved contract](../superpowers/specs/2026-10-14-online-team-move.md).
 Behavior/recovery remains UNEXECUTED; source/static acceptance is separate.

@@ -453,7 +453,7 @@ def create_app(state: DaemonState) -> FastAPI:
     async def team_move_task_conflict(request: Request, exc: DeferredTeamMove | TeamMoveError) -> JSONResponse:
         return JSONResponse(status_code=409, content={"detail": {
             "code": exc.code, "operation_id": getattr(exc, "operation_id", None),
-            "required_action": "Resolve the owning team-move hold before task admission",
+            "required_action": "Resolve the owning team-move hold or named admission owner before retrying",
         }})
     # Wire metrics registry into the run_step worker queue for loop-tick recording.
     state.queue._metrics_registry = state.metrics_registry

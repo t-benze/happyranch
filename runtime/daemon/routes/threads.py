@@ -1820,6 +1820,10 @@ async def dispatch_from_thread_endpoint(
             async with org.db_lock:
                 from runtime.orchestrator.task_pause import origin_guard
                 with origin_guard(org, resolves):
+                    with org.db._lock:
+                        move = getattr(org.db, "_team_move_coordinator", None)
+                        if move is not None:
+                            move.threads.callback_uncommitted(body.invocation_token)
                     cur_inv = org.db.get_pending_invocation(body.invocation_token)
                     if cur_inv is None or cur_inv.dispatched_task_id is not None:
                         raise HTTPException(status_code=409, detail={"code": "dispatch_already_used"})

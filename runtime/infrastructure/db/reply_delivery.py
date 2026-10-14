@@ -206,6 +206,9 @@ class ReplyDeliveryMixin:
         lease_id: str, now: datetime | None = None,
     ) -> ThreadReplyBreakerEpisode | None:
         """Acquire the single durable half-open lease when its cooldown is due."""
+        move = getattr(self, "_team_move_coordinator", None)
+        if move is not None and move.threads.held_uncommitted(agent_name) is not None:
+            return None
         at_s = (now or _now()).astimezone(timezone.utc).isoformat()
         cursor = self._conn.execute(
             "UPDATE thread_reply_breaker_episodes SET state='probe',"
@@ -259,6 +262,7 @@ class ReplyDeliveryMixin:
                     invocation_token=queued["queued_invocation_token"],
                     kind="breaker_probe",
                 ))
+            move = getattr(self, "_team_move_coordinator", None)
             cutoff_s = (at - timedelta(seconds=cooldown_seconds)).isoformat()
             for candidate in self._conn.execute(
                 "SELECT d.thread_id,d.agent_name,d.updated_at FROM "
@@ -273,6 +277,8 @@ class ReplyDeliveryMixin:
                 "ORDER BY d.updated_at,d.thread_id,d.agent_name",
                 (cutoff_s,),
             ).fetchall():
+                if move is not None and move.threads.held_uncommitted(candidate["agent_name"]) is not None:
+                    continue
                 pair = (candidate["thread_id"], candidate["agent_name"])
                 executor_key = (no_episode_executor_keys or {}).get(pair)
                 if executor_key is None:
@@ -310,6 +316,8 @@ class ReplyDeliveryMixin:
                 (at_s,),
             ).fetchall()
             for row in rows:
+                if move is not None and move.threads.held_uncommitted(row["agent_name"]) is not None:
+                    continue
                 if (row["queued_invocation_token"] is not None
                         or row["running_invocation_token"] is not None
                         or int(row["required_through_seq"] or 0)
@@ -529,7 +537,10 @@ class ReplyDeliveryMixin:
             participants = [
                 p.agent_name for p in self.list_thread_participants(thread_id)
             ]
+            move = getattr(self, "_team_move_coordinator", None)
             for agent_name in participants:
+                if move is not None and move.threads.preserve_pair_uncommitted(thread_id, agent_name):
+                    continue
                 existing = self._conn.execute(
                     "SELECT 1 FROM thread_reply_delivery_state "
                     "WHERE thread_id = ? AND agent_name = ?",
@@ -669,7 +680,10 @@ class ReplyDeliveryMixin:
         ).fetchall()
         try:
             self._conn.execute("BEGIN IMMEDIATE")
+            move = getattr(self, "_team_move_coordinator", None)
             for row in rows:
+                if move is not None and move.threads.preserve_pair_uncommitted(row["thread_id"], row["agent_name"]):
+                    continue
                 thread_id = row["thread_id"]
                 agent_name = row["agent_name"]
                 running_token = row["running_invocation_token"]
@@ -992,6 +1006,8 @@ class ReplyDeliveryMixin:
             ).fetchall():
                 thread_id = d["thread_id"]
                 agent_name = d["agent_name"]
+                if move is not None and move.threads.preserve_pair_uncommitted(thread_id, agent_name):
+                    continue
                 srow = self._conn.execute(
                     "SELECT * FROM thread_reply_delivery_state "
                     "WHERE thread_id = ? AND agent_name = ?",
@@ -1356,6 +1372,9 @@ class ReplyDeliveryMixin:
         (the durable recorded form); a queued settlement attributes only
         messages minted-at-or-before the wake.
         """
+        move = getattr(self, "_team_move_coordinator", None)
+        if move is not None:
+            move.threads.settlement_uncommitted(token)
         now = _now().isoformat()
         row = self._conn.execute(
             "SELECT * FROM thread_reply_delivery_state "
@@ -1689,6 +1708,9 @@ class ReplyDeliveryMixin:
         arrivals: list[ThreadReplyArrival] = []
         try:
             self._conn.execute("BEGIN IMMEDIATE")
+            move = getattr(self, "_team_move_coordinator", None)
+            if move is not None:
+                move.threads.callback_uncommitted(token)
             settlement = self._settle_reply_uncommitted(
                 token,
                 outcome=outcome,
@@ -1730,6 +1752,9 @@ class ReplyDeliveryMixin:
         settlement: ThreadReplySettlement | None = None
         try:
             self._conn.execute("BEGIN IMMEDIATE")
+            move = getattr(self, "_team_move_coordinator", None)
+            if move is not None:
+                move.threads.callback_uncommitted(token)
             self.validate_thread_message(_addresses)
             participants = [
                 p["agent_name"] for p in self._conn.execute(
@@ -1837,12 +1862,31 @@ class ReplyDeliveryMixin:
         return seq, settlement, arrivals
 
     @_synchronized
+    def peek_conversational_reply(self, token: str) -> ThreadReplyClaim | None:
+        inv = self.get_pending_invocation(token)
+        if inv is None:
+            return None
+        row = self._conn.execute("SELECT * FROM thread_reply_delivery_state WHERE thread_id=? AND agent_name=?",
+            (inv.thread_id, inv.agent_name)).fetchone()
+        if row is None:
+            return None
+        running = row["running_invocation_token"] == token
+        if not running and (row["queued_invocation_token"] != token or row["running_invocation_token"] is not None):
+            return None
+        ack, req = int(row["acknowledged_through_seq"]), int(row["required_through_seq"])
+        return ThreadReplyClaim(thread_id=inv.thread_id, agent_name=inv.agent_name, invocation_token=token,
+            acknowledged_through_seq=ack, required_through_seq=req,
+            running_from_seq=int(row["running_from_seq"]) if running else ack + 1,
+            running_through_seq=int(row["running_through_seq"]) if running else req)
+
+    @_synchronized
     def claim_conversational_reply(
         self,
         token: str,
         *,
         executor: str | None = None,
         model: str | None = None,
+        _move_owner: object | None = None,
     ) -> ThreadReplyClaim | None:
         """Durable queued→running CAS for a conversational REPLY.
 
@@ -1855,14 +1899,26 @@ class ReplyDeliveryMixin:
         """
         now = _now().isoformat()
         try:
-            self._conn.execute("BEGIN IMMEDIATE")
+            if _move_owner is None:
+                self._conn.execute("BEGIN IMMEDIATE")
+            move = getattr(self, "_team_move_coordinator", None)
+            if move is not None:
+                inv_owner = self.get_invocation_any_status(token)
+                if inv_owner is not None:
+                    move.threads.check_agent_uncommitted(inv_owner.agent_name)
+                if (_move_owner is None or _move_owner.admission is not move.threads
+                        or move.threads.live.get(_move_owner.inv.id) is not _move_owner
+                        or _move_owner.inv.invocation_token != token):
+                    from runtime.orchestrator.team_move import DeferredTeamMove
+                    raise DeferredTeamMove("team_move_thread_preparation_missing")
             row = self._conn.execute(
                 "SELECT * FROM thread_reply_delivery_state "
                 "WHERE queued_invocation_token = ?",
                 (token,),
             ).fetchone()
             if row is None or row["running_invocation_token"] is not None:
-                self._conn.commit()
+                if _move_owner is None:
+                    self._conn.commit()
                 return None
             inv = self._conn.execute(
                 "SELECT * FROM thread_invocations WHERE invocation_token = ?",
@@ -1877,17 +1933,24 @@ class ReplyDeliveryMixin:
                 and inv["started_at"] is None
             )
             if not valid:
-                self._conn.commit()
+                if _move_owner is None:
+                    self._conn.commit()
                 return None
+            if _move_owner is not None:
+                expected = _move_owner.claim
+                if (expected is None or expected.acknowledged_through_seq != row["acknowledged_through_seq"]
+                        or expected.required_through_seq != row["required_through_seq"]):
+                    from runtime.orchestrator.team_move import DeferredTeamMove
+                    raise DeferredTeamMove("team_move_thread_context_changed")
             acknowledged = int(row["acknowledged_through_seq"] or 0)
             required = int(row["required_through_seq"] or 0)
             running_from = acknowledged + 1
             running_through = required
             self._conn.execute(
-                "UPDATE thread_invocations SET started_at = ?, executor = ?, "
+                "UPDATE thread_invocations SET started_at = ?, session_id = ?, executor = ?, "
                 "model = ? "
                 "WHERE invocation_token = ? AND status = 'pending'",
-                (now, executor, model, token),
+                (now, _move_owner.session_id if _move_owner is not None else None, executor, model, token),
             )
             self._conn.execute(
                 "UPDATE thread_reply_delivery_state SET "
@@ -1908,9 +1971,11 @@ class ReplyDeliveryMixin:
                     "token_prefix": token[:8],
                 },
             )
-            self._conn.commit()
-        except Exception:
-            self._conn.rollback()
+            if _move_owner is None:
+                self._conn.commit()
+        except BaseException:
+            if _move_owner is None:
+                self._conn.rollback()
             raise
         return ThreadReplyClaim(
             thread_id=row["thread_id"],
