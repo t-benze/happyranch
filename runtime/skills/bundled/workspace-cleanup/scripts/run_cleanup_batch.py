@@ -417,7 +417,9 @@ def main(argv: list[str] | None = None) -> int:
                 pending_signal = signum
                 if process is None:
                     return  # Ownership must be assigned before cancellation.
-                raise InterruptedError('batch_signal:' + str(signum))
+                # Do not use InterruptedError: selectors in communicate would
+                # swallow it and keep the separately owned candidate alive.
+                raise RuntimeError('batch_signal:' + str(signum))
             old_handlers = {sig: signal.signal(sig, interrupted) for sig in (signal.SIGTERM, signal.SIGINT)}
             try:
                 process = subprocess.Popen(
@@ -425,7 +427,7 @@ def main(argv: list[str] | None = None) -> int:
                     text=True, start_new_session=True, env={**os.environ, "WC_ATTEMPT": str(attempt)},
                 )
                 if pending_signal is not None:
-                    raise InterruptedError('batch_signal:' + str(pending_signal))
+                    raise RuntimeError('batch_signal:' + str(pending_signal))
                 try:
                     stdout, stderr = process.communicate(
                         timeout=args.candidate_timeout_seconds,

@@ -44,14 +44,16 @@ def capture_command(argv: list[str], cwd: Path, timeout: float = 10,
             pending_signal = signum
             if process is None:
                 return  # Finish assigning ownership if interrupted during spawn.
-            raise InterruptedError('capture_signal:' + str(signum))
+            # selectors treats InterruptedError as a retryable interrupted read.
+            # Cancellation must escape that loop and stop owned containment.
+            raise RuntimeError('capture_signal:' + str(signum))
         old_handlers = {sig: signal.signal(sig, interrupted) for sig in (signal.SIGTERM, signal.SIGINT)}
     try:
         process = subprocess.Popen(argv, cwd=cwd, stdout=subprocess.PIPE,
                                    stderr=subprocess.PIPE, start_new_session=own_group,
                                    env={**os.environ, 'GIT_OPTIONAL_LOCKS': '0'})
         if pending_signal is not None:
-            raise InterruptedError('capture_signal:' + str(pending_signal))
+            raise RuntimeError('capture_signal:' + str(pending_signal))
         with selectors.DefaultSelector() as selector:
             selector.register(process.stdout, selectors.EVENT_READ, 'stdout')
             selector.register(process.stderr, selectors.EVENT_READ, 'stderr')
@@ -75,7 +77,7 @@ def capture_command(argv: list[str], cwd: Path, timeout: float = 10,
             if _group_exists(process.pid):
                 _, _, termination = _terminate_group(process, '', '')
                 receipt['error'] = 'capture_group_residue:' + termination
-    except (OSError, ValueError, TimeoutError, subprocess.TimeoutExpired) as exc:
+    except (OSError, ValueError, RuntimeError, TimeoutError, subprocess.TimeoutExpired) as exc:
         receipt['error'] = str(exc)
         if process is not None:
             for sig in old_handlers:
