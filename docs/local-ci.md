@@ -1035,3 +1035,19 @@ controls UNAUTHORED; protected12/RED-restoration-GREEN/repetitions unauthorized.
 General AND actual CLI callback integration SKIPPED243seq42; units RETIRED.
 Root remains INCOMPLETE for held R, wider E04, cancel-CLI mismatch and daily
 acceptance. No deployment/serving restart/Jenkins/schema/auth/permission work.
+
+### Ordinary attachment focused QA (THR304 seq36)
+
+`attachment-focused-qa.yml` is manual-only plumbing for the fixed
+`tests/integration/test_attachment_feedback_shipping.py` F1–F8 component cases.
+Register it through its separate plumbing PR before manager-dispatched QA of a
+reviewed immutable production branch. It checks out `github.sha` without saved
+credentials, uses frozen Python 3.14 dependencies and the unchanged integration
+parent guards, and retains source/interpreter/command/stdout/stderr/exit/JUnit
+under owned runner temp state. Setup or missing JUnit fails; the job is capped
+at ten minutes and the command at 240 seconds plus fifteen seconds kill grace.
+Never import, collect or execute this file on the live daemon host. Registration
+and static checks are not behavioral PASS. All five historical custom-harness
+runs remain FAILED; broader restart, simultaneous-race, process-tree and
+scheduler proof remains UNPROVEN. No general integration/E2E/protected proof,
+Jenkins, deployment, automatic trigger, retry or notification is added.
