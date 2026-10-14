@@ -2257,3 +2257,29 @@ Independent final-head source review/scoped QA and lint/static checks remain
 separate gates. Python units RETIRED; integration including callback SKIPPED24342;
 behavioral/negative/mutation/repetition/protected proof UNEXECUTED /
 FOUNDER-WAIVED139429/430. No package/native build or ad hoc daily E2E is authorized.
+
+## Bounded repository artifact source — K1
+
+`repository_artifacts.py` supplies closed canonical saved binding/adoption/presentation
+readers; the private `repository_artifact_objects.py` supplies bounded no-follow
+adopted-primary-store copies, sanitized typed Git reads, recomputed object hashes
+and complete raw base/head tree manifests. Allocation failures are category-only
+storage_unavailable with no launch or acquired directory. Every refusal retains
+the parent's acquired private-directory identity for owner remediation; process
+quiescence and omitted child metadata do not prove cleanup. Worker cleanup stays
+alarm-bounded; the parent performs no recursive cleanup and accepts success only
+after witnessing directory absence. Unknown launch/nested process/reap ownership
+remains internal. Retained directory identity is not a claim of present storage.
+Saved validation proves historical integrity only. OrgState mounts `WorkflowRepositoryArtifactService`; its current
+resolve operation categorically refuses before decode or object I/O because K2b's
+authenticated adoption/current authority producer is absent. No constructor flag,
+caller Boolean, record/digest or injected callback authorizes content access.
+K0 readiness remains false and code activation still refuses before allocation.
+Current document formats/producers, routes/CLI/DTOs/schema/receipt/recovery and
+native permissions are unchanged. Later coding writers must ship complete selected
+read/stage/prelaunch/receipt/closeout consumers with before-I/O admission and
+post-await authority revalidation. No live adoption/setup, execution or coding
+readiness is delivered. Python units RETIRED; integration/callback SKIPPED24342;
+behavior/security/protected proof UNEXECUTED/FOUNDER-WAIVED139429/430. Source-only
+review/static checks cannot establish reader-security or behavioral acceptance.
+See [the current K0/K1 contract](../superpowers/specs/2026-10-14-ordered-coding-workflow.md).
