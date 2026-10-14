@@ -1440,3 +1440,25 @@ existing SurfaceAllowList and credential/transport policy; source inspection is
 not native execution evidence. Mounted UI is a separate serial unit. Python units
 remain retired, integration SKIPPED24342, broad behavior/proof UNEXECUTED and
 FOUNDER-WAIVED139429/430; lint/static evidence is not behavioral acceptance.
+
+
+## Disabled coding release catalog — K0
+
+`runtime/workflows/builtin_templates/coding.v1.json` is the sole canonical release
+resource,634 bytes without newline, SHA256
+`6ee02be98738d3c95fe584b165abe07d0dbef66e510133c117ee0d62c953cad8`.
+Exactly one wheel force-include pair supplies it to the existing shared
+`packaging/daemon.spec` inventory for daemon and CLI; the spec stays unchanged.
+The reader resolves `importlib.resources.files("runtime").joinpath("workflows",
+"builtin_templates","coding.v1.json")`, reading at most16384 bytes; exact634-byte validation also
+rejects any longer resource, including a read that reaches that bound. No caller path, source fallback or default replacement exists.
+Missing/unreadable/unsupported loader holds503 resource_unavailable; invalid
+bytes refuse500 resource_corrupt. Static inventory is not installed-wheel or
+frozen-loader evidence; both remain unverified. No startup read/seed, migration,
+capability issuance, mapping, readiness flag, deployment or restart follows.
+
+See [the current ordered-coding K0 contract](../superpowers/specs/2026-10-14-ordered-coding-workflow.md).
+Independent final-head source review/scoped QA and lint/static checks remain
+separate gates. Python units RETIRED; integration including callback SKIPPED24342;
+behavioral/negative/mutation/repetition/protected proof UNEXECUTED /
+FOUNDER-WAIVED139429/430. No package/native build or ad hoc daily E2E is authorized.

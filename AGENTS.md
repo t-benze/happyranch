@@ -1,5 +1,32 @@
 # Project: HappyRanch - Multi-Agent Org Runtime
 
+**Disabled coding release catalog K0 — Founder THR139seq562/563, ROOT TASK10693.**
+GET `/api/v1/orgs/{slug}/workflows/release-templates/coding/1` authenticates the
+existing bearer and resolves an existing org before reading the constant package
+resource. CLI `happyranch workflows release-template coding --version 1 --org ORG
+--json` calls that GET and validates the same closed receipt. Exactly634 canonical
+UTF8 bytes pin SHA256 `6ee02be98738d3c95fe584b165abe07d0dbef66e510133c117ee0d62c953cad8`.
+The matched `workflow-release-template@1` receipt exposes exact bytes/base64,
+identity/version/digest and compiler/validator/source pins; readiness is ALWAYS
+`{enabled:false,reason:"release_catalog_only"}`. Missing/unsupported resource
+returns503 `resource_unavailable`; corrupt/noncanonical data returns500
+`resource_corrupt`, without private paths. Unknown kind/version is404.
+One wheel force-include pair feeds the unchanged shared frozen inventory; actual
+installed/frozen loading remains unverified. Import/mount/GET never seeds,
+imports templates, reads mutable readiness, changes workflow data or allocates
+work. The ordinary org GET is classified included for unchanged native handling;
+K0's explicit radius ships no TS/provider/browser initiation or stage prompts.
+No J migration, setup/mapping/adoption capability, activation, execution, CI/merge
+engine or live operation follows. Later ordered coding is separately scoped
+under Founder562; historical document pins and exclusions remain intact.
+V1 later merge requires exact independently reviewed head plus successful required
+lint/static CI on that head, scoped QA/hooks and guarded manager merge; optional
+target-base conditions cannot block v1. Artifact comparison base remains fixed.
+See [the current K0 source contract](docs/superpowers/specs/2026-10-14-ordered-coding-workflow.md).
+Python units RETIRED, integration/callback SKIPPED24342; behavioral/protected proof
+UNEXECUTED/FOUNDER-WAIVED139429/430. Source review is not behavioral acceptance.
+
+
 **Naming v1 core, API and routing source (THR-293 seq14/22/34).** One daemon controls each org.
 OrgState admits the existing generic/workflow/canonical source before installing
 an org-only, atomic three-table naming extension. Generic Database and

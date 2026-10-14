@@ -3139,3 +3139,25 @@ existing SurfaceAllowList and credential/transport policy; source inspection is
 not native execution evidence. Mounted UI is a separate serial unit. Python units
 remain retired, integration SKIPPED24342, broad behavior/proof UNEXECUTED and
 FOUNDER-WAIVED139429/430; lint/static evidence is not behavioral acceptance.
+
+
+## Disabled coding release catalog — K0
+
+The K0 release reader/strict projection has no database, store, authority,
+allocation or dispatch import. Its only public producer is the authenticated
+existing-org catalog GET; CLI is its sole new caller. There is no consumed stage
+prompt, coding action/parser, task/callback owner, setup/mapping writer or
+execution admission in this slice. Catalog readiness remains false independently
+of current authority, mappings, CI or document workflow state. Later K1–K6 are
+serial exact-radius source slices under Founder THR139seq562/563, SAME ROOT
+TASK10693; no stage engine or effect authority follows from K0. The amended v1
+merge contract requires the exact independently reviewed head and successful
+required lint/static CI on that head, independent scoped QA, normal hooks and
+guarded manager merge. Target-base conditional support is optional later;
+artifact comparison-base identity remains immutable across review/QA.
+
+See [the current ordered-coding K0 contract](../superpowers/specs/2026-10-14-ordered-coding-workflow.md).
+Independent final-head source review/scoped QA and lint/static checks remain
+separate gates. Python units RETIRED; integration including callback SKIPPED24342;
+behavioral/negative/mutation/repetition/protected proof UNEXECUTED /
+FOUNDER-WAIVED139429/430. No package/native build or ad hoc daily E2E is authorized.
