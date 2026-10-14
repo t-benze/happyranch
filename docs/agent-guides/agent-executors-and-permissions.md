@@ -48,6 +48,17 @@ thread census/drain and post-release seams are available to D, whose complete
 startup/containment/operation/old-reader closure remains absent. No public apply
 or COMPLETE writer; APPLY_AVAILABLE stays false. Behavior remains UNEXECUTED,
 integration SKIPPED24342; no new product tests/fixtures or activation authority.
+Native archive admission precedes delivery discard, BOOTSTRAP reaping, status,
+participant resets, their audits and the archive system message in one DB-owned
+transaction serialized against a forward decision. Refusal leaves all those
+obligations and history unchanged; transcript files/events follow COMMIT.
+Authentic provider eviction audit and compare-and-clear of the attempted stale
+SID commit before fallback phase selection/admission. Only the actual live
+producer's durable launched/settled initial attempt can record that observation
+under a winning hold; callback/drain/new-launch and general participant guards
+remain unchanged. Watermarks, delivery ranges/tokens and runtime SID are retained;
+unknown cleanup remains a blocker. Deferred re-entry cannot reuse the evicted SID.
+These archive/eviction/re-entry behavioral observations remain UNEXECUTED.
 
 See the [approved contract](../superpowers/specs/2026-10-14-online-team-move.md).
 Behavior/recovery remains UNEXECUTED; source/static acceptance is separate.

@@ -2,9 +2,14 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
+from typing import TYPE_CHECKING
 
 from runtime.infrastructure.db._shared import _synchronized
 from runtime.models import TaskStatus, TokenUsage
+
+
+if TYPE_CHECKING:
+    from runtime.orchestrator.thread_move import ThreadPreparation
 
 
 class SessionsMixin:
@@ -528,6 +533,7 @@ class SessionsMixin:
         stale_session_id: str,
         error: str,
         executor: str = "claude",
+        _move_owner: ThreadPreparation | None = None,
     ) -> None:
         """One transaction: eviction audit + durable session-id invalidation.
 
@@ -535,13 +541,25 @@ class SessionsMixin:
         BEFORE the full-prompt fallback launch. The audit row and the
         ``agent_session_id = NULL`` update commit atomically, so a failed
         fallback can never leave the stale id durable for the next wake.
+        An owned settled producer may record this authentic invalidation even
+        when a move hold wins; no fallible launch/callback check precedes it.
+        Compare-and-clear touches only the actually attempted stale id, never
+        a pointer already changed by another native owner.
         ``last_resumed_seq`` is intentionally preserved — a failed fallback
         must not advance delivery state; the next wake re-attempts the same
         required range (the id being NULL forces a full-prompt launch).
         """
         move = getattr(self, "_team_move_coordinator", None)
         if move is not None:
-            move.threads.participant_write_uncommitted(agent_name)
+            if _move_owner is None:
+                move.threads.participant_write_uncommitted(agent_name)
+            else:
+                # Authentic settled eviction is native observation repair,
+                # not callback/drain eligibility or a move reset entitlement.
+                move.threads.eviction_uncommitted(
+                    _move_owner, thread_id=thread_id, agent_id=agent_name,
+                    executor=executor,
+                )
         payload = {
             "executor": executor,
             "stale_session_id": stale_session_id,
@@ -563,11 +581,11 @@ class SessionsMixin:
             )
             self._conn.execute(
                 "UPDATE thread_participants SET agent_session_id = NULL "
-                "WHERE thread_id = ? AND agent_name = ?",
-                (thread_id, agent_name),
+                "WHERE thread_id = ? AND agent_name = ? AND agent_session_id = ?",
+                (thread_id, agent_name, stale_session_id),
             )
             self._conn.commit()
-        except Exception:
+        except BaseException:
             self._conn.rollback()
             raise
 

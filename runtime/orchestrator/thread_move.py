@@ -312,6 +312,30 @@ class ThreadMoveAdmission:
                 or (inv.id, owner.session_id, owner.state.preparation_id) not in self.captured.get(row["operation_id"], ())):
             raise DeferredTeamMove("team_move_thread_settlement_not_captured", row["operation_id"])
 
+    def eviction_uncommitted(
+        self, owner: ThreadPreparation, *, thread_id: str, agent_id: str,
+        executor: str,
+    ) -> None:
+        """Validate native eviction observation under DB, without launch admission.
+
+        A winning hold cannot erase an already-observed provider eviction.
+        Only this actual live producer's durable launched/settled initial
+        attempt qualifies. This grants no callback, retry, reset or release;
+        earlier uncertain cleanup stays in the unchanged lifecycle history.
+        """
+        inv = self.db.get_invocation_any_status(owner.inv.invocation_token)
+        state = self.store.read_uncommitted(owner.inv)
+        if (owner.admission is not self or self.live.get(owner.inv.id) is not owner
+                or not owner.owner_live or not owner.claimed or owner.attempt_open
+                or (owner.inv.thread_id, owner.identity.agent_id) != (thread_id, agent_id)
+                or inv is None or (inv.id, inv.thread_id, inv.agent_name, inv.session_id) !=
+                (owner.inv.id, thread_id, agent_id, owner.session_id)
+                or state != owner.state or state is None or state.phase != "initial"
+                or not state.attempts or state.attempts[-1].phase != "initial"
+                or state.attempts[-1].executor != executor
+                or not state.attempts[-1].launched or not state.attempts[-1].settled):
+            raise DeferredTeamMove("team_move_thread_eviction_owner_unavailable")
+
     def participant_write_uncommitted(self, agent_id: str, *, token: str | None = None) -> None:
         row = self.held_uncommitted(agent_id)
         if row is None:

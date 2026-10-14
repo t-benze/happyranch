@@ -2111,6 +2111,22 @@ class Database(
         purposes: list[ThreadInvocationPurpose] | None = None,
         decline_reason: str,
     ) -> int:
+        """Standalone reaper commits; compound archive uses the leaf below."""
+        rows = self._reap_pending_invocations_uncommitted(
+            thread_id, purposes=purposes, decline_reason=decline_reason,
+        )
+        self._conn.commit()
+        return rows
+
+    @_synchronized
+    def _reap_pending_invocations_uncommitted(
+        self,
+        thread_id: str,
+        *,
+        purposes: list[ThreadInvocationPurpose] | None = None,
+        decline_reason: str,
+    ) -> int:
+        """Caller owns DB lock and transaction; never commit a partial archive."""
         now = _now().isoformat()
         if purposes is None:
             cursor = self._conn.execute(
@@ -2129,11 +2145,7 @@ class Database(
                 f"AND purpose IN ({placeholders})",
                 values,
             )
-        self._conn.commit()
         return cursor.rowcount
-
-
-
 
     @_synchronized
     def set_thread_pinned(self, thread_id: str, *, pinned: bool) -> None:

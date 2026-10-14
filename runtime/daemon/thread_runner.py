@@ -1623,12 +1623,16 @@ async def _run_invocation_owned(
                 # untouched — the next wake re-attempts the same range from
                 # a full prompt instead of a doomed resume against a stale
                 # provider session.
-                move_owner.start_phase("fallback")
                 audit.log_agent_session_evicted_fallback(
                     inv.thread_id, agent_name=inv.agent_name, executor=executor_name,
                     stale_session_id=resume_sid,
                     error=str(getattr(result, "error", "") or ""),
+                    _move_owner=move_owner,
                 )
+                # Only after durable invalidation: phase persistence and its
+                # fallible hold check may defer. Re-entry cannot retain the
+                # known-evicted pointer, even if fallback never launches.
+                move_owner.start_phase("fallback")
                 full_prompt = build_thread_prompt(
                     thread=thread, participants=participants, messages=messages,
                     invocation_token=invocation_token, invoked_agent=inv.agent_name,

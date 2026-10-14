@@ -100,8 +100,17 @@ fallback or the one allowed nudge persists that phase before a winning hold can
 defer it. Safe redelivery re-prepares from current context with the same genuine
 invocation/SID, immutable claimed range if already admitted, and retained phase
 and retry ordinal. It cannot restart the budget or silently replay an uncertain
-attempt. Known original provider-session eviction retains its existing audited
-invalidation; C2 adds no resume reset or restoration. Clean no-callback nudge
+attempt. Known original provider-session eviction commits its native audit and
+compare-and-clear of the actually attempted stale SID BEFORE fallback phase
+persistence and fallible hold/launch admission. The actual live claimed producer,
+INTEGER invocation/thread/agent/runtime SID and durable launched/settled initial
+attempt authenticate this observation under DB ownership, independent of callback
+or drain eligibility. A winning hold cannot interrupt that invalidation; a changed
+pointer is not cleared. Only then may fallback selection defer. Released re-entry
+or failed fallback cannot silently retain/reuse the evicted durable SID. Delivery
+watermark/token/range/runtime SID, finite budgets and uncertain-attempt blockers
+stay intact; ordinary participant/callback/launch guards are unchanged. C2 adds
+no move reset or restoration. Clean no-callback nudge
 failure keeps the native post-launch-contract classification. Unknown original
 ownership requires the actual recovery/containment owner, not another model run.
 
@@ -135,6 +144,19 @@ Safe deferred/unstarted work can be rediscovered through the same queue owner;
 lost preparation/process/cleanup evidence stays diagnostic. Participant creation,
 removal and resume/reset writes cooperate under DB ownership during the future
 forward-commit/reset window. Ordinary messages/delivery obligations continue.
+The complete native archive boundary checks every affected participant before
+its first durable effect, then holds the same DB RLock and one transaction through
+discard/reply and BOOTSTRAP terminalization, breaker/exchange suppression, status,
+participant reset, native audits and the system message. Its uncommitted leaves
+never commit independently; standalone discard/reaper callers retain their native
+commit ownership. This DB interval serializes against the move's decision writer,
+without acquiring move gate beneath DB or performing await/filesystem/provider
+work. A committed affected hold refuses with original status, pointers, pending
+tokens/ranges/acknowledgements, breaker/exchange and audit history unchanged.
+Authorized archive without that hold commits the intended native effects together;
+idempotent archived requests append nothing. Transcript rendering/file/path,
+archived audit and event publication keep their existing post-COMMIT owners.
+All archive refusal/success and eviction/hold/re-entry observations are UNEXECUTED.
 The actual operation-scoped reset writer and early partial-roster attachment,
 full startup/launcher/old-reader compatibility remain D, not C2. No canonical
 move/reset/publication service, public route/CLI or COMPLETE writer is enabled.
