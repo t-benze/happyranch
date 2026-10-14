@@ -31,14 +31,29 @@ REQUEST_KEYS = {'task_id', 'session_id', 'title', 'script', 'interpreter', 'rati
 
 
 def capture_command(argv: list[str], cwd: Path, timeout: float = 10,
-                    cap: int = COMMAND_CAP) -> dict[str, Any]:
+                    cap: int = COMMAND_CAP, *, own_group: bool = True) -> dict[str, Any]:
     receipt: dict[str, Any] = {'argv': argv, 'cwd': str(cwd), 'started_at': dt.datetime.now(dt.timezone.utc).isoformat(),
                               'exit_code': None, 'stdout': '', 'stderr': '', 'error': None}
     streams = {'stdout': bytearray(), 'stderr': bytearray()}
     process = None
+    old_handlers = {}
+    pending_signal = None
+    if own_group:
+        def interrupted(signum: int, frame: Any) -> None:
+            nonlocal pending_signal
+            pending_signal = signum
+            if process is None:
+                return  # Finish assigning ownership if interrupted during spawn.
+            # selectors treats InterruptedError as a retryable interrupted read.
+            # Cancellation must escape that loop and stop owned containment.
+            raise RuntimeError('capture_signal:' + str(signum))
+        old_handlers = {sig: signal.signal(sig, interrupted) for sig in (signal.SIGTERM, signal.SIGINT)}
     try:
         process = subprocess.Popen(argv, cwd=cwd, stdout=subprocess.PIPE,
-                                   stderr=subprocess.PIPE, start_new_session=True)
+                                   stderr=subprocess.PIPE, start_new_session=own_group,
+                                   env={**os.environ, 'GIT_OPTIONAL_LOCKS': '0'})
+        if pending_signal is not None:
+            raise RuntimeError('capture_signal:' + str(pending_signal))
         with selectors.DefaultSelector() as selector:
             selector.register(process.stdout, selectors.EVENT_READ, 'stdout')
             selector.register(process.stderr, selectors.EVENT_READ, 'stderr')
@@ -57,20 +72,40 @@ def capture_command(argv: list[str], cwd: Path, timeout: float = 10,
                         raise ValueError('command_output_cap:' + key.data)
             process.wait(timeout=max(.01, deadline - time.monotonic()))
         receipt['exit_code'] = process.returncode
-    except (OSError, ValueError, TimeoutError, subprocess.TimeoutExpired) as exc:
+        if own_group:
+            from run_cleanup_batch import _group_exists, _terminate_group
+            if _group_exists(process.pid):
+                _, _, termination = _terminate_group(process, '', '')
+                receipt['error'] = 'capture_group_residue:' + termination
+    except (OSError, ValueError, RuntimeError, TimeoutError, subprocess.TimeoutExpired) as exc:
         receipt['error'] = str(exc)
         if process is not None:
-            try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            process.wait(timeout=5)
+            for sig in old_handlers:
+                signal.signal(sig, signal.SIG_IGN)
+            if own_group:
+                from run_cleanup_batch import _terminate_group
+                tail_stdout, tail_stderr, termination = _terminate_group(process, '', '', grace_seconds=3)
+                for key, tail in (('stdout', tail_stdout), ('stderr', tail_stderr)):
+                    value = streams[key]
+                    value.extend(tail.encode('utf-8')[:max(0, cap - len(value))])
+                receipt['error'] += ':' + termination
+            else:
+                # Never signal the inherited candidate group from inside it.
+                # Batch reconciliation stops any residual descendants before
+                # recording a terminal observation or admitting another item.
+                try:
+                    process.kill()
+                except ProcessLookupError:
+                    pass
+                process.wait(timeout=5)
             receipt['exit_code'] = process.returncode
     finally:
         if process is not None:
             for stream in (process.stdout, process.stderr):
                 if stream is not None:
                     stream.close()
+        for sig, handler in old_handlers.items():
+            signal.signal(sig, handler)
     receipt.update({key: bytes(value).decode('utf-8', errors='replace') for key, value in streams.items()})
     receipt['ended_at'] = dt.datetime.now(dt.timezone.utc).isoformat()
     return receipt
@@ -347,9 +382,12 @@ def run_observed_batch(manifest: Path, journal: Path, history: Path, evidence_di
                        candidate_timeout_seconds: int) -> int:
     if not 1 <= max_candidates <= CAP or not 1 <= deadline_seconds <= 1200 or not 1 <= candidate_timeout_seconds <= 180:
         raise ValueError('unsupported_batch_bounds')
+    from prepare_cleanup import evidence_context
+    context = evidence_context(manifest, history, journal, evidence_dir)
     evidence_dir.mkdir(parents=True, exist_ok=True)
     sequence: dict[str, Any] = {'batch_started': False, 'batch': None, 'postcheck': None,
-                                'complete': False, 'write_errors': [], 'persisted_artifacts': []}
+                                'complete': False, 'write_errors': [], 'persisted_artifacts': [],
+                                'coverage_context': context}
 
     def retain(name: str, value: Any) -> bool:
         try:
@@ -371,7 +409,8 @@ def run_observed_batch(manifest: Path, journal: Path, history: Path, evidence_di
     if sequence['baseline']['complete']:
         sequence['batch_started'] = True
         command = [sys.executable, str(SCRIPTS / 'run_cleanup_batch.py'), '--manifest', str(manifest),
-                   '--journal', str(journal), '--max-candidates', str(max_candidates),
+                   '--journal', str(journal), '--history-exclusions', str(history),
+                   '--evidence-dir', str(evidence_dir), '--max-candidates', str(max_candidates),
                    '--deadline-seconds', str(deadline_seconds), '--candidate-timeout-seconds', str(candidate_timeout_seconds)]
         sequence['environment'] = {**before['binding'], 'TMPDIR': os.environ.get('TMPDIR')}
         sequence['batch'] = capture_command(command, Path(before['binding']['WORKSPACE']),
@@ -396,7 +435,14 @@ def run_observed_batch(manifest: Path, journal: Path, history: Path, evidence_di
                 raise ValueError('batch_incomplete')
         except (ValueError, TypeError) as exc:
             sequence['batch_summary_error'] = str(exc)
-        sequence['complete'] = (batch['exit_code'] == 0 and batch['error'] is None
+        try:
+            from run_cleanup_batch import _completed_candidates, _load_manifest
+            admitted = _completed_candidates(journal, _load_manifest(manifest),
+                                            SCRIPTS / 'run_cleanup_candidate.sh', context)
+            sequence['acknowledged_candidates'] = len(admitted)
+        except (OSError, ValueError, TypeError, KeyError) as exc:
+            sequence['coverage_error'] = str(exc)
+        sequence['complete'] = ('coverage_error' not in sequence and batch['exit_code'] == 0 and batch['error'] is None
                                 and 'batch_summary_error' not in sequence and post['complete']
                                 and not sequence['write_errors'])
     sequence['halt_reason'] = ('complete' if sequence['complete'] else 'baseline_incomplete'
@@ -558,6 +604,20 @@ def summarize_publication(inventory: dict[str, Any], sequence: dict[str, Any],
                           task: dict[str, Any], result: dict[str, Any],
                           audit: dict[str, Any], preparation: dict[str, Any] | None = None,
                           evidence_errors: list[str] | None = None) -> dict[str, Any]:
+    evidence_errors = list(evidence_errors or [])
+    if sequence:
+        try:
+            from prepare_cleanup import evidence_context
+            from run_cleanup_batch import _completed_candidates, _load_manifest
+            context = sequence['coverage_context']
+            fresh = evidence_context(Path(context['manifest_path']), Path(context['history_path']),
+                                     Path(context['journal_path']), Path(context['evidence_root']))
+            if context != fresh:
+                raise ValueError('sequence_binding_drift')
+            _completed_candidates(Path(context['journal_path']), _load_manifest(Path(context['manifest_path'])),
+                                  SCRIPTS / 'run_cleanup_candidate.sh', context, recovery=True)
+        except (OSError, ValueError, TypeError, KeyError) as exc:
+            evidence_errors.append('terminal_coverage:' + str(exc))
     status = task.get('status')
     native_inventory = (inventory.get('complete') is True and isinstance(inventory.get('candidates'), list)
                         and all(successful_receipts(inventory.get(key)) for key in
