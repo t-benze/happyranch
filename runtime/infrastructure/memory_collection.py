@@ -1719,8 +1719,9 @@ def acquire_collection_report(org: Any, *, current_time: datetime | None = None)
 
 
 def _collection_pages(client: Any, org: str, *, tasks: bool = False) -> list[dict]:
-    from runtime.infrastructure.memory_telemetry_report import ReportAcquisitionUnavailable
+    from runtime.infrastructure.memory_telemetry_report import aware_utc, ReportAcquisitionUnavailable
     items, seen, cursors, cursor = [], set(), set(), None
+    task_anchor = None
     while True:
         params = {"limit": 200 if tasks else 5000}
         if cursor is not None:
@@ -1737,30 +1738,43 @@ def _collection_pages(client: Any, org: str, *, tasks: bool = False) -> list[dic
         for index, row in enumerate(rows):
             if tasks and isinstance(row, dict):
                 row = dict(row)
+                if (not isinstance(row.get("task_id"), str) or not row["task_id"].strip()
+                        or not isinstance(row.get("created_at"), str)):
+                    raise ReportAcquisitionUnavailable()
                 row["id"] = row.pop("task_id")
                 rows[index] = row
             if not isinstance(row, dict) or row.get("id") in seen:
                 raise ReportAcquisitionUnavailable()
             seen.add(row["id"])
         order = [row["id"] for row in rows]
-        # /tasks is newest-first; /audit returns each newest keyset page in
+        # /tasks uses (created_at, id) DESC, with an ID-only transport cursor.
+        # Parse the wire datetime: UTC serialization uses Z, whose lexical
+        # order relative to fractional seconds is not chronological.
+        # /audit returns each newest keyset page in
         # ascending audit-ID order (not descending timestamp order).
-        if order != sorted(set(order), reverse=tasks):
+        try:
+            anchors = ([(aware_utc(row["created_at"]), row["id"]) for row in rows] if tasks else
+                       [(row["timestamp"], row["id"]) for row in rows])
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ReportAcquisitionUnavailable() from exc
+        if (tasks and anchors != sorted(anchors, reverse=True)) or (not tasks and order != sorted(set(order))):
             raise ReportAcquisitionUnavailable()
-        anchors = order if tasks else [(row["timestamp"], row["id"]) for row in rows]
         if cursor is not None and order:
             from runtime.infrastructure.database import _decode_cursor
-            if max(anchors) >= (cursor if tasks else _decode_cursor(cursor)):
+            if max(anchors) >= (task_anchor if tasks else _decode_cursor(cursor)):
                 raise ReportAcquisitionUnavailable()
         items.extend(rows)
         next_cursor = page["next_cursor"]
+        if tasks and (len(rows) == params["limit"]) != (next_cursor is not None):
+            raise ReportAcquisitionUnavailable()
         if next_cursor is None:
             break
         if not rows or not isinstance(next_cursor, str) or not next_cursor or next_cursor in cursors:
             raise ReportAcquisitionUnavailable()
         if tasks:
-            if next_cursor != rows[-1]["id"] or (cursor is not None and next_cursor >= cursor):
+            if next_cursor != rows[-1]["id"]:
                 raise ReportAcquisitionUnavailable()
+            task_anchor = anchors[-1]
         else:
             from runtime.infrastructure.database import _decode_cursor
             anchor = _decode_cursor(next_cursor)

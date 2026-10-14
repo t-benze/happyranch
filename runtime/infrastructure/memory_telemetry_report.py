@@ -120,12 +120,15 @@ def _session_diagnostics(tables: dict | None, keys: set[tuple], now: datetime,
                 continue
             rows.append({**raw, "payload": _payload(raw["payload"]), "time": timestamp})
         rows.sort(key=lambda row: row["id"])
-        starts, phases, resumes, ends = defaultdict(list), defaultdict(list), defaultdict(list), []
+        starts, all_starts = defaultdict(list), defaultdict(list)
+        phases, resumes, ends = defaultdict(list), defaultdict(list), []
         for row in rows:
             p, action = row["payload"], row["action"]
             key = (row["agent"], row["task_id"], p.get("session_id"))
-            if action == "session_start" and p.get("invocation_purpose") in _TASK_PURPOSES:
-                starts[key].append(row)
+            if action == "session_start":
+                all_starts[key].append(row)
+                if p.get("invocation_purpose") in _TASK_PURPOSES:
+                    starts[key].append(row)
             elif action.startswith("memory_runtime_"):
                 phases[(p.get("boot_id"), p.get("ordinal"))].append(row)
             elif action == "task_resumed_from_jobs":
@@ -167,9 +170,10 @@ def _session_diagnostics(tables: dict | None, keys: set[tuple], now: datetime,
             values.sort(key=lambda item: item[0]["id"])
 
         intervals, unknown, by_owner = {}, set(), defaultdict(list)
-        # All starts are needed to disambiguate SID-less ends even when only a
-        # subset belongs to this epoch. Do not pick the newest same-agent row.
-        for key, values in starts.items():
+        # Excluded recovery/thread/dream intervals also own SID-less ends.
+        # Resolve ownership before selecting natural populations; excluded
+        # starts never enter their classification history or source validation.
+        for key, values in all_starts.items():
             own = identities.get(key, [])
             terminal = []
             if len(own) == 1:

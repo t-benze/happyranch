@@ -243,6 +243,8 @@ unavailable. No-epoch diagnostics need no valid serving health but cannot claim
 collection; accepted epochs retain independent current loaded identity/census
 and authenticated original probe gates. HTTP/decoder/timeout or SELECT failure
 refuses with `acquisition_unavailable`, CLI exit1 and no partial stdout.
+Task pagination follows `(created_at, id)` descending using parsed wire
+timestamps and the last ID as the server-resolved transport cursor, not ID order.
 
 D (THR-091 seq389–390) adds disjoint `by_session_kind` diagnostics: first_launch,
 job_resume, retry, retry_job_resume, other_continuation, unknown. Actual runtime
@@ -256,7 +258,9 @@ production acceptance.
 
 Exact boot/ordinal/task/agent/SID joins establish runtime intervals. A SID-less
 end attaches only when exactly one task/agent interval contains it, never by
-latest agent. Actual audit IDs establish order, including timestamp ties. End,
+latest agent. All natural and excluded recovery/thread/dream intervals establish
+end ownership first; only natural starts enter classification/source validation.
+Actual audit IDs establish order, including timestamp ties. End,
 terminal and a later same-task start bound old SID eligibility; credited reads
 and searches after that boundary are hard failures per kind, while earlier
 history stays valid. Old/pre-epoch credited tuples are inspected even when their

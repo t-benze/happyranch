@@ -1113,6 +1113,8 @@ lifecycle action pages plus a coherent complete task snapshot and roles before
 empty/short returns. Unrelated audit history does not consume their existing
 100000-row bound; authority readers retain the default unfiltered snapshot. HTTP/decoder/timeout, cursor or
 SELECT failures refuse as `acquisition_unavailable`, without partial CLI stdout.
+Task pages use `(created_at, id)` descending, with parsed wire timestamps and
+the last ID as the server-resolved transport cursor, rather than ID ordering.
 Natural population excludes designated probes/retries, recovery and all
 pre-start invocations from qualifying metrics. Credited late events on old
 tuples remain visible to the retirement diagnostic and can close eligibility. D1 remains the later of
@@ -1132,7 +1134,9 @@ Per-kind pull-through is diagnostic only and introduces no thresholds.
 
 Retirement joins exact boot/ordinal/task/agent/SID runtime identity, launch and
 terminal with session start/end. SID-less `session_end` joins only a unique
-ordered task/agent interval ending at its own runtime terminal. Audit IDs resolve
+ordered task/agent interval ending at its own runtime terminal. Natural and
+excluded recovery/thread/dream intervals participate in end ownership before
+natural-only classification and source validation. Audit IDs resolve
 ordering, including equal timestamps; no latest-agent inference is used. Any
 credited read **or** search after end, terminal or a later same-task start is
 reported per kind, excluded from valid read metrics and closes collection

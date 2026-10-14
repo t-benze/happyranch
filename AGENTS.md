@@ -983,14 +983,26 @@ U2B still wires no workflow
 admission, activation, or dispatch consumer; those remain later units.
 
 **Memory reporting core (THR-091).** Backend and CLI use one pure observation-only
-reducer, validate all four audit streams and consume only persisted version1
-exposure metadata. Backend uses one synchronized SELECT; CLI exhausts two sweeps
-of `/audit` at limit5000 and checks roles/content at a fixed UTC cutoff. Acquisition
+reducer and consume only persisted version1 exposure metadata. Before empty or
+short returns, backend reads a coherent bounded multi-table evidence snapshot;
+CLI exhausts task pages and all relevant memory/lifecycle/control audit action
+pages in two stable sweeps, comparing tasks, audit content and roles at a fixed
+UTC cutoff. Task pagination uses `(created_at, id)` descending, with the last ID
+as the server-resolved cursor; audit pages retain their own keyset ordering.
+Accepted epochs additionally require complete original results/jobs/outputs and
+stable serving bookends. Acquisition
 failures refuse as `acquisition_unavailable`, with no partial CLI stdout. Tagged
 G1 authority is revalidated through the shared reducer and serving audit view;
 unversioned or damaged evidence remains `insufficient_instrumentation`.
 `session_start` denotes intended invocations. Valid reports exclude synthetic,
 recovery and pre-start tuples; raw sample counts alone cannot enable collection.
+`by_session_kind` and `session_lifecycle` expose disjoint first-launch, job-resume,
+retry and retry-resume diagnostics. Natural and excluded intervals both own
+SID-less ends; excluded sessions never enter natural metrics. Any credited read or
+search after retirement closes eligibility; valid earlier history remains.
+Missing/ambiguous evidence yields unknown/null hard-zero fields, and absent kinds
+report no observed population. D-only temporal diagnostics do not repair A's
+unresolved attribution of another live task's SID to the actual caller.
 An operational accepted epoch and its independent within48h health duty are
 separate from source tests, review, CI and deployment. See the memory sections in
 `features-and-invariants.md`, `web-and-cli.md` and the current corrective spec.
