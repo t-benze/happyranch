@@ -1964,3 +1964,57 @@ same-final-head scoped SOURCE QA return to SAME root, with actual lint/static
 checks, normal publication/hooks and manager guarded merge. Root retains full
 K2a2–K6 and real-agent/two-org/override/backup-copy operational acceptance; human
 trial remains retired and no live operation is authorized.
+
+## Retained native source identities — K2a2b4
+
+Sole ROOT10693 step60 / Founder THR139seq562/559/329 accepts TASK11484
+source appendix SHA2564ee1d1819d3b58ff1350b192d6438fa8ed8bf99ba7cc06abfb0fe315fb4312e1
+and cases SHA256f55f71a1db09cf708dbad083cd8c955cd5241cf5f244586eaa3b19d7909c24ae
+after independent DESIGN11485. Unmounted coding_source_history now adds
+read_source_native_records(conn, expected_org_slug, authorization_id), with
+exactly five immutable fields: capability_history, source_task_record,
+ancestor_task_records, session_start_audit_record, same_session_result_records.
+Existing capability/setup APIs and mandatory-value validations stay unchanged.
+
+Select genuine source-level P and its complete native P/U/own-admission/historical
+publication closure with one shared call budget/cache. All27 task/18 result/6
+audit fields preserve exact native storage classes, genuine NULLs, empty free
+text, original UTF8/JSON bytes/timestamps and finite native REAL cost. Current
+source and complete parent-to-NULL ancestry (20 rows INCLUDING source) are
+TODAY'S coherent records, never original source admission or current permission.
+Ancestry follows only parent_task_id; missing/cyclic/foreign-team rows refuse.
+Original source SID selects one authentic manager_decision session_start with
+the exact native owner payload grammar and the complete bounded same-SID result
+inventory. A selected genuine INTEGER callback matches the full closed original
+workflow_start command and its source tuple/work radius. A null selected result
+never proves original absence or excludes later callbacks. No old active tracker
+binding, current assignment equality, claim consumption or source grant follows.
+
+Caller first admits complete native/J structure and holds one coherent raw-value
+connection/transaction/lock. Fixed parameterized SELECTs only; no transaction
+control/await/DTO/default counter/converter. Original typeof and byte lengths gate
+before fetch, including multibyte/NUL suffixes. Every new native row gates ALL
+variable bytes against remaining budget before payload fetch; singleton keyset
+pages renew that gate. A bounded uniqueness probe prevents task LIMIT1 masking.
+All fetched candidates, including rejected/overflow rows, charge one8192-row/
+16384-step/16MiB raw-byte budget; per-value1MiB, P64/setup1024/source20.
+Native nullable/empty/REAL accounting is separate from mandatory setup/admission
+validation. Limits do not claim total SQLite/process/decoded-copy memory bounds.
+Failures are category-only coding_source_history_invalid with no partial return.
+
+Original callback C0 and first claim C1 require independently admitted captures;
+only their exact25 named load-bearing columns may agree with separately retained
+timestamp observations at that initial boundary. ALL27 C1=C2 equality is mandatory
+after preflight; intervening heartbeat refuses without any partial coding write,
+debit or publication. Full27 attributed replay/version-aware heartbeat handoff
+remain mandatory after bootstrap. These capture/writer/replay obligations remain
+UNIMPLEMENTED here. Fixed callback/source captures plus independent historical
+consumer, complete J/native/current-policy/invocation/Pause/move/host/recovery/
+cutover closure must precede EVERY producer. No capture/native writer/mount,
+authority inference or live operation is supplied. Existing F–J/refusal/create-org
+I/document history, disabled K0 and unavailable K1 remain. FIRST fresh FULL
+reviewer then same-final-head scoped SOURCE QA then SAME ROOT10693; static-only
+local all/hosted lint, normal hooks/nonforce push and guarded manager merge.
+Python units RETIRED, integration INCLUDING callback SKIPPED24342; all SQL/parser/
+product/native/security/negative/mutation/repetition/executable proof remains
+UNEXECUTED/FOUNDER-WAIVED139429/430. Root retains K2a2–K6/operational acceptance.
