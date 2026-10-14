@@ -1304,7 +1304,12 @@ gate for established ID operations. Editor drafts are scoped by org/kind/ID and
 survive locale changes and identity refetches.
 
 Real thread compose/follow-up/invite/forward and task read-filter pickers search
-current names and permanent IDs. Selected values stay IDs across renames. Clear
+current names and permanent IDs. Selected values stay IDs across renames. Thread-detail
+composer @mention hints offer only eligible participant agents, including their
+current Name · ID labels and permanent-ID matching; human Founder is never
+suggested, even after renaming. Manually typed current Founder names and
+`@founder` remain literal and retain existing preflight/send behavior. Human
+recipient controls elsewhere still offer the separate Founder option. Clear
 invalidates pending task-filter resolution; stale success/error/finalization cannot
 reapply a cleared filter, show an obsolete alert or release a newer attempt. Founder
 is a separate human option routed as established `@founder`, never an agent
