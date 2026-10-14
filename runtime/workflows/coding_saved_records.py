@@ -914,12 +914,11 @@ def _root_radius(record: dict, root: dict) -> None:
            and subject['source_session_id'] == record['issuer']['session_id'])
     if record['level'] == 'source':
         _check({'principal': subject['principal'], 'team': subject['team']} == root['manager_selector'])
-    elif record['level'] == 'control' or record['action'] in ('observe-coding-ci', 'merge-coding-approved-head'):
-        _check({'principal': subject['principal'], 'team': subject['team']} == root['manager_selector'])
     elif record['action'] in ('implement-code-change', 'review-code-change', 'verify-code-change'):
         _check(subject['principal'] != root['manager_selector']['principal'])
     # Role membership of an arbitrary mapped recipient is external unless its
-    # mapping is supplied. The contained manager identity above is decidable.
+    # mapping is supplied. The contained SOURCE manager identity is decidable;
+    # a downstream manager actor retains its own parent-bound task/principal.
     level_actions = {
         'source': ('import-release-coding', 'publish-coding-mapping', 'adopt-local-store',
                    'read-repository-artifact', 'start-coding'),
