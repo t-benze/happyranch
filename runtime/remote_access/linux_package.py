@@ -243,7 +243,6 @@ WantedBy=happyranch-managed.target
 Description=HappyRanch managed remote access composite
 Requires=happyranch-connector.service happyranch-tsnet-sidecar.service
 After=happyranch-connector.service happyranch-tsnet-sidecar.service
-StopWhenUnneeded=yes
 """
     return {UNITS[0]: connector, UNITS[1]: sidecar, UNITS[2]: target}
 

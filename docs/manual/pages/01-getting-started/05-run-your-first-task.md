@@ -10,8 +10,8 @@ activity.
 
 For v1, task submission is **CLI-only**. The web UI is for monitoring,
 responding, and retrieving outputs after work starts. Web task creation is
-deferred (not yet in v1 scope); see the founder-decisions note in
-[the manual index](../00-README.md).
+deferred (not yet in v1 scope); see what v1 covers in
+[the manual index](../).
 
 ## Dispatch from the CLI
 
