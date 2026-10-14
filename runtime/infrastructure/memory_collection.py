@@ -840,7 +840,7 @@ def loaded_identity(org: Any) -> dict:
                  CollectionObserver._record, CollectionObserver._persist, CollectionObserver._seal,
                  _identity_bytes, _identity_file_hash, _hash_metadata, _code_projection, _find_code, _serving_snapshot,
                  _serving_revision, _check_serving_snapshot, _now, serving_observation, loaded_identity]
-    from runtime.infrastructure.memory_telemetry_report import reduce_report, reduce_collection_report
+    from runtime.infrastructure.memory_telemetry_report import reduce_report, reduce_collection_report, _session_diagnostics
     from runtime.infrastructure.audit_logger import AuditLogger
     from cli.commands.learning import cmd_memory_report, _compute_report, _print_report
     functions.extend([org.orchestrator._log_step_result, org.memory_collection.reconcile_acceptance,
@@ -855,7 +855,7 @@ def loaded_identity(org: Any) -> dict:
                       _validate_probe_operations, _census_from_view, validate_acceptance_evidence, _view_projection,
                       _referenced_probe_jobs, _local_job_outputs, _registered_cohort, validate_epoch_candidate, prepare_acceptance, reconcile_acceptance, acquire_collection_report,
                       _collection_pages, _http_collection_capture, acquire_http_collection_report,
-                      current_epoch_references, reduce_report, reduce_collection_report, AuditLogger.compute_memory_telemetry_report,
+                      current_epoch_references, reduce_report, reduce_collection_report, _session_diagnostics, AuditLogger.compute_memory_telemetry_report,
                       cmd_memory_report, _compute_report, _print_report])
     code_rows = []
     compiled: dict[str, CodeType] = {}
@@ -1731,7 +1731,8 @@ def _collection_pages(client: Any, org: str, *, tasks: bool = False) -> list[dic
         page = response.json()
         _closed(page, {"tasks" if tasks else "entries", "next_cursor"})
         rows = page["tasks" if tasks else "entries"]
-        if not isinstance(rows, list) or len(items) + len(rows) > MAX_CENSUS_READ_ROWS:
+        if (not isinstance(rows, list) or len(rows) > params["limit"]
+                or len(items) + len(rows) > MAX_CENSUS_READ_ROWS):
             raise ReportAcquisitionUnavailable()
         for index, row in enumerate(rows):
             if tasks and isinstance(row, dict):
@@ -1741,6 +1742,16 @@ def _collection_pages(client: Any, org: str, *, tasks: bool = False) -> list[dic
             if not isinstance(row, dict) or row.get("id") in seen:
                 raise ReportAcquisitionUnavailable()
             seen.add(row["id"])
+        order = [row["id"] for row in rows]
+        # /tasks is newest-first; /audit returns each newest keyset page in
+        # ascending audit-ID order (not descending timestamp order).
+        if order != sorted(set(order), reverse=tasks):
+            raise ReportAcquisitionUnavailable()
+        anchors = order if tasks else [(row["timestamp"], row["id"]) for row in rows]
+        if cursor is not None and order:
+            from runtime.infrastructure.database import _decode_cursor
+            if max(anchors) >= (cursor if tasks else _decode_cursor(cursor)):
+                raise ReportAcquisitionUnavailable()
         items.extend(rows)
         next_cursor = page["next_cursor"]
         if next_cursor is None:
@@ -1753,7 +1764,7 @@ def _collection_pages(client: Any, org: str, *, tasks: bool = False) -> list[dic
         else:
             from runtime.infrastructure.database import _decode_cursor
             anchor = _decode_cursor(next_cursor)
-            if not any((row.get("timestamp"), row["id"]) == anchor for row in rows):
+            if anchor != min(anchors):
                 raise ReportAcquisitionUnavailable()
             if cursor is not None and anchor >= _decode_cursor(cursor):
                 raise ReportAcquisitionUnavailable()
@@ -1777,10 +1788,22 @@ def _http_collection_capture(client: Any, org: str) -> tuple[dict, dict, dict]:
     results, jobs, outputs = [], [], {}
     # All original parent/plan results participate in prior-delegation and
     # retry validation; accepting only final references would omit evidence.
-    for task_id in sorted(row["id"] for row in tasks):
+    result_ids = set()
+    for task in tasks:
+        task_id = task["id"]
         _identifier(task_id, "TASK")
         detail = get(f"tasks/{task_id}")
-        if not isinstance(detail.get("results"), list):
+        current = detail.get("task")
+        if (not isinstance(current, dict) or current.get("task_id") != task_id
+                or any(current.get(key) != value for key, value in task.items() if key not in {"id", "pause"})
+                or not isinstance(detail.get("results"), list)):
+            raise ReportAcquisitionUnavailable()
+        for result in detail["results"]:
+            if (not isinstance(result, dict) or type(result.get("id")) is not int or result["id"] <= 0
+                    or result["id"] in result_ids or result.get("task_id") != task_id):
+                raise ReportAcquisitionUnavailable()
+            result_ids.add(result["id"])
+        if len(results) + len(detail["results"]) > MAX_CENSUS_READ_ROWS:
             raise ReportAcquisitionUnavailable()
         results.extend(detail["results"])
     job_ids = _referenced_probe_jobs(results)

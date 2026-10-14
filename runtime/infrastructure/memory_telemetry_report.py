@@ -9,7 +9,10 @@ from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
 import json
 
-ACTIONS = ("session_start", "memory_digest_impression", "memory_read", "memory_search")
+METRIC_ACTIONS = ("session_start", "memory_digest_impression", "memory_read", "memory_search")
+ACTIONS = (*METRIC_ACTIONS, "session_end", "task_resumed_from_jobs",
+           "memory_runtime_identity", "memory_runtime_launched", "memory_runtime_terminal")
+SESSION_KINDS = ("first_launch", "job_resume", "retry", "retry_job_resume", "other_continuation", "unknown")
 _TASK_PURPOSES = {"manager_decision", "worker_execution"}
 _EXCLUDED_PURPOSES = {
     "thread_reply": "thread", "thread_followup": "thread", "thread_follow_up": "thread",
@@ -45,7 +48,8 @@ def _base(now: datetime) -> dict:
             "status": "insufficient_instrumentation", "reason_code": "missing_authority",
         },
         "instrumentation_health": {}, "aggregate": {}, "by_agent": {}, "by_role": {},
-        "read_counts": {}, "excluded": {}, "diagnostic_errors": {},
+        "read_counts": {}, "excluded": {}, "diagnostic_errors": {}, "by_session_kind": {},
+        "session_lifecycle": {"status": "unavailable", "reason_code": "missing_session_evidence"},
         "decision": "insufficient_instrumentation", "evaluation_candidate": False, "decision_detail": _REASON,
     }
 
@@ -77,18 +81,244 @@ def _payload(value):
     return value
 
 
+def _session_diagnostics(tables: dict | None, keys: set[tuple], now: datetime,
+                         *, since: datetime | None = None, excluded_tasks: set[str] | None = None) -> tuple[dict, dict, set[int]]:
+    """Join existing runtime facts; audit IDs establish actual retirement order.
+
+    A SID-less end belongs only to a unique task/agent interval. An unfinished
+    interval is lawful only with the snapshot's exact current task/agent/SID.
+    This is observational correlation, not caller authentication or a writer.
+    """
+    kinds, rejected = {}, set()
+    counts = {kind: {"sessions": 0, "credited_reads": 0, "credited_searches": 0,
+                     "post_retirement_reads": 0, "post_retirement_searches": 0,
+                     "unknown_sessions": 0, "active_sessions": 0} for kind in SESSION_KINDS}
+    errors, flags = Counter(), Counter()
+    def unavailable(reason: str) -> tuple[dict, dict, set[int]]:
+        for kind, values in counts.items():
+            values.update(sessions=0, unknown_sessions=0, active_sessions=0, credited_reads=0, credited_searches=0,
+                          status="unknown" if kind == "unknown" and keys else "no_observed_population",
+                          post_retirement_reads=None, post_retirement_searches=None)
+        counts["unknown"].update(sessions=len(keys), unknown_sessions=len(keys))
+        return {}, {"status": "unavailable", "reason_code": reason, "by_kind": counts,
+                    "errors": {reason: 1}}, rejected
+    if tables is None:
+        return unavailable("missing_session_evidence")
+    try:
+        tasks = {}
+        for task in tables["tasks"]:
+            if not _text(task.get("id")) or task["id"] in tasks:
+                raise ValueError("task identity")
+            tasks[task["id"]] = task
+        rows, seen = [], set()
+        for raw in tables["audit_log"]:
+            if type(raw.get("id")) is not int or raw["id"] <= 0 or raw["id"] in seen:
+                raise ValueError("audit identity")
+            seen.add(raw["id"])
+            timestamp = aware_utc(raw["timestamp"])
+            if timestamp >= now or raw["action"] not in ACTIONS:
+                continue
+            rows.append({**raw, "payload": _payload(raw["payload"]), "time": timestamp})
+        rows.sort(key=lambda row: row["id"])
+        starts, phases, resumes, ends = defaultdict(list), defaultdict(list), defaultdict(list), []
+        for row in rows:
+            p, action = row["payload"], row["action"]
+            key = (row["agent"], row["task_id"], p.get("session_id"))
+            if action == "session_start" and p.get("invocation_purpose") in _TASK_PURPOSES:
+                starts[key].append(row)
+            elif action.startswith("memory_runtime_"):
+                phases[(p.get("boot_id"), p.get("ordinal"))].append(row)
+            elif action == "task_resumed_from_jobs":
+                resumes[row["task_id"]].append(row)
+            elif action == "session_end":
+                ends.append(row)
+        identities = defaultdict(list)
+        for group in phases.values():
+            for row in group:
+                if row["action"] == "memory_runtime_identity":
+                    identities[(row["agent"], row["task_id"], row["payload"].get("session_id"))].append(row)
+        # Include credited old/unknown tuples in the measured window: dropping
+        # them because they are not a new epoch invocation would hide damage.
+        selected = set(keys)
+        operations = []
+        excluded_tasks = excluded_tasks or set()
+        for row in rows:
+            if row["action"] not in {"memory_read", "memory_search"} or (since is not None and row["time"] < since):
+                continue
+            p = row["payload"]
+            tid = p.get("task_id") if row["action"] == "memory_read" else row["task_id"]
+            sid = p.get("session_id")
+            if row["action"] == "memory_read" and bool(tid) != bool(sid):
+                errors["partial_memory_attribution"] += 1
+            if not tid or not sid or tid in excluded_tasks:
+                continue
+            key = (row["agent"], tid, sid)
+            # Thread/dream/recovery identity never creates a natural population.
+            own = identities.get(key, [])
+            if own and all(r["payload"].get("invocation_purpose") not in _TASK_PURPOSES for r in own):
+                continue
+            selected.add(key)
+            operations.append((key, row))
+        selected = {key for key in selected if key[1] not in excluded_tasks}
+        ordered_tasks = defaultdict(list)
+        for key, values in starts.items():
+            ordered_tasks[key[1]].extend((row, key) for row in values)
+        for values in ordered_tasks.values():
+            values.sort(key=lambda item: item[0]["id"])
+
+        intervals, unknown, by_owner = {}, set(), defaultdict(list)
+        # All starts are needed to disambiguate SID-less ends even when only a
+        # subset belongs to this epoch. Do not pick the newest same-agent row.
+        for key, values in starts.items():
+            own = identities.get(key, [])
+            terminal = []
+            if len(own) == 1:
+                p = own[0]["payload"]
+                group = phases[(p.get("boot_id"), p.get("ordinal"))]
+                terminal = [r for r in group if r["action"] == "memory_runtime_terminal"]
+            intervals[key] = {"start": values[0], "terminal": terminal, "ends": []}
+            by_owner[key[:2]].append(key)
+        for end in ends:
+            owner = (end["agent"], end["task_id"])
+            candidates = [key for key in by_owner[owner]
+                          if intervals[key]["start"]["id"] < end["id"]
+                          and (not intervals[key]["terminal"] or end["id"] < intervals[key]["terminal"][0]["id"])]
+            if len(candidates) == 1:
+                intervals[candidates[0]]["ends"].append(end)
+            elif set(by_owner[owner]) & selected:
+                errors["ambiguous_session_end"] += 1
+                unknown.update(set(candidates or by_owner[owner]) & selected)
+
+        retirement = {}
+        for key in sorted(selected):
+            agent, tid, sid = key
+            task, own_starts = tasks.get(tid), starts.get(key, [])
+            kind = "unknown"
+            if task is None or "revisit_of_task_id" not in task or len(own_starts) != 1:
+                errors["missing_task_or_start"] += 1
+                unknown.add(key)
+            else:
+                start = own_starts[0]
+                history = ordered_tasks[tid]
+                prior = [row for row, _ in history if row["id"] < start["id"]]
+                prior_id = prior[-1]["id"] if prior else None
+                events = [row for row in resumes[tid] if (prior_id or 0) < row["id"] < start["id"]]
+                job_resume = bool(prior and len(events) == 1)
+                event = events[0]["payload"] if len(events) == 1 else {}
+                job_ids, outcomes = event.get("blocking_job_ids"), event.get("job_outcomes")
+                if events and (not prior or len(events) != 1 or not _ids(job_ids) or not job_ids
+                               or len(job_ids) != len(set(job_ids)) or not isinstance(outcomes, dict)
+                               or set(outcomes) != set(job_ids) or not all(_text(value) for value in outcomes.values())):
+                    errors["ambiguous_job_resume"] += 1
+                    unknown.add(key)
+                revisit = task["revisit_of_task_id"]
+                lineage, cursor = set(), task
+                while cursor.get("revisit_of_task_id") is not None:
+                    target = cursor["revisit_of_task_id"]
+                    if not _text(target) or target in lineage or target == tid or target not in tasks:
+                        errors["missing_or_cyclic_revisit"] += 1
+                        unknown.add(key)
+                        break
+                    lineage.add(target)
+                    cursor = tasks[target]
+                    if "revisit_of_task_id" not in cursor:
+                        errors["missing_or_cyclic_revisit"] += 1
+                        unknown.add(key)
+                        break
+                kind = ("retry_job_resume" if job_resume else "retry") if revisit is not None else (
+                    "job_resume" if job_resume else "other_continuation" if prior else "first_launch")
+                if prior and not job_resume:
+                    flags["later_session_without_job_resume"] += 1
+            kinds[key] = kind
+            counts[kind]["sessions"] += 1
+            own = identities.get(key, [])
+            interval = intervals.get(key)
+            if len(own) != 1 or interval is None:
+                errors["missing_runtime_identity"] += 1
+                unknown.add(key)
+                continue
+            identity, p = own[0], own[0]["payload"]
+            group = phases[(p.get("boot_id"), p.get("ordinal"))]
+            launched = [r for r in group if r["action"] == "memory_runtime_launched"]
+            terminal = interval["terminal"]
+            if (not _text(p.get("boot_id")) or type(p.get("ordinal")) is not int or p["ordinal"] <= 0
+                    or not launched or len(terminal) > 1
+                    or any((r["agent"], r["task_id"], r["payload"].get("session_id")) != key
+                           or r["payload"].get("task_id") != tid or r["payload"].get("agent") != agent for r in group)
+                    or not identity["id"] < interval["start"]["id"] < launched[0]["id"]
+                    or [r["payload"].get("callback_count") for r in launched] != list(range(1, len(launched) + 1))
+                    or (terminal and (terminal[0]["id"] <= launched[-1]["id"]
+                                      or terminal[0]["payload"].get("launched_callbacks") != len(launched)
+                                      or type(terminal[0]["payload"].get("success")) is not bool))):
+                errors["misjoined_runtime_interval"] += 1
+                unknown.add(key)
+            end_rows = interval["ends"]
+            if len(end_rows) > 1:
+                errors["ambiguous_session_end"] += 1
+                unknown.add(key)
+            boundaries = end_rows + terminal
+            if boundaries:
+                retirement[key] = min(r["id"] for r in boundaries)
+            if terminal and len(end_rows) != 1:
+                errors["missing_session_end"] += 1
+                unknown.add(key)
+            if not terminal:
+                if (end_rows or task is None or task.get("status") != "in_progress"
+                        or task.get("assigned_agent") != agent or task.get("current_session_id") != sid):
+                    errors["missing_retirement_evidence"] += 1
+                    unknown.add(key)
+                else:
+                    counts[kind]["active_sessions"] += 1
+            # Supersession cannot transfer an old SID's credit to a later start.
+            later = [row["id"] for row, _ in ordered_tasks[tid] if row["id"] > interval["start"]["id"]]
+            if later:
+                retirement[key] = min(retirement.get(key, later[0]), later[0])
+        for key, row in operations:
+            kind = kinds[key]
+            suffix = "reads" if row["action"] == "memory_read" else "searches"
+            counts[kind][f"credited_{suffix}"] += 1
+            if key not in intervals or row["id"] <= intervals[key]["start"]["id"]:
+                errors["operation_outside_session"] += 1
+                unknown.add(key)
+                rejected.add(row["id"])
+            if key in retirement and row["id"] > retirement[key]:
+                counts[kind][f"post_retirement_{suffix}"] += 1
+                rejected.add(row["id"])
+        for key in unknown:
+            counts[kinds[key]]["unknown_sessions"] += 1
+        violations = sum(c["post_retirement_reads"] + c["post_retirement_searches"] for c in counts.values())
+        if violations:
+            errors["credited_after_retirement"] += violations
+        for values in counts.values():
+            # Absence of a population/evidence is not an observed healthy zero.
+            values["status"] = ("no_observed_population" if not values["sessions"] else
+                                "unhealthy" if values["post_retirement_reads"] or values["post_retirement_searches"] else
+                                "unknown" if values["unknown_sessions"] else "observed")
+            if not values["sessions"] or values["unknown_sessions"]:
+                for field in ("post_retirement_reads", "post_retirement_searches"):
+                    if not values[field]:
+                        values[field] = None
+        return kinds, {"status": "unhealthy" if violations else "unknown" if errors else "observed" if selected else "no_observed_population",
+                       "reason_code": "credited_after_retirement" if violations else "session_evidence_unknown" if errors else "observed",
+                       "sessions": len(selected), "by_kind": counts, "errors": dict(errors), "flags": dict(flags)}, rejected
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return unavailable("malformed_session_evidence")
+
+
 def reduce_report(
     impression_rows: list[dict], read_rows: list[dict], search_rows: list[dict],
     agent_role_map: dict[str, str] | None = None, current_time: datetime | None = None,
     *, session_start_rows: list[dict] | None = None,
+    evidence_tables: dict | None = None, collection_since: datetime | None = None,
+    excluded_tasks: set[str] | None = None,
 ) -> dict:
     """Validate every stream before reducing; legacy helper calls stay closed."""
     now = aware_utc(current_time if current_time is not None else datetime.now(timezone.utc))
     errors = Counter()
-    parsed = {action: [] for action in ACTIONS}
+    parsed = {action: [] for action in METRIC_ACTIONS}
     inputs = (session_start_rows if session_start_rows is not None else [], impression_rows, read_rows, search_rows)
     labels = ("session_start", "impression", "read", "search")
-    for action, rows, label in zip(ACTIONS, inputs, labels):
+    for action, rows, label in zip(METRIC_ACTIONS, inputs, labels):
         if not isinstance(rows, list):
             errors[f"malformed_{label}"] += 1
             continue
@@ -170,10 +400,14 @@ def reduce_report(
         if key not in starts or row["time"] < starts[key]["time"]:
             starts[key] = row
     task_starts = {k: v for k, v in starts.items() if v["payload"].get("invocation_purpose") in _TASK_PURPOSES}
+    kinds, lifecycle, retired_operations = _session_diagnostics(
+        evidence_tables, set(task_starts), now, since=collection_since, excluded_tasks=excluded_tasks)
     rejection = Counter()
     rejected_reads = 0
 
     def binding(row, action):
+        if row.get("id") in retired_operations:
+            return None, "rejected_attribution"
         p = row["payload"]
         sid = p.get("session_id")
         tid = p.get("task_id") if action == "memory_read" else row["task_id"]
@@ -202,7 +436,7 @@ def reduce_report(
     impressions = defaultdict(list)
     searches = defaultdict(list)
     reads = []
-    for action in ACTIONS[1:]:
+    for action in METRIC_ACTIONS[1:]:
         for row in parsed[action]:
             key, why = binding(row, action)
             if why:
@@ -299,6 +533,13 @@ def reduce_report(
         "eligible_functional_agents": 0, "eligible_pointer_agents": 0, "eligible_agents_below_10_percent": 0,
     })
     report["aggregate"] = aggregate
+    report["session_lifecycle"] = lifecycle
+    for kind in SESSION_KINDS:
+        values = lifecycle.get("by_kind", {}).get(kind, {})
+        report["by_session_kind"][kind] = {
+            **metrics(k for k in task_starts if kinds.get(k, "unknown") == kind),
+            **values, "diagnostic_only": True,
+        }
     if agent_role_map is not None and (not isinstance(agent_role_map, dict) or any(
         not _text(agent) or not _text(role) for agent, role in agent_role_map.items()
     )):
@@ -341,6 +582,9 @@ def reduce_report(
     }
     report["excluded"] = dict(sorted(excluded.items()))
     report["diagnostic_errors"] = dict(sorted(rejection.items()))
+    if lifecycle["status"] in {"unknown", "unavailable", "unhealthy"}:
+        report["diagnostic_errors"].update(lifecycle["errors"])
+        report["instrumentation_health"].update(status=lifecycle["status"], reason_code=lifecycle["reason_code"])
     return report
 
 
@@ -355,10 +599,12 @@ def reduce_collection_report(tables: dict, view: dict, outputs: dict, agent_role
     now = aware_utc(current_time if current_time is not None else datetime.now(timezone.utc))
     rows = tables["audit_log"]
     def diagnostic() -> dict:
-        return reduce_report(*([row for row in rows if row["action"] == action] for action in ACTIONS[1:]),
-                             agent_role_map, now, session_start_rows=[row for row in rows if row["action"] == "session_start"])
+        return reduce_report(*([row for row in rows if row["action"] == action] for action in METRIC_ACTIONS[1:]),
+                             agent_role_map, now, session_start_rows=[row for row in rows if row["action"] == "session_start"],
+                             evidence_tables=tables)
     if not any(row["action"] in CONTROL_ACTIONS for row in rows):
         return diagnostic()
+    report = None
     try:
         data = _decoded_tables(tables)
         rows = data["audit_log"]
@@ -392,7 +638,7 @@ def reduce_collection_report(tables: dict, view: dict, outputs: dict, agent_role
                       if row["action"] == "memory_runtime_identity" and row["payload"].get("boot_id") == view["boot_id"]}
         excluded_keys = {(row["agent"], row["task_id"], row["payload"].get("session_id")) for row in rows
                          if row["action"] == "session_start" and row["payload"].get("invocation_purpose") not in _TASK_PURPOSES}
-        streams = {action: [] for action in ACTIONS}
+        streams = {action: [] for action in METRIC_ACTIONS}
         for row in rows:
             if row["action"] not in streams:
                 continue
@@ -408,8 +654,11 @@ def reduce_collection_report(tables: dict, view: dict, outputs: dict, agent_role
                     streams[row["action"]].append(row)
                 elif payload.get("session_id") and task_id and key not in known_keys:
                     raise AcceptanceUnavailable("epoch_unknown_task_tuple")
+        # Old tuples omitted from qualifying streams remain visible to the
+        # retirement check through the complete evidence_tables below.
         report = reduce_report(streams["memory_digest_impression"], streams["memory_read"], streams["memory_search"],
-                               roles, now, session_start_rows=streams["session_start"])
+                               roles, now, session_start_rows=streams["session_start"], evidence_tables=tables,
+                               collection_since=started, excluded_tasks=prepared["synthetic_task_ids"])
         if report["diagnostic_errors"] or report["aggregate"].get("pointer_opportunities") is None:
             raise AcceptanceUnavailable("epoch_natural_evidence_unhealthy")
         report["epoch"] = {"status": "accepted", "id": body["epoch_id"], "collection_started": True,
@@ -443,7 +692,7 @@ def reduce_collection_report(tables: dict, view: dict, outputs: dict, agent_role
         corroboration = {}
         for role, values in report["by_role"].items():
             qualified = {agent for agent, item in report["by_agent"].items() if item["role"] == role and item["eligible"]}
-            qualified_report = reduce_report(*([row for row in streams[action] if row["agent"] in qualified] for action in ACTIONS[1:]),
+            qualified_report = reduce_report(*([row for row in streams[action] if row["agent"] in qualified] for action in METRIC_ACTIONS[1:]),
                                               roles, now, session_start_rows=[row for row in streams["session_start"] if row["agent"] in qualified])
             qualified_metrics = qualified_report["aggregate"]
             values["retrieval_corroboration_eligible"] = qualified_metrics["search_sourced_reads"] >= 30
@@ -466,8 +715,14 @@ def reduce_collection_report(tables: dict, view: dict, outputs: dict, agent_role
         obs["status"] = decision
         return report
     except Exception:
-        report = diagnostic()
-        report["instrumentation_health"].update(status="unavailable", reason_code="collection_authority_unavailable")
-        report["observation_period"].update(thresholds_met=False, diagnostics_valid_for_collection=False,
-                                            reason_code="collection_authority_unavailable")
+        report = report if report is not None else diagnostic()
+        reason = (report["session_lifecycle"]["reason_code"]
+                  if report["session_lifecycle"]["status"] in {"unknown", "unavailable", "unhealthy"}
+                  else "collection_authority_unavailable")
+        report.update(epoch=_base(now)["epoch"], decision="insufficient_instrumentation", evaluation_candidate=False,
+                      decision_detail="Collection evidence is unavailable or unhealthy; explicit reset rules still apply.")
+        report["instrumentation_health"].update(status="unavailable", reason_code=reason,
+                                                complete_launch_census="UNKNOWN", probe_health="UNKNOWN", epoch_health="UNKNOWN")
+        report["observation_period"].update(status="insufficient_instrumentation", thresholds_met=False, diagnostics_valid_for_collection=False,
+                                            reason_code=reason)
         return report

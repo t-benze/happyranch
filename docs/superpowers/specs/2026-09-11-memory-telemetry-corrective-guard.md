@@ -228,15 +228,43 @@ epoch NOT STARTED, 48h handoff NOT DUE; frozen eligibility thresholds unchanged.
 ## Observation-only reporting core (TASK-9673 recovery / TASK-9559)
 
 The backend and canonical CLI share the pure `memory_telemetry_report` reducer.
-They acquire `session_start`, impressions, reads and searches before any empty or
-short return. Backend acquisition uses one synchronized SELECT statement snapshot;
-CLI exhausts real `/audit` pages at limit5000 in two complete sweeps and compares
-relevant audit identities/content and `/agents` roles at one aware UTC cutoff.
-Events at or after that cutoff are excluded. Backdated/content/role drift,
-cursor/schema errors, HTTP/decoder/timeout or SELECT failures refuse with
-`acquisition_unavailable`; CLI writes only that category to stderr and exits1,
-with no partial JSON. Unavailable `/agents` stays explicitly unknown and allows
-safe descriptive counts; it never supplies functional cohort authority.
+Both report entry points now acquire complete bounded tasks/results/jobs/audit
+snapshots, including session start/end, actual job-resume audits and runtime
+identity/launch/terminal. Backend uses the existing coherent SELECT-only evidence
+snapshot; CLI exhausts `/tasks` and `/audit` keyset pages and original task-result
+and referenced probe-job evidence twice with stable serving bookends. Task/result
+ownership, duplicate rows, cursor/page ordering, size bounds and changed snapshots
+refuse acquisition. Roles are bracketed separately and remain descriptive when
+unavailable. No-epoch diagnostics need no valid serving health but cannot claim
+collection; accepted epochs retain independent current loaded identity/census
+and authenticated original probe gates. HTTP/decoder/timeout or SELECT failure
+refuses with `acquisition_unavailable`, CLI exit1 and no partial stdout.
+
+D (THR-091 seq389–390) adds disjoint `by_session_kind` diagnostics: first_launch,
+job_resume, retry, retry_job_resume, other_continuation, unknown. Actual runtime
+`revisit_of_task_id` supplies retry lineage, never a name/brief; one genuine
+`task_resumed_from_jobs` after an earlier same-task session and before this start
+supplies job resume. Later sessions without this evidence remain explicitly other
+continuations (or retries with a flag). Per-kind correlated counts reconcile
+exactly to aggregate; no new per-kind threshold is introduced. Empty categories
+report no observed population; synthetic operational snapshots are not natural
+production acceptance.
+
+Exact boot/ordinal/task/agent/SID joins establish runtime intervals. A SID-less
+end attaches only when exactly one task/agent interval contains it, never by
+latest agent. Actual audit IDs establish order, including timestamp ties. End,
+terminal and a later same-task start bound old SID eligibility; credited reads
+and searches after that boundary are hard failures per kind, while earlier
+history stays valid. Old/pre-epoch credited tuples are inspected even when their
+invocations do not qualify for metrics. Missing/misjoined/duplicate lifecycle or
+lineage yields unknown diagnostics and cannot produce healthy zero; still-active
+exact current in-progress tuples need no fabricated terminal. Reports close
+eligibility on damage and require the existing explicit reset process; they
+never write invalidation/reset rows. Existing admission <=48h freshness and
+no age-only ongoing expiry, 14 complete UTC days AND500 sessions, per-agent30,
+strict activation<10%, NONshown-search>25% and aggregate/majority/pair rules stay
+unchanged. These temporal diagnostics cannot identify the actual caller of a
+foreign *live* SID: JOB-4624 remains runtime failure, not accepted by D.
 
 Structural returned-data corruption produces the full empty-metrics error object
 (null first event, days0, empty aggregate/by_agent/by_role/read_counts, explicit
@@ -258,9 +286,9 @@ complete UTC days exclude partial first/current days. Raw day/session sample
 flags may be true; thresholds, diagnostics_valid_for_collection and
 evaluation_candidate remain false, decision `insufficient_instrumentation`.
 `session_start` records audited intended invocations, never a complete process
-launch/expectation census. G3 source observation is shipped separately; the report does not acquire its
-current-serving census authority. Trusted canary/epoch, census and probe
-health remain UNKNOWN/unavailable in the report. There is no collection/tuning, ranking write,
+launch/expectation census. Without accepted G1 authority, trusted canary/epoch, census and probe
+health remain UNKNOWN/unavailable; the current admitted collection reader below
+revalidates them before claiming healthy collection. There is no collection/tuning, ranking write,
 synthetic/natural eligibility claim, authority override or epoch start.
 The read-side snapshot/two-sweep contract detects observed drift; it adds no
 writer fence or hostile same-UID guarantee. Full eligibility, operational H-v1

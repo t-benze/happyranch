@@ -365,10 +365,10 @@ def _report_projection(streams: dict, cutoff) -> str:
 
 
 def cmd_memory_report(args: argparse.Namespace) -> None:
-    """Observe a stable full four-stream acquisition at one aware UTC cutoff."""
+    """Observe complete bounded task/lifecycle evidence at one aware UTC cutoff."""
     from datetime import datetime, timezone
-    from runtime.infrastructure.memory_telemetry_report import ACTIONS, ReportAcquisitionUnavailable
-    from runtime.infrastructure.memory_collection import CONTROL_ACTIONS, acquire_http_collection_report
+    from runtime.infrastructure.memory_telemetry_report import ReportAcquisitionUnavailable, reduce_collection_report
+    from runtime.infrastructure.memory_collection import acquire_http_collection_report
 
     cutoff = datetime.now(timezone.utc)
     try:
@@ -380,23 +380,11 @@ def cmd_memory_report(args: argparse.Namespace) -> None:
                 raise ReportAcquisitionUnavailable()
             body = response.json()
             org = resolve_org_slug(args_org=None, available=[o["slug"] for o in body["orgs"]])
-        sweeps, role_maps = [], []
-        for _ in range(2):
-            sweeps.append({action: _paginate(client, org, action) for action in ACTIONS})
-            role_maps.append(_fetch_agent_roles(client, org))
-            sweeps[-1].update({action: _paginate(client, org, action) for action in sorted(CONTROL_ACTIONS)})
-        if (_report_projection(sweeps[0], cutoff) != _report_projection(sweeps[1], cutoff)
-                or role_maps[0] != role_maps[1]):
+        roles = _fetch_agent_roles(client, org)
+        tables, view, outputs, _ = acquire_http_collection_report(client, org, current_time=cutoff)
+        if roles != _fetch_agent_roles(client, org):
             raise ReportAcquisitionUnavailable()
-        streams = sweeps[1]
-        report = _compute_report(
-            streams["memory_digest_impression"], streams["memory_read"], streams["memory_search"],
-            role_maps[1], cutoff, session_start_rows=streams["session_start"],
-        )
-        if any(streams[action] for action in CONTROL_ACTIONS):
-            from runtime.infrastructure.memory_telemetry_report import reduce_collection_report
-            tables, view, outputs, _ = acquire_http_collection_report(client, org, current_time=cutoff)
-            report = reduce_collection_report(tables, view, outputs, role_maps[1], cutoff)
+        report = reduce_collection_report(tables, view, outputs, roles, cutoff)
         rendered = json.dumps(report, indent=2, sort_keys=True, allow_nan=False) if args.json else None
     except Exception as exc:
         # Never leak a partial report or provider/decoder exception text.
@@ -411,12 +399,12 @@ def cmd_memory_report(args: argparse.Namespace) -> None:
 def _compute_report(
     impression_rows: list[dict], read_rows: list[dict], search_rows: list[dict],
     agent_role_map: dict[str, str] | None = None, current_time: "datetime | None" = None,
-    *, session_start_rows: list[dict] | None = None,
+    *, session_start_rows: list[dict] | None = None, evidence_tables: dict | None = None,
 ) -> dict:
     """Compatibility wrapper around the same pure reducer as AuditLogger."""
     from runtime.infrastructure.memory_telemetry_report import reduce_report
     return reduce_report(impression_rows, read_rows, search_rows, agent_role_map, current_time,
-                         session_start_rows=session_start_rows)
+                         session_start_rows=session_start_rows, evidence_tables=evidence_tables)
 
 
 def _print_report(report: dict) -> None:
@@ -435,14 +423,15 @@ def _print_report(report: dict) -> None:
     print(f"Sessions: {obs.get('total_correlated_sessions', 0)} / {obs.get('required_sessions', 500)}")
     print("Thresholds:    " + ("MET" if obs.get("thresholds_met") else "NOT MET"))
     print("Population: audited intended task-session invocations; complete launch census " + str(report.get("instrumentation_health", {}).get("complete_launch_census", "UNKNOWN")))
-    for label, rows in (("AGGREGATE", {"all": report.get("aggregate", {})}),
+    for label, rows in (("BY SESSION KIND (diagnostic only)", report.get("by_session_kind", {})),
+                        ("AGGREGATE", {"all": report.get("aggregate", {})}),
                         ("BY AGENT", report.get("by_agent", {})), ("BY ROLE", report.get("by_role", {}))):
         print(label)
         for name, data in sorted(rows.items()):
             print(f"  [{name}]")
             for key, value in sorted(data.items()):
                 print(f"    {key}: {'unknown' if value is None else value}")
-    for label in ("read_counts", "excluded", "diagnostic_errors", "instrumentation_health"):
+    for label in ("session_lifecycle", "read_counts", "excluded", "diagnostic_errors", "instrumentation_health"):
         print(f"{label}: {json.dumps(report.get(label, {}), sort_keys=True, allow_nan=False)}")
     print(f"DECISION: {report.get('decision', 'unknown')}")
     print(report.get("decision_detail", ""))

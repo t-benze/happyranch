@@ -1108,13 +1108,40 @@ Readers never write, reseal, repair, invalidate or start epochs.
 
 Backend and canonical CLI JSON/text share the report core. G1 acquisition
 exhausts original tasks/results/jobs/audit evidence with stable bookends and
-complete owned outputs; legacy diagnostics still acquire all four memory
-streams and roles before empty/short returns. HTTP/decoder/timeout, cursor or
+complete owned outputs; observation-only diagnostics now acquire the same
+bounded task/lifecycle evidence and roles before empty/short returns. HTTP/decoder/timeout, cursor or
 SELECT failures refuse as `acquisition_unavailable`, without partial CLI stdout.
 Natural population excludes designated probes/retries, recovery and all
-pre-start invocations, including their late events. D1 remains the later of
+pre-start invocations from qualifying metrics. Credited late events on old
+tuples remain visible to the retirement diagnostic and can close eligibility. D1 remains the later of
 original epoch start and first qualifying natural impression, counting complete
 UTC days only. Valid short samples remain `insufficient_sample`.
+
+D reporting (THR-091 seq389–390) adds `by_session_kind` and
+`session_lifecycle` to both backend and CLI JSON/text. The disjoint kinds are
+`first_launch`, `job_resume`, `retry`, `retry_job_resume`, `other_continuation`
+and `unknown`. A runtime-written `tasks.revisit_of_task_id` identifies a retry;
+a unique actual `task_resumed_from_jobs` between the previous same-task start
+and this start proves a job resume. A later session alone is an
+`other_continuation` (or `retry` with a diagnostic flag), never an inferred job
+resume. Kind correlated-session totals reconcile to the aggregate; lifecycle
+session counts additionally include credited old tuples inspected for damage.
+Per-kind pull-through is diagnostic only and introduces no thresholds.
+
+Retirement joins exact boot/ordinal/task/agent/SID runtime identity, launch and
+terminal with session start/end. SID-less `session_end` joins only a unique
+ordered task/agent interval ending at its own runtime terminal. Audit IDs resolve
+ordering, including equal timestamps; no latest-agent inference is used. Any
+credited read **or** search after end, terminal or a later same-task start is
+reported per kind, excluded from valid read metrics and closes collection
+eligibility under the existing explicit reset contract. Valid earlier history
+is retained. Missing, duplicate, misjoined or ambiguous lifecycle/lineage is
+unknown, with null hard-zero diagnostics where evidence is unavailable. An
+exact current in-progress task/agent/SID may lawfully remain active without a
+terminal. Empty kinds say `no_observed_population`, never PASS. These read-only
+diagnostics cannot detect which caller supplied another *live* task's SID;
+TASK-11402/JOB-4624's foreign-credit defect remains unaccepted pending the
+separately authorized caller-context decision. No control row is written.
 
 Source tests and source publication do not accept a production canary, start
 an official epoch, or fulfill the independently owned durable health check
