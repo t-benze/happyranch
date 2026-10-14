@@ -25,6 +25,11 @@ real callback/retry/cleanup ownership; it changes no permission generator or
 manage-agent admission. C2/C3/D producer/recovery/old-reader closure is still
 required. No move command/route or apply/COMPLETE writer is available and no live
 move is authorized. Later complete source requires founder admission.
+Admission refusal preserves pending work. Retry handoff retains each uncertain
+attempt separately; provider return is not containment proof. Pause attribution
+settles only after workflow reconciliation and an explicit safe outer-cleanup
+disposition; failed/unknown cleanup stays attributable. These source contracts
+remain behaviorally UNEXECUTED and grant no operational move authority.
 Do not substitute termination/re-enrollment, direct roster writes or ambient
 agent credentials. See docs/superpowers/specs/2026-10-14-online-team-move.md in
 the release source; this prose grants no execution/permission change.

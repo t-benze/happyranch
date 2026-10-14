@@ -11,7 +11,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any, Callable, Literal
 
-from runtime.infrastructure.team_move_store import MoveRequest, Phase, TeamMoveStore, validate_team_move_schema, _decode
+from runtime.infrastructure.team_move_store import MoveRequest, Phase, TeamMoveError, TeamMoveStore, validate_team_move_schema, _decode
 
 _task_tail: ContextVar[list | None] = ContextVar("team_move_task_tail", default=None)
 
@@ -91,6 +91,7 @@ class TaskPreparation:
         # A missing outcome/receipt or passthrough cannot prove tree quiescence.
         with self.coordinator.store.db._lock:
             receipt = None if outcome is None else outcome.receipt
+            self.cleanup_failed |= outcome is not None and outcome.cleanup_error is not None
             self.quiescent = bool(receipt is not None and receipt.backend != "passthrough"
                 and receipt.quiescent is True and receipt.cleanup_status.value != "incomplete"
                 and not receipt.survivors and outcome.cleanup_error is None)
@@ -155,8 +156,13 @@ class TeamMoveCoordinator:
 
     def active_uncommitted(self) -> dict | None:
         conn = self.store.db._conn
-        if not validate_team_move_schema(conn, org_slug=self.store.org_slug):
-            return None
+        try:
+            if not validate_team_move_schema(conn, org_slug=self.store.org_slug):
+                return None
+        except TeamMoveError as exc:
+            # Installed-state admission belongs to this owner, not the task's
+            # business failure consumer. Preserve the actionable store code.
+            raise DeferredTeamMove(exc.code) from exc
         row = conn.execute("SELECT * FROM team_move_operations WHERE active_slot=1").fetchone()
         return dict(row) if row is not None else None
 
@@ -320,6 +326,21 @@ class TeamMoveCoordinator:
         if task is None:
             raise DeferredTeamMove("team_move_task_owner_unavailable")
         self.check_task_uncommitted(task)
+
+    def retry_uncommitted(self, invocation: Any, unknown_owner: str) -> None:
+        """After journal COMMIT, keep the returned attempt as a separate blocker.
+
+        Caller owns root/move/DB in that order, outside host terminal locks.
+        The next attempt still checks durable admission before FIFO and launch.
+        Return from a provider does not settle the original descendant tree.
+        """
+        prior = invocation.move_reservation
+        self._reservations.pop(invocation.identity)
+        prior.owner_id, prior.owner_live = unknown_owner, False
+        self._reservations[unknown_owner] = prior
+        invocation.move_reservation = TaskPreparation(self, prior.identity,
+            invocation.identity, invocation.task.id, invocation.session_id)
+        self._reservations[invocation.identity] = invocation.move_reservation
 
     def release_task(self, invocation: Any, *, failed: bool = False) -> None:
         # Result consumer / workflow dispatcher tail, no gate under their locks.

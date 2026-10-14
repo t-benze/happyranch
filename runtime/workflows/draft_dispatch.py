@@ -245,17 +245,10 @@ class WorkflowDraftDispatcher:
         except (DeferredRootPause, DeferredTeamMove) as exc:
             if isinstance(exc, DeferredTeamMove):
                 self.org.orchestrator._team_moves.defer_task(task_id, None)
-            invocation.close()
         except BaseException:
             if invocation.admitted:
                 invocation.phase("unknown")
-            else:
-                invocation.close()
             raise
-        else:
-            # A terminal uncertain intent is retained as the authoritative drain
-            # blocker; it must never be retried through ordinary task admission.
-            invocation.close()
         finally:
             from runtime.orchestrator.task_pause import release_live
             import sys
@@ -264,6 +257,8 @@ class WorkflowDraftDispatcher:
                 _invocation.reset(token)
                 with self._live_lock:
                     self._live.pop(task_id, None)
+                # Pause attribution remains durable through this late tail and
+                # the outer worker cleanup. release_live settles it last.
                 self.reconcile(task_id)
             except BaseException:
                 failed = True

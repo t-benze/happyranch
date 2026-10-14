@@ -869,8 +869,12 @@ class Orchestrator:
                 # Legacy direct callers have already assembled a prompt without
                 # preparation ownership. Never adopt it for an installed move
                 # layout; absent-layout ordinary operation remains supported.
-                from runtime.infrastructure.team_move_store import validate_team_move_schema
-                if validate_team_move_schema(self._db._conn, org_slug=self._slug):
+                from runtime.infrastructure.team_move_store import TeamMoveError, validate_team_move_schema
+                try:
+                    installed = validate_team_move_schema(self._db._conn, org_slug=self._slug)
+                except TeamMoveError as exc:
+                    raise DeferredTeamMove(exc.code) from exc
+                if installed:
                     raise DeferredTeamMove("team_move_unowned_task_producer")
             elif (invocation.task.id != task_id or invocation.agent != agent
                   or invocation.move_reservation is None
@@ -1739,8 +1743,10 @@ class Orchestrator:
                 tail_failed = True
                 raise
             finally:
-                _root_worktree_batch(self, root_transitions,
+                disposition = _root_worktree_batch(self, root_transitions,
                     teardown_incomplete=tail_failed or delivery['teardown_incomplete'])
+                if disposition.kind == 'unknown' and invocation is not None:
+                    invocation.move_reservation.failed_cleanup()
 
         def _launch_body(running: RunningHandle) -> LaunchResult:
             if drafts is not None:

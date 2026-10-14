@@ -21,6 +21,18 @@ and runtime/launcher downgrade requirements remain DATA ONLY until D. D
 must discover/recover before partial-roster validation/publication/admission and
 refuse incompatible readers. An additive table cannot teach prefeature binaries
 a hold. No deployment/restart/live DB operation follows source acceptance.
+Move admission deferral propagates through the inner launch handler to the existing
+pending-work owner without task failure, parent wake, followup or callback consumption.
+Malformed installed state retains its actionable admission error. Direct 429 and
+supervised passthrough retries preserve each returned uncertain attempt as a separate
+Pause journal/reservation blocker; the next actual attempt keeps the original retry
+budget, session and enqueue age and rechecks durable admission before FIFO/commit.
+Provider return never proves containment. Durable Pause attribution remains through
+workflow reconciliation and the actual outer cleanup batch. Its explicit disposition
+distinguishes safe no-action/preservation from halted, unreaped, action/report failure
+or unknown teardown; uncertainty retains the exact task/session owner and cleanup
+facts, without changing the normal terminal result or expanding cleanup authority.
+
 See the [approved contract](../superpowers/specs/2026-10-14-online-team-move.md).
 Behavior/recovery remains UNEXECUTED; source/static acceptance is separate.
 

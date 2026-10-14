@@ -1470,6 +1470,10 @@ class HostSessionSupervisor:
                 if backoff > 0:
                     self._sleep(backoff)
                 request = request.with_retry_attempt(attempt)
+                if task_invocation is not None:
+                    # An unknown returned attempt retains its original owner;
+                    # the copy carries the next actual attempt's reservation.
+                    request = replace(request, move_reservation=task_invocation.move_reservation)
                 continue
             return outcome
 
@@ -1532,6 +1536,10 @@ class HostSessionSupervisor:
             try:
                 pre_launch_validator()
             except Exception as exc:
+                from runtime.orchestrator.task_pause import DeferredRootPause, PauseControlError
+                from runtime.orchestrator.team_move import DeferredTeamMove
+                if isinstance(exc, (DeferredRootPause, DeferredTeamMove, PauseControlError)):
+                    raise
                 ctx.freeze_terminal(TerminalReason.FAILURE)
                 ctx.set_error(f"pre-launch validation failed: {exc}")
                 return self._outcome(request, ctx, attempt)
@@ -1579,6 +1587,11 @@ class HostSessionSupervisor:
                 try:
                     final_prelaunch_validator()
                 except Exception as exc:
+                    from runtime.orchestrator.task_pause import DeferredRootPause, PauseControlError
+                    from runtime.orchestrator.team_move import DeferredTeamMove
+                    if isinstance(exc, (DeferredRootPause, DeferredTeamMove, PauseControlError)):
+                        self._safe_abandon(self._backend, pending, request.move_reservation)
+                        raise
                     ctx.freeze_terminal(TerminalReason.FAILURE)
                     ctx.set_error(f"final pre-launch validation failed: {exc}")
                     # Keep the actionable validation error; _abandon_pre_launch

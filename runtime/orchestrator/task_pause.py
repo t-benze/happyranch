@@ -412,7 +412,7 @@ class TaskInvocation:
                 resume_session_id=proof["provider_session_id"], origin_runtime_session_id=proof["origin_session_id"],
                 timeout_seconds_override=120, recovery=True)
             return self.admitted, recovery_result, recovery_report
-        except (DeferredRootPause, DeferredTeamMove):
+        except (DeferredRootPause, DeferredTeamMove, PauseControlError):
             raise
         except Exception as exc:
             result.success = False
@@ -425,11 +425,31 @@ class TaskInvocation:
         """Retain the original retry budget; every actual retry arbitrates again."""
         if boundary == "host" and ordinal and self.unsettled:
             raise PauseControlError("pause_control_unavailable")
-        with self.store.writer(self.task.id) as (_, row):
+        unknown_owner = None
+        def committed() -> None:
+            if unknown_owner is not None:
+                self.orch._team_moves.retry_uncommitted(self, unknown_owner)
+        with self.store.writer(self.task.id, admission=True, committed=committed) as (_, row):
             entry = self._entry(row)
             prior = entry["retry"]
             if prior and prior["boundary"] != boundary:
                 raise PauseControlError("pause_control_unavailable")
+            reservation = self.move_reservation
+            if ordinal and reservation is not None and reservation.possible_launch and not reservation.quiescent:
+                if (self.unsettled or reservation.cleanup_failed or not entry["context"].get("execution_unknown")
+                        or self.orch._team_moves._reservations.get(self.identity) is not reservation):
+                    raise PauseControlError("pause_control_unavailable")
+                # Only the actual returned direct/passthrough attempt reaches
+                # this handoff. Its original SID/retry/fingerprint stay durable;
+                # a later attempt's receipt cannot erase its unknown tree.
+                original = deepcopy(entry)
+                original["id"] = unknown_owner = uuid.uuid4().hex
+                original["phase"] = "unknown"
+                original["started_at"] = original["captured_generation"] = None
+                original["context"].update(execution_unknown=True, producer_settled=True,
+                    origin_owner_id=self.identity)
+                row["journal"]["entries"].append(original)
+                entry["context"].pop("execution_unknown", None)
             entry["retry"] = {"ordinal": ordinal, "budget": budget, "boundary": boundary,
                               "enqueued_at": prior.get("enqueued_at", enqueued_at or now()),
                               "schedule": prior.get("schedule", list(schedule or ())),
@@ -448,7 +468,8 @@ class TaskInvocation:
             return
         receipt = None if outcome is None else outcome.receipt
         if (receipt is not None and receipt.backend != "passthrough" and receipt.quiescent is True
-                and receipt.cleanup_status.value != "incomplete" and not receipt.survivors):
+                and receipt.cleanup_status.value != "incomplete" and not receipt.survivors
+                and outcome.cleanup_error is None):
             self.unsettled = False
             self.phase("result_processing", started_at=None, captured_generation=None)
         else:
@@ -608,10 +629,39 @@ def release_live(invocation: TaskInvocation, *, failed: bool = False) -> None:
         invocation.store._live.pop(invocation.identity, None)
         from runtime.orchestrator.team_move import _task_tail
         tail = _task_tail.get()
-        if tail is None:
-            invocation.orch._team_moves.release_task(invocation, failed=failed)
-        else:
+        if tail is not None:
             tail.append((invocation, failed))
+    if tail is None:
+        settle_live(invocation, failed=failed)
+
+
+def settle_live(invocation: TaskInvocation, *, failed: bool = False, cleanup: Any = None) -> None:
+    """Close durable attribution only after reconcile and actual outer cleanup."""
+    reservation = invocation.move_reservation
+    if failed and reservation is not None:
+        reservation.failed_cleanup()
+    try:
+        if failed:
+            with invocation.store.writer(invocation.task.id) as (_, row):
+                entry = invocation._entry(row)
+                entry["context"]["execution_unknown"] = True
+                entry["context"]["cleanup_tail"] = dict(
+                    reason="producer_tail_failed" if cleanup is None or cleanup.kind != "unknown" else cleanup.reason,
+                    processes=[] if cleanup is None else list(cleanup.processes))
+                invocation.store.save_journal_uncommitted(row)
+        with invocation.store.db._lock:
+            row = invocation.store.row_uncommitted(invocation.store.root_uncommitted(invocation.task.id)["id"])
+            phase = invocation._entry(row)["phase"]
+        # Genuine deferred retries/recovery keep their exact owner for the
+        # existing redelivery owner. Failure must first become durable unknown.
+        if failed or phase not in {"retry_deferred", "recovery_deferred"}:
+            invocation.close()
+    except BaseException:
+        if reservation is not None:
+            reservation.failed_cleanup()
+        raise
+    finally:
+        invocation.orch._team_moves.release_task(invocation, failed=failed)
 
 
 def pause_deferred_owner(db: Any, task_id: str) -> bool:
