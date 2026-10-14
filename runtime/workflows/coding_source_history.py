@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from runtime.workflows.coding_authority_history import (
-    CodingAuthorityHistoryError, _Budget, _SetupHistoryReader, _token,
+    CodingAuthorityHistoryError, _Budget, _CALL_ROW_LIMIT, _SetupHistoryReader, _token,
 )
 from runtime.workflows.coding_capability_history import (
     CodingCapabilityHistory, CodingCapabilityHistoryError, _history,
@@ -120,7 +120,7 @@ def _projection(columns: tuple[str, ...], allowed: tuple[tuple[str, ...], ...],
         choices = ','.join("'" + kind + "'" for kind in types)
         length = f' AND length(CAST({name} AS BLOB))<={_VALUE_LIMIT}' if 'text' in types else ''
         value = f'CAST({name} AS BLOB)' if 'text' in types else name
-        fields.append(f'CASE WHEN _row_bytes<=? AND typeof({name}) IN ({choices})'
+        fields.append(f'CASE WHEN ? > 0 AND _row_bytes<=? AND typeof({name}) IN ({choices})'
                       f'{length} THEN {value} ELSE NULL END')
     fields.extend(f'typeof({name})' for name in columns)
     return ('WITH native AS (SELECT ' + ','.join(columns) + ',' + size
@@ -146,7 +146,8 @@ def _native_rows(conn: sqlite3.Connection, sql: str, args: tuple,
         # ID with bounded keyset pages, not OFFSET/fetchall. Every next candidate
         # receives a NEW remaining-byte gate; no page can overspend the budget
         # through multiple buffered payload rows with a stale remaining value.
-        cursor.execute(sql, args + (budget.remaining_bytes,) * len(columns))
+        cursor.execute(sql, args + (_CALL_ROW_LIMIT - budget.accepted_rows,
+                                    budget.remaining_bytes) * len(columns))
         while (row := cursor.fetchone()) is not None:
             budget.candidate()  # before type/grammar/conflict rejection
             budget.step()
@@ -349,6 +350,43 @@ def _results(conn: sqlite3.Connection, capability: dict,
     return tuple(records)
 
 
+def _source_records(conn: sqlite3.Connection, expected_org_slug: str,
+                    authorization_id: str, *, budget: _Budget | None = None) -> CodingSourceNativeRecords:
+    # Private call-local composition only; preserve the public five-field API.
+    _check(type(conn) is sqlite3.Connection and conn.in_transaction and conn.text_factory is str)
+    _check(type(expected_org_slug) is str
+           and re.fullmatch(r'[a-z][a-z0-9-]{0,62}', expected_org_slug) is not None)
+    _token(authorization_id)
+    if budget is None:
+        budget = _Budget()
+    setups = _SetupHistoryReader(conn, expected_org_slug, budget)
+    history = _history(conn, expected_org_slug, authorization_id, budget=budget, setups=setups)
+    capability = json.loads(history.selected.authority_bytes)
+    _check(capability['level'] == 'source')
+    issuer = capability['issuer']
+    # _history binds the COMPLETE native lineage in source-to-selected
+    # order. Its first source P terminates at authentic U; refinements
+    # retain the same issuer/result but may narrow paths. The original
+    # callback must match that initial P exactly, not the narrower child.
+    budget.step()
+    initial_source = json.loads(history.capabilities[0].authority_bytes)
+    _check(initial_source['level'] == 'source' and initial_source['issuer'] == issuer)
+    source = _task(conn, issuer['task_id'], budget)
+    chain = [source]
+    seen = {issuer['task_id']}
+    parent = source._text('parent_task_id')
+    while parent is not None:
+        _check(len(chain) < _SOURCE_LIMIT and parent not in seen)
+        seen.add(parent)
+        row = _task(conn, parent, budget)
+        _check(row._text('team') == source._text('team'))
+        chain.append(row)
+        parent = row._text('parent_task_id')
+    start = _session_start(conn, issuer, budget)
+    results = _results(conn, initial_source, budget)
+    return CodingSourceNativeRecords(history, source, tuple(chain[1:]), start, results)
+
+
 def read_source_native_records(conn: sqlite3.Connection, *, expected_org_slug: str,
                                authorization_id: str) -> CodingSourceNativeRecords:
     """Five immutable identity fields under one shared native/P/U budget.
@@ -367,37 +405,7 @@ def read_source_native_records(conn: sqlite3.Connection, *, expected_org_slug: s
     schema admission are caller prerequisites, never permission flags here.
     """
     try:
-        _check(type(conn) is sqlite3.Connection and conn.in_transaction and conn.text_factory is str)
-        _check(type(expected_org_slug) is str
-               and re.fullmatch(r'[a-z][a-z0-9-]{0,62}', expected_org_slug) is not None)
-        _token(authorization_id)
-        budget = _Budget()
-        setups = _SetupHistoryReader(conn, expected_org_slug, budget)
-        history = _history(conn, expected_org_slug, authorization_id, budget=budget, setups=setups)
-        capability = json.loads(history.selected.authority_bytes)
-        _check(capability['level'] == 'source')
-        issuer = capability['issuer']
-        # _history binds the COMPLETE native lineage in source-to-selected
-        # order. Its first source P terminates at authentic U; refinements
-        # retain the same issuer/result but may narrow paths. The original
-        # callback must match that initial P exactly, not the narrower child.
-        budget.step()
-        initial_source = json.loads(history.capabilities[0].authority_bytes)
-        _check(initial_source['level'] == 'source' and initial_source['issuer'] == issuer)
-        source = _task(conn, issuer['task_id'], budget)
-        chain = [source]
-        seen = {issuer['task_id']}
-        parent = source._text('parent_task_id')
-        while parent is not None:
-            _check(len(chain) < _SOURCE_LIMIT and parent not in seen)
-            seen.add(parent)
-            row = _task(conn, parent, budget)
-            _check(row._text('team') == source._text('team'))
-            chain.append(row)
-            parent = row._text('parent_task_id')
-        start = _session_start(conn, issuer, budget)
-        results = _results(conn, initial_source, budget)
-        return CodingSourceNativeRecords(history, source, tuple(chain[1:]), start, results)
+        return _source_records(conn, expected_org_slug, authorization_id)
     except (sqlite3.Error, CodingSavedRecordError, CodingAuthorityHistoryError,
             CodingCapabilityHistoryError, ValueError, TypeError, KeyError,
             UnicodeError, RecursionError, OverflowError, AttributeError):
