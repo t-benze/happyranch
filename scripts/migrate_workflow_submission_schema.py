@@ -123,6 +123,7 @@ def main(argv: list[str] | None = None) -> int:
         before = path.stat()
         conn = sqlite3.connect(path.as_uri() + ('?mode=ro' if args.check else '?mode=rw'), uri=True, timeout=1.0,
                                factory=_MigrationConnection)
+        conn.row_factory = sqlite3.Row
         conn.execute('PRAGMA foreign_keys=ON')
         identity = _identity(path, conn)
         if identity[:2] != (before.st_dev, before.st_ino):
@@ -130,16 +131,16 @@ def main(argv: list[str] | None = None) -> int:
         conn.execute('BEGIN')
         layout = validate_workflow_schema(conn, expected_org_slug=args.org)
         _validate_release_database(conn, layout, expected_org_slug=args.org)
-        if layout != 'G':
+        if layout in ('F', 'E'):
             for event in _records(conn, 'SELECT * FROM workflow_events'):
                 _event_revision(conn, event)
         conn.rollback()
         if args.check:
-            if layout != 'G':
+            if layout in ('F', 'E'):
                 print('migration-needed: ' + submission_migration_guidance(org_slug=args.org, runtime_root=str(args.runtime_root)))
                 return 3
             outcome = 'ready'
-        elif layout == 'G':
+        elif layout in ('G', 'H', 'I', 'J'):
             outcome = migrate_submission_schema(conn, expected_org_slug=args.org)
         else:
             offline = _lifecycle_snapshot(args.runtime_root)
@@ -150,7 +151,7 @@ def main(argv: list[str] | None = None) -> int:
             conn.source_identity = identity
             conn.offline = offline
             outcome = migrate_submission_schema(conn, expected_org_slug=args.org)
-        print(f'{outcome}: org {args.org}; layout G; compatible reader required')
+        print(f'{outcome}: org {args.org}; layout {layout if outcome == "ready" else "G"}; compatible reader required')
         return 0
     except (OSError, ValueError, yaml.YAMLError, sqlite3.DatabaseError) as exc:
         if conn is not None:
