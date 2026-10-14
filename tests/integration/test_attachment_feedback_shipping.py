@@ -181,8 +181,10 @@ def assert_feedback(state: ShippingState, row: dict, code: str, remedy: str,
         assert 'claimed_by=' + json.dumps(owner) in reason
     assert state.db.get_task(row['task_id']).status == TaskStatus.PENDING
     before = state.footprint()
+    queue_before = list(state.queue.items)
     state.consume(row)
     assert state.footprint() == before  # original INTEGER result consumes once
+    assert state.queue.items == queue_before
 
 
 @pytest.mark.parametrize('variant', ['direct', 'nested-only', 'invalid-name', 'extension'])
@@ -310,6 +312,9 @@ def test_f5_fresh_correction_and_once_only_graph(shipping: ShippingState, kind: 
     assert corrected['id'] not in {row['id'] for row in originals}
     children = state.children(task)
     assert len(children) == (1 if kind == 'delegate' else 2)
+    assert all(child['assigned_agent'] == 'dev_agent' for child in children)
+    assert {child['brief'] for child in children} == ({'Synthetic child'} if kind == 'delegate' else {'Plain', 'Carrier'})
+    assert state.db.get_task(task).block_kind.value == 'delegated'
     all_new = [row for row in state.rows('tasks') if row['id'] != task]
     assert len(all_new) == (1 if kind == 'delegate' else 3)
     owner = children[0] if kind == 'delegate' else next(child for child in children if child['active_chain'])
@@ -324,13 +329,16 @@ def test_f5_fresh_correction_and_once_only_graph(shipping: ShippingState, kind: 
     if kind == 'fanout':
         first_legs = state.children(owner['id'])
         assert len(first_legs) == 1 and not state.db.list_task_attachments(first_legs[0]['id'])
+        assert first_legs[0]['assigned_agent'] == 'dev_agent' and first_legs[0]['brief'] == 'Carrier'
         assert {ref.storage_key for ref in state.db.resolve_ancestor_attachments(first_legs[0]['id'])} == {ref['storage_key'] for ref in direct}
         assert nested[0]['storage_key'] in state.db.get_task(task).active_fanout
     assert len(state.corrections(task)) == 2
     before = state.footprint()
+    queue_before = list(state.queue.items)
     for row in (*originals, corrected, corrected):
         state.consume(row)
     assert state.footprint() == before
+    assert state.queue.items == queue_before
 
 
 @pytest.mark.parametrize('boundary', ['before-A', 'after-A-before-B'])
@@ -356,6 +364,7 @@ def test_f6_original_claim_loss(shipping: ShippingState, monkeypatch: pytest.Mon
     assert state.db.get_task(task).assigned_agent == 'dev_agent'
     assert state.db.get_task(task).current_session_id == 'sess-replacement'
     assert not state.queue.items
+    assert state.db.get_task(task).status == (TaskStatus.IN_PROGRESS if boundary == 'before-A' else TaskStatus.PENDING)
     state.prechild(task)
 
 
