@@ -26,16 +26,8 @@ on:
         description: Opt in to PR1047 fixed-node disposable THR299 QA (independent review required)
         type: boolean
         default: false
-      attachment_scoped_qa:
-        description: Closed THR304 attachment C1-C8 source-reviewed manual selection (release binding required)
-        type: boolean
-        default: false
-      execution_task_id:
-        description: Actual manager-released THR304 execution owner; empty refuses attachment execution
-        type: string
-        default: ''
       expected_source_sha:
-        description: Required immutable 40-hex event SHA for the selected scoped QA lane
+        description: Required immutable 40-hex event SHA when thr299_scoped_qa is true
         type: string
         default: ''
 
@@ -43,38 +35,9 @@ permissions:
   contents: read
 
 jobs:
-  manual-input-guard:
-    name: Validate closed manual selection before setup
-    if: ${{ github.event_name == 'workflow_dispatch' }}
-    runs-on: ubuntu-24.04
-    timeout-minutes: 1
-    steps:
-      - name: Refuse conflicting attachment/manual inputs
-        env:
-          ATTACHMENT_QA: ${{ inputs.attachment_scoped_qa }}
-          NAMING_ONLY: ${{ inputs.naming_only }}
-          ALL_ONLY: ${{ inputs.all_only }}
-          THR299_QA: ${{ inputs.thr299_scoped_qa }}
-          EXECUTION_TASK: ${{ inputs.execution_task_id }}
-          EXPECTED_SHA: ${{ inputs.expected_source_sha }}
-        run: |
-          python3 -I - <<'PYGUARD'
-          import os, re
-          attachment = os.environ['ATTACHMENT_QA'] == 'true'
-          if attachment and (os.environ['NAMING_ONLY'] == 'true' or os.environ['ALL_ONLY'] == 'true' or os.environ['THR299_QA'] == 'true'):
-              raise SystemExit('Conflicting closed manual selections')
-          if not attachment and os.environ['EXECUTION_TASK']:
-              raise SystemExit('execution_task_id is attachment-only')
-          if attachment and (not re.fullmatch(r'TASK-[1-9][0-9]*', os.environ['EXECUTION_TASK']) or not re.fullmatch(r'[0-9a-f]{40}', os.environ['EXPECTED_SHA'])):
-              raise SystemExit('Actual execution owner and immutable final SHA required')
-          if not attachment and os.environ['THR299_QA'] != 'true' and os.environ['EXPECTED_SHA']:
-              raise SystemExit('expected_source_sha requires a selected scoped QA lane')
-          PYGUARD
-
   local-ci-all:
-    needs: manual-input-guard
     name: Manual local CI all (Python 3.14, Node 24)
-    if: ${{ github.event_name == 'workflow_dispatch' && !inputs.naming_only && inputs.thr299_scoped_qa != true && inputs.attachment_scoped_qa != true }}
+    if: ${{ github.event_name == 'workflow_dispatch' && !inputs.naming_only && inputs.thr299_scoped_qa != true }}
     runs-on: ubuntu-latest
     # Preserve the existing disposable venue cap; units are retired.
     timeout-minutes: 150
@@ -98,7 +61,6 @@ jobs:
         run: uv sync --frozen
       - name: Run exact lint/static local CI all in a clean environment
         env:
-          NAMING_ONLY: ${{ inputs.naming_only }}
           ALL_ONLY: ${{ inputs.all_only }}
         run: uv run python scripts/nightly_local_ci_all.py
       - name: Upload manual local CI evidence
@@ -112,7 +74,7 @@ jobs:
 
   naming:
     name: Finite naming daemon/browser proof (Python 3.14, Node 24)
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.naming_only && inputs.attachment_scoped_qa != true && inputs.thr299_scoped_qa != true }}
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.naming_only && inputs.thr299_scoped_qa != true }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -122,7 +84,6 @@ jobs:
         env:
           NAMING_SHA: ${{ inputs.naming_source_sha }}
           NAMING_IMAGE: ${{ inputs.naming_image }}
-          NAMING_ONLY: ${{ inputs.naming_only }}
           ALL_ONLY: ${{ inputs.all_only }}
         run: |
           [[ "$ALL_ONLY" != 'true' ]]
@@ -155,9 +116,8 @@ jobs:
           retention-days: 14
 
   thr299-scoped-qa:
-    needs: manual-input-guard
     name: THR299 disposable scoped QA (Python 3.14)
-    if: ${{ github.event_name == 'workflow_dispatch' && !inputs.naming_only && inputs.thr299_scoped_qa == true && inputs.attachment_scoped_qa != true && github.repository == 't-benze/happyranch' && github.ref == 'refs/heads/task/TASK-10816' }}
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.thr299_scoped_qa == true && !inputs.naming_only && github.repository == 't-benze/happyranch' && github.ref == 'refs/heads/task/TASK-10816' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
@@ -357,65 +317,6 @@ jobs:
         with:
           name: thr299-scoped-qa-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/thr299-scoped-qa/evidence/
-          if-no-files-found: warn
-          retention-days: 7
-
-  attachment-scoped-qa:
-    name: THR304 closed attachment scoped QA (Python 3.14)
-    needs: manual-input-guard
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.attachment_scoped_qa == true && github.repository == 't-benze/happyranch' && github.ref == 'refs/heads/task/TASK-11122' }}
-    runs-on: ubuntu-24.04
-    timeout-minutes: 35
-    env:
-      EXPECTED_SOURCE_SHA: ${{ inputs.expected_source_sha }}
-      EXECUTION_TASK_ID: ${{ inputs.execution_task_id }}
-    steps:
-      - name: Checkout exact event source without credentials
-        timeout-minutes: 1
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
-        with:
-          ref: ${{ github.sha }}
-          persist-credentials: false
-      - name: Admit released task and immutable manifest before dependencies
-        timeout-minutes: 1
-        env:
-          QA_RUNNER_ENVIRONMENT: ${{ runner.environment }}
-          QA_RUNNER_NAME: ${{ runner.name }}
-        run: python3 -I scripts/attachment_scoped_qa.py --admit-only --task-id "$EXECUTION_TASK_ID" --expected-sha "$EXPECTED_SOURCE_SHA"
-      - name: Install uv and Python 3.14
-        timeout-minutes: 3
-        uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
-        with:
-          enable-cache: false
-          python-version: '3.14'
-      - name: Frozen disposable setup
-        timeout-minutes: 3
-        env:
-          UV_PROJECT_ENVIRONMENT: ${{ runner.temp }}/attachment-qa-venv
-          UV_CACHE_DIR: ${{ runner.temp }}/attachment-qa-uv-cache
-        run: |
-          uv sync --frozen --python 3.14
-          git diff --exit-code -- uv.lock
-          test -z "$(git status --porcelain)"
-      - name: Execute only released finite attachment recipe
-        timeout-minutes: 22
-        env:
-          QA_RUNNER_ENVIRONMENT: ${{ runner.environment }}
-          QA_RUNNER_NAME: ${{ runner.name }}
-          UV_PROJECT_ENVIRONMENT: ${{ runner.temp }}/attachment-qa-venv
-          HAPPYRANCH_TEST_REAL_PLATFORM: '1'
-        run: |
-          timeout --signal=INT --kill-after=20s 1280s "$UV_PROJECT_ENVIRONMENT/bin/python" -I scripts/attachment_scoped_qa.py \
-            --task-id "$EXECUTION_TASK_ID" --expected-sha "$EXPECTED_SOURCE_SHA" \
-            --selection attachment-c1-c8-v1 \
-            --scratch "$RUNNER_TEMP/attachment-qa/$EXECUTION_TASK_ID/$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/scratch"
-      - name: Upload existing capped attachment evidence on every outcome
-        if: ${{ always() }}
-        timeout-minutes: 2
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: attachment-scoped-qa-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/attachment-qa/${{ inputs.execution_task_id }}/${{ github.run_id }}-${{ github.run_attempt }}/evidence/
           if-no-files-found: warn
           retention-days: 7
 
