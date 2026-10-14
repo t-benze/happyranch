@@ -1584,3 +1584,56 @@ INCLUDING callback SKIPPED24342; broad/negative/mutation/repetition/protected pr
 UNEXECUTED/FOUNDER-WAIVED139429/430. Full independent review, same-final-head scoped
 QA and Source Boundary Lint + Web Lint(Node24)/local all remain required, followed
 by manager guarded merge. Root owns K2a2–K6 and operational/real-agent acceptance.
+
+
+## Saved coding grammar source — K2a2a
+
+Sole ROOT TASK10693, manager step48 and Founder THR139seq562/559/329
+bound `runtime/workflows/coding_saved_records.py` to pure, unmounted saved-record
+inspection. All eight entry points check complete canonical bytes, strict types,
+bounds and contained equalities. Original command bytes/IDs/CAS/selectors remain
+intact; contextual coding repository roles preserve K1 identity/owner invariants
+without widening document/K1 readers. Parsing creates no adoption or authority.
+
+Accepted TASK11459 B2/D1 appendix SHA256
+`5a1baa4967ffefb07967d1aa5e5771b6048801bfcd71b37d690ab74aa3722c9b`
+closes ready/pointer/profiles/full mirror, exact Founder provenance and complete
+five-column native admission plus capture on issue AND withdrawal. Native v1/v2
+snapshots retain their complete original projection and ordering; reconstruction
+includes all consumers, generations and digests. Genuine empty profiles differ
+from missing evidence; other-namespace/removed/unbound/unused mirror rows remain
+validated. Historical pointer/journal/fence are retained, never read from today.
+
+Grant selection is position-specific: setup/issuance terminates in full original
+issue/withdraw Q; mapping uses closed M with 1–8 ordered distinct complete U
+setups; capability selects its permitted U/P parent. Complete preimages/hash,
+ID/parent/time/source ownership, source versus mint admission, level/action,
+queued-null versus actual bound SID and component/argv radius attenuation are
+checked without format fallback or truncation. Each ancestry ends at U→issue Q,
+with at most64 capability nodes/16MiB decoded ancestry and original1MiB limits.
+Mapping cannot union one repository's setup onto another. U subtree digest is
+not the containing native issuance-wrapper digest. Fixed repository/base/head
+and provider subject are separate from navigation. Saved ready/Founder strings,
+a hash or a parsed grant never prove authentic native rows or current access.
+
+Full relational/native↔J/event/history readers remain required BEFORE every
+producer: identical genuine admissions and historical cache_installed journals,
+setup issuance-subtree/native-wrapper/pointer/withdrawal, source result/start
+claim and native task/session/parent chronology, mapped role eligibility and
+independence, mapping generation/adoption authenticity, run/context/binding/
+activation/request/receipt/contributor closure, journal replay/CAS and host/
+cleanup/provider/effect ownership. Current-use owners revalidate every setup/
+ancestor/grant, cancellation/Pause/move and actual executor permissions after
+waits. Valid revoked history permits no new launch/disclosure/effect. No store,
+roster, object, provider, DB or network I/O, resolver or trusted flag is supplied.
+
+K2a1 still refuses ALL populated/reserved coding data including validate_data=False;
+F–I/J schema/reference/cache/recovery/migration owners, create-org I and document
+history are unchanged. K0 stays disabled and K1 current resolution unavailable.
+No mount, native admission insertion, producer, transport/auth/permission change,
+live setup/migration/assignment/deployment/restart or retired trial follows.
+Python units RETIRED; integration INCLUDING callback SKIPPED24342; behavior/
+security/negative/mutation/repetition/protected/executable proof UNEXECUTED/
+FOUNDER-WAIVED139429/430. AST/raw-byte inspection and lint/static checks establish
+no behavioral or test-authoring PASS. Fresh FULL independent review then
+same-final-head scoped SOURCE QA and manager guarded merge remain required.
