@@ -927,14 +927,24 @@ class Database(
         return self._conn.execute(sql, params).fetchall()
 
     @_synchronized
-    def read_memory_collection_evidence(self) -> dict:
-        """Bounded SELECT-only snapshot; callers decode after releasing the DB lock."""
+    def read_memory_collection_evidence(self, *, audit_actions: tuple[str, ...] | None = None) -> dict:
+        """Bounded SELECT-only snapshot; acceptance callers always read all history.
+
+        No-epoch reports may select their complete diagnostic action set. This
+        filter never supplies collection authority or changes the default view.
+        """
         from runtime.infrastructure.memory_collection import MAX_CENSUS_READ_ROWS, AcceptanceUnavailable
         tables = {}
         with self.coherent_read_view() as conn:
             for table in ("tasks", "task_results", "jobs", "audit_log"):
-                rows = conn.execute(f"SELECT * FROM {table} ORDER BY id LIMIT ?",
-                                    (MAX_CENSUS_READ_ROWS + 1,)).fetchall()
+                where, params = "", ()
+                if table == "audit_log" and audit_actions is not None:
+                    if not audit_actions:
+                        raise AcceptanceUnavailable("acceptance_read_actions")
+                    where = " WHERE action IN (" + ",".join("?" for _ in audit_actions) + ")"
+                    params = audit_actions
+                rows = conn.execute(f"SELECT * FROM {table}{where} ORDER BY id LIMIT ?",
+                                    (*params, MAX_CENSUS_READ_ROWS + 1)).fetchall()
                 if len(rows) > MAX_CENSUS_READ_ROWS:
                     raise AcceptanceUnavailable("acceptance_read_limit")
                 tables[table] = [dict(row) for row in rows]

@@ -284,6 +284,7 @@ def _paginate(client: OpcClient, org: str, action: str) -> list[dict]:
     """Report-only, complete production-limit audit acquisition or refusal."""
     from runtime.infrastructure.database import _decode_cursor
     from runtime.infrastructure.memory_telemetry_report import ReportAcquisitionUnavailable
+    from runtime.infrastructure.memory_collection import MAX_CENSUS_READ_ROWS
 
     rows, cursor, seen_cursors, seen_ids = [], None, set(), set()
     try:
@@ -298,19 +299,25 @@ def _paginate(client: OpcClient, org: str, action: str) -> list[dict]:
             if not isinstance(page, dict) or not isinstance(page.get("entries"), list) or "next_cursor" not in page:
                 raise ReportAcquisitionUnavailable()
             entries, next_cursor = page["entries"], page["next_cursor"]
-            if len(entries) > 5000 or any(not isinstance(row, dict) or type(row.get("id")) is not int or row["id"] <= 0 for row in entries):
+            if (len(entries) > 5000 or len(rows) + len(entries) > MAX_CENSUS_READ_ROWS
+                    or any(not isinstance(row, dict) or type(row.get("id")) is not int or row["id"] <= 0 for row in entries)):
                 raise ReportAcquisitionUnavailable()
             for row in entries:
                 if row["id"] in seen_ids or row.get("action") != action:
                     raise ReportAcquisitionUnavailable()
                 seen_ids.add(row["id"])
+            anchors = [(row["timestamp"], row["id"]) for row in entries]
+            if [row["id"] for row in entries] != sorted(row["id"] for row in entries):
+                raise ReportAcquisitionUnavailable()
+            if cursor is not None and anchors and max(anchors) >= _decode_cursor(cursor):
+                raise ReportAcquisitionUnavailable()
             rows.extend(entries)
             if next_cursor is None:
                 return rows
             if not isinstance(next_cursor, str) or not next_cursor or next_cursor in seen_cursors or not entries:
                 raise ReportAcquisitionUnavailable()
             anchor = _decode_cursor(next_cursor)
-            if not any((row.get("timestamp"), row["id"]) == anchor for row in entries):
+            if anchor != min(anchors):
                 raise ReportAcquisitionUnavailable()
             if cursor is not None and anchor >= _decode_cursor(cursor):
                 raise ReportAcquisitionUnavailable()
@@ -367,8 +374,8 @@ def _report_projection(streams: dict, cutoff) -> str:
 def cmd_memory_report(args: argparse.Namespace) -> None:
     """Observe complete bounded task/lifecycle evidence at one aware UTC cutoff."""
     from datetime import datetime, timezone
-    from runtime.infrastructure.memory_telemetry_report import ReportAcquisitionUnavailable, reduce_collection_report
-    from runtime.infrastructure.memory_collection import acquire_http_collection_report
+    from runtime.infrastructure.memory_telemetry_report import ACTIONS, ReportAcquisitionUnavailable, reduce_collection_report
+    from runtime.infrastructure.memory_collection import CONTROL_ACTIONS, MAX_CENSUS_READ_ROWS, _collection_pages, acquire_http_collection_report
 
     cutoff = datetime.now(timezone.utc)
     try:
@@ -380,11 +387,22 @@ def cmd_memory_report(args: argparse.Namespace) -> None:
                 raise ReportAcquisitionUnavailable()
             body = response.json()
             org = resolve_org_slug(args_org=None, available=[o["slug"] for o in body["orgs"]])
-        roles = _fetch_agent_roles(client, org)
-        tables, view, outputs, _ = acquire_http_collection_report(client, org, current_time=cutoff)
-        if roles != _fetch_agent_roles(client, org):
+        sweeps, tasks, roles = [], [], []
+        for _ in range(2):
+            sweeps.append({action: _paginate(client, org, action) for action in (*ACTIONS, *sorted(CONTROL_ACTIONS))})
+            if sum(len(rows) for rows in sweeps[-1].values()) > MAX_CENSUS_READ_ROWS:
+                raise ReportAcquisitionUnavailable()
+            tasks.append(_collection_pages(client, org, tasks=True))
+            roles.append(_fetch_agent_roles(client, org))
+        if (_report_projection(sweeps[0], cutoff) != _report_projection(sweeps[1], cutoff)
+                or tasks[0] != tasks[1] or roles[0] != roles[1]):
             raise ReportAcquisitionUnavailable()
-        report = reduce_collection_report(tables, view, outputs, roles, cutoff)
+        tables = {"tasks": tasks[1], "task_results": [], "jobs": [],
+                  "audit_log": sorted((row for rows in sweeps[1].values() for row in rows), key=lambda row: row["id"])}
+        view, outputs = {}, {}
+        if any(sweeps[1][action] for action in CONTROL_ACTIONS):
+            tables, view, outputs, _ = acquire_http_collection_report(client, org, current_time=cutoff)
+        report = reduce_collection_report(tables, view, outputs, roles[1], cutoff)
         rendered = json.dumps(report, indent=2, sort_keys=True, allow_nan=False) if args.json else None
     except Exception as exc:
         # Never leak a partial report or provider/decoder exception text.

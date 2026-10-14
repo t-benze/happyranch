@@ -228,11 +228,15 @@ epoch NOT STARTED, 48h handoff NOT DUE; frozen eligibility thresholds unchanged.
 ## Observation-only reporting core (TASK-9673 recovery / TASK-9559)
 
 The backend and canonical CLI share the pure `memory_telemetry_report` reducer.
-Both report entry points now acquire complete bounded tasks/results/jobs/audit
+Both report entry points now acquire complete bounded task and relevant audit
 snapshots, including session start/end, actual job-resume audits and runtime
 identity/launch/terminal. Backend uses the existing coherent SELECT-only evidence
-snapshot; CLI exhausts `/tasks` and `/audit` keyset pages and original task-result
-and referenced probe-job evidence twice with stable serving bookends. Task/result
+snapshot with an optional no-epoch audit-action filter; CLI exhausts all relevant
+`/audit` action pages and `/tasks` pages in two stable sweeps. The100000-row
+bound applies to required evidence, without unrelated audit history causing a
+new no-epoch refusal. Accepted-epoch acquisition keeps the default unfiltered
+tasks/results/jobs/audit snapshots, original task results, referenced probe jobs
+and stable serving bookends. No diagnostic filter supplies collection authority. Task/result
 ownership, duplicate rows, cursor/page ordering, size bounds and changed snapshots
 refuse acquisition. Roles are bracketed separately and remain descriptive when
 unavailable. No-epoch diagnostics need no valid serving health but cannot claim

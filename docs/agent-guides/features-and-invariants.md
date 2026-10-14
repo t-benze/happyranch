@@ -1108,8 +1108,10 @@ Readers never write, reseal, repair, invalidate or start epochs.
 
 Backend and canonical CLI JSON/text share the report core. G1 acquisition
 exhausts original tasks/results/jobs/audit evidence with stable bookends and
-complete owned outputs; observation-only diagnostics now acquire the same
-bounded task/lifecycle evidence and roles before empty/short returns. HTTP/decoder/timeout, cursor or
+complete owned outputs. No-epoch diagnostics exhaust all relevant memory and
+lifecycle action pages plus a coherent complete task snapshot and roles before
+empty/short returns. Unrelated audit history does not consume their existing
+100000-row bound; authority readers retain the default unfiltered snapshot. HTTP/decoder/timeout, cursor or
 SELECT failures refuse as `acquisition_unavailable`, without partial CLI stdout.
 Natural population excludes designated probes/retries, recovery and all
 pre-start invocations from qualifying metrics. Credited late events on old
