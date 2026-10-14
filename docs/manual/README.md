@@ -4,6 +4,25 @@ Standalone Nextra 3 (Pages Router) docs site on Next.js 15 and React 18.
 Content lives in `pages/`; screenshots that do not exist yet are
 `![placeholder: ...](TODO)` markers rendered as "Screenshot coming" cards.
 
+## Search
+
+The search box is `components/ManualSearch.jsx`, set as the theme's
+`search.component`. It is adapted from nextra-theme-docs 3.3.1's built-in
+FlexSearch box (MIT, notice kept in the file) and keeps its index, matching,
+markup and keyboard behavior. It differs in three ways:
+
+- A query typed while the search index is still loading gets its results as
+  soon as the index is ready, with no further typing. A query cleared while
+  loading shows nothing.
+- If the index fails to load, the box shows "Failed to load search index." and
+  the next focus (or typing again) retries the load.
+- No search runs while the index is absent.
+
+It imports `flexsearch` and `@headlessui/react` directly, so both are declared
+in `package.json` at exactly the versions nextra-theme-docs 3.3.1 already
+resolves (0.7.43 and 2.2.10). Keep them in step with the theme when upgrading
+Nextra.
+
 ## Build
 
 Requires Node 24 and the committed lockfile.
