@@ -1,0 +1,76 @@
+name: Attachment focused QA
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  attachment-focused:
+    name: Ordinary attachment F1-F8 (Python 3.14)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Create owned evidence outside checkout
+        run: |
+          set -euo pipefail
+          root="$(mktemp -d "$RUNNER_TEMP/attachment-focused.XXXXXX")"
+          chmod 700 "$root"
+          mkdir -m 700 "$root/evidence"
+          echo "QA_ROOT=$root" >> "$GITHUB_ENV"
+          echo "QA_EVIDENCE=$root/evidence" >> "$GITHUB_ENV"
+          echo "UV_PROJECT_ENVIRONMENT=$root/venv" >> "$GITHUB_ENV"
+          echo "UV_CACHE_DIR=$root/uv-cache" >> "$GITHUB_ENV"
+          printf '%s\n' "$GITHUB_SHA" > "$root/evidence/event-sha.txt"
+      - name: Checkout immutable event source
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Install uv and Python 3.14
+        uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
+        with:
+          enable-cache: false
+          python-version: '3.14'
+      - name: Frozen setup and source identity
+        run: |
+          set -euo pipefail
+          trap 'status=$?; printf "%s\n" "$status" > "$QA_EVIDENCE/setup-exit-code.txt"' EXIT
+          exec > >(tee "$QA_EVIDENCE/setup.stdout.log") 2> >(tee "$QA_EVIDENCE/setup.stderr.log" >&2)
+          git rev-parse HEAD | tee "$QA_EVIDENCE/source-sha.txt"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test -z "$(git status --porcelain)"
+          uv sync --frozen --python 3.14
+          git diff --exit-code -- uv.lock
+          test -z "$(git status --porcelain)"
+          "$UV_PROJECT_ENVIRONMENT/bin/python" -c 'import json,sys; print(json.dumps({"executable":sys.executable,"prefix":sys.prefix,"version":sys.version}))' \
+            | tee "$QA_EVIDENCE/python.json"
+          test "$("$UV_PROJECT_ENVIRONMENT/bin/python" -c 'import sys; print(sys.version_info[:2] == (3, 14))')" = True
+      - name: Run fixed ordinary integration file through unchanged parent
+        run: |
+          set -euo pipefail
+          command=(uv run --frozen --no-sync python tests/helpers/integration_parent.py -- pytest -m integration tests/integration/test_attachment_feedback_shipping.py -q --tb=short "--junitxml=$QA_EVIDENCE/attachment-focused.xml")
+          printf '%q ' "${command[@]}" > "$QA_EVIDENCE/command.txt"
+          printf '\n' >> "$QA_EVIDENCE/command.txt"
+          set +e
+          timeout --signal=TERM --kill-after=15s 240s "${command[@]}" \
+            > "$QA_EVIDENCE/stdout.log" 2> "$QA_EVIDENCE/stderr.log"
+          status=$?
+          set -e
+          printf '%s\n' "$status" > "$QA_EVIDENCE/exit-code.txt"
+          cat "$QA_EVIDENCE/stdout.log"
+          cat "$QA_EVIDENCE/stderr.log" >&2
+          if [ "$status" -ne 0 ]; then exit "$status"; fi
+          test -s "$QA_EVIDENCE/attachment-focused.xml"
+          # Missing/invalid/empty JUnit is a failure, even when the command returned 0.
+          "$UV_PROJECT_ENVIRONMENT/bin/python" -c 'import sys,xml.etree.ElementTree as E; r=E.parse(sys.argv[1]).getroot(); assert r.findall(".//testcase"), "no per-case JUnit"' "$QA_EVIDENCE/attachment-focused.xml"
+          test -z "$(git status --porcelain)"
+      - name: Upload evidence on success or failure
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: attachment-focused-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.QA_EVIDENCE }}
+          if-no-files-found: error
+          retention-days: 7
