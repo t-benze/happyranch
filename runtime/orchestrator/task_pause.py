@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
+import sys
 import uuid
 from copy import deepcopy
 from contextlib import contextmanager
@@ -133,19 +135,22 @@ class TaskInvocation:
     last_spec: Any = None
     prompt_reader: Callable[[], str] | None = None
     workflow_dispatcher: Any = None
+    move_reservation: Any = None
 
     @property
     def store(self) -> TaskPauseStore:
         return self.orch._db._task_pause_store
 
     def prepare(self) -> None:
-        with self.store.writer(self.task.id) as (root, row):
+        with self.store.writer(self.task.id, admission=True) as (root, row):
             self.store.held_uncommitted(self.task.id)
+            self.orch._team_moves.check_task_uncommitted(self.task)
             row = row or self.store.ensure_uncommitted(root["id"])
             _observe_settled_producers(self.store, row)
             entries = row["journal"]["entries"]
             if any(e["task_id"] == self.task.id and e["owner"] != "job" and not e["context"].get("producer_settled") for e in entries):
                 raise DeferredRootPause("invocation already owned")
+            self.move_reservation = self.orch._team_moves.reserve_task_uncommitted(self)
             entries.append({"id": self.identity, "org": self.store.org_slug, "root_task_id": root["id"],
                             "task_id": self.task.id, "agent": self.agent, "session_id": self.session_id,
                             "owner": self.owner, "owner_identity": {key: self.metadata[key] for key in
@@ -262,6 +267,8 @@ class TaskInvocation:
         def record_commit() -> None:
             if won:
                 self.admitted = self.attempt_committed = self.unsettled = True
+                self.move_reservation.possible_launch = True
+                self.move_reservation.quiescent = False
                 if self.owner == "recovery":
                     # Publish only the original live deadline of this actual
                     # claim after COMMIT. Rollback publishes no budget, and
@@ -272,7 +279,7 @@ class TaskInvocation:
         cancelled_binding = None
         with lease:
             with self.store.writer(self.task.id,
-                    commit_guard=ctx._lock if ctx is not None else None, committed=record_commit) as (_, row):
+                    commit_guard=ctx._lock if ctx is not None else None, committed=record_commit, admission=True) as (_, row):
                 if row is None:
                     raise PauseControlError("pause_control_unavailable")
                 try:
@@ -281,6 +288,10 @@ class TaskInvocation:
                     if exc.detail["code"] == "root_paused":
                         raise DeferredRootPause("root_paused") from exc
                     raise
+                if self.move_reservation is None:
+                    from runtime.orchestrator.team_move import DeferredTeamMove
+                    raise DeferredTeamMove("team_move_preparation_missing")
+                self.orch._team_moves.revalidate_uncommitted(self.move_reservation)
                 entry = self._entry(row)
                 if ctx is not None and ctx._terminal_reason is not None:
                     return False
@@ -346,21 +357,24 @@ class TaskInvocation:
         This records no result/consumption and spends no recovery opportunity.
         Only the original server-observed return reaches this producer.
         """
-        with self.store.writer(self.task.id) as (_, row):
+        from runtime.orchestrator.team_move import DeferredTeamMove
+        with self.store.writer(self.task.id, admission=True) as (_, row):
             entry = self._entry(row)
             proof = entry["context"].get("recovery_return")
             if self.admitted and self.owner == "recovery":
                 # Duplicate delivery must not convert a spent/live recovery
                 # back into an unclaimed preparation or erase its attempt.
                 raise PauseControlError("pause_control_unavailable")
+            unknown_owner = None
             if proof is None:
-                if self.unsettled or entry["phase"] == "unknown" or entry["context"].get("execution_unknown"):
+                if (self.unsettled or entry["phase"] == "unknown" or entry["context"].get("execution_unknown")
+                        or (self.move_reservation is not None and self.move_reservation.cleanup_failed)):
                     # This actual return ends the original producer, not its
                     # uncertain execution tree. Keep its original SID, owner,
                     # generation and context in a separate bounded entry. A
                     # recovery receipt can close only the recovery attempt.
                     original = deepcopy(entry)
-                    original["id"] = uuid.uuid4().hex
+                    original["id"] = unknown_owner = uuid.uuid4().hex
                     original["phase"] = "unknown"
                     original["started_at"] = original["captured_generation"] = None
                     original["context"].update(execution_unknown=True, producer_settled=True)
@@ -371,6 +385,7 @@ class TaskInvocation:
                              duration_seconds=result.duration_seconds, recovery_session_id=self.orch._build_session_id(),
                              deadline_at=None)
                 entry["context"]["recovery_return"] = proof
+            self.orch._team_moves.recovery_uncommitted(self, proof["recovery_session_id"], unknown_owner)
             current = self.orch._db.get_task(self.task.id)
             entry["phase"], entry["owner"] = "recovery_deferred", "recovery"
             entry["retry"] = {}
@@ -399,7 +414,7 @@ class TaskInvocation:
                 resume_session_id=proof["provider_session_id"], origin_runtime_session_id=proof["origin_session_id"],
                 timeout_seconds_override=120, recovery=True)
             return self.admitted, recovery_result, recovery_report
-        except DeferredRootPause:
+        except (DeferredRootPause, DeferredTeamMove, PauseControlError):
             raise
         except Exception as exc:
             result.success = False
@@ -412,11 +427,33 @@ class TaskInvocation:
         """Retain the original retry budget; every actual retry arbitrates again."""
         if boundary == "host" and ordinal and self.unsettled:
             raise PauseControlError("pause_control_unavailable")
-        with self.store.writer(self.task.id) as (_, row):
+        unknown_owner = None
+        def committed() -> None:
+            if unknown_owner is not None:
+                self.orch._team_moves.retry_uncommitted(self, unknown_owner)
+        with self.store.writer(self.task.id, admission=True, committed=committed) as (_, row):
             entry = self._entry(row)
             prior = entry["retry"]
             if prior and prior["boundary"] != boundary:
                 raise PauseControlError("pause_control_unavailable")
+            reservation = self.move_reservation
+            if ordinal and reservation is not None and reservation.possible_launch and not reservation.quiescent:
+                if (self.unsettled or reservation.cleanup_failed or not entry["context"].get("execution_unknown")
+                        or self.orch._team_moves._reservations.get(self.identity) is not reservation):
+                    raise PauseControlError("pause_control_unavailable")
+                # Only the actual returned direct/passthrough attempt reaches
+                # this handoff. Its original SID/retry/fingerprint stay durable;
+                # a later attempt's receipt cannot erase its unknown tree.
+                original = deepcopy(entry)
+                original["id"] = unknown_owner = uuid.uuid4().hex
+                original["phase"] = "unknown"
+                original["started_at"] = original["captured_generation"] = None
+                # The copied admitted fields retain attribution. The new id
+                # also names the retained reservation after journal COMMIT;
+                # no extra context key is part of the strict Pause format.
+                original["context"].update(execution_unknown=True, producer_settled=True)
+                row["journal"]["entries"].append(original)
+                entry["context"].pop("execution_unknown", None)
             entry["retry"] = {"ordinal": ordinal, "budget": budget, "boundary": boundary,
                               "enqueued_at": prior.get("enqueued_at", enqueued_at or now()),
                               "schedule": prior.get("schedule", list(schedule or ())),
@@ -429,11 +466,14 @@ class TaskInvocation:
         return dict(entry["retry"])
 
     def host_terminal(self, outcome: Any) -> None:
+        if self.move_reservation is not None and self.attempt_committed:
+            self.move_reservation.terminal(outcome)
         if not self.attempt_committed:
             return
         receipt = None if outcome is None else outcome.receipt
         if (receipt is not None and receipt.backend != "passthrough" and receipt.quiescent is True
-                and receipt.cleanup_status.value != "incomplete" and not receipt.survivors):
+                and receipt.cleanup_status.value != "incomplete" and not receipt.survivors
+                and outcome.cleanup_error is None):
             self.unsettled = False
             self.phase("result_processing", started_at=None, captured_generation=None)
         else:
@@ -457,9 +497,17 @@ class TaskInvocation:
         with self.store.db._lock:
             row = self.store.row_uncommitted(self.store.root_uncommitted(self.task.id)["id"])
             unknown = self._entry(row)["context"].get("execution_unknown", False)
+            reservation = self.move_reservation
+            move_unknown = reservation is not None and (reservation.cleanup_failed
+                or (reservation.possible_launch and not reservation.quiescent))
+            unknown |= move_unknown
         if self.unsettled or unknown:
             with self.store.writer(self.task.id) as (_, row):
                 entry = self._entry(row)
+                if move_unknown:
+                    # Preserve failed callback/abandon cleanup in the existing
+                    # durable unknown-tree journal; restart cannot erase it.
+                    entry["context"]["execution_unknown"] = True
                 entry["phase"] = "unknown"
                 entry["started_at"] = entry["captured_generation"] = None
                 task = self.orch._db.get_task(self.task.id)
@@ -503,7 +551,7 @@ def _authenticate_deferred_v2(store: TaskPauseStore, entry: dict) -> None:
 def deferred_invocation(orch: Any, task: TaskRecord, metadata: dict | None = None) -> TaskInvocation | None:
     """Adopt only an exact durable deferred owner, once per live worker."""
     store = orch._db._task_pause_store
-    with store.writer(task.id) as (_, row):
+    with store.writer(task.id, admission=True) as (_, row):
         if row is not None:
             _observe_settled_producers(store, row)
             store.save_journal_uncommitted(row)
@@ -551,6 +599,7 @@ def deferred_invocation(orch: Any, task: TaskRecord, metadata: dict | None = Non
         metadata = dict(entry["owner_identity"])
         invocation = TaskInvocation(orch, original, entry["agent"], entry["session_id"],
                                     owner=entry["owner"], metadata=metadata, identity=entry["id"], admitted=admitted)
+        invocation.move_reservation = orch._team_moves.reserve_task_uncommitted(invocation)
         invocation.deferred_recovery = entry["phase"] == "recovery_deferred"
         invocation.consumer_only = consumer_only
         invocation.consumer_session_id = consumer_sid
@@ -579,9 +628,72 @@ def origin_guard(org: Any, task_id: str | None):
         yield
 
 
-def release_live(invocation: TaskInvocation) -> None:
+def release_live(invocation: TaskInvocation, *, failed: bool = False) -> None:
     with invocation.store.db._lock:
         invocation.store._live.pop(invocation.identity, None)
+        from runtime.orchestrator.team_move import _task_tail
+        tail = _task_tail.get()
+        if tail is not None:
+            tail.append((invocation, failed))
+    if tail is None:
+        settle_live(invocation, failed=failed)
+
+
+def settle_live(invocation: TaskInvocation, *, failed: bool = False, cleanup: Any = None) -> None:
+    """Close durable attribution only after reconcile and actual outer cleanup."""
+    original_error = sys.exception()
+    reservation = invocation.move_reservation
+    if failed and reservation is not None:
+        reservation.failed_cleanup()
+    try:
+        if failed:
+            with invocation.store.writer(invocation.task.id) as (_, row):
+                entry = invocation._entry(row)
+                entry["context"]["execution_unknown"] = True
+                facts = dict(
+                    reason="producer_tail_failed" if cleanup is None or cleanup.kind != "unknown" else cleanup.reason,
+                    processes=[] if cleanup is None else list(cleanup.processes))
+                # Append diagnostics within the existing 64KiB UTF8 suffix
+                # allowance. Never overwrite earlier cleanup facts or use
+                # these lines as process/quiescence proof. Unknown entries
+                # cannot be adopted as deferred retry/recovery preparations.
+                lines = entry["context"].setdefault("cleanup", {"suffix_lines": []})["suffix_lines"]
+                available = 65536 - sum(len(line.encode()) for line in lines)
+                diagnostic = "\nProducer tail cleanup unknown: " + json.dumps(facts, sort_keys=True) + "\n"
+                truncated = len(diagnostic.encode()) > available
+                if truncated:
+                    marker = " [truncated]\n"
+                    diagnostic = (diagnostic.encode()[:max(0, available - len(marker))].decode("utf8", errors="ignore")
+                                  + marker) if available >= len(marker) else ""
+                if diagnostic:
+                    lines.append(diagnostic)
+                invocation.store.save_journal_uncommitted(row)
+            if truncated:
+                logging.getLogger(__name__).warning(
+                    "task %s session %s owner %s cleanup suffix capacity; new diagnostics truncated: %s",
+                    invocation.task.id, invocation.session_id, invocation.identity, facts)
+        with invocation.store.db._lock:
+            row = invocation.store.row_uncommitted(invocation.store.root_uncommitted(invocation.task.id)["id"])
+            phase = invocation._entry(row)["phase"]
+        # Genuine deferred retries/recovery keep their exact owner for the
+        # existing redelivery owner. Failure must first become durable unknown.
+        if failed or phase not in {"retry_deferred", "recovery_deferred"}:
+            invocation.close()
+    except BaseException as exc:
+        failed = True
+        if reservation is not None:
+            reservation.failed_cleanup()
+        if original_error is None:
+            raise
+        # Finalization must retain the original launch/reconcile/cleanup
+        # exception. A refused save is a failed retained settlement, never a
+        # successful release; expose it without replacing the original cause.
+        original_error.add_note(f"Pause tail settlement failed for {invocation.identity}: {exc!r}")
+        logging.getLogger(__name__).exception(
+            "task %s session %s owner %s Pause tail settlement failed; original error preserved",
+            invocation.task.id, invocation.session_id, invocation.identity)
+    finally:
+        invocation.orch._team_moves.release_task(invocation, failed=failed)
 
 
 def pause_deferred_owner(db: Any, task_id: str) -> bool:

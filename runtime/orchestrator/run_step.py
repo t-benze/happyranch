@@ -759,15 +759,24 @@ def _root_worktree_reconcile(orch, transition, event_id, budget, *, teardown_inc
     return receipt
 
 
+@dataclass(frozen=True)
+class _RootWorktreeBatchDisposition:
+    """Actual cleanup-owner outcome; preservation is not teardown uncertainty."""
+    kind: str
+    reason: str
+    receipts: tuple[dict, ...] = ()
+    processes: tuple[dict, ...] = ()
+
+
 def _root_worktree_batch_impl(orch, transitions, *, teardown_incomplete=False):
     """One finite, synchronous owner batch; no continuation or replay retry."""
     delivery = _ROOT_WORKTREE_OWNER_EVENTS.get()
     if delivery is not None and delivery['orch'] is orch and delivery['active']:
         delivery['events'].extend(transitions)
         delivery['teardown_incomplete'] |= teardown_incomplete
-        return []
+        return _RootWorktreeBatchDisposition('deferred', 'outer_owner_retained')
     if orch is None:
-        return []
+        return _RootWorktreeBatchDisposition('unknown', 'cleanup_owner_unavailable')
     capture_missing = getattr(transitions, 'unexamined', [])
     if capture_missing:
         logger.warning('root worktree capture scope unexamined=%s raw_audit_window=(%s,%s] cursor=%s; zero actions; complete=false',
@@ -785,9 +794,10 @@ def _root_worktree_batch_impl(orch, transitions, *, teardown_incomplete=False):
         logger.warning('root worktree capture overflow=%s known_roots=%s raw_audit_window=(%s,%s] cursor=%s; zero actions; complete=false',
             transitions.overflow_count, [event.after['id'] for event in transitions],
             transitions.audit_low, transitions.audit_high, transitions.audit_low)
-        return []
+        return _RootWorktreeBatchDisposition('unknown', 'transition_capture_overflow')
     if not transitions:
-        return []
+        return _RootWorktreeBatchDisposition('unknown' if capture_missing or teardown_incomplete else 'safe',
+            'transition_capture_or_teardown_unavailable' if capture_missing or teardown_incomplete else 'no_action')
     capture_seconds = getattr(transitions, 'capture_seconds', 0.0)
     budget = _RootWorktreeBudget(started=time.monotonic()-capture_seconds, db_seconds=capture_seconds)
     # Missing protection/capture closure forbids the whole owner batch.
@@ -801,7 +811,7 @@ def _root_worktree_batch_impl(orch, transitions, *, teardown_incomplete=False):
                      'roots=%s raw_audit_window=(%s,%s] cursor=%s; complete=false; no retry',
                      len(transitions), getattr(transitions, 'audit_low', None),
                      getattr(transitions, 'audit_high', None), getattr(transitions, 'audit_low', None))
-        return []
+        return _RootWorktreeBatchDisposition('unknown', 'transition_manifest_capacity')
     for event in transitions:
         if event.attempted:
             continue
@@ -842,7 +852,15 @@ def _root_worktree_batch_impl(orch, transitions, *, teardown_incomplete=False):
             break
     logger.info('root worktree batch receipts=%s unexamined_root_ids=%s elapsed=%s report=%s reap=%s',
                 receipts, unexamined, time.monotonic()-budget.started, budget.report_seconds, budget.reap_seconds)
-    return receipts
+    unknown = (teardown_incomplete or budget.halted
+        or any(not p['reaped'] or not p.get('group_exited') for p in budget.processes)
+        or any(r.get('counts', {}).get('action_anomaly') for r in receipts))
+    # A bounded refusal/preserved tree admits no further cleanup; it can be
+    # safe even with complete=false. Swallowed report/action/reap failures and
+    # halted budgets above are distinct, attributable unknown teardown.
+    return _RootWorktreeBatchDisposition('unknown' if unknown else 'safe',
+        'cleanup_or_report_unsettled' if unknown else 'settled_or_preserved',
+        tuple(receipts), tuple(dict(p) for p in budget.processes))
 
 
 def _root_worktree_batch(orch, transitions, *, teardown_incomplete=False):
@@ -850,7 +868,7 @@ def _root_worktree_batch(orch, transitions, *, teardown_incomplete=False):
         return _root_worktree_batch_impl(orch, transitions, teardown_incomplete=teardown_incomplete)
     except Exception:
         logger.exception('root worktree owner tail unavailable; terminal state/report preserved; no retry')
-        return []
+        return _RootWorktreeBatchDisposition('unknown', 'cleanup_owner_tail_unavailable')
 
 
 async def _await_root_worktree_batch(orch, transitions, *, teardown_incomplete=False):
@@ -1195,7 +1213,11 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
     # This worker scope also carries its terminal event past tracker teardown,
     # workflow invocation close/release and the dispatcher's live-claim tail.
     transitions = _RootWorktreeTransitions()
+    from runtime.orchestrator.team_move import _task_tail
+    tail = []
+    tail_token = _task_tail.set(tail)
     tail_failed = False
+    disposition = None
     try:
         with _defer_root_worktree_batches(orch, transitions) as delivery:
             _run_step_owned(orch, task_id, metadata)
@@ -1203,8 +1225,27 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
         tail_failed = True
         raise
     finally:
-        _root_worktree_batch(orch, transitions,
-            teardown_incomplete=tail_failed or delivery['teardown_incomplete'])
+        tail_failed |= delivery['teardown_incomplete']
+        try:
+            disposition = _root_worktree_batch(orch, transitions, teardown_incomplete=tail_failed)
+            tail_failed |= disposition.kind != 'safe'
+            if tail_failed:
+                logger.warning('task %s outer cleanup retained: %s processes=%s',
+                    task_id, disposition.reason, disposition.processes)
+        except BaseException:
+            tail_failed = True
+            raise
+        finally:
+            _task_tail.reset(tail_token)
+            from runtime.orchestrator.task_pause import settle_live
+            settlement_errors = []
+            for invocation, failed in tail:
+                try:
+                    settle_live(invocation, failed=failed or tail_failed, cleanup=disposition)
+                except BaseException as exc:
+                    settlement_errors.append(exc)
+            if settlement_errors:
+                raise BaseExceptionGroup("task Pause tail settlement failed", settlement_errors)
 
 
 def _run_step_owned(orch: "Orchestrator", task_id: str, metadata: dict | None = None) -> None:
@@ -1212,8 +1253,20 @@ def _run_step_owned(orch: "Orchestrator", task_id: str, metadata: dict | None = 
         TaskInvocation, DeferredRootPause, _invocation, eligible, deferred_invocation,
     )
     from runtime.infrastructure.task_pause_controls import PauseControlError
+    from runtime.orchestrator.team_move import DeferredTeamMove
     store = getattr(orch._db, "_task_pause_store", None)
     if store is None:
+        from runtime.infrastructure.team_move_store import TeamMoveError, validate_team_move_schema
+        try:
+            with orch._db._lock:
+                installed = validate_team_move_schema(orch._db._conn, org_slug=orch._slug)
+        except TeamMoveError as exc:
+            logger.warning('task %s move admission unavailable: %s', task_id, exc.code)
+            orch._team_moves.defer_task(task_id, metadata)
+            return
+        if installed:
+            orch._team_moves.defer_task(task_id, metadata)
+            return
         return _run_step_body(orch, task_id, metadata)
     task = orch._db.get_task(task_id)
     if task is None:
@@ -1232,6 +1285,10 @@ def _run_step_owned(orch: "Orchestrator", task_id: str, metadata: dict | None = 
                 owner="v2" if isinstance(metadata, dict) and "authority_v2_generation" in metadata else "ordinary",
                 metadata=metadata or {})
             invocation.prepare()
+    except DeferredTeamMove as exc:
+        logger.warning('task %s deferred by move admission: %s operation=%s', task_id, exc.code, exc.operation_id)
+        orch._team_moves.defer_task(task_id, metadata)
+        return
     except DeferredRootPause:
         return
     except PauseControlError as exc:
@@ -1268,7 +1325,10 @@ def _run_step_owned(orch: "Orchestrator", task_id: str, metadata: dict | None = 
                                 usage_already_recorded=True)
         else:
             _run_step_body(orch, task_id, invocation.metadata)
-    except DeferredRootPause:
+    except (DeferredRootPause, DeferredTeamMove) as exc:
+        if isinstance(exc, DeferredTeamMove):
+            logger.warning('task %s deferred by move admission: %s operation=%s', task_id, exc.code, exc.operation_id)
+            orch._team_moves.defer_task(task_id, metadata)
         with store.db._lock:
             row = store.row_uncommitted(store.root_uncommitted(task_id)["id"])
             entry = invocation._entry(row)
@@ -1277,22 +1337,16 @@ def _run_step_owned(orch: "Orchestrator", task_id: str, metadata: dict | None = 
             invocation.phase("recovery_deferred")
         elif invocation.admitted:
             invocation.phase("retry_deferred", started_at=None, captured_generation=None)
-        else:
-            invocation.close()
     except BaseException:
         root_delivery['teardown_incomplete'] = True
         if invocation.admitted:
             invocation.phase("unknown")
-        else:
-            invocation.close()
         raise
-    else:
-        invocation.close()
     finally:
         root_delivery['teardown_incomplete'] |= sys.exc_info()[0] is not None
         from runtime.orchestrator.task_pause import release_live
         try:
-            release_live(invocation)
+            release_live(invocation, failed=root_delivery['teardown_incomplete'])
         except BaseException:
             root_delivery['teardown_incomplete'] = True
             raise
@@ -1307,6 +1361,8 @@ def _run_step_owned(orch: "Orchestrator", task_id: str, metadata: dict | None = 
 def _run_step_body(orch: "Orchestrator", task_id: str, metadata: dict | None = None) -> None:
     # metadata: optional resume context (trigger, triggering_job_id); read by the CAS-win audit hook in Task 11.
     db = orch._db
+    from runtime.orchestrator.team_move import DeferredTeamMove
+    from runtime.infrastructure.task_pause_controls import PauseControlError
     task = db.get_task(task_id)
     if task is None:
         return
@@ -1524,7 +1580,9 @@ def _run_step_body(orch: "Orchestrator", task_id: str, metadata: dict | None = N
             result, report = orch._run_agent(
                 task_id, agent, prompt, runtime_session_id=reserved_session_id,
             )
-    except DeferredRootPause:
+    except (DeferredRootPause, DeferredTeamMove, PauseControlError):
+        # Admission errors reach the durable defer/unknown owner. They never
+        # become a business FAILED task, parent wake or thread followup.
         raise
     except Exception as exc:
         note = f"agent invocation failed: {exc}"
@@ -1543,6 +1601,8 @@ def _finish_step_return(orch: "Orchestrator", task: TaskRecord, agent: str, resu
                         *, usage_already_recorded: bool = False) -> None:
     db, task_id = orch._db, task.id
     from runtime.orchestrator.task_pause import current_invocation, DeferredRootPause
+    from runtime.orchestrator.team_move import DeferredTeamMove
+    from runtime.infrastructure.task_pause_controls import PauseControlError
     pause_invocation = current_invocation()
     # Persist token usage for this session, regardless of session outcome.
     # Spec 4.3: skip when None; otherwise write — including the parse-failure
@@ -1658,6 +1718,8 @@ def _finish_step_return(orch: "Orchestrator", task: TaskRecord, agent: str, resu
                                 thread_id=task.dispatched_from_thread_id,
                             )
                         result, report = recovery_result, recovery_report
+                    except (DeferredRootPause, DeferredTeamMove, PauseControlError):
+                        raise
                     except Exception as exc:
                         result.error = f"completion recovery launch failed: {exc}"
                 else:

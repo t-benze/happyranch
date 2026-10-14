@@ -1,6 +1,6 @@
 # Runtime And Configuration
 
-## Approved online team move — inert B (THR296seq135)
+## Approved online team move — C1 task/host source (THR296seq135)
 
 The optional team_move_operations table is explicit org-owned storage, never
 generic Database/runtime-audit bootstrap or startup installation in B. Exact
@@ -12,10 +12,38 @@ Naming captures workflow/naming/pause/move layouts in one coherent read view,
 builds independent references outside the short SQL transaction, then compares
 the entire database again within that transaction. Absence remains supported;
 malformed presence refuses without installation, stripping or history repair.
-The startup and runtime/launcher downgrade requirements are DATA ONLY in B. D
+C1 binds the coordinator at Orchestrator construction and reads durable holds
+in actual allocation/claim transactions without installing schema. Absent layout
+keeps normal operation; malformed/unknown installed state refuses. Preparation
+ownership spans callbacks and cleanup; unknown tree/cleanup state stays busy.
+C1 task redelivery supplies an owner seam only; startup/whole-operation release
+and runtime/launcher downgrade requirements remain DATA ONLY until D. D
 must discover/recover before partial-roster validation/publication/admission and
 refuse incompatible readers. An additive table cannot teach prefeature binaries
 a hold. No deployment/restart/live DB operation follows source acceptance.
+Move admission deferral propagates through the inner launch handler to the existing
+pending-work owner without task failure, parent wake, followup or callback consumption.
+Malformed installed state retains its actionable admission error. Direct 429 and
+supervised passthrough retries preserve each returned uncertain attempt as a separate
+Pause journal/reservation blocker; the next actual attempt keeps the original retry
+budget, session and enqueue age and rechecks durable admission before FIFO/commit.
+Provider return never proves containment. Durable Pause attribution remains through
+workflow reconciliation and the actual outer cleanup batch. Its explicit disposition
+distinguishes safe no-action/preservation from halted, unreaped, action/report failure
+or unknown teardown; uncertainty retains the exact task/session owner and cleanup
+facts, without changing the normal terminal result or expanding cleanup authority.
+Retry attribution uses the existing entry id, task/agent/SID, owner identity,
+fingerprint, generation and retry fields; the retained reservation adopts that
+entry id only after journal COMMIT. The closed Pause journal format is unchanged.
+Failed-tail diagnostics append to existing `cleanup.suffix_lines` within its
+65536-byte UTF8 allowance, preserving earlier lines; excess new diagnostics are
+explicitly truncated and logged. `execution_unknown` retains ownership independently
+of diagnostic capacity. These lines are diagnostics, never quiescence proof or
+permission to replay an unknown entry. A refused save retains failed ownership
+and propagates unless an original exception is already unwinding; then that
+original exception carries the settlement failure note and log. Every collected
+outer-tail owner is visited even if another settlement fails.
+
 See the [approved contract](../superpowers/specs/2026-10-14-online-team-move.md).
 Behavior/recovery remains UNEXECUTED; source/static acceptance is separate.
 

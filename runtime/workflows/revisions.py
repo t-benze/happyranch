@@ -596,6 +596,7 @@ class WorkflowRevisionStore:
                         is_current=1, state='queued', cancellation_requested=0, claim_token=None, claim_owner=None,
                         host_launch_started=0, host_execution_id=None, session_id=None, final_result_id=None,
                         last_error=None, created_at=now, updated_at=now)
+                    self.db._check_team_move_workflow_uncommitted(instance["id"])
                     self.db._insert_task_uncommitted(task)
                     ctxrow = dict(id=ctxid, binding_snapshot_id=first['binding_snapshot_id'], context_bytes=ctxraw,
                         context_digest=digest(ctxraw), source_kind='document-revision', source_id=opid)
@@ -795,6 +796,7 @@ class WorkflowRevisionStore:
     def _review_graph(self, conn: sqlite3.Connection, subject: dict, proof: dict, context: dict, intent: dict, now: str) -> list[str]:
         from runtime.workflows.submissions import review_brief
         contract = context_contract(context)
+        self.db._check_team_move_workflow_uncommitted(subject["instance_id"])
         round_id = _id('workflow-round', subject['instance_id'], 2, subject['submission_id'])
         _insert(conn, 'workflow_rounds', dict(id=round_id, instance_id=subject['instance_id'], submission_id=subject['submission_id'], current_revision=2, state='reviewing'))
         request_ids, task_ids = [], []

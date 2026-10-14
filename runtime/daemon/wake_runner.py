@@ -382,6 +382,7 @@ async def run_wake(
                 AdmissionRequest(
                     org=org_state.slug,
                     invocation_kind="wake",
+                    agent_id=record.agent_name,
                     logical_id=work_hour_id,
                     executor_profile=executor_name,
                     enqueued_at=time.monotonic(),

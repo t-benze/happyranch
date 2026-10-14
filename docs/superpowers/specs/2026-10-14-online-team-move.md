@@ -4,18 +4,55 @@ Founder THR-296 seq135 (2026-10-14T05:17:20Z), “@engineering_manager start the
 
 ## Source status and serial ownership
 
-Slice B implements the private durable store, closed request/state/progress/receipt contract, optional layout validation and independent whole-release schema reference selection. An inert org-owned coordinator projects holds and declares the later lock/startup/completion contract. The installer is explicit and org-only; production startup never calls it. Its only external caller in B constructs disposable release-reference databases. Existing installed optional layouts are validated without installation or row rewriting. Generic Database/runtime-audit remain extension-free.
+Slice B implements the private durable store, closed request/state/progress/receipt contract, optional layout validation and independent whole-release schema reference selection. C1 binds the org-owned coordinator to actual task allocation, preparation and final Pause/host commitment; its projection remains diagnostic. The installer is explicit and org-only; production startup never calls it. Its only external caller in B constructs disposable release-reference databases. Existing installed optional layouts are validated without installation or row rewriting. Generic Database/runtime-audit remain extension-free.
 
-There is no public apply/preview/show/recover route or CLI command, background operation, business admission wiring, operational completion writer or available-feature claim in B. `APPLY_AVAILABLE=False`; `COMPLETE` writes and its unsupported read contract fail closed until D supplies the actual native evidence validator. Source/static acceptance is separate from behavior, activation and live-operation acceptance. A table alone cannot make a prefeature reader recognize a hold.
+There is no public apply/preview/show/recover route or CLI command, background operation, operational completion writer or available-feature claim. C1 task admission exclusion is active in source whenever a valid durable hold exists. `APPLY_AVAILABLE=False`; `COMPLETE` writes and its unsupported read contract fail closed until D supplies the actual native evidence validator. Source/static acceptance is separate from behavior, activation and live-operation acceptance. A table alone cannot make a prefeature reader recognize a hold.
 
-| Serial unit | Required closure; B status |
+| Serial unit | Required closure; source status |
 |---|---|
-| C1 | Task/create/continuation/chain/fanout/revisit/recovery, workflow final-launch, Pause/tracker/host reservation and retries/fallback: NOT INTEGRATED. |
+| C1 | Task allocation/claim and preparation, causal task closure, workflow producers/final-launch, Pause/tracker/host retry ownership: integrated in source; behavioral evidence UNEXECUTED. Installed-layout legacy unowned producers refuse before claim/preparation. |
 | C2 | Thread claim/delivery, bootstrap/followup, breaker/probe/exchange, pending redelivery and captured running-turn drain: NOT INTEGRATED. |
 | C3 | Dream/wake/schedule/job/remote/cleanup and roster/enrollment/profile/skill/name/policy writers: NOT INTEGRATED. |
 | D | Pure native preview, canonical files/cache, two audited resets, context/skills, batch profile publisher, bounded recovery, early startup and supported runtime/launcher downgrade refusal: NOT INTEGRATED. |
 | E | Founder-controlled API/client/CLI and supported runbook: NOT INTEGRATED; depends on D and complete admission closure. |
 | F | Root whole-diff/inventory review, independent scoped QA, guarded merge and supported activation/live handoff: outstanding. |
+
+## C1 task and host contract
+
+One coordinator belongs to the org DB owner, bound by Orchestrator to the server TeamsRegistry. Allocation and claims validate optional installed state in their actual transaction; absence preserves ordinary operation and malformed/unknown presence refuses. No production installer or move writer is added. Closure includes assigned/default manager, preserved task team, parents/descendants/revisits, declared chain/fanout agents and immutable workflow bindings. Allocation cannot cross a held closure, including a cross-team child that could wake the old manager. Existing pending/paused/job-blocked/recovery/workflow work is retained as a blocker; no task, result or attribution is cancelled/relabelled.
+
+TaskInvocation reserves preparation before role/prompt/permission reads. The host request carries the server-selected permanent agent ID and the current actual attempt reservation through 429 copies, retaining earlier uncertain attempt reservations separately; no logical-ID parsing or display-name authority. Held tasks are deferred outside host FIFO/capacity. Final launch revalidates reservation and durable task closure in the Pause transaction while the existing terminal mutex still owns the first-wins launch decision. A prepared prompt is discarded on deferral; later dispatch rebuilds context. Installed-layout task/workflow producers without the trusted preparation/Pause owner refuse rather than adopt an already-built prompt. Supervised passthrough and absent-layout legacy execution retain unknown tree evidence after provider return.
+
+Lock order is existing profile/workflow writer leases (outside synchronous gates), task session binding lease, root Pause gate, short move gate, DB RLock/claim transaction, then host terminal mutex. Standalone task allocation/claim decorators enter move gate before DB. Already-owned nested graph transactions check the durable hold directly under DB without acquiring move gate beneath it: their commit and the operation writer's reservation commit serialize on the same DB owner. No await, filesystem, provider/network execution or publication-lease acquisition belongs in these short sections. Terminal hooks/settlement use DB ownership only and never reacquire move gate beneath tracker/terminal locks.
+
+Preparation ownership spans retries, actual callback consumption, tracker cleanup, workflow reconciliation and the outer worker terminal batch. Verified containment receipt with no survivors/cleanup error permits settlement; missing tracker, task termination, provider return, passthrough, failed abandon or failed callback hook does not prove quiescence. Unknown ownership remains an actionable reservation plus the existing durable Pause/intent evidence; no TTL clears it. Genuine completion recovery gets its actual new SID and ordinary budget while retaining an uncertain original reservation separately. INTEGER result/callback identity, Pause captures and immutable workflow pins are unchanged.
+
+Move admission deferral propagates through the inner launch handler to the existing
+pending-work owner without task failure, parent wake, followup or callback consumption.
+Malformed installed state retains its actionable admission error. Direct 429 and
+supervised passthrough retries preserve each returned uncertain attempt as a separate
+Pause journal/reservation blocker; the next actual attempt keeps the original retry
+budget, session and enqueue age and rechecks durable admission before FIFO/commit.
+Provider return never proves containment. Durable Pause attribution remains through
+workflow reconciliation and the actual outer cleanup batch. Its explicit disposition
+distinguishes safe no-action/preservation from halted, unreaped, action/report failure
+or unknown teardown; uncertainty retains the exact task/session owner and cleanup
+facts, without changing the normal terminal result or expanding cleanup authority.
+Retry attribution uses the existing entry id, task/agent/SID, owner identity,
+fingerprint, generation and retry fields; the retained reservation adopts that
+entry id only after journal COMMIT. The closed Pause journal format is unchanged.
+Failed-tail diagnostics append to existing `cleanup.suffix_lines` within its
+65536-byte UTF8 allowance, preserving earlier lines; excess new diagnostics are
+explicitly truncated and logged. `execution_unknown` retains ownership independently
+of diagnostic capacity. These lines are diagnostics, never quiescence proof or
+permission to replay an unknown entry. A refused save retains failed ownership
+and propagates unless an original exception is already unwinding; then that
+original exception carries the settlement failure note and log. Every collected
+outer-tail owner is visited even if another settlement fails.
+
+The task-specific deferred notification seam retains tagged metadata and can redeliver through the existing generation-aware/deduplicating queue owner only after durable release. It does not consume result/callback tokens, allocate tasks, release the operation or recover startup. D must join persistent task/Pause/workflow, session/host/remote and writer evidence; an empty process-local reservation registry is never clearance. C2 owns all thread claims/delivery/drain/breaker/probe behavior; C3 owns dream/wake/schedule/job/remote/cleanup and writers. Their host constructors carry permanent identity only in C1, which does not close those producer claims. D's whole-operation release, startup/partial-roster recovery and supported old-reader/launcher downgrade guard remain absent. APPLY_AVAILABLE stays literal false, with no apply/COMPLETE writer.
+
+C1 review/QA uses the plan section8 SOURCE/POLICY/STATIC acceptance. Race, hold/deferral/redelivery, callback/quiescence, recovery/startup and compatibility behavior remains UNEXECUTED; integration SKIPPED THR243seq42. No new unit/integration cases or fixtures, retired units, ad hoc E2E, protected experiments, synthetic/live tasks, DB installation/migration, move or activation is authorized by this source slice.
 
 ## Exact resulting roster and preservation
 
@@ -55,7 +92,7 @@ Workflow publication's best-effort return is insufficient. COMPLETE requires exa
 
 ## Producer, writer and lock contract
 
-One daemon and one org owner coordinate the durable hold and a distinct short synchronous producer gate. Producer registration precedes any role/prompt/permission preparation or claim; retain the same reservation through provider retry, executor fallback, callback and actual terminal host cleanup. Reserve/recheck again at final launch. Either a producer wins and is visible as busy, or a move wins and affected work remains unclaimed. Resolve permanent identity through task/session/workflow/schedule/job owners, never logical-ID string heuristics. Unknown ownership or cleanup refuses actionably. No-supervisor/legacy paths require the same contract; they cannot silently bypass it. Held agents stay outside host FIFO; normal unaffected work continues.
+One daemon and one org owner coordinate the durable hold and a distinct short synchronous producer gate. Producer registration precedes any role/prompt/permission preparation or claim; retain attributable preparation ownership through provider retry, executor fallback, callback and actual terminal host cleanup. A returned uncertain attempt keeps a separate reservation and existing Pause journal entry while the next actual retry arbitrates under its own preparation. Reserve/recheck again at final launch. Either a producer wins and is visible as busy, or a move wins and affected work remains unclaimed. Resolve permanent identity through task/session/workflow/schedule/job owners, never logical-ID string heuristics. Unknown ownership or cleanup refuses actionably. No-supervisor/legacy paths require the same contract; they cannot silently bypass it. Held agents stay outside host FIFO; normal unaffected work continues.
 
 Composition order is existing producer ownership/binding lease → applicable root/Pause gate → move gate → DB RLock/claim transaction → tracker leaf mutex where its existing owner requires it. Terminal callbacks must not acquire the move gate under DB/tracker locks. Native profile/publication writer order remains profile → workflow → roster, acquired outside the short gate, with synchronous revalidation after acquisition. No gate/DB transaction across await, filesystem scans/writes, network/provider/bootstrap or acquiring publication leases. Persisted holds outlive mutex/process/TTL leases.
 

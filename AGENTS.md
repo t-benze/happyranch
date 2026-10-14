@@ -736,11 +736,39 @@ There is no added orgs_lock hold, worker drain or lifespan guarantee.
 Founder THR296 seq135 approves the full seq130 online plan under NEW root
 TASK11345: ONE additive org-owned team_move_operations table, affected-agent
 admission/deferral, forward recovery and startup/old-reader contract. A is
-satisfied. First slice B is inert: private store/state and read-only projection,
-optional exact schema validation/reference selection, no startup installation
-or public command/admission/business effect. COMPLETE is unavailable until D
-validates actual canonical/context/reset/ready-authority evidence. C1-C3/D and
-supported launcher downgrade refusal remain NOT INTEGRATED; a table cannot make
+satisfied. B provides the optional durable store/schema/reference contract. C1
+binds task allocation/claim, preparation and final Pause/host exclusion, including
+causal task/workflow ownership and permanent-ID retry metadata. Preparation lives
+through callback consumption and actual cleanup tails; unknown quiescence or
+failed callback cleanup remains reserved. Binding/root Pause -> move gate -> DB
+transaction -> terminal leaf; existing nested graph writers check durable hold
+under DB without acquiring move gate beneath it. Terminal settlement uses DB only.
+Move admission deferral propagates through the inner launch handler to the existing
+pending-work owner without task failure, parent wake, followup or callback consumption.
+Malformed installed state retains its actionable admission error. Direct 429 and
+supervised passthrough retries preserve each returned uncertain attempt as a separate
+Pause journal/reservation blocker; the next actual attempt keeps the original retry
+budget, session and enqueue age and rechecks durable admission before FIFO/commit.
+Provider return never proves containment. Durable Pause attribution remains through
+workflow reconciliation and the actual outer cleanup batch. Its explicit disposition
+distinguishes safe no-action/preservation from halted, unreaped, action/report failure
+or unknown teardown; uncertainty retains the exact task/session owner and cleanup
+facts, without changing the normal terminal result or expanding cleanup authority.
+Retry attribution uses the existing entry id, task/agent/SID, owner identity,
+fingerprint, generation and retry fields; the retained reservation adopts that
+entry id only after journal COMMIT. The closed Pause journal format is unchanged.
+Failed-tail diagnostics append to existing `cleanup.suffix_lines` within its
+65536-byte UTF8 allowance, preserving earlier lines; excess new diagnostics are
+explicitly truncated and logged. `execution_unknown` retains ownership independently
+of diagnostic capacity. These lines are diagnostics, never quiescence proof or
+permission to replay an unknown entry. A refused save retains failed ownership
+and propagates unless an original exception is already unwinding; then that
+original exception carries the settlement failure note and log. Every collected
+outer-tail owner is visited even if another settlement fails.
+
+Installed-layout unowned legacy producers refuse before claim/preparation; absent
+layout preserves normal operation. No schema installation, public apply or COMPLETE
+writer. C2/C3/D and supported launcher downgrade refusal remain NOT INTEGRATED; a table cannot make
 a prefeature reader recognize a hold. Manage-agent cannot transfer teams.
 Normal source acceptance does not authorize activation/live move. Preserve all
 IDs/paths/history/frozen bindings/permissions and Engineering omitted-owner

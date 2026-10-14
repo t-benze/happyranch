@@ -1872,6 +1872,7 @@ class Database(
         )
         try:
             self._conn.execute("BEGIN IMMEDIATE")
+            self._check_team_move_task_uncommitted(task)
             self._insert_thread_uncommitted(thread)
             self._add_thread_participant_uncommitted(
                 thread_id, composer, added_by=composer,

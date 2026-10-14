@@ -1,17 +1,43 @@
 # Features And Invariants
 
-## Approved online team move — inert B (THR296seq135)
+## Approved online team move — C1 task/host source (THR296seq135)
 
-The approved coordinated consultant move has inert private infrastructure only.
+B supplies private durable storage; C1 connects holds to task allocation/claim,
+preparation and final Pause/host commitment. Causal task/workflow closure and
+actual retry/callback/cleanup ownership participate; unknown quiescence stays
+reserved. C2/C3/D producer/recovery/startup/old-reader closure remains absent.
 Same-key/body replay is read-only; changed body/active conflict/stale CAS refuse.
 Precommit refusal may release empty progress; postcommit repair retains its hold
-without TTL. No public commands or COMPLETE writer exist until C1-D closure and
+without TTL. No public commands or COMPLETE writer exist until full C2-D closure and
 actual canonical/context/reset/ready-authority validation. Manage-agent cannot
 transfer teams. Preserve histories/IDs/paths/permissions and Engineering routing.
 History validation shares the writer's finite forward/repair edges, requires the
 initial empty WAITING reservation and phase-local decision/receipt evidence,
 and forbids terminal resurrection. Repair returns only to its interrupted phase;
 retained recovery ownership remains required. Unchanged replay adds no audit.
+Move admission deferral propagates through the inner launch handler to the existing
+pending-work owner without task failure, parent wake, followup or callback consumption.
+Malformed installed state retains its actionable admission error. Direct 429 and
+supervised passthrough retries preserve each returned uncertain attempt as a separate
+Pause journal/reservation blocker; the next actual attempt keeps the original retry
+budget, session and enqueue age and rechecks durable admission before FIFO/commit.
+Provider return never proves containment. Durable Pause attribution remains through
+workflow reconciliation and the actual outer cleanup batch. Its explicit disposition
+distinguishes safe no-action/preservation from halted, unreaped, action/report failure
+or unknown teardown; uncertainty retains the exact task/session owner and cleanup
+facts, without changing the normal terminal result or expanding cleanup authority.
+Retry attribution uses the existing entry id, task/agent/SID, owner identity,
+fingerprint, generation and retry fields; the retained reservation adopts that
+entry id only after journal COMMIT. The closed Pause journal format is unchanged.
+Failed-tail diagnostics append to existing `cleanup.suffix_lines` within its
+65536-byte UTF8 allowance, preserving earlier lines; excess new diagnostics are
+explicitly truncated and logged. `execution_unknown` retains ownership independently
+of diagnostic capacity. These lines are diagnostics, never quiescence proof or
+permission to replay an unknown entry. A refused save retains failed ownership
+and propagates unless an original exception is already unwinding; then that
+original exception carries the settlement failure note and log. Every collected
+outer-tail owner is visited even if another settlement fails.
+
 See the [approved contract](../superpowers/specs/2026-10-14-online-team-move.md).
 Behavior/recovery remains UNEXECUTED; source/static acceptance is separate.
 
