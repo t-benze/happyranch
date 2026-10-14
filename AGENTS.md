@@ -700,6 +700,23 @@ There is no added orgs_lock hold, worker drain or lifespan guarantee.
 
 ## Founder-managed teams (THR296)
 
+Founder THR296 seq135 approves the full seq130 online plan under NEW root
+TASK11345: ONE additive org-owned team_move_operations table, affected-agent
+admission/deferral, forward recovery and startup/old-reader contract. A is
+satisfied. First slice B is inert: private store/state and read-only projection,
+optional exact schema validation/reference selection, no startup installation
+or public command/admission/business effect. COMPLETE is unavailable until D
+validates actual canonical/context/reset/ready-authority evidence. C1-C3/D and
+supported launcher downgrade refusal remain NOT INTEGRATED; a table cannot make
+a prefeature reader recognize a hold. Manage-agent cannot transfer teams.
+Normal source acceptance does not authorize activation/live move. Preserve all
+IDs/paths/history/frozen bindings/permissions and Engineering omitted-owner
+routing. No new tests/fixtures, retired Python units, ad hoc E2E or protected
+proof; section8 permits source/static acceptance with behavior UNEXECUTED and
+integration SKIPPED24342. Exact-head independent review/scoped QA, lint-only
+CI/hooks/nonforce publication and manager guarded merge remain. See the
+[approved online team-move contract](docs/superpowers/specs/2026-10-14-online-team-move.md). Historical offline limits remain historical.
+
 Founder THR296 seq107 / TASK11050 authorizes the separate online empty-team
 correction: `happyranch teams ensure-default --org ORG` calls founder-bearer
 POST `/api/v1/orgs/{slug}/teams/ensure-default`. It creates only an absent

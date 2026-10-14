@@ -811,17 +811,17 @@ _RELEASE_REFERENCE_PREIMAGES = (
 )
 
 
-_release_schema_digest_cache: dict[tuple[str, str, int, bool], str] | None = None
+_release_schema_digest_cache: dict[tuple[str, str, int, bool, bool], str] | None = None
 
 
-def _release_schema_digest(layout: str = "F", history: str = "fresh", naming_version: int = 0, *, pause_layout: bool = False) -> str:
+def _release_schema_digest(layout: str = "F", history: str = "fresh", naming_version: int = 0, *, pause_layout: bool = False, team_move_layout: bool = False) -> str:
     """Digest of the complete release-pinned org-database schema surface.
 
     Independent fresh or pinned whole-historical inputs run the actual current
     generic migrations, then the requested complete workflow installer before
     hashing every SQL object. No candidate schema is used as an input. No
     persistent generic or runtime-audit database is changed. Cache identity
-    includes layout, source history, naming version and pause layout;
+    includes layout, source history, naming version, pause layout and inert team-move layout;
     unavailable construction fails closed.
     """
     global _release_schema_digest_cache
@@ -830,7 +830,7 @@ def _release_schema_digest(layout: str = "F", history: str = "fresh", naming_ver
         return "unavailable"
     if _release_schema_digest_cache is None:
         _release_schema_digest_cache = {}
-    key = (layout, history, naming_version, pause_layout)
+    key = (layout, history, naming_version, pause_layout, team_move_layout)
     if key in _release_schema_digest_cache:
         return _release_schema_digest_cache[key]
     try:
@@ -866,6 +866,10 @@ def _release_schema_digest(layout: str = "F", history: str = "fresh", naming_ver
                 if pause_layout:
                     from runtime.infrastructure.task_pause_controls import install_pause_schema
                     install_pause_schema(fresh, org_slug="release-reference")
+
+                if team_move_layout:
+                    from runtime.infrastructure.team_move_store import install_team_move_schema
+                    install_team_move_schema(fresh, org_slug="release-reference")
 
                 if naming_version:
                     from runtime.identities.schema import REFERENCE_DDL, execute_literal, validate_names
@@ -2281,7 +2285,9 @@ def _server_evidence(
             from runtime.identities.schema import validate_names
             pause_layout = validate_pause_schema(conn, org_slug=orch._slug, allow_absent=True)
             names = validate_names(conn, org_slug=orch._slug)
-        references = tuple(_release_schema_digest(layout, history, names, pause_layout=pause_layout) for history in _RELEASE_REFERENCE_HISTORIES)
+            from runtime.infrastructure.team_move_store import validate_team_move_schema
+            team_move_layout = validate_team_move_schema(conn, org_slug=orch._slug)
+        references = tuple(_release_schema_digest(layout, history, names, pause_layout=pause_layout, team_move_layout=team_move_layout) for history in _RELEASE_REFERENCE_HISTORIES)
         reference = live_schema_digest if 'unavailable' not in references and live_schema_digest in references else 'unavailable'
     except Exception:
         reference = "unavailable"
