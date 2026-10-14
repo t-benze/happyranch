@@ -447,6 +447,23 @@ def acknowledgement(attempt: Path, journal: Path, start: int, end: int) -> dict[
 def validate_coverage(context: dict[str, Any], manifest: list[dict[str, Any]],
                       *, recovery: bool = False) -> list[dict[str, Any]]:
     root = Path(context['evidence_root'])
+    # Explicit enclosing failure wins even before a candidate envelope exists.
+    # A genuinely fresh observer has only its successful before record; failed
+    # or pending postwrites must never masquerade as untouched input.
+    for name in ('before.json', 'batch.json', 'after.json', 'sequence.json'):
+        path = root / name
+        if path.exists() or path.is_symlink() or path.with_name('.' + name + '.pending').exists():
+            enclosing = canonical_record(path)
+            if name == 'batch.json':
+                if not successful_receipts([enclosing]):
+                    raise ValueError('native_batch_failure')
+            elif (enclosing.get('complete') is not True
+                  or (name in ('before.json', 'after.json')
+                      and enclosing.get('binding') != context['binding'])
+                  or (name == 'sequence.json' and (
+                      enclosing.get('write_errors') or enclosing.get('unknown_postcondition')
+                      or enclosing.get('coverage_context') != context))):
+                raise ValueError('enclosing_observation_failure:' + name)
     namespace = root / 'attempts'
     journal = Path(context['journal_path'])
     if not namespace.is_dir() or namespace.is_symlink():
