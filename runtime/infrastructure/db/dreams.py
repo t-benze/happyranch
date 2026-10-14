@@ -165,7 +165,7 @@ class DreamsMixin:
         SKIPPED). Extra fields are persisted only on a successful transition.
         """
         admission = native_owner_uncommitted(self)
-        if move is not None and new_status == DreamStatus.RUNNING:
+        if admission is not None and new_status == DreamStatus.RUNNING:
             row = self._conn.execute('SELECT agent_name FROM dreams WHERE id=?', (dream_id,)).fetchone()
             if row is not None:
                 admission.check_uncommitted(agents=(row['agent_name'],))

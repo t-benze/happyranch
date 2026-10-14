@@ -18,6 +18,15 @@ Operator `identities rename` is separate from bound manage-agent. It uses positi
 
 # manage-agent
 
+Native C3 preparation failure or ordinary process return never proves file,
+package or process cleanup. Unknown ownership remains in retained audit census.
+New retry budgets explicitly freeze even an empty schedule; missing legacy facts
+cannot authorize replenishment/reentry. Schedule runtime SID is pinned through
+real preparation/spec/execution and is distinct from provider resume identity.
+Custom-skill authority validates before reservations; only explicit native
+validation/rollback/temporary-cleanup evidence can settle a refused writer.
+No history deletion, automatic recovery, apply or execution authority follows.
+
 Team transfers and manager demotion remain outside manage-agent. Update retains
 the existing team/role. Founder THR296seq135 approved a separate coordinated
 online consultant move under TASK11345. C1 supplies task/host holds and preserves

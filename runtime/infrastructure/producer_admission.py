@@ -20,6 +20,8 @@ class ProducerLifecycle(Closed):
     preparation_id: ID
     enqueued_at: ID
     boundary: Literal['host', 'provider'] = 'host'
+    # None reads old missing facts conservatively: its budget is frozen.
+    retry_initialized: bool | None = None
     ordinal: Annotated[int, Field(ge=0, le=64)] = 0
     schedule: Annotated[tuple[Annotated[float, Field(ge=0, le=86400)], ...], Field(max_length=64)] = ()
     attempts: Annotated[tuple[ThreadAttempt, ...], Field(max_length=64)] = ()
@@ -34,6 +36,10 @@ class ProducerLifecycle(Closed):
             raise ValueError('producer enqueue timezone')
         if type(self.version) is not int or self.ordinal > len(self.schedule):
             raise ValueError('producer version/retry bound')
+        if self.retry_initialized is False and (self.schedule or self.ordinal or self.attempts):
+            raise ValueError('uninitialized producer retry evidence')
+        if self.retry_initialized is not None and any(a.boundary != self.boundary or a.ordinal > self.ordinal for a in self.attempts):
+            raise ValueError('producer attempt budget owner')
         if len({a.attempt_id for a in self.attempts}) != len(self.attempts):
             raise ValueError('duplicate producer attempt')
         if any(a.phase != 'initial' or (a.launched and a.no_launch_deferred)
@@ -44,7 +50,7 @@ class ProducerLifecycle(Closed):
 
     @property
     def unknown(self):
-        return self.failed_cleanup or any(a.possible_launch and not (a.settled and a.quiescent) for a in self.attempts)
+        return self.failed_cleanup or (self.retry_initialized is None and self.deferred) or any(a.possible_launch and not (a.settled and a.quiescent) for a in self.attempts)
 
 
 def _unique(pairs):
@@ -61,18 +67,30 @@ class ProducerAdmissionStore:
         self.db, self.org_slug = db, org_slug
 
     @staticmethod
-    def append(prior, current):
+    def append(prior, current, *, legacy_history=False):
         for field in ('version', 'org_slug', 'kind', 'source_id', 'occurrence_id', 'agent_id', 'task_id', 'session_id', 'preparation_id', 'enqueued_at'):
             if getattr(prior, field) != getattr(current, field):
                 raise ValueError('producer identity changed')
         if prior.failed_cleanup and not current.failed_cleanup:
             raise ValueError('producer uncertainty erased')
-        if prior.schedule and (prior.schedule != current.schedule or prior.boundary != current.boundary):
+        if prior.retry_initialized is not False and prior.retry_initialized != current.retry_initialized:
+            raise ValueError('producer retry initialization changed')
+        if current.retry_initialized is False and prior.boundary != current.boundary:
+            raise ValueError('uninitialized producer boundary changed')
+        if prior.retry_initialized is False and current.retry_initialized is None:
+            raise ValueError('producer retry initialization erased')
+        legacy_uninitialized = legacy_history and prior.retry_initialized is None and current.retry_initialized is None and not prior.schedule
+        if prior.retry_initialized is not False and not legacy_uninitialized and (prior.schedule != current.schedule or prior.boundary != current.boundary):
             raise ValueError('producer budget changed')
         if not prior.ordinal <= current.ordinal <= prior.ordinal + 1:
             raise ValueError('producer ordinal reset/skipped')
+        prior_unknown = prior.unknown
+        if legacy_history and prior.retry_initialized is None and current.retry_initialized is None:
+            # Historical safe reentry keeps its original interpretation. Missing
+            # initialization blocks new execution, not reading committed bytes.
+            prior_unknown = prior.failed_cleanup or any(a.possible_launch and not (a.settled and a.quiescent) for a in prior.attempts)
         if prior.producer_settled and not current.producer_settled and not (
-                prior.deferred and not prior.unknown and not current.deferred):
+                prior.deferred and not prior_unknown and not current.deferred):
             raise ValueError('producer ownership reopened')
         if len(current.attempts) < len(prior.attempts):
             raise ValueError('producer attempt erased')
@@ -103,8 +121,10 @@ class ProducerAdmissionStore:
             key = (state.kind, state.source_id, state.occurrence_id)
             prior = states.get(key)
             if prior is not None:
-                self.append(prior, state)
-            elif state.attempts or state.schedule or state.ordinal or state.deferred or state.producer_settled or state.failed_cleanup:
+                # Preserve the old writer's readable history, without admitting
+                # a missing initialization fact for new retry/reentry writes.
+                self.append(prior, state, legacy_history=True)
+            elif state.retry_initialized is True or state.attempts or state.schedule or state.ordinal or state.deferred or state.producer_settled or state.failed_cleanup:
                 raise ValueError('producer initial evidence missing')
             states[key] = state
         return states
@@ -121,7 +141,7 @@ class ProducerAdmissionStore:
             self.append(prior, state)
             if prior == state:
                 return
-        elif state.attempts or state.producer_settled or state.deferred or state.failed_cleanup:
+        elif state.retry_initialized is True or state.schedule or state.ordinal or state.attempts or state.producer_settled or state.deferred or state.failed_cleanup:
             raise ValueError('producer initial evidence missing')
         self.db.insert_audit_log_uncommitted(state.source_id, state.agent_id, 'producer_move_lifecycle', payload)
 

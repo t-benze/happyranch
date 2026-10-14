@@ -5,6 +5,15 @@ description: Use this skill only when the daemon starts a private scheduled drea
 
 # dream
 
+Native C3 preparation failure or ordinary process return never proves file,
+package or process cleanup. Unknown ownership remains in retained audit census.
+New retry budgets explicitly freeze even an empty schedule; missing legacy facts
+cannot authorize replenishment/reentry. Schedule runtime SID is pinned through
+real preparation/spec/execution and is distinct from provider resume identity.
+Custom-skill authority validates before reservations; only explicit native
+validation/rollback/temporary-cleanup evidence can settle a refused writer.
+No history deletion, automatic recovery, apply or execution authority follows.
+
 During an online team-move hold, the native scheduler/runner retains due or pending work without consuming its occurrence. Running work is a blocker. Let the real dream owner revalidate and issue its genuine callback; never create a replacement occurrence, fake completion or reset a window. Source behavior remains UNEXECUTED and apply is unavailable.
 
 This is a private reflection invocation. It is not a task, thread, or thread.

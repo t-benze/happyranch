@@ -18,6 +18,15 @@ Human Todo-list filters accept current names; `schedules create/spawn` payload a
 
 # Todos — Agent-owned scheduled commitments (THR-105 v2)
 
+Native C3 preparation failure or ordinary process return never proves file,
+package or process cleanup. Unknown ownership remains in retained audit census.
+New retry budgets explicitly freeze even an empty schedule; missing legacy facts
+cannot authorize replenishment/reentry. Schedule runtime SID is pinned through
+real preparation/spec/execution and is distinct from provider resume identity.
+Custom-skill authority validates before reservations; only explicit native
+validation/rollback/temporary-cleanup evidence can settle a refused writer.
+No history deletion, automatic recovery, apply or execution authority follows.
+
 An online team-move hold preserves pending schedules before claim and missed/expiry bookkeeping. The native owner reevaluates ordinary deadlines after release with current context; never shift recurrence, invent catch-up or create a replacement schedule. Stable permanent-ID schedules can remain; retired-team content or unsupported bindings need explicit owner resolution. Firing/session ownership blocks a move. Apply is unavailable; behavior remains UNEXECUTED.
 
 Agents may create `one_shot`, `weekly`, and `recurring` self-scheduled Todos via the

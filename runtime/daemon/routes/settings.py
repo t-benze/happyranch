@@ -826,60 +826,71 @@ def put_org_settings(slug: str, org: OrgDep, patch: OrgSettingsPatch) -> Setting
     Returns the updated settings snapshot so the client can invalidate
     and re-render in a single round-trip.
     """
-    with native_writer(org.db, publisher='org_settings'):
-        paths = OrgPaths(root=org.root)
+    with native_writer(org.db, publisher='org_settings') as writer:
+        with writer.validation():
+            paths = OrgPaths(root=org.root)
 
-        # Pre-flight: validate agent names if dreaming agents are being patched
-        patch_raw = _patch_to_raw_dict(patch)
-        if "dreaming" in patch_raw:
-            dreaming_block = patch_raw["dreaming"]
-            if "agents" in dreaming_block:
-                agents_block = dreaming_block["agents"]
-                known = _resolve_agent_names(paths)
-                errors = _validate_agent_names(
-                    agents_block.get("include"), agents_block.get("exclude"), known,
+            # Pre-flight: validate agent names if dreaming agents are being patched
+            patch_raw = _patch_to_raw_dict(patch)
+            if "dreaming" in patch_raw:
+                dreaming_block = patch_raw["dreaming"]
+                if "agents" in dreaming_block:
+                    agents_block = dreaming_block["agents"]
+                    known = _resolve_agent_names(paths)
+                    errors = _validate_agent_names(
+                        agents_block.get("include"), agents_block.get("exclude"), known,
+                    )
+                    if errors:
+                        detail = {"errors": errors}
+                        raise HTTPException(status_code=422, detail=detail)
+
+            # Pre-flight: validate working_hours agent/team names against the live
+            # roster so a stale reference is rejected (422) before reaching disk.
+            if "working_hours" in patch_raw:
+                known_agents = _resolve_agent_names(paths)
+                known_teams = set(org.teams.teams()) if getattr(org, "teams", None) else set()
+                wh_errors = _validate_working_hours_names(
+                    patch_raw["working_hours"], known_agents, known_teams,
                 )
-                if errors:
-                    detail = {"errors": errors}
+                if wh_errors:
+                    raise HTTPException(status_code=422, detail={"errors": wh_errors})
+
+            # THR-175: validate reviewer_agents against the live roster. A malformed
+            # or unusable list (empty, non-string, unknown agent) is a HARD REJECT —
+            # the setting gates reviewer-leg auto-advance, so a stale identity would
+            # silently disable the QA/downstream gate.
+            if "reviewer_agents" in patch_raw:
+                known_agents = _resolve_agent_names(paths)
+                ra = patch_raw["reviewer_agents"]
+                ra_errors: list[str] = []
+                if not isinstance(ra, list) or not ra:
+                    ra_errors.append("reviewer_agents must be a non-empty list of agent names")
+                else:
+                    unknown = sorted(set(ra) - known_agents)
+                    if unknown:
+                        ra_errors.append(
+                            "reviewer_agents references unknown agent(s): " + ", ".join(unknown)
+                        )
+                if ra_errors:
+                    detail = {
+                        "errors": ra_errors,
+                        "remediation": (
+                            "HARD REJECT: set expect_verdict: \"APPROVE\" on every "
+                            "configured reviewer leg; reviewer_agents must name "
+                            "known agents."
+                        ),
+                    }
                     raise HTTPException(status_code=422, detail=detail)
 
-        # Pre-flight: validate working_hours agent/team names against the live
-        # roster so a stale reference is rejected (422) before reaching disk.
-        if "working_hours" in patch_raw:
-            known_agents = _resolve_agent_names(paths)
-            known_teams = set(org.teams.teams()) if getattr(org, "teams", None) else set()
-            wh_errors = _validate_working_hours_names(
-                patch_raw["working_hours"], known_agents, known_teams,
-            )
-            if wh_errors:
-                raise HTTPException(status_code=422, detail={"errors": wh_errors})
-
-        # THR-175: validate reviewer_agents against the live roster. A malformed
-        # or unusable list (empty, non-string, unknown agent) is a HARD REJECT —
-        # the setting gates reviewer-leg auto-advance, so a stale identity would
-        # silently disable the QA/downstream gate.
-        if "reviewer_agents" in patch_raw:
-            known_agents = _resolve_agent_names(paths)
-            ra = patch_raw["reviewer_agents"]
-            ra_errors: list[str] = []
-            if not isinstance(ra, list) or not ra:
-                ra_errors.append("reviewer_agents must be a non-empty list of agent names")
-            else:
-                unknown = sorted(set(ra) - known_agents)
-                if unknown:
-                    ra_errors.append(
-                        "reviewer_agents references unknown agent(s): " + ", ".join(unknown)
-                    )
-            if ra_errors:
-                detail = {
-                    "errors": ra_errors,
-                    "remediation": (
-                        "HARD REJECT: set expect_verdict: \"APPROVE\" on every "
-                        "configured reviewer leg; reviewer_agents must name "
-                        "known agents."
-                    ),
-                }
-                raise HTTPException(status_code=422, detail=detail)
+        # Validate the complete patch before any nested publication writer/fence.
+        # The actual writer repeats native validation; partial writes retain unknown.
+        try:
+            write_org_setting_to_db(paths, org.db, patch_raw, writer=writer, validate_only=True)
+        except OrgConfigError as exc:
+            refusal = HTTPException(status_code=422, detail=str(exc))
+            if writer.no_effect_error is exc:
+                writer.no_effect_error = refusal
+            raise refusal from exc
 
         # THR-095: write to DB (transactional per section: upsert + audit row).
         try:
@@ -887,11 +898,14 @@ def put_org_settings(slug: str, org: OrgDep, patch: OrgSettingsPatch) -> Setting
                 with org.workflow_authority.supported_change(
                     publisher="put_org_settings:reviewer_agents",
                 ):
-                    write_org_setting_to_db(paths, org.db, patch_raw)
+                    write_org_setting_to_db(paths, org.db, patch_raw, writer=writer)
             else:
-                write_org_setting_to_db(paths, org.db, patch_raw)
+                write_org_setting_to_db(paths, org.db, patch_raw, writer=writer)
         except OrgConfigError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
+            refusal = HTTPException(status_code=422, detail=str(exc))
+            if writer.no_effect_error is exc:
+                writer.no_effect_error = refusal
+            raise refusal from exc
 
         # Return updated snapshot from DB-resolved values.
         return get_settings(slug, org)

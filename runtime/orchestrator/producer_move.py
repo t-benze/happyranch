@@ -38,6 +38,50 @@ def owner_for(db):
         return native_owner_uncommitted(db)
 
 
+class NativeWriterDisposition:
+    """Only the native caller can establish a validation-only refusal.
+
+    Exact exception identity matters: failed rollback/cleanup must not inherit
+    the original validation's no-effect evidence. No HTTP status is classified.
+    """
+    def __init__(self):
+        self.no_effect_error = None
+        self.uncertain = False
+
+    @contextmanager
+    def validation(self):
+        try:
+            yield
+        except Exception as exc:
+            self.no_effect_error = exc
+            raise
+
+
+@contextmanager
+def producer_preparation_effects(owner):
+    """An explicit synchronous native preparation/validation interval.
+
+    Active durable ownership already covers interruption. A caught error or
+    an internally reported partial effect retains sticky cleanup uncertainty.
+    Successful completion is evidence for this interval only, not a process
+    receipt or evidence that an earlier failed interval settled.
+    """
+    if owner is None:
+        yield
+        return
+    token = _current.set(owner)
+    try:
+        yield
+    except BaseException as exc:
+        try:
+            owner.failed_cleanup()
+        except BaseException as evidence:
+            exc.add_note(f'native preparation evidence failed: {evidence}')
+        raise
+    finally:
+        _current.reset(token)
+
+
 @contextmanager
 def native_writer(db, *, publisher, agents=(), teams=(), durable=True, settlement=False):
     """Reservation only, never a gate/DB lock across the writer body.
@@ -46,9 +90,10 @@ def native_writer(db, *, publisher, agents=(), teams=(), durable=True, settlemen
     Unscoped canonical changes invalidate org-wide snapshot inputs and reserve
     that input. This does not authorize D to borrow an existing journal.
     """
+    disposition = NativeWriterDisposition()
     admission = owner_for(db)
     if admission is None:
-        yield
+        yield disposition
         return
     with db._lock:
         registry = admission.move._teams_reader() if admission.move._teams_reader else None
@@ -76,7 +121,7 @@ def native_writer(db, *, publisher, agents=(), teams=(), durable=True, settlemen
         admission.writers[key] = dict(owner_id=key, publisher=publisher, agents=tuple(agents), teams=tuple(teams))
     primary = None
     try:
-        yield
+        yield disposition
     except BaseException as exc:
         primary = exc
         raise
@@ -86,7 +131,8 @@ def native_writer(db, *, publisher, agents=(), teams=(), durable=True, settlemen
             # A persistence failure keeps the live reservation and active audit.
             try:
                 if durable:
-                    admission.write_writer(state.model_copy(update={'state': 'unknown' if primary is not None else 'settled'}))
+                    unknown = disposition.uncertain or (primary is not None and primary is not disposition.no_effect_error)
+                    admission.write_writer(state.model_copy(update={'state': 'unknown' if unknown else 'settled'}))
             except BaseException as settlement:
                 if primary is None:
                     raise
@@ -118,13 +164,22 @@ class ProducerPreparation:
     def save(self, **changes):
         candidate = self.state.model_copy(update=changes)
         db = self.admission.db
+        if db._conn.in_transaction:
+            self.state = self.state.model_copy(update={'failed_cleanup': True})
+            raise DeferredTeamMove('team_move_producer_sql_owner_unavailable')
+        began = False
         try:
             db._conn.execute('BEGIN IMMEDIATE')
+            began = True
             self.admission.store.save_uncommitted(candidate)
             db._conn.commit()
-        except BaseException:
-            db._conn.rollback()
+        except BaseException as exc:
             self.state = self.state.model_copy(update={'failed_cleanup': True})
+            if began:
+                try:
+                    db._conn.rollback()
+                except BaseException as rollback:
+                    exc.add_note(f'native producer rollback failed: {rollback}')
             raise
         self.state = candidate
 
@@ -140,8 +195,10 @@ class ProducerPreparation:
     def retry_schedule(self, boundary, schedule):
         with self.admission.move.gate, self.admission.db._lock:
             self.admission.revalidate_uncommitted(self)
-            if not self.state.schedule:
-                self.save(boundary=boundary, schedule=tuple(float(x) for x in schedule))
+            if self.state.retry_initialized is None:
+                raise DeferredTeamMove('team_move_producer_retry_initialization_unknown')
+            if self.state.retry_initialized is False:
+                self.save(retry_initialized=True, boundary=boundary, schedule=tuple(float(x) for x in schedule))
             elif self.state.boundary != boundary:
                 raise DeferredTeamMove('team_move_producer_retry_owner')
             return self.state.ordinal, self.state.schedule
@@ -158,6 +215,11 @@ class ProducerPreparation:
             with ctx._lock if ctx is not None else nullcontext():
                 if ctx is not None and ctx._terminal_reason is not None:
                     return False
+                if self.state.retry_initialized is None:
+                    raise DeferredTeamMove('team_move_producer_retry_initialization_unknown')
+                if self.state.retry_initialized is False:
+                    # Direct job/no-retry launch has an affirmative zero budget.
+                    self.save(retry_initialized=True)
                 if self.attempt_open:
                     raise DeferredTeamMove('team_move_producer_attempt_unsettled')
                 self.save(attempts=self.state.attempts + (ThreadAttempt(
@@ -215,6 +277,12 @@ class ProducerPreparation:
 
     def failed_cleanup(self):
         with self.admission.db._lock:
+            if self.admission.db._conn.in_transaction:
+                # A caught package/event error may still own native SQL work.
+                # Retain active durable ownership and local sticky uncertainty;
+                # finish persists it only after that real transaction settles.
+                self.state = self.state.model_copy(update={'failed_cleanup': True})
+                return
             self.save(failed_cleanup=True)
 
     def invoke(self, action):
@@ -340,7 +408,7 @@ class ProducerMoveAdmission:
                 if not job_sid:
                     raise DeferredTeamMove('team_move_job_session_owner_unavailable')
             state = prior or ProducerLifecycle(org_slug=self.move.store.org_slug,
-                kind=kind, source_id=source_id, occurrence_id=self.occurrence(kind, row), agent_id=row['agent_name'],
+                retry_initialized=False, kind=kind, source_id=source_id, occurrence_id=self.occurrence(kind, row), agent_id=row['agent_name'],
                 task_id=row['task_id'] if kind == 'job' else None, enqueued_at=datetime.now(timezone.utc).isoformat(),
                 session_id=job_sid or f'sess-{uuid.uuid4().hex}', preparation_id=uuid.uuid4().hex)
             owner = ProducerPreparation(self, state)
@@ -437,13 +505,13 @@ class ProducerMoveAdmission:
                     if 'session_id' in row.keys() and row['session_id'] is not None and (kind == 'schedule' or row['status'] in ('running', 'firing')):
                         add(kind + '_session', row['id'], 'Settle actual session and host cleanup')
                     if state is not None and (state.unknown or not state.producer_settled):
-                        add(kind + '_cleanup_unknown', row['id'], 'Resolve every original attempt through its native owner')
+                        add(kind + '_cleanup_unknown', row['id'], 'Resolve original preparation/file/package effects and every process attempt through the native owner; no automatic retry')
                     if kind == 'job' and state is None and row['started_at'] is not None:
                         add('job_legacy_cleanup_unproven', row['id'], 'Obtain native process cleanup evidence; terminal row is insufficient')
             # Audit evidence remains relevant even if a source row was removed.
             for state in states.values():
                 if state.agent_id in affected and (state.unknown or not state.producer_settled):
-                    add('producer_ownership', state.source_id, 'Reconcile retained attempt/preparation evidence; no automatic takeover')
+                    add('producer_ownership', state.source_id, 'Reconcile original retry initialization, preparation/file/package and process evidence; no automatic reentry or takeover')
             for row in self.db._conn.execute('SELECT id,blocked_on_job_ids FROM tasks WHERE blocked_on_job_ids IS NOT NULL'):
                 import json
                 try:
@@ -568,7 +636,24 @@ class _BoundProducerExecutor:
         running = kwargs.get('running')
         if running is None:
             kwargs['on_started'] = started
-        return self.owner.invoke(lambda: self.executor.run(**kwargs))
+        def execute():
+            try:
+                result = self.executor.run(**kwargs)
+            except DeferredTeamMove:
+                # Preserve the native final-before-Popen no-launch evidence;
+                # completed preparation is not an unresolved partial effect.
+                raise
+            except BaseException as exc:
+                try:
+                    self.owner.failed_cleanup()
+                except BaseException as evidence:
+                    exc.add_note(f'native executor preparation evidence failed: {evidence}')
+                raise
+            if not getattr(result, 'success', False) and not self.owner.state.attempts:
+                # A caught pre-launch failure carries no native no-effect proof.
+                self.owner.failed_cleanup()
+            return result
+        return self.owner.invoke(execute)
 
 
 def bind_producer_executor(executor, owner):

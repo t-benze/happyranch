@@ -72,6 +72,41 @@ Closed version1 C3 producer and native-writer evidence uses only existing audit_
 
 All C3 behavior, race, callback, retry, process cleanup, compatibility, migration and recovery observations are UNEXECUTED. Reuse the same thirteen section8 four-answer records; no new cases/parameters/fixtures/campaign. General integration including callback is SKIPPED THR243seq42; Python units are RETIRED. Independent full-diff review, SOURCE/POLICY/STATIC QA, lint-only local all/two hosted checks, normal hooks/nonforce publication and manager guarded merge remain. No activation, live operation, duration or feature-complete claim.
 
+### C3 native correction contract
+
+C3 correction preserves one native schedule runtime SID in materialization,
+actual builtin/custom LaunchSpec and executor.run, including contained/passthrough
+and retry/redelivery. Provider resume/result identity stays separate. Schedule
+preparation appends actual SID/preparation attribution in the existing native
+audit; B2 materialization rows still admit only task/thread/wake/dream contexts.
+Explicit preparation/integrity intervals and caught package/repository failures
+retain failed_cleanup; a normal Python return or terminal source row is not
+settlement of partial file/package effects. Retained audit census stays blocking
+until native ownership is genuinely resolved; no D repair writer is added.
+
+Agent custom-skill identity checks precede durable writer admission under the
+actual binding lease, then current task/session/agent facts are rechecked under
+ownership. Lexical native validation-only refusals may settle only the exact
+exception after successful rollback and affirmative temporary cleanup. HTTP
+status alone is never cleanup evidence; artifact/commit/compensation/interruption
+or uncertain audit tails remain unknown. Mutable package facts are re-read at
+the SQL leaf; settings prevalidate before nested publication and preserve unknown
+ownership if a later section fails after an earlier commit. Existing writer
+lock order and strict immutable terminal history remain.
+
+New producer audits carry retry_initialized=false before first initialization
+and true after it, even with an EMPTY schedule. The pinned boundary and budget,
+including zero, cannot change on deferral/reentry or config changes. Missing/null
+legacy facts preserve old history through its version-aware reader; they never
+initialize a new budget. Ambiguous deferred legacy ownership remains a blocker
+and new retry/launch admission refuses with owner remediation. No historical
+bytes, enqueue age, ordinal, attempt identity or earlier uncertainty are rewritten.
+Marker-bearing new records require correction-compatible C3 readers; this is
+not a prefeature binary or old-runtime downgrade safety claim.
+These corrections remain SOURCE/POLICY/STATIC only: behavior UNEXECUTED,
+integration INCLUDING callback SKIPPED24342, units RETIRED. APPLY_AVAILABLE=false;
+D/E/F and actual recovery/old-reader/activation acceptance remain root-owned.
+
 ## C2 thread admission and deferred obligations
 
 C2 integrates actual REPLY, BOOTSTRAP and TASK_FOLLOWUP producers. One org-owned

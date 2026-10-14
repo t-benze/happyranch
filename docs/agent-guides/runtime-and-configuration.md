@@ -90,6 +90,17 @@ startup/recovery/old-reader guard; D/E/F remain outstanding. APPLY_AVAILABLE=Fal
 All behavior/migration/recovery remains UNEXECUTED; integration SKIPPED24342,
 Python units RETIRED, no new cases/fixtures or activation/live-operation authority.
 
+C3 schedule preparation/spec/execution uses the SAME pinned runtime SID;
+provider resume identity remains separate. Native caught materialization,
+integrity/package/repository failures retain sticky failed_cleanup after source
+terminalization; normal return is not cleanup proof. Agent custom-skill identity
+admission precedes reservations; exact validation-only refusals with completed
+rollback/temporary cleanup can settle, while real partial effects stay unknown.
+Retry initialization explicitly freezes EMPTY as well as nonempty schedules;
+missing legacy facts preserve history but cannot grant new retries or automatic
+ambiguous reentry. These are source corrections only; behavior UNEXECUTED,
+integration INCLUDING callback SKIPPED24342, APPLY_AVAILABLE=false and D/E/F remain.
+
 See the [approved contract](../superpowers/specs/2026-10-14-online-team-move.md).
 Behavior/recovery remains UNEXECUTED; source/static acceptance is separate.
 

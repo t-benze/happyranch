@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from runtime.orchestrator.team_move import DeferredTeamMove
+from runtime.orchestrator.producer_move import producer_preparation_effects
 
 import asyncio
 import time
@@ -243,28 +244,29 @@ async def _run_dream(
     # and return BEFORE executor spawn (REVISE TASK-2829).
     session_id = _move_owner.session_id if _move_owner is not None else f"sess-{uuid.uuid4().hex}"
     try:
-        skills_root = settings.project_root / "runtime" / "skills"
-        expected_specs = materialize_workspace_skills(
-            workspace, settings,
-            slug=org_state.slug,
-            context="dream",
-            provider=_prov,
-            agent_name=dream.agent_name,
-            team=agent_team,
-            skills_root=skills_root,
-            org_root=org_state.root,
-            db=org_state.db,
-            session_id=session_id,
-        )
+        with producer_preparation_effects(_move_owner):
+            skills_root = settings.project_root / "runtime" / "skills"
+            expected_specs = materialize_workspace_skills(
+                workspace, settings,
+                slug=org_state.slug,
+                context="dream",
+                provider=_prov,
+                agent_name=dream.agent_name,
+                team=agent_team,
+                skills_root=skills_root,
+                org_root=org_state.root,
+                db=org_state.db,
+                session_id=session_id,
+            )
 
-        # ── Pre-launch integrity validation ─────────────────────
-        validate_workspace_skills_integrity(
-            workspace, expected_specs,
-            settings=settings,
-            db=org_state.db,
-            agent_name=dream.agent_name,
-            task_id=dream_id,
-        )
+            # ── Pre-launch integrity validation ─────────────────────
+            validate_workspace_skills_integrity(
+                workspace, expected_specs,
+                settings=settings,
+                db=org_state.db,
+                agent_name=dream.agent_name,
+                task_id=dream_id,
+            )
     except DeferredTeamMove:
         raise
     except Exception as e:
@@ -284,19 +286,21 @@ async def _run_dream(
     # fresh code regardless of executor (claude/codex/opencode/pi).
     # Must run BEFORE the executor subprocess starts. Failure is non-
     # blocking: offline / dirty / non-ff / timeout are swallowed.
-    repo_refresh_results = refresh_workspace_repos(workspace)
+    with producer_preparation_effects(_move_owner):
+        repo_refresh_results = refresh_workspace_repos(workspace)
 
     repo_refresh_note = format_repo_refresh_note(repo_refresh_results)
 
     # ── Per-retry launch validator ───────────────────────────────
     def _pre_launch_validator():
-        validate_workspace_skills_integrity(
-            workspace, expected_specs,
-            settings=settings,
-            db=org_state.db,
-            agent_name=dream.agent_name,
-            task_id=dream_id,
-        )
+        with producer_preparation_effects(_move_owner):
+            validate_workspace_skills_integrity(
+                workspace, expected_specs,
+                settings=settings,
+                db=org_state.db,
+                agent_name=dream.agent_name,
+                task_id=dream_id,
+            )
 
     from runtime.orchestrator.active_authority_policy import resolve_active_team_policy_section
     from runtime.orchestrator.authority_policy_store import AuthorityPolicyStore
@@ -375,14 +379,15 @@ async def _run_dream(
             )
             return
         try:
-            launch_spec = spec_builder(
-                workspace=workspace,
-                prompt=prompt,
-                session_id=session_id,
-                model=model_name, reasoning_effort=reasoning_effort,
-                org_slug=org_state.slug,
-                timeout_seconds=settings.session_timeout_seconds,
-            )
+            with producer_preparation_effects(_move_owner):
+                launch_spec = spec_builder(
+                    workspace=workspace,
+                    prompt=prompt,
+                    session_id=session_id,
+                    model=model_name, reasoning_effort=reasoning_effort,
+                    org_slug=org_state.slug,
+                    timeout_seconds=settings.session_timeout_seconds,
+                )
         except DeferredTeamMove:
             raise
         except Exception as exc:

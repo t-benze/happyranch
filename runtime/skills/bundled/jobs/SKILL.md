@@ -5,6 +5,15 @@ description: Run a script in the background or request founder review; manage th
 
 # jobs
 
+Native C3 preparation failure or ordinary process return never proves file,
+package or process cleanup. Unknown ownership remains in retained audit census.
+New retry budgets explicitly freeze even an empty schedule; missing legacy facts
+cannot authorize replenishment/reentry. Schedule runtime SID is pinned through
+real preparation/spec/execution and is distinct from provider resume identity.
+Custom-skill authority validates before reservations; only explicit native
+validation/rollback/temporary-cleanup evidence can settle a refused writer.
+No history deletion, automatic recovery, apply or execution authority follows.
+
 An online team-move hold defers new affected job creation/approval/run under its native task/session/job owner. Pending/running jobs, actual wait/resume callbacks and unknown process/remote-workspace cleanup block the move. A safe already-approved no-launch deferral keeps its exact runner and approval; do not approve/reject/stop or resubmit it to clear a hold. Terminal job status alone is not process-tree quiescence. No move/apply authority follows; behavior remains UNEXECUTED.
 
 ## THR-247 recovery-turn exception
