@@ -1,5 +1,19 @@
 # Orchestrator Contracts
 
+## Approved online team move — inert B (THR296seq135)
+
+TeamMoveCoordinator is an inert org-owned read projection and composition seam.
+C1-C3 must integrate before-preparation and final-launch reservations, retaining
+retry/fallback/callback/host cleanup ownership. Producer binding/root gate → move
+gate → DB RLock/claim transaction → tracker leaf mutex; callbacks never acquire
+the move gate beneath DB/tracker locks. Profile → workflow → roster leases are
+acquired outside this short gate. No await/filesystem/network/provider/bootstrap
+or publication-lease acquisition under gate/DB. Held agents stay outside host
+FIFO; unaffected execution continues. Current producer closure is NOT INTEGRATED.
+See the [approved contract](../superpowers/specs/2026-10-14-online-team-move.md).
+Behavior/recovery remains UNEXECUTED; source/static acceptance is separate.
+
+
 
 **Mounted generic owner review — THR139465/480/493/506, ROOT TASK10693.**
 The normal `/orgs/:slug/reviews` list and `/orgs/:slug/reviews/:activationId`

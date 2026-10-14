@@ -4,6 +4,7 @@ Current combined naming contract: [`2026-10-09-identity-names-core.md`](2026-10-
 
 This directory is append-only design history. Specs capture intent, alternatives, and decisions at the time they were written; they are not automatically updated when the implementation evolves.
 
+- **current, approved implementation / inert B**: [Online consultant team move](2026-10-14-online-team-move.md) — Founder THR296seq135 / new TASK11345; C1-D closure and real downgrade guard precede available apply.
 - **current**: [Human-managed Default roster](2026-10-09-human-default-team-roster.md) — THR296 accepted contract; execution/readiness gates remain.
 
 ## Source Of Truth

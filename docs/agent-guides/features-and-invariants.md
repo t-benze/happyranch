@@ -1,5 +1,21 @@
 # Features And Invariants
 
+## Approved online team move — inert B (THR296seq135)
+
+The approved coordinated consultant move has inert private infrastructure only.
+Same-key/body replay is read-only; changed body/active conflict/stale CAS refuse.
+Precommit refusal may release empty progress; postcommit repair retains its hold
+without TTL. No public commands or COMPLETE writer exist until C1-D closure and
+actual canonical/context/reset/ready-authority validation. Manage-agent cannot
+transfer teams. Preserve histories/IDs/paths/permissions and Engineering routing.
+History validation shares the writer's finite forward/repair edges, requires the
+initial empty WAITING reservation and phase-local decision/receipt evidence,
+and forbids terminal resurrection. Repair returns only to its interrupted phase;
+retained recovery ownership remains required. Unchanged replay adds no audit.
+See the [approved contract](../superpowers/specs/2026-10-14-online-team-move.md).
+Behavior/recovery remains UNEXECUTED; source/static acceptance is separate.
+
+
 
 **Mounted generic owner review — THR139465/480/493/506, ROOT TASK10693.**
 The normal `/orgs/:slug/reviews` list and `/orgs/:slug/reviews/:activationId`

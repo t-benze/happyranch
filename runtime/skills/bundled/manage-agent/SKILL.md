@@ -18,6 +18,15 @@ Operator `identities rename` is separate from bound manage-agent. It uses positi
 
 # manage-agent
 
+Team transfers and manager demotion remain outside manage-agent. Update retains
+the existing team/role. Founder THR296seq135 approved a separate coordinated
+online consultant move under TASK11345, but its B slice is inert infrastructure:
+no move command/route is available and no live move is authorized. Later source
+requires complete producer/recovery/old-reader closure and founder admission.
+Do not substitute termination/re-enrollment, direct roster writes or ambient
+agent credentials. See docs/superpowers/specs/2026-10-14-online-team-move.md in
+the release source; this prose grants no execution/permission change.
+
 For an `update`, first obtain the target's current `revision` from the active
 agent roster and include that exact value as `expected_revision` in the
 callback payload. A missing, null, malformed, or stale revision is rejected;

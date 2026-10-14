@@ -957,6 +957,10 @@ def validate_workflow_schema(conn: sqlite3.Connection, *, expected_org_slug: str
     """Complete layout/discriminator/history and stored source/data validation."""
     layout = _validate_installed(conn, expected_org_slug=expected_org_slug)
     _validate_source_data(conn)
+    # Optional org extension: validation only, never install or operational
+    # admission. Complete producer/startup recovery closure belongs to D.
+    from runtime.infrastructure.team_move_store import validate_team_move_schema
+    validate_team_move_schema(conn, org_slug=expected_org_slug)
     return layout
 
 
@@ -1557,7 +1561,9 @@ def _validate_release_database(conn: sqlite3.Connection, layout: str, *, expecte
     from runtime.identities.schema import validate_names
     pause_layout = validate_pause_schema(conn, allow_absent=True)
     names = validate_names(conn, org_slug=expected_org_slug)
-    expected = tuple(_release_schema_digest(layout, history, names, pause_layout=pause_layout)
+    from runtime.infrastructure.team_move_store import validate_team_move_schema
+    team_move_layout = validate_team_move_schema(conn, org_slug=expected_org_slug)
+    expected = tuple(_release_schema_digest(layout, history, names, pause_layout=pause_layout, team_move_layout=team_move_layout)
                      for history in _RELEASE_REFERENCE_HISTORIES)
     if 'unavailable' in expected or actual not in expected:
         raise ValueError('workflow_submission_whole_database_mismatch')

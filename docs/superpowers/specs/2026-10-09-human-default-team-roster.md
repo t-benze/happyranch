@@ -1,5 +1,15 @@
 # Human-managed Default roster — current THR296 contract
 
+Current online continuation: Founder THR296seq135 approves seq130 under NEW
+TASK11345. A is satisfied; the first B slice supplies private durable state
+only. The [online contract](2026-10-14-online-team-move.md) controls the eventual
+coordinated two-agent demotion/retirement and admission/recovery scope. No move
+route/CLI, producer barrier, completion writer or operational capability is
+available in B. Source acceptance is separate from activation and actual live
+move authority. The offline contract/evidence below stays historical; its old
+correction limit does not constrain this new implementation root.
+
+
 Authority: Founder THR296 seq24 approving seq22/23; exact TASK10423 design
 SHA256 d6e8dd860fbcf7c09501d898abc3d936580170e68e5cc791f1d56df2f7094275,
 accepted by engineering_manager TASK10394. Source authoring does not establish
