@@ -2263,8 +2263,14 @@ FOUNDER-WAIVED139429/430. No package/native build or ad hoc daily E2E is authori
 `repository_artifacts.py` supplies closed canonical saved binding/adoption/presentation
 readers; the private `repository_artifact_objects.py` supplies bounded no-follow
 adopted-primary-store copies, sanitized typed Git reads, recomputed object hashes
-and complete raw base/head tree manifests. Saved validation proves historical
-integrity only. OrgState mounts `WorkflowRepositoryArtifactService`; its current
+and complete raw base/head tree manifests. Allocation failures are category-only
+storage_unavailable with no launch or acquired directory. Every refusal retains
+the parent's acquired private-directory identity for owner remediation; process
+quiescence and omitted child metadata do not prove cleanup. Worker cleanup stays
+alarm-bounded; the parent performs no recursive cleanup and accepts success only
+after witnessing directory absence. Unknown launch/nested process/reap ownership
+remains internal. Retained directory identity is not a claim of present storage.
+Saved validation proves historical integrity only. OrgState mounts `WorkflowRepositoryArtifactService`; its current
 resolve operation categorically refuses before decode or object I/O because K2b's
 authenticated adoption/current authority producer is absent. No constructor flag,
 caller Boolean, record/digest or injected callback authorizes content access.

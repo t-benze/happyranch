@@ -175,8 +175,18 @@ process memory/output and kill/reap. Snapshot manifests contain every supported
 head blob; comparison manifests contain every changed path in the exact base/head
 union with before/after mode/OID/UTF8 bytes, sorted by raw UTF8 path. Missing or
 wrong-type objects refuse; verified hash/pack corruption is storage corruption.
-Errors contain category only; unreaped ownership/private storage remain internal
-unknown facts rather than success or quiescence. Same-UID unmanaged mutation
+Errors contain category only. Temporary allocation is inside the owned error
+boundary: failure is storage_unavailable with no launch, PID or acquired directory,
+without publishing the raw OSError or attempted path. Once acquired, the parent's
+exact directory identity survives every refusal, including a deadline before
+resolution or during worker cleanup, known refusal, malformed/unknown reply and
+final reap failure. Child omission and process quiescence never prove cleanup.
+Worker recursive cleanup stays alarm-bounded; there is no unbounded parent cleanup
+or retry. Success requires the parent's own no-follow absence witness; every
+failure retains the identity as owner-only remediation metadata, without asserting
+that storage remains present. Unknown launch/nested process/reap ownership stays
+unknown after outer reap; a known nested PID is preserved on final reap failure.
+The original five-second total deadline and reserve remain. Same-UID unmanaged mutation
 remains a storage hazard, not OS isolation or remote-origin provenance.
 
 K2b supplies authenticated setup/withdrawal/attenuation/mapping/adoption producers.

@@ -781,6 +781,11 @@ def _build_resolution(*, paths: OrgPaths, binding: RepositoryBinding,
         if private is not None and not retain:
             try:
                 shutil.rmtree(private)
+            except WorkflowRepositoryError as error:
+                # The alarm also bounds cleanup. Interrupted removal is not
+                # absence, even though no nested process remains unknown.
+                error.private_storage = str(private)
+                raise
             except OSError:
                 # Failed cleanup cannot masquerade as a successful resolution.
                 raise WorkflowRepositoryError('storage_unavailable', private_storage=str(private)) from None
@@ -814,7 +819,7 @@ def _reader_child() -> None:
         result = dict(ok=resolution.model_dump())
     except WorkflowRepositoryError as error:
         result = dict(error=error.code, execution_unknown=error.execution_unknown,
-                      process_id=error.process_id, private_storage=error.private_storage)
+                      process_id=error.process_id, private_storage=sys.argv[2])
     except Exception:
         # No traceback/config/content is published to the parent or a caller.
         result = dict(error='workflow_repository_storage_unavailable',
@@ -838,12 +843,16 @@ def _resolve_objects(*, paths: OrgPaths, binding: RepositoryBinding,
         configured_origin=configured_origin))
     if len(command) > 1048576:
         raise WorkflowRepositoryError('content_bounds')
-    private = Path(tempfile.mkdtemp(prefix='workflow-object-only-'))
+    private = None
     process = None
     launch_reserved = False
     quiescent = False
+    failure = None
     output = bytearray()
     try:
+        # Until allocation returns there is no acquired directory or launch.
+        # Its OSError must cross the same category-only boundary as later I/O.
+        private = Path(tempfile.mkdtemp(prefix='workflow-object-only-'))
         budget.check()
         launch_reserved = True
         process = subprocess.Popen([sys.executable, '-I', str(Path(__file__).absolute()),
@@ -892,13 +901,20 @@ def _resolve_objects(*, paths: OrgPaths, binding: RepositoryBinding,
             raise ValueError('invalid_worker_reply')
         if set(answer) == {'ok'}:
             resolution = RepositoryResolution.model_validate(answer['ok'])
-            if private.exists():
+            try:
+                os.lstat(private)
+            except FileNotFoundError:
+                pass
+            else:
                 raise ValueError('worker_cleanup_missing')
             quiescent = True
             budget.check()
             return resolution
         if (set(answer) != {'error', 'execution_unknown', 'process_id', 'private_storage'}
                 or type(answer['execution_unknown']) is not bool
+                or (answer['process_id'] is not None and
+                    (type(answer['process_id']) is not int or answer['process_id'] <= 0))
+                or answer['private_storage'] not in (None, str(private))
                 or answer['error'] not in {'workflow_repository_' + c for c in
                     ('reader_unavailable', 'binding_unavailable', 'object_unavailable', 'object_type_invalid',
                      'content_unsupported', 'content_bounds', 'storage_corrupt', 'storage_unavailable')}):
@@ -906,43 +922,50 @@ def _resolve_objects(*, paths: OrgPaths, binding: RepositoryBinding,
         quiescent = not answer['execution_unknown']
         raise WorkflowRepositoryError(answer['error'].removeprefix('workflow_repository_'),
             execution_unknown=answer['execution_unknown'], process_id=answer['process_id'],
-            private_storage=answer['private_storage'])
-    except WorkflowRepositoryError:
+            private_storage=str(private))
+    except WorkflowRepositoryError as error:
+        # The parent owns this identity. Child omission, process quiescence or
+        # a refusal before _build_resolution cannot prove storage absence.
+        if private is not None:
+            error.private_storage = str(private)
+        failure = error
         raise
-    except (OSError, ValueError, subprocess.SubprocessError):
-        raise WorkflowRepositoryError('storage_unavailable', execution_unknown=launch_reserved,
-            process_id=None if process is None else process.pid, private_storage=str(private)) from None
+    except BaseException:
+        failure = WorkflowRepositoryError('storage_unavailable',
+            execution_unknown=launch_reserved and not quiescent,
+            process_id=None if process is None else process.pid,
+            private_storage=None if private is None else str(private))
+        raise failure from None
     finally:
-        if process is not None:
-            # Successful/known-error workers already reaped each nested Git child.
-            # An interrupted worker needs group termination; nested reap cannot
-            # be proved, so its private storage and execution_unknown survive.
-            if not quiescent:
+        try:
+            if process is not None:
+                # Successful/known-error workers already reaped each nested Git
+                # child. Unknown nested ownership survives the outer reap.
+                if not quiescent:
+                    try:
+                        os.killpg(process.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
                 try:
-                    os.killpg(process.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-                except OSError:
-                    raise WorkflowRepositoryError('storage_unavailable', execution_unknown=True,
-                        process_id=process.pid, private_storage=str(private)) from None
-            try:
-                process.wait(timeout=max(0, budget.deadline - time.monotonic()))
-            except (OSError, subprocess.TimeoutExpired):
-                raise WorkflowRepositoryError('storage_unavailable', execution_unknown=True,
-                    process_id=process.pid, private_storage=str(private)) from None
-            finally:
-                for stream in (process.stdin, process.stdout, process.stderr):
-                    if stream is not None:
-                        stream.close()
-        elif launch_reserved:
-            # No returned process handle is not proof that launch never happened.
+                    process.wait(timeout=max(0, budget.deadline - time.monotonic()))
+                finally:
+                    for stream in (process.stdin, process.stdout, process.stderr):
+                        if stream is not None:
+                            stream.close()
+            elif launch_reserved:
+                # No returned handle proves neither no-launch nor quiescence.
+                raise WorkflowRepositoryError('storage_unavailable')
+        except BaseException:
+            # Keep a known nested PID rather than replacing it with its reaped
+            # outer worker. Every teardown failure still retains parent storage.
+            owner = None if failure is None else failure.process_id
+            if owner is None and process is not None:
+                owner = process.pid
             raise WorkflowRepositoryError('storage_unavailable', execution_unknown=True,
-                private_storage=str(private)) from None
-        elif private.exists():
-            try:
-                shutil.rmtree(private)
-            except OSError:
-                raise WorkflowRepositoryError('storage_unavailable', private_storage=str(private)) from None
+                process_id=owner, private_storage=None if private is None else str(private)) from None
+        # No recursive parent cleanup outside the alarm-bounded worker. Failure
+        # retains the acquired identity for owner remediation, even prelaunch;
+        # private_storage is not a claim that the directory is still present.
 
 
 if __name__ == '__main__':
