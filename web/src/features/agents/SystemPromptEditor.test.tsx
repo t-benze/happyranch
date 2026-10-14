@@ -8,7 +8,7 @@ import { AppRoutes } from '@/routes';
 import { LocaleTestSwitch, renderWithProviders, savedLocaleAdapter } from '@/test/render';
 import { server } from '@/test/server';
 import { AgentDetailDrawer } from './AgentDetailDrawer';
-import type { AgentSummary } from '@/lib/api/types';
+import type { AgentSummary, TaskRecord } from '@/lib/api/types';
 
 const root = '/api/v1/orgs/prompt-test';
 const base = { name: 'writer', team: 'engineering', role: 'worker', executor: 'claude',
@@ -27,7 +27,7 @@ function FixtureControls({ observe }: { observe: (client: QueryClient) => void }
     <button onClick={() => navigate('/orgs/prompt-beta/agents/writer')}>select beta fixture</button></>;
 }
 
-function setup(read: Parameters<typeof http.get>[1], put: Parameters<typeof http.put>[1], surface = 'pane') {
+function setup(read: Parameters<typeof http.get>[1], put: Parameters<typeof http.put>[1], surface = 'pane', recentTasks: TaskRecord[] = []) {
   let client!: QueryClient;
   server.use(
     http.get('/api/v1/auth/bootstrap', () => HttpResponse.json({ token: 'tok' })),
@@ -37,7 +37,11 @@ function setup(read: Parameters<typeof http.get>[1], put: Parameters<typeof http
     http.get('/api/v1/health/prereqs', () => HttpResponse.json({ prereqs: [] })),
     http.get('/api/v1/executors/runtime/profiles', () => HttpResponse.json({ profiles: [] })),
     http.get(`${root}/teams`, () => HttpResponse.json({ teams: [] })),
-    http.get(`${root}/tasks`, () => HttpResponse.json({ tasks: [] })),
+    http.get(`${root}/tasks`, ({request}) => {
+      const url = new URL(request.url);
+      return url.searchParams.get('assigned_agent') === 'writer' && url.searchParams.get('limit') === '20'
+        ? HttpResponse.json({tasks: recentTasks, next_cursor:null}) : HttpResponse.json({detail:'wrong selection'},{status:400});
+    }),
     http.get(`${root}/jobs/`, () => HttpResponse.json({ jobs: [] })),
     http.get(`${root}/agents/:name/cleanup-activity`, () => HttpResponse.json({ activities: [] })),
     http.get(`${root}/agents/:name/memory/entries/`, () => HttpResponse.json({ entries: [] })),
@@ -465,4 +469,21 @@ test('an older ordinary read cannot overwrite the verified return snapshot', asy
   fireEvent.click(await screen.findByRole('button', { name: 'Edit system prompt' }));
   expect(screen.getByRole('textbox', { name: 'System prompt' })).toHaveValue(authored);
   expect(reads).toBe(3);
+});
+
+// A10: actual caller/provider fixture; no prompt/task control actions.
+test.each(['pane','drawer'])('%s injects current locale qualifiers and neutral legacy evidence', async surface => {
+  const states = ['continuation_pending','pending_children','waiting_children','child_results_received',null,'unavailable','malformed'] as const;
+  const tasks = states.map((state,i) => ({task_id:`CARD-${i}`, team:'engineering',brief:`raw ${i}`,status:'in_progress',block_kind:'delegated',assigned_agent:'writer',parent_task_id:null,revisit_of_task_id:null,created_at:'2026-10-14T00:00:00Z',updated_at:'2026-10-14T00:00:00Z',closed_at:null,cancelled_at:null,session_timeout_seconds:null,
+    ...(state ? {child_wait:{state,observed_at:'2026-10-14T00:00:00Z'}} : {})})) as TaskRecord[];
+  setup(() => HttpResponse.json({agents:[base]}), () => HttpResponse.json({}), surface, tasks);
+  await screen.findByRole('link', {name:/CARD-0/});
+  for (const locale of ['en','zh-CN','en'] as const) {
+    fireEvent.click(screen.getByTestId(`test-set-locale-${locale}`));
+    const expected = locale === 'en' ? ['Continuation pending','Child work pending','Waiting on child work','Child results received; continuation pending'] : ['等待后续处理','子任务待执行','等待子任务处理','已收到子任务结果，等待后续处理'];
+    expected.forEach((text,i) => expect(screen.getByRole('link',{name:new RegExp(`CARD-${i}`)})).toHaveTextContent(`in_progress· ${text}`));
+    for (let i=4;i<7;i++) expect(screen.getByRole('link',{name:new RegExp(`CARD-${i}`)}).textContent).not.toMatch(/waiting|等待|暂不可用/);
+    expect(document.querySelector('[data-task-pause]')).toBeNull();
+    expect(screen.queryByRole('button',{name:/^(Pause|Resume|暂停|恢复)$/})).not.toBeInTheDocument();
+  }
 });

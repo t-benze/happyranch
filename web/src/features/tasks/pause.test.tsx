@@ -299,3 +299,14 @@ test.each(['pausing', 'paused'] as const)('seq77 Resume during %s: pending prote
   expect(region).toHaveTextContent(control_state === 'paused' ? 'Paused' : 'Waiting for current work to finish');
   expect(screen.queryByRole('button', { name: 'Pause' })).toBeNull();
 });
+
+test.each(['en','zh-CN'] as const)('B01 unknown job cleanup remains unconfirmed with raw reasons %s', async locale => {
+  mountDetail(record({pause:projection({held:true,effective_hold:true,control_state:'pausing',evidence_complete:false,
+    blockers:[{...blocker('unknown','ROOT-1','JOB-9'),owner_kind:'job'}]})}),locale);
+  const region = await controls();
+  expect(region.querySelector('summary')).toHaveTextContent(locale === 'en' ? '1 job cleanup unconfirmed' : '作业清理尚未确认 1 项');
+  expect(region).toHaveTextContent(locale === 'en' ? 'Job descendant cleanup unconfirmed' : '作业子进程清理尚未确认');
+  expect(region).toHaveTextContent(locale === 'en' ? 'The job record may be terminal' : '作业记录可能已结束');
+  expect(region.querySelector('summary')?.textContent).not.toMatch(/still running|仍在运行/);
+  expect(region.querySelector('a[href="/orgs/alpha/jobs/JOB-9"]')).toHaveTextContent('JOB-9');
+});

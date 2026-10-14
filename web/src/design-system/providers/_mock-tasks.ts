@@ -14,6 +14,7 @@ const FIXTURES: TaskRecord[] = [
     team: 'content',
     brief: 'Draft Hong Kong visa guide v2',
     status: 'in_progress',
+    child_wait: null, // Prototype row; no backend dispatch evidence.
     block_kind: null,
     parent_task_id: null,
     revisit_of_task_id: null,

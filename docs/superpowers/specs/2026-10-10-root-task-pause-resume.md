@@ -112,6 +112,64 @@ suffix for SAME-owner retry. Interrupted ACTION retains unknown evidence. The
 existing terminal worktree reclaimer preserves unresolved/held ownership and
 otherwise keeps its non-force conditions.
 
+## Bounded status observation correction (THR-292 seq85/87; TASK-11437)
+
+Stored `in_progress/delegated` is delegation bookkeeping, not outstanding-child
+or running-process evidence. Task list, roots and detail serialize optional
+`child_wait` in the same coherent database snapshot as their parent rows. The
+closed `{state, observed_at}` observation distinguishes unresolved non-Pending
+child work (`waiting_children`), only unresolved Pending work (`pending_children`),
+nonterminal rows with an exact current completed report (`child_results_received`),
+and all-terminal or authoritatively empty children (`continuation_pending`).
+Incomplete, malformed, capped or deadline-exceeded reads are `unavailable`.
+The reader reuses the existing exact child/agent/current-SID completed-report
+predicate and terminal states. It invokes no eligibility, admission, result
+consumer or wake. At most256 direct children (query257),1000 inspected children
+and250ms additional observation work per response/page are allowed, with no
+refill. These limits do not guarantee response performance or constrain execution.
+No model/store/schema field is added and no stored status/block_kind/note changes.
+
+Ordinary EN/ZH qualifiers use validated current projections, never delegated
+alone or partial recall. Missing/legacy/malformed evidence leaves list/shared
+badges and agent cards unqualified; detail adds a subordinate child-status-
+unavailable explanation. Header, rail, chain timeline and both actual agent
+TaskCard callers share the mapping. A different displayed severity rollup cannot
+inherit the parent's qualifier. Existing job waiting copy is preserved.
+Pause UI and inherited hold explanations remain detail-only; list and agent
+cards receive no pause label, control, disclosure or overview request.
+
+Selected recall must be a complete valid recursive tree for that task. Fanout
+counts require nonempty distinct exact selected IDs, positive matching integer
+width and exactly one valid direct row per ID. Invalid/missing membership yields
+null counts, without a numeric summary, width or bar. Seven literal categories
+(pending, in_progress, escalated, completed, failed, cancelled, superseded) drive
+the same summary and proportional accessible bar. Terminal includes the four
+actual terminal outcomes; in_progress is not running proof and cancelled or
+superseded is not success. Spawned headlines follow the independent current
+parent child_wait. A genuine prior audit join stays historical and shows current
+row counts separately; it never proves parent resumed/completed or consumed
+results. Queued chain/join/continuation ownership remains unchanged.
+
+Only AgentDetailDrawer's local `DrawerContent className="max-w-[100vw]"` caps
+its original desktop clamp: min(100vw,clamp(480px,45vw,720px)). The shared primitive
+and production routes/providers/config remain unchanged. The shipping route
+mounts the pane; a separately hashed disposable real-component/provider entry
+supplies drawer evidence. Owned synthetic browser observations are frontend
+only, with actual request/payload, source/input/dist hashes and viewed images.
+
+Detail unknown blockers with owner_kind=job and actual job_id read “Job
+descendant cleanup unconfirmed” / “作业子进程清理尚未确认”. Their summary counts
+job cleanup unconfirmed separately from known running sessions/jobs and other
+unresolved items. IDs/raw reasons remain literal. A terminal job, exit0 or PID
+absence never closes descendant uncertainty; the future job-owned closure
+producer is excluded. TASK-11345 and its16 historical unknowns remain held.
+Backend/race/restart/Pause/R/E04 and protected red/mutation/repetition/test-authoring
+proof remain UNEXECUTED/held. Python units RETIRED; integration and actual CLI
+callback SKIPPED THR243seq42. Automated gates stay lint/static only; manual
+synthetic frontend builds/observations do not constitute Product E2E or behavioral
+Pause acceptance. Native independent final-head review/QA and manager merge/
+exact-main lint remain required; source delivery authorizes no live activation.
+
 ## Persistence, deployment and evidence
 
 Only OrgState.load and proven fresh org creation install/validate the approved
@@ -144,7 +202,7 @@ kind, actual task/job links, raw owner_kind and reason (no title, agent or start
 time exists); owner_kind is not an assignee and observed_at is not a start time, so
 the single projection observed_at appears inside the disclosure. Only
 task_session/job count as "still running"; launch/result_processing/unknown are
-"other items to resolve" and incomplete evidence is stated. The artifact's
+"other items to resolve" (unknown job items separately say cleanup unconfirmed), and incomplete evidence is stated. The artifact's
 "evidence moves to View audit" note is not adopted: pause/resume audit rows carry
 generation/held and event time, not live drain observations, so necessary
 unknown/incomplete/terminal diagnostics stay in the detail disclosure; the existing
