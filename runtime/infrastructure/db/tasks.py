@@ -7,7 +7,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from typing import Callable
 
-from runtime.infrastructure.db._shared import _late_database_now as _now, _synchronized
+from runtime.infrastructure.db._shared import _task_move_admission, _late_database_now as _now, _synchronized
 from runtime.infrastructure.db.task_reconciliation import (
     ReconciliationError, TaskReconciliation, strict_json,
 )
@@ -307,10 +307,57 @@ class TasksMixin:
         return dict(successors=related, jobs=[dict(row) for row in jobs],
                     recoveries=[dict(row) for row in recoveries], intents=intents)
 
+    def _check_team_move_task_uncommitted(self, task: TaskRecord | str, *, declared_chain: str | None = None) -> None:
+        """Server-owned task allocation/claim exclusion, inside DB ownership.
+
+        Already-owned graph transactions never acquire a move mutex beneath DB.
+        The durable operation writer is serialized by the same DB owner. No
+        schema install, caller name, prompt read or result consumption occurs.
+        """
+        move = getattr(self, "_team_move_coordinator", None)
+        if move is None:
+            if self._conn.execute("SELECT 1 FROM sqlite_schema WHERE name='team_move_operations'").fetchone():
+                from runtime.orchestrator.team_move import DeferredTeamMove
+                raise DeferredTeamMove("team_move_org_owner_unavailable")
+            return
+        if isinstance(task, str):
+            task = self.get_task(task)
+            if task is None:
+                from runtime.orchestrator.team_move import DeferredTeamMove
+                raise DeferredTeamMove("team_move_task_owner_unavailable")
+        if declared_chain is not None:
+            task = task.model_copy(update={"active_chain": declared_chain})
+        move.check_task_uncommitted(task)
+
+    def _check_team_move_workflow_uncommitted(self, instance_id: str | None = None, *, binding_bytes: bytes | None = None) -> None:
+        move = getattr(self, "_team_move_coordinator", None)
+        if move is None:
+            if self._conn.execute("SELECT 1 FROM sqlite_schema WHERE name='team_move_operations'").fetchone():
+                from runtime.orchestrator.team_move import DeferredTeamMove
+                raise DeferredTeamMove("team_move_org_owner_unavailable")
+            return
+        if binding_bytes is None:
+            row = self._conn.execute("SELECT b.binding_bytes FROM workflow_instances i "
+                "JOIN workflow_binding_snapshots b ON b.id=i.binding_snapshot_id WHERE i.id=?", (instance_id,)).fetchone()
+            if row is None:
+                from runtime.orchestrator.team_move import DeferredTeamMove
+                raise DeferredTeamMove("team_move_workflow_owner_unavailable")
+            binding_bytes = row[0]
+        move.check_bindings_uncommitted(binding_bytes)
+
+    @_task_move_admission
     @_synchronized
     def insert_task(self, task: TaskRecord) -> None:
-        self._insert_task_uncommitted(task)
-        self._conn.commit()
+        began = not self._conn.in_transaction
+        if began:
+            self._conn.execute("BEGIN IMMEDIATE")
+        try:
+            self._insert_task_uncommitted(task)
+            self._conn.commit()
+        except BaseException:
+            if began:
+                self._conn.rollback()
+            raise
 
     def _insert_task_uncommitted(self, task: TaskRecord) -> None:
         """Insert through the caller-owned synchronized transaction.
@@ -319,6 +366,7 @@ class TasksMixin:
         including when the caller already opened a transaction. Workflow
         admission owns the lock, writer reservation and entire graph commit.
         """
+        self._check_team_move_task_uncommitted(task)
         params = (
             task.id,
             task.status.value,
@@ -1433,6 +1481,9 @@ class TasksMixin:
     def _retry_spawn_check(self, parent_id: str, children: list, claim: RetryClaim,
                            revision_delta: int = 0, revision_cap: int = 0,
                            *, ordinary: bool = False) -> InvalidLineage | LostClaim | None:
+        self._check_team_move_task_uncommitted(parent_id)
+        for child in children:
+            self._check_team_move_task_uncommitted(child)
         if parent_id != claim.task_id or not self._retry_claim_matches(claim):
             return LostClaim()
         for child in children:
@@ -1696,6 +1747,7 @@ class TasksMixin:
         finally:
             self._conn.rollback()
 
+    @_task_move_admission
     @_synchronized
     def try_delegate_many(
         self, parent_id: str, children: list, *, parent_note: str,
@@ -1739,6 +1791,9 @@ class TasksMixin:
         """
         try:
             self._conn.execute("BEGIN IMMEDIATE")
+            for carrier in carrier_chains or ():
+                self._check_team_move_task_uncommitted(children[carrier["child_index"]],
+                    declared_chain=carrier["active_chain_json"])
             refusal = self._retry_spawn_check(
                 parent_id, children, expected_claim,
 
@@ -1838,6 +1893,7 @@ class TasksMixin:
             self._conn.rollback()
             raise
 
+    @_task_move_admission
     @_synchronized
     def try_delegate(
         self, parent_id: str, child: TaskRecord, *, parent_note: str,
@@ -1858,6 +1914,7 @@ class TasksMixin:
         """
         try:
             self._conn.execute("BEGIN IMMEDIATE")
+            self._check_team_move_task_uncommitted(parent_id, declared_chain=active_chain_json)
             refusal = self._retry_spawn_check(
                 parent_id, [child], expected_claim,
                 revision_delta, revision_cap, ordinary=True,
@@ -1922,6 +1979,7 @@ class TasksMixin:
             self._conn.rollback()
             raise
 
+    @_task_move_admission
     @_synchronized
     def try_claim_for_step(
         self,
@@ -1980,6 +2038,7 @@ class TasksMixin:
         """Compose the original CAS in the caller's admission transaction."""
         if not self._conn.in_transaction:
             raise RuntimeError("task admission requires a writer transaction")
+        self._check_team_move_task_uncommitted(task_id)
         now = datetime.now(timezone.utc).isoformat()
         pending_generation = self._conn.execute(
             """SELECT 1 FROM authority_policy_v2_root_dispatch
@@ -2119,6 +2178,7 @@ class TasksMixin:
         self._conn.commit()
         return cursor.rowcount == 1
 
+    @_task_move_admission
     @_synchronized
     def try_manager_supersede(
         self,
@@ -2140,6 +2200,7 @@ class TasksMixin:
         """
         try:
             self._conn.execute("BEGIN IMMEDIATE")
+            self._check_team_move_task_uncommitted(task_id)
             row = self._conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
             if row is None or (
                 row["status"] != TaskStatus.IN_PROGRESS.value
@@ -2306,6 +2367,7 @@ class TasksMixin:
             self._conn.rollback()
             raise
 
+    @_task_move_admission
     @_synchronized
     def try_advance_chain(
         self,
@@ -2329,6 +2391,8 @@ class TasksMixin:
         now_ts = datetime.now(timezone.utc).isoformat()
         try:
             self._conn.execute("BEGIN IMMEDIATE")
+            self._check_team_move_task_uncommitted(parent_id, declared_chain=active_chain_json)
+            self._check_team_move_task_uncommitted(next_child)
             self._conn.execute(
                 "UPDATE tasks SET active_chain = ? WHERE id = ?",
                 (active_chain_json, parent_id),
@@ -2370,7 +2434,11 @@ class TasksMixin:
                 )
             self._conn.commit()
             return True
-        except Exception:
+        except Exception as exc:
+            from runtime.orchestrator.team_move import DeferredTeamMove
+            if isinstance(exc, DeferredTeamMove):
+                self._conn.rollback()
+                raise
             self._conn.rollback()
             return False
 
@@ -2439,6 +2507,7 @@ class TasksMixin:
         ).fetchall()
         return [row["id"] for row in rows]
 
+    @_task_move_admission
     @_synchronized
     def claim_task_completion_recovery(
         self, *, task_id: str, agent: str, origin_session_id: str,
@@ -2478,6 +2547,7 @@ class TasksMixin:
         claimed_at: str, expires_at: str,
     ) -> bool:
         """Reuse original checks in a caller-owned admission transaction."""
+        self._check_team_move_task_uncommitted(task_id)
         task = self._conn.execute(
             "SELECT status, cancelled_at, assigned_agent, current_session_id "
             "FROM tasks WHERE id = ?", (task_id,)
@@ -3580,6 +3650,7 @@ class TasksMixin:
             local_ci=_local_ci,
         )
 
+    @_task_move_admission
     @_synchronized
     def insert_task_with_attachments(
         self,
@@ -3603,6 +3674,7 @@ class TasksMixin:
         now = _now().isoformat()
         try:
             self._conn.execute("BEGIN IMMEDIATE")
+            self._check_team_move_task_uncommitted(task)
             self._conn.execute(
                 """INSERT INTO tasks (id, status, assigned_agent, team, brief,
                    revision_count, created_at, updated_at, completed_at, parent_task_id,
@@ -3680,6 +3752,7 @@ class TasksMixin:
             self._conn.rollback()
             raise
 
+    @_task_move_admission
     @_synchronized
     def dispatch_task_followup_replacement(
         self,
@@ -3807,6 +3880,8 @@ class TasksMixin:
                 task.orchestration_step_count, task.session_timeout_seconds,
                 task.task_type, task.active_fanout, task.current_session_id, None,
             )
+            self._check_team_move_task_uncommitted(original_id)
+            self._check_team_move_task_uncommitted(task)
             self._conn.execute(
                 """INSERT INTO tasks (id, status, assigned_agent, team, brief,
                    revision_count, created_at, updated_at, completed_at, parent_task_id,

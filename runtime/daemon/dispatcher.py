@@ -32,7 +32,28 @@ class Dispatcher:
                 task_id,
             )
             return
-        org.orchestrator.run_step(task_id, metadata=metadata)
+        from runtime.orchestrator.team_move import DeferredTeamMove
+        from runtime.infrastructure.team_move_store import TeamMoveError
+        try:
+            org.orchestrator.run_step(task_id, metadata=metadata)
+        except (DeferredTeamMove, TeamMoveError):
+            org.orchestrator._team_moves.defer_task(task_id, metadata)
+
+    def task_admission_allowed(self, slug: str, task_id: str, metadata: dict | None = None) -> bool:
+        from runtime.orchestrator.team_move import DeferredTeamMove
+        from runtime.infrastructure.team_move_store import TeamMoveError
+        try:
+            org = self._state.get_org(slug)
+        except KeyError:
+            return False
+        move = org.orchestrator._team_moves
+        try:
+            with move.gate, org.db._lock:
+                org.db._check_team_move_task_uncommitted(task_id)
+        except (DeferredTeamMove, TeamMoveError):
+            move.defer_task(task_id, metadata)
+            return False
+        return True
 
     def heartbeat(self, slug: str, task_id: str) -> None:
         """Stamp ``tasks.last_heartbeat`` on the per-org DB.

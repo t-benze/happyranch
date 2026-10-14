@@ -1,6 +1,6 @@
 # Runtime And Configuration
 
-## Approved online team move — inert B (THR296seq135)
+## Approved online team move — C1 task/host source (THR296seq135)
 
 The optional team_move_operations table is explicit org-owned storage, never
 generic Database/runtime-audit bootstrap or startup installation in B. Exact
@@ -12,7 +12,12 @@ Naming captures workflow/naming/pause/move layouts in one coherent read view,
 builds independent references outside the short SQL transaction, then compares
 the entire database again within that transaction. Absence remains supported;
 malformed presence refuses without installation, stripping or history repair.
-The startup and runtime/launcher downgrade requirements are DATA ONLY in B. D
+C1 binds the coordinator at Orchestrator construction and reads durable holds
+in actual allocation/claim transactions without installing schema. Absent layout
+keeps normal operation; malformed/unknown installed state refuses. Preparation
+ownership spans callbacks and cleanup; unknown tree/cleanup state stays busy.
+C1 task redelivery supplies an owner seam only; startup/whole-operation release
+and runtime/launcher downgrade requirements remain DATA ONLY until D. D
 must discover/recover before partial-roster validation/publication/admission and
 refuse incompatible readers. An additive table cannot teach prefeature binaries
 a hold. No deployment/restart/live DB operation follows source acceptance.

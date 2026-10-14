@@ -655,6 +655,7 @@ class WorkflowSubmissionStore:
 
     def _graph(self, conn: sqlite3.Connection, row: dict, proof: dict, context: dict, binding: dict,
                grant: dict, intent: dict, result: dict) -> list[str]:
+        self.db._check_team_move_workflow_uncommitted(row["instance_id"])
         now = datetime.now(timezone.utc).isoformat()
         if conn.execute('SELECT 1 FROM workflow_submission_operations WHERE '
                         '(org_slug=? AND principal=? AND operation_key=?) OR instance_id=?',

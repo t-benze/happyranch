@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 from pydantic import ValidationError
 
 from runtime.infrastructure.db._shared import (
+    _task_move_admission,
     _late_database_now as _now,
     _synchronized,
 )
@@ -3440,6 +3441,7 @@ class AuthorityV2ContinuationMixin:
                 status="generation_pending", reason=reason, **kw,
             )
 
+        self._check_team_move_task_uncommitted(root_task_id)
         store = getattr(self, "_task_pause_store", None)
         if store is not None:
             store.held_uncommitted(root_task_id)
@@ -3550,6 +3552,7 @@ class AuthorityV2ContinuationMixin:
             next_session_id=next_session_id, orchestration_step_count=new_count,
         )
 
+    @_task_move_admission
     @_synchronized
     def try_claim_v2_continuation_generation(
         self, *, root_task_id: str, manager_agent: str, manager_session_id: str,

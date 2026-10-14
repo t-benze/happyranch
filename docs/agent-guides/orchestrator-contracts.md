@@ -1,15 +1,19 @@
 # Orchestrator Contracts
 
-## Approved online team move — inert B (THR296seq135)
+## Approved online team move — C1 task/host source (THR296seq135)
 
-TeamMoveCoordinator is an inert org-owned read projection and composition seam.
-C1-C3 must integrate before-preparation and final-launch reservations, retaining
-retry/fallback/callback/host cleanup ownership. Producer binding/root gate → move
-gate → DB RLock/claim transaction → tracker leaf mutex; callbacks never acquire
+C1 binds one org-owned coordinator to task preparation and final launch, retaining
+retry/callback/host cleanup ownership through the actual worker terminal tail.
+Installed-layout unowned legacy producers refuse before claim/preparation. Producer binding/root gate → move
+gate → DB RLock/claim transaction → host terminal leaf mutex; callbacks never acquire
 the move gate beneath DB/tracker locks. Profile → workflow → roster leases are
 acquired outside this short gate. No await/filesystem/network/provider/bootstrap
 or publication-lease acquisition under gate/DB. Held agents stay outside host
-FIFO; unaffected execution continues. Current producer closure is NOT INTEGRATED.
+FIFO; unaffected execution continues. C2/C3 producer closure remains NOT INTEGRATED.
+Standalone task writers enter gate before DB; nested graph transactions already
+owning DB check the durable hold there without acquiring move gate beneath DB.
+Task release notifications use existing generation-aware queue ownership; D owns
+whole-operation release/startup recovery. Empty process-local state proves no idle.
 See the [approved contract](../superpowers/specs/2026-10-14-online-team-move.md).
 Behavior/recovery remains UNEXECUTED; source/static acceptance is separate.
 

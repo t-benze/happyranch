@@ -444,6 +444,17 @@ async def metrics_timing_middleware(request: Request, call_next):
 def create_app(state: DaemonState) -> FastAPI:
     app = FastAPI(title="HappyRanch Daemon", version="0.2.0", lifespan=_lifespan)
     app.state.daemon = state
+    from runtime.orchestrator.team_move import DeferredTeamMove
+    from runtime.infrastructure.team_move_store import TeamMoveError
+    from fastapi.responses import JSONResponse
+
+    @app.exception_handler(TeamMoveError)
+    @app.exception_handler(DeferredTeamMove)
+    async def team_move_task_conflict(request: Request, exc: DeferredTeamMove | TeamMoveError) -> JSONResponse:
+        return JSONResponse(status_code=409, content={"detail": {
+            "code": exc.code, "operation_id": getattr(exc, "operation_id", None),
+            "required_action": "Resolve the owning team-move hold before task admission",
+        }})
     # Wire metrics registry into the run_step worker queue for loop-tick recording.
     state.queue._metrics_registry = state.metrics_registry
 

@@ -20,9 +20,11 @@ Operator `identities rename` is separate from bound manage-agent. It uses positi
 
 Team transfers and manager demotion remain outside manage-agent. Update retains
 the existing team/role. Founder THR296seq135 approved a separate coordinated
-online consultant move under TASK11345, but its B slice is inert infrastructure:
-no move command/route is available and no live move is authorized. Later source
-requires complete producer/recovery/old-reader closure and founder admission.
+online consultant move under TASK11345. C1 supplies task/host holds and preserves
+real callback/retry/cleanup ownership; it changes no permission generator or
+manage-agent admission. C2/C3/D producer/recovery/old-reader closure is still
+required. No move command/route or apply/COMPLETE writer is available and no live
+move is authorized. Later complete source requires founder admission.
 Do not substitute termination/re-enrollment, direct roster writes or ambient
 agent credentials. See docs/superpowers/specs/2026-10-14-online-team-move.md in
 the release source; this prose grants no execution/permission change.

@@ -703,11 +703,16 @@ There is no added orgs_lock hold, worker drain or lifespan guarantee.
 Founder THR296 seq135 approves the full seq130 online plan under NEW root
 TASK11345: ONE additive org-owned team_move_operations table, affected-agent
 admission/deferral, forward recovery and startup/old-reader contract. A is
-satisfied. First slice B is inert: private store/state and read-only projection,
-optional exact schema validation/reference selection, no startup installation
-or public command/admission/business effect. COMPLETE is unavailable until D
-validates actual canonical/context/reset/ready-authority evidence. C1-C3/D and
-supported launcher downgrade refusal remain NOT INTEGRATED; a table cannot make
+satisfied. B provides the optional durable store/schema/reference contract. C1
+binds task allocation/claim, preparation and final Pause/host exclusion, including
+causal task/workflow ownership and permanent-ID retry metadata. Preparation lives
+through callback consumption and actual cleanup tails; unknown quiescence or
+failed callback cleanup remains reserved. Binding/root Pause -> move gate -> DB
+transaction -> terminal leaf; existing nested graph writers check durable hold
+under DB without acquiring move gate beneath it. Terminal settlement uses DB only.
+Installed-layout unowned legacy producers refuse before claim/preparation; absent
+layout preserves normal operation. No schema installation, public apply or COMPLETE
+writer. C2/C3/D and supported launcher downgrade refusal remain NOT INTEGRATED; a table cannot make
 a prefeature reader recognize a hold. Manage-agent cannot transfer teams.
 Normal source acceptance does not authorize activation/live move. Preserve all
 IDs/paths/history/frozen bindings/permissions and Engineering omitted-owner

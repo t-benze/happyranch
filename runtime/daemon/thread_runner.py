@@ -1458,6 +1458,7 @@ async def run_invocation(
                 AdmissionRequest(
                     org=org_state.slug,
                     invocation_kind="thread",
+                    agent_id=inv.agent_name,
                     logical_id=inv.thread_id,
                     executor_profile=executor_name,
                     enqueued_at=time.monotonic(),

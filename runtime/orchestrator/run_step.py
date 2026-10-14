@@ -1195,6 +1195,9 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
     # This worker scope also carries its terminal event past tracker teardown,
     # workflow invocation close/release and the dispatcher's live-claim tail.
     transitions = _RootWorktreeTransitions()
+    from runtime.orchestrator.team_move import _task_tail
+    tail = []
+    tail_token = _task_tail.set(tail)
     tail_failed = False
     try:
         with _defer_root_worktree_batches(orch, transitions) as delivery:
@@ -1203,8 +1206,16 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
         tail_failed = True
         raise
     finally:
-        _root_worktree_batch(orch, transitions,
-            teardown_incomplete=tail_failed or delivery['teardown_incomplete'])
+        tail_failed |= delivery['teardown_incomplete']
+        try:
+            _root_worktree_batch(orch, transitions, teardown_incomplete=tail_failed)
+        except BaseException:
+            tail_failed = True
+            raise
+        finally:
+            _task_tail.reset(tail_token)
+            for invocation, failed in tail:
+                orch._team_moves.release_task(invocation, failed=failed or tail_failed)
 
 
 def _run_step_owned(orch: "Orchestrator", task_id: str, metadata: dict | None = None) -> None:
@@ -1212,8 +1223,14 @@ def _run_step_owned(orch: "Orchestrator", task_id: str, metadata: dict | None = 
         TaskInvocation, DeferredRootPause, _invocation, eligible, deferred_invocation,
     )
     from runtime.infrastructure.task_pause_controls import PauseControlError
+    from runtime.orchestrator.team_move import DeferredTeamMove
     store = getattr(orch._db, "_task_pause_store", None)
     if store is None:
+        with orch._db._lock:
+            from runtime.infrastructure.team_move_store import validate_team_move_schema
+            if validate_team_move_schema(orch._db._conn, org_slug=orch._slug):
+                orch._team_moves.defer_task(task_id, metadata)
+                return
         return _run_step_body(orch, task_id, metadata)
     task = orch._db.get_task(task_id)
     if task is None:
@@ -1232,6 +1249,9 @@ def _run_step_owned(orch: "Orchestrator", task_id: str, metadata: dict | None = 
                 owner="v2" if isinstance(metadata, dict) and "authority_v2_generation" in metadata else "ordinary",
                 metadata=metadata or {})
             invocation.prepare()
+    except DeferredTeamMove:
+        orch._team_moves.defer_task(task_id, metadata)
+        return
     except DeferredRootPause:
         return
     except PauseControlError as exc:
@@ -1268,7 +1288,9 @@ def _run_step_owned(orch: "Orchestrator", task_id: str, metadata: dict | None = 
                                 usage_already_recorded=True)
         else:
             _run_step_body(orch, task_id, invocation.metadata)
-    except DeferredRootPause:
+    except (DeferredRootPause, DeferredTeamMove) as exc:
+        if isinstance(exc, DeferredTeamMove):
+            orch._team_moves.defer_task(task_id, metadata)
         with store.db._lock:
             row = store.row_uncommitted(store.root_uncommitted(task_id)["id"])
             entry = invocation._entry(row)
@@ -1292,7 +1314,7 @@ def _run_step_owned(orch: "Orchestrator", task_id: str, metadata: dict | None = 
         root_delivery['teardown_incomplete'] |= sys.exc_info()[0] is not None
         from runtime.orchestrator.task_pause import release_live
         try:
-            release_live(invocation)
+            release_live(invocation, failed=root_delivery['teardown_incomplete'])
         except BaseException:
             root_delivery['teardown_incomplete'] = True
             raise

@@ -63,3 +63,20 @@ def _synchronized(method):
         finally:
             self._lock.release()
     return wrapper
+
+
+def _task_move_admission(method):
+    """Outer move gate for task allocation/claims, before the DB decorator.
+
+    A caller-owned DB transaction must use its uncommitted check directly,
+    never acquire another gate beneath DB. Its allocation is durable before
+    the move writer can commit a hold; the move census must see that task.
+    """
+    @functools.wraps(method)
+    def wrapper(self, *args, **kwargs):
+        from contextlib import nullcontext
+        move = getattr(self, "_team_move_coordinator", None)
+        gate = move.gate if move is not None and not self._lock._is_owned() else nullcontext()
+        with gate:
+            return method(self, *args, **kwargs)
+    return wrapper

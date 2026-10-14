@@ -1,12 +1,13 @@
 # Agent Executors And Permissions
 
-## Approved online team move — inert B (THR296seq135)
+## Approved online team move — C1 task/host source (THR296seq135)
 
 Manage-agent update retains team/role and cannot transfer or demote agents.
 The approved eventual online move reuses native rendering/permission/reset
-owners without changing execution enforcement or explicit allow rules. B runs
-none of those owners; materialization/publisher/producer closure remains D/C1-C3
-work. Shared founder bearer cannot prove human presence. No ambient agent
+owners without changing execution enforcement or explicit allow rules. C1 adds task/host business admission exclusion, not executor permission
+enforcement. Permanent agent identity comes from trusted task ownership and
+survives host retries. C2/C3/D materialization/publisher/other-producer/recovery
+closure remains absent. Shared founder bearer cannot prove human presence. No ambient agent
 credential, name, type/model or source acceptance grants move authority.
 See the [approved contract](../superpowers/specs/2026-10-14-online-team-move.md).
 Behavior/recovery remains UNEXECUTED; source/static acceptance is separate.

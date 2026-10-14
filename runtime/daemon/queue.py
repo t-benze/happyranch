@@ -32,6 +32,7 @@ HEARTBEAT_INTERVAL_SECONDS = 30
 class _Dispatcher(Protocol):
     def run_step(self, slug: str, task_id: str, metadata: dict | None = None) -> None: ...
     def heartbeat(self, slug: str, task_id: str) -> None: ...
+    def task_admission_allowed(self, slug: str, task_id: str, metadata: dict | None = None) -> bool: ...
 
 
 _QueueItem = tuple[str, str, dict | None]
@@ -165,6 +166,10 @@ class TaskQueue:
         loop = asyncio.get_running_loop()
         while not self._stopping:
             slug, task_id, metadata = await self._queue.get()
+            admission = getattr(dispatcher, "task_admission_allowed", None)
+            if admission is not None and not admission(slug, task_id, metadata):
+                self._queue.task_done()
+                continue
             hb = asyncio.create_task(self._heartbeat(dispatcher, slug, task_id))
             t0 = time.monotonic()
             try:

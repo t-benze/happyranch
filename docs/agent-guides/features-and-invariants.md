@@ -1,11 +1,14 @@
 # Features And Invariants
 
-## Approved online team move — inert B (THR296seq135)
+## Approved online team move — C1 task/host source (THR296seq135)
 
-The approved coordinated consultant move has inert private infrastructure only.
+B supplies private durable storage; C1 connects holds to task allocation/claim,
+preparation and final Pause/host commitment. Causal task/workflow closure and
+actual retry/callback/cleanup ownership participate; unknown quiescence stays
+reserved. C2/C3/D producer/recovery/startup/old-reader closure remains absent.
 Same-key/body replay is read-only; changed body/active conflict/stale CAS refuse.
 Precommit refusal may release empty progress; postcommit repair retains its hold
-without TTL. No public commands or COMPLETE writer exist until C1-D closure and
+without TTL. No public commands or COMPLETE writer exist until full C2-D closure and
 actual canonical/context/reset/ready-authority validation. Manage-agent cannot
 transfer teams. Preserve histories/IDs/paths/permissions and Engineering routing.
 History validation shares the writer's finite forward/repair edges, requires the

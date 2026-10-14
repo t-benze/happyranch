@@ -169,6 +169,10 @@ class Orchestrator:
         self._name_metadata_reader = None
         self._audit = AuditLogger(db)
         self._teams = teams
+        from runtime.infrastructure.team_move_store import TeamMoveStore
+        from runtime.orchestrator.team_move import TeamMoveCoordinator
+        self._team_moves = TeamMoveCoordinator.for_org(TeamMoveStore(db, slug))
+        self._team_moves.bind_teams(lambda: self._teams)
         # THR-181 Track A: deterministic injectable evaluator seam. The daemon
         # wires the production subprocess evaluator; CI wires the strict fake.
         # None disables evaluation (the hook fails closed to ESCALATE), which
@@ -195,6 +199,18 @@ class Orchestrator:
         Dispatcher.heartbeat to stamp tasks.last_heartbeat for the
         currently-executing task without reaching into the private attribute."""
         return self._db
+
+    def redeliver_team_move_tasks(self) -> None:
+        """Task-only release seam for D; no operation release or startup owner."""
+        from runtime.orchestrator.authority import enqueue_task_generation_aware
+        if self._queue is None:
+            from runtime.orchestrator.team_move import DeferredTeamMove
+            raise DeferredTeamMove("team_move_task_queue_unavailable")
+        def publish(task_id: str, metadata: dict | None) -> bool:
+            return self._queue.enqueue_if_absent(self._slug, task_id, metadata=metadata,
+                publisher=lambda: enqueue_task_generation_aware(self, self._queue, self._slug,
+                    task_id, metadata=metadata))
+        self._team_moves.redeliver_tasks(publish)
 
     def attach_queue(self, queue: "TaskQueue") -> None:
         """Daemon boot wires its TaskQueue so run_step can enqueue follow-ups.
@@ -845,6 +861,23 @@ class Orchestrator:
         ``on_session_started`` is invoked with ``(task_id, agent_name, session_id)``
         before the subprocess starts so the daemon can register the active session.
         """
+        from runtime.orchestrator.task_pause import current_invocation
+        from runtime.orchestrator.team_move import DeferredTeamMove
+        invocation = current_invocation()
+        with self._db._lock:
+            if invocation is None:
+                # Legacy direct callers have already assembled a prompt without
+                # preparation ownership. Never adopt it for an installed move
+                # layout; absent-layout ordinary operation remains supported.
+                from runtime.infrastructure.team_move_store import validate_team_move_schema
+                if validate_team_move_schema(self._db._conn, org_slug=self._slug):
+                    raise DeferredTeamMove("team_move_unowned_task_producer")
+            elif (invocation.task.id != task_id or invocation.agent != agent
+                  or invocation.move_reservation is None
+                  or invocation.move_reservation.session_id != invocation.session_id):
+                raise DeferredTeamMove("team_move_task_identity_unavailable")
+        if invocation is not None:
+            invocation.move_reservation.before_fifo()
         task = self._db.get_task(task_id)
         agent_name = agent
         workspace = self._paths.workspaces_dir / agent_name
@@ -1757,6 +1790,8 @@ class Orchestrator:
         host_request = AdmissionRequest(
             org=self._slug,
             invocation_kind="task",
+            agent_id=agent_name,
+            move_reservation=invocation.move_reservation if invocation is not None else None,
             logical_id=(current_invocation().draft_request_key if drafts is not None and current_invocation() is not None
                         else drafts.host_request_key(task_id, agent_name, session_id)
                         if drafts is not None else task_id),
