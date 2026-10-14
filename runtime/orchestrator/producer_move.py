@@ -39,7 +39,7 @@ def owner_for(db):
 
 
 @contextmanager
-def native_writer(db, *, publisher, agents=(), teams=(), durable=True):
+def native_writer(db, *, publisher, agents=(), teams=(), durable=True, settlement=False):
     """Reservation only, never a gate/DB lock across the writer body.
 
     The caller retains its existing profile/workflow/roster/store lock order.
@@ -64,8 +64,12 @@ def native_writer(db, *, publisher, agents=(), teams=(), durable=True):
     key = uuid.uuid4().hex
     state = NativeWriterLifecycle(org_slug=admission.move.store.org_slug,
         writer_id=key, publisher=publisher, agents=tuple(agents), teams=tuple(teams))
-    with admission.move.gate, db._lock:
-        admission.check_uncommitted(agents=agents, teams=teams, global_write=unknown_membership or not (agents or teams))
+    # Native terminal recovery already owns publisher/DB; its leaf check is
+    # serialized against the operation's SAME DB COMMIT without reverse gate.
+    gate = nullcontext() if db._lock._is_owned() else admission.move.gate
+    with gate, db._lock:
+        if not settlement:
+            admission.check_uncommitted(agents=agents, teams=teams, global_write=unknown_membership or not (agents or teams))
         if durable:
             admission.write_writer(state)
         admission.writer_epoch += 1
@@ -244,6 +248,8 @@ class ProducerMoveAdmission:
         self.writer_epoch = 0
 
     def write_writer(self, state):
+        if self.db._conn.in_transaction:
+            raise DeferredTeamMove('team_move_writer_sql_owner_unavailable')
         try:
             self.db._conn.execute('BEGIN IMMEDIATE')
             self.writer_store.save_uncommitted(state)

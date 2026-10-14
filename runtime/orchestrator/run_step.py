@@ -1940,7 +1940,7 @@ def _drive_human_failed_recovery(orch: "Orchestrator", operation: _HumanFailedRe
         if authority._async_writer_lock.locked() or not db._lock.acquire(blocking=False):
             return
         acquired_db = True
-        with authority.writer_interval(publisher="human-failed-leaf-recovery"):
+        with authority.writer_interval(publisher="human-failed-leaf-recovery", settlement=True):
             params = dict(task_id=operation.task_id, agent=operation.agent,
                           session_id=operation.session_id, result_row_id=operation.result_id)
             while operation.phase != "drain_jobs":

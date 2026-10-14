@@ -758,9 +758,10 @@ class WorkflowAuthorityCoordinator:
         self,
         *,
         publisher: str,
+        settlement: bool = False,
     ) -> Iterator[_SupportedWriterInterval]:
         """Own a synchronous writer batch while leasing only mutations."""
-        with native_writer(self._db, publisher=publisher):
+        with native_writer(self._db, publisher=publisher, settlement=settlement):
             with self._publisher_lock:
                 interval = _SupportedWriterInterval(self, publisher=publisher)
                 try:
