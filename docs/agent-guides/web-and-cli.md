@@ -2379,3 +2379,47 @@ INCLUDING callback SKIPPED24342; broad/negative/mutation/repetition/protected pr
 UNEXECUTED/FOUNDER-WAIVED139429/430. Full independent review, same-final-head scoped
 QA and Source Boundary Lint + Web Lint(Node24)/local all remain required, followed
 by manager guarded merge. Root owns K2a2–K6 and operational/real-agent acceptance.
+
+
+## Saved coding grammar source — K2a2a
+
+Sole ROOT TASK10693, manager step45 and Founder THR139seq562/559/329
+bound `runtime/workflows/coding_saved_records.py` to pure, unmounted saved-record
+inspection. Setup issue/withdraw commands preserve explicit null withdrawal;
+mapping values/commands preserve original bytes, all selectors and generations,
+fixed shipped K0 definition digest, four distinct agent roles, bounded eligible
+sets and contextual underscore RoleKeys. Coding repository capsules retain K1's
+org/key/origin identity, explicit owner membership and adoption pairing without
+widening the document/K1 role grammar. Parsing grants no adoption or authority.
+
+Mapping-record/setup/capability/issuance envelope readers check the specified
+fields and equalities but **refuse** dependent captures with
+`coding_saved_authority_serialization_unavailable`. The one missing contract
+delta is the closed coding serialization of B2 `profile_evidence` and D1's
+issuance `issuer`/`admission`: existing native capture types, admission rows and
+Founder provenance do not specify those persisted nested coding values. No opaque
+authority dictionaries, guessed serialization, resolver or trusted flag are
+accepted. These are partial source readers, not complete K2a2a acceptance or
+populated J compatibility. Full original command bytes/digests are retained;
+there is no second reduced persisted form or digest-only replay.
+
+All full relational/native↔J/event/history readers remain required before any
+producer: native admission, source/result claim and task/session ancestry;
+setup pointer/withdrawal and parent/action/radius attenuation; mapping generation
+continuity and authentic adoption; run/context/binding/activation/task/request/
+receipt/contributor closure; journal replay/CAS, host/cleanup/provider/effect
+ownership; current selected access and all archived/current consumers. These
+source grammars establish no authentic issuer, active grant or valid graph.
+There is no store/roster/object/provider/network I/O. Empty paths/commands or
+null provider/SID grant no corresponding current-use authority.
+
+K2a1 continues rejecting every populated/reserved coding row, including with
+`validate_data=False`; complete F–I/J literals/references/cache/migration/recovery
+source is unchanged. K0 stays disabled, K1 current resolution unavailable,
+create-org I and startup validate-only. No producer, mounting, new transport,
+authority issuance, allocation, execution, migration or rollout is enabled.
+Python tests are RETIRED; integration including callback SKIPPED24342; all
+behavioral/security/negative/mutation/repetition/protected/executable proof is
+UNEXECUTED/FOUNDER-WAIVED139429/430. AST/raw-byte/static inspection and required
+lint/static checks supply no behavioral or test-authoring PASS. Independent FULL
+review followed by same-final-head scoped SOURCE QA remain required.
