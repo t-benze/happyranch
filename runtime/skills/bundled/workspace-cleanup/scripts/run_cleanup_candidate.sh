@@ -13,7 +13,7 @@ _WC_SCAN_HELPER="${_WC_RUNNER_SKILL_DIR:+$_WC_RUNNER_SKILL_DIR/scripts/check_pat
 _WC_SAFETY_HELPER="${_WC_RUNNER_SKILL_DIR:+$_WC_RUNNER_SKILL_DIR/scripts/worktree_safety.py}"
 
 _wc_refuse() {
-  if [ -f "${WC_ATTEMPT:-}/evidence-failed" ]; then
+  if [ "${WC_NATIVE_UNCERTAIN:-}" = 1 ] || [ -f "${WC_ATTEMPT:-}/evidence-failed" ]; then
     _wc_evidence_failure "native_capture_or_publication_uncertain"; return 3
   fi
   printf '{"decision":"%s","reason":"%s"}\n' "${2:-refused}" "$1"; return 2
@@ -23,12 +23,13 @@ _wc_refuse() {
 _wc_native() {
   local sink="$1"; shift
   # A swallowed/subshell failure must not authorize another action or restore.
-  [ ! -f "$WC_ATTEMPT/evidence-failed" ] || return 3
+  [ "${WC_NATIVE_UNCERTAIN:-}" != 1 ] && [ ! -f "$WC_ATTEMPT/evidence-failed" ] || return 3
   local native_rc=0
   python3 "$_WC_RUNNER_SKILL_DIR/scripts/prepare_cleanup.py" evidence-capture \
     --output "$sink" -- "$@" || native_rc=$?
   if ! python3 "$_WC_RUNNER_SKILL_DIR/scripts/prepare_cleanup.py" capture-check \
        --output "$sink" 2> "$WC_TMP/capture-check-error"; then
+    WC_NATIVE_UNCERTAIN=1
     { printf 'native capture/publication uncertain: %s\n' "$sink"; cat "$WC_TMP/capture-check-error"; } > "$WC_ATTEMPT/evidence-failed"
     return 3
   fi
@@ -1192,6 +1193,6 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
   fi
   run_cleanup_candidate "$1" "${2:-$1}"
   runner_rc=$?
-  if [ -f "${WC_ATTEMPT:-}/evidence-failed" ]; then runner_rc=3; fi
+  if [ "${WC_NATIVE_UNCERTAIN:-}" = 1 ] || [ -f "${WC_ATTEMPT:-}/evidence-failed" ]; then runner_rc=3; fi
   exit "$runner_rc"
 fi

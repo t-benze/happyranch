@@ -464,7 +464,8 @@ def main(argv: list[str] | None = None) -> int:
                 for sig, handler in old_handlers.items():
                     signal.signal(sig, handler)
             try:
-                if (attempt / 'evidence-failed').exists():
+                if ((attempt / 'evidence-failed').exists()
+                        or (isinstance(row['receipt'], dict) and row['receipt'].get('decision') == 'evidence_failure')):
                     row['error'] = (row['error'] + ';' if row['error'] else '') + 'native_capture_or_publication_uncertain'
                 row['eligible_sha256'] = validate_eligibility(attempt)
                 native = {key: row[key] for key in ('exit_code', 'receipt', 'stdout', 'stderr', 'error')}
