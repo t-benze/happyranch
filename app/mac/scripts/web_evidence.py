@@ -804,8 +804,15 @@ def publish_build(s,context,preparation,payload):
     return s.write('build',{**payload,'subjects':s.subjects,'source_tool_associations':s.associations},{'context':context,'preparation':preparation,'css_relation':result})
 
 
+def checked_build(s,context,preparation,build):
+    record=s.load('build',build)
+    result=validate_build(s,record['payload'],context,preparation,stored_required=True)
+    need(record['upstream']=={'context':context,'preparation':preparation,'css_relation':result},'BUILD_UPSTREAM_MISMATCH')
+    return record
+
+
 def seal_dist(s,context,preparation,build,asset_dist=None):
-    record=s.load('build',build);validate_build(s,record['payload'],context,preparation,stored_required=True)
+    record=checked_build(s,context,preparation,build)
     generated=record['payload']['final_bundle']
     with A['root_for'](s.paths.exported_source/'web/public') as root:public=A['census'](root)
     with A['root_for'](s.paths.dist) as root:dist=A['census'](root)
@@ -823,7 +830,7 @@ def seal_dist(s,context,preparation,build,asset_dist=None):
 
 
 def retain_web_notices(s,context,preparation,build,dist,asset_app,components):
-    p=load_context(s,context,preparation);record=s.load('build',build);validate_build(s,record['payload'],context,preparation,stored_required=True)
+    p=load_context(s,context,preparation);record=checked_build(s,context,preparation,build)
     d=s.load('dist',dist);need(d['upstream']['build']==build,'DIST_BINDING')
     if s.binding['venue']=='native':A['load_record']('app',s.candidate,s.paths,s.run,asset_app,s.binding['asset_context_sha256'])
     rows=[];refused=[];retained=[]
@@ -887,7 +894,7 @@ def retain_web_notices(s,context,preparation,build,dist,asset_app,components):
 
 
 def verify_web(s,context,preparation,build,dist,notices=None,asset_app=None,mapping=None):
-    record=s.load('build',build);validate_build(s,record['payload'],context,preparation,stored_required=True)
+    record=checked_build(s,context,preparation,build)
     d=s.load('dist',dist)
     need(d['upstream']['context']==context and d['upstream']['preparation']==preparation and d['upstream']['build']==build,'DIST_BINDING')
     with A['root_for'](s.paths.dist) as root:need(A['census'](root)==d['payload']['census'],'DIST_CENSUS_MISMATCH')
