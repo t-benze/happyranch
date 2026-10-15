@@ -213,7 +213,10 @@ is supplied. See accepted TASK11214 C01–C18 for the full independent contract.
 The freezer operation observer uses the original-backed PyInstaller input and
 bounded independent archive reader described in
 [the freezer contract](../../packaging/README.md#freezer-operation-custody).
-The existing daemon freeze and app cp-R execute once; observers retain their
+Darwin selects custody revision 2 with descriptor-relative snapshot writes and
+ZIP metadata budgets enforced before allocation. Historical revision 1 evidence
+remains attributed to its original input. The existing daemon freeze and app cp-R
+execute once; observers retain their
 actual generations and results. Preserve the full local scratch tree for the
 independent reader. Removing intermediate subjects makes custody unavailable.
 

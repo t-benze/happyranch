@@ -1,8 +1,8 @@
 # PyInstaller custody input
 
 This internal repack retains distribution/version `pyinstaller 6.21.0` and uses
-wheel build tag `1happyranchcustody1`. It is not an upstream release. The source
-changes are labelled HappyRanch custody revision 1, dated 2026-10-16. A later
+wheel build tag `1happyranchcustody2`. It is not an upstream release. The source
+changes are labelled HappyRanch custody revision 2, dated 2026-10-16. A later
 content revision requires a new build tag/path, identities, lock and review.
 
 The original wheel is 1,052,350 bytes, SHA256
@@ -16,7 +16,8 @@ terms or applicability determination.
 `custody.patch` changes only `PyInstaller/building/api.py` and
 `PyInstaller/building/utils.py`. PYZ/EXE/COLLECT retain actual ordered selections,
 generations, normalization edges, native return/copy results and EXE operations.
-The opt-in data contract is closed; unsupported effective strip/UPX options
+Revision 2 holds freshly admitted destination ancestry through descriptor-relative
+snapshot creation, streaming, fsync and close. The opt-in data contract is closed; unsupported effective strip/UPX options
 refuse before processing/cache use. Unopted callers retain upstream path returns.
 No loader, bootloader, compiler or configuration source changes. Bootloader
 binaries are unchanged. Native operations are observed at their existing call

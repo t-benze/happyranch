@@ -14,7 +14,7 @@
              self.name = os.path.splitext(self.tocfilename)[0] + '.pyz'
  
          # PyInstaller bootstrapping modules.
-+        # HappyRanch custody revision 1, changed 2026-10-16.
++        # HappyRanch custody revision 2, changed 2026-10-16.
 +        self.custody = _HRCustody(kwargs['custody']) if kwargs.get('custody') is not None else None
          bootstrap_dependencies = get_bootstrap_modules()
 +        if self.custody:
@@ -331,11 +331,11 @@
  
 --- a/PyInstaller/building/utils.py
 +++ b/PyInstaller/building/utils.py
-@@ -104,6 +104,347 @@
+@@ -104,6 +104,350 @@
      return os.path.join(*dest_elements)
  
  
-+# HappyRanch custody revision 1, changed 2026-10-16.
++# HappyRanch custody revision 2, changed 2026-10-16.
 +# Opt-in observations of existing operations; original notices remain above.
 +import contextlib as _hr_contextlib
 +import json as _hr_json
@@ -541,34 +541,37 @@
 +            digest = hashlib.sha256()
 +            snap = None
 +            out = None
-+            if retain:
-+                key = str(self.stage)
-+                ordinal = self.state['next'].get(key, 0)
-+                self.state['next'][key] = ordinal + 1
-+                snap = self.stage / f'{ordinal}.bin'
-+                self.charge(info.st_size, True)
-+                out = os.open(snap, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
-+            try:
-+                count = 0
-+                while True:
-+                    data = os.read(src, min(65536, cap - count + 1))
-+                    if not data:
-+                        break
-+                    count += len(data)
-+                    _hr_need(count <= cap, 'SUBJECT_CAP')
-+                    digest.update(data)
++            with _hr_contextlib.ExitStack() as destination:
++                if retain:
++                    key = str(self.stage)
++                    ordinal = self.state['next'].get(key, 0)
++                    self.state['next'][key] = ordinal + 1
++                    snap = self.stage / f'{ordinal}.bin'
++                    self.charge(info.st_size, True)
++                    stage_fd = destination.enter_context(_hr_fd(self.stage, True))
++                    out = os.open(snap.name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
++                                  0o600, dir_fd=stage_fd)
++                try:
++                    count = 0
++                    while True:
++                        data = os.read(src, min(65536, cap - count + 1))
++                        if not data:
++                            break
++                        count += len(data)
++                        _hr_need(count <= cap, 'SUBJECT_CAP')
++                        digest.update(data)
++                        if out is not None:
++                            view = memoryview(data)
++                            while view:
++                                n = os.write(out, view)
++                                _hr_need(n > 0, 'SNAPSHOT_WRITE')
++                                view = view[n:]
++                    _hr_need(count == info.st_size, 'SUBJECT_SHORT_OR_GROWING')
 +                    if out is not None:
-+                        view = memoryview(data)
-+                        while view:
-+                            n = os.write(out, view)
-+                            _hr_need(n > 0, 'SNAPSHOT_WRITE')
-+                            view = view[n:]
-+                _hr_need(count == info.st_size, 'SUBJECT_SHORT_OR_GROWING')
-+                if out is not None:
-+                    os.fsync(out)
-+            finally:
-+                if out is not None:
-+                    os.close(out)
++                        os.fsync(out)
++                finally:
++                    if out is not None:
++                        os.close(out)
 +            result = {'root': str(root), 'relative': path.relative_to(root).as_posix(),
 +                      'identity': _hr_identity(info), 'size': count, 'sha256': digest.hexdigest(),
 +                      'snapshot': str(snap) if snap else None}
@@ -679,7 +682,7 @@
  def process_collected_binary(
      src_name,
      dest_name,
-@@ -113,7 +454,8 @@
+@@ -113,7 +457,8 @@
      target_arch=None,
      codesign_identity=None,
      entitlements_file=None,
@@ -689,7 +692,7 @@
  ):
      """
      Process the collected binary using strip or UPX (or both), and apply any platform-specific processing. On macOS,
-@@ -123,12 +465,46 @@
+@@ -123,12 +468,46 @@
      In addition to given arguments, this function also uses CONF['cachedir'] and CONF['upx_dir'].
      """
      from PyInstaller.config import CONF
@@ -737,7 +740,7 @@
  
      # Match against provided UPX exclude patterns.
      upx_exclude = upx_exclude or []
-@@ -169,7 +545,7 @@
+@@ -169,7 +548,7 @@
  
      # Exit early if no processing is required after above rules are applied.
      if not use_strip and not use_upx and not is_darwin:
@@ -746,7 +749,7 @@
  
      # Prepare cache directory path. Cache is tied to python major/minor version, but also to various processing options.
      pyver = f'py{sys.version_info[0]}{sys.version_info[1]}'
-@@ -218,7 +594,7 @@
+@@ -218,7 +597,7 @@
      if cached_id in cache_index:
          # If digest matches to the cached digest, return the cached file...
          if src_digest == cache_index[cached_id]:
@@ -755,7 +758,7 @@
  
          # ... otherwise remove it.
          os.remove(cached_name)
-@@ -327,6 +703,7 @@
+@@ -327,6 +706,7 @@
              osxutils.set_dylib_dependency_paths(cached_name, target_rpath)
              osxutils.sign_binary(cached_name, codesign_identity, entitlements_file)
          except osxutils.InvalidBinaryError:
@@ -763,7 +766,7 @@
              # Raised by osxutils.binary_to_target_arch when the given file is not a valid macOS binary (for example,
              # a linux .so file; see issue #6327). The error prevents any further processing, so just ignore it.
              pass
-@@ -342,6 +719,7 @@
+@@ -342,6 +722,7 @@
              #    the actual python code is running on M1 in native arm64 mode.
              if strict_arch_validation:
                  raise
@@ -771,7 +774,7 @@
              logger.debug("File %s failed optional architecture validation - collecting as-is!", src_name)
          except Exception as e:
              raise SystemError(f"Failed to process binary {cached_name!r}!") from e
-@@ -350,7 +728,7 @@
+@@ -350,7 +731,7 @@
      cache_index[cached_id] = src_digest
      misc.save_py_data_struct(cache_index_file, cache_index)
  

@@ -39,7 +39,7 @@ MAX_MEMBERS = 16384
 KINDS = {'PYMODULE', 'PYMODULE-1', 'PYMODULE-2', 'PYSOURCE', 'PYSOURCE-1', 'PYSOURCE-2',
          'BINARY', 'EXTENSION', 'DATA', 'ZIPFILE', 'PYZ', 'EXECUTABLE', 'SYMLINK', 'OPTION'}
 VENDOR = 'packaging/vendor/pyinstaller-6.21.0'
-WHEEL = 'pyinstaller-6.21.0-1happyranchcustody1-py3-none-macosx_10_13_universal2.whl'
+WHEEL = 'pyinstaller-6.21.0-1happyranchcustody2-py3-none-macosx_10_13_universal2.whl'
 ENCODING = 'happyranch-freezer@1'
 FILES = {k: f'freezer-{k}.json' for k in ('context', 'inputs', 'output', 'copy')}
 SUBJECT_KEYS = {'root', 'relative', 'identity', 'size', 'sha256', 'snapshot'}
@@ -176,31 +176,33 @@ def observe(path, roots, budget, snapshot=None, cap=CONTAINER_CAP):
         h = hashlib.sha256()
         count = 0
         out = None
-        if snapshot is not None:
-            budget.charge(info.st_size, 'snapshots')
-            snapshot = absolute(snapshot)
-            with ASSET['RootHandle'](snapshot.parent, '/', True):
-                out = os.open(snapshot, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
-        try:
-            while True:
-                chunk = os.read(fd, min(65536, cap - count + 1))
-                if not chunk:
-                    break
-                count += len(chunk)
-                need(count <= cap, 'SUBJECT_CAP')
-                h.update(chunk)
+        with contextlib.ExitStack() as destination:
+            if snapshot is not None:
+                budget.charge(info.st_size, 'snapshots')
+                snapshot = absolute(snapshot)
+                parent = destination.enter_context(ASSET['RootHandle'](snapshot.parent, '/', True))
+                out = os.open(snapshot.name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+                              0o600, dir_fd=parent.fd)
+            try:
+                while True:
+                    chunk = os.read(fd, min(65536, cap - count + 1))
+                    if not chunk:
+                        break
+                    count += len(chunk)
+                    need(count <= cap, 'SUBJECT_CAP')
+                    h.update(chunk)
+                    if out is not None:
+                        view = memoryview(chunk)
+                        while view:
+                            n = os.write(out, view)
+                            need(n > 0, 'SNAPSHOT_WRITE')
+                            view = view[n:]
+                need(count == info.st_size, 'SUBJECT_SHORT_OR_GROWING')
                 if out is not None:
-                    view = memoryview(chunk)
-                    while view:
-                        n = os.write(out, view)
-                        need(n > 0, 'SNAPSHOT_WRITE')
-                        view = view[n:]
-            need(count == info.st_size, 'SUBJECT_SHORT_OR_GROWING')
-            if out is not None:
-                os.fsync(out)
-        finally:
-            if out is not None:
-                os.close(out)
+                    os.fsync(out)
+            finally:
+                if out is not None:
+                    os.close(out)
         return {'root': str(root), 'relative': relative, 'identity': ident(info), 'size': count,
                 'sha256': h.hexdigest(), 'snapshot': str(snapshot) if snapshot else None}
 
@@ -539,15 +541,81 @@ def pkg_members(raw, magic, pyversion, budget, expected_pkg=None):
             'python_library': lib.split(b'\0',1)[0].decode('utf-8'), 'members': rows}
 
 
+def zip_metadata(raw, budget):
+    """Bound metadata before ZipFile materializes its complete central directory.
+
+    The pinned base-library writer uses small, single-disk ZIP entries without
+    forced ZIP64 or data descriptors. ZIP64 and split archives are unsupported.
+    Member/name charges belong here exactly once, including across containers.
+    """
+    size = len(raw)
+    need(22 <= size <= CONTAINER_CAP and raw[size-22:size-18] == b'PK\x05\x06', 'ZIP_TRAILING_OR_EOCD')
+    disk, cd_disk, disk_count, declared, cd_size, cd_start, comment = struct.unpack('<4H2IH', raw[size-18:])
+    need(not comment, 'ZIP_CAP_OR_COMMENT')
+    need(disk_count != 0xffff and declared != 0xffff and cd_size != 0xffffffff
+         and cd_start != 0xffffffff and raw[max(0, size-42):size-38] != b'PK\x06\x07', 'ZIP64_UNSUPPORTED')
+    need(disk == cd_disk == 0 and disk_count == declared, 'ZIP_DISK_OR_COUNT')
+    need(cd_start + cd_size == size-22, 'ZIP_CENTRAL_RANGE')
+    # At most 1KiB per name, plus one 8MiB aggregate variable-metadata fence.
+    need(cd_size <= MAX_MEMBERS * (46 + 1024) + RECORD_CAP, 'ZIP_METADATA_CAP')
+    cursor, count, variable = cd_start, 0, 0
+
+    def extra(begin, length):
+        end = begin + length
+        while begin < end:
+            need(begin+4 <= end, 'ZIP_EXTRA_RANGE')
+            tag, amount = struct.unpack('<HH', raw[begin:begin+4])
+            need(tag != 1, 'ZIP64_UNSUPPORTED')
+            begin += 4 + amount
+            need(begin <= end, 'ZIP_EXTRA_RANGE')
+
+    while cursor < size-22:
+        need(cursor+46 <= size-22 and raw[cursor:cursor+4] == b'PK\x01\x02', 'ZIP_CENTRAL_HEADER')
+        header = struct.unpack('<4s6H3I5H2I', raw[cursor:cursor+46])
+        flags, method = header[3:5]
+        compressed, expanded_size = header[8:10]
+        namesize, extrasize, commentsize, start_disk = header[10:14]
+        offset = header[16]
+        need(compressed != 0xffffffff and expanded_size != 0xffffffff
+             and offset != 0xffffffff and start_disk != 0xffff, 'ZIP64_UNSUPPORTED')
+        need(start_disk == 0, 'ZIP_DISK_OR_COUNT')
+        end = cursor+46+namesize+extrasize+commentsize
+        need(end <= size-22, 'ZIP_CENTRAL_RANGE')
+        count += 1
+        need(count <= MAX_MEMBERS, 'ZIP_CAP_OR_COMMENT')
+        budget.charge(1, 'members')
+        need(0 < namesize <= 1024, 'NAME_INVALID')
+        label = name(raw[cursor+46:cursor+46+namesize].decode('utf-8' if flags & 0x800 else 'cp437'))
+        budget.charge(len(label.encode()), 'names')
+        variable += extrasize + commentsize
+        need(variable <= RECORD_CAP, 'ZIP_METADATA_CAP')
+        extra(cursor+46+namesize, extrasize)
+        # Bound local variable metadata too; payload and name equality are
+        # independently checked again by the existing reader below.
+        need(0 <= offset and offset+30 <= cd_start and raw[offset:offset+4] == b'PK\x03\x04'
+             and not flags & 8 and method in (0, 8), 'ZIP_LOCAL_HEADER')
+        local_flags, local_method = struct.unpack('<HH', raw[offset+6:offset+10])
+        local_compressed, local_expanded = struct.unpack('<II', raw[offset+18:offset+26])
+        local_name, local_extra = struct.unpack('<HH', raw[offset+26:offset+30])
+        need(local_compressed != 0xffffffff and local_expanded != 0xffffffff, 'ZIP64_UNSUPPORTED')
+        need(local_flags == flags and local_method == method, 'ZIP_LOCAL_HEADER')
+        need(0 < local_name <= 1024 and offset+30+local_name+local_extra+compressed <= cd_start, 'ZIP_LOCAL_RANGE_OR_NAME')
+        variable += local_extra
+        need(variable <= RECORD_CAP, 'ZIP_METADATA_CAP')
+        extra(offset+30+local_name, local_extra)
+        cursor = end
+    need(cursor == size-22 and count == declared, 'ZIP_ENTRY_COUNT')
+    return count, cd_start
+
+
 def zip_members(raw, magic, budget):
     rows, seen, total = [], set(), 0
-    eocd = raw.rfind(b'PK\x05\x06')
-    need(eocd >= 0 and eocd+22 == len(raw), 'ZIP_TRAILING_OR_EOCD')
+    count, cd_start = zip_metadata(raw, budget)
     intervals = []
     with zipfile.ZipFile(io.BytesIO(raw) if isinstance(raw,bytes) else raw) as archive:
-        need(len(archive.infolist()) <= MAX_MEMBERS and not archive.comment, 'ZIP_CAP_OR_COMMENT')
+        need(len(archive.infolist()) == count and archive.start_dir == cd_start
+             and not archive.comment, 'ZIP_METADATA_MISMATCH')
         for entry in archive.infolist():
-            budget.charge(1, 'members')
             offset = entry.header_offset
             need(0 <= offset <= offset+30 <= len(raw) and raw[offset:offset+4] == b'PK\x03\x04'
                  and not entry.flag_bits & 8 and entry.compress_type in (0,8), 'ZIP_LOCAL_HEADER')
@@ -557,7 +625,6 @@ def zip_members(raw, magic, budget):
             need(end <= archive.start_dir and raw[offset+30:offset+30+namesize].decode('utf-8' if entry.flag_bits & 0x800 else 'cp437') == entry.filename, 'ZIP_LOCAL_RANGE_OR_NAME')
             intervals.append((offset,end))
             label = name(entry.filename)
-            budget.charge(len(label.encode()), 'names')
             need(label not in seen and not entry.flag_bits & 1 and not entry.is_dir(), 'ZIP_DUPLICATE_OR_KIND')
             seen.add(label)
             need(entry.file_size <= 16*MiB and entry.file_size <= max(1, entry.compress_size)*1000, 'ZIP_EXPANSION_CAP')
@@ -760,7 +827,7 @@ class Session:
             check_subject(subject, self.roots, self.budget)
         for key in ('wheel', 'provenance'):
             check_subject(row[key], self.roots, self.budget)
-        need(row['contract'] == 'pyinstaller-6.21.0-1happyranchcustody1', 'CONTRACT')
+        need(row['contract'] == 'pyinstaller-6.21.0-1happyranchcustody2', 'CONTRACT')
         return row
 
     def snapshot(self, path, lane, stage, cap=CONTAINER_CAP):
@@ -829,7 +896,7 @@ def begin(candidate, paths, run, asset_context, toolchains):
             'directories': dirs, 'owner': owner, 'preflight':preflight, 'asset_context':asset_context,
             'toolchains':toolchains, 'sources':sources, 'wheel':wheel,
             'provenance':observe(vendor / 'provenance.json', session.roots, session.budget, cap=256*1024),
-            'contract':'pyinstaller-6.21.0-1happyranchcustody1'}, None)
+            'contract':'pyinstaller-6.21.0-1happyranchcustody2'}, None)
         return {'context':reference['sha256'], 'caller':{'candidate':asdict(candidate), 'paths':{k:str(v) for k,v in asdict(paths).items()},
                                                        'run_id':run,'context':reference['sha256'],
                                                        'helper_sha256':sources[1]['sha256']}}

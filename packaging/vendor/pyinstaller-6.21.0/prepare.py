@@ -14,7 +14,7 @@ import subprocess
 import zipfile
 
 ORIGINAL = 'pyinstaller-6.21.0-py3-none-macosx_10_13_universal2.whl'
-REPLACEMENT = 'pyinstaller-6.21.0-1happyranchcustody1-py3-none-macosx_10_13_universal2.whl'
+REPLACEMENT = 'pyinstaller-6.21.0-1happyranchcustody2-py3-none-macosx_10_13_universal2.whl'
 ORIGINAL_SHA = '327d132389f37912609e01be62810cf96b5aa95b613903e4b8692e0d12fb0eda'
 NOTICE_SHA = 'dcf75fdb959db1e3b41c0f8505069d2ece781b5ec6b3d0a4d30975cfc6580245'
 SOURCES = ('PyInstaller/building/api.py','PyInstaller/building/utils.py')
@@ -155,8 +155,8 @@ def build(original, patch, stage):
     new=dict(base); new.update(apply(base,patch,stage))
     meta=base[INFO+'METADATA']
     need(b'X-HappyRanch-Custody-Revision:' not in meta,'ORIGINAL_METADATA')
-    new[INFO+'METADATA']=meta.replace(b'\n\n',b'\nX-HappyRanch-Custody-Revision: 1\n\n',1)
-    new[INFO+'WHEEL']=base[INFO+'WHEEL']+b'Build: 1happyranchcustody1\n'
+    new[INFO+'METADATA']=meta.replace(b'\n\n',b'\nX-HappyRanch-Custody-Revision: 2\n\n',1)
+    new[INFO+'WHEEL']=base[INFO+'WHEEL']+b'Build: 1happyranchcustody2\n'
     record=io.StringIO(newline=''); writer=csv.writer(record,lineterminator='\n')
     for member in sorted(new):
         raw=new[member]

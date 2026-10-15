@@ -341,6 +341,18 @@ response4KiB; the reused JSON parser's stricter depth16/100,000-node fence also
 applies. Overflow refuses; these caps have not been calibrated by a native run.
 Container snapshots are hashed in chunks on held stable descriptors; archive
 parsing uses bounded ranges and expansion, without executing or extracting code.
+Both application and upstream snapshot writers open the ordinal leaf relative to
+freshly admitted destination descriptors, retaining ancestry checks until after
+streaming, fsync and close. ZIP metadata admission precedes ZipFile allocation:
+fixed EOCD/central/local headers, actual entry counts and cumulative names are
+bounded first. The small pinned base-library format supports single-disk stored
+or deflated entries; ZIP64, split archives, data descriptors and archive comments
+refuse. Central extras/comments and local extras share an 8MiB per-archive cap;
+extra fields must be structurally complete. Existing payload CRC, expansion,
+duplicate, local-range and complete-coverage checks remain independent. Logical
+member/name budgets are charged once in admission, cumulatively across archives.
+The Darwin input is custody revision 2; historical revision 1 receipts describe
+only their original input and head.
 
 Technical matches cannot complete PYTHON_NATIVE or BOOTLOADER_EXCEPTION_MAPPING.
 Compilation associations remain `declared_compile_origin`/`origin_unobserved`;

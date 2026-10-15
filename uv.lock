@@ -121,7 +121,7 @@ dependencies = [
 [package.dev-dependencies]
 build = [
     { name = "pyinstaller", version = "6.21.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'darwin'" },
-    { name = "pyinstaller", version = "6.21.0", source = { path = "packaging/vendor/pyinstaller-6.21.0/dist/pyinstaller-6.21.0-1happyranchcustody1-py3-none-macosx_10_13_universal2.whl" }, marker = "sys_platform == 'darwin'" },
+    { name = "pyinstaller", version = "6.21.0", source = { path = "packaging/vendor/pyinstaller-6.21.0/dist/pyinstaller-6.21.0-1happyranchcustody2-py3-none-macosx_10_13_universal2.whl" }, marker = "sys_platform == 'darwin'" },
 ]
 dev = [
     { name = "pytest" },
@@ -145,7 +145,7 @@ requires-dist = [
 [package.metadata.requires-dev]
 build = [
     { name = "pyinstaller", marker = "sys_platform != 'darwin'", specifier = "==6.21.0" },
-    { name = "pyinstaller", marker = "sys_platform == 'darwin'", path = "packaging/vendor/pyinstaller-6.21.0/dist/pyinstaller-6.21.0-1happyranchcustody1-py3-none-macosx_10_13_universal2.whl" },
+    { name = "pyinstaller", marker = "sys_platform == 'darwin'", path = "packaging/vendor/pyinstaller-6.21.0/dist/pyinstaller-6.21.0-1happyranchcustody2-py3-none-macosx_10_13_universal2.whl" },
 ]
 dev = [
     { name = "pytest", specifier = ">=7.0" },
@@ -411,7 +411,7 @@ wheels = [
 [[package]]
 name = "pyinstaller"
 version = "6.21.0"
-source = { path = "packaging/vendor/pyinstaller-6.21.0/dist/pyinstaller-6.21.0-1happyranchcustody1-py3-none-macosx_10_13_universal2.whl" }
+source = { path = "packaging/vendor/pyinstaller-6.21.0/dist/pyinstaller-6.21.0-1happyranchcustody2-py3-none-macosx_10_13_universal2.whl" }
 resolution-markers = [
     "sys_platform == 'darwin'",
 ]
@@ -423,7 +423,7 @@ dependencies = [
     { name = "setuptools" },
 ]
 wheels = [
-    { filename = "pyinstaller-6.21.0-1happyranchcustody1-py3-none-macosx_10_13_universal2.whl", hash = "sha256:3685d33a344585e96083fcfeb916780120ba0c30a63e919549da5e6028fc02d3" },
+    { filename = "pyinstaller-6.21.0-1happyranchcustody2-py3-none-macosx_10_13_universal2.whl", hash = "sha256:ad82e86911292188f2c40385c50c140b98bba2c2ebcd103fdd0a8c8dd4c699e3" },
 ]
 
 [package.metadata]
