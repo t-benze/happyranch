@@ -6,7 +6,6 @@ import { request } from './client';
 import type {
   JobRecord,
   JobOutput,
-  JobRunResponse,
   JobListResponse,
   JobTailResponse,
   JobStopResponse,
@@ -28,13 +27,6 @@ export const listJobs = (
 
 export const getJob = (slug: string, job_id: string): Promise<JobRecord> =>
   request(`/orgs/${slug}/jobs/${job_id}`);
-
-export const runJob = (
-  slug: string,
-  job_id: string,
-  body: { cwd_override?: string; timeout_seconds?: number },
-): Promise<JobRunResponse> =>
-  request(`/orgs/${slug}/jobs/${job_id}/run`, { method: 'POST', body });
 
 export const rejectJob = (
   slug: string,

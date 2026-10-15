@@ -1,5 +1,21 @@
 # Project: HappyRanch - Multi-Agent Org Runtime
 
+## Jobs — automatic admission (THR309seq1)
+
+Obtain required content authorization in a thread BEFORE submission. From a
+genuine ordinary task/session omit review_required or set false; rationale is
+optional. Parsed true refuses422 before allocation (CLI exit2), without silent
+flip/retry. HTTP201/CLI exit0 is admission, never script success; inspect actual
+reason/exit/output. Legacy true pending rows/history stay inert and visible as
+disposition backlog. Manual /run is a nonexecuting410 tombstone; both CLI run
+aliases exit2 and both Web details retain only pending Reject/running Stop.
+Initial cwd/interpreter preflight allocates no job. Later authenticated false,
+never-launched prerequisite loss alone may commit failed/spawn_failed with
+NULL start/exit, genuine finish/diagnostic/agent audit and postcommit wake.
+Preserve owner/session/Pause/possible-launch/race winners, existing running CAS,
+limits and all-terminal resumption. No schema/auth/permission/credential/general
+notifier change or deployment follows. Current contract: [Jobs](docs/superpowers/specs/2026-05-26-jobs-design.md).
+
 **Independent THR307 nightly disk sweeper — Founder seq48–51, ROOT TASK11518.**
 `runtime/daemon/disk_sweeper.py` adds machine-local03:00, default-dry-run, sequential
 org sweeping under one1800s monotonic batch window, with an owned stoppable worker

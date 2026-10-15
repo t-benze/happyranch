@@ -197,10 +197,11 @@ An `allow_rules` update is not a live permission change on every executor:
 | **opencode** | The effective surface is the generated `opencode.json`. An **`allow_rules`-only update does not re-run the workspace bootstrap** (regeneration is gated on a system-prompt or executor change), so the grant is inert until a bootstrap-forcing change or `happyranch init-agent`. This is an open limitation, not repaired here. |
 
 Request the narrowest prefix plus the skill step that needs it and why a
-reviewed one-off job is insufficient. Approval of one job never expands ongoing
-permissions; no self-edit or new grant endpoint exists. A one-off blocked
-operation is a reviewed **job** (see the **jobs** skill), not an `allow_rules`
-change.
+thread-authorized one-off job is insufficient. Authorization of one command
+never expands ongoing permissions; no self-edit or new grant endpoint exists.
+For a one-off blocked operation, obtain required authorization in a thread
+BEFORE submitting an automatic **job** from an ordinary task session (see the
+**jobs** skill). Omit/set false for review_required; true is refused, never queued.
 
 ## Agent naming
 

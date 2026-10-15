@@ -81,8 +81,8 @@ second terminal callback with the same token returns 409.
 NOT a task session id and it authorizes no job submission or other side effect.
 If a thread turn reveals a skill operation blocked by an executor permission
 refusal, do not try to run it here: dispatch a task to yourself (or route it to
-the owning agent), and that task session then uses the reviewed-job rail
-documented in the **jobs** and **start-task** skills.
+the owning agent). Obtain required authorization in the thread BEFORE automatic
+job submission from that ordinary task session, as documented in the **jobs** and **start-task** skills.
 
 ## Identify the trigger
 
@@ -393,8 +393,8 @@ to append to a thread remains **post-as-agent** (attributed to you) or
 ## What NOT to do
 
 - Do NOT spawn arbitrary side-effects (run repos, hit APIs) inside a thread
-  invocation. Threads are conversation. Side-effects flow through tasks. A
-  reviewed job is a side effect too: the `invocation_token` is not a task
+  invocation. Threads are conversation. Side-effects flow through tasks. Any
+  job is a side effect too: the `invocation_token` is not a task
   session id, so submit it from a dispatched task, not from the thread turn.
 - Do NOT issue multiple terminal callbacks (reply AND decline) in one
   invocation. One terminal outcome per turn. Dispatch is the only non-terminal

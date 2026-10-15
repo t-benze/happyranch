@@ -985,7 +985,7 @@ limits. Other authoring, revise, slice and total-step rules stay unchanged.
 - **Founder-facing executor-switch.** `happyranch set-executor` switches an existing agent's executor end-to-end in the org `.md` frontmatter and executor bootstrap (THR-095: agent.yaml is no longer synced). A real executor change clears the old executor-specific `model`; an idempotent request preserves it. The shared canonical instruction pair (`AGENTS.md` + `CLAUDE.md -> AGENTS.md`) and `.claude/skills` are preserved across a switch; only the executor-only `.claude/settings.json` is stale and WARNs by default; cleanup requires an explicit `--clean` flag. CLI-only — no web surface. Commit cf4c9e0; impl `cli/commands/agents.py`, `runtime/daemon/routes/agents.py`.
 - **Per-agent memory.** Each agent keeps durable `MEM-NNN` learnings plus task recall. Specs `docs/superpowers/specs/2026-04-18-agent-memory-design.md` (superseded), `docs/superpowers/specs/2026-05-13-per-agent-learnings-structural-upgrade-design.md`; impl `runtime/infrastructure/learnings_store.py`. See [Per-Agent Learnings](#per-agent-learnings) below for traps.
 - **Retired System Assistant.** Feature routes/CLI/settings/dock are removed. Legacy files, links and historical records remain inert.
-- **Jobs.** Background subprocesses run by the daemon, with two policy flags (`review_required`, `persistent`) and founder-review gating. Spec `docs/superpowers/specs/2026-05-26-jobs-design.md` (current); skill `runtime/skills/bundled/jobs/SKILL.md`; impl `runtime/daemon/routes/jobs.py`, `runtime/daemon/jobs_runner.py`. (Jobs absorbed the earlier "agent script requests" feature, `docs/superpowers/specs/2026-05-23-agent-script-requests-design.md`, now superseded.) See [Jobs](#jobs) below for traps.
+- **Jobs.** Background subprocesses run by the daemon, with automatic admission and independent persistence; content authorization precedes submission in a thread. Spec `docs/superpowers/specs/2026-05-26-jobs-design.md` (current); skill `runtime/skills/bundled/jobs/SKILL.md`; impl `runtime/daemon/routes/jobs.py`, `runtime/daemon/jobs_runner.py`. (Jobs absorbed the earlier "agent script requests" feature, `docs/superpowers/specs/2026-05-23-agent-script-requests-design.md`, now superseded.) See [Jobs](#jobs) below for traps.
 - **Task blocked by job.** A task can self-block on one or more jobs via `tasks.blocked_on_job_ids`; it auto-resumes when all are terminal. Spec `docs/superpowers/specs/2026-05-28-task-blocked-by-job-design.md`. See [Task Blocked By Job](#task-blocked-by-job) below for traps.
 - **PR CI wait / guarded merge.** PR-producing engineering tasks use the jobs + `blocked_on_job_ids` path to wait for GitHub CI outside the agent session. Two CLI entrypoints (`python -m runtime.daemon.pr_ci_waiter` and `python -m runtime.daemon.pr_ci_merge`) wired to real `gh` provide the polling and guarded-merge mechanisms. The poll job (submitted through the existing jobs path with `review_required=false`) polls checks for a pinned PR head SHA, handles no-checks-yet settling, detects stale heads and timeouts, and prints a structured verdict JSON. The poll job performs NO merge. On resume, the task owner triggers `guarded_merge` as a short daemon-run step; it re-enforces all guards (review APPROVE + QA PASS + CI PASS + unchanged SHA + mergeable CLEAN) before merge. No new daemon route, no new task state, and no raw `gh pr merge` permission broadening. Current contract: `docs/agent-guides/orchestrator-contracts.md` (including the **Merge-evidence contract** — the canonical vocabulary `APPROVE | REQUEST_CHANGES | BLOCK | PASS | REVISE | FAIL` and the structured-vs-prose extraction rules: a NON-NULL structured `verdict` is primary; serialized `null`, the durable recall producer's representation of legacy/no-structured rows, uses the strict annotated-prose fallback); implementation: `runtime/daemon/pr_ci_waiter.py`, `runtime/daemon/pr_ci_merge.py`.
 
@@ -1624,6 +1624,19 @@ Traps:
 
 ## Jobs
 
+Authorize contents in a thread BEFORE ordinary task/session submission.
+Omitted/false review_required enters automatic admission, rationale optional;
+true refuses422 before allocation (new CLI exit2), never flip/retry. /run is a
+nonexecuting410 tombstone; both CLI aliases exit2 and both Web details omit Run.
+Legacy true pending rows stay unchanged, never launch on startup/Resume, and
+remain visible as accurate disposition backlog with individual reasoned Reject.
+Initial cwd/interpreter preflight allocates nothing; genuine authenticated false
+never-launched prerequisite loss alone commits failed/spawn_failed, NULL
+start/exit, actual finish/diagnostic/agent audit and journal before the existing
+wake. Holds/owners/session refusals, possible launch, race winners, limits and
+running CAS stay intact. Admission is not script success; completed/nonzero is
+unsuccessful. [Current contract](../superpowers/specs/2026-05-26-jobs-design.md).
+
 Per-org jobs use a SQLite table and files at `<runtime>/orgs/<slug>/jobs/JOB-NNN.{out,err,script}`. Spec: `docs/superpowers/specs/2026-05-26-jobs-design.md`.
 
 Implementation: `runtime/daemon/routes/jobs.py`, `runtime/daemon/jobs_runner.py`, `runtime/infrastructure/database.py`, and `runtime/infrastructure/audit_logger.py`.
@@ -1634,7 +1647,7 @@ Traps:
 
 - Agent identity derives from auth context, never payload `agent`.
 - Submit auth path: `(task_id + session_id)`.
-- `review_required` and `persistent` are honor-system on submit.
+- Parsed true review_required refuses422; only omitted/false enters automatic admission. Persistence remains independent.
 - Auto-resume on terminal supersedes founder revisit for blocked-on-job tasks.
 - Graceful daemon teardown stops task-queue admission before signalling jobs.
   A job actually signalled there persists `failed/daemon_shutdown` with its
@@ -1665,7 +1678,7 @@ Traps:
 - "No checks" is not pass. Use required contexts when branch protection provides them, otherwise require explicit expected checks and a bounded settle window.
 - GitHub `mergeable` / `mergeStateStatus` is not CI green. It is one guard in addition to CI pass.
 - Do not use `gh pr merge --auto` as proof of safety while required checks are absent on `main`.
-- Merge completion is allowed only through the guarded helper or founder-reviewed job, not broad worker `gh pr merge` allow-rules.
+- Merge completion is allowed only through the guarded helper or an explicitly thread-authorized manager job, not broad worker `gh pr merge` allow-rules.
 - The poll job entrypoint is `python -m runtime.daemon.pr_ci_waiter --repo ... --pr N --head-sha <sha> --expected-check ...`; the merge entrypoint is `python -m runtime.daemon.pr_ci_merge --org ... --repo ... --pr N --head-sha <sha> --merge-method ... --ci-verdict ... --review-task-id ... --qa-task-id ...`. Both print structured JSON to stdout and exit with mapped codes.
 
 ## Reply-delivery compact retry captions
@@ -1719,7 +1732,7 @@ running/queued/succeeded or parent resumed/completed. Backend/protected proof
 remains unexecuted; synthetic frontend observations establish only that boundary.
 
 
-Task Pause is a separate root control with generation-checked, idempotent toggles. New Pending-root Pause is409; terminal lifecycle wins. Pausing means committed work or unavailable drain evidence remains; Paused requires complete absence of blockers. A callback, PID0 placeholder, persisted PID or passthrough CLEAN receipt cannot prove tree quiescence. Committed work can settle while held, but future steps/retries/job approvals and founder origin Continue/supersede/revisit/dispatch(resolves) are gated. Only a captured ordinary-purpose actually running session (including a normal v2-admitted manager session) retains its unreviewed auto-job exception. Cancel, job reject/stop and genuine result settlement remain available. Another accepted manager successor root remains unheld. Overview is bounded/read-only and never safe-to-restart. [Current contract](../superpowers/specs/2026-10-10-root-task-pause-resume.md).
+Task Pause is a separate root control with generation-checked, idempotent toggles. New Pending-root Pause is409; terminal lifecycle wins. Pausing means committed work or unavailable drain evidence remains; Paused requires complete absence of blockers. A callback, PID0 placeholder, persisted PID or passthrough CLEAN receipt cannot prove tree quiescence. Committed work can settle while held, but future steps/retries/automatic job admission and founder origin Continue/supersede/revisit/dispatch(resolves) are gated. Only a captured ordinary-purpose actually running session (including a normal v2-admitted manager session) retains its unreviewed auto-job exception. Cancel, job reject/stop and genuine result settlement remain available. Another accepted manager successor root remains unheld. Overview is bounded/read-only and never safe-to-restart. [Current contract](../superpowers/specs/2026-10-10-root-task-pause-resume.md).
 
 Unclaimed completion recovery retains the actual original return and SIDs while held, with no running deadline. Its 120-second deadline is pinned atomically with the accepted real admission/claim, binding and launch journal. Preclaim/admission waiting spends nothing; claimed recovery retains its expiry across Resume, duplicates, retry and restart, including committed no-launch failure. Unresolved original host/tree evidence is separately retained under the original session/owner/generation before recovery conversion. It remains an unknown drain blocker after callbacks, terminal lifecycle, restart or quiescent recovery, without owning a new producer. Known-quiescent originals add no unknown blocker, and deferred unclaimed recovery alone is not execution.
 

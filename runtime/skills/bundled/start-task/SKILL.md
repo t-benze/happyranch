@@ -482,38 +482,27 @@ logs/screenshots/review packets to Shared Artifacts as an ownership workaround.
 
 ## Permission walls
 
-If your executor refuses one concrete command, first classify the failure (see
-the **jobs** skill). Only an actual executor permission/sandbox refusal is fixed
-by a reviewed job; a missing binary, an auth/credential error, a network/service
-failure, a denied product policy, and an ordinary command bug are not.
+If your executor refuses one concrete command, classify the failure and record
+redacted evidence using the **jobs** skill. Missing tools, credentials, network
+failures and product policy denials are not executor permission refusals.
 
-**One-off operation.** Use the **jobs** skill to submit one reviewed bounded job
-with `review_required=true` and a concrete rationale, then report
-`status="blocked"` with its `JOB-NNN` in `waiting_on_job_ids`. Resume only
-through the existing job-result workflow. Pi has no HappyRanch-managed
-command-refusal surface, so founder-grade Pi operations still use a reviewed
-job. Review authorizes only that job and does not grant new executor permissions.
+**One-off operation.** Obtain any required exact content authorization in an
+existing thread BEFORE submission. From a genuine ordinary task session, use
+the **jobs** form with deprecated `review_required` omitted/false. True refuses
+422 before allocation (CLI exit2); never flip/retry or request job approval.
+No job grants executor permissions or blanket authority over its contents.
+Pi likewise requires the existing authorization before a daemon operation.
 
-Blocked report (worker shape):
+For an actual nonterminal owned job you must wait on, report `status="blocked"`
+and its ID in `waiting_on_job_ids`. This is a real result wait, not an approval
+request. An unresolved authorization question has no job ID: report the precise
+blocker with `waiting_on_job_ids` omitted. Admission is not script success;
+inspect actual status/reason/exit/output on resume. Legacy true pending jobs
+never run; inspect history and use explicit one-ID reject with a reason if
+appropriate. Both run aliases are local tombstones; `/run` returns410.
 
-```json
-{
-  "task_id": "<TASK>",
-  "session_id": "<session>",
-  "agent": "<you>",
-  "status": "blocked",
-  "confidence": 0,
-  "summary": "Skill <slug>@<version> step N is blocked by an executor permission refusal; submitted reviewed JOB-NNN for the single minimum operation. Awaiting founder review.",
-  "waiting_on_job_ids": ["JOB-NNN"]
-}
-```
-
-```bash
-happyranch report-completion --org {ORG_SLUG} --from-file /tmp/completion-<task_id>.json
-```
-
-**Role-specific callback fields.** The shape above is the *worker* shape. Add
-the fields your injected role contract requires:
+**Role-specific callback fields.** Use the ordinary worker completion shape
+and add the fields your injected role contract requires:
 
 - a **worker** sends `status` + `summary` (and `waiting_on_job_ids` only while a
   live job wait exists);
@@ -561,7 +550,7 @@ effects. Then:
   blocked disposition **omitting `waiting_on_job_ids` entirely**.
 - `running` — stay blocked; never duplicate the submission.
 
-**Context boundaries.** A normal active task session may submit a reviewed job.
+**Context boundaries.** A normal active task session may submit an authorized automatic job.
 A resumed (ordinary) task may submit a new job only under ordinary rules if one
 is genuinely needed. A **completion-recovery turn** (THR-247) may only observe
 an already-owned job and its wait result — it cannot submit new jobs. A **thread
@@ -569,7 +558,7 @@ turn** carries an `invocation_token` that authorizes only the thread callback:
 it is not a task session id and authorizes no job; route side-effect work through
 a supported task dispatch.
 
-**Lasting changes.** A reviewed job is for one operation. A *lasting* permission
+**Lasting changes.** Thread authorization for a job is for that exact operation. A *lasting* permission
 change goes through the founder-approved central `manage-agent` workflow
 invoked by a **team manager** (never the affected worker editing itself); a
 worker, or a manager changing its own rules, escalates to the founder. The
