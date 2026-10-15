@@ -14,8 +14,9 @@ the current name and do not forward. Founder is a separate human; recipient
 transport remains `@founder`. Metadata failure gives ID-only context.
 
 CLI send/reply and both compose upload modes preflight former tokens before
-associated uploads; forward validates final quoted+note text. Quoted and email
-interior matches remain active. Unknown body text is unchanged. Preflight is
+associated uploads; forward validates final quoted+note text. Ordinary quoted
+prose remains eligible; email/word interiors, escaped tokens
+and supported code are literal. Unknown body text is unchanged. Preflight is
 read-only, not a reservation or rollback across upload/message requests. The
 server still owns admission; a rename between requests can leave an independent
 upload before the message refuses. Resumed/fallback prompts refresh current
@@ -29,8 +30,10 @@ verification and independent acceptance belong in the maker handoff.
 
 Human recipients and @mentions may use current names or permanent IDs; the
 server resolves them to canonical IDs. Former names refuse409 with the current
-name and never forward, including mixed former/current/founder text. The token
-grammar is unchanged; unknown text normally retains fallback. Founder-only
+name and never forward, including mixed former/current/founder text. The ASCII
+token charset is unchanged; explicit prose boundaries exclude email/word
+interiors, escaped tokens and supported code. Unknown text normally retains
+fallback. Founder-only
 current mentions create no new agent wake but retain existing due catch-up and
 delivery obligations. Founder is a human inbox recipient, never an executor.
 Do not substitute names for composer/speaker/agent/task/session/invocation-token
@@ -42,6 +45,17 @@ Separate pre-uploaded attachments already exist independently of a later send;
 former-name refusal leaves those prior objects unchanged. CLI pre-upload/target resolution and current/resumed prompt source are now
 described above; neither source paragraph claims behavioral verification.
 Keep the existing callback shapes and authentication mechanics below.
+
+New-message body admission excludes email/word interiors, escaped tokens and
+supported inline/fenced code; ordinary quoted prose remains eligible. Literal-only
+bodies perform no body naming lookup. Genuine body aliases fail closed on service
+failure, including empty explicit recipients and per-token unavailability. Known
+actual canonical IDs retain owner checks; ID-shaped aliases supply no evidence.
+Observed Former refusal precedes later chunk failures. en/zh-CN service wording
+asks for retry or a known intended-recipient ID, with no body rewrite, automatic
+retry/send or locale-triggered effect. Historical messages/delivery and release
+measurement keep their original interpretation. The exact finite scanner contract
+is in the current identity-names core spec (THR293seq174).
 
 You've been invoked because something happened on a thread (THR-NNN). The full
 prior history is in your prompt, along with a note explaining WHY you were
@@ -88,6 +102,7 @@ The "You have been invoked because" line tells you which case applies:
 Pick exactly one terminal outcome (reply OR decline). You MAY additionally
 dispatch a task before the terminal callback; dispatch alone does not end the
 turn.
+
 
 ### Reply
 

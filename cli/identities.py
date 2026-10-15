@@ -60,13 +60,15 @@ def display(names: dict[str, str], canonical_id: str | None) -> str:
     return names.get(canonical_id, canonical_id or "-")
 
 
-def _resolutions(client, slug: str, addresses: list[str], *, context: str, thread_id=None):
+def _resolutions(client, slug: str, addresses: list[str], *, context: str, thread_id=None, body_preflight=False):
     payload = {"addresses": addresses, "context": context}
     if thread_id is not None:
         payload["thread_id"] = thread_id
     try:
         response = client.post(f"/api/v1/orgs/{slug}/identities/resolve", json=payload)
     except httpx.RequestError:
+        if body_preflight:
+            raise
         return None
     if response.status_code in (404, 503):
         # 404 unknown_thread still belongs to the final action owner. This is
@@ -124,19 +126,44 @@ def agent_target(client, slug: str, address: str, *, lifecycles=None, historical
 
 
 def preflight_body(client, slug: str, body: str | None) -> None:
-    """Check former tokens before uploads; never rewrite or reserve the body.
+    """Read-only NEW-message prose admission before associated uploads.
 
-    Match the shipping server parser, including quoted/email-interior tokens.
-    Unknown/invalid tokens remain ordinary body text. Server admission still
-    owns the action and may reject if names change after this separate read.
+    Literal email/code/escaped text performs no body naming lookup. Historical
+    target lookup compatibility is separate; server revalidates the final body.
     """
     from runtime.infrastructure.thread_mentions import parse_mentions
     validate_body(body)
     tokens = parse_mentions(body)
+    known_ids: set[str] | None = None
+
+    def known_body_id(address: str) -> bool:
+        nonlocal known_ids
+        if address.lower() == "founder":
+            return True
+        if known_ids is None:
+            # Actual canonical owner projection, never infer IDs from spelling.
+            known_ids = {row["canonical_id"] for row in identity_rows(client, slug)
+                         if row.get("kind") == "agent" and isinstance(row.get("canonical_id"), str)
+                         and row.get("lifecycle") in ("active", "pending", "terminated")}
+        return address.lower() in known_ids
+
     for start in range(0, len(tokens), 128):
-        rows = _resolutions(client, slug, tokens[start:start + 128], context="lookup")
+        chunk = tokens[start:start + 128]
+        try:
+            rows = _resolutions(client, slug, chunk, context="lookup", body_preflight=True)
+        except httpx.RequestError:
+            if any(not known_body_id(address) for address in chunk):
+                fail("naming service request failed; message addressing could not be checked; retry the service read")
+            rows = None
+        # Former takes precedence over unavailable peers in this chunk and
+        # later chunks; do not perform an upload or contextual target lookup.
         for row in rows or []:
             _former(row)
+        for index, address in enumerate(chunk):
+            status = rows[index].get("status") if rows is not None else "naming_unavailable"
+            if status == "naming_unavailable" and not known_body_id(address):
+                fail("naming service is unavailable; current-name addressing cannot be checked; "
+                     "retry, or use a known permanent ID for the intended recipient")
 
 
 def filter_target(client, slug: str, address: str | None) -> str | None:

@@ -13,6 +13,7 @@
  * composing CJK input commits the composition without triggering submit.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { openMention } from '@/lib/threadMentions';
 import { MentionAutocomplete } from './MentionAutocomplete';
 import type { AddressOption } from './MentionAutocomplete';
 
@@ -29,17 +30,6 @@ function useAutoGrow(
     el.style.height = 'auto';
     el.style.height = Math.min(el.scrollHeight, maxPx) + 'px';
   }, [ref, value, maxPx]);
-}
-
-function detectOpenMention(text: string, caret: number):
-  | { query: string; tokenStart: number }
-  | null {
-  for (let i = caret - 1; i >= 0; i--) {
-    const ch = text[i];
-    if (ch === '@') return { query: text.slice(i + 1, caret), tokenStart: i };
-    if (/\s/.test(ch)) return null;
-  }
-  return null;
 }
 
 const DEFAULT_CLASSNAME =
@@ -105,7 +95,7 @@ export function MentionTextarea({
     const el = textareaRef.current;
     if (!el || disabled) { setMention(null); return; }
     const caret = el.selectionStart ?? 0;
-    const m = detectOpenMention(value, caret);
+    const m = openMention(value, caret);
     if (!m) { setMention(null); return; }
     const rect = el.getBoundingClientRect();
     setMention({ query: m.query, tokenStart: m.tokenStart, anchor: { x: rect.left, y: rect.top, width: rect.width, height: rect.height } });

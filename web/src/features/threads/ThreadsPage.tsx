@@ -1,4 +1,4 @@
-import { useIdentityOptions, usePreflightAddresses, namingAddressError } from '@/hooks/identities';
+import { useIdentityOptions, useKnownAgentIds, usePreflightAddresses, namingAddressError } from '@/hooks/identities';
 import { IdentityName } from '@/shared/identities/IdentityName';
 /**
  * ThreadsPage — list + detail reshape (§4.2, design-overhaul).
@@ -621,7 +621,7 @@ export function ThreadsPage(): JSX.Element {
     [messages, activeThread.data?.reply_delivery],
   );
   const nowMs = useNowMs(anyWorking);
-
+  const knownAgentIds = useKnownAgentIds(agents);
   // Send mutation lives at the page level so the Composer pattern is pure.
   const sendFollowUp = useSendFollowUp(threadId ?? '');
   const preflight = usePreflightAddresses();
@@ -773,7 +773,7 @@ export function ThreadsPage(): JSX.Element {
     // succeed so a later send failure is never blamed on the last file.
     let failedUpload: PendingAttachment | null = null;
     try {
-      await preflight.mutateAsync({ slug: capturedSlug, context: 'thread_recipient', thread_id: capturedThreadId, body: markdown, canonicalAgentIds: composerAgents.map((a) => a.name), allowFounder: true });
+      await preflight.mutateAsync({ slug: capturedSlug, context: 'thread_recipient', thread_id: capturedThreadId, body: markdown, canonicalAgentIds: knownAgentIds, allowFounder: true });
       const refs: ThreadAttachmentRef[] = [];
       for (const pending of attachments) {
         failedUpload = pending;

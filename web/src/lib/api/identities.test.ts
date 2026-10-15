@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, test } from 'vitest';
 import { http, HttpResponse } from 'msw';
 import { server } from '@/test/server';
 import { bodyAddresses, isEditableAddressableName, listIdentities, preflightAddresses, renameAgent, renameFounder, resolveIdentities } from './identities';
+import { openMention } from '../threadMentions';
 import type { IdentityView } from './types';
 
 const agent: IdentityView = { canonical_id: 'worker', kind: 'agent', lifecycle: 'active', addressable_name: 'Current', name_revision: 2, canonical_definition_revision: null, naming_status: 'ready' };
@@ -30,7 +31,7 @@ describe('naming adapters — mocked source contract', () => {
   test('editable grammar is exact; historical underscore IDs never widen rename grammar', () => {
     for (const name of ['A', '0_name-Test', 'a'.repeat(64)]) expect(isEditableAddressableName(name)).toBe(true);
     for (const name of ['', '_worker', ' A', 'A ', '张三', 'A.B', 'a'.repeat(65)]) expect(isEditableAddressableName(name)).toBe(false);
-    expect(bodyAddresses('> "mail@Former and @Current" @unknown @A.B @_worker')).toEqual(['Former', 'Current', 'unknown', 'A.B']);
+    expect(bodyAddresses('> "mail@Former and @Current" @unknown @A.B @_worker')).toEqual(['Current', 'unknown', 'A.B']);
   });
   test('recognized former body is refused before resolving recipients; unknown body stays literal', async () => {
     const calls: unknown[] = [];
@@ -38,7 +39,7 @@ describe('naming adapters — mocked source contract', () => {
       const body = await request.json() as { addresses: string[]; context: string }; calls.push(body);
       return HttpResponse.json({ resolutions: body.addresses.map((address) => ({ address, status: address === 'Former' ? 'former_name' : 'unknown_identity', identity: address === 'Former' ? agent : null, eligible: false })) });
     }));
-    await expect(preflightAddresses({ slug: 'one', context: 'thread_recipient', recipients: ['worker'], body: 'email@Former', canonicalAgentIds: ['worker'] })).rejects.toMatchObject({ resolution: { status: 'former_name' } });
+    await expect(preflightAddresses({ slug: 'one', context: 'thread_recipient', recipients: ['worker'], body: '> @Former', canonicalAgentIds: ['worker'] })).rejects.toMatchObject({ resolution: { status: 'former_name' } });
     expect(calls).toEqual([{ addresses: ['Former'], context: 'lookup' }]);
     expect(await preflightAddresses({ slug: 'one', context: 'thread_recipient', body: '@unknown', canonicalAgentIds: [] })).toEqual({ recipients: [] });
   });
@@ -48,5 +49,105 @@ describe('naming adapters — mocked source contract', () => {
     expect(await preflightAddresses({ slug: 'one', context: 'thread_recipient', recipients: ['_worker'], canonicalAgentIds: ['_worker'] })).toEqual({ recipients: ['_worker'] });
     await expect(preflightAddresses({ slug: 'one', context: 'thread_recipient', recipients: ['Current'], canonicalAgentIds: ['_worker'] })).rejects.toMatchObject({ resolution: { status: 'naming_unavailable' } });
     expect(requests).toBe(2);
+  });
+});
+
+// TASK11431 finite groups1/2/3/6: shipping extraction, not renderer equivalence.
+const lexicalCases: [string, string[]][] = [
+  ['the contact email is `contact@danze.ltd`', []],
+  ['contact@Former word@Current @@Current a.b+tag@Current /@Current .@Current', []],
+  ['(@Current), "@Other" >@Current @Current. @current @_worker @A.B', ['Current', 'Other', 'current', 'A.B']],
+  ['\\@Former \\\\@Current word\\\\@Other', ['Current']],
+  ['\\` @Current', ['Current']],
+  ['`@Former` @Current', ['Current']],
+  ['``one ` @Former`` @Current', ['Current']],
+  ['`@Former\\` @Current', ['Current']],
+  ['`\n\n@Current\n\n`', ['Current']],
+  ['`\r\n\r\n@Current\r\n\r\n`', ['Current']],
+  ['`\r\r@Current\r\r`', ['Current']],
+  ['`\n@Current', ['Current']],
+  ['> `\n@Current\n`', ['Current']],
+  ['`\n> @Current\n`', ['Current']],
+  ['`\n@Current\n`', []],
+  ['> `\n> @Former\n> `\n@Current', ['Current']],
+  [' > ```\n> @Former\n@Current', ['Current']],
+  [' > ```\r\n> @Former\r\n@Current', ['Current']],
+  [' > ```\n> @Former\n>\n> @Other\n@Current', ['Current']],
+  [' > ```\n> @Former\n\n@Current', ['Current']],
+  [' > ```\n> @Former\n>> @Current', ['Current']],
+  ['```\n@Former\n> @Current', []],
+  ['```\n@Former\n```\n@Current', ['Current']],
+  ['~~~~ info `\n@Former\n~~~\n@Other\n~~~~~ \t\n@Current', ['Current']],
+  ['```info` @Current', ['Current']],
+  ['email@Former `@Other`\n@Current', ['Current']],
+  [' > ```\n> @Current\n@Former', ['Former']],
+];
+describe('new-message lexical contract', () => {
+  beforeEach(() => sessionStorage.setItem('happyranch.token', 'mock-token'));
+  test.each(lexicalCases)('extracts prose tokens from %j', (body, expected) => {
+    expect(bodyAddresses(body)).toEqual(expected);
+    for (const match of body.matchAll(/@([A-Za-z0-9][A-Za-z0-9_-]*(?:\.[A-Za-z0-9_-]+)*)/g)) {
+      const hint = openMention(body, match.index! + match[0].length);
+      if (hint) expect(expected).toContain(match[1]);
+    }
+  });
+  test('caret uses complete code/paragraph/container regions and terminating punctuation', () => {
+    for (const body of ['contact@Current', '`@Current`', '```\n@Current', '\\@Current']) {
+      const caret = body.indexOf('@Current') + 8;
+      expect(openMention(body, caret)).toBeNull();
+    }
+    for (const body of ['(@Current),', '`\n\n@Current\n\n`', ' > ```\n> @Former\n@Current', '`\n@Current']) {
+      const at = body.indexOf('@Current');
+      expect(openMention(body, at + 8)).toEqual({tokenStart:at,query:'Current'});
+    }
+    expect(openMention('hi @',4)).toEqual({tokenStart:3,query:''});
+    expect(openMention('@Current.',9)).toBeNull();
+    expect(openMention('@Current suffix',10)).toBeNull();
+  });
+  test('uses the finite shared whitespace set, excluding FEFF and Python-only controls', () => {
+    const spaces = [9,10,11,12,13,32,133,160,5760,...Array.from({length:11},(_,i)=>8192+i),8232,8233,8239,8287,12288];
+    for (const cp of spaces) expect(bodyAddresses(`${String.fromCodePoint(cp)}@Current`)).toEqual(['Current']);
+    for (const cp of [0xfeff,28,29,30,31]) expect(bodyAddresses(`${String.fromCodePoint(cp)}@Current`)).toEqual([]);
+  });
+  test('literal-only input performs zero body resolution reads', async () => {
+    let reads = 0;
+    server.use(http.post('/api/v1/orgs/one/identities/resolve', () => { reads++; return HttpResponse.json({}, {status:503}); }));
+    expect(await preflightAddresses({slug:'one',context:'thread_recipient',body:'email@Former `@Current`',canonicalAgentIds:[]})).toEqual({recipients:[]});
+    expect(reads).toBe(0);
+  });
+  test.each(['503','per-token'] as const)('body alias with empty recipients refuses %s unavailable', async (failure) => {
+    const reads: unknown[] = [];
+    server.use(http.post('/api/v1/orgs/one/identities/resolve', async ({request}) => {
+      const body = await request.json() as {addresses:string[]}; reads.push(body);
+      return failure === '503' ? HttpResponse.json({detail:{code:'naming_unavailable'}},{status:503})
+        : HttpResponse.json({resolutions:body.addresses.map(address=>({address,status:'naming_unavailable',identity:null,eligible:false}))});
+    }));
+    await expect(preflightAddresses({slug:'one',context:'thread_recipient',body:'@current',canonicalAgentIds:['worker']})).rejects.toMatchObject({resolution:{status:'naming_unavailable'}});
+    expect(reads).toEqual([{addresses:['current'],context:'lookup'}]);
+  });
+  test('known body IDs and manual Founder survive unavailable naming, ID-shaped aliases do not', async () => {
+    server.use(http.post('/api/v1/orgs/one/identities/resolve', () => HttpResponse.json({detail:{code:'naming_unavailable'}},{status:503})));
+    expect(await preflightAddresses({slug:'one',context:'thread_recipient',body:'@WORKER @founder',canonicalAgentIds:['worker'],allowFounder:true})).toEqual({recipients:[]});
+    await expect(preflightAddresses({slug:'one',context:'thread_recipient',recipients:['worker'],body:'@unknown',canonicalAgentIds:['worker']})).rejects.toMatchObject({resolution:{status:'naming_unavailable',address:'unknown'}});
+    // Lookup compatibility applies only to explicit read targets, never body aliases.
+    await expect(preflightAddresses({slug:'one',context:'lookup',body:'@unknown',canonicalAgentIds:[]})).rejects.toMatchObject({resolution:{status:'naming_unavailable'}});
+  });
+  test.each([500,422])('unresolved body HTTP %i keeps infrastructure/validation category', async (status) => {
+    server.use(http.post('/api/v1/orgs/one/identities/resolve',()=>HttpResponse.json({detail:{code:'server_or_validation_error'}},{status})));
+    await expect(preflightAddresses({slug:'one',context:'thread_recipient',body:'@Current',canonicalAgentIds:[]})).rejects.toMatchObject({status});
+  });
+  test('network failure remains a transport error for unresolved body', async () => {
+    server.use(http.post('/api/v1/orgs/one/identities/resolve',()=>HttpResponse.error()));
+    await expect(preflightAddresses({slug:'one',context:'thread_recipient',body:'@Current',canonicalAgentIds:[]})).rejects.toBeInstanceOf(TypeError);
+  });
+  test('observed Former in first chunk refuses before a later failing chunk or recipients', async () => {
+    let reads=0;
+    server.use(http.post('/api/v1/orgs/one/identities/resolve',async ({request})=>{
+      reads++; const body=await request.json() as {addresses:string[]};
+      return reads===1 ? HttpResponse.json({resolutions:body.addresses.map(address=>({address,status:address==='Former'?'former_name':'unknown_identity',identity:address==='Former'?agent:null,eligible:false}))}) : HttpResponse.json({},{status:503});
+    }));
+    const body = ['@Former',...Array.from({length:128},(_,i)=>`@unknown${i}`)].join(' ');
+    await expect(preflightAddresses({slug:'one',context:'thread_recipient',recipients:['worker'],body,canonicalAgentIds:['worker']})).rejects.toMatchObject({resolution:{status:'former_name'}});
+    expect(reads).toBe(1);
   });
 });

@@ -91,8 +91,9 @@ projection; C19e may be active/coherent while workspace rollback remains archive
 ## Current-message routing and verification
 
 Routing source now classifies current names and permanent IDs case-insensitively
-to canonical agent IDs using the unchanged @token grammar (including quoted and
-email-interior matches). Any recognized former token rejects the entire current
+to canonical agent IDs using explicit prose @tokens. Ordinary quotes remain
+prose; email/word interiors, escaped tokens and supported code are literal. Any
+recognized former token rejects the entire current
 message/recipient input with409 former_name and current_name, before thread-ID
 allocation, exchange closure, callback settlement/consumption, message/audit/queue
 mutation or application attachment finalization. Composer, speaker, task/session
@@ -101,6 +102,46 @@ of pending/terminated owners do not designate wake targets. Unknown text and
 self/nonparticipant-only mentions retain ordinary fallback when naming is ready.
 Unavailable naming preserves actual ID behavior; non-ID addresses refuse503
 naming_unavailable. No read adapter reconciles or writes names.
+
+### NEW-message lexical boundary (THR293 seq174)
+
+Backend parse_mentions, CLI body preflight, Web bodyAddresses and complete-body
+caret detection share a small offset scanner; raw body bytes are never rewritten.
+Historical persisted messages/delivery and release-measurement regex interpretation
+are frozen; this changes only new message input. Token charset remains
+`[A-Za-z0-9][A-Za-z0-9_-]*(?:\.[A-Za-z0-9_-]+)*`, with exact-spelling first-occurrence
+dedup and downstream case-insensitive classification; explicit `_worker` ID lookup
+retains its separate exception. Unescaped @ requires start, shared whitespace or
+one of `(` `[` `{` `<` `>` single/double quote, U+2018/U+201C, comma, colon,
+semicolon, exclamation or question mark. Odd backslash runs escape @/opening ticks;
+even runs evaluate the boundary before the run. Shared whitespace is precisely
+U+0009–000D,0020,0085,00A0,1680,2000–200A,2028,2029,202F,205F,3000;
+FEFF and001C–001F are excluded. Physical lines use LF/CRLF/CR only.
+
+Inline code pairs maximal equal-length backtick runs within a nonblank paragraph
+at unchanged simple quote depth; unmatched runs remain prose. Established code's
+closer is not escaped by backslashes. Blank residual SP/HT lines, quote-depth
+changes and fences end inline regions. Simple quote prefixes repeat zero–three
+SP + > + optional SP, without lazy continuation. Fences begin after zero–three
+residual SP with at least three ticks/tildes (backtick info cannot contain ticks),
+and close at the same depth/character with at least that length and SP/HT suffix.
+Top-level unclosed fences mask to body end; quoted fences end before any depth
+change, including an unprefixed blank line. Quoted empty lines retain active
+quoted fences. General indented/list/HTML/Markdown AST behavior is outside this
+selected contract. Ordinary forwarded quotes remain eligible prose. Caret hints
+use the complete body masks, admit empty @ and valid partial/full tokens, and
+exclude terminating punctuation. Eligible-agent-only hints/manual Founder/To
+semantics remain unchanged.
+
+Literal-only bodies cause no body naming lookup. Body aliases fail closed on
+503 or per-token200 naming_unavailable independently of explicit recipients,
+including empty lists. Actual canonical roster/identity owners retain known-ID
+access; ID-shaped unknown text supplies no fallback evidence. Former observed
+in any earlier chunk retains precedence. Generic server/network errors remain
+infrastructure errors; en/zh-CN service errors describe unavailable name checking,
+with retry/known-ID guidance. Drafts, attachments, focus and selection survive;
+locale changes emit no send/retry. Preflight remains a read, final server admission
+is authoritative, and independent uploaded objects are not rolled back.
 
 Current-founder-only MESSAGE classification is ephemeral and separate from
 empty agent mentions. It suppresses broadcast and frozen-cohort fallback for
@@ -169,7 +210,7 @@ retain owner-bound defaults such as _worker. No wildcard underscore labels,
 Unicode, spaces, brackets or trimming. Resolved and ineligible results retain
 kind/lifecycle; former_name returns current name as diagnostic with eligible=false,
 never forwarding. Unknown lookup is explicit unknown_identity, independently of
-ordinary unknown @text message parsing, which remains unchanged. Invalid syntax
+ordinary unknown explicit-prose @text handling, which retains its fallback. Invalid syntax
 has invalid_identity_address; unavailable naming has naming_unavailable. Task
 owners require active actual team-roster agent definitions. Thread recipients
 require active definitions/workspace and optional open existing thread membership;
@@ -227,8 +268,9 @@ name snapshot.
 CLI-managed send/reply, multipart and shared compose paths check recognized
 former body tokens before their associated upload requests; recipient resolution
 also precedes compose uploads. Forward checks the final quoted+note body. The
-unchanged server parser matches quoted text and email interiors; ordinary unknown
-@text stays intact and bodies are never rewritten. A preflight is a read, not a
+server and client scanners admit explicit prose tokens and exclude email/word
+interiors, escaped tokens and supported code; ordinary unknown @text stays intact
+and bodies are never rewritten. A preflight is a read, not a
 reservation across independent HTTP requests: a rename between preflight and
 upload/send can still cause the authoritative action to refuse after a separate
 upload exists. No rollback, atomic-upload protocol or lifecycle journal is added.
@@ -294,7 +336,8 @@ invite resolve omits `thread_id` because that optional scope means existing
 participants; the actual invite endpoint retains final action eligibility.
 Recognized former body/recipient tokens stop UI-managed associated attachment
 uploads when caught by separate preflight. Unknown body @text remains literal,
-including the existing quoted/email token parser behavior. This read is not a
+with ordinary quotes eligible and email/code/escaped tokens excluded. This read
+is not a
 reservation: final server admission may reject after an intervening rename, and
 already-completed uploads are not claimed rolled back. New en/zh-CN text uses
 existing controls/tokens. The naming browser adapter captures 390×844/1440×900

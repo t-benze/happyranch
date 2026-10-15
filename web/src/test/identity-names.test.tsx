@@ -128,6 +128,88 @@ async function enterName(editor: HTMLElement, value: string) {
 }
 
 describe('naming v1 shipping UI — mocked HTTP', () => {
+  test.each(['ready', 'unavailable', 'read-error'] as const)('new-thread body hints exclude Founder with %s identity display; To keeps its human option', async (display) => {
+    const f = fixture();
+    if (display === 'unavailable') {
+      for (const identity of f.records.alpha) {
+        identity.addressable_name = null;
+        identity.naming_status = 'unavailable';
+      }
+    }
+    if (display === 'read-error') {
+      server.use(http.get('/api/v1/orgs/alpha/identities', () =>
+        HttpResponse.json({ detail: { code: 'naming_unavailable' } }, { status: 503 })));
+    }
+    mount('/orgs/alpha/threads');
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole('button', { name: /New thread/i }));
+    const dialog = screen.getByRole('dialog');
+    const body = within(dialog).getByLabelText(t('threads.newThread.bodyLabel')) as HTMLTextAreaElement;
+    const recipient = within(dialog).getByLabelText(t('threads.newThread.recipientsLabel'));
+    const optionName = display === 'ready' ? 'Alpha · agent_a core' : 'agent_a core';
+    const inserted = display === 'ready' ? '@Alpha ' : '@agent_a ';
+
+    await user.type(body, '@');
+    await screen.findByRole('option', { name: optionName });
+    expect(screen.getAllByRole('option')).toHaveLength(2);
+    expect(screen.queryByRole('option', { name: /Human/ })).not.toBeInTheDocument();
+    for (const prefix of ['Bo', 'Boss', 'fo', 'founder']) {
+      await user.clear(body); await user.type(body, `@${prefix}`);
+      expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
+    }
+    // Current labels and canonical IDs select the same eligible agent while
+    // preserving the suffix, focus and caret at the actual mounted body seam.
+    for (const prefix of display === 'ready' ? ['Al', 'agent_a'] : ['agent_a']) {
+      await user.clear(body); await user.type(body, `@${prefix} tail`);
+      act(() => { body.setSelectionRange(prefix.length + 1, prefix.length + 1); });
+      fireEvent.click(body);
+      await user.click(await screen.findByRole('option', { name: optionName }));
+      await waitFor(() => expect(body).toHaveValue(`${inserted} tail`));
+      expect(body).toHaveFocus();
+      expect(body.selectionStart).toBe(inserted.length);
+      expect(body.selectionEnd).toBe(inserted.length);
+    }
+    await user.clear(body);
+    await user.type(recipient, display === 'ready' ? 'Bo' : 'fo');
+    await user.click(await screen.findByRole('option', { name: display === 'ready' ? 'Boss · founder Human' : 'founder Human' }));
+    expect(recipient).toHaveValue('founder, ');
+    expect(f.resolves).toEqual([]);
+    expect(f.effects).toEqual([]);
+  });
+
+  test.each(['Boss', 'founder', 'unavailable-founder'] as const)('new-thread manual genuine %s retains body preflight and human recipient transport', async (addressCase) => {
+    const f = fixture();
+    const address = addressCase === 'unavailable-founder' ? 'founder' : addressCase;
+    const failedReads: ResolveBody[] = [];
+    if (addressCase === 'unavailable-founder') {
+      for (const identity of f.records.alpha) {
+        identity.addressable_name = null;
+        identity.naming_status = 'unavailable';
+      }
+      server.use(http.post('/api/v1/orgs/alpha/identities/resolve', async ({ request }) => {
+        failedReads.push(await request.json() as ResolveBody);
+        return HttpResponse.json({ detail: { code: 'naming_unavailable' } }, { status: 503 });
+      }));
+    }
+    mount('/orgs/alpha/threads');
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole('button', { name: /New thread/i }));
+    const dialog = screen.getByRole('dialog');
+    const literal = `Please ask @${address}`;
+    await user.type(within(dialog).getByLabelText(t('threads.newThread.subjectLabel')), 'Manual human');
+    await user.type(within(dialog).getByLabelText(t('threads.newThread.recipientsLabel')), 'founder');
+    await user.type(within(dialog).getByLabelText(t('threads.newThread.bodyLabel')), literal);
+    await user.click(within(dialog).getByLabelText(t('threads.newThread.subjectLabel')));
+    expect(f.effects).toEqual([]);
+    await user.click(within(dialog).getByRole('button', { name: t('threads.newThread.send') }));
+    await waitFor(() => expect(f.effects).toHaveLength(1));
+    expect(f.effects[0]).toMatchObject({ kind: 'compose', slug: 'alpha', body: { recipients: ['@founder'], body_markdown: literal } });
+    const reads = addressCase === 'unavailable-founder' ? failedReads : f.resolves.map(r => r.body);
+    expect(reads).toContainEqual({ context: 'lookup', addresses: [address] });
+    expect(reads).toContainEqual({ context: 'thread_recipient', addresses: ['founder'] });
+    expect(f.effects.some(e => e.kind === 'upload')).toBe(false);
+  });
+
   test.each(['founder', 'Boss'])('thread-detail hints exclude human %s while human recipients remain available', async (founderName) => {
     const f = fixture();
     f.records.alpha.find((i) => i.kind === 'founder')!.addressable_name = founderName;
@@ -207,6 +289,33 @@ describe('naming v1 shipping UI — mocked HTTP', () => {
     expect(f.resolves).toContainEqual({ slug: 'alpha', body: { context: 'lookup', addresses: [address] } });
     await waitFor(() => expect(composer).toHaveValue(''));
     expect(composer).toHaveFocus();
+  });
+
+  test.each(['503','per-token'] as const)('follow-up %s alias failure keeps draft/file and zero uploads; known nonparticipant ID stays reachable', async (failure) => {
+    const f=fixture(); const resolves: string[][]=[];
+    server.use(http.post('/api/v1/orgs/alpha/identities/resolve',async ({request})=>{
+      const body=await request.json() as ResolveBody; resolves.push(body.addresses);
+      return failure==='503' ? HttpResponse.json({detail:{code:'naming_unavailable'}},{status:503})
+        : HttpResponse.json({resolutions:body.addresses.map(address=>({address,status:'naming_unavailable',identity:null,eligible:false}))});
+    }), http.post('/api/v1/orgs/alpha/threads/THR-MOCK/send',async ({request})=>{
+      f.effects.push({kind:'send',slug:'alpha',body:await request.json()});
+      return HttpResponse.json({seq:1,thread_id:'THR-MOCK'});
+    }));
+    mount('/orgs/alpha/threads/THR-MOCK'); const user=userEvent.setup();
+    const composer=await screen.findByRole('textbox',{name:t('threads.page.composer.textareaAria')});
+    await user.type(composer,'email@OldAlpha `@OldAlpha` plus @Alpha');
+    await user.upload(screen.getByLabelText(t('threads.page.composer.attach')),new File(['proof'],'proof.txt',{type:'text/plain'}));
+    await user.click(screen.getByRole('button',{name:t('threads.page.composer.send')}));
+    await screen.findByText(/Naming service is unavailable/);
+    expect(f.effects).toEqual([]); expect(resolves).toEqual([['Alpha']]);
+    expect(composer).toHaveValue('email@OldAlpha `@OldAlpha` plus @Alpha');
+    expect(screen.getByText('proof.txt')).toBeInTheDocument();
+    await user.click(screen.getByRole('button',{name:t('threads.page.composer.removeAttachment')}));
+    await user.clear(composer); await user.type(composer,'@agent_b');
+    expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
+    await user.keyboard('{Enter}');
+    await waitFor(()=>expect(f.effects).toHaveLength(1));
+    expect(f.effects[0]).toMatchObject({kind:'send',body:{body_markdown:'@agent_b'}});
   });
 
   test.each(['managed', 'user_authored'] as const)('scenario 9 frontend consumer: %s skill rows keep canonical identity and node through label refresh', async (type) => {
@@ -297,13 +406,13 @@ describe('naming v1 shipping UI — mocked HTTP', () => {
     expect(JSON.stringify(f.records.alpha)).toBe(before);
   });
 
-  test('scenario 5: former token inside quoted/email body stops associated upload and compose; draft and file remain', async () => {
+  test('scenario 5: genuine former token in quoted prose stops associated upload and compose; draft and file remain', async () => {
     const f = fixture(); mount('/orgs/alpha/threads'); const user = userEvent.setup();
     await user.click(await screen.findByRole('button', { name: /New thread/i }));
     const dialog = screen.getByRole('dialog');
     await user.type(within(dialog).getByLabelText(t('threads.newThread.subjectLabel')), 'Literal');
     await user.type(within(dialog).getByLabelText(t('threads.newThread.recipientsLabel')), 'agent_a');
-    const body = '> quoted: mail@OldAlpha and @Alpha';
+    const body = '> quoted: mail@OldAlpha, `@OldAlpha` and @OldAlpha @Alpha';
     await user.type(within(dialog).getByLabelText(t('threads.newThread.bodyLabel')), body);
     await user.upload(within(dialog).getByLabelText(t('threads.newThread.attachFiles')), new File(['proof'], 'proof.txt', { type: 'text/plain' }));
     await user.click(within(dialog).getByRole('button', { name: t('threads.newThread.send') }));

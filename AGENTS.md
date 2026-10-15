@@ -97,8 +97,9 @@ and canonical-definition revision are distinct. Resolution is diagnostic, never
 authorization or reservation.
 
 Routing source now classifies current names and permanent IDs case-insensitively
-to canonical agent IDs using the unchanged @token grammar (including quoted and
-email-interior matches). Any recognized former token rejects the entire current
+to canonical agent IDs using explicit prose @tokens. Ordinary quotes remain
+prose; email/word interiors, escaped tokens and supported code are literal. Any
+recognized former token rejects the entire current
 message/recipient input with409 former_name and current_name, before thread-ID
 allocation, exchange closure, callback settlement/consumption, message/audit/queue
 mutation or application attachment finalization. Composer, speaker, task/session
@@ -108,13 +109,26 @@ self/nonparticipant-only mentions retain ordinary fallback when naming is ready.
 Unavailable naming preserves actual ID behavior; non-ID addresses refuse503
 naming_unavailable. No read adapter reconciles or writes names.
 
+
+New-message body admission excludes email/word interiors, escaped tokens and
+supported inline/fenced code; ordinary quoted prose remains eligible. Literal-only
+bodies perform no body naming lookup. Genuine body aliases fail closed on service
+failure, including empty explicit recipients and per-token unavailability. Known
+actual canonical IDs retain owner checks; ID-shaped aliases supply no evidence.
+Observed Former refusal precedes later chunk failures. en/zh-CN service wording
+asks for retry or a known intended-recipient ID, with no body rewrite, automatic
+retry/send or locale-triggered effect. Historical messages/delivery and release
+measurement keep their original interpretation. The exact finite scanner contract
+is in the current identity-names core spec (THR293seq174).
+
 **Current naming CLI/prompt contract.**
 Operator `identities list/resolve/rename` uses existing API and name-revision CAS,
 local validation and uncertain-failure readback without retries. Human targets
 resolve current names to IDs; founder recipients retain `@founder`. Historical
 ID filters and naming-unavailable ID access preserve owner checks. Every CLI
-managed associated upload checks former body/recipient tokens first, including
-quoted/email-interior grammar, without rewriting bodies or claiming reservation/
+managed associated upload checks former body/recipient tokens first, using
+explicit prose tokens (email/code are literal), without rewriting bodies or
+claiming reservation/
 rollback across HTTP requests. Task/manager/full/resumed/fallback/dream/wake/
 schedule prompts receive current self/founder/ID-selected roster labels; metadata
 failure renders ID-only context without writes or launch gates. Automation,
@@ -1570,7 +1584,8 @@ invite resolve omits `thread_id` because that optional scope means existing
 participants; the actual invite endpoint retains final action eligibility.
 Recognized former body/recipient tokens stop UI-managed associated attachment
 uploads when caught by separate preflight. Unknown body @text remains literal,
-including the existing quoted/email token parser behavior. This read is not a
+with ordinary quotes eligible and email/code/escaped tokens excluded. This read
+is not a
 reservation: final server admission may reject after an intervening rename, and
 already-completed uploads are not claimed rolled back. New en/zh-CN text uses
 existing controls/tokens. The naming browser adapter captures 390×844/1440×900
