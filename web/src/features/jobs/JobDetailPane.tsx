@@ -12,7 +12,6 @@ import { useJob, useJobsRoutes, useStopJob } from '@/hooks/jobs';
 import { cn } from '@/lib/utils';
 import type { JobStatus } from '@/lib/api/types';
 import { RejectJobDialog } from './RejectJobDialog';
-import { RunJobDialog } from './RunJobDialog';
 import { OutputPanel } from './OutputPanel';
 
 // Mirrors STATUS_CLASS from JobsPage — keep in sync until a shared
@@ -38,7 +37,7 @@ function JobStatusBadge({ status }: { status: JobStatus }): JSX.Element {
   );
 }
 
-type OpenDialog = 'reject' | 'run' | null;
+type OpenDialog = 'reject' | null;
 
 interface JobDetailPaneProps {
   jobId: string;
@@ -105,7 +104,7 @@ export function JobDetailPane({ jobId }: JobDetailPaneProps): JSX.Element {
                 {job.review_required && (
                   <>
                     <span>·</span>
-                    <span className="tracking-wider uppercase">review</span>
+                    <span className="tracking-wider uppercase">legacy review flag</span>
                   </>
                 )}
                 {job.created_at && (
@@ -155,12 +154,6 @@ export function JobDetailPane({ jobId }: JobDetailPaneProps): JSX.Element {
                 {/* 4. Action bar — pending or running */}
                 {job.status === 'pending' && (
                   <div className="flex gap-3">
-                    <Button
-                      variant="default"
-                      onClick={() => setOpenDialog('run')}
-                    >
-                      Run
-                    </Button>
                     <Button
                       variant="secondary"
                       onClick={() => setOpenDialog('reject')}
@@ -224,14 +217,6 @@ export function JobDetailPane({ jobId }: JobDetailPaneProps): JSX.Element {
         />
       )}
 
-      {/* Run dialog — mounted outside the Drawer so z-index stacks correctly */}
-      {openDialog === 'run' && job && (
-        <RunJobDialog
-          job={job}
-          open
-          onClose={() => setOpenDialog(null)}
-        />
-      )}
     </>
   );
 }

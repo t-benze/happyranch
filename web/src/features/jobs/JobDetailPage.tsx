@@ -1,32 +1,6 @@
-/**
- * JobDetailPage — standalone contextual job detail surface (§4.13 PRD final).
- *
- * RENDER-ONLY for stored fields + DERIVE for "if-approved" cascade.
- * No standalone Jobs index — reached contextually from Audit timeline,
- * task detail, or artifact cards.
- *
- * Direction-A alignment (TASK-912, a-job-detail.html): a serif job-TITLE
- * headline with the JOB id + status as a compact eyebrow row, the action
- * buttons hoisted top-right, a "Verbatim command · runs exactly this"
- * command card, a carded "If approved" cascade, and a curated approval-
- * context right-rail (Requested by / Created lead) with the execution
- * telemetry kept present but secondary.
- *
- * Honesty fence — the design's curated `Routed via`, `Thread`, `Kind`,
- * `File` rows and its `PR #NNN` chip have NO backing JobRecord field, so they
- * are honestly omitted rather than fabricated; the back-link stays
- * "← Back to {task_id}" (there is no originating-thread field to back to).
- * The design's "Decline & revert code instead" implies a revert *behavior*
- * we do not implement (TASK-414 fence) — the secondary action keeps the
- * existing honest reject wiring (RejectJobDialog) and a "Reject" label.
- * See TASK-912 completion report for the deferred data-field follow-up list.
- *
- * Key behaviours:
- * - Verbatim command in monospace
- * - "If approved" cascade lists real tasks blocked on this job (DERIVE)
- * - Single popup confirm for approve/run (one button → RunJobDialog → execute)
- * - Gated (review_required) chip routes to EXISTING approve/reject flow
- * - Calm/empty/loading/error states with retry
+/** Job history, automatic-admission status and explicit reject/stop controls.
+ * Stored review fields remain historical metadata. Waiting-task links describe
+ * dependencies; they never promise that disposition or process exit is success.
  */
 import { useState, type ReactNode } from 'react';
 import { Link, useParams } from 'react-router-dom';
@@ -45,7 +19,6 @@ import { useTranslation } from '@/hooks/i18n';
 import type { Locale, MessageKey } from '@/lib/i18n';
 import { classifyJobError, renderJobError, type JobErrorView } from './strings';
 import { RejectJobDialog } from './RejectJobDialog';
-import { RunJobDialog } from './RunJobDialog';
 import { OutputPanel } from './OutputPanel';
 
 // ── Helpers ──────────────────────────────────────────────────────────
@@ -203,9 +176,8 @@ function PropertyRail({ job, slug }: { job: JobRecord; slug: string | undefined 
   );
 }
 
-/** "If approved" cascade — DERIVE: lists tasks blocked on this job, carded
- *  with impact dots per the Direction-A reference. */
-function IfApprovedCascade({ slug, jobId }: { slug: string; jobId: string }): JSX.Element {
+/** Actual tasks currently waiting on this job. */
+function WaitingTasks({ slug, jobId }: { slug: string; jobId: string }): JSX.Element {
   const { t } = useTranslation();
   const blockedTasksQuery = useQuery({
     queryKey: ['tasks-blocked-on-job', slug, jobId],
@@ -278,11 +250,8 @@ function IfApprovedCascade({ slug, jobId }: { slug: string; jobId: string }): JS
   );
 }
 
-/** Gated explanation card: a review_required job is approved/rejected from the
- *  top-right action buttons. Copy aligned to the Direction-A approve-card; the
- *  Approve & run / Reject controls live in the header and route to the EXISTING
- *  single RunJobDialog confirm + RejectJobDialog. */
-function GatedNotice(): JSX.Element {
+/** Legacy reviewed pending rows remain inert until explicit disposition. */
+function LegacyPendingNotice(): JSX.Element {
   const { t } = useTranslation();
   return (
     <div className="bg-attention-soft mt-5 rounded-xl p-4">
@@ -304,7 +273,7 @@ function GatedNotice(): JSX.Element {
 
 // ── Main page ────────────────────────────────────────────────────────
 
-type OpenDialog = 'reject' | 'run' | null;
+type OpenDialog = 'reject' | null;
 
 export function JobDetailPage(): JSX.Element {
   const { slug, job_id: jobId } = useParams<{ slug: string; job_id: string }>();
@@ -362,11 +331,7 @@ export function JobDetailPage(): JSX.Element {
     );
   }
 
-  // ── Header actions — top-right per Direction-A. Relabel + relayout only;
-  // every handler is the EXISTING approve/reject/run/stop wiring. The primary
-  // pending action opens the single RunJobDialog confirm directly (one button →
-  // one popup → execute); for a review_required job the founder /run IS the
-  // approve+run, so the label reads "Approve & run". ──
+  // Pending jobs permit explicit rejection; running jobs permit Stop.
   let headerActions: ReactNode = null;
   if (job.status === 'running') {
     headerActions = (
@@ -379,9 +344,6 @@ export function JobDetailPage(): JSX.Element {
       <>
         <Button variant="secondary" size="sm" onClick={() => setOpenDialog('reject')}>
           {t('jobs.action.reject')}
-        </Button>
-        <Button size="sm" onClick={() => setOpenDialog('run')}>
-          {job.review_required ? t('jobs.action.approveRun') : t('jobs.action.run')}
         </Button>
       </>
     );
@@ -457,15 +419,14 @@ export function JobDetailPage(): JSX.Element {
               </section>
             )}
 
-            {/* "If approved" cascade — always visible for pending jobs */}
+            {/* Waiting-task dependencies — always visible for pending jobs */}
             {job.status === 'pending' && slug && (
-              <IfApprovedCascade slug={slug} jobId={jobId ?? ''} />
+              <WaitingTasks slug={slug} jobId={jobId ?? ''} />
             )}
 
-            {/* Gated (review_required) pending job → explanation card; the
-                Approve & run / Reject controls live in the header above. */}
+            {/* Historical pending jobs never launch through manual controls. */}
             {job.status === 'pending' && job.review_required && (
-              <GatedNotice />
+              <LegacyPendingNotice />
             )}
 
             {/* Running job: stop error feedback (Stop button is in the header) */}
@@ -485,13 +446,6 @@ export function JobDetailPage(): JSX.Element {
         {openDialog === 'reject' && (
           <RejectJobDialog
             jobId={jobId ?? ''}
-            open
-            onClose={() => setOpenDialog(null)}
-          />
-        )}
-        {openDialog === 'run' && (
-          <RunJobDialog
-            job={job}
             open
             onClose={() => setOpenDialog(null)}
           />

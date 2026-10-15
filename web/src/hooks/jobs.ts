@@ -31,8 +31,6 @@ export const useJobOutput: ReturnType<typeof useData>['jobs']['useJobOutput'] = 
 export const useRejectJob: ReturnType<typeof useData>['jobs']['useRejectJob'] = () =>
   useData().jobs.useRejectJob();
 
-export const useRunJob: ReturnType<typeof useData>['jobs']['useRunJob'] = () =>
-  useData().jobs.useRunJob();
 
 export const useStopJob: ReturnType<typeof useData>['jobs']['useStopJob'] = () =>
   useData().jobs.useStopJob();

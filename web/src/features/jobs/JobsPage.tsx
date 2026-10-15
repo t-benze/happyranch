@@ -216,8 +216,8 @@ function ColumnHeader(): JSX.Element {
 }
 
 /**
- * The amber "needs you" callout — the running total of founder-blocking
- * (pending) decisions. Collapses to a calm queue-clear line when nothing is
+ * The amber "needs you" callout — the running total of legacy reviewed
+ * pending dispositions. Collapses to a calm queue-clear line when nothing is
  * pending. Count is derived from existing data (no new field).
  */
 function NeedsYouCallout({ pendingCount }: { pendingCount: number }): JSX.Element {
@@ -253,7 +253,7 @@ export function JobsPage(): JSX.Element {
   const query = useJobsList({ status: 'all', limit: 200 });
 
   const jobs = useMemo<JobRecord[]>(() => query.data?.jobs ?? [], [query.data]);
-  const pendingCount = useMemo(() => jobs.filter((j) => j.status === 'pending').length, [jobs]);
+  const pendingCount = useMemo(() => jobs.filter((j) => j.status === 'pending' && j.review_required).length, [jobs]);
 
   return (
     <div className="bg-surface-canvas h-full">

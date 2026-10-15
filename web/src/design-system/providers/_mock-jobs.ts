@@ -6,8 +6,6 @@ import type {
   QueryLike,
   RejectJobArgs,
   RejectJobResult,
-  RunJobArgs,
-  RunJobResult,
   StopJobResult,
 } from './DataContext';
 
@@ -33,13 +31,6 @@ export const mockJobsApi: JobsApi = {
   useRejectJob: (): MutationLike<
     { jobId: string; body: RejectJobArgs },
     RejectJobResult
-  > => ({
-    mutateAsync: async () => { throw new Error('Mock: not implemented'); },
-    isPending: false,
-  }),
-  useRunJob: (): MutationLike<
-    { jobId: string; body: RunJobArgs },
-    RunJobResult
   > => ({
     mutateAsync: async () => { throw new Error('Mock: not implemented'); },
     isPending: false,

@@ -361,6 +361,27 @@ class JobsMixin:
         )
         return cur.rowcount == 1
 
+    def _fail_unlaunched_job_uncommitted(
+        self, job_id: str, *, task_id: str, agent: str,
+        finished_at: str, diagnostic: str,
+    ) -> bool:
+        """CAS for authenticated preflight loss, inside the caller's Pause writer.
+
+        Caller holds the DB/session/root ownership locks, authenticates the full
+        immutable submission and proves exactly one pending, never-launched journal
+        entry. Audit and journal settlement commit in that same transaction.
+        This never weakens the separate running-only terminal writer.
+        """
+        cursor = self._conn.execute(
+            "UPDATE jobs SET status='failed', reason='spawn_failed', exit_code=NULL, "
+            "finished_at=?, duration_ms=0, stderr_head=? "
+            "WHERE id=? AND task_id=? AND agent_name=? AND review_required=0 "
+            "AND status='pending' AND started_at IS NULL AND finished_at IS NULL "
+            "AND exit_code IS NULL AND stdout_path IS NULL AND stderr_path IS NULL",
+            (finished_at, diagnostic[:4096], job_id, task_id, agent),
+        )
+        return cursor.rowcount == 1
+
     @_synchronized
     def transition_job_to_terminal(
         self,

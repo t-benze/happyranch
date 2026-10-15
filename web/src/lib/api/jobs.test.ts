@@ -39,13 +39,8 @@ describe('jobs api', () => {
     expect(spy).toHaveBeenCalledWith('/orgs/test/jobs/JOB-001');
   });
 
-  it('runJob POSTs body', async () => {
-    const spy = vi.spyOn(clientModule, 'request').mockResolvedValue({ id: 'JOB-001', status: 'running' });
-    await jobs.runJob('test', 'JOB-001', { timeout_seconds: 600 });
-    expect(spy).toHaveBeenCalledWith('/orgs/test/jobs/JOB-001/run', {
-      method: 'POST',
-      body: { timeout_seconds: 600 },
-    });
+  it('does not expose a browser manual-run function', () => {
+    expect(jobs).not.toHaveProperty('runJob');
   });
 
   it('rejectJob POSTs reason', async () => {
