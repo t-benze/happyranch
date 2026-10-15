@@ -260,7 +260,7 @@ The dedicated completion token and direct caller-held `WEB_CALLER`,
 `WEB_CONTEXT`, `WEB_PREPARATION`, `WEB_BUILD`, `WEB_DIST` and `WEB_NOTICES` values
 must survive from the genuine wrapper, alongside all existing asset/freezer
 expectations. Standalone `verify-release.sh licenses` additionally requires
-`--web-caller "$WEB_CALLER" --web-context-sha256 "$WEB_CONTEXT"
+`--web-tool-originals "$WEB_TOOL_ORIGINALS" --web-caller "$WEB_CALLER" --web-context-sha256 "$WEB_CONTEXT"
 --web-preparation-sha256 "$WEB_PREPARATION" --web-build-sha256 "$WEB_BUILD"
 --web-dist-sha256 "$WEB_DIST" --web-notices-sha256 "$WEB_NOTICES"`.
 Never discover expectations from candidate receipts. Retained web originals

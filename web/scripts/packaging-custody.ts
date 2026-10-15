@@ -7,7 +7,7 @@ import path from 'node:path';
 import type { Plugin, ResolvedConfig } from 'vite';
 
 type Bytes = { size: number; sha256: string };
-type BlobRef = Bytes & { path: string };
+type BlobRef = Bytes & { path: string; descriptor_sha256: string };
 type Row = Record<string, any>;
 export type CssRead = { schema: string; path: string; relative: string; base: string; content: string; content_sha256: string; raw_sha256: string; token: Row };
 const HOOKS = ['load', 'transform', 'moduleParsed', 'resolveId', 'renderStart', 'renderChunk', 'generateBundle', 'writeBundle', 'buildEnd', 'closeBundle', 'banner', 'footer', 'intro', 'outro'] as const;

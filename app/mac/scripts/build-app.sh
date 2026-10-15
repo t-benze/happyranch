@@ -685,7 +685,7 @@ PYNOTICES
 )"
 WEB_NOTICES="$(web_field "$(web_field "$ASSET_NOTICES_TOKEN" web)" record_sha256)"
 ASSET_NOTICES="$(asset_field "$(web_field "$ASSET_NOTICES_TOKEN" asset)" sha256)"
-WEB_ARGS=(--web-caller "$WEB_CALLER" --web-context-sha256 "$WEB_CONTEXT" --web-preparation-sha256 "$WEB_PREPARATION" --web-build-sha256 "$WEB_BUILD" --web-dist-sha256 "$WEB_DIST" --web-notices-sha256 "$WEB_NOTICES")
+WEB_ARGS=(--web-tool-originals "$WEB_TOOL_ORIGINALS" --web-caller "$WEB_CALLER" --web-context-sha256 "$WEB_CONTEXT" --web-preparation-sha256 "$WEB_PREPARATION" --web-build-sha256 "$WEB_BUILD" --web-dist-sha256 "$WEB_DIST" --web-notices-sha256 "$WEB_NOTICES")
 STAGE=verification
 INSPECTION_STAGE=resources
 bash "$VERIFY" resources --app "$APP" > "$OUTPUT/diagnostics/resources.json"

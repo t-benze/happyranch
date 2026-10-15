@@ -142,6 +142,14 @@ class Session:
             row=A['read_subject'](root,'toolchains.txt',A['TOOLCHAINS'])
         need(row['sha256']==binding['toolchains_sha256'],'TOOLCHAINS_MISMATCH')
         need(A['git'](self.paths,'rev-parse',self.candidate.source_sha+'^{tree}',cap=128).decode().strip()==self.candidate.source_tree,'SOURCE_TREE_MISMATCH')
+        # The invoked implementation must be the pinned exported implementation,
+        # even when the native wrapper calls its adjacent repository copy.
+        with A['root_for'](Path(__file__).parent) as root:
+            actual=A['read_subject'](root,'web_evidence.py')
+        with A['root_for'](self.paths.exported_source) as root:
+            exported=A['read_subject'](root,'app/mac/scripts/web_evidence.py')
+            A['verify_git_subject'](self.candidate,self.paths,root,'app/mac/scripts/web_evidence.py',exported)
+        need(actual['sha256']==exported['sha256'] and actual['size']==exported['size'],'HELPER_SOURCE_MISMATCH')
 
     def envelope(self,kind,payload,upstream):
         return {'schema':'web-evidence@1','kind':kind,'candidate':asdict(self.candidate),'run_id':self.run,'roots':A['paths_dict'](self.paths),'owner':self.owner,'preflight':self.preflight,'asset_context_sha256':self.binding['asset_context_sha256'],'toolchains_sha256':self.binding['toolchains_sha256'],'upstream':upstream,'payload':payload}
@@ -198,7 +206,7 @@ class Session:
             need(token['content']['size']<=TOOL,'SUBJECT_CAP')
 
     def resolve_subject_token(self,token):
-        keys(token,{'schema','subject_id','descriptor_sha256','content'});keys(token['content'],{'size','sha256'})
+        keys(token,{'schema','subject_id','descriptor_sha256','content'});keys(token['content'],{'size','sha256'});js_size(token['content']['size'],TOOL);digest_shape(token['content']['sha256']);digest_shape(token['descriptor_sha256'])
         need(token['schema']=='web-subject-token@1' and re.fullmatch(r's[1-9][0-9]{0,4}',token['subject_id']),'SUBJECT_TOKEN_INVALID')
         n=int(token['subject_id'][1:]);need(n<=len(self.subjects),'SUBJECT_TOKEN_UNKNOWN')
         row=self.subjects[n-1];need(descriptor_token(row)==token,'SUBJECT_TOKEN_MISMATCH')
@@ -311,7 +319,7 @@ class Session:
         for token in payload['post_tokens'].values():self.resolve_subject_token(token)
         need(len(payload['subjects'])==2 and payload['subjects'][0]['descriptor']['relative']==route['selected_relative'] and payload['subjects'][1]['descriptor']['relative']==route['alias_relative'],'ESBUILD_SUBJECTS')
         a,p=[r['descriptor'] for r in payload['subjects']]
-        need((a['dev'],a['ino'])!=(p['dev'],p['ino']),'ESBUILD_ALIAS_LAYOUT_INVALID')
+        need((a['dev'],a['ino'])!=(p['dev'],p['ino']) and all(stat.S_IMODE(x['mode'])==0o755 and x['sha256']==payload['member']['sha256'] and x['size']==payload['member']['size'] for x in (a,p)),'ESBUILD_ALIAS_LAYOUT_INVALID')
         return payload
 
 
@@ -390,7 +398,8 @@ def begin_web(s,preparation):
     source=[]
     for name in ['web/vite.config.ts','web/tsconfig.json','web/scripts/packaging-custody.ts','web/scripts/packaging-tailwind.ts','app/mac/scripts/web_evidence.py','web/vendor/vite/css-relation.patch','web/vendor/vite/UPSTREAM.json']:
         token,raw=s.intern_subject(s.paths.exported_source,name);source.append({'path':name,'token':token})
-    context_subjects=list(s.subjects)
+        with A['root_for'](s.paths.exported_source) as root:
+            A['verify_git_subject'](s.candidate,s.paths,root,name,s.subjects[int(token['subject_id'][1:])-1]['descriptor'])
     listing=A['git'](s.paths,'ls-tree','-rz',s.candidate.source_sha,'--','web',cap=8*MiB)
     for line in listing.split(b'\0')[:-1]:
         meta,name=line.split(b'\t',1);name=name.decode('utf-8')
@@ -457,13 +466,14 @@ def snapshot(s,context,preparation,index,raw):
     name='css/'+f'{index:06d}'+'.bin'
     with A['root_for'](s.paths.evidence_dir) as root:
         row=A['create_once'](root,name,raw,A['ReadDomain'](CAP))
-    return {'path':name,'size':row['size'],'sha256':row['sha256']}
+    return {'path':name,'size':row['size'],'sha256':row['sha256'],'descriptor_sha256':sha(canonical(row))}
 
 
 def blob(s,row):
-    keys(row,{'path','size','sha256'});js_size(row['size']);digest_shape(row['sha256'])
+    keys(row,{'path','size','sha256','descriptor_sha256'});digest_shape(row['descriptor_sha256']);js_size(row['size']);digest_shape(row['sha256'])
     need(re.fullmatch(r'css/[0-9]{6}\.bin',row['path']),'BLOB_PATH')
-    descriptor,raw=s.raw(s.paths.evidence_dir,row['path'])
+    token,raw=s.intern_subject(s.paths.evidence_dir,row['path']);descriptor=s.subjects[int(token['subject_id'][1:])-1]['descriptor']
+    need(sha(canonical(descriptor))==row['descriptor_sha256'],'SUBJECT_DESCRIPTOR_MISMATCH',row['path'])
     need(descriptor['size']==row['size'] and descriptor['sha256']==row['sha256'],'BLOB_MISMATCH',row['path'])
     return raw
 
@@ -613,15 +623,28 @@ def validate_import_urls(css):
 
 
 def validate_build(s,payload,context,preparation):
+    stored={k:payload[k] for k in ('subjects','source_tool_associations') if k in payload}
+    payload={k:v for k,v in payload.items() if k not in stored}
     p=load_context(s,context,preparation)
     keys(payload,{'complete','profile','observations','css_operations','modules','final_bundle','counts'})
     need(payload['complete'] is True,'CALL_INCOMPLETE');profile=payload['profile']
     keys(profile,{'command','mode','isProduction','isWorker','root','base','appType','input','output','build','css','esbuild','define','env','config_dependencies','plugins'})
     need(profile['command']=='build' and profile['mode']=='production' and profile['isProduction'] is True and profile['isWorker'] is False and profile['root']==str(s.paths.exported_source/'web') and profile['base']=='/' and profile['appType']=='spa','PROFILE_UNSUPPORTED')
-    need(profile['build']['sourcemap'] is True and profile['build']['cssCodeSplit'] is True and profile['build']['cssMinify'] in (True,'esbuild') and profile['build']['minify']=='esbuild' and profile['build']['ssr'] is False and profile['build']['watch'] is None and profile['build']['lib'] is False,'PROFILE_UNSUPPORTED')
+    need(profile['build']['sourcemap'] is True and profile['build']['cssCodeSplit'] is True and profile['build']['cssMinify'] is True and profile['build']['minify']=='esbuild' and profile['build']['ssr'] is False and profile['build']['watch'] is None and profile['build']['lib'] is False,'PROFILE_UNSUPPORTED')
     need(profile['css']['devSourcemap'] is False and profile['css']['postcss']=={'plugins':[]},'PROFILE_UNSUPPORTED')
+    keys(profile['build'],{'outDir','assetsDir','assetsInlineLimit','cssCodeSplit','sourcemap','minify','cssMinify','target','cssTarget','write','copyPublicDir','lib','ssr','watch','modulePreload','commonjsOptions'})
+    need(profile['build']['outDir']=='dist' and profile['build']['assetsDir']=='assets' and profile['build']['assetsInlineLimit']==4096 and profile['build']['write'] is True and profile['build']['copyPublicDir'] is True,'PROFILE_UNSUPPORTED')
+    keys(profile['css'],{'devSourcemap','postcss','transformer'});need(profile['css']['transformer']=='postcss','PROFILE_UNSUPPORTED')
+    expected_names=['commonjs--resolver','vite:build-metadata','vite:watch-package-data','vite:pre-alias','alias','i18n-browser-evidence-instrumentation','vite:react-babel','vite:react-refresh','happyranch:packaging-tailwind','vite:modulepreload-polyfill','vite:resolve','vite:html-inline-proxy','vite:css','vite:esbuild','vite:json','vite:wasm-helper','vite:worker','vite:asset','happyranch:html-pre','happyranch:html-post','vite:wasm-fallback','vite:define','vite:css-post','vite:build-html','vite:worker-import-meta-url','vite:asset-import-meta-url','vite:force-systemjs-wrap-complete','commonjs','vite:data-uri','vite:dynamic-import-vars','vite:import-glob','happyranch:packaging-custody','vite:build-import-analysis','vite:esbuild-transpile','vite:terser','vite:reporter','vite:load-fallback']
+    need([x['name'] for x in profile['plugins']]==expected_names,'PLUGIN_INVENTORY_MISMATCH')
+    for ordinal,item in enumerate(profile['plugins']):
+        keys(item,{'ordinal','name','hooks'});need(type(item['ordinal']) is int and item['ordinal']==ordinal,'PLUGIN_ORDINAL')
+        if item['name']=='vite:react-babel':need(not item['hooks'],'REACT_BABEL_PROFILE')
+    keys(payload['counts'],{'observations','operations','processed_bytes'})
+    js_size(payload['counts']['processed_bytes'],512*MiB)
+    need(type(payload['counts']['observations']) is int and payload['counts']['observations']==len(payload['observations']) and type(payload['counts']['operations']) is int and payload['counts']['operations']==len(payload['css_operations']),'COUNTS_MISMATCH')
     observations=payload['observations'];need(type(observations) is list and len(observations)<=MAX_ROWS,'OBSERVATION_CAP')
-    ids={};calls={};refs={};snapshots={};delta=None;render={};write=None;generated=None
+    ids={};calls={};refs={};snapshots={};delta=None;render={};render_inputs={};write=None;generated=None
     hooks={'load','transform','moduleParsed','resolveId','renderStart','renderChunk','generateBundle','writeBundle','buildEnd','closeBundle','banner','footer','intro','outro'}
     entry_keys={'path','preliminary_path','type','bytes','module_ids','sourcemap_path'}
     def entries(rows):
@@ -644,6 +667,7 @@ def validate_build(s,payload,context,preparation):
             calls[o['id']]=o
             if o['hook']=='renderChunk':
                 chain=render.setdefault(o['chunk_id'],[])
+                if not chain:need(o['chunk_id'] in render_inputs and render_inputs[o['chunk_id']]==o['input'],'CORE_RENDER_INPUT_MISMATCH')
                 if chain and chain[-1]['result'] is not None:need(o['input']==chain[-1]['result'],'RENDER_CHAIN_INVALID')
                 chain.append(o)
             if o['subject_token'] is not None:s.resolve_subject_token(o['subject_token'])
@@ -658,7 +682,8 @@ def validate_build(s,payload,context,preparation):
             need(o['plugin_ordinal'] is None and o['internal_parent_id'] is None and o['internal_reference_id'] is None,'CORE_REFERENCE_INVALID');entries(o['entries'])
             if o['phase']=='generate_input':need(generated is None,'CORE_PHASE_DUPLICATE');generated=o['entries'];delta=o['id']
             elif o['phase']=='write_input':need(write is None,'CORE_PHASE_DUPLICATE');write=o['entries']
-            else:need(o['phase']=='render_input','CORE_PHASE_INVALID')
+            else:
+                need(o['phase']=='render_input' and len(o['entries'])==1 and o['chunk_id'] not in render_inputs,'CORE_PHASE_INVALID');render_inputs[o['chunk_id']]=o['entries'][0]['bytes']
             snapshots[o['id']]=o['entries']
         elif kind=='bundle_delta':
             keys(o,{'schema','kind','id','call_id','before_snapshot_id','after_entries'})
@@ -671,28 +696,77 @@ def validate_build(s,payload,context,preparation):
     need(entries(payload['final_bundle'])==write,'FINAL_BUNDLE_MISMATCH')
     for row in write:
         if row['type']=='chunk':
-            need(row['preliminary_path'] in render,'CORE_CHUNK_MAPPING')
+            need(row['preliminary_path'] in render and row['module_ids']==next(o['entries'][0]['module_ids'] for o in observations if o['kind']=='core_snapshot' and o['phase']=='render_input' and o['chunk_id']==row['preliminary_path']),'CORE_CHUNK_MAPPING')
             if row['sourcemap_path'] is not None:need(any(r['path']==row['sourcemap_path'] and r['type']=='map' for r in write),'CORE_MAP_PAIR_MISSING')
     plan_record=s.load('css-inputs',p['css_inputs']);plan=plan_record['payload']['plan']
     # Derive complete list and actual bytes independently on every reader.
     expected=s.prepare_css_inputs();need(plan==expected,'CSS_INPUT_SET_MISMATCH')
     result=validate_css(s,payload['css_operations'],plan,ids)
+    for operation in payload['css_operations']:
+        if operation['stage']=='compile':
+            parent=ids[operation['parent_outer_call']];data=operation['data'];raw=blob(s,data['input'])
+            need(parent['hook']=='transform' and profile['plugins'][parent['plugin_ordinal']]['name']=='happyranch:packaging-tailwind' and parent['input']=={'size':len(raw),'sha256':sha(raw)},'CSS_COMPILE_INPUT_MISSING')
     need(payload['modules'] and len(payload['modules'])<=MAX_ROWS,'MODULE_CAP')
     for module in payload['modules']:
         keys(module,{'id','code','calls','source'})
         need(module['calls'] and all(c in calls for c in module['calls']),'GENERATED_RELATION_MISSING')
+        current=None
         if module['source'] is not None:
             path=Path(module['source']);need(path.is_relative_to(s.paths.exported_source/'web'),'MODULE_SOURCE_ROOT')
-            descriptor,raw=s.raw(s.paths.exported_source,path.relative_to(s.paths.exported_source).as_posix())
-            loads=[calls[c] for c in module['calls'] if calls[c]['hook']=='load' and calls[c]['result'] is not None]
-            transforms=[calls[c] for c in module['calls'] if calls[c]['hook']=='transform']
-            if not loads and transforms:need(transforms[0]['input']=={'size':len(raw),'sha256':sha(raw)},'MODULE_RAW_RELATION')
+            token,raw=s.intern_subject(s.paths.exported_source,path.relative_to(s.paths.exported_source).as_posix())
+            text=decode(raw).encode();current={'size':len(text),'sha256':sha(text)}
+        for call_id in module['calls']:
+            call=calls[call_id]
+            if call['hook']=='load' and call['result'] is not None:current=call['result']
+            elif call['hook']=='transform':
+                need(current is not None,'GENERATED_RELATION_MISSING',module['id'])
+                need(call['input']==current,'MODULE_TRANSFORM_CHAIN',module['id'])
+                if call['result'] is not None:current=call['result']
+            elif call['hook']=='moduleParsed':
+                need(call['input']==current==module['code'],'MODULE_FINAL_CHAIN',module['id'])
+    shipped={name for row in write if row['type']=='chunk' for name in row['module_ids']}
+    need(shipped<={row['id'] for row in payload['modules']},'GENERATED_RELATION_MISSING')
+    html=[o for o in observations if o['kind']=='html_snapshot' and o['stage']=='pre']
+    need(len(html)==1,'HTML_SOURCE_MISSING')
+    _,raw=s.raw(s.paths.exported_source,'web/index.html');text=decode(raw).encode()
+    need(html[0]['input']=={'size':len(text),'sha256':sha(text)},'HTML_SOURCE_MISMATCH')
+    output_html=next((row for row in write if row['path']=='index.html'),None)
+    need(output_html is not None and any(o['kind']=='plugin_emission' and o['declared_file_name']=='index.html' and o['source']==output_html['bytes'] and payload['profile']['plugins'][calls[o['call_id']]['plugin_ordinal']]['name']=='vite:build-html' for o in observations),'HTML_EMISSION_MISSING')
+    associations=source_associations(s,p,payload)
+    if stored:
+        need(set(stored)=={'subjects','source_tool_associations'} and stored['subjects']==s.subjects and stored['source_tool_associations']==associations,'SOURCE_ASSOCIATION_MISMATCH')
+    s.associations=associations
     return result
+
+
+def source_associations(s,context,payload):
+    tools=context['tools'];sources={r['path']:r['token'] for r in context['sources']};rows=[]
+    def member(package,name):
+        matches=[r['token'] for r in tools if r['package']==package and r['member']=='package/'+name]
+        need(len(matches)==1,'GENERATOR_IMPLEMENTATION_MISSING',package+'/'+name);return matches[0]
+    vite=member('vite','dist/node/chunks/dep-BK3b2jBa.js');rollup=member('rollup','dist/es/shared/node-entry.js')
+    for plugin in payload['profile']['plugins']:
+        outer=[o['id'] for o in payload['observations'] if o['kind']=='hook_call' and o['plugin_ordinal']==plugin['ordinal']]
+        if not outer:continue
+        name=plugin['name'];tool_tokens=[]
+        if name in ('happyranch:html-pre','happyranch:html-post','happyranch:packaging-custody'):implementation=sources['web/scripts/packaging-custody.ts'];site=['web/scripts/packaging-custody.ts',name]
+        elif name=='i18n-browser-evidence-instrumentation':implementation=sources['web/vite.config.ts'];site=['web/vite.config.ts','i18nEvidenceInstrumentation']
+        elif name=='happyranch:packaging-tailwind':
+            implementation=sources['web/scripts/packaging-tailwind.ts'];site=['web/scripts/packaging-tailwind.ts','compile/scanFiles/build/optimize']
+            tool_tokens=[member('tailwindcss','dist/lib.mjs'),member('@tailwindcss/node','dist/index.mjs'),member('@tailwindcss/oxide','index.js'),member('lightningcss','node/index.js')]
+        elif name in ('vite:react-babel','vite:react-refresh'):implementation=member('@vitejs/plugin-react','dist/index.js');site=['@vitejs/plugin-react/dist/index.js',name]
+        else:
+            implementation=vite;site=['vite/dist/node/chunks/dep-BK3b2jBa.js',name]
+            if name in ('vite:esbuild','vite:define','vite:esbuild-transpile','vite:css-post'):tool_tokens=[member('esbuild','lib/main.js')]
+        rows.append({'kind':'source_tool_association','outer_ids':outer,'implementation_token':implementation,'tool_tokens':tool_tokens,'source_site':site,'relation':'source_derived'})
+    core=[o['id'] for o in payload['observations'] if o['kind']=='core_snapshot']
+    rows.append({'kind':'source_tool_association','outer_ids':core,'implementation_token':rollup,'tool_tokens':[],'source_site':['rollup/dist/es/shared/node-entry.js','renderChunks/addChunksToBundle/finaliseAssets/writeOutputFile'],'relation':'source_derived'})
+    return rows
 
 
 def publish_build(s,context,preparation,payload):
     result=validate_build(s,payload,context,preparation)
-    return s.write('build',payload,{'context':context,'preparation':preparation,'css_relation':result})
+    return s.write('build',{**payload,'subjects':s.subjects,'source_tool_associations':s.associations},{'context':context,'preparation':preparation,'css_relation':result})
 
 
 def seal_dist(s,context,preparation,build,asset_dist=None):
@@ -757,10 +831,21 @@ def verify_web(s,context,preparation,build,dist,notices=None,asset_app=None,mapp
     d=s.load('dist',dist)
     need(d['upstream']['context']==context and d['upstream']['preparation']==preparation and d['upstream']['build']==build,'DIST_BINDING')
     with A['root_for'](s.paths.dist) as root:need(A['census'](root)==d['payload']['census'],'DIST_CENSUS_MISMATCH')
+    with A['root_for'](s.paths.exported_source/'web/public') as root:need(A['census'](root)==d['payload']['public'],'PUBLIC_CENSUS_MISMATCH')
+    need(d['payload']['generated']==record['payload']['final_bundle'],'DIST_GENERATED_BINDING')
+    public=d['payload']['public']['files'];generated=d['payload']['generated']
+    def alias(value):return unicodedata.normalize('NFC',value).casefold()
+    for g in generated:
+        for p in public:
+            a,b=alias(g['path']),alias(p['relative']);need(not(a==b or a.startswith(b+'/') or b.startswith(a+'/')),'PUBLIC_OUTPUT_COLLISION',g['path'])
+    expected={r['path']:r['bytes'] for r in generated};expected.update({r['relative']:{k:r[k] for k in ('size','sha256')} for r in public})
+    need(expected=={r['relative']:{k:r[k] for k in ('size','sha256')} for r in d['payload']['census']['files']},'DIST_CENSUS_MISMATCH')
     if notices:
         n=s.load('notices',notices);p=n['payload'];keys(p,{'prefix','appended','retained','refused','subjects'})
         need(n['upstream']=={'context':context,'preparation':preparation,'build':build,'dist':dist,'asset_app':asset_app},'NOTICES_BINDING')
         need(mapping is not None and mapping['components'][-len(p['appended']):]==p['appended'] and [sha(canonical(r)) for r in mapping['components'][:-len(p['appended'])]]==p['prefix'],'MAPPING_PREFIX_CHANGED')
+        need(p['subjects'][:len(s.subjects)]==s.subjects,'SUBJECT_PREFIX_MISMATCH')
+        s.subjects=[];s.subject_index={};s.import_subjects(p['subjects'])
         for row in p['retained']:
             s.resolve_subject_token(row['original'])
             with A['root_for'](s.paths.app) as root:need(A['read_subject'](root,row['target']['relative'],A['NOTICE'])==row['target'],'NOTICE_TARGET_MISMATCH')
@@ -771,12 +856,13 @@ def verify_web(s,context,preparation,build,dist,notices=None,asset_app=None,mapp
 
 
 def add_arguments(parser):
-    for name in ('web-caller','web-context-sha256','web-preparation-sha256','web-build-sha256','web-dist-sha256','web-notices-sha256'):
+    for name in ('web-caller','web-context-sha256','web-preparation-sha256','web-build-sha256','web-dist-sha256','web-notices-sha256','web-tool-originals'):
         parser.add_argument('--'+name,required=True,action=A['Once'])
 
 @A['bounded']
 def verify_arguments(args):
     s=Session(parse(args.web_caller.encode(),256*1024))
+    need(str(s.originals)==args.web_tool_originals,'ORIGINALS_CALLER_MISMATCH')
     with A['root_for'](args.mapping.parent) as root:_,raw=A['read_bytes'](root,args.mapping.name,A['ReadDomain'](8*MiB))
     return verify_web(s,args.web_context_sha256,args.web_preparation_sha256,args.web_build_sha256,args.web_dist_sha256,args.web_notices_sha256,args.asset_app_sha256,parse(raw,8*MiB))
 
