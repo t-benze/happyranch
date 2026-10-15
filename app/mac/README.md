@@ -27,6 +27,60 @@ with the checked-in module graph (1.23.1 or newer), CGO/SDK, Python 3.12–3.14,
 uv, Node 24 and npm. Dependencies stay locked. The script records effective
 toolchains; missing tools or evidence fail explicitly.
 
+The web lockfile selects a checked-in local `react-remove-scroll-bar` derivative
+from immutable upstream `8ca9ba5ea52de03308fe8ced94f7b159a44d28ff`, version
+`2.3.7+upstream.8ca9ba5ea52d`, through a same-package file dependency/override.
+The git archive source export includes its tarball, original source/LICENSE and
+explicit [preparation/check script](../../web/vendor/react-remove-scroll-bar/README.md).
+The build's ordinary npm ci installs regular package files and the original
+notice without compiling this package or downloading upstream build tooling.
+Existing Radix/react-remove-scroll consumers and notice attribution remain.
+This is source preparation, not approval to replace the separately pinned
+native-run source or consume an allocation. Six actual candidate closures
+remain UNEXECUTED/UNMET; native build, macOS/WKWebView behavior, minimum OS,
+install, trust and release acceptance remain separate.
+
+Web font source delivery retains unmodified Hanken Grotesk and Newsreader
+variable TTFs plus their two full co-version original OFL texts under
+`web/public/fonts/`. The pinned source/notice relations are in
+[`font-assets.json`](../../packaging/notice-data/font-assets.json). The
+existing Vite public-copy step emits all five files to `web/dist/fonts/`,
+and existing app assembly copies that directory with the rest of dist to
+`Contents/Resources/web/dist/`. Font bytes total 1,080,240 (+850,516 versus
+the removed WOFF2 subsets), with another 8,796 bytes of notices before
+transport compression. This source retention does not establish actual
+app/archive custody, macOS 14 / WKWebView font loading or rasterization,
+SVG/icon rights, ICNS transformation evidence or any of the six closures.
+
+The release wrapper now measures the complete selected Git/export public tree
+(including hidden and unreferenced files), ordinary dist, and actual app copy.
+Only existing basename `*.map` removals are exceptions. Unknown generated/other
+files remain explicitly unattributed. Its private `scripts/asset_evidence.py`
+retains the two unchanged OFLs at
+`Contents/Resources/licenses/assets/{HankenGrotesk,Newsreader}-OFL.txt` and
+returns three separate font component rows; both Newsreader rows share one
+notice. Existing identical safe targets are preserved; conflicts persist as
+failures. Installed-original Python/Radix precedence is unchanged.
+
+The same helper prepares seven PNG originals into ten iconset members, then
+runs the selected real iconutil once on Darwin/arm64 into new private
+`scratch/icon-output/AppIcon.icns`. Exclusive publication to the app is a byte
+copy, not another transform. Catchable interruption is deferred until the child
+handle is owned; bounded cleanup preserves the first failure and actual exit
+(or explicit unknown) and attempts each acquired resource independently.
+Six one-shot local records and two bounded tool
+streams bind explicit caller roots, candidate, run, tool and synchronous stage
+tokens. The independent licenses reader reopens complete subjects before the
+unchanged strict legacy license checks; it never reruns iconutil. See the
+[packaging reader arguments and limits](../../packaging/README.md).
+
+Portable synthetic-copy fixture results cover shipping helper operations only.
+Actual native process capture, PYNOTICES append/token capture, full reader,
+macOS14/WKWebView/install and future all-six finalization remain unexecuted.
+Literal `closure_complete=False`, six sentinels and ordinary failed components
+remain. This slice closes no whole requirement and grants no changed-source
+native execution, signing, deployment or release authority.
+
 The existing hosted workflow installs exact native arm64 Go **1.23.12** with
 `actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e` (v7.0.0), with
 shared setup caching disabled. Before packaging it logs PATH, the resolved Go

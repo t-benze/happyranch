@@ -197,7 +197,7 @@ describe('DashboardPage', () => {
     expect(await screen.findByText(/Waiting on you · 2/i)).toBeInTheDocument();
     expect(screen.getByText('JOB-201')).toBeInTheDocument();
     expect(screen.getByText('Publish founder report')).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Review job' })).toHaveAttribute(
+    expect(screen.getByRole('link', { name: 'Inspect legacy job' })).toHaveAttribute(
       'href', `/orgs/${SLUG}/jobs/JOB-201`,
     );
 

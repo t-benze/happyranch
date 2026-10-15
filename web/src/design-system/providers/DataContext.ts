@@ -434,8 +434,6 @@ export interface TeamsApi {
 export type RejectJobArgs = Parameters<typeof jobsApi.rejectJob>[2];
 export type RejectJobResult = Awaited<ReturnType<typeof jobsApi.rejectJob>>;
 
-export type RunJobArgs = Parameters<typeof jobsApi.runJob>[2];
-export type RunJobResult = Awaited<ReturnType<typeof jobsApi.runJob>>;
 
 export type StopJobResult = Awaited<ReturnType<typeof jobsApi.stopJob>>;
 
@@ -453,7 +451,6 @@ export interface JobsApi {
   useJob: (jobId: string | undefined) => QueryLike<JobRecord>;
   useJobOutput: (jobId: string | undefined) => QueryLike<JobOutputResult>;
   useRejectJob: () => MutationLike<{ jobId: string; body: RejectJobArgs }, RejectJobResult>;
-  useRunJob: () => MutationLike<{ jobId: string; body: RunJobArgs }, RunJobResult>;
   useStopJob: () => MutationLike<{ jobId: string }, StopJobResult>;
 }
 

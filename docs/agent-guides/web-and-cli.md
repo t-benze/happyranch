@@ -1,5 +1,22 @@
 # Web And CLI
 
+## Jobs — automatic admission (THR309seq1)
+
+Both detail surfaces omit callable Run/Approve actions, dialogs and providers;
+pending retains explicit one-ID reasoned Reject, running retains Stop/output,
+and historical review fields remain readable. Lists count only legacy
+pending+true disposition backlog; the dashboard retains pending_review_jobs's
+actual query/count, inspection links and truthful attention/empty state.
+The old /run route is nonexecuting410 after auth/model/unknown/hold/nonpending
+precedence; jobs run and scripts run exit2 locally. New submit omitted/false
+uses automatic admission, optional rationale; parsed true refuses422 before
+allocation (new CLI exit2), never flip/retry. Obtain required authorization in
+a thread BEFORE submission. Old CLI may need upgrading or rationale for false;
+new clients cannot change old-daemon policy. Admission is not script success:
+retain status/reason/output and natural completed/nonzero. Served OpenAPI uses
+the supported non-test scripts/generate_openapi_snapshot.py; browser
+classification excludes the compatibility tombstone. [Current jobs contract](../superpowers/specs/2026-05-26-jobs-design.md).
+
 ## CLI human names and fresh prompt context
 
 The naming CLI provides `identities list/resolve/rename` using the
@@ -20,10 +37,23 @@ owners retain eligibility/authorization. Human task/thread/enrollment/Todo/dream
 wake output enriches IDs with explicitly current labels; raw JSON, callback
 actors, session proofs, automated targets and historical bodies remain canonical.
 
+
+New-message body admission excludes email/word interiors, escaped tokens and
+supported inline/fenced code; ASCII quoted prose remains eligible; explicit blockquote lines are literal. Literal-only
+bodies perform no body naming lookup. Genuine body aliases fail closed on service
+failure, including empty explicit recipients and per-token unavailability. Known
+actual canonical IDs retain owner checks; ID-shaped aliases supply no evidence.
+Observed Former refusal precedes later chunk failures. en/zh-CN service wording
+asks for retry or a known intended-recipient ID, with no body rewrite, automatic
+retry/send or locale-triggered effect. Historical messages/delivery and release
+measurement keep their original interpretation. The exact finite scanner contract
+is in the current identity-names core spec (THR293seq174).
+
 Before CLI-managed send/reply or multipart/shared compose uploads, preflight
 recognized former body tokens and compose recipients. Forward validates final
-quoted+note text. Quoted and email-interior matches follow the unchanged parser;
-unknown body text stays intact. Preflight is a read, not a reservation across
+quoted+note text. ASCII quoted prose remains eligible; explicit blockquote lines are literal; email/word interiors,
+escaped tokens and supported code remain literal. Unknown/ineligible body intentions follow the THR310 caller policy below; raw text stays intact.
+Preflight is a read, not a reservation across
 HTTP uploads/sends. A rename between requests can leave an independent upload
 before the server refuses the message; no rollback/protocol/journal is added.
 
@@ -37,6 +67,23 @@ merge remain required. Source publication authorizes no deployment.
 See the [current naming contract](../superpowers/specs/2026-10-09-identity-names-core.md).
 
 ## Naming v1 core, API and routing source
+
+Naming install alone uses N-SAC-1 transaction-time structural admission over the
+selected org DB, actual task/audit dependencies, closed naming interactions and
+unchanged complete workflow/Pause/move validators. Global workflow/legacy
+references retain their strict contract; naming readiness grants no authority.
+Reads and ordinary non-install refreshes never invoke admission or install names.
+
+`GET /api/v1/orgs/{slug}/identities` and `happyranch identities list --json`
+expose additive `naming_diagnostic`: null for ready rows, otherwise a finite
+captured naming category. Unknown, malformed or missing captured codes fall back
+to `naming_database_unavailable` when any row is unavailable, including a fresh
+metadata-read failure with a stale null diagnostic. The response never exposes
+raw exception text, paths or SQL. Older servers may omit the field: absence is
+UNKNOWN, never readiness. Canonical roster, definition revisions and existing
+read/auth errors retain their behavior; GET never reconciles or installs names.
+This category is an observation, not proof of a serving source SHA or root cause.
+Source publication does not establish restored naming or authorize live recovery.
 
 The bounded API source mounts four existing-org-prefix endpoints: GET
 `/identities`, POST `/identities/resolve`, PUT `/agents/{agent_id}/addressable-name`
@@ -617,7 +664,7 @@ delegate to it, and `formatCount` takes an optional locale (omitting it keeps
 the legacy host-default behaviour). An unexpected catalog gap renders the
 English message with English plural grammar, never a raw key.
 
-**W5a copy repair:** the mounted Jobs Run/Reject, Settings Capacity/Organization, Tasks Cancel/Revisit/Resolve, Threads Archive/Invite/RemoveParticipant and shared NewThread dialogs pass the existing `common.close` label to their built-in close control. Their actions and focus-return behavior are unchanged. `Markdown` accepts optional `mermaidLoadingLabel`, and `MessageBubble.labels.mermaidLoading` forwards it. KB, Task detail/recall, Threads supply `common.mermaidLoading`; omitted props retain “Rendering diagram…”. A private Markdown-local context carries only that string to the stable code renderer. Suspense remains per Mermaid block, and changing locale preserves loaded diagrams without another render. Authored Markdown/code and raw Mermaid failure source stay verbatim, including text equal to either loading label. Coverage markers remain inventory; W5a rendering acceptance requires the finite mounted-state/browser evidence. W5a finite mounted coverage is accepted (PR993); W5b enables full browser resolution and bilingual availability copy. Desktop N0/N1 remain deferred. Pending-import assertions live in the isolated Markdown.loading.test.tsx file; Markdown.test.tsx SVG/error cases use an independent lazy-module instance so filters and file order do not depend on releasing another test’s import.
+**W5a copy repair:** the mounted Jobs Reject, Settings Capacity/Organization, Tasks Cancel/Revisit/Resolve, Threads Archive/Invite/RemoveParticipant and shared NewThread dialogs pass the existing `common.close` label to their built-in close control. Their actions and focus-return behavior are unchanged. `Markdown` accepts optional `mermaidLoadingLabel`, and `MessageBubble.labels.mermaidLoading` forwards it. KB, Task detail/recall, Threads supply `common.mermaidLoading`; omitted props retain “Rendering diagram…”. A private Markdown-local context carries only that string to the stable code renderer. Suspense remains per Mermaid block, and changing locale preserves loaded diagrams without another render. Authored Markdown/code and raw Mermaid failure source stay verbatim, including text equal to either loading label. Coverage markers remain inventory; W5a rendering acceptance requires the finite mounted-state/browser evidence. W5a finite mounted coverage is accepted (PR993); W5b enables full browser resolution and bilingual availability copy. Desktop N0/N1 remain deferred. Pending-import assertions live in the isolated Markdown.loading.test.tsx file; Markdown.test.tsx SVG/error cases use an independent lazy-module instance so filters and file order do not depend on releasing another test’s import.
 **W5a Work Hours reachability:** the agent-detail reconciliation heading and local edit controls wrap within the page, including long raw agent/team names. The reconciliation and overview roster tables keep every column, value and provenance cell in a localized, named, keyboard-focusable horizontal scroll region; focus the region and use the arrow keys to reach the rightmost columns. Shared Button/AppShell and editor/action semantics are unchanged. The earlier 390px document-width checks did not establish child/control or column reachability: historical clipping captures remain failed evidence. The affected ordinary-build browser case is `web/scripts/w4a-browser-evidence.mjs --slice work-hours-reachability`, checking actual control bounds, readable headings and keyboard access to the final column in en/zh-CN at 390/1440, with mounted editor/draft/focus/navigation preservation. W5a finite coverage was independently reviewed, QA-verified and manager-accepted with PR993; W5b enables full browser locale resolution. Historical evidence keeps its original source/build identity. The tier editor now stacks field rows below the small-screen breakpoint, bounds grid children and field/control groups, wraps resets/day controls and full raw title/provenance/selected-timezone text, and allows the existing dialog to scroll vertically. Desktop retains the row hierarchy. Editor child and text-range bounds must be measured against actual dialog content and viewport after scrolling, with pointer hit testing and a real Tab cycle; page/table bounds alone do not establish editor readability. The affected browser cases include all three tiers, windowed/continuous and impact stages, long raw values, both locales at390/1440, and both-direction node/focus/selection/draft preservation with zero locale HTTP. Actual Save/PUT, reset-null and verbatim422 contracts remain owned by TierEditorDialog.test.tsx and work-hours.i18n.test.tsx; screenshots alone do not prove writes.
 
 
@@ -1335,6 +1382,14 @@ Stored seals checkpoint counters only: `census_integrity` explicitly reports
 `census_not_reconciled` with `census_valid=false`. Exhaustive integrity is a
 bounded internal zero-write validation with live semantic bookends; neither a
 stored seal nor a valid source census establishes collection health.
+
+The seq428 closed failed-before-exposure class retains exact failed invocations
+in all attempted/persisted census counts and seals but never shown/natural
+session denominators. Complete task/result/audit evidence and stable serving
+bookends must establish the strict raised/false/false/INTEGER0/null/null terminal,
+actual failed lifecycle and exhaustive no-exposure/no-callback/no-credit tuple.
+Missing/contradictory evidence and all-failure populations refuse. See the
+corrective memory spec; this supplies no installed B/C or epoch acceptance.
 G1 authority additionally reads exact admitted roles/results, original finite
 plan/tasks, owned jobs/full outputs and operation history at stable bookends.
 Its server admission, locked commit and serving checks use the existing
@@ -1373,6 +1428,16 @@ Task pages follow `(created_at, id)` descending; the last ID remains the transpo
 cursor resolved by the server. No-epoch diagnostic reads filter unrelated audit
 actions without changing the100000-row bound. Accepted epochs retain complete
 unfiltered task/result/job/audit acquisition, original outputs and serving bookends.
+
+Canonical CLI task sweeps and HTTP list/detail/two-capture comparisons share one
+semantic task projection. It excludes only valid rendering timestamps at
+`pause.observed_at`, `pause.blockers[*].observed_at` and `child_wait.observed_at`.
+Malformed timestamps/structures, unknown fields and every other `observed_at`
+remain evidence. Raw acquired records remain intact. Task lifecycle/owner/SID/
+lineage/content, pause/wait states, result/job bytes, roles and all serving
+counts/digests/seals/errors/generations remain compared. Real serving movement
+(including generation53->54, seal312201->312222 and terminal6->7) refuses;
+timestamp equality cannot retroactively qualify an earlier moving capture.
 Events at or after that cutoff are excluded. Backdated/content/role drift,
 cursor/schema errors, HTTP/decoder/timeout or SELECT failures refuse with
 `acquisition_unavailable`; CLI writes only that category to stderr and exits1,
@@ -1892,7 +1957,12 @@ cannot rename. A displayed human label provides no authentication proof.
 Provider-aware naming hooks share one org-scoped identity list/query. Successful
 rename/readback refreshes identity metadata, preserving canonical IDs, settings
 and unrelated drafts. Current labels display Name · ID (ID alone when equal or
-unavailable); historical IDs, links, keys, owner/filter/recipient values and
+unavailable). Bounded Founder exception (THR293seq236): the Sidebar account row
+and thread list/detail/message-author/participant-rail sites show the Founder's
+ready current name alone with matching avatar initials, else the canonical
+`founder` ID (unnamed, loading, unavailable, error or another org still loading);
+agents and every other label keep Name · ID. Historical IDs, links, keys,
+owner/filter/recipient values and
 stored message text remain canonical/literal. Metadata follows existing focus/
 reconnect behavior and bounded 30-second polling; availability is never a global
 gate for established ID operations. Editor drafts are scoped by org/kind/ID and
@@ -1913,8 +1983,9 @@ source; the existing task agent filter is the relevant selector. Prospective
 invite resolve omits `thread_id` because that optional scope means existing
 participants; the actual invite endpoint retains final action eligibility.
 Recognized former body/recipient tokens stop UI-managed associated attachment
-uploads when caught by separate preflight. Unknown body @text remains literal,
-including the existing quoted/email token parser behavior. This read is not a
+uploads when caught by separate preflight. Body intentions follow the THR310 caller policy below,
+with ASCII quotes eligible, explicit blockquote lines literal and email/code/escaped tokens excluded. This read
+is not a
 reservation: final server admission may reject after an intervening rename, and
 already-completed uploads are not claimed rolled back. New en/zh-CN text uses
 existing controls/tokens. The naming browser adapter captures 390×844/1440×900
@@ -2756,3 +2827,55 @@ nonforce push and manager guarded merge remain. Python units RETIRED; integratio
 INCLUDING callback SKIPPED24342; SQL/parser/product/security/protected/executable
 proof UNEXECUTED/FOUNDER-WAIVED139429/430. Root retains K2a2–K6, real-agent/two-org/
 override/backup-copy operational acceptance. No live action or trial renewal.
+
+## Literal text and recipient intentions (THR310 seq3/13)
+
+All Founder-authenticated writes, including an unbound agent-launched CLI, reject
+unknown/nonparticipant body intentions with422 and eligible current-name/ID guidance.
+Genuine Former anywhere in To/body retains409 before body422; unknown explicit To
+retains404 and unresolved aliases retain503 under naming failure. Preserve native
+structural/auth/binding/lifecycle/file errors. To alone selects participants (plus
+a genuine agent composer). BODY suggestions are eligible selected prospective
+agents in a new thread, current participants in an existing one; Founder is human,
+never an agent participant or BODY suggestion. Manual `@founder` remains valid.
+
+Validated agent writers retain compatibility; CLI stderr describes ignored tokens
+and canonical narrowed targets or conditional fallback: recipients minus speaker
+outside an exchange, frozen cohort intersect recipients minus speaker inside one,
+possibly empty. Prior catch-up is independent; pending_replies proves neither
+audience nor storage/launches. Direct agent API/internal authors receive no warning
+channel (accepted limitation). Complete valid JSON-only bindings count for CLI
+warning/upload attribution; partial/invalid bindings retain native refusal. No
+response warning field/header/auth change or preflight reservation is introduced.
+Founder-only suppresses new selection while preserving obligations/prior catch-up;
+Founder+unknown differs, and self-only/quote-only use ordinary conditional fallback.
+
+Only start, finite whitespace, or `(` `[` `{` ASCII single/double quote opens an
+unescaped ASCII token. Explicit physical lines with0–3 ASCII spaces then `>` are
+literal; unprefixed lazy continuation and four-space indentation are outside this
+quote rule. Top-level unclosed fences mask to EOF; quoted ticks/fences cannot own
+later notes. The precise finite whitespace/code grammar and examples are in the
+identity-names core spec's THR310 section; this is not a full Markdown parser.
+Nonblank authored bodies remain exact through storage, including controls,
+indentation, CRLF/bare CR and trailing whitespace. The existing strip emptiness
+predicate and attachment-only null outcomes remain; subjects/history are unchanged.
+
+Forwarders quote every physical source line/header/blank/marker. Generated source
+separators may become LF; notes remain verbatim, including CLI note-file newlines.
+CLI's fully serialized quoted excerpt is at most4096 UTF8 bytes, metadata/prefixes/
+newlines/marker included; separator and note excluded. Reserve the quoted marker
+and retain the longest valid source prefix. Web retains its last-message selection
+and size policy. Raw occurrence ranges keep duplicates; admission spellings dedup.
+Insertion replaces only the prefix through caret, preserving suffix/spaces/focus.
+Thread-body rendering styles only proven exact raw intervals, noninteractively;
+ambiguous transformations stay plain, code/Mermaid stay undecorated, task/KB defaults
+and historical delivery stay unchanged. No render-time naming or recipient inference.
+Shared data is protocol/thread-mention-corpus.json (51 lexical +13 write-path rows).
+Public-unexposed mentions_json, authentic debt/outage and genuine task/dream/callback
+proof require actual evidence and cannot be inferred from static/mock checks.
+
+Thread detail stacks its conversation/composer and properties below the medium
+breakpoint. The transcript has bounded scrolling; all properties and participant
+controls remain reachable in the detail scroll area. At desktop widths the
+properties retain their fixed rail. Resize and locale changes preserve the mounted
+composer, draft, attachments and selection; neither action submits a message.

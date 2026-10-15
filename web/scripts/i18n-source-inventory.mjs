@@ -86,7 +86,6 @@ const raw = (path, symbol, slot, literal, reason) => ({ path: `src/${path}`, sym
 export const COPY_EXCEPTIONS = [
   raw('design-system/layouts/AppShell/Sidebar.tsx', 'Sidebar', 'children', 'Happy', 'Brand wordmark bytes'),
   raw('design-system/layouts/AppShell/Sidebar.tsx', 'Sidebar', 'children', 'Ranch', 'Brand wordmark bytes'),
-  raw('design-system/layouts/AppShell/Sidebar.tsx', 'Sidebar', 'children', 'YT', 'Existing avatar initials'),
   raw('design-system/patterns/CommandPalette.tsx', 'CommandPalette', 'children', 'esc', 'Keyboard key name'),
   raw('design-system/patterns/HelpSheet.tsx', 'HelpSheet', 'children-expression', 'Keyboard shortcuts', 'Prop fallback compatibility; mounted owner supplies title'),
   raw('design-system/patterns/HelpSheet.tsx', 'HelpSheet', 'children-expression', 'List of keyboard shortcuts available on this screen.', 'Prop fallback compatibility; mounted owner supplies description'),

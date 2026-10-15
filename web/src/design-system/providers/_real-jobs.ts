@@ -8,8 +8,6 @@ import type {
   QueryLike,
   RejectJobArgs,
   RejectJobResult,
-  RunJobArgs,
-  RunJobResult,
   StopJobResult,
 } from './DataContext';
 import type { JobListResponse, JobOutput, JobRecord } from '@/lib/api/types';
@@ -61,22 +59,6 @@ function useRejectJob(): MutationLike<
   });
 }
 
-function useRunJob(): MutationLike<
-  { jobId: string; body: RunJobArgs },
-  RunJobResult
-> {
-  const slug = useRealOrgSlug();
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: ({ jobId, body }: { jobId: string; body: RunJobArgs }) =>
-      jobsApi.runJob(slug, jobId, body),
-    onSuccess: (_d, { jobId }) => {
-      qc.invalidateQueries({ queryKey: ['job', slug, jobId] });
-      qc.invalidateQueries({ queryKey: ['jobs', slug] });
-    },
-  });
-}
-
 function useStopJob(): MutationLike<{ jobId: string }, StopJobResult> {
   const slug = useRealOrgSlug();
   const qc = useQueryClient();
@@ -103,6 +85,5 @@ export const realJobsApi: JobsApi = {
   useJob,
   useJobOutput,
   useRejectJob,
-  useRunJob,
   useStopJob,
 };

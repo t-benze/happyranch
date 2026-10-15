@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Read-only packaging inspection; never imports runtime or executes skill helpers.
 set -euo pipefail
-exec python3 - "$@" <<'PYTHON'
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
+exec python3 - "$SCRIPT_DIR/asset_evidence.py" "$@" <<'PYTHON'
 import argparse
 import hashlib
 import json
@@ -13,6 +14,9 @@ import subprocess
 import sys
 import zipfile
 from pathlib import Path
+
+# Only the private helper adjacent to this selected verifier is imported.
+ASSET_HELPER = sys.argv.pop(1)
 
 BASELINE = [{'path': 'LICENSE',
   'size': 11358,
@@ -672,8 +676,12 @@ q.add_argument('--receipt', type=Path, required=True)
 q.add_argument('--transform-chain', type=Path, help='Read-only signed/submission/notary/staple/final relationship comparison; never public admission')
 for key in ('version', 'build', 'source-sha', 'source-tree', 'arch', 'run-id'):
     q.add_argument('--' + key, required=True)
-q = s.add_parser('licenses'); q.add_argument('--app', type=Path, required=True)
-q.add_argument('--mapping', type=Path, required=True)
+# Keep asset options closed and explicitly single-valued. Ordinary argparse
+# store actions accept duplicates; these options must refuse them instead.
+asset = __import__('runpy').run_path(ASSET_HELPER)
+q = s.add_parser('licenses', allow_abbrev=False)
+asset['add_arguments'](q, expectations=True)
+q.add_argument('--mapping', type=Path, required=True, action=asset['Once'])
 a = p.parse_args()
 if a.mode == 'native':
     NATIVE_EVIDENCE_DIR = a.evidence_dir
@@ -842,6 +850,8 @@ try:
         emit({'local_reconciliation': 'MATCHED_TRANSFORM_RELATIONS' if a.transform_chain else 'MATCHED_UNSIGNED_INNER_BYTES', 'available': False,
               'approved_url': None, 'signing_chain': 'SUPPLIED_RELATIONS_ONLY' if a.transform_chain else 'UNEXECUTED', 'public_admission_owner': 'TASK-11196'})
     elif a.mode == 'licenses':
+        asset['verify_arguments'](a)
+        a.app = Path(a.app)
         mapping = json.loads(a.mapping.read_text())
         errors = []
         for row in mapping['components']:

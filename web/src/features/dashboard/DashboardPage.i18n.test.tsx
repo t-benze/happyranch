@@ -220,7 +220,7 @@ describe('DashboardPage i18n (W3a)', () => {
     expect(within(main).getByText('等你处理 · 2')).toBeInTheDocument();
     expect(within(main).getByText('审阅或继续')).toBeInTheDocument();
     expect(within(main).getByText('近期动态')).toBeInTheDocument();
-    expect(within(main).getByRole('link', { name: '审阅作业' })).toHaveAttribute(
+    expect(within(main).getByRole('link', { name: '查看历史作业' })).toHaveAttribute(
       'href',
       `/orgs/${SLUG}/jobs/JOB-201`,
     );
@@ -273,7 +273,7 @@ describe('DashboardPage i18n (W3a)', () => {
     expect(within(rail).getByText('engineering')).toBeInTheDocument();
 
     // No English product copy leaks.
-    for (const english of ['Waiting on you · 2', 'Recent activity', 'Today', 'Review job', 'All clear']) {
+    for (const english of ['Waiting on you · 2', 'Recent activity', 'Today', 'Inspect legacy job', 'All clear']) {
       expect(screen.queryByText(english)).not.toBeInTheDocument();
     }
   });

@@ -13,7 +13,7 @@ import socket
 import struct
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, BinaryIO
 
 from oracles import require
 from owned import identity
@@ -126,11 +126,21 @@ def pending(c: Controller, task: str, job: dict, server: socket.socket) -> dict:
     record = dict(at=time.monotonic(), row=row, sentinel_absent=not Path(job["sentinel"]).exists(),
                   files_absent=absent, peer_pending=bool(select.select([server], [], [], 0)[0]), audit=audit)
     job["pending"].append(record)
-    require(row["status"] == "pending" and all(row[k] is None for k in (
-        "started_at", "finished_at", "reviewed_at", "reviewed_by", "exit_code", "reason", "duration_ms",
-        "stdout_head", "stderr_head", "stdout_path", "stderr_path", "cwd_resolved", "reject_reason")), "pending literal no execution", row)
-    require(record["sentinel_absent"] and all(absent.values()) and not record["peer_pending"], "pending no script/files/peer", record)
-    require([a["action"] for a in audit] == ["job_submitted"], "pending no launch audit", audit)
+    if job["code"] is None:
+        require(row["status"] == "pending" and all(row[k] is None for k in (
+            "started_at", "finished_at", "reviewed_at", "reviewed_by", "exit_code", "reason", "duration_ms",
+            "stdout_head", "stderr_head", "stdout_path", "stderr_path", "cwd_resolved", "reject_reason")), "pending literal no execution", row)
+        require(record["sentinel_absent"] and all(absent.values()) and not record["peer_pending"], "pending no script/files/peer", record)
+        require([a["action"] for a in audit] == ["job_submitted"], "pending no launch audit", audit)
+    else:
+        require(row["status"] == "running" and row["exit_code"] is None and row["finished_at"] is None
+                and row["reason"] is None and row["reviewed_by"] == "case_manager"
+                and row["started_at"] and row["reviewed_at"] and row["cwd_resolved"],
+                "automatic job is genuinely running, not successful yet", row)
+        require(not record["sentinel_absent"] and not any(absent.values()) and not record["peer_pending"]
+                and identity(job["peer"]["pid"]) == job["peer"]["start"], "owned automatic script remains live", record)
+        require([a["action"] for a in audit] == ["job_submitted", "job_auto_started"]
+                and all(a["agent"] == "case_manager" for a in audit), "automatic submit/start provenance", audit)
     return record
 
 
@@ -183,8 +193,8 @@ def group_members(pgid: int) -> list[dict]:
     return members
 
 
-def run_script(c: Controller, task: str, job: dict, server: socket.socket) -> None:
-    job["action"] = c.browser.job_action(job["id"], job["cap"], lambda: pending(c, task, job, server))
+def observe_running(c: Controller, task: str, job: dict, server: socket.socket) -> tuple[socket.socket, BinaryIO]:
+    """Observe the already automatically started script through its existing socket."""
     server.settimeout(c.remaining(3))
     connection, _ = server.accept()
     # Retain and register even an unexpected peer before validating its token.
@@ -211,6 +221,14 @@ def run_script(c: Controller, task: str, job: dict, server: socket.socket) -> No
     require(peer["census"] == [dict(pid=pid, start=start, state=peer["census"][0]["state"])], "direct script owns exactly one process")
     job["running"] = raw_job(c, task, job["id"])
     require(job["running"]["status"] == "running" and identity(pid) == start, "genuine live running witness")
+    return connection, stream
+
+
+def run_script(c: Controller, task: str, job: dict, server: socket.socket,
+               handle: tuple[socket.socket, BinaryIO]) -> None:
+    connection, stream = handle
+    pid, start = job["peer"]["pid"], job["peer"]["start"]
+    job["action"] = c.browser.job_action(job["id"], job["cap"], lambda: pending(c, task, job, server))
     job["running_browser"] = c.browser.job_open(job["id"], "running")
     require(identity(pid) == start, "script live through running browser read")
     if job["code"] != -9:
@@ -243,8 +261,8 @@ def terminal_oracle(c: Controller, task: str, job: dict) -> dict:
     status = "rejected" if code is None else "failed" if code == -9 else "completed"
     require((row["status"], row["exit_code"], row["reason"]) == (status, code, "timeout" if code == -9 else None),
             "literal job outcome, no success laundering", row)
-    require(row["reviewed_by"] == "founder" and row["reviewed_at"] is not None
-            and row["max_runtime_seconds"] == job["cap"] and row["review_required"] == 1 and row["persistent"] == 0,
+    require(row["reviewed_by"] == ("founder" if code is None else "case_manager") and row["reviewed_at"] is not None
+            and row["max_runtime_seconds"] == job["cap"] and row["review_required"] == (1 if code is None else 0) and row["persistent"] == 0,
             "actual review and original cap", row)
     require(row["task_id"] == task and row["agent_name"] == "case_manager" and row["interpreter"] == "python3"
             and row["script_text"] == job["script"], "actual submit script/owner binding", row)
@@ -269,8 +287,8 @@ def terminal_oracle(c: Controller, task: str, job: dict) -> dict:
         return audits if any(a["action"] == action for a in audits) else None
     audits = c.poll(audited, "eventual terminal audit (no imposed resume ordering)", cap=3)
     require([a["action"] for a in audits] == (["job_submitted", "job_rejected"] if code is None else
-            ["job_submitted", "job_run_started", action]), "exact job audit actions", audits)
-    require(audits[0]["agent"] == "case_manager" and all(a["agent"] == "founder" for a in audits[1:]), "actual audit actors", audits)
+            ["job_submitted", "job_auto_started", action]), "exact job audit actions", audits)
+    require(audits[0]["agent"] == "case_manager" and all(a["agent"] == ("founder" if code is None else "case_manager") for a in audits[1:]), "actual audit actors", audits)
     payload = json.loads(audits[-1]["payload"])
     if code is None:
         require(payload["reason"] == "E04_REJECTED_BY_REVIEW" and payload["reviewer"] == "founder", "literal rejection audit")
@@ -406,6 +424,16 @@ def exercise(c: Controller) -> None:
             record = dict(method="serial-public-metrics-window-causal-v1", variant=variant, index=index, entered=entered, deadline=c.case_deadline, jobs=[], anchors=[pre],
                           source_sha=c.revision, observer_begin=len(c.observer), commands_begin=len(c.provider_commands))
             records.append(record)
+            if variant == "E04.reject":
+                # THR311 manager disposition: no new fixture infrastructure or fake SID.
+                # Preserve identity/order and every historical no-launch/reject/wake
+                # oracle below; missing genuine fixture is a prerequisite FAILURE.
+                record["missing_prerequisite"] = (
+                    "Authorized legacy pending reviewed-job fixture with genuine eligible waiter provenance; "
+                    "new true submissions refuse before allocation, not rejection coverage."
+                )
+                require(False, "E04.reject MISSING prerequisite; historical rejection/wake UNEXECUTED", record)
+            handles: dict[str, tuple[socket.socket, BinaryIO]] = {}
             task = c.create("alpha", variant)
             record["task"] = task
             first = c.start("alpha", task, "case_manager")
@@ -420,11 +448,13 @@ def exercise(c: Controller) -> None:
                            err="" if job_code is None else f"E04_{job_label}_ERR\n")
                 record["jobs"].append(job)
                 submit = c.provider_cli(first, "jobs-submit", payload=dict(title=variant + "/" + token, rationale="Disposable owned deterministic job",
-                    script=program, interpreter="python3", cwd_hint=None, review_required=True, persistent=False, max_runtime_seconds=cap))
+                    script=program, interpreter="python3", cwd_hint=None, review_required=(job_code is None), persistent=False, max_runtime_seconds=cap))
                 job["submit"] = submit
                 result = json.loads(submit["stdout"])
-                require(result["status"] == "pending" and result["authentication"] == dict(task_id=task, session_id=first["session"]), "actual CLI submit ID/auth", result)
+                require(result["status"] == ("pending" if job_code is None else "running") and result["authentication"] == dict(task_id=task, session_id=first["session"]), "actual CLI submit ID/auth", result)
                 job["id"] = result["id"]
+                if job_code is not None:
+                    handles[job["id"]] = observe_running(c, task, job, server)
                 pending(c, task, job, server)
             ids = [j["id"] for j in record["jobs"]]
             block = c.provider_cli(first, "jobs-block", payload=dict(status="blocked", confidence=90, summary="waiting for genuine IDs", waiting_on_job_ids=ids))
@@ -440,7 +470,7 @@ def exercise(c: Controller) -> None:
                 if job["code"] is None:
                     job["action"] = c.browser.job_action(job["id"], job["cap"], lambda: pending(c, task, job, server), reject=True)
                 else:
-                    run_script(c, task, job, server)
+                    run_script(c, task, job, server, handles[job["id"]])
                 terminal_oracle(c, task, job)
                 job["browser"] = c.browser.job_terminal(job["id"], job["oracle"]["row"]["status"], job["code"], job["out"], job["err"])
                 if len(record["jobs"]) == 2 and offset == 0:

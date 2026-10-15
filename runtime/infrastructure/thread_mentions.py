@@ -50,31 +50,118 @@ def classify_message_write(method: Callable[..., Any]) -> Callable[..., Any]:
         return method(self, **kwargs)
     return admitted
 
-# Agent tokens are @-prefixed names; the charset mirrors canonical agent
-# names (letters, digits, underscore, hyphen; dots only between name parts,
-# so sentence punctuation like "@dev_agent." is never swallowed). The
-# Live naming classification precedes participant eligibility. The parser
-# itself remains unchanged, including quoted/email-interior token matches.
-_MENTION_RE = re.compile(r"@([A-Za-z0-9][A-Za-z0-9_-]*(?:\.[A-Za-z0-9_-]+)*)")
+# NEW-message lexical contract only; historical release measurement freezes
+# its old regex locally. Offsets never alter raw body bytes. This deliberately
+# supports simple quote containers/code, not a general Markdown AST.
+_TOKEN_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*(?:\.[A-Za-z0-9_-]+)*")
+_LINE_RE = re.compile(r"[^\r\n]*(?:\r\n|\r|\n|$)")
+_QUOTE_RE = re.compile(r" {0,3}> ?")
+_FENCE_RE = re.compile(r" {0,3}(`{3,}|~{3,})(.*)")
+_BOUNDARIES = frozenset("([{\"'")
+
+
+def _mention_space(char: str) -> bool:
+    cp = ord(char)
+    return (9 <= cp <= 13 or cp in (32, 133, 160, 5760, 8232, 8233, 8239, 8287, 12288)
+            or 8192 <= cp <= 8202)
+
+
+def _backslash_start(text: str, offset: int) -> int:
+    start = offset
+    while start > 0 and text[start - 1] == "\\":
+        start -= 1
+    return start
+
+
+def _code_mask(text: str) -> bytearray:
+    mask = bytearray(len(text))
+    region_start: int | None = None
+    region_end = 0
+    fence: tuple[str, int] | None = None
+
+    def finish_region() -> None:
+        nonlocal region_start
+        if region_start is None:
+            return
+        # Every maximal run can close established code, even after a slash.
+        runs = [(m.start(), m.end()) for m in re.compile(r"`+").finditer(text, region_start, region_end)]
+        next_run: dict[int, int] = {}
+        closers: dict[int, int] = {}
+        for index in range(len(runs) - 1, -1, -1):
+            start, end = runs[index]
+            length = end - start
+            if length in next_run:
+                closers[index] = next_run[length]
+            next_run[length] = index
+        index = 0
+        while index < len(runs):
+            start, _end = runs[index]
+            closer = closers.get(index)
+            if (start - _backslash_start(text, start)) % 2 == 0 and closer is not None:
+                end = runs[closer][1]
+                mask[start:end] = b"\x01" * (end - start)
+                index = closer + 1
+            else:
+                index += 1
+        region_start = None
+
+    for line in _LINE_RE.finditer(text):
+        start, end = line.span()
+        if start == end:
+            continue
+        content = line.group().rstrip("\r\n")
+        # An already-open top-level fence owns even quote-prefixed lines.
+        marker = _FENCE_RE.fullmatch(content)
+        if fence is not None:
+            mask[start:end] = b"\x01" * (end - start)
+            if (marker is not None and marker[1][0] == fence[0]
+                    and len(marker[1]) >= fence[1] and not marker[2].strip(" \t")):
+                fence = None
+            continue
+        # Explicit physical quote lines are wholly literal and never open or
+        # close outside code. Lazy continuation is ordinary prose.
+        if _QUOTE_RE.match(content):
+            finish_region()
+            mask[start:end] = b"\x01" * (end - start)
+            continue
+        if marker is not None and (marker[1][0] != "`" or "`" not in marker[2]):
+            finish_region()
+            fence = (marker[1][0], len(marker[1]))
+            mask[start:end] = b"\x01" * (end - start)
+            continue
+        if not content.strip(" \t"):
+            finish_region()
+            continue
+        if region_start is None:
+            region_start = start
+        region_end = end
+    finish_region()
+    return mask
 
 
 def parse_mentions(body_markdown: str | None) -> list[str]:
-    """Extract @-tokens from a message body.
+    """Extract explicit prose addresses, exact-spelling dedup in input order.
 
-    Returns the raw canonical tokens in first-occurrence order, de-duplicated.
-    Deterministic for a given body; no participant/speaker knowledge is
-    applied here (see ``valid_mentions`` / ``resolve_wake_set``).
+    Email/word interiors, escaped tokens and supported code are literal.
+    Explicit quote lines are literal; ASCII quoted prose remains eligible. No owner/routing knowledge or I/O.
     """
     if not body_markdown:
         return []
+    text = body_markdown
+    mask = _code_mask(text)
     seen: set[str] = set()
     out: list[str] = []
-    for m in _MENTION_RE.finditer(body_markdown):
-        name = m.group(1)
-        if name in seen:
+    for offset, char in enumerate(text):
+        if char != "@" or mask[offset]:
             continue
-        seen.add(name)
-        out.append(name)
+        boundary = _backslash_start(text, offset)
+        if (offset - boundary) % 2 or (boundary > 0 and
+                not (_mention_space(text[boundary - 1]) or text[boundary - 1] in _BOUNDARIES)):
+            continue
+        token = _TOKEN_RE.match(text, offset + 1)
+        if token is not None and token[0] not in seen:
+            seen.add(token[0])
+            out.append(token[0])
     return out
 
 

@@ -1,0 +1,43 @@
+{
+  "source": "fa2ef222c26161169b04d64e2a1d94ae17d7ecf7",
+  "packet_sha256": "0a404932a9c83c01c8dd6e5dd35bd086a7624cd1d869d2962e178d72c50f0a2b",
+  "assets": {
+    "release_literals.json": "d33f3e4eacd3508c0777eda3a1b39e6e4a7700375cd3dc160d012a8a54487045",
+    "naming-v1.sql": "9b195182d835f50d527b52afe362312ee6c56f533d18c72a5de435394b98d75e",
+    "observed-eight.json": "8f863e970d1750f3a6a59706550a3730ebc30bdd55580da7eb330d3808af13e3"
+  },
+  "ddl_hashes": {
+    "custom_skills": {
+      "live": "cb8b9b7a7c63d41c48dda116b615d37795b4a67488be5ea1ea33b5624081c575",
+      "reference": "045934c036e08e35f23b15b4e05dd1fd5133351d6be6c6799ad7a74e576ca19f"
+    },
+    "jobs": {
+      "live": "0919278eef7a90ee50f2462cfa40a70292885465d73681d2c836e83e45d3aab1",
+      "reference": "f652f9b0e5ad16d32c12eab22d72b8b79c01a9017c89d3202b12d6efa97432d1"
+    },
+    "remote_runners": {
+      "live": "d72bf383dd070ca811bca6c6964aa20f80b1b28169813729504a08af15461946",
+      "reference": "0f98211851b26fa8ec89aa1f90926f32e258257734845648351d9f9305b552a7"
+    },
+    "session_token_usage": {
+      "live": "38f5eb14c7616db422de58c98eb82640a36625ec93d33240f6053d3a0b2596b1",
+      "reference": "47410da6ee004a5d03adb2e8ea4668d768218c1931273a008983f6e66e5e507c"
+    },
+    "tasks": {
+      "live": "c03b7dc0194a7e5fafffd59fe2d749bd93b51194eba6ed0ae6cfc94d3e67bb50",
+      "reference": "4f2aec283c7a69a84757f6752695f71648a25952e06e0f883a8d6f4291ea76ca"
+    },
+    "thread_messages": {
+      "live": "359e93ef3bcb4669046005177eef68992a5482c7decdd4e00dae73d25c6ed840",
+      "reference": "986c3c199829efa142254c436cb6dd9ae1a60e378a80a5c08a6639ad12b12444"
+    },
+    "thread_participants": {
+      "live": "65b40d45a47d5153f381705b073b321fea5c63c7e6edc352bc09bd0f28a520fc",
+      "reference": "10c6c01c49612c03796b9f5f8ccf942003dbcb6e2fcbdcd566d7a13b6171b461"
+    },
+    "threads": {
+      "live": "5a8de7e639f6625698ee2d068d844440eeb54d8bdd67378db2563c1d8b7a5363",
+      "reference": "1875ed02f3a3c25b7e89081af67c1099b531c66a9e896e84693285c392a37c87"
+    }
+  }
+}

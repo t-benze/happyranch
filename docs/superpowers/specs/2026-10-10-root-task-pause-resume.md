@@ -97,7 +97,13 @@ fresh exact SID/task/agent validation. Prepared, committed-but-not-running,
 retry-waiting, recovery and workflow owners have no exception. Otherwise job
 submission can remain Pending; every real run entry checks the hold before
 review stamps, files, running CAS, launch or success audit. After Resume, an unreviewed Pending job may run after its original session ends only when the original server submission audit and immutable job digest authenticate its provenance and the task/agent remain eligible. Stored session strings alone grant no entitlement. Existing runners
-and genuine callbacks/results continue settling. Reject/stop and Cancel remain
+and genuine callbacks/results continue settling. THR309seq1 retires manual /run
+with410 (local CLI aliases exit2); legacy true pending rows never run, including
+on Resume. New true submissions refuse422 before allocation. Initial preflight
+allocates no job; only a genuine authenticated false never-launched prerequisite
+loss can commit failed/spawn_failed plus audit/journal settlement before the
+existing wake bridge. Hold/owner/session refusals and possible launches remain
+unchanged. Reject/stop and Cancel remain
 available. Pending rows, deferred work and worktrees are preserved.
 
 Founder Continue/supersede/revisit, shared resolution and thread dispatch(resolves)

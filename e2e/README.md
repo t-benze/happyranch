@@ -474,6 +474,40 @@ registry/shared stub, dependency, cadence/cap or cleanup-machinery changes.
 
 ## E04 jobs prefix (TASK-10686 / THR-291)
 
+Current source amendment TASK11543 / FounderTHR309seq1 and manager THR311seq2:
+**SOURCE ONLY / behavior UNEXECUTED**. The six case identities, order, counts,
+allowances and strong independent terminal/audit/process/wake oracles remain.
+The historical `E04.approve-exit0` ID now observes omitted/false automatic
+admission with actual case_manager `job_auto_started` and terminal actor; no
+browser run mutation. Each owned script is observed through its existing
+socket immediately after submission, remains running through S1, then is
+released/observed as before. Pair's other job is running, not pending. Natural
+completed/nonzero and timeout caps/results remain exact. Both detail states
+must have no Run/Approve controls; individual Reject and running Stop stay real.
+
+`E04.reject` deliberately FAILS CLOSED through the existing prerequisite/error
+reporting. Missing prerequisite: an authorized legacy pending reviewed-job
+fixture with genuine eligible waiter provenance. New true422 is not rejection
+coverage; never convert that case to false or drop its original no-launch,
+individual reject and wake assertions. Aggregate explicitly refuses a missing
+fixture record; no historical approval-mode receipt proves automatic mode.
+This correction adds no fixture/provider/controller/oracle infrastructure or
+execution authority. Later variants remain authored but unreached while this
+prerequisite is absent. Rejection/wake and source fit remain MISSING/UNEXECUTED,
+not a waiver, test-authoring PASS or behavioral acceptance. Matrix3.12/3.14,
+daily schedule and E04 cap/persistent-Stop/abrupt-R holds remain unchanged.
+
+Four answers for changed E04 assertions: observable = real automatic running
+row/provenance, no-run browser, actual completed0/completed7/timeout outcomes
+and all-terminal wake; credible regression = keep hidden run call, founder
+start audit for auto, or normalize nonzero; nearest coverage = existing six
+E04 journeys/independent aggregate and focused Web owners (Web cannot prove
+backend process/wake); test-only production seam = NONE. Red/green, keeper,
+mutation/restoration and repetitions are UNEXECUTED/MISSING; no ad hoc daily
+run is authorized. The rejection branch retains historical expectations below
+solely until an independently authorized genuine fixture exists.
+
+
 The daily controller now runs the unchanged baseline23, then Pause19, then
 `jobs.exercise`'s six serial variants: **48 authored variants**. E04 source
 reuses accepted design SHA256
@@ -503,12 +537,12 @@ Each credible mutation is an unexecuted sensitivity proposal, not authorization.
 
 | Named case / contract and action → literal oracle | Credible regression | Nearest coverage and missing seam |
 | --- | --- | --- |
-| `E04.approve-exit0`: provider CLI submits review-required cap30, blocks/exits/parks; real browser Approve & run after S1 settlement; owned script released after running readback → completed/0/NULL, exact E04_OK streams, founder audits; natural live S2 reads then final callback/exit/done. | Premature run before review; lost terminal wake. | Baseline task completion does not submit or run a job. |
-| `E04.reject`: same real submit/block, browser Reason=E04_REJECTED_BY_REVIEW → rejected/reviewer founder, all execution fields NULL, no sentinel/peer/files at submit/park/dialog/final drain; one truthful natural S2/done. | Rejection runs script or omits wake. | Baseline has no rejection; empty output alone cannot prove no launch. |
+| `E04.approve-exit0`: provider CLI submits false cap30 and observes automatic owned running; blocks/exits/parks; browser verifies no-run after S1 settlement; owned script released after running readback → completed/0/NULL, exact E04_OK streams, submitting-agent auto-start/terminal audits; natural live S2 reads then final callback/exit/done. | Hidden manual start requirement, wrong start actor or lost terminal wake. | Baseline task completion does not submit or run a job. |
+| `E04.reject`: MISSING legacy fixture/genuine waiter (fails closed); retained historical oracle: real submit/block, browser Reason=E04_REJECTED_BY_REVIEW → rejected/reviewer founder, all execution fields NULL, no sentinel/peer/files at submit/park/dialog/final drain; one truthful natural S2/done. | Rejection runs script or omits wake. | Baseline has no rejection; empty output alone cannot prove no launch. |
 | `E04.completed-exit7`: real cap30 Python exits7 → completed/7/NULL, exact E04_EXIT7 streams, completed audit; CLI/receipt/browser and final summary explicitly preserve nonzero. | Normalize exit7 to0 or label natural nonzero failed. | Ordinary provider exits do not cover job runner return codes. |
 | `E04.failed-timeout`: real cap5 direct script ignores TERM and is never controller-released → product timeout/KILL, failed/timeout/-9, exact streams, duration5–17s, PID/start gone, empty PGID and socket EOF before outer cleanup, one natural S2. | Omit cap forwarding, discard reason, or accept terminal row without process closure. | Launcher TERM/INT diagnoses harness cleanup, not product job timeout. |
-| `E04.two-jobs-A-first`: A completed0 while B remains pending across durable/audit/CLI/browser and two +0 settled checkpoints; B then completed7 → one S2, both literal outcomes, two results/count2, no third provider. | Coordinated all→any producer/admission predicate or lost claim fence. | Single-job wake and ordinary child joins do not cover job fan-in. |
-| `E04.two-jobs-B-first`: B completed7 first, A pending through the same checkpoints, then A completed0 → identical final truth with reverse triggering-job ID. | Asymmetric terminal ordering, premature wake or duplicate return. | A-first alone cannot establish order symmetry. |
+| `E04.two-jobs-A-first`: A completed0 while B remains running across durable/audit/CLI/browser and two +0 settled checkpoints; B then completed7 → one S2, both literal outcomes, two results/count2, no third provider. | Coordinated all→any producer/admission predicate or lost claim fence. | Single-job wake and ordinary child joins do not cover job fan-in. |
+| `E04.two-jobs-B-first`: B completed7 first, A running through the same checkpoints, then A completed0 → identical final truth with reverse triggering-job ID. | Asymmetric terminal ordering, premature wake or duplicate return. | A-first alone cannot establish order symmetry. |
 
 `provider.jobs_command` invokes the bound CLI as a genuine provider child,
 using the real issued task/session. S1's final CLI action is blocked callback;
@@ -578,7 +612,7 @@ Evidence/control authoring records (all four answers; production seam NO):
 | Named fixture/control or consumer | Contract / assertion mapping | Credible regression; nearest coverage/gap |
 | --- | --- | --- |
 | Provider jobs protocol + wrapper child witness | `jobs_command`/`provider_cli` order absolute child/exchange deadlines with one-second receipt delivery room, append partial timeout evidence before refusal, bind actual child PID/parent/argv/source/SID and enforce block/final last-CLI rule. | Equal caller/child timeouts lose streams/identity; controller impersonation or post-final CLI. Exit-only provider lacks these command/evidence boundaries; persistence and sensitivity are unexecuted. |
-| Owned submitted-script socket/sentinel | `pending`/`run_script` bind exact script/token/job to SO_PEERCRED, E2E_ROOT, PID/start/PGID, natural EOF/closure and untruncated streams. | Launch before approval, wrong peer, controller substituting timeout; baseline provider socket is a different process family. |
+| Owned submitted-script socket/sentinel | `pending`/`run_script` bind exact script/token/job to SO_PEERCRED, E2E_ROOT, PID/start/PGID, natural EOF/closure and untruncated streams. | Wrong automatic launch owner/peer, controller substituting timeout; baseline provider socket is a different process family. |
 | Passive observer + boot/window records | `anchor`, passive Pause archive hooks, unchanged baseline/Pause boundary assertions and `aggregate.validate_e04` recompute A0→9→12/B0→6→18, serial+1/+1 and pair+0, full tails/counters and observed source identities. | Missing/reset/evicted window, extra attempt without provider, duplicate summaries deduplicated, receipt-before-S1/after-S2 confusion; old aggregate only checked metadata. |
 | Browser jobs fixture (O1–O7) | `Browser.response` binds armed Request/document scope and captures opt-in JSON inside the original deadline; `job_action` captures actual unchanged-cap body, status, dialog-open no-launch; `job_terminal`/`jobs_waiting` read fresh shipping detail, output, Recall and screenshots. | Wrong dialog/action, stale outcome or exit7 laundered; existing Browser covers only ordinary tasks. |
 | Actual-content daily aggregate (J1.b/J1.c) | `validate_e04` independently reconstructs genuine result/start SIDs, closed semantic completion/defaults, exact live/final lifecycle and full retained history; reads observations and browser events, resolves records and screenshots, recomputes source/boot/counter/CLI/job/audit/process/result joins, five method/path/query/HTTP200/body/stdout/durable read joins, source-timed live-S2/blocked-S1 chronology and exact human-show first header; rejects empty/hash-only/disagreeing content. | Discovery-only/error/contradictory job wire, missing live S2, title masquerading as status or forged PASS/count-only content; metadata controls cannot validate these joins. Dedicated synthetic E04 aggregate fixtures are not authored or executed; sensitivity remains MISSING. |

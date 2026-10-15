@@ -1,0 +1,2577 @@
+{
+  "contract": "thr310-mention-v1",
+  "status": "Manager accepted design after TASK11563 independent review and R1 disposition; all product behavior UNEXECUTED",
+  "prospective_repository_path": "protocol/thread-mention-corpus.json; data-only future source fixture, not authorized to edit during design review",
+  "authority": "TASK11561 Founder THR310seq3/13; manager design-acceptance.md plus accepted original packet/addendum and independent TASK11563 recheck",
+  "normalization": "Lexing never normalizes; existing empty-body predicate remains; nonblank authored body preserved through preview/admission/final storage. See write_path_cases.",
+  "offsets": "half-open; codepoint and UTF16 explicit; UTF8 storage unchanged",
+  "identity_fixture": "C-case actual synthetic org; lexical tokens alone do not confer eligibility",
+  "new_evidence": "NOT EXECUTED; prior receipts only in implementation-cases.md",
+  "cases": [
+    {
+      "id": "L01",
+      "requirement": "Literal email/user-at-host/embedded signs",
+      "changed_from_predecessor": false,
+      "scenario_preconditions": "Raw input; identity/action fixture in packet C01-C25.",
+      "input": "ops@example.com user@host a@b word@Current @@Current path/@Current pkg@scope",
+      "action": "Use identical input at scanner, both composer and render seams; C cases define final admission.",
+      "expected_tokens": [],
+      "expected_ranges": [],
+      "caret_utf16": null,
+      "expected_open_mention": null,
+      "observable_expected_result": "Exact expected_tokens/ranges and caret result; literal positions have no lookup or mention mark.",
+      "level": "W lexical/caret; P/B action samples. DESIGN ONLY.",
+      "environment_isolation": "Future locked Node24 + isolated source-bound synthetic daemon; no Python units.",
+      "four_answers": {
+        "shipping_seam": "Server/CLI raw scanner; TS proseAddresses/openMention; both composers; MessageBubble.",
+        "observable_assertion": "Exact token/range/caret data; final effects separately in packet C cases.",
+        "defect_caught": "Email and embedded at-sign causes lookup/false refusal",
+        "level_adequacy": "Lexical/caret parity only; real public API/browser still required for server, storage and delivery."
+      },
+      "notes": "",
+      "evidence": "NOT EXECUTED"
+    },
+    {
+      "id": "L02",
+      "requirement": "Exact allowed starts",
+      "changed_from_predecessor": true,
+      "scenario_preconditions": "Raw input; identity/action fixture in packet C01-C25.",
+      "input": "@Current (@Other) [@Third] {@Fourth} \"@Fifth\" '@Sixth'",
+      "action": "Use identical input at scanner, both composer and render seams; C cases define final admission.",
+      "expected_tokens": [
+        "Current",
+        "Other",
+        "Third",
+        "Fourth",
+        "Fifth",
+        "Sixth"
+      ],
+      "expected_ranges": [
+        {
+          "token": "Current",
+          "start_codepoint": 0,
+          "end_codepoint": 8,
+          "start_utf16": 0,
+          "end_utf16": 8
+        },
+        {
+          "token": "Other",
+          "start_codepoint": 10,
+          "end_codepoint": 16,
+          "start_utf16": 10,
+          "end_utf16": 16
+        },
+        {
+          "token": "Third",
+          "start_codepoint": 19,
+          "end_codepoint": 25,
+          "start_utf16": 19,
+          "end_utf16": 25
+        },
+        {
+          "token": "Fourth",
+          "start_codepoint": 28,
+          "end_codepoint": 35,
+          "start_utf16": 28,
+          "end_utf16": 35
+        },
+        {
+          "token": "Fifth",
+          "start_codepoint": 38,
+          "end_codepoint": 44,
+          "start_utf16": 38,
+          "end_utf16": 44
+        },
+        {
+          "token": "Sixth",
+          "start_codepoint": 47,
+          "end_codepoint": 53,
+          "start_utf16": 47,
+          "end_utf16": 53
+        }
+      ],
+      "caret_utf16": null,
+      "expected_open_mention": null,
+      "observable_expected_result": "Exact expected_tokens/ranges and caret result; literal positions have no lookup or mention mark.",
+      "level": "W lexical/caret; P/B action samples. DESIGN ONLY.",
+      "environment_isolation": "Future locked Node24 + isolated source-bound synthetic daemon; no Python units.",
+      "four_answers": {
+        "shipping_seam": "Server/CLI raw scanner; TS proseAddresses/openMention; both composers; MessageBubble.",
+        "observable_assertion": "Exact token/range/caret data; final effects separately in packet C cases.",
+        "defect_caught": "Missing allowed delimiter or broad quote suppression",
+        "level_adequacy": "Lexical/caret parity only; real public API/browser still required for server, storage and delivery."
+      },
+      "notes": "",
+      "evidence": "NOT EXECUTED"
+    },
+    {
+      "id": "L03",
+      "requirement": "Excluded start punctuation",
+      "changed_from_predecessor": true,
+      "scenario_preconditions": "Raw input; identity/action fixture in packet C01-C25.",
+      "input": "<@Current >@Current ‘@Current “@Current ,@Current :@Current ;@Current !@Current ?@Current )@Current ]@Current }@Current .@Current /@Current -@Current",
+      "action": "Use identical input at scanner, both composer and render seams; C cases define final admission.",
+      "expected_tokens": [],
+      "expected_ranges": [],
+      "caret_utf16": null,
+      "expected_open_mention": null,
+      "observable_expected_result": "Exact expected_tokens/ranges and caret result; literal positions have no lookup or mention mark.",
+      "level": "W lexical/caret; P/B action samples. DESIGN ONLY.",
+      "environment_isolation": "Future locked Node24 + isolated source-bound synthetic daemon; no Python units.",
+      "four_answers": {
+        "shipping_seam": "Server/CLI raw scanner; TS proseAddresses/openMention; both composers; MessageBubble.",
+        "observable_assertion": "Exact token/range/caret data; final effects separately in packet C cases.",
+        "defect_caught": "P overbroad boundaries survive",
+        "level_adequacy": "Lexical/caret parity only; real public API/browser still required for server, storage and delivery."
+      },
+      "notes": "",
+      "evidence": "NOT EXECUTED"
+    },
+    {
+      "id": "L04",
+      "requirement": "Post-token punctuation and dotted lexical names",
+      "changed_from_predecessor": false,
+      "scenario_preconditions": "Raw input; identity/action fixture in packet C01-C25.",
+      "input": "@A.B @Current. @A..B @A.-b @A/B @A!",
+      "action": "Use identical input at scanner, both composer and render seams; C cases define final admission.",
+      "expected_tokens": [
+        "A.B",
+        "Current",
+        "A",
+        "A.-b"
+      ],
+      "expected_ranges": [
+        {
+          "token": "A.B",
+          "start_codepoint": 0,
+          "end_codepoint": 4,
+          "start_utf16": 0,
+          "end_utf16": 4
+        },
+        {
+          "token": "Current",
+          "start_codepoint": 5,
+          "end_codepoint": 13,
+          "start_utf16": 5,
+          "end_utf16": 13
+        },
+        {
+          "token": "A",
+          "start_codepoint": 15,
+          "end_codepoint": 17,
+          "start_utf16": 15,
+          "end_utf16": 17
+        },
+        {
+          "token": "A.-b",
+          "start_codepoint": 21,
+          "end_codepoint": 26,
+          "start_utf16": 21,
+          "end_utf16": 26
+        },
+        {
+          "token": "A",
+          "start_codepoint": 27,
+          "end_codepoint": 29,
+          "start_utf16": 27,
+          "end_utf16": 29
+        },
+        {
+          "token": "A",
+          "start_codepoint": 32,
+          "end_codepoint": 34,
+          "start_utf16": 32,
+          "end_utf16": 34
+        }
+      ],
+      "caret_utf16": null,
+      "expected_open_mention": null,
+      "observable_expected_result": "Exact expected_tokens/ranges and caret result; literal positions have no lookup or mention mark.",
+      "level": "W lexical/caret; P/B action samples. DESIGN ONLY.",
+      "environment_isolation": "Future locked Node24 + isolated source-bound synthetic daemon; no Python units.",
+      "four_answers": {
+        "shipping_seam": "Server/CLI raw scanner; TS proseAddresses/openMention; both composers; MessageBubble.",
+        "observable_assertion": "Exact token/range/caret data; final effects separately in packet C cases.",
+        "defect_caught": "Wrong token termination or dotted label validation grant",
+        "level_adequacy": "Lexical/caret parity only; real public API/browser still required for server, storage and delivery."
+      },
+      "notes": "Exact-spelling dedup removes later A; token rule is not editable-name validation. MANAGER CORRECTION: ranges retain all occurrences; only expected_tokens deduplicates.",
+      "evidence": "NOT EXECUTED"
+    },
+    {
+      "id": "L05",
+      "requirement": "Immediate Unicode after at-sign",
+      "changed_from_predecessor": true,
+      "scenario_preconditions": "Raw input; identity/action fixture in packet C01-C25.",
+      "input": "@名字 @é @😀 @＠Current",
+      "action": "Use identical input at scanner, both composer and render seams; C cases define final admission.",
+      "expected_tokens": [],
+      "expected_ranges": [],
+      "caret_utf16": null,
+      "expected_open_mention": null,
+      "observable_expected_result": "Exact expected_tokens/ranges and caret result; literal positions have no lookup or mention mark.",
+      "level": "W lexical/caret; P/B action samples. DESIGN ONLY.",
+      "environment_isolation": "Future locked Node24 + isolated source-bound synthetic daemon; no Python units.",
+      "four_answers": {
+        "shipping_seam": "Server/CLI raw scanner; TS proseAddresses/openMention; both composers; MessageBubble.",
+        "observable_assertion": "Exact token/range/caret data; final effects separately in packet C cases.",
+        "defect_caught": "Unicode partial empty token treated as real mention",
+        "level_adequacy": "Lexical/caret parity only; real public API/browser still required for server, storage and delivery."
+      },
+      "notes": "",
+      "evidence": "NOT EXECUTED"
+    },
+    {
+      "id": "L06",
+      "requirement": "Unicode adjacency after ASCII prefix",
+      "changed_from_predecessor": true,
+      "scenario_preconditions": "Raw input; identity/action fixture in packet C01-C25.",
+      "input": "名@Current 😀@Other @Currenté @Other中",
+      "action": "Use identical input at scanner, both composer and render seams; C cases define final admission.",
+      "expected_tokens": [
+        "Current",
+        "Other"
+      ],
+      "expected_ranges": [
+        {
+          "token": "Current",
+          "start_codepoint": 18,
+          "end_codepoint": 26,
+          "start_utf16": 19,
+          "end_utf16": 27
+        },
+        {
+          "token": "Other",
+          "start_codepoint": 28,
+          "end_codepoint": 34,
+          "start_utf16": 29,
+          "end_utf16": 35
+        }
+      ],
+      "caret_utf16": null,
+      "expected_open_mention": null,
+      "observable_expected_result": "Exact expected_tokens/ranges and caret result; literal positions have no lookup or mention mark.",
+      "level": "W lexical/caret; P/B action samples. DESIGN ONLY.",
+      "environment_isolation": "Future locked Node24 + isolated source-bound synthetic daemon; no Python units.",
+      "four_answers": {
+        "shipping_seam": "Server/CLI raw scanner; TS proseAddresses/openMention; both composers; MessageBubble.",
+        "observable_assertion": "Exact token/range/caret data; final effects separately in packet C cases.",
+        "defect_caught": "Unapproved whole-token Unicode rule or word-interior mention",
+        "level_adequacy": "Lexical/caret parity only; real public API/browser still required for server, storage and delivery."
+      },
+      "notes": "",
+      "evidence": "NOT EXECUTED"
+    },
+    {
+      "id": "L07",
+      "requirement": "Escape parity",
+      "changed_from_predecessor": false,
+      "scenario_preconditions": "Raw input; identity/action fixture in packet C01-C25.",
+      "input": "\\@Former \\\\@Current \\\\\\@Other x\\\\@Third",
+      "action": "Use identical input at scanner, both composer and render seams; C cases define final admission.",
+      "expected_tokens": [
+        "Current"
+      ],
+      "expected_ranges": [
+        {
+          "token": "Current",
+          "start_codepoint": 11,
+          "end_codepoint": 19,
+          "start_utf16": 11,
+          "end_utf16": 19
+        }
+      ],
+      "caret_utf16": null,
+      "expected_open_mention": null,
+      "observable_expected_result": "Exact expected_tokens/ranges and caret result; literal positions have no lookup or mention mark.",
+      "level": "W lexical/caret; P/B action samples. DESIGN ONLY.",
+      "environment_isolation": "Future locked Node24 + isolated source-bound synthetic daemon; no Python units.",
+      "four_answers": {
+        "shipping_seam": "Server/CLI raw scanner; TS proseAddresses/openMention; both composers; MessageBubble.",
+        "observable_assertion": "Exact token/range/caret data; final effects separately in packet C cases.",
+        "defect_caught": "Odd escaped token or even slash without boundary",
+        "level_adequacy": "Lexical/caret parity only; real public API/browser still required for server, storage and delivery."
+      },
+      "notes": "JSON decoded: one slash Former; two Current; three Other; word before two Third.",
+      "evidence": "NOT EXECUTED"
+    },
+    {
+      "id": "L08",
+      "requirement": "Exact-spelling dedup, resolution separate",
+      "changed_from_predecessor": false,
+      "scenario_preconditions": "Raw input; identity/action fixture in packet C01-C25.",
+      "input": "@Current @Current @current @case_worker",
+      "action": "Use identical input at scanner, both composer and render seams; C cases define final admission.",
+      "expected_tokens": [
+        "Current",
+        "current",
+        "case_worker"
+      ],
+      "expected_ranges": [
+        {
+          "token": "Current",
+          "start_codepoint": 0,
+          "end_codepoint": 8,
+          "start_utf16": 0,
+          "end_utf16": 8
+        },
+        {
+          "token": "Current",
+          "start_codepoint": 9,
+          "end_codepoint": 17,
+          "start_utf16": 9,
+          "end_utf16": 17
+        },
+        {
+          "token": "current",
+          "start_codepoint": 18,
+          "end_codepoint": 26,
+          "start_utf16": 18,
+          "end_utf16": 26
+        },
+        {
+          "token": "case_worker",
+          "start_codepoint": 27,
+          "end_codepoint": 39,
+          "start_utf16": 27,
+          "end_utf16": 39
+        }
+      ],
+      "caret_utf16": null,
+      "expected_open_mention": null,
+      "observable_expected_result": "Exact expected_tokens/ranges and caret result; literal positions have no lookup or mention mark.",
+      "level": "W lexical/caret; P/B action samples. DESIGN ONLY.",
+      "environment_isolation": "Future locked Node24 + isolated source-bound synthetic daemon; no Python units.",
+      "four_answers": {
+        "shipping_seam": "Server/CLI raw scanner; TS proseAddresses/openMention; both composers; MessageBubble.",
+        "observable_assertion": "Exact token/range/caret data; final effects separately in packet C cases.",
+        "defect_caught": "Wrong lexical casefold/dedup versus identity normalization",
+        "level_adequacy": "Lexical/caret parity only; real public API/browser still required for server, storage and delivery."
+      },
+      "notes": " MANAGER CORRECTION: ranges retain all occurrences; only expected_tokens deduplicates.",
+      "evidence": "NOT EXECUTED"
+    },
+    {
+      "id": "L09",
+      "requirement": "Lexical start versus canonical explicit destination",
+      "changed_from_predecessor": false,
+      "scenario_preconditions": "Raw input; identity/action fixture in packet C01-C25.",
+      "input": "@_worker @-bad @.bad @9agent @_ @",
+      "action": "Use identical input at scanner, both composer and render seams; C cases define final admission.",
+      "expected_tokens": [
+        "9agent"
+      ],
+      "expected_ranges": [
+        {
+          "token": "9agent",
+          "start_codepoint": 21,
+          "end_codepoint": 28,
+          "start_utf16": 21,
+          "end_utf16": 28
+        }
+      ],
+      "caret_utf16": null,
+      "expected_open_mention": null,
+      "observable_expected_result": "Exact expected_tokens/ranges and caret result; literal positions have no lookup or mention mark.",
+      "level": "W lexical/caret; P/B action samples. DESIGN ONLY.",
+      "environment_isolation": "Future locked Node24 + isolated source-bound synthetic daemon; no Python units.",
+      "four_answers": {
+        "shipping_seam": "Server/CLI raw scanner; TS proseAddresses/openMention; both composers; MessageBubble.",
+        "observable_assertion": "Exact token/range/caret data; final effects separately in packet C cases.",
+        "defect_caught": "Loosening unchanged lexer to all owner IDs",
+        "level_adequacy": "Lexical/caret parity only; real public API/browser still required for server, storage and delivery."
+      },
+      "notes": "",
+      "evidence": "NOT EXECUTED"
+    },
+    {
+      "id": "L10",
+      "requirement": "Inline equal-run literal",
+      "changed_from_predecessor": false,
+      "scenario_preconditions": "Raw input; identity/action fixture in packet C01-C25.",
+      "input": "`@Former` ``a ` @Former`` @Current",
+      "action": "Use identical input at scanner, both composer and render seams; C cases define final admission.",
+      "expected_tokens": [
+        "Current"
+      ],
+      "expected_ranges": [
+        {
+          "token": "Current",
+          "start_codepoint": 26,
+          "end_codepoint": 34,
+          "start_utf16": 26,
+          "end_utf16": 34
+        }
+      ],
+      "caret_utf16": null,
+      "expected_open_mention": null,
+      "observable_expected_result": "Exact expected_tokens/ranges and caret result; literal positions have no lookup or mention mark.",
+      "level": "W lexical/caret; P/B action samples. DESIGN ONLY.",
+      "environment_isolation": "Future locked Node24 + isolated source-bound synthetic daemon; no Python units.",
+      "four_answers": {
+        "shipping_seam": "Server/CLI raw scanner; TS proseAddresses/openMention; both composers; MessageBubble.",
+        "observable_assertion": "Exact token/range/caret data; final effects separately in packet C cases.",
+        "defect_caught": "Code tokens leak or genuine tail swallowed",
+        "level_adequacy": "Lexical/caret parity only; real public API/browser still required for server, storage and delivery."
+      },
+      "notes": "",
+      "evidence": "NOT EXECUTED"
+    },
+    {
+      "id": "L11",
+      "requirement": "Multiline paired inline code",
+      "changed_from_predecessor": false,
+      "scenario_preconditions": "Raw input; identity/action fixture in packet C01-C25.",
+      "input": "`a\n@Former\nb` @Current",
+      "action": "Use identical input at scanner, both composer and render seams; C cases define final admission.",
+      "expected_tokens": [
+        "Current"
+      ],
+      "expected_ranges": [
+        {
+          "token": "Current",
+          "start_codepoint": 14,
+          "end_codepoint": 22,
+          "start_utf16": 14,
+          "end_utf16": 22
+        }
+      ],
+      "caret_utf16": null,
+      "expected_open_mention": null,
+      "observable_expected_result": "Exact expected_tokens/ranges and caret result; literal positions have no lookup or mention mark.",
+      "level": "W lexical/caret; P/B action samples. DESIGN ONLY.",
+      "environment_isolation": "Future locked Node24 + isolated source-bound synthetic daemon; no Python units.",
+      "four_answers": {
+        "shipping_seam": "Server/CLI raw scanner; TS proseAddresses/openMention; both composers; MessageBubble.",
+        "observable_assertion": "Exact token/range/caret data; final effects separately in packet C cases.",
+        "defect_caught": "Multiline inline literal disagreement",
+        "level_adequacy": "Lexical/caret parity only; real public API/browser still required for server, storage and delivery."
+      },
+      "notes": "",
+      "evidence": "NOT EXECUTED"
+    },
+    {
+      "id": "L12",
+      "requirement": "Unmatched inline opener",
+      "changed_from_predecessor": false,
+      "scenario_preconditions": "Raw input; identity/action fixture in packet C01-C25.",
+      "input": "`unclosed @Current",
+      "action": "Use identical input at scanner, both composer and render seams; C cases define final admission.",
+      "expected_tokens": [
+        "Current"
+      ],
+      "expected_ranges": [
+        {
+          "token": "Current",
+          "start_codepoint": 10,
+          "end_codepoint": 18,
+          "start_utf16": 10,
+          "end_utf16": 18
+        }
+      ],
+      "caret_utf16": null,
+      "expected_open_mention": null,
+      "observable_expected_result": "Exact expected_tokens/ranges and caret result; literal positions have no lookup or mention mark.",
+      "level": "W lexical/caret; P/B action samples. DESIGN ONLY.",
+      "environment_isolation": "Future locked Node24 + isolated source-bound synthetic daemon; no Python units.",
+      "four_answers": {
+        "shipping_seam": "Server/CLI raw scanner; TS proseAddresses/openMention; both composers; MessageBubble.",
+        "observable_assertion": "Exact token/range/caret data; final effects separately in packet C cases.",
+        "defect_caught": "Unmatched run masks rest",
+        "level_adequacy": "Lexical/caret parity only; real public API/browser still required for server, storage and delivery."
+      },
+      "notes": "",
+      "evidence": "NOT EXECUTED"
+    },
+    {
+      "id": "L13",
+      "requirement": "Blank line ends inline region",
+      "changed_from_predecessor": false,
+      "scenario_preconditions": "Raw input; identity/action fixture in packet C01-C25.",
+      "input": "`@Current\n\n@Other`",
+      "action": "Use identical input at scanner, both composer and render seams; C cases define final admission.",
+      "expected_tokens": [
+        "Other"
+      ],
+      "expected_ranges": [
+        {
+          "token": "Other",
+          "start_codepoint": 11,
+          "end_codepoint": 17,
+          "start_utf16": 11,
+          "end_utf16": 17
+        }
+      ],
+      "caret_utf16": null,
+      "expected_open_mention": null,
+      "observable_expected_result": "Exact expected_tokens/ranges and caret result; literal positions have no lookup or mention mark.",
+      "level": "W lexical/caret; P/B action samples. DESIGN ONLY.",
+      "environment_isolation": "Future locked Node24 + isolated source-bound synthetic daemon; no Python units.",
+      "four_answers": {
+        "shipping_seam": "Server/CLI raw scanner; TS proseAddresses/openMention; both composers; MessageBubble.",
+        "observable_assertion": "Exact token/range/caret data; final effects separately in packet C cases.",
+        "defect_caught": "Cross-paragraph run pairing hides genuine mentions",
+        "level_adequacy": "Lexical/caret parity only; real public API/browser still required for server, storage and delivery."
+      },
+      "notes": " MANAGER CORRECTION: unmatched backtick does not become an allowed start delimiter; immediately adjacent @Current stays literal. @Other at line start remains genuine.",
+      "evidence": "NOT EXECUTED"
+    },
+    {
+      "id": "L14",
+      "requirement": "Escaped inline opener",
+      "changed_from_predecessor": false,
+      "scenario_preconditions": "Raw input; identity/action fixture in packet C01-C25.",
+      "input": "\\` text @Current",
+      "action": "Use identical input at scanner, both composer and render seams; C cases define final admission.",
+      "expected_tokens": [
+        "Current"
+      ],
+      "expected_ranges": [
+        {
+          "token": "Current",
+          "start_codepoint": 8,
+          "end_codepoint": 16,
+          "start_utf16": 8,
+          "end_utf16": 16
+        }
+      ],
+      "caret_utf16": null,
+      "expected_open_mention": null,
+      "observable_expected_result": "Exact expected_tokens/ranges and caret result; literal positions have no lookup or mention mark.",
+      "level": "W lexical/caret; P/B action samples. DESIGN ONLY.",
+      "environment_isolation": "Future locked Node24 + isolated source-bound synthetic daemon; no Python units.",
+      "four_answers": {
+        "shipping_seam": "Server/CLI raw scanner; TS proseAddresses/openMention; both composers; MessageBubble.",
+        "observable_assertion": "Exact token/range/caret data; final effects separately in packet C cases.",
+        "defect_caught": "Escaped opener starts mask",
+        "level_adequacy": "Lexical/caret parity only; real public API/browser still required for server, storage and delivery."
+      },
+      "notes": "",
+      "evidence": "NOT EXECUTED"
+    },
+    {
+      "id": "L15",
+      "requirement": "Closed top-level fence",
+      "changed_from_predecessor": false,
+      "scenario_preconditions": "Raw input; identity/action fixture in packet C01-C25.",
+      "input": "```text\n@Former\n```\n@Current",
+      "action": "Use identical input at scanner, both composer and render seams; C cases define final admission.",
+      "expected_tokens": [
+        "Current"
+      ],
+      "expected_ranges": [
+        {
+          "token": "Current",
+          "start_codepoint": 20,
+          "end_codepoint": 28,
+          "start_utf16": 20,
+          "end_utf16": 28
+        }
+      ],
+      "caret_utf16": null,
+      "expected_open_mention": null,
+      "observable_expected_result": "Exact expected_tokens/ranges and caret result; literal positions have no lookup or mention mark.",
+      "level": "W lexical/caret; P/B action samples. DESIGN ONLY.",
+      "environment_isolation": "Future locked Node24 + isolated source-bound synthetic daemon; no Python units.",
+      "four_answers": {
+        "shipping_seam": "Server/CLI raw scanner; TS proseAddresses/openMention; both composers; MessageBubble.",
+        "observable_assertion": "Exact token/range/caret data; final effects separately in packet C cases.",
+        "defect_caught": "Fence leak or no recovery",
+        "level_adequacy": "Lexical/caret parity only; real public API/browser still required for server, storage and delivery."
+      },
+      "notes": "",
+      "evidence": "NOT EXECUTED"
+    },
+    {
+      "id": "L16",
+      "requirement": "Unclosed top-level fence",
+      "changed_from_predecessor": false,
+      "scenario_preconditions": "Raw input; identity/action fixture in packet C01-C25.",
+      "input": "```\n@Current\n\n@Other",
+      "action": "Use identical input at scanner, both composer and render seams; C cases define final admission.",
+      "expected_tokens": [],
+      "expected_ranges": [],
+      "caret_utf16": null,
+      "expected_open_mention": null,
+      "observable_expected_result": "Exact expected_tokens/ranges and caret result; literal positions have no lookup or mention mark.",
+      "level": "W lexical/caret; P/B action samples. DESIGN ONLY.",
+      "environment_isolation": "Future locked Node24 + isolated source-bound synthetic daemon; no Python units.",
+      "four_answers": {
+        "shipping_seam": "Server/CLI raw scanner; TS proseAddresses/openMention; both composers; MessageBubble.",
+        "observable_assertion": "Exact token/range/caret data; final effects separately in packet C cases.",
+        "defect_caught": "Unapproved top-level implicit recovery",
+        "level_adequacy": "Lexical/caret parity only; real public API/browser still required for server, storage and delivery."
+      },
+      "notes": "Top-level unclosed fence masks to EOF. Manager resolves U3 by preserving predecessor semantics; no automatic recovery from a top-level fence.",
+      "evidence": "NOT EXECUTED"
+    },
+    {
+      "id": "L17",
+      "requirement": "Mismatched/short closer",
+      "changed_from_predecessor": false,
+      "scenario_preconditions": "Raw input; identity/action fixture in packet C01-C25.",
+      "input": "````\n@Former\n```\n@Other\n~~~~\n@Third\n`````\n@Current",
+      "action": "Use identical input at scanner, both composer and render seams; C cases define final admission.",
+      "expected_tokens": [
+        "Current"
+      ],
+      "expected_ranges": [
+        {
+          "token": "Current",
+          "start_codepoint": 42,
+          "end_codepoint": 50,
+          "start_utf16": 42,
+          "end_utf16": 50
+        }
+      ],
+      "caret_utf16": null,
+      "expected_open_mention": null,
+      "observable_expected_result": "Exact expected_tokens/ranges and caret result; literal positions have no lookup or mention mark.",
+      "level": "W lexical/caret; P/B action samples. DESIGN ONLY.",
+      "environment_isolation": "Future locked Node24 + isolated source-bound synthetic daemon; no Python units.",
+      "four_answers": {
+        "shipping_seam": "Server/CLI raw scanner; TS proseAddresses/openMention; both composers; MessageBubble.",
+        "observable_assertion": "Exact token/range/caret data; final effects separately in packet C cases.",
+        "defect_caught": "Wrong fence closer length/character",
+        "level_adequacy": "Lexical/caret parity only; real public API/browser still required for server, storage and delivery."
+      },
+      "notes": "",
+      "evidence": "NOT EXECUTED"
+    },
+    {
+      "id": "L18",
+      "requirement": "Tilde fence",
+      "changed_from_predecessor": false,
+      "scenario_preconditions": "Raw input; identity/action fixture in packet C01-C25.",
+      "input": "~~~lang\n@Former\n~~~\n@Current",
+      "action": "Use identical input at scanner, both composer and render seams; C cases define final admission.",
+      "expected_tokens": [
+        "Current"
+      ],
+      "expected_ranges": [
+        {
+          "token": "Current",
+          "start_codepoint": 20,
+          "end_codepoint": 28,
+          "start_utf16": 20,
+          "end_utf16": 28
+        }
+      ],
+      "caret_utf16": null,
+      "expected_open_mention": null,
+      "observable_expected_result": "Exact expected_tokens/ranges and caret result; literal positions have no lookup or mention mark.",
+      "level": "W lexical/caret; P/B action samples. DESIGN ONLY.",
+      "environment_isolation": "Future locked Node24 + isolated source-bound synthetic daemon; no Python units.",
+      "four_answers": {
+        "shipping_seam": "Server/CLI raw scanner; TS proseAddresses/openMention; both composers; MessageBubble.",
+        "observable_assertion": "Exact token/range/caret data; final effects separately in packet C cases.",
+        "defect_caught": "Only backtick fences supported",
+        "level_adequacy": "Lexical/caret parity only; real public API/browser still required for server, storage and delivery."
+      },
+      "notes": "",
+      "evidence": "NOT EXECUTED"
+    },
+    {
+      "id": "L19",
+      "requirement": "Quote line literal",
+      "changed_from_predecessor": true,
+      "scenario_preconditions": "Raw input; identity/action fixture in packet C01-C25.",
+      "input": "> @Former\n@Current",
+      "action": "Use identical input at scanner, both composer and render seams; C cases define final admission.",
+      "expected_tokens": [
+        "Current"
+      ],
+      "expected_ranges": [
+        {
+          "token": "Current",
+          "start_codepoint": 10,
+          "end_codepoint": 18,
+          "start_utf16": 10,
+          "end_utf16": 18
+        }
+      ],
+      "caret_utf16": null,
+      "expected_open_mention": null,
+      "observable_expected_result": "Exact expected_tokens/ranges and caret result; literal positions have no lookup or mention mark.",
+      "level": "W lexical/caret; P/B action samples. DESIGN ONLY.",
+      "environment_isolation": "Future locked Node24 + isolated source-bound synthetic daemon; no Python units.",
+      "four_answers": {
+        "shipping_seam": "Server/CLI raw scanner; TS proseAddresses/openMention; both composers; MessageBubble.",
+        "observable_assertion": "Exact token/range/caret data; final effects separately in packet C cases.",
+        "defect_caught": "Quote interpreted as prose or leaks mask into tail",
+        "level_adequacy": "Lexical/caret parity only; real public API/browser still required for server, storage and delivery."
+      },
+      "notes": "",
+      "evidence": "NOT EXECUTED"
+    },
+    {
+      "id": "L20",
+      "requirement": "Nested/empty quote",
+      "changed_from_predecessor": true,
+      "scenario_preconditions": "Raw input; identity/action fixture in packet C01-C25.",
+      "input": " > > @Former\n>\n>>>@Other\n@Current",
+      "action": "Use identical input at scanner, both composer and render seams; C cases define final admission.",
+      "expected_tokens": [
+        "Current"
+      ],
+      "expected_ranges": [
+        {
+          "token": "Current",
+          "start_codepoint": 25,
+          "end_codepoint": 33,
+          "start_utf16": 25,
+          "end_utf16": 33
+        }
+      ],
+      "caret_utf16": null,
+      "expected_open_mention": null,
+      "observable_expected_result": "Exact expected_tokens/ranges and caret result; literal positions have no lookup or mention mark.",
+      "level": "W lexical/caret; P/B action samples. DESIGN ONLY.",
+      "environment_isolation": "Future locked Node24 + isolated source-bound synthetic daemon; no Python units.",
+      "four_answers": {
+        "shipping_seam": "Server/CLI raw scanner; TS proseAddresses/openMention; both composers; MessageBubble.",
+        "observable_assertion": "Exact token/range/caret data; final effects separately in packet C cases.",
+        "defect_caught": "Nested or empty source line escapes literal zone",
+        "level_adequacy": "Lexical/caret parity only; real public API/browser still required for server, storage and delivery."
+      },
+      "notes": "",
+      "evidence": "NOT EXECUTED"
+    },
+    {
+      "id": "L21",
+      "requirement": "Quote-contained unclosed fence",
+      "changed_from_predecessor": true,
+      "scenario_preconditions": "Raw input; identity/action fixture in packet C01-C25.",
+      "input": "> ```\n> @Former\n>\n@Current",
+      "action": "Use identical input at scanner, both composer and render seams; C cases define final admission.",
+      "expected_tokens": [
+        "Current"
+      ],
+      "expected_ranges": [
+        {
+          "token": "Current",
+          "start_codepoint": 18,
+          "end_codepoint": 26,
+          "start_utf16": 18,
+          "end_utf16": 26
+        }
+      ],
+      "caret_utf16": null,
+      "expected_open_mention": null,
+      "observable_expected_result": "Exact expected_tokens/ranges and caret result; literal positions have no lookup or mention mark.",
+      "level": "W lexical/caret; P/B action samples. DESIGN ONLY.",
+      "environment_isolation": "Future locked Node24 + isolated source-bound synthetic daemon; no Python units.",
+      "four_answers": {
+        "shipping_seam": "Server/CLI raw scanner; TS proseAddresses/openMention; both composers; MessageBubble.",
+        "observable_assertion": "Exact token/range/caret data; final effects separately in packet C cases.",
+        "defect_caught": "Quoted unclosed fence swallows forward note",
+        "level_adequacy": "Lexical/caret parity only; real public API/browser still required for server, storage and delivery."
+      },
+      "notes": "",
+      "evidence": "NOT EXECUTED"
+    },
+    {
+      "id": "L22",
+      "requirement": "Quote-contained unmatched inline opener",
+      "changed_from_predecessor": true,
+      "scenario_preconditions": "Raw input; identity/action fixture in packet C01-C25.",
+      "input": "> `@Former\n@Current",
+      "action": "Use identical input at scanner, both composer and render seams; C cases define final admission.",
+      "expected_tokens": [
+        "Current"
+      ],
+      "expected_ranges": [
+        {
+          "token": "Current",
+          "start_codepoint": 11,
+          "end_codepoint": 19,
+          "start_utf16": 11,
+          "end_utf16": 19
+        }
+      ],
+      "caret_utf16": null,
+      "expected_open_mention": null,
+      "observable_expected_result": "Exact expected_tokens/ranges and caret result; literal positions have no lookup or mention mark.",
+      "level": "W lexical/caret; P/B action samples. DESIGN ONLY.",
+      "environment_isolation": "Future locked Node24 + isolated source-bound synthetic daemon; no Python units.",
+      "four_answers": {
+        "shipping_seam": "Server/CLI raw scanner; TS proseAddresses/openMention; both composers; MessageBubble.",
+        "observable_assertion": "Exact token/range/caret data; final effects separately in packet C cases.",
+        "defect_caught": "Quoted code span leaks across quote boundary",
+        "level_adequacy": "Lexical/caret parity only; real public API/browser still required for server, storage and delivery."
+      },
+      "notes": "",
+      "evidence": "NOT EXECUTED"
+    },
+    {
+      "id": "L23",
+      "requirement": "Unprefixed lazy continuation",
+      "changed_from_predecessor": true,
+      "scenario_preconditions": "Raw input; identity/action fixture in packet C01-C25.",
+      "input": "> literal\n@Current",
+      "action": "Use identical input at scanner, both composer and render seams; C cases define final admission.",
+      "expected_tokens": [
+        "Current"
+      ],
+      "expected_ranges": [
+        {
+          "token": "Current",
+          "start_codepoint": 10,
+          "end_codepoint": 18,
+          "start_utf16": 10,
+          "end_utf16": 18
+        }
+      ],
+      "caret_utf16": null,
+      "expected_open_mention": null,
+      "observable_expected_result": "Exact expected_tokens/ranges and caret result; literal positions have no lookup or mention mark.",
+      "level": "W lexical/caret; P/B action samples. DESIGN ONLY.",
+      "environment_isolation": "Future locked Node24 + isolated source-bound synthetic daemon; no Python units.",
+      "four_answers": {
+        "shipping_seam": "Server/CLI raw scanner; TS proseAddresses/openMention; both composers; MessageBubble.",
+        "observable_assertion": "Exact token/range/caret data; final effects separately in packet C cases.",
+        "defect_caught": "Implicit renderer container replaces explicit-line grammar",
+        "level_adequacy": "Lexical/caret parity only; real public API/browser still required for server, storage and delivery."
+      },
+      "notes": "Scanner sees ordinary prose tail even if Markdown renders lazy continuation in blockquote; decoration uses raw offsets.",
+      "evidence": "NOT EXECUTED"
+    },
+    {
+      "id": "L24",
+      "requirement": "Quote starts end ordinary inline region",
+      "changed_from_predecessor": true,
+      "scenario_preconditions": "Raw input; identity/action fixture in packet C01-C25.",
+      "input": "`@Current\n> source\n@Other`",
+      "action": "Use identical input at scanner, both composer and render seams; C cases define final admission.",
+      "expected_tokens": [
+        "Other"
+      ],
+      "expected_ranges": [
+        {
+          "token": "Other",
+          "start_codepoint": 19,
+          "end_codepoint": 25,
+          "start_utf16": 19,
+          "end_utf16": 25
+        }
+      ],
+      "caret_utf16": null,
+      "expected_open_mention": null,
+      "observable_expected_result": "Exact expected_tokens/ranges and caret result; literal positions have no lookup or mention mark.",
+      "level": "W lexical/caret; P/B action samples. DESIGN ONLY.",
+      "environment_isolation": "Future locked Node24 + isolated source-bound synthetic daemon; no Python units.",
+      "four_answers": {
+        "shipping_seam": "Server/CLI raw scanner; TS proseAddresses/openMention; both composers; MessageBubble.",
+        "observable_assertion": "Exact token/range/caret data; final effects separately in packet C cases.",
+        "defect_caught": "Code pairing crosses quote line",
+        "level_adequacy": "Lexical/caret parity only; real public API/browser still required for server, storage and delivery."
+      },
+      "notes": " MANAGER CORRECTION: unmatched backtick does not become an allowed start delimiter; immediately adjacent @Current stays literal. @Other at line start remains genuine.",
+      "evidence": "NOT EXECUTED"
+    },
+    {
+      "id": "L25",
+      "requirement": "Ordinary ASCII quoted prose",
+      "changed_from_predecessor": true,
+      "scenario_preconditions": "Raw input; identity/action fixture in packet C01-C25.",
+      "input": "\"@Current\" '@Other'",
+      "action": "Use identical input at scanner, both composer and render seams; C cases define final admission.",
+      "expected_tokens": [
+        "Current",
+        "Other"
+      ],
+      "expected_ranges": [
+        {
+          "token": "Current",
+          "start_codepoint": 1,
+          "end_codepoint": 9,
+          "start_utf16": 1,
+          "end_utf16": 9
+        },
+        {
+          "token": "Other",
+          "start_codepoint": 12,
+          "end_codepoint": 18,
+          "start_utf16": 12,
+          "end_utf16": 18
+        }
+      ],
+      "caret_utf16": null,
+      "expected_open_mention": null,
+      "observable_expected_result": "Exact expected_tokens/ranges and caret result; literal positions have no lookup or mention mark.",
+      "level": "W lexical/caret; P/B action samples. DESIGN ONLY.",
+      "environment_isolation": "Future locked Node24 + isolated source-bound synthetic daemon; no Python units.",
+      "four_answers": {
+        "shipping_seam": "Server/CLI raw scanner; TS proseAddresses/openMention; both composers; MessageBubble.",
+        "observable_assertion": "Exact token/range/caret data; final effects separately in packet C cases.",
+        "defect_caught": "All quoted prose suppressed",
+        "level_adequacy": "Lexical/caret parity only; real public API/browser still required for server, storage and delivery."
+      },
+      "notes": "",
+      "evidence": "NOT EXECUTED"
+    },
+    {
+      "id": "L26",
+      "requirement": "Newlines CRLF and CR",
+      "changed_from_predecessor": true,
+      "scenario_preconditions": "Raw input; identity/action fixture in packet C01-C25.",
+      "input": "> @Former\r\n@Current\r> @Other\r@Third",
+      "action": "Use identical input at scanner, both composer and render seams; C cases define final admission.",
+      "expected_tokens": [
+        "Current",
+        "Third"
+      ],
+      "expected_ranges": [
+        {
+          "token": "Current",
+          "start_codepoint": 11,
+          "end_codepoint": 19,
+          "start_utf16": 11,
+          "end_utf16": 19
+        },
+        {
+          "token": "Third",
+          "start_codepoint": 29,
+          "end_codepoint": 35,
+          "start_utf16": 29,
+          "end_utf16": 35
+        }
+      ],
+      "caret_utf16": null,
+      "expected_open_mention": null,
+      "observable_expected_result": "Exact expected_tokens/ranges and caret result; literal positions have no lookup or mention mark.",
+      "level": "W lexical/caret; P/B action samples. DESIGN ONLY.",
+      "environment_isolation": "Future locked Node24 + isolated source-bound synthetic daemon; no Python units.",
+      "four_answers": {
+        "shipping_seam": "Server/CLI raw scanner; TS proseAddresses/openMention; both composers; MessageBubble.",
+        "observable_assertion": "Exact token/range/caret data; final effects separately in packet C cases.",
+        "defect_caught": "LF-only quoting/line masking",
+        "level_adequacy": "Lexical/caret parity only; real public API/browser still required for server, storage and delivery."
+      },
+      "notes": "",
+      "evidence": "NOT EXECUTED"
+    },
+    {
+      "id": "L27",
+      "requirement": "Four-space container is outside simple quote grammar",
+      "changed_from_predecessor": true,
+      "scenario_preconditions": "Raw input; identity/action fixture in packet C01-C25.",
+      "input": "    > @Current",
+      "action": "Use identical input at scanner, both composer and render seams; C cases define final admission.",
+      "expected_tokens": [
+        "Current"
+      ],
+      "expected_ranges": [
+        {
+          "token": "Current",
+          "start_codepoint": 6,
+          "end_codepoint": 14,
+          "start_utf16": 6,
+          "end_utf16": 14
+        }
+      ],
+      "caret_utf16": null,
+      "expected_open_mention": null,
+      "observable_expected_result": "Exact expected_tokens/ranges and caret result; literal positions have no lookup or mention mark.",
+      "level": "W lexical/caret; P/B action samples. DESIGN ONLY.",
+      "environment_isolation": "Future locked Node24 + isolated source-bound synthetic daemon; no Python units.",
+      "four_answers": {
+        "shipping_seam": "Server/CLI raw scanner; TS proseAddresses/openMention; both composers; MessageBubble.",
+        "observable_assertion": "Exact token/range/caret data; final effects separately in packet C cases.",
+        "defect_caught": "Implicit unapproved indented-code/container grammar",
+        "level_adequacy": "Lexical/caret parity only; real public API/browser still required for server, storage and delivery."
+      },
+      "notes": "Raw scanner contract, not complete CommonMark semantics; rendering mapping U4.",
+      "evidence": "NOT EXECUTED"
+    },
+    {
+      "id": "L28",
+      "requirement": "No foreign closers affect top-level fence",
+      "changed_from_predecessor": true,
+      "scenario_preconditions": "Raw input; identity/action fixture in packet C01-C25.",
+      "input": "```\n> ```\n@Former\n```\n@Current",
+      "action": "Use identical input at scanner, both composer and render seams; C cases define final admission.",
+      "expected_tokens": [
+        "Current"
+      ],
+      "expected_ranges": [
+        {
+          "token": "Current",
+          "start_codepoint": 22,
+          "end_codepoint": 30,
+          "start_utf16": 22,
+          "end_utf16": 30
+        }
+      ],
+      "caret_utf16": null,
+      "expected_open_mention": null,
+      "observable_expected_result": "Exact expected_tokens/ranges and caret result; literal positions have no lookup or mention mark.",
+      "level": "W lexical/caret; P/B action samples. DESIGN ONLY.",
+      "environment_isolation": "Future locked Node24 + isolated source-bound synthetic daemon; no Python units.",
+      "four_answers": {
+        "shipping_seam": "Server/CLI raw scanner; TS proseAddresses/openMention; both composers; MessageBubble.",
+        "observable_assertion": "Exact token/range/caret data; final effects separately in packet C cases.",
+        "defect_caught": "Quote handler accidentally closes top-level fence",
+        "level_adequacy": "Lexical/caret parity only; real public API/browser still required for server, storage and delivery."
+      },
+      "notes": "",
+      "evidence": "NOT EXECUTED"
+    },
+    {
+      "id": "L29",
+      "requirement": "Mixed literal Former and genuine tail",
+      "changed_from_predecessor": true,
+      "scenario_preconditions": "Raw input; identity/action fixture in packet C01-C25.",
+      "input": "mail@Former `@Former`\n> @Former\n@Current",
+      "action": "Use identical input at scanner, both composer and render seams; C cases define final admission.",
+      "expected_tokens": [
+        "Current"
+      ],
+      "expected_ranges": [
+        {
+          "token": "Current",
+          "start_codepoint": 32,
+          "end_codepoint": 40,
+          "start_utf16": 32,
+          "end_utf16": 40
+        }
+      ],
+      "caret_utf16": null,
+      "expected_open_mention": null,
+      "observable_expected_result": "Exact expected_tokens/ranges and caret result; literal positions have no lookup or mention mark.",
+      "level": "W lexical/caret; P/B action samples. DESIGN ONLY.",
+      "environment_isolation": "Future locked Node24 + isolated source-bound synthetic daemon; no Python units.",
+      "four_answers": {
+        "shipping_seam": "Server/CLI raw scanner; TS proseAddresses/openMention; both composers; MessageBubble.",
+        "observable_assertion": "Exact token/range/caret data; final effects separately in packet C cases.",
+        "defect_caught": "Literal Former rejects or masks real tail",
+        "level_adequacy": "Lexical/caret parity only; real public API/browser still required for server, storage and delivery."
+      },
+      "notes": "",
+      "evidence": "NOT EXECUTED"
+    },
+    {
+      "id": "L30",
+      "requirement": "Mixed literal and genuine Former",
+      "changed_from_predecessor": true,
+      "scenario_preconditions": "Raw input; identity/action fixture in packet C01-C25.",
+      "input": "mail@Former `@Former`\n> @Former\n@Former",
+      "action": "Use identical input at scanner, both composer and render seams; C cases define final admission.",
+      "expected_tokens": [
+        "Former"
+      ],
+      "expected_ranges": [
+        {
+          "token": "Former",
+          "start_codepoint": 32,
+          "end_codepoint": 39,
+          "start_utf16": 32,
+          "end_utf16": 39
+        }
+      ],
+      "caret_utf16": null,
+      "expected_open_mention": null,
+      "observable_expected_result": "Exact expected_tokens/ranges and caret result; literal positions have no lookup or mention mark.",
+      "level": "W lexical/caret; P/B action samples. DESIGN ONLY.",
+      "environment_isolation": "Future locked Node24 + isolated source-bound synthetic daemon; no Python units.",
+      "four_answers": {
+        "shipping_seam": "Server/CLI raw scanner; TS proseAddresses/openMention; both composers; MessageBubble.",
+        "observable_assertion": "Exact token/range/caret data; final effects separately in packet C cases.",
+        "defect_caught": "Literal masking hides actual former refusal",
+        "level_adequacy": "Lexical/caret parity only; real public API/browser still required for server, storage and delivery."
+      },
+      "notes": "",
+      "evidence": "NOT EXECUTED"
+    },
+    {
+      "id": "L31",
+      "requirement": "Safe generated forward body plus note",
+      "changed_from_predecessor": true,
+      "scenario_preconditions": "Raw input; identity/action fixture in packet C01-C25.",
+      "input": "> **Forwarded from THR-X**\n> Header\n> first\n> @Former\n> ```\n>\n> (... source truncated)\n\n---\n\n@Current",
+      "action": "Use identical input at scanner, both composer and render seams; C cases define final admission.",
+      "expected_tokens": [
+        "Current"
+      ],
+      "expected_ranges": [
+        {
+          "token": "Current",
+          "start_codepoint": 93,
+          "end_codepoint": 101,
+          "start_utf16": 93,
+          "end_utf16": 101
+        }
+      ],
+      "caret_utf16": null,
+      "expected_open_mention": null,
+      "observable_expected_result": "Exact expected_tokens/ranges and caret result; literal positions have no lookup or mention mark.",
+      "level": "W lexical/caret; P/B action samples. DESIGN ONLY.",
+      "environment_isolation": "Future locked Node24 + isolated source-bound synthetic daemon; no Python units.",
+      "four_answers": {
+        "shipping_seam": "Server/CLI raw scanner; TS proseAddresses/openMention; both composers; MessageBubble.",
+        "observable_assertion": "Exact token/range/caret data; final effects separately in packet C cases.",
+        "defect_caught": "Forward source/truncation or code leaks into note",
+        "level_adequacy": "Lexical/caret parity only; real public API/browser still required for server, storage and delivery."
+      },
+      "notes": "",
+      "evidence": "NOT EXECUTED"
+    },
+    {
+      "id": "L32",
+      "requirement": "Quoted-only follows no-mention fallback",
+      "changed_from_predecessor": true,
+      "scenario_preconditions": "Raw input; identity/action fixture in packet C01-C25.",
+      "input": "> @founder\n> @Former",
+      "action": "Use identical input at scanner, both composer and render seams; C cases define final admission.",
+      "expected_tokens": [],
+      "expected_ranges": [],
+      "caret_utf16": null,
+      "expected_open_mention": null,
+      "observable_expected_result": "Exact expected_tokens/ranges and caret result; literal positions have no lookup or mention mark.",
+      "level": "W lexical/caret; P/B action samples. DESIGN ONLY.",
+      "environment_isolation": "Future locked Node24 + isolated source-bound synthetic daemon; no Python units.",
+      "four_answers": {
+        "shipping_seam": "Server/CLI raw scanner; TS proseAddresses/openMention; both composers; MessageBubble.",
+        "observable_assertion": "Exact token/range/caret data; final effects separately in packet C cases.",
+        "defect_caught": "Quote-only confused with Founder-only",
+        "level_adequacy": "Lexical/caret parity only; real public API/browser still required for server, storage and delivery."
+      },
+      "notes": "",
+      "evidence": "NOT EXECUTED"
+    },
+    {
+      "id": "L33",
+      "requirement": "Founder genuine/mixed tokens",
+      "changed_from_predecessor": false,
+      "scenario_preconditions": "Raw input; identity/action fixture in packet C01-C25.",
+      "input": "@founder @Owner @Current",
+      "action": "Use identical input at scanner, both composer and render seams; C cases define final admission.",
+      "expected_tokens": [
+        "founder",
+        "Owner",
+        "Current"
+      ],
+      "expected_ranges": [
+        {
+          "token": "founder",
+          "start_codepoint": 0,
+          "end_codepoint": 8,
+          "start_utf16": 0,
+          "end_utf16": 8
+        },
+        {
+          "token": "Owner",
+          "start_codepoint": 9,
+          "end_codepoint": 15,
+          "start_utf16": 9,
+          "end_utf16": 15
+        },
+        {
+          "token": "Current",
+          "start_codepoint": 16,
+          "end_codepoint": 24,
+          "start_utf16": 16,
+          "end_utf16": 24
+        }
+      ],
+      "caret_utf16": null,
+      "expected_open_mention": null,
+      "observable_expected_result": "Exact expected_tokens/ranges and caret result; literal positions have no lookup or mention mark.",
+      "level": "W lexical/caret; P/B action samples. DESIGN ONLY.",
+      "environment_isolation": "Future locked Node24 + isolated source-bound synthetic daemon; no Python units.",
+      "four_answers": {
+        "shipping_seam": "Server/CLI raw scanner; TS proseAddresses/openMention; both composers; MessageBubble.",
+        "observable_assertion": "Exact token/range/caret data; final effects separately in packet C cases.",
+        "defect_caught": "Human removed from manual body grammar",
+        "level_adequacy": "Lexical/caret parity only; real public API/browser still required for server, storage and delivery."
+      },
+      "notes": "",
+      "evidence": "NOT EXECUTED"
+    },
+    {
+      "id": "L34",
+      "requirement": "Incomplete bare-at caret",
+      "changed_from_predecessor": false,
+      "scenario_preconditions": "Raw input; identity/action fixture in packet C01-C25.",
+      "input": "hi @",
+      "action": "Use identical input at scanner, both composer and render seams; C cases define final admission.",
+      "expected_tokens": [],
+      "expected_ranges": [],
+      "caret_utf16": 4,
+      "expected_open_mention": {
+        "query": "",
+        "tokenStart": 3
+      },
+      "observable_expected_result": "Exact expected_tokens/ranges and caret result; literal positions have no lookup or mention mark.",
+      "level": "W lexical/caret; P/B action samples. DESIGN ONLY.",
+      "environment_isolation": "Future locked Node24 + isolated source-bound synthetic daemon; no Python units.",
+      "four_answers": {
+        "shipping_seam": "Server/CLI raw scanner; TS proseAddresses/openMention; both composers; MessageBubble.",
+        "observable_assertion": "Exact token/range/caret data; final effects separately in packet C cases.",
+        "defect_caught": "Lost ordinary empty hint",
+        "level_adequacy": "Lexical/caret parity only; real public API/browser still required for server, storage and delivery."
+      },
+      "notes": "",
+      "evidence": "NOT EXECUTED"
+    },
+    {
+      "id": "L35",
+      "requirement": "Invalid Unicode must suppress popup at bare-at position",
+      "changed_from_predecessor": true,
+      "scenario_preconditions": "Raw input; identity/action fixture in packet C01-C25.",
+      "input": "@é",
+      "action": "Use identical input at scanner, both composer and render seams; C cases define final admission.",
+      "expected_tokens": [],
+      "expected_ranges": [],
+      "caret_utf16": 1,
+      "expected_open_mention": null,
+      "observable_expected_result": "Exact expected_tokens/ranges and caret result; literal positions have no lookup or mention mark.",
+      "level": "W lexical/caret; P/B action samples. DESIGN ONLY.",
+      "environment_isolation": "Future locked Node24 + isolated source-bound synthetic daemon; no Python units.",
+      "four_answers": {
+        "shipping_seam": "Server/CLI raw scanner; TS proseAddresses/openMention; both composers; MessageBubble.",
+        "observable_assertion": "Exact token/range/caret data; final effects separately in packet C cases.",
+        "defect_caught": "Empty hint before immediate non-ASCII",
+        "level_adequacy": "Lexical/caret parity only; real public API/browser still required for server, storage and delivery."
+      },
+      "notes": "",
+      "evidence": "NOT EXECUTED"
+    },
+    {
+      "id": "L36",
+      "requirement": "Genuine prefix with suffix",
+      "changed_from_predecessor": false,
+      "scenario_preconditions": "Raw input; identity/action fixture in packet C01-C25.",
+      "input": "hello @Cur tail",
+      "action": "Use identical input at scanner, both composer and render seams; C cases define final admission.",
+      "expected_tokens": [
+        "Cur"
+      ],
+      "expected_ranges": [
+        {
+          "token": "Cur",
+          "start_codepoint": 6,
+          "end_codepoint": 10,
+          "start_utf16": 6,
+          "end_utf16": 10
+        }
+      ],
+      "caret_utf16": 10,
+      "expected_open_mention": {
+        "query": "Cur",
+        "tokenStart": 6
+      },
+      "observable_expected_result": "Exact expected_tokens/ranges and caret result; literal positions have no lookup or mention mark.",
+      "level": "W lexical/caret; P/B action samples. DESIGN ONLY.",
+      "environment_isolation": "Future locked Node24 + isolated source-bound synthetic daemon; no Python units.",
+      "four_answers": {
+        "shipping_seam": "Server/CLI raw scanner; TS proseAddresses/openMention; both composers; MessageBubble.",
+        "observable_assertion": "Exact token/range/caret data; final effects separately in packet C cases.",
+        "defect_caught": "Caret slices wrong interval",
+        "level_adequacy": "Lexical/caret parity only; real public API/browser still required for server, storage and delivery."
+      },
+      "notes": "",
+      "evidence": "NOT EXECUTED"
+    },
+    {
+      "id": "L37",
+      "requirement": "Caret after trailing dot",
+      "changed_from_predecessor": false,
+      "scenario_preconditions": "Raw input; identity/action fixture in packet C01-C25.",
+      "input": "@Current.",
+      "action": "Use identical input at scanner, both composer and render seams; C cases define final admission.",
+      "expected_tokens": [
+        "Current"
+      ],
+      "expected_ranges": [
+        {
+          "token": "Current",
+          "start_codepoint": 0,
+          "end_codepoint": 8,
+          "start_utf16": 0,
+          "end_utf16": 8
+        }
+      ],
+      "caret_utf16": 9,
+      "expected_open_mention": null,
+      "observable_expected_result": "Exact expected_tokens/ranges and caret result; literal positions have no lookup or mention mark.",
+      "level": "W lexical/caret; P/B action samples. DESIGN ONLY.",
+      "environment_isolation": "Future locked Node24 + isolated source-bound synthetic daemon; no Python units.",
+      "four_answers": {
+        "shipping_seam": "Server/CLI raw scanner; TS proseAddresses/openMention; both composers; MessageBubble.",
+        "observable_assertion": "Exact token/range/caret data; final effects separately in packet C cases.",
+        "defect_caught": "Popup beyond token end",
+        "level_adequacy": "Lexical/caret parity only; real public API/browser still required for server, storage and delivery."
+      },
+      "notes": "",
+      "evidence": "NOT EXECUTED"
+    },
+    {
+      "id": "L38",
+      "requirement": "Caret in email",
+      "changed_from_predecessor": false,
+      "scenario_preconditions": "Raw input; identity/action fixture in packet C01-C25.",
+      "input": "mail@Current",
+      "action": "Use identical input at scanner, both composer and render seams; C cases define final admission.",
+      "expected_tokens": [],
+      "expected_ranges": [],
+      "caret_utf16": 12,
+      "expected_open_mention": null,
+      "observable_expected_result": "Exact expected_tokens/ranges and caret result; literal positions have no lookup or mention mark.",
+      "level": "W lexical/caret; P/B action samples. DESIGN ONLY.",
+      "environment_isolation": "Future locked Node24 + isolated source-bound synthetic daemon; no Python units.",
+      "four_answers": {
+        "shipping_seam": "Server/CLI raw scanner; TS proseAddresses/openMention; both composers; MessageBubble.",
+        "observable_assertion": "Exact token/range/caret data; final effects separately in packet C cases.",
+        "defect_caught": "Email autocomplete",
+        "level_adequacy": "Lexical/caret parity only; real public API/browser still required for server, storage and delivery."
+      },
+      "notes": "",
+      "evidence": "NOT EXECUTED"
+    },
+    {
+      "id": "L39",
+      "requirement": "Caret in quote",
+      "changed_from_predecessor": true,
+      "scenario_preconditions": "Raw input; identity/action fixture in packet C01-C25.",
+      "input": "> @Current",
+      "action": "Use identical input at scanner, both composer and render seams; C cases define final admission.",
+      "expected_tokens": [],
+      "expected_ranges": [],
+      "caret_utf16": 10,
+      "expected_open_mention": null,
+      "observable_expected_result": "Exact expected_tokens/ranges and caret result; literal positions have no lookup or mention mark.",
+      "level": "W lexical/caret; P/B action samples. DESIGN ONLY.",
+      "environment_isolation": "Future locked Node24 + isolated source-bound synthetic daemon; no Python units.",
+      "four_answers": {
+        "shipping_seam": "Server/CLI raw scanner; TS proseAddresses/openMention; both composers; MessageBubble.",
+        "observable_assertion": "Exact token/range/caret data; final effects separately in packet C cases.",
+        "defect_caught": "Quote autocomplete",
+        "level_adequacy": "Lexical/caret parity only; real public API/browser still required for server, storage and delivery."
+      },
+      "notes": "",
+      "evidence": "NOT EXECUTED"
+    },
+    {
+      "id": "L40",
+      "requirement": "Caret in code",
+      "changed_from_predecessor": false,
+      "scenario_preconditions": "Raw input; identity/action fixture in packet C01-C25.",
+      "input": "`@Current`",
+      "action": "Use identical input at scanner, both composer and render seams; C cases define final admission.",
+      "expected_tokens": [],
+      "expected_ranges": [],
+      "caret_utf16": 9,
+      "expected_open_mention": null,
+      "observable_expected_result": "Exact expected_tokens/ranges and caret result; literal positions have no lookup or mention mark.",
+      "level": "W lexical/caret; P/B action samples. DESIGN ONLY.",
+      "environment_isolation": "Future locked Node24 + isolated source-bound synthetic daemon; no Python units.",
+      "four_answers": {
+        "shipping_seam": "Server/CLI raw scanner; TS proseAddresses/openMention; both composers; MessageBubble.",
+        "observable_assertion": "Exact token/range/caret data; final effects separately in packet C cases.",
+        "defect_caught": "Code autocomplete",
+        "level_adequacy": "Lexical/caret parity only; real public API/browser still required for server, storage and delivery."
+      },
+      "notes": "",
+      "evidence": "NOT EXECUTED"
+    },
+    {
+      "id": "L41",
+      "requirement": "UTF16 offset versus Unicode code point",
+      "changed_from_predecessor": true,
+      "scenario_preconditions": "Raw input; identity/action fixture in packet C01-C25.",
+      "input": "😀 @Current",
+      "action": "Use identical input at scanner, both composer and render seams; C cases define final admission.",
+      "expected_tokens": [
+        "Current"
+      ],
+      "expected_ranges": [
+        {
+          "token": "Current",
+          "start_codepoint": 2,
+          "end_codepoint": 10,
+          "start_utf16": 3,
+          "end_utf16": 11
+        }
+      ],
+      "caret_utf16": 11,
+      "expected_open_mention": {
+        "query": "Current",
+        "tokenStart": 3
+      },
+      "observable_expected_result": "Exact expected_tokens/ranges and caret result; literal positions have no lookup or mention mark.",
+      "level": "W lexical/caret; P/B action samples. DESIGN ONLY.",
+      "environment_isolation": "Future locked Node24 + isolated source-bound synthetic daemon; no Python units.",
+      "four_answers": {
+        "shipping_seam": "Server/CLI raw scanner; TS proseAddresses/openMention; both composers; MessageBubble.",
+        "observable_assertion": "Exact token/range/caret data; final effects separately in packet C cases.",
+        "defect_caught": "Emoji shifts JS render/caret offsets",
+        "level_adequacy": "Lexical/caret parity only; real public API/browser still required for server, storage and delivery."
+      },
+      "notes": "",
+      "evidence": "NOT EXECUTED"
+    },
+    {
+      "id": "L42",
+      "requirement": "Literal code followed by true at caret",
+      "changed_from_predecessor": false,
+      "scenario_preconditions": "Raw input; identity/action fixture in packet C01-C25.",
+      "input": "`@Former` @Current",
+      "action": "Use identical input at scanner, both composer and render seams; C cases define final admission.",
+      "expected_tokens": [
+        "Current"
+      ],
+      "expected_ranges": [
+        {
+          "token": "Current",
+          "start_codepoint": 10,
+          "end_codepoint": 18,
+          "start_utf16": 10,
+          "end_utf16": 18
+        }
+      ],
+      "caret_utf16": 18,
+      "expected_open_mention": {
+        "query": "Current",
+        "tokenStart": 10
+      },
+      "observable_expected_result": "Exact expected_tokens/ranges and caret result; literal positions have no lookup or mention mark.",
+      "level": "W lexical/caret; P/B action samples. DESIGN ONLY.",
+      "environment_isolation": "Future locked Node24 + isolated source-bound synthetic daemon; no Python units.",
+      "four_answers": {
+        "shipping_seam": "Server/CLI raw scanner; TS proseAddresses/openMention; both composers; MessageBubble.",
+        "observable_assertion": "Exact token/range/caret data; final effects separately in packet C cases.",
+        "defect_caught": "Full body mask disagrees with caret",
+        "level_adequacy": "Lexical/caret parity only; real public API/browser still required for server, storage and delivery."
+      },
+      "notes": "",
+      "evidence": "NOT EXECUTED"
+    },
+    {
+      "id": "L43",
+      "requirement": "Quote prefix at max allowed spaces",
+      "changed_from_predecessor": true,
+      "scenario_preconditions": "Raw input; identity/action fixture in packet C01-C25.",
+      "input": "   >@Former\n@Current",
+      "action": "Use identical input at scanner, both composer and render seams; C cases define final admission.",
+      "expected_tokens": [
+        "Current"
+      ],
+      "expected_ranges": [
+        {
+          "token": "Current",
+          "start_codepoint": 12,
+          "end_codepoint": 20,
+          "start_utf16": 12,
+          "end_utf16": 20
+        }
+      ],
+      "caret_utf16": null,
+      "expected_open_mention": null,
+      "observable_expected_result": "Exact expected_tokens/ranges and caret result; literal positions have no lookup or mention mark.",
+      "level": "W lexical/caret; P/B action samples. DESIGN ONLY.",
+      "environment_isolation": "Future locked Node24 + isolated source-bound synthetic daemon; no Python units.",
+      "four_answers": {
+        "shipping_seam": "Server/CLI raw scanner; TS proseAddresses/openMention; both composers; MessageBubble.",
+        "observable_assertion": "Exact token/range/caret data; final effects separately in packet C cases.",
+        "defect_caught": "Quote requires optional following space",
+        "level_adequacy": "Lexical/caret parity only; real public API/browser still required for server, storage and delivery."
+      },
+      "notes": "",
+      "evidence": "NOT EXECUTED"
+    },
+    {
+      "id": "L44",
+      "requirement": "Quote fences cannot close ordinary outside span",
+      "changed_from_predecessor": true,
+      "scenario_preconditions": "Raw input; identity/action fixture in packet C01-C25.",
+      "input": "`@Current\n> `\n@Other",
+      "action": "Use identical input at scanner, both composer and render seams; C cases define final admission.",
+      "expected_tokens": [
+        "Other"
+      ],
+      "expected_ranges": [
+        {
+          "token": "Other",
+          "start_codepoint": 14,
+          "end_codepoint": 20,
+          "start_utf16": 14,
+          "end_utf16": 20
+        }
+      ],
+      "caret_utf16": null,
+      "expected_open_mention": null,
+      "observable_expected_result": "Exact expected_tokens/ranges and caret result; literal positions have no lookup or mention mark.",
+      "level": "W lexical/caret; P/B action samples. DESIGN ONLY.",
+      "environment_isolation": "Future locked Node24 + isolated source-bound synthetic daemon; no Python units.",
+      "four_answers": {
+        "shipping_seam": "Server/CLI raw scanner; TS proseAddresses/openMention; both composers; MessageBubble.",
+        "observable_assertion": "Exact token/range/caret data; final effects separately in packet C cases.",
+        "defect_caught": "Cross-container closer consumes outside text",
+        "level_adequacy": "Lexical/caret parity only; real public API/browser still required for server, storage and delivery."
+      },
+      "notes": " MANAGER CORRECTION: unmatched backtick does not become an allowed start delimiter; immediately adjacent @Current stays literal. @Other at line start remains genuine.",
+      "evidence": "NOT EXECUTED"
+    },
+    {
+      "id": "L45",
+      "requirement": "Markdown-transformed candidate text",
+      "changed_from_predecessor": true,
+      "scenario_preconditions": "Raw input; identity/action fixture in packet C01-C25.",
+      "input": "*@Current* [@Other](https://example.invalid/) \\@Former",
+      "action": "Use identical input at scanner, both composer and render seams; C cases define final admission.",
+      "expected_tokens": [
+        "Other"
+      ],
+      "expected_ranges": [
+        {
+          "token": "Other",
+          "start_codepoint": 12,
+          "end_codepoint": 18,
+          "start_utf16": 12,
+          "end_utf16": 18
+        }
+      ],
+      "caret_utf16": null,
+      "expected_open_mention": null,
+      "observable_expected_result": "Exact expected_tokens/ranges and caret result; literal positions have no lookup or mention mark.",
+      "level": "W lexical/caret; P/B action samples. DESIGN ONLY.",
+      "environment_isolation": "Future locked Node24 + isolated source-bound synthetic daemon; no Python units.",
+      "four_answers": {
+        "shipping_seam": "Server/CLI raw scanner; TS proseAddresses/openMention; both composers; MessageBubble.",
+        "observable_assertion": "Exact token/range/caret data; final effects separately in packet C cases.",
+        "defect_caught": "Rendered-text regex invents raw-ineligible mention",
+        "level_adequacy": "Lexical/caret parity only; real public API/browser still required for server, storage and delivery."
+      },
+      "notes": "Star is not an allowed start delimiter. Other in the link label is genuine in raw source. Preserve the existing link; any syntax mark is a noninteractive span only when exact raw-source mapping is proven. See render cases in manager addendum.",
+      "evidence": "NOT EXECUTED"
+    },
+    {
+      "id": "L46",
+      "requirement": "Quoted fence CR exit plus unquoted note",
+      "changed_from_predecessor": true,
+      "scenario_preconditions": "Raw input; identity/action fixture in packet C01-C25.",
+      "input": "> ```\r> @Former\r\r@Current",
+      "action": "Use identical input at scanner, both composer and render seams; C cases define final admission.",
+      "expected_tokens": [
+        "Current"
+      ],
+      "expected_ranges": [
+        {
+          "token": "Current",
+          "start_codepoint": 17,
+          "end_codepoint": 25,
+          "start_utf16": 17,
+          "end_utf16": 25
+        }
+      ],
+      "caret_utf16": null,
+      "expected_open_mention": null,
+      "observable_expected_result": "Exact expected_tokens/ranges and caret result; literal positions have no lookup or mention mark.",
+      "level": "W lexical/caret; P/B action samples. DESIGN ONLY.",
+      "environment_isolation": "Future locked Node24 + isolated source-bound synthetic daemon; no Python units.",
+      "four_answers": {
+        "shipping_seam": "Server/CLI raw scanner; TS proseAddresses/openMention; both composers; MessageBubble.",
+        "observable_assertion": "Exact token/range/caret data; final effects separately in packet C cases.",
+        "defect_caught": "Bare CR line/forward note swallowed",
+        "level_adequacy": "Lexical/caret parity only; real public API/browser still required for server, storage and delivery."
+      },
+      "notes": "",
+      "evidence": "NOT EXECUTED"
+    },
+    {
+      "id": "L47",
+      "requirement": "Finite whitespace membership",
+      "changed_from_predecessor": false,
+      "scenario_preconditions": "Raw input; identity/action fixture in packet C01-C25.",
+      "input": "\t@Current\n@Current\u000b@Current\f@Current\r@Current @Current@Current @Current @Current @Current @Current @Current @Current @Current @Current @Current @Current @Current @Current @Current @Current @Current @Current @Current　@Current",
+      "action": "Use identical input at scanner, both composer and render seams; C cases define final admission.",
+      "expected_tokens": [
+        "Current"
+      ],
+      "expected_ranges": [
+        {
+          "token": "Current",
+          "start_codepoint": 1,
+          "end_codepoint": 9,
+          "start_utf16": 1,
+          "end_utf16": 9
+        },
+        {
+          "token": "Current",
+          "start_codepoint": 10,
+          "end_codepoint": 18,
+          "start_utf16": 10,
+          "end_utf16": 18
+        },
+        {
+          "token": "Current",
+          "start_codepoint": 19,
+          "end_codepoint": 27,
+          "start_utf16": 19,
+          "end_utf16": 27
+        },
+        {
+          "token": "Current",
+          "start_codepoint": 28,
+          "end_codepoint": 36,
+          "start_utf16": 28,
+          "end_utf16": 36
+        },
+        {
+          "token": "Current",
+          "start_codepoint": 37,
+          "end_codepoint": 45,
+          "start_utf16": 37,
+          "end_utf16": 45
+        },
+        {
+          "token": "Current",
+          "start_codepoint": 46,
+          "end_codepoint": 54,
+          "start_utf16": 46,
+          "end_utf16": 54
+        },
+        {
+          "token": "Current",
+          "start_codepoint": 55,
+          "end_codepoint": 63,
+          "start_utf16": 55,
+          "end_utf16": 63
+        },
+        {
+          "token": "Current",
+          "start_codepoint": 64,
+          "end_codepoint": 72,
+          "start_utf16": 64,
+          "end_utf16": 72
+        },
+        {
+          "token": "Current",
+          "start_codepoint": 73,
+          "end_codepoint": 81,
+          "start_utf16": 73,
+          "end_utf16": 81
+        },
+        {
+          "token": "Current",
+          "start_codepoint": 82,
+          "end_codepoint": 90,
+          "start_utf16": 82,
+          "end_utf16": 90
+        },
+        {
+          "token": "Current",
+          "start_codepoint": 91,
+          "end_codepoint": 99,
+          "start_utf16": 91,
+          "end_utf16": 99
+        },
+        {
+          "token": "Current",
+          "start_codepoint": 100,
+          "end_codepoint": 108,
+          "start_utf16": 100,
+          "end_utf16": 108
+        },
+        {
+          "token": "Current",
+          "start_codepoint": 109,
+          "end_codepoint": 117,
+          "start_utf16": 109,
+          "end_utf16": 117
+        },
+        {
+          "token": "Current",
+          "start_codepoint": 118,
+          "end_codepoint": 126,
+          "start_utf16": 118,
+          "end_utf16": 126
+        },
+        {
+          "token": "Current",
+          "start_codepoint": 127,
+          "end_codepoint": 135,
+          "start_utf16": 127,
+          "end_utf16": 135
+        },
+        {
+          "token": "Current",
+          "start_codepoint": 136,
+          "end_codepoint": 144,
+          "start_utf16": 136,
+          "end_utf16": 144
+        },
+        {
+          "token": "Current",
+          "start_codepoint": 145,
+          "end_codepoint": 153,
+          "start_utf16": 145,
+          "end_utf16": 153
+        },
+        {
+          "token": "Current",
+          "start_codepoint": 154,
+          "end_codepoint": 162,
+          "start_utf16": 154,
+          "end_utf16": 162
+        },
+        {
+          "token": "Current",
+          "start_codepoint": 163,
+          "end_codepoint": 171,
+          "start_utf16": 163,
+          "end_utf16": 171
+        },
+        {
+          "token": "Current",
+          "start_codepoint": 172,
+          "end_codepoint": 180,
+          "start_utf16": 172,
+          "end_utf16": 180
+        },
+        {
+          "token": "Current",
+          "start_codepoint": 181,
+          "end_codepoint": 189,
+          "start_utf16": 181,
+          "end_utf16": 189
+        },
+        {
+          "token": "Current",
+          "start_codepoint": 190,
+          "end_codepoint": 198,
+          "start_utf16": 190,
+          "end_utf16": 198
+        },
+        {
+          "token": "Current",
+          "start_codepoint": 199,
+          "end_codepoint": 207,
+          "start_utf16": 199,
+          "end_utf16": 207
+        },
+        {
+          "token": "Current",
+          "start_codepoint": 208,
+          "end_codepoint": 216,
+          "start_utf16": 208,
+          "end_utf16": 216
+        },
+        {
+          "token": "Current",
+          "start_codepoint": 217,
+          "end_codepoint": 225,
+          "start_utf16": 217,
+          "end_utf16": 225
+        }
+      ],
+      "caret_utf16": null,
+      "expected_open_mention": null,
+      "observable_expected_result": "Exact expected_tokens/ranges and caret result; literal positions have no lookup or mention mark.",
+      "level": "W lexical/caret; P/B action samples. DESIGN ONLY.",
+      "environment_isolation": "Future locked Node24 + isolated source-bound synthetic daemon; no Python units.",
+      "four_answers": {
+        "shipping_seam": "Server/CLI raw scanner; TS proseAddresses/openMention; both composers; MessageBubble.",
+        "observable_assertion": "Exact token/range/caret data; final effects separately in packet C cases.",
+        "defect_caught": "Python/JS Unicode whitespace mismatch",
+        "level_adequacy": "Lexical/caret parity only; real public API/browser still required for server, storage and delivery."
+      },
+      "notes": "Parameter expansion: each codepoint is separately prepended to @Current, not only concatenated whole input; cps=U+0009,U+000A,U+000B,U+000C,U+000D,U+0020,U+0085,U+00A0,U+1680,U+2000,U+2001,U+2002,U+2003,U+2004,U+2005,U+2006,U+2007,U+2008,U+2009,U+200A,U+2028,U+2029,U+202F,U+205F,U+3000 MANAGER CORRECTION: ranges retain all occurrences; only expected_tokens deduplicates.",
+      "evidence": "NOT EXECUTED",
+      "parameter_samples": [
+        {
+          "prefix_codepoint": "U+0009",
+          "input": "\t@Current",
+          "expected_tokens": [
+            "Current"
+          ],
+          "expected_ranges": [
+            {
+              "token": "Current",
+              "start_codepoint": 1,
+              "end_codepoint": 9,
+              "start_utf16": 1,
+              "end_utf16": 9
+            }
+          ]
+        },
+        {
+          "prefix_codepoint": "U+000A",
+          "input": "\n@Current",
+          "expected_tokens": [
+            "Current"
+          ],
+          "expected_ranges": [
+            {
+              "token": "Current",
+              "start_codepoint": 1,
+              "end_codepoint": 9,
+              "start_utf16": 1,
+              "end_utf16": 9
+            }
+          ]
+        },
+        {
+          "prefix_codepoint": "U+000B",
+          "input": "\u000b@Current",
+          "expected_tokens": [
+            "Current"
+          ],
+          "expected_ranges": [
+            {
+              "token": "Current",
+              "start_codepoint": 1,
+              "end_codepoint": 9,
+              "start_utf16": 1,
+              "end_utf16": 9
+            }
+          ]
+        },
+        {
+          "prefix_codepoint": "U+000C",
+          "input": "\f@Current",
+          "expected_tokens": [
+            "Current"
+          ],
+          "expected_ranges": [
+            {
+              "token": "Current",
+              "start_codepoint": 1,
+              "end_codepoint": 9,
+              "start_utf16": 1,
+              "end_utf16": 9
+            }
+          ]
+        },
+        {
+          "prefix_codepoint": "U+000D",
+          "input": "\r@Current",
+          "expected_tokens": [
+            "Current"
+          ],
+          "expected_ranges": [
+            {
+              "token": "Current",
+              "start_codepoint": 1,
+              "end_codepoint": 9,
+              "start_utf16": 1,
+              "end_utf16": 9
+            }
+          ]
+        },
+        {
+          "prefix_codepoint": "U+0020",
+          "input": " @Current",
+          "expected_tokens": [
+            "Current"
+          ],
+          "expected_ranges": [
+            {
+              "token": "Current",
+              "start_codepoint": 1,
+              "end_codepoint": 9,
+              "start_utf16": 1,
+              "end_utf16": 9
+            }
+          ]
+        },
+        {
+          "prefix_codepoint": "U+0085",
+          "input": "@Current",
+          "expected_tokens": [
+            "Current"
+          ],
+          "expected_ranges": [
+            {
+              "token": "Current",
+              "start_codepoint": 1,
+              "end_codepoint": 9,
+              "start_utf16": 1,
+              "end_utf16": 9
+            }
+          ]
+        },
+        {
+          "prefix_codepoint": "U+00A0",
+          "input": " @Current",
+          "expected_tokens": [
+            "Current"
+          ],
+          "expected_ranges": [
+            {
+              "token": "Current",
+              "start_codepoint": 1,
+              "end_codepoint": 9,
+              "start_utf16": 1,
+              "end_utf16": 9
+            }
+          ]
+        },
+        {
+          "prefix_codepoint": "U+1680",
+          "input": " @Current",
+          "expected_tokens": [
+            "Current"
+          ],
+          "expected_ranges": [
+            {
+              "token": "Current",
+              "start_codepoint": 1,
+              "end_codepoint": 9,
+              "start_utf16": 1,
+              "end_utf16": 9
+            }
+          ]
+        },
+        {
+          "prefix_codepoint": "U+2000",
+          "input": " @Current",
+          "expected_tokens": [
+            "Current"
+          ],
+          "expected_ranges": [
+            {
+              "token": "Current",
+              "start_codepoint": 1,
+              "end_codepoint": 9,
+              "start_utf16": 1,
+              "end_utf16": 9
+            }
+          ]
+        },
+        {
+          "prefix_codepoint": "U+2001",
+          "input": " @Current",
+          "expected_tokens": [
+            "Current"
+          ],
+          "expected_ranges": [
+            {
+              "token": "Current",
+              "start_codepoint": 1,
+              "end_codepoint": 9,
+              "start_utf16": 1,
+              "end_utf16": 9
+            }
+          ]
+        },
+        {
+          "prefix_codepoint": "U+2002",
+          "input": " @Current",
+          "expected_tokens": [
+            "Current"
+          ],
+          "expected_ranges": [
+            {
+              "token": "Current",
+              "start_codepoint": 1,
+              "end_codepoint": 9,
+              "start_utf16": 1,
+              "end_utf16": 9
+            }
+          ]
+        },
+        {
+          "prefix_codepoint": "U+2003",
+          "input": " @Current",
+          "expected_tokens": [
+            "Current"
+          ],
+          "expected_ranges": [
+            {
+              "token": "Current",
+              "start_codepoint": 1,
+              "end_codepoint": 9,
+              "start_utf16": 1,
+              "end_utf16": 9
+            }
+          ]
+        },
+        {
+          "prefix_codepoint": "U+2004",
+          "input": " @Current",
+          "expected_tokens": [
+            "Current"
+          ],
+          "expected_ranges": [
+            {
+              "token": "Current",
+              "start_codepoint": 1,
+              "end_codepoint": 9,
+              "start_utf16": 1,
+              "end_utf16": 9
+            }
+          ]
+        },
+        {
+          "prefix_codepoint": "U+2005",
+          "input": " @Current",
+          "expected_tokens": [
+            "Current"
+          ],
+          "expected_ranges": [
+            {
+              "token": "Current",
+              "start_codepoint": 1,
+              "end_codepoint": 9,
+              "start_utf16": 1,
+              "end_utf16": 9
+            }
+          ]
+        },
+        {
+          "prefix_codepoint": "U+2006",
+          "input": " @Current",
+          "expected_tokens": [
+            "Current"
+          ],
+          "expected_ranges": [
+            {
+              "token": "Current",
+              "start_codepoint": 1,
+              "end_codepoint": 9,
+              "start_utf16": 1,
+              "end_utf16": 9
+            }
+          ]
+        },
+        {
+          "prefix_codepoint": "U+2007",
+          "input": " @Current",
+          "expected_tokens": [
+            "Current"
+          ],
+          "expected_ranges": [
+            {
+              "token": "Current",
+              "start_codepoint": 1,
+              "end_codepoint": 9,
+              "start_utf16": 1,
+              "end_utf16": 9
+            }
+          ]
+        },
+        {
+          "prefix_codepoint": "U+2008",
+          "input": " @Current",
+          "expected_tokens": [
+            "Current"
+          ],
+          "expected_ranges": [
+            {
+              "token": "Current",
+              "start_codepoint": 1,
+              "end_codepoint": 9,
+              "start_utf16": 1,
+              "end_utf16": 9
+            }
+          ]
+        },
+        {
+          "prefix_codepoint": "U+2009",
+          "input": " @Current",
+          "expected_tokens": [
+            "Current"
+          ],
+          "expected_ranges": [
+            {
+              "token": "Current",
+              "start_codepoint": 1,
+              "end_codepoint": 9,
+              "start_utf16": 1,
+              "end_utf16": 9
+            }
+          ]
+        },
+        {
+          "prefix_codepoint": "U+200A",
+          "input": " @Current",
+          "expected_tokens": [
+            "Current"
+          ],
+          "expected_ranges": [
+            {
+              "token": "Current",
+              "start_codepoint": 1,
+              "end_codepoint": 9,
+              "start_utf16": 1,
+              "end_utf16": 9
+            }
+          ]
+        },
+        {
+          "prefix_codepoint": "U+2028",
+          "input": " @Current",
+          "expected_tokens": [
+            "Current"
+          ],
+          "expected_ranges": [
+            {
+              "token": "Current",
+              "start_codepoint": 1,
+              "end_codepoint": 9,
+              "start_utf16": 1,
+              "end_utf16": 9
+            }
+          ]
+        },
+        {
+          "prefix_codepoint": "U+2029",
+          "input": " @Current",
+          "expected_tokens": [
+            "Current"
+          ],
+          "expected_ranges": [
+            {
+              "token": "Current",
+              "start_codepoint": 1,
+              "end_codepoint": 9,
+              "start_utf16": 1,
+              "end_utf16": 9
+            }
+          ]
+        },
+        {
+          "prefix_codepoint": "U+202F",
+          "input": " @Current",
+          "expected_tokens": [
+            "Current"
+          ],
+          "expected_ranges": [
+            {
+              "token": "Current",
+              "start_codepoint": 1,
+              "end_codepoint": 9,
+              "start_utf16": 1,
+              "end_utf16": 9
+            }
+          ]
+        },
+        {
+          "prefix_codepoint": "U+205F",
+          "input": " @Current",
+          "expected_tokens": [
+            "Current"
+          ],
+          "expected_ranges": [
+            {
+              "token": "Current",
+              "start_codepoint": 1,
+              "end_codepoint": 9,
+              "start_utf16": 1,
+              "end_utf16": 9
+            }
+          ]
+        },
+        {
+          "prefix_codepoint": "U+3000",
+          "input": "　@Current",
+          "expected_tokens": [
+            "Current"
+          ],
+          "expected_ranges": [
+            {
+              "token": "Current",
+              "start_codepoint": 1,
+              "end_codepoint": 9,
+              "start_utf16": 1,
+              "end_utf16": 9
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "L48",
+      "requirement": "Explicit whitespace exclusions",
+      "changed_from_predecessor": false,
+      "scenario_preconditions": "Raw input; identity/action fixture in packet C01-C25.",
+      "input": "﻿@Current\u001c@Current\u001d@Current\u001e@Current\u001f@Current",
+      "action": "Use identical input at scanner, both composer and render seams; C cases define final admission.",
+      "expected_tokens": [],
+      "expected_ranges": [],
+      "caret_utf16": null,
+      "expected_open_mention": null,
+      "observable_expected_result": "Exact expected_tokens/ranges and caret result; literal positions have no lookup or mention mark.",
+      "level": "W lexical/caret; P/B action samples. DESIGN ONLY.",
+      "environment_isolation": "Future locked Node24 + isolated source-bound synthetic daemon; no Python units.",
+      "four_answers": {
+        "shipping_seam": "Server/CLI raw scanner; TS proseAddresses/openMention; both composers; MessageBubble.",
+        "observable_assertion": "Exact token/range/caret data; final effects separately in packet C cases.",
+        "defect_caught": "Python/JS Unicode whitespace mismatch",
+        "level_adequacy": "Lexical/caret parity only; real public API/browser still required for server, storage and delivery."
+      },
+      "notes": "Parameter expansion: each codepoint is separately prepended to @Current, not only concatenated whole input; cps=U+FEFF,U+001C,U+001D,U+001E,U+001F",
+      "evidence": "NOT EXECUTED",
+      "parameter_samples": [
+        {
+          "prefix_codepoint": "U+FEFF",
+          "input": "﻿@Current",
+          "expected_tokens": [],
+          "expected_ranges": []
+        },
+        {
+          "prefix_codepoint": "U+001C",
+          "input": "\u001c@Current",
+          "expected_tokens": [],
+          "expected_ranges": []
+        },
+        {
+          "prefix_codepoint": "U+001D",
+          "input": "\u001d@Current",
+          "expected_tokens": [],
+          "expected_ranges": []
+        },
+        {
+          "prefix_codepoint": "U+001E",
+          "input": "\u001e@Current",
+          "expected_tokens": [],
+          "expected_ranges": []
+        },
+        {
+          "prefix_codepoint": "U+001F",
+          "input": "\u001f@Current",
+          "expected_tokens": [],
+          "expected_ranges": []
+        }
+      ]
+    },
+    {
+      "id": "L49",
+      "requirement": "Repeated token occurrence caret and suffix preservation",
+      "changed_from_predecessor": true,
+      "scenario_preconditions": "Raw input; identity/action fixture in packet C01-C25.",
+      "input": "@Current @Current suffix",
+      "action": "Use identical input at scanner, both composer and render seams; C cases define final admission.",
+      "expected_tokens": [
+        "Current"
+      ],
+      "expected_ranges": [
+        {
+          "token": "Current",
+          "start_codepoint": 0,
+          "end_codepoint": 8,
+          "start_utf16": 0,
+          "end_utf16": 8
+        },
+        {
+          "token": "Current",
+          "start_codepoint": 9,
+          "end_codepoint": 17,
+          "start_utf16": 9,
+          "end_utf16": 17
+        }
+      ],
+      "caret_utf16": 13,
+      "expected_open_mention": {
+        "query": "Cur",
+        "tokenStart": 9
+      },
+      "observable_expected_result": "Exact expected_tokens/ranges and caret result; literal positions have no lookup or mention mark.",
+      "level": "W lexical/caret; P/B action samples. DESIGN ONLY.",
+      "environment_isolation": "Future locked Node24 + isolated source-bound synthetic daemon; no Python units.",
+      "four_answers": {
+        "shipping_seam": "Server/CLI raw scanner; TS proseAddresses/openMention; both composers; MessageBubble.",
+        "observable_assertion": "Both occurrence ranges remain; caret inside/at end of second selects tokenStart9; choosing a suggestion changes only that selected interval and preserves suffix/focus.",
+        "defect_caught": "Deduplicating scan occurrences makes second-token suggestion absent or replaces the first token.",
+        "level_adequacy": "Lexical/caret parity only; real public API/browser still required for server, storage and delivery."
+      },
+      "notes": "Manager finite corrective case; data-only oracle, not executed. Repeated caret uses occurrence identity, not deduplicated admission tokens.",
+      "evidence": "NOT EXECUTED"
+    },
+    {
+      "id": "L50",
+      "requirement": "Repeated token occurrence caret and suffix preservation",
+      "changed_from_predecessor": true,
+      "scenario_preconditions": "Raw input; identity/action fixture in packet C01-C25.",
+      "input": "@Current @Current suffix",
+      "action": "Use identical input at scanner, both composer and render seams; C cases define final admission.",
+      "expected_tokens": [
+        "Current"
+      ],
+      "expected_ranges": [
+        {
+          "token": "Current",
+          "start_codepoint": 0,
+          "end_codepoint": 8,
+          "start_utf16": 0,
+          "end_utf16": 8
+        },
+        {
+          "token": "Current",
+          "start_codepoint": 9,
+          "end_codepoint": 17,
+          "start_utf16": 9,
+          "end_utf16": 17
+        }
+      ],
+      "caret_utf16": 17,
+      "expected_open_mention": {
+        "query": "Current",
+        "tokenStart": 9
+      },
+      "observable_expected_result": "Exact expected_tokens/ranges and caret result; literal positions have no lookup or mention mark.",
+      "level": "W lexical/caret; P/B action samples. DESIGN ONLY.",
+      "environment_isolation": "Future locked Node24 + isolated source-bound synthetic daemon; no Python units.",
+      "four_answers": {
+        "shipping_seam": "Server/CLI raw scanner; TS proseAddresses/openMention; both composers; MessageBubble.",
+        "observable_assertion": "Both occurrence ranges remain; caret inside/at end of second selects tokenStart9; choosing a suggestion changes only that selected interval and preserves suffix/focus.",
+        "defect_caught": "Deduplicating scan occurrences makes second-token suggestion absent or replaces the first token.",
+        "level_adequacy": "Lexical/caret parity only; real public API/browser still required for server, storage and delivery."
+      },
+      "notes": "Manager finite corrective case; data-only oracle, not executed. Repeated caret uses occurrence identity, not deduplicated admission tokens.",
+      "evidence": "NOT EXECUTED"
+    },
+    {
+      "id": "L51",
+      "requirement": "Non-ASCII-first token suppresses suggestions even at bare-at caret",
+      "changed_from_predecessor": true,
+      "scenario_preconditions": "Raw input; identity/action fixture in packet C01-C25.",
+      "input": "@名字",
+      "action": "Use identical input at scanner, both composer and render seams; C cases define final admission.",
+      "expected_tokens": [],
+      "expected_ranges": [],
+      "caret_utf16": 1,
+      "expected_open_mention": null,
+      "observable_expected_result": "Exact expected_tokens/ranges and caret result; literal positions have no lookup or mention mark.",
+      "level": "W lexical/caret; P/B action samples. DESIGN ONLY.",
+      "environment_isolation": "Future locked Node24 + isolated source-bound synthetic daemon; no Python units.",
+      "four_answers": {
+        "shipping_seam": "Server/CLI raw scanner; TS proseAddresses/openMention; both composers; MessageBubble.",
+        "observable_assertion": "No admission tokens/ranges or popup at caret1 before the immediate non-ASCII suffix; no body naming lookup.",
+        "defect_caught": "Empty-query popup incorrectly opens for a non-ASCII-first literal token.",
+        "level_adequacy": "Lexical/caret parity only; real public API/browser still required for server, storage and delivery."
+      },
+      "notes": "Immediate non-ASCII after @ suppresses empty-query suggestion, including caret immediately after @.",
+      "evidence": "NOT EXECUTED"
+    }
+  ],
+  "range_contract": "expected_tokens deduplicates exact spelling; expected_ranges contains EVERY genuine occurrence, including repeated tokens; bare @ caret candidates are not admission ranges",
+  "write_path_cases": [
+    {
+      "id": "R1-01",
+      "requirement": "Keep L27 original nonblank representation",
+      "input": "    > @Current",
+      "expected_tokens": [
+        "Current"
+      ],
+      "scenario_preconditions": "Fresh supported isolated org and eligible To; genuine bindings where required; no fabricated DB/task/session/outage",
+      "action": "Submit original body through applicable public write and read the accepted body back",
+      "expected_stored_nonblank_body": "    > @Current",
+      "four_answers": {
+        "shipping_seam": "Both Web composers/CLI -> JSON/multipart Founder or agent compose/send/post/reply -> final writer",
+        "observable_assertion": "Exact body retained; Current remains genuine; explicit roster unchanged; eligible current-message wake selected, no forced decoration inside Markdown code",
+        "defect_caught": "Edge trimming converts genuine mention to explicit quote and fallback",
+        "adequacy_and_limit": "Actual public CLI/server plus browser; source arithmetic alone insufficient"
+      },
+      "evidence": "UNEXECUTED"
+    },
+    {
+      "id": "R1-U001C",
+      "requirement": "Excluded whitespace must not become start-of-text mention",
+      "input": "\u001c@Former",
+      "expected_tokens": [],
+      "scenario_preconditions": "Fresh supported isolated org and eligible To; genuine bindings where required; no fabricated DB/task/session/outage",
+      "action": "Submit original body through applicable public write and read the accepted body back",
+      "expected_stored_nonblank_body": "\u001c@Former",
+      "four_answers": {
+        "shipping_seam": "Raw preflight -> normalize -> allocation/application finalization -> final prepare/storage",
+        "observable_assertion": "Exact nonblank body remains literal, no body Former refusal; explicit To independently validates",
+        "defect_caught": "Leading control trim turns literal into genuine Former after precheck/effects",
+        "adequacy_and_limit": "Public write/read with genuine former-name fixture; authentic outage variant unavailable"
+      },
+      "evidence": "UNEXECUTED"
+    },
+    {
+      "id": "R1-U001D",
+      "requirement": "Excluded whitespace must not become start-of-text mention",
+      "input": "\u001d@Former",
+      "expected_tokens": [],
+      "scenario_preconditions": "Fresh supported isolated org and eligible To; genuine bindings where required; no fabricated DB/task/session/outage",
+      "action": "Submit original body through applicable public write and read the accepted body back",
+      "expected_stored_nonblank_body": "\u001d@Former",
+      "four_answers": {
+        "shipping_seam": "Raw preflight -> normalize -> allocation/application finalization -> final prepare/storage",
+        "observable_assertion": "Exact nonblank body remains literal, no body Former refusal; explicit To independently validates",
+        "defect_caught": "Leading control trim turns literal into genuine Former after precheck/effects",
+        "adequacy_and_limit": "Public write/read with genuine former-name fixture; authentic outage variant unavailable"
+      },
+      "evidence": "UNEXECUTED"
+    },
+    {
+      "id": "R1-U001E",
+      "requirement": "Excluded whitespace must not become start-of-text mention",
+      "input": "\u001e@Former",
+      "expected_tokens": [],
+      "scenario_preconditions": "Fresh supported isolated org and eligible To; genuine bindings where required; no fabricated DB/task/session/outage",
+      "action": "Submit original body through applicable public write and read the accepted body back",
+      "expected_stored_nonblank_body": "\u001e@Former",
+      "four_answers": {
+        "shipping_seam": "Raw preflight -> normalize -> allocation/application finalization -> final prepare/storage",
+        "observable_assertion": "Exact nonblank body remains literal, no body Former refusal; explicit To independently validates",
+        "defect_caught": "Leading control trim turns literal into genuine Former after precheck/effects",
+        "adequacy_and_limit": "Public write/read with genuine former-name fixture; authentic outage variant unavailable"
+      },
+      "evidence": "UNEXECUTED"
+    },
+    {
+      "id": "R1-U001F",
+      "requirement": "Excluded whitespace must not become start-of-text mention",
+      "input": "\u001f@Former",
+      "expected_tokens": [],
+      "scenario_preconditions": "Fresh supported isolated org and eligible To; genuine bindings where required; no fabricated DB/task/session/outage",
+      "action": "Submit original body through applicable public write and read the accepted body back",
+      "expected_stored_nonblank_body": "\u001f@Former",
+      "four_answers": {
+        "shipping_seam": "Raw preflight -> normalize -> allocation/application finalization -> final prepare/storage",
+        "observable_assertion": "Exact nonblank body remains literal, no body Former refusal; explicit To independently validates",
+        "defect_caught": "Leading control trim turns literal into genuine Former after precheck/effects",
+        "adequacy_and_limit": "Public write/read with genuine former-name fixture; authentic outage variant unavailable"
+      },
+      "evidence": "UNEXECUTED"
+    },
+    {
+      "id": "R1-dream",
+      "requirement": "Preserve genuine dream body and agent provenance",
+      "input": "    > @Current",
+      "expected_tokens": [
+        "Current"
+      ],
+      "scenario_preconditions": "Fresh supported isolated org and eligible To; genuine bindings where required; no fabricated DB/task/session/outage",
+      "action": "In a genuine sanctioned dream completion, request Founder thread with original nonblank body",
+      "expected_stored_nonblank_body": "    > @Current",
+      "four_answers": {
+        "shipping_seam": "complete_dream founder-thread body assignment -> _create_agent_thread_locked",
+        "observable_assertion": "Same original string reaches writer; composer-only participant and Founder destination preserved; Current outsider uses existing agent compatibility; genuine Former variant retains preallocation refusal",
+        "defect_caught": "Independent dream trim or new human/task-binding requirement",
+        "adequacy_and_limit": "Source design now; actual supported dream context required for behavior; not launched"
+      },
+      "evidence": "UNEXECUTED"
+    },
+    {
+      "id": "R1-note",
+      "requirement": "Preserve CLI note bytes separately from generated source representation",
+      "input": "> **Forwarded from THR-X** (thread: s)\n>\n> case_worker: first\n> @Former\n>\n> last\n\n---\n\n  @Current\r\n  ",
+      "expected_tokens": [
+        "Current"
+      ],
+      "scenario_preconditions": "Fresh supported isolated org and eligible To; genuine bindings where required; no fabricated DB/task/session/outage",
+      "action": "Submit original body through applicable public write and read the accepted body back",
+      "expected_stored_nonblank_body": "> **Forwarded from THR-X** (thread: s)\n>\n> case_worker: first\n> @Former\n>\n> last\n\n---\n\n  @Current\r\n  ",
+      "four_answers": {
+        "shipping_seam": "UTF8 note-file read -> complete preflight -> Founder compose -> stored body",
+        "observable_assertion": "Note CRLF and trailing spaces survive exactly; every source line quoted; only Current genuine; Former-note variant refuses409 before new effects",
+        "defect_caught": "Universal-newline translation or final strip violates note preservation",
+        "adequacy_and_limit": "Actual CLI/server body read and original-source read needed; artifact bytes alone insufficient"
+      },
+      "evidence": "UNEXECUTED",
+      "note": "  @Current\r\n  ",
+      "quoted_source": "> **Forwarded from THR-X** (thread: s)\n>\n> case_worker: first\n> @Former\n>\n> last",
+      "quoted_source_utf8_bytes": 80,
+      "separator": "\n\n---\n\n"
+    },
+    {
+      "id": "R1-empty-0-0",
+      "requirement": "Preserve existing empty-body and attachment-only contract",
+      "input": null,
+      "accepted_attachment_present": false,
+      "expected_outcome": "422 empty_body",
+      "expected_stored_body": null,
+      "scenario_preconditions": "Valid existing route-specific authority and accepted attachments if present",
+      "action": "Submit through ordinary message routes; dream retains its separate empty_thread_body validation",
+      "four_answers": {
+        "shipping_seam": "_normalize_message_body callers",
+        "observable_assertion": "Existing empty refusal or attachment-only null body; no participant/lifecycle changes",
+        "defect_caught": "Raw preservation accidentally accepts blank messages or stores blank-only text",
+        "adequacy_and_limit": "Actual public JSON/multipart and supported action evidence still needed"
+      },
+      "evidence": "UNEXECUTED"
+    },
+    {
+      "id": "R1-empty-0-1",
+      "requirement": "Preserve existing empty-body and attachment-only contract",
+      "input": null,
+      "accepted_attachment_present": true,
+      "expected_outcome": "accepted body None",
+      "expected_stored_body": null,
+      "scenario_preconditions": "Valid existing route-specific authority and accepted attachments if present",
+      "action": "Submit through ordinary message routes; dream retains its separate empty_thread_body validation",
+      "four_answers": {
+        "shipping_seam": "_normalize_message_body callers",
+        "observable_assertion": "Existing empty refusal or attachment-only null body; no participant/lifecycle changes",
+        "defect_caught": "Raw preservation accidentally accepts blank messages or stores blank-only text",
+        "adequacy_and_limit": "Actual public JSON/multipart and supported action evidence still needed"
+      },
+      "evidence": "UNEXECUTED"
+    },
+    {
+      "id": "R1-empty-1-0",
+      "requirement": "Preserve existing empty-body and attachment-only contract",
+      "input": "",
+      "accepted_attachment_present": false,
+      "expected_outcome": "422 empty_body",
+      "expected_stored_body": null,
+      "scenario_preconditions": "Valid existing route-specific authority and accepted attachments if present",
+      "action": "Submit through ordinary message routes; dream retains its separate empty_thread_body validation",
+      "four_answers": {
+        "shipping_seam": "_normalize_message_body callers",
+        "observable_assertion": "Existing empty refusal or attachment-only null body; no participant/lifecycle changes",
+        "defect_caught": "Raw preservation accidentally accepts blank messages or stores blank-only text",
+        "adequacy_and_limit": "Actual public JSON/multipart and supported action evidence still needed"
+      },
+      "evidence": "UNEXECUTED"
+    },
+    {
+      "id": "R1-empty-1-1",
+      "requirement": "Preserve existing empty-body and attachment-only contract",
+      "input": "",
+      "accepted_attachment_present": true,
+      "expected_outcome": "accepted body None",
+      "expected_stored_body": null,
+      "scenario_preconditions": "Valid existing route-specific authority and accepted attachments if present",
+      "action": "Submit through ordinary message routes; dream retains its separate empty_thread_body validation",
+      "four_answers": {
+        "shipping_seam": "_normalize_message_body callers",
+        "observable_assertion": "Existing empty refusal or attachment-only null body; no participant/lifecycle changes",
+        "defect_caught": "Raw preservation accidentally accepts blank messages or stores blank-only text",
+        "adequacy_and_limit": "Actual public JSON/multipart and supported action evidence still needed"
+      },
+      "evidence": "UNEXECUTED"
+    },
+    {
+      "id": "R1-empty-2-0",
+      "requirement": "Preserve existing empty-body and attachment-only contract",
+      "input": " \t\r\n",
+      "accepted_attachment_present": false,
+      "expected_outcome": "422 empty_body",
+      "expected_stored_body": null,
+      "scenario_preconditions": "Valid existing route-specific authority and accepted attachments if present",
+      "action": "Submit through ordinary message routes; dream retains its separate empty_thread_body validation",
+      "four_answers": {
+        "shipping_seam": "_normalize_message_body callers",
+        "observable_assertion": "Existing empty refusal or attachment-only null body; no participant/lifecycle changes",
+        "defect_caught": "Raw preservation accidentally accepts blank messages or stores blank-only text",
+        "adequacy_and_limit": "Actual public JSON/multipart and supported action evidence still needed"
+      },
+      "evidence": "UNEXECUTED"
+    },
+    {
+      "id": "R1-empty-2-1",
+      "requirement": "Preserve existing empty-body and attachment-only contract",
+      "input": " \t\r\n",
+      "accepted_attachment_present": true,
+      "expected_outcome": "accepted body None",
+      "expected_stored_body": null,
+      "scenario_preconditions": "Valid existing route-specific authority and accepted attachments if present",
+      "action": "Submit through ordinary message routes; dream retains its separate empty_thread_body validation",
+      "four_answers": {
+        "shipping_seam": "_normalize_message_body callers",
+        "observable_assertion": "Existing empty refusal or attachment-only null body; no participant/lifecycle changes",
+        "defect_caught": "Raw preservation accidentally accepts blank messages or stores blank-only text",
+        "adequacy_and_limit": "Actual public JSON/multipart and supported action evidence still needed"
+      },
+      "evidence": "UNEXECUTED"
+    }
+  ]
+}

@@ -322,7 +322,7 @@ function useComposeThread(): MutationLike<ComposeArgs, ComposeResult> {
           responder_status: [],
         },
       ];
-      return { thread_id: newId, started_at: startedAt, pending_replies: body.recipients.length };
+      return { thread_id: newId, started_at: startedAt, pending_replies: body.recipients.filter(id => id !== '@founder' && id !== 'founder') };
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['mock-threads'] });

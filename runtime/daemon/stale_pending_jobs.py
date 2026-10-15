@@ -1,13 +1,10 @@
 """All-org observation of stale never-started pending jobs (THR-195).
 
-Diagnosis (durable evidence, see audit trail for JOB-155/191/193/201 and
-JOB-002/003/004): a job row is inserted ``pending`` with ``started_at IS
-NULL``. On the auto-run path the dispatch handoff is synchronous — a row that
-is still ``pending`` after the submit response has never been dispatched; when
-the handoff fails validation (e.g. ``cwd_missing`` from a bad ``cwd_hint``)
-the submit route re-raises to the caller and the row stays ``pending``
-forever. No job queue scans ``pending`` rows, so nothing ever dispatches or
-terminates them — they silently strand the owning task's bookkeeping.
+Historical diagnosis (JOB-155/191/193/201 and JOB-002/003/004): old
+post-insertion preflight errors could strand never-started pending rows.
+New submissions preflight before allocation and settle only authenticated
+never-launched false pending prerequisite losses on attempted delivery.
+Historical rows remain unchanged; this scanner never repairs or launches them.
 
 This module implements the OBSERVATION half of the THR-195 repair: a read-only
 scan, across every organization dynamically discovered via the supported
@@ -17,12 +14,10 @@ threshold. Observation ONLY — this is deliberately NOT an automatic
 reaper/retry/cancel mechanism and never mutates lifecycle state. Recurrence is
 surfaced (daemon-startup diagnostic log) instead of silently stranding tasks.
 
-Threshold justification: auto-run dispatch is synchronous (sub-second), so any
-pending-never-started auto-run row is anomalous; the only legitimate
-long-lived ``pending`` class is a review-gated job awaiting founder action, and
-one that has waited longer than the threshold is exactly what the observation
-consumer should see (it decides, this module does not). Seven days is far
-beyond any dispatch window while surfacing recurrence within a week.
+Threshold justification: seven days is well beyond synchronous admission.
+Legacy true pending jobs require explicit disposition and never run; false
+pending jobs may legitimately defer under Pause/owner checks. Observation
+reports age without asserting that every pending row is a failed launch.
 """
 from __future__ import annotations
 
@@ -39,8 +34,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger("happyranch.daemon.stale_pending_jobs")
 
 # A pending job with started_at IS NULL that is older than this has either
-# failed its synchronous dispatch handoff (auto-run path) or been abandoned
-# awaiting founder review (review-gated path). Both are worth surfacing.
+# historical handoff loss, legacy disposition backlog or deferred automatic
+# work. Age alone grants no execution/disposition authority.
 STALE_PENDING_JOB_MAX_AGE = timedelta(days=7)
 
 

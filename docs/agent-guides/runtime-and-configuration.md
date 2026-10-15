@@ -6,11 +6,12 @@ The optional team_move_operations table is explicit org-owned storage, never
 generic Database/runtime-audit bootstrap or startup installation in B. Exact
 owned layout/all-record validation and complete independent release references
 include its presence without modifying naming/pause/workflow/v2 history.
-All three whole-release consumers (workflow validation, legacy authority evidence
-and naming installation/reconciliation) select validated optional presence.
-Naming captures workflow/naming/pause/move layouts in one coherent read view,
-builds independent references outside the short SQL transaction, then compares
-the entire database again within that transaction. Absence remains supported;
+Workflow release validation and legacy authority evidence retain complete
+independent whole-release references with validated optional presence. Naming
+installation uses N-SAC-1 structural admission inside its existing transaction:
+selected/actual DB association, task/audit dependency shapes, naming interaction
+closure and unchanged complete workflow/Pause/move/naming validators. It builds
+no whole-release reference. Non-install reconciliation retains its prior behavior. Absence remains supported;
 malformed presence refuses without installation, stripping or history repair.
 C1 binds the coordinator at Orchestrator construction and reads durable holds
 in actual allocation/claim transactions without installing schema. Absent layout
@@ -101,10 +102,31 @@ frontend verification leg. See the [current naming contract](../superpowers/spec
 
 ## Naming v1 core, API and routing source
 
+`GET /api/v1/orgs/{slug}/identities` and `happyranch identities list --json`
+expose additive `naming_diagnostic`: null for ready rows, otherwise a finite
+captured naming category. Unknown, malformed or missing captured codes fall back
+to `naming_database_unavailable` when any row is unavailable, including a fresh
+metadata-read failure with a stale null diagnostic. The response never exposes
+raw exception text, paths or SQL. Older servers may omit the field: absence is
+UNKNOWN, never readiness. Canonical roster, definition revisions and existing
+read/auth errors retain their behavior; GET never reconciles or installs names.
+This category is an observation, not proof of a serving source SHA or root cause.
+Source publication does not establish restored naming or authorize live recovery.
+
+A failed actual install attempt retains one bounded category in memory. Later
+non-install refreshes that only observe absent naming report that last attempt's
+cause; without that provenance they report `naming_not_installed`, never a guessed
+stale cause. A different current failure takes precedence while observed. A new
+install attempt supersedes the retained cause; any successful refresh clears it.
+This diagnostic retention changes no readiness, admission or installation decision
+and adds no retry, persistent history or read-time writer.
+
 Schema2 multi-org attachment installs naming only after baseline admission; no
 flat-schema1 conversion or history-only ID mining is added. Naming failure is
 volatile readiness with an actionable category. Original strict team/attachment
-and complete workflow/reference guards remain. Every naming-installed F/E/G needs
+and complete workflow validators remain; global workflow/legacy reference
+guards are unchanged. Installer-only admission is naming structural compatibility,
+never a global authority grant. Every naming-installed F/E/G needs
 a compatible naming reader; existing explicit workflow commands preserve exact
 naming row identities/revisions and reject malformed naming without repair.
 One daemon controls each organization; no naming cross-process lease is added.

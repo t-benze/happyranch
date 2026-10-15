@@ -1,5 +1,22 @@
 # Orchestrator Contracts
 
+## Jobs — automatic admission (THR309seq1)
+
+Content authorization belongs in an existing thread BEFORE ordinary task/session
+job submission. Use omitted/false review_required with optional rationale; true
+refuses422 before allocation (CLI exit2), never flip/retry. No new approval token,
+permission, credential or content grant exists. Manual /run is nonexecuting410;
+legacy true pending never launches on Resume/startup and remains individual
+reasoned-reject disposition backlog. Admission is not script success. Real
+nonterminal owned IDs use status=blocked/waiting_on_job_ids and actual receipt
+inspection on resume; existing all-terminal predicate and wake stay unchanged.
+Preflight before insertion avoids allocation for missing cwd/interpreter.
+Only authenticated false pending never-launched prerequisite loss commits
+failed/spawn_failed with NULL start/exit, actual finish/diagnostic/agent audit
+and journal settlement before that bridge. Hold/owner/session refusal, uncertain
+launch and race winners remain unchanged, as do the running-only terminal CAS,
+limits, genuine callback/final-action and durable job rules. [Current jobs contract](../superpowers/specs/2026-05-26-jobs-design.md).
+
 ## Approved online team move — C1 task/host and C2 thread source (THR296seq135)
 
 C1 binds one org-owned coordinator to task preparation and final launch, retaining
@@ -365,6 +382,12 @@ review/QA/checks and guarded merge remain required.
 See the [current naming contract](../superpowers/specs/2026-10-09-identity-names-core.md).
 
 ## Naming v1 core, API and routing source
+
+Naming install alone uses N-SAC-1 transaction-time structural admission over the
+selected org DB, actual task/audit dependencies, closed naming interactions and
+unchanged complete workflow/Pause/move validators. Global workflow/legacy
+references retain their strict contract; naming readiness grants no authority.
+Reads and ordinary non-install refreshes never invoke admission or install names.
 
 Org identity names use the same outer coroutine gate as supported roster and
 consumer writes, with profile-before-publication ordering preserved. The thread

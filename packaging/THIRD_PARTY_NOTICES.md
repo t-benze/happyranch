@@ -18,6 +18,26 @@ exclusion evidence before `BUILD_ONLY_NOT_SHIPPED` can be recorded.
 | Native extensions/dylibs/frameworks | Recursive actual native closure, vendor texts; system frameworks explicitly host references | LICENSE_UNRESOLVED:PYTHON_NATIVE and NATIVE_REDISTRIBUTION |
 | Generated icon and source resources | Original source attribution and build receipts; preserve all 29 accepted resources | LICENSE_UNRESOLVED:ASSET_ATTRIBUTION where ownership/attribution is not established |
 
+The self-hosted web fonts retain three unmodified upstream originals:
+Hanken Grotesk at `marcologous/hanken-grotesk@e6e3c4df55acfe44333c587e3d97ae3c44b7dce5`
+and Newsreader normal/italic at
+`productiontype/NewsReader@1ece6a8bfe5db1a2b90c76cc1fe5d3b2eed5dcf3`.
+Their full co-version original OFL texts are retained verbatim as
+`web/public/fonts/HankenGrotesk-OFL.txt` and `Newsreader-OFL.txt`.
+[`notice-data/font-assets.json`](notice-data/font-assets.json) records the
+source URLs, commit-to-tree-to-blob identities and font-to-notice relations.
+The Hanken Google Fonts import title says 3.012; its body and original font
+say 3.013. Both facts are preserved in that record.
+
+Vite's existing public-copy step emits these three TTFs and two notices into
+`web/dist/fonts/`; the existing app assembly copies that dist into
+`Contents/Resources/web/dist/`. Source retention and a web-copy observation
+do not prove actual app/archive custody, native loading or complete asset
+attribution. All six closure results remain UNEXECUTED/UNMET; this factual
+record supplies no new admission reader or closure result and does not
+relax strict release verification. SVG/icon rights and actual ICNS evidence
+remain separate unresolved obligations.
+
 A named `LICENSE_MISSING:<component>:<path>` means an identified original text or
 retained copy is absent. `LICENSE_UNRESOLVED:<component>:<reason>` means shipped
 inclusion/version/provenance/obligations remain unproved. The machine mapping

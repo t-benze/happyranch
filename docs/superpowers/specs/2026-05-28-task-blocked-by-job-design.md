@@ -1,5 +1,20 @@
 # Task blocked-by-job — Design Spec
 
+Current job admission amendment (THR309seq1): authorize contents in a thread
+BEFORE submission; omitted/false mode enters automatic admission, true refuses
+422 before allocation. Manual run is retired410 (both CLI run aliases exit2).
+Historical true pending rows remain inert and may only be explicitly rejected
+one ID/reason at a time. Approval-mode scenarios and skill quotations below are
+historical; they do not reinstate an approval queue. The all-terminal predicate,
+immediate post-callback check, committed-terminal wake and startup recovery
+remain unchanged. Failed/rejected outcomes wake without proving success;
+completed/nonzero is unsuccessful. Initial preflight allocates no job; genuine
+authenticated never-launched pending prerequisite loss commits failed/audit and
+journal settlement before using that same bridge. Current jobs instructions:
+`runtime/skills/bundled/jobs/SKILL.md`. Python units RETIRED, integration/callback
+SKIPPED THR243seq42; daily E2E source adaptation is behaviorally UNEXECUTED.
+
+
 > Pause boundary superseded by [2026-10-10-root-task-pause-resume.md](2026-10-10-root-task-pause-resume.md). Existing lifecycle, waiting and lineage meanings remain. A separate actual-root hold gates future commitment; committed sessions/results drain, deferred retries retain their owner, and unknown execution is not proof of quiescence. Cancel/stop/reject remain available. This annotation preserves the historical design below.
 
 **Date:** 2026-05-28
@@ -349,7 +364,7 @@ Defensive re-validation runs again in `run_step_impl` (§5.3): if a job was dele
 
 The existing skill section (jobs-design.md §9.1, the paragraph beginning "If `review_required=true`...") is replaced with:
 
-> **When you need to wait for jobs to finish before proceeding** (either `review_required=true` waiting for founder approval, or `review_required=false` jobs you can't move forward without):
+> **When an admitted job must finish before proceeding**, wait on its genuine nonterminal ID; authorization occurred before submission.
 >
 > Submit your block via `report-completion` with `status=blocked` and `waiting_on_job_ids` populated:
 >

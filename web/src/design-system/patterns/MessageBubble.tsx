@@ -114,7 +114,7 @@ export function MessageBubble(props: MessageBubbleProps): JSX.Element {
           <strong>{props.labels?.declined ?? 'Declined:'}</strong> {declineReason}
         </p>
       ) : (
-        <Markdown body={body ?? ''} mermaidLoadingLabel={props.labels?.mermaidLoading} />
+        <Markdown threadMentions body={body ?? ''} mermaidLoadingLabel={props.labels?.mermaidLoading} />
       )}
       {variant !== 'decline' && attachments && attachments.length > 0 && (
         <div className="mt-3 flex flex-wrap gap-2">
