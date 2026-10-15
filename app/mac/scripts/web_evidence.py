@@ -102,6 +102,15 @@ def path_name(value):
     need(not any(ord(c)<32 or ord(c)==127 for c in value),'PATH_INVALID',value)
     return value
 
+
+def is_absent(root, name):
+    try:
+        with A['parent_at'](root,name) as (parent,leaf):
+            os.stat(leaf,dir_fd=parent,follow_symlinks=False)
+        return False
+    except FileNotFoundError:
+        return True
+
 def decode(raw):
     return raw.decode('utf-8','replace')
 
@@ -340,7 +349,7 @@ def prepare_esbuild_alias(session):
     route={'importer_lock_key':'node_modules/vite','esbuild_lock_key':'node_modules/esbuild','platform_lock_key':'node_modules/'+platform_name,'selected_relative':selected,'alias_relative':alias}
     with A['root_for'](s.paths.exported_source) as root, contextlib.ExitStack() as stack:
         for disallowed in (base+'esbuild/bin-esbuild',base+'esbuild/lib/downloaded-'+platform_name.replace('/','-')+'-esbuild'):
-            need(A['absent'](root,disallowed),'ESBUILD_UNSUPPORTED_LAYOUT',disallowed)
+            need(is_absent(root,disallowed),'ESBUILD_UNSUPPORTED_LAYOUT',disallowed)
         opened=[];pre={}
         for key,name in [('selected',selected),('alias',alias)]:
             parent,leaf=stack.enter_context(A['parent_at'](root,name));fd=os.open(leaf,A['FLAGS'],dir_fd=parent);stack.callback(os.close,fd)
@@ -720,7 +729,7 @@ def retain_web_notices(s,context,preparation,build,dist,asset_app,components):
                 original,raw=s.intern_subject(s.paths.exported_source,base+'/'+name,256*1024);need(raw and decode(raw).encode()==raw,'OWNER_ORIGINAL_UTF8',owner)
                 target='Contents/Resources/licenses/web-generated/'+owner_id+'/'+name
                 with A['root_for'](s.paths.app) as root:
-                    if not A['absent'](root,target):
+                    if not is_absent(root,target):
                         existing=A['read_subject'](root,target,A['NOTICE']);need(existing['sha256']==sha(raw) and existing['size']==len(raw),'OWNER_TARGET_CONFLICT',owner)
                 pending.append((original,base+'/'+name,target))
             # Prevalidate ALL sources/targets before creating any for this owner.
