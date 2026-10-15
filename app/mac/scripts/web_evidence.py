@@ -598,7 +598,7 @@ def validate_css(s,operations,plan,observations):
             pieces.append(raw[cursor:]);need(b''.join(pieces).decode('utf-16-le')==b(d['output']),'CSS_URL_RELATION_INVALID');last_url=b(d['output'])
         elif stage=='css_minify':
             keys(d,{'input','options','code','inlined','output'})
-            need(d['inlined'] is False and d['options']['loader']=='css' and b(d['code'])==b(d['output']),'CSS_MINIFY_INPUT_MISMATCH');minifies.append(d)
+            need(d['inlined'] is False and d['options']=={'loader':'css','target':['es2020','edge88','firefox78','chrome87','safari14'],'charset':'utf8','logLevel':None,'logLimit':None,'logOverride':None,'legalComments':None,'minify':True} and b(d['code'])==b(d['output']),'CSS_MINIFY_INPUT_MISMATCH');minifies.append(d)
         elif stage=='css_finalize':
             keys(d,{'input','hoist','hoisted','minify','minified','marker','output'})
             need(b(d['input'])==(last_url if last_url is not None else last_chunk),'CSS_FINALIZE_CHAIN_INVALID')
@@ -759,6 +759,16 @@ def validate_build(s,payload,context,preparation,*,stored_required=False):
         if operation['stage']=='compile':
             parent=ids[operation['parent_outer_call']];data=operation['data'];raw=blob(s,data['input'])
             need(parent['hook']=='transform' and profile['plugins'][parent['plugin_ordinal']]['name']=='happyranch:packaging-tailwind' and parent['input']=={'size':len(raw),'sha256':sha(raw)},'CSS_COMPILE_INPUT_MISSING')
+    for operation in payload['css_operations']:
+        if operation['stage']!='css_emit':continue
+        data=operation['data'];emitted=blob(s,data['source'])
+        references=[o for o in observations if o['kind']=='plugin_emission' and o['reference_id']==data['referenceId']]
+        need(len(references)==1,'CSS_EMISSION_RELATION_MISSING')
+        filename=references[0]['resolved_file_name'];before=next((r for r in generated if r['path']==filename),None);after=next((r for r in write if r['path']==filename),None)
+        need(before is not None and after is not None and before['bytes']=={'size':len(emitted),'sha256':sha(emitted)},'CSS_EMISSION_RELATION_MISSING')
+        final=re.sub(rb'/\*\$vite\$:\d+\*/',b'',emitted,count=1)
+        need(after['bytes']=={'size':len(final),'sha256':sha(final)},'CSS_FINALIZE_CHAIN_INVALID')
+        need(any(o['kind']=='bundle_delta' and payload['profile']['plugins'][calls[o['call_id']]['plugin_ordinal']]['name']=='vite:css-post' and any(r['path']==filename and r['bytes']==after['bytes'] for r in o['after_entries']) for o in observations),'CSS_FINALIZE_CHAIN_INVALID')
     need(payload['modules'] and len(payload['modules'])<=MAX_ROWS,'MODULE_CAP')
     for module in payload['modules']:
         keys(module,{'id','code','calls','source'})
