@@ -1149,7 +1149,6 @@ export const zhCN: Record<MessageKey, MessageValue> = {
   'threads.page.rail.aria': '会话属性',
   'threads.page.rail.participants': '参与者',
   'threads.page.rail.you': '你',
-  'threads.page.rail.founderRole': '创始人',
   'threads.page.rail.removeParticipant': '移除 {name}',
   'threads.page.rail.none': '无',
   'threads.page.rail.invite': '邀请参与者',

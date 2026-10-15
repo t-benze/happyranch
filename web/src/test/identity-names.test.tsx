@@ -537,7 +537,7 @@ function founderThread() {
   const at = '2026-10-15T00:00:00Z';
   const row = { thread_id: 'THR-F', subject: 'Founder naming', status: 'open', started_at: at, archived_at: null, forwarded_from_id: null, forwarded_from_kind: null, turn_cap: 500, turns_used: 2, summary: null, transcript_path: null, composed_from_dream_id: null, last_speaker: 'founder', pinned: false, pinned_at: null, last_activity_at: at, participants: ['founder', 'agent_a'] };
   const message = (seq: number, speaker: string, body: string) => ({ seq, speaker, kind: 'message', body_markdown: body, decline_reason: null, system_payload: null, created_at: at, responder_status: [] });
-  const messages = [message(1, 'founder', 'Founder body'), message(2, 'agent_a', 'Agent body')];
+  const messages = [{ ...message(1, 'founder', 'Founder body'), responder_status: [{ agent_name: 'agent_a', status: 'replied' }] }, message(2, 'agent_a', 'Agent body')];
   server.use(
     http.get('/api/v1/orgs/:slug/threads', () => HttpResponse.json({ threads: [row], totals: { open: 1, archived: 0, all: 1, dream_origin: 0 }, has_more: false, next_cursor: null, sampled_at: at })),
     http.get('/api/v1/orgs/:slug/threads/THR-F', () => HttpResponse.json({ ...row, reply_delivery: [], messages })),
@@ -579,11 +579,15 @@ describe('Founder presentation (THR-293 seq236) — shipping Sidebar + threads, 
     await waitFor(() => expect(screen.getByText('Founder body')).toBeInTheDocument());
     const { transcript, rail, founderRow } = founderSites();
     await waitFor(() => expect(within(transcript).getByTitle(/^Boss · founder — /)).toHaveTextContent(/^Boss$/));
-    // Message author, avatar initials and participant rail: name only, role retained in the rail.
+    // Message author, avatar initials and participant rail: the current name alone —
+    // no canonical ID and no redundant Founder role label (en "founder" / zh 创始人).
     const avatar = transcript.parentElement!.parentElement!.firstElementChild!;
     expect(avatar).toHaveTextContent(/^BO$/);
-    expect(within(founderRow).getByText('Boss')).toBeInTheDocument();
-    expect(within(founderRow).getByText(t('threads.page.rail.founderRole'))).toBeInTheDocument();
+    expect(founderRow).toHaveTextContent(/^Boss$/);
+    // The agent rail row keeps Name · ID plus its responder status label.
+    const agentRow = within(rail).getAllByRole('listitem')[1];
+    expect(within(agentRow).getByText('Alpha · agent_a')).toBeInTheDocument();
+    expect(within(agentRow).getByText(t('threads.page.responder.replied'))).toBeInTheDocument();
     // No visible "Boss · founder" anywhere; the agent keeps its current Name · ID.
     expect(screen.queryAllByText('Boss · founder')).toHaveLength(0);
     expect(within(rail).getByText('Alpha · agent_a')).toBeInTheDocument();
@@ -610,6 +614,7 @@ describe('Founder presentation (THR-293 seq236) — shipping Sidebar + threads, 
     const { transcript, founderRow } = founderSites();
     await waitFor(() => expect(within(transcript).getByTitle(/^founder — /)).toHaveTextContent(/^founder$/));
     expect(within(founderRow).getByText('founder', { selector: 'span.break-words' })).toBeInTheDocument();
+    expect(founderRow).toHaveTextContent(/^founder$/);
   });
 
   test('case 4: metadata failure after a ready cache falls back to the canonical ID with no stale custom name', async () => {
@@ -623,6 +628,7 @@ describe('Founder presentation (THR-293 seq236) — shipping Sidebar + threads, 
     await waitFor(() => expect(screen.getByText('Founder body')).toBeInTheDocument());
     const { transcript } = founderSites();
     expect(within(transcript).getByTitle(/^founder — /)).toHaveTextContent(/^founder$/);
+    expect(founderSites().founderRow).toHaveTextContent(/^founder$/);
     expect(screen.queryAllByText(/Boss/)).toHaveLength(0);
     // Established ID UI still works: the agent row keeps its canonical ID.
     expect(screen.getAllByText('agent_a').length).toBeGreaterThan(0);

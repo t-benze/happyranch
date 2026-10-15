@@ -1420,7 +1420,7 @@ function DetailColumn({
         >
           {/* Participants — LED + mono name + latest-response status (THR-061
               a-thread-detail .prow). Status is derived from responder_status
-              (honest); founder is labelled by role. Remove ✕ preserved. */}
+              (honest); the founder row shows the current name alone. Remove ✕ preserved. */}
           <div>
             <h3 className="text-text-muted mb-1 text-xs font-semibold tracking-wider uppercase">{t('threads.page.rail.participants')}</h3>
             {thread.participants.length > 0 ? (
@@ -1428,15 +1428,11 @@ function DetailColumn({
                 {thread.participants.map((p) => {
                   // Latest responder state drives BOTH the LED color and the
                   // status label (honest, derived — no fabrication). The
-                  // founder shows their current name alone plus the role label.
+                  // founder shows their current name alone (canonical ID when
+                  // unnamed/unavailable) with no redundant role label.
                   const respStatus = statusByAgent.get(p) ?? null;
                   const led = participantLed(p, respStatus);
-                  const statusLabel =
-                    p === 'founder'
-                      ? t('threads.page.rail.founderRole')
-                      : respStatus
-                        ? responderStatusLabel(respStatus, t)
-                        : null;
+                  const statusLabel = p !== 'founder' && respStatus ? responderStatusLabel(respStatus, t) : null;
                   const displayName = <IdentityName canonicalId={p} founderNameOnly />;
                   return (
                     <li key={p} className="flex items-center gap-2 py-1">

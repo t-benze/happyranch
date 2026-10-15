@@ -1224,7 +1224,6 @@ export const en = {
   'threads.page.rail.aria': 'Thread properties',
   'threads.page.rail.participants': 'Participants',
   'threads.page.rail.you': 'you',
-  'threads.page.rail.founderRole': 'founder',
   'threads.page.rail.removeParticipant': 'Remove {name}',
   'threads.page.rail.none': 'none',
   'threads.page.rail.invite': 'Invite participant',
