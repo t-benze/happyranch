@@ -1319,6 +1319,29 @@ plus bounded synthetic CLI validation; unconditional PR/push-main hosted
 `Source Boundary Lint` uses Python 3.14 without project dependency installation.
 See the project-layout boundary section and [Local CI](docs/local-ci.md).
 
+## Memory census and report readers (THR-091 seq428)
+
+A closed failed-before-exposure invocation stays in every attempted/persisted
+count, ordinal, digest and seal, with no shown/natural-session denominator.
+Only one ordered authenticated intent/identity/raised-terminal tuple with actual
+failed lifecycle, correct parent/type/population, Boolean false expectation and
+binding, INTEGER0 launch callbacks, explicit null success/returncode and complete
+absence of exposure/callback/credited get/search qualifies for this class.
+Full bounded audit/task/result evidence, independent counts/digests/seals and
+stable semantic bookends are required; missing/unknown/duplicate/contradictory,
+pending/moving/error or all-failure evidence refuses. Normal exposed/in-flight
+checks, temporal post-retirement zero, source/boot/cohort, original epoch/reset
+contract and thresholds remain. Classification grants no B/C/health acceptance.
+
+Canonical CLI and HTTP task comparisons exclude only valid rendering timestamps
+at pause.observed_at, pause.blockers[*].observed_at and child_wait.observed_at.
+Raw evidence, unknown/malformed fields, lifecycle/pause/wait state, results/jobs,
+roles and all serving generation/count/digest/seal/error facts remain intact.
+Invocation-exception diagnostics add only correlated class/bounded frame-location
+metadata; no exception messages/source lines/locals are added. Existing failure,
+terminal, wake/thread and control effects remain. Original launch cause is unknown.
+See the corrective memory spec and the maintained agent guides.
+
 ## Commands
 
 PR1022's TASK10553 continuation retains all 224 C4 parameters and the finite

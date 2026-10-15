@@ -1359,6 +1359,14 @@ Stored seals checkpoint counters only: `census_integrity` explicitly reports
 `census_not_reconciled` with `census_valid=false`. Exhaustive integrity is a
 bounded internal zero-write validation with live semantic bookends; neither a
 stored seal nor a valid source census establishes collection health.
+
+The seq428 closed failed-before-exposure class retains exact failed invocations
+in all attempted/persisted census counts and seals but never shown/natural
+session denominators. Complete task/result/audit evidence and stable serving
+bookends must establish the strict raised/false/false/INTEGER0/null/null terminal,
+actual failed lifecycle and exhaustive no-exposure/no-callback/no-credit tuple.
+Missing/contradictory evidence and all-failure populations refuse. See the
+corrective memory spec; this supplies no installed B/C or epoch acceptance.
 G1 authority additionally reads exact admitted roles/results, original finite
 plan/tasks, owned jobs/full outputs and operation history at stable bookends.
 Its server admission, locked commit and serving checks use the existing
@@ -1397,6 +1405,16 @@ Task pages follow `(created_at, id)` descending; the last ID remains the transpo
 cursor resolved by the server. No-epoch diagnostic reads filter unrelated audit
 actions without changing the100000-row bound. Accepted epochs retain complete
 unfiltered task/result/job/audit acquisition, original outputs and serving bookends.
+
+Canonical CLI task sweeps and HTTP list/detail/two-capture comparisons share one
+semantic task projection. It excludes only valid rendering timestamps at
+`pause.observed_at`, `pause.blockers[*].observed_at` and `child_wait.observed_at`.
+Malformed timestamps/structures, unknown fields and every other `observed_at`
+remain evidence. Raw acquired records remain intact. Task lifecycle/owner/SID/
+lineage/content, pause/wait states, result/job bytes, roles and all serving
+counts/digests/seals/errors/generations remain compared. Real serving movement
+(including generation53->54, seal312201->312222 and terminal6->7) refuses;
+timestamp equality cannot retroactively qualify an earlier moving capture.
 Events at or after that cutoff are excluded. Backdated/content/role drift,
 cursor/schema errors, HTTP/decoder/timeout or SELECT failures refuse with
 `acquisition_unavailable`; CLI writes only that category to stderr and exits1,

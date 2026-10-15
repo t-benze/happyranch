@@ -341,6 +341,23 @@ remain `census_not_reconciled`. Bounded exhaustive read validation rejects
 moving captures and unresolved authoritative task/parent/type facts without
 changing ordinary launch/refusal behavior. These source facts confer no
 installed/epoch/collection authority.
+
+The seq428 closed failed-before-exposure census class requires complete bounded
+actual task/result/audit evidence, one ordered authenticated tuple and a strict
+raised/false/false/INTEGER0/null/null terminal with supported failed lifecycle
+and exhaustive no-exposure/no-callback/no-credit evidence. It retains the failed
+ordinal in all counts/digests/seals while excluding it from shown/natural-session
+denominators. Missing/pending/contradictory evidence and all-failure populations
+remain insufficient; no execution or measurement authority follows.
+
+The existing task invocation-exception catch logs only task/agent/reserved runtime
+SID (or explicit unavailable), exception class and at most eight bounded frame
+locations, with truncation stated. External filenames are hidden; exception
+messages, source lines, prompts, credentials and frame locals are not added to
+this diagnostic. Existing failure notes, failure/terminal/parent-wake/thread
+behavior and control-exception propagation remain unchanged. Diagnostic/logging
+failure cannot replace those effects. This supplies future metadata, not a cause
+or repair for the original unknown launch exception and not measurement acceptance.
 The seal-action `/audit` source view fingerprints declared actually loaded
 Python functions at their import origins and compares them to bounded compiled
 source without execution. It records the actual interpreter, registered
