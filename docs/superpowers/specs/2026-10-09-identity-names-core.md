@@ -208,6 +208,15 @@ read/auth errors retain their behavior; GET never reconciles or installs names.
 This category is an observation, not proof of a serving source SHA or root cause.
 Source publication does not establish restored naming or authorize live recovery.
 
+If an actual install attempt fails, a later non-install refresh that only finds
+absent naming retains that attempt's bounded category in memory. It describes
+the last failed attempt, not a new installation. Without such provenance,
+absence remains `naming_not_installed`; a stale diagnostic cannot supply it.
+A new install attempt supersedes the retained cause, a successful refresh clears
+it, and a different current failure takes precedence while it is observed.
+Readiness, admission, installation decisions and the finite response vocabulary
+are unchanged; no retry, durable diagnostic history or read-time writer is added.
+
 IdentityView separates canonical_id, kind, lifecycle, addressable_name,
 name_revision, canonical_definition_revision and naming_status. Agent list and
 enrollment summaries add addressable_name/name_revision/naming_status; existing

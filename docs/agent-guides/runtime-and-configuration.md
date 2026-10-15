@@ -112,6 +112,14 @@ read/auth errors retain their behavior; GET never reconciles or installs names.
 This category is an observation, not proof of a serving source SHA or root cause.
 Source publication does not establish restored naming or authorize live recovery.
 
+A failed actual install attempt retains one bounded category in memory. Later
+non-install refreshes that only observe absent naming report that last attempt's
+cause; without that provenance they report `naming_not_installed`, never a guessed
+stale cause. A different current failure takes precedence while observed. A new
+install attempt supersedes the retained cause; any successful refresh clears it.
+This diagnostic retention changes no readiness, admission or installation decision
+and adds no retry, persistent history or read-time writer.
+
 Schema2 multi-org attachment installs naming only after baseline admission; no
 flat-schema1 conversion or history-only ID mining is added. Naming failure is
 volatile readiness with an actionable category. Original strict team/attachment
