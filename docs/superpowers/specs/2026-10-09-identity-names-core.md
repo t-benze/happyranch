@@ -27,10 +27,37 @@ index metadata to independently pinned literal references and validates bounded
 rows and their cross-row ownership. Partial/newer/foreign/extra/corrupt naming
 refuses without repair. Generic Database/runtime-audit never acquire names.
 
+Naming installation uses N-SAC-1 structural admission (Founder THR293seq220/217).
+Before locking, the selected OrgPaths DB and Database path must agree. Inside
+the caller-owned BEGIN IMMEDIATE, the DB-only admission helper checks actual
+main/expected absolute path, foreign_keys=1, no attached schema, bounded main/temp
+inventory, required task identity/parent lookup shape and exactly six audit columns.
+The audit grammar admits shipping declarations in any order with ordinary quoting;
+it requires INTEGER PRIMARY KEY AUTOINCREMENT id, TEXT NOT NULL task_id/agent/
+action/timestamp and nullable TEXT payload. Extra constraints/columns, audit
+triggers, unique/expression indexes and unknown partial predicates refuse. Plain
+BINARY column indexes and the shipping cleanup action predicate remain allowed.
+Complete unchanged workflow/Pause/move/naming validators run in that transaction;
+Pause/move absence is compatible. Naming objects remain closed to their pinned
+v1 literal. External naming references (including literal mentions in SQL),
+incoming foreign keys, reserved-prefix objects and temp dependency shadows refuse.
+A bounded unrelated table/index/trigger/view or historical generic formatting/order
+variation is preserved; naming does not certify its global compatibility.
+Canonical capture stays outside connection locks. Admission repeats after naming
+effects; final naming/namespace validation and existing BaseException rollback
+remain. An absent install commits only literal naming schema, selected-org marker
+and actual canonical/Founder defaults; complete reopen retains rowids, claims and
+revisions, with only existing lifecycle reconciliation allowed. Installer structural
+refusals use existing sanitized naming_database_unavailable; retained historical
+diagnostic categories and PR1092 failure provenance remain unchanged. Non-install
+refreshes and all readers never invoke this installer admission or install names.
+
 Release-reference construction supports fresh/v0/v2/v2-organic × F/E/G/H/I × naming absent/v1,
 including all three current generic cleanup indexes. Every non-null schema SQL
 object participates; no object filter/whitelist or candidate-derived baseline.
-Unknown whole-database objects keep the existing strict reference refusal.
+Unknown whole-database objects keep the existing strict reference refusal in
+workflow release validation and legacy authority evidence. Naming readiness is
+separate and never grants workflow/coding/legacy authority.
 Explicit workflow readiness and migration validation binds the naming singleton
 to the same expected org as the workflow marker, including source/target checks
 under the migration reservation. A valid SQL layout with a foreign naming marker
@@ -647,9 +674,10 @@ remain required.
 ### Current main integration and A10 fixture correction (TASK-10565)
 
 The naming reference now includes main's independently installed Pause/Resume
-layout as a separate cache dimension. Install admission, workflow release
-validation and legacy authority comparison require the complete combined
-reference; neither extension's objects are ignored. Downgrade planning retains
+layout as a separate cache dimension. Workflow release validation and legacy
+authority comparison require the complete combined reference; neither extension's
+objects are ignored. Naming installation instead uses N-SAC-1 structural admission
+with unchanged complete Pause/workflow validators, as specified above. Downgrade planning retains
 both compatible-reader refusals. No new schema, permission or authority rule is
 introduced. Naming's legacy-org scenario now expects the Pause/Resume layout
 that ordinary OrgState attachment installs.

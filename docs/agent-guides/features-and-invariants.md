@@ -516,6 +516,12 @@ required. See the [current naming contract](../superpowers/specs/2026-10-09-iden
 
 ## Naming v1 core, API and routing source
 
+Naming install alone uses N-SAC-1 transaction-time structural admission over the
+selected org DB, actual task/audit dependencies, closed naming interactions and
+unchanged complete workflow/Pause/move validators. Global workflow/legacy
+references retain their strict contract; naming readiness grants no authority.
+Reads and ordinary non-install refreshes never invoke admission or install names.
+
 The internal naming registry retains chosen/current/former ownership permanently,
 while default-only rejected reservations release. Absent-owner revision metadata
 survives, preventing ABA; exact same-ID reenrollment restores chosen spelling.

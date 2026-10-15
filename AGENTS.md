@@ -69,7 +69,17 @@ See [the current K0/K1 contract](docs/superpowers/specs/2026-10-14-ordered-codin
 
 **Naming v1 core, API and routing source (THR-293 seq14/22/34).** One daemon controls each org.
 OrgState admits the existing generic/workflow/canonical source before installing
-an org-only, atomic three-table naming extension. Generic Database and
+an org-only, atomic three-table naming extension. Installer-only N-SAC-1 in
+`runtime/identities/admission.py` checks selected/actual DB ownership, task/audit
+shapes, closed naming interactions and unchanged workflow/Pause/move/naming
+validators inside the existing transaction; it builds no whole-release reference.
+Global workflow/legacy reference consumers remain strict and separate. Non-install
+refreshes/readers keep their prior behavior. Finite synthetic verification uses
+`uv run --frozen python scripts/verify_naming_structural_admission.py --case B-SA-01
+--scratch NEW_ABSOLUTE_TASK_TMP_CHILD --evidence NEW_ABSOLUTE_EVIDENCE_CHILD`;
+select B-SA-01 through B-SA-08 separately, per the fixture README. No test Python
+imports, live DB input, repair, provider or daemon lifespan is supported.
+Generic Database and
 runtime-audit remain naming-free. Every naming-installed database, including F,
 requires a compatible naming reader; explicit F/E/G/H/I workflow migrations preserve
 naming rows/revisions and never install absent naming. Flat schema1 still refuses.

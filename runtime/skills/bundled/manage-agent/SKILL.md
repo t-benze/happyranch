@@ -95,6 +95,7 @@ Operator rename accepts only addressable_name and positive expected_name_revisio
 with raw binding-key denial and the shared bearer limitation. The operator CLI is now described above; no agent-session rename authority is added. Mention delivery, CLI targets, fresh prompts and UI enrichment use current names at human boundaries. Names do not
 change allowed tools, execution permissions, task/session principals or workspace
 ownership. Coherent naming is not proof that bootstrap/cleanup/rollback succeeded.
+Naming readiness follows structural naming admission, never global authority; see the identity-names core spec.
 One daemon controls each org; no naming-specific cross-process guard is required.
 
 ## Authentication paths
