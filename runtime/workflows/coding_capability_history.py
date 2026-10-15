@@ -5,7 +5,8 @@ SQLite read transaction, connection and lock throughout. Native envelopes,
 own admissions, historical publications and complete parent/setup containment
 are retained facts only. They prove no real mint order, source execution,
 task/SID/result/assignment/policy/J graph or current permission. Those separate
-readers remain prerequisites before every producer and current-use admission.
+readers must ship with each corresponding capability producer/current-use
+consumer. They do not block the separate human setup producer.
 """
 from __future__ import annotations
 

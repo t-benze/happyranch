@@ -1,4 +1,4 @@
-"""Unmounted K2a2a saved coding grammars, never current-use authorization.
+"""Saved coding grammars, consumed by K2b setup; never current authorization.
 
 These readers do no store, roster, object, provider or network I/O. A parsed
 record is no authentic issuer, active grant, admission or valid native/J graph.

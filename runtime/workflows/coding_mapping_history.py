@@ -193,7 +193,8 @@ def read_mapping_history(conn: sqlite3.Connection, *, expected_org_slug: str,
     does not invalidate an earlier genuine issue or restore any current grant.
     Native issuer task/SID/policy/source rule, current authority/capabilities and
     full native/J run/event/result/session/receipt/heartbeat graph remain owed
-    downstream before every producer. Reading never attests or adopts a store.
+    downstream with each corresponding mapping producer. Human setup needs its
+    own complete readers only. Reading never attests or adopts a store.
     """
     try:
         _check(type(conn) is sqlite3.Connection and conn.in_transaction)
