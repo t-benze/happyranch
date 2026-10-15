@@ -76,6 +76,17 @@ try {
   const target = join(vendor, filename);
   if (args.includes('--write')) writeFileSync(target, archive);
   else if (!read(target).equals(archive)) throw Error('Checked-in tarball differs from reproducible source compilation');
+  const integrity = `sha512-${createHash('sha512').update(archive).digest('base64')}`;
+  if (args.includes('--check')) {
+    const dependency = `file:vendor/react-remove-scroll-bar/${filename}`;
+    const root = JSON.parse(read(join(web, 'package.json')));
+    const locked = lock.packages['node_modules/react-remove-scroll-bar'];
+    if (root.dependencies[manifest.name] !== dependency || root.overrides?.[manifest.name] !== `$${manifest.name}`
+        || lock.packages[''].dependencies[manifest.name] !== dependency
+        || locked?.version !== manifest.version || locked.resolved !== dependency || locked.integrity !== integrity) {
+      throw Error('Root dependency/override or lockfile does not select the exact current tarball');
+    }
+  }
   if (args.includes('--installed')) {
     const installed = join(web, 'node_modules/react-remove-scroll-bar');
     if (lstatSync(installed).isSymbolicLink()) throw Error('Installed package must not be linked');
@@ -85,7 +96,7 @@ try {
     for (const file of files) if (!read(join(pkg, file)).equals(read(join(installed, file)))) throw Error(`Installed bytes differ: ${file}`);
   }
   console.log(JSON.stringify({ filename, compiler: ts.version, size: archive.length,
-    sha256: sha(archive), integrity: `sha512-${createHash('sha512').update(archive).digest('base64')}`,
+    sha256: sha(archive), integrity,
     files: packed.files, installed: args.includes('--installed') }, null, 2));
 } finally {
   rmSync(scratch, { recursive: true, force: true });
