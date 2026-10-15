@@ -587,38 +587,48 @@ class Browser:
         require(body["id"] == job and body["status"] == status, "fresh browser job state", body)
         expect(self.page.get_by_role("main").get_by_text(status, exact=True).first).to_be_visible(timeout=self.controller.remaining(5)*1000)
         self.controller.remaining()
+        for label in ("Approve & run", "Run"):
+            expect(self.page.get_by_role("main").get_by_role("button", name=label, exact=True)).to_have_count(0, timeout=self.controller.remaining(5)*1000)
+            self.controller.remaining()
+        self.events.append(dict(event="job-read", path=urlsplit(response.value.url).path,
+                                method=response.value.request.method, status=response.value.status,
+                                response=body, at=time.monotonic()))
         return body
 
     def job_action(self, job: str, cap: int, pending_check: Any, *, reject: bool = False) -> dict:
-        self.job_open(job, "pending")
-        action = "Reject" if reject else "Approve & run"
-        self.page.get_by_role("main").get_by_role("button", name=action, exact=True).click(timeout=self.controller.remaining(10)*1000)
-        self.controller.remaining()
-        dialog = self.page.get_by_role("dialog")
-        expect(dialog).to_be_visible(timeout=self.controller.remaining(5)*1000)
-        self.controller.remaining()
-        expect(dialog.get_by_text(action + " " + job, exact=True)).to_be_visible(timeout=self.controller.remaining(5)*1000)
-        self.controller.remaining()
-        if reject:
+        body = self.job_open(job, "pending" if reject else "running")
+        main = self.page.get_by_role("main")
+        for label in ("Approve & run", "Run"):
+            expect(main.get_by_role("button", name=label, exact=True)).to_have_count(0, timeout=self.controller.remaining(5)*1000)
+            self.controller.remaining()
+        if not reject:
+            expect(main.get_by_role("button", name="Stop", exact=True)).to_be_visible(timeout=self.controller.remaining(5)*1000)
+            self.controller.remaining()
+            pending_check()  # Genuine already-running script; no manual start request.
+            read = next(e for e in reversed(self.events) if e.get("event") == "job-read")
+            record = dict(path=read["path"], method=read["method"], request=None,
+                          status=read["status"], response=body, no_run_controls=True, at=time.monotonic())
+        else:
+            main.get_by_role("button", name="Reject", exact=True).click(timeout=self.controller.remaining(10)*1000)
+            self.controller.remaining()
+            dialog = self.page.get_by_role("dialog")
+            expect(dialog).to_be_visible(timeout=self.controller.remaining(5)*1000)
+            self.controller.remaining()
+            expect(dialog.get_by_text("Reject " + job, exact=True)).to_be_visible(timeout=self.controller.remaining(5)*1000)
+            self.controller.remaining()
             dialog.get_by_label("Reason", exact=True).fill("E04_REJECTED_BY_REVIEW", timeout=self.controller.remaining(10)*1000)
             self.controller.remaining()
-        else:
-            expect(dialog.get_by_label("Timeout (seconds)", exact=True)).to_have_value(str(cap), timeout=self.controller.remaining(5)*1000)
+            pending_check()  # Historical fixture must still prove no launch/files/audit.
+            path = f"/api/v1/orgs/alpha/jobs/{job}/reject"
+            with self.page.expect_response(lambda r: r.url == self.base + path and r.request.method == "POST", timeout=self.controller.remaining(10)*1000) as received:
+                dialog.get_by_role("button", name="Reject", exact=True).click(timeout=self.controller.remaining(10)*1000)
+                self.controller.remaining()
             self.controller.remaining()
-            expect(dialog.get_by_label("Working directory override", exact=True)).to_have_value("", timeout=self.controller.remaining(5)*1000)
-            self.controller.remaining()
-        pending_check()  # Still no launch with the real confirmation open.
-        path = f"/api/v1/orgs/alpha/jobs/{job}/" + ("reject" if reject else "run")
-        with self.page.expect_response(lambda r: r.url == self.base + path and r.request.method == "POST", timeout=self.controller.remaining(10)*1000) as received:
-            dialog.get_by_role("button", name=action, exact=True).click(timeout=self.controller.remaining(10)*1000)
-            self.controller.remaining()
-        self.controller.remaining()
-        response = received.value
-        request = response.request.post_data_json
-        expected = {"reason": "E04_REJECTED_BY_REVIEW"} if reject else {}
-        record = dict(path=path, request=request, status=response.status, response=response.json(), at=time.monotonic())
+            response = received.value
+            record = dict(path=path, method="POST", request=response.request.post_data_json,
+                          status=response.status, response=response.json(), no_run_controls=True, at=time.monotonic())
+            require(record["request"] == {"reason": "E04_REJECTED_BY_REVIEW"} and response.status == 200, "actual browser individual rejection", record)
         self.events.append(dict(event="job-action", **record))
-        require(request == expected and response.status == (200 if reject else 202), "actual browser job action", record)
         return record
 
     def job_terminal(self, job: str, status: str, exit_code: int | None, out: str, err: str) -> dict:

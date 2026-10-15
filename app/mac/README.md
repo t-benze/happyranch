@@ -52,6 +52,35 @@ transport compression. This source retention does not establish actual
 app/archive custody, macOS 14 / WKWebView font loading or rasterization,
 SVG/icon rights, ICNS transformation evidence or any of the six closures.
 
+The release wrapper now measures the complete selected Git/export public tree
+(including hidden and unreferenced files), ordinary dist, and actual app copy.
+Only existing basename `*.map` removals are exceptions. Unknown generated/other
+files remain explicitly unattributed. Its private `scripts/asset_evidence.py`
+retains the two unchanged OFLs at
+`Contents/Resources/licenses/assets/{HankenGrotesk,Newsreader}-OFL.txt` and
+returns three separate font component rows; both Newsreader rows share one
+notice. Existing identical safe targets are preserved; conflicts persist as
+failures. Installed-original Python/Radix precedence is unchanged.
+
+The same helper prepares seven PNG originals into ten iconset members, then
+runs the selected real iconutil once on Darwin/arm64 into new private
+`scratch/icon-output/AppIcon.icns`. Exclusive publication to the app is a byte
+copy, not another transform. Catchable interruption is deferred until the child
+handle is owned; bounded cleanup preserves the first failure and actual exit
+(or explicit unknown) and attempts each acquired resource independently.
+Six one-shot local records and two bounded tool
+streams bind explicit caller roots, candidate, run, tool and synchronous stage
+tokens. The independent licenses reader reopens complete subjects before the
+unchanged strict legacy license checks; it never reruns iconutil. See the
+[packaging reader arguments and limits](../../packaging/README.md).
+
+Portable synthetic-copy fixture results cover shipping helper operations only.
+Actual native process capture, PYNOTICES append/token capture, full reader,
+macOS14/WKWebView/install and future all-six finalization remain unexecuted.
+Literal `closure_complete=False`, six sentinels and ordinary failed components
+remain. This slice closes no whole requirement and grants no changed-source
+native execution, signing, deployment or release authority.
+
 The existing hosted workflow installs exact native arm64 Go **1.23.12** with
 `actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e` (v7.0.0), with
 shared setup caching disabled. Before packaging it logs PATH, the resolved Go

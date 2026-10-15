@@ -678,15 +678,6 @@ export interface JobListResponse {
   jobs: JobRecord[];
 }
 
-export interface JobRunResponse {
-  id: string;
-  status: 'running';
-  started_at: string;
-  cwd_resolved: string;
-  timeout_seconds: number;
-  events_url: string;
-}
-
 export interface JobOutput {
   stdout: string;
   stderr: string;

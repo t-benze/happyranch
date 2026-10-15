@@ -1,6 +1,6 @@
 ---
 name: jobs
-description: Run a script in the background or request founder review; manage the result.
+description: Run an authorized script in the background; inspect its actual result.
 ---
 
 # jobs
@@ -12,7 +12,7 @@ may only observe an already-owned task job, including its actual wait result,
 for the recovery report. A normal resumed turn is not a recovery turn and uses
 the ordinary rules below.
 
-You want to run a script that either takes longer than your session can wait for, doesn't return at all (a dev server, a watcher), or needs permissions you don't have. Submit a job, fill in the form, and the framework handles the rest.
+You want to run a script that either takes longer than your session can wait for, doesn't return at all (a dev server, a watcher), or needs an authorized daemon operation. Obtain any required authorization in an existing thread BEFORE submitting; job admission does not authorize contents or grant executor permissions.
 
 ## When to use
 
@@ -20,7 +20,7 @@ Three signals you should reach for jobs instead of running the command inline:
 
 1. **The command doesn't return.** Dev servers, log watchers, polling loops, things you want running while you do other work.
 2. **The command takes too long.** A build, a backup, a long migration that would consume the rest of your session.
-3. **The command needs permissions you don't have.** A `gh`, `aws`, `stripe`, `ssh`, or `sudo` invocation your `allow_rules` block — submit with `review_required=true` and the founder will run it for you.
+3. **An authorized one-off operation needs the daemon.** Classify an executor refusal, obtain the exact content authorization in a thread first, then submit from a genuine ordinary task session. Do not use jobs to evade a refusal or product policy.
 
 Do NOT use jobs for one-shot, fast, in-sandbox commands. Run those inline — `bash` is still the right tool. Jobs add audit overhead and only pay off for the three signals above.
 
@@ -48,13 +48,12 @@ durable job boundary.
 
 ## Classify the failure before requesting a job
 
-A skill step can fail for several different reasons. Only one of them is a
-permission refusal, and only that one is fixed by asking for a reviewed job.
+A skill step can fail for several different reasons. Only one is a permission refusal. Record it and obtain authorization in a thread before any supported job submission.
 Classify first:
 
 | Observed failure | Signal | Permission refusal? | Correct action |
 | --- | --- | --- | --- |
-| **Executor permission refusal** | The command is refused/denied by the executor's permission or sandbox decision (for example an unlisted leading binary under `allow_rules`, or a sandbox denial) — not a missing program | **Yes** | Record redacted evidence; submit one reviewed bounded job (below) |
+| **Executor permission refusal** | The command is refused/denied by the executor's permission or sandbox decision (for example an unlisted leading binary under `allow_rules`, or a sandbox denial) — not a missing program | **Yes** | Record evidence; obtain bounded thread authorization first |
 | Binary not found | Shell "command not found" / exit 127 | No | Install or use an available tool; do not request permissions |
 | Authentication / credential | The program runs and returns 401/403, an auth prompt, or "no credentials" | No | Route through the existing credential/operator workflow; do not request shell permissions |
 | Network / service unreachable | DNS/timeout/connection refused from a runnable program | No | Report the dependency; do not request permissions |
@@ -68,51 +67,19 @@ scope that would unblock it. Pause that one operation. Do not evade the decision
 with an executor switch, a skill-level grant, wildcard expansion, gate
 suppression, or an unrelated credential request.
 
-## Request one blocked operation (reviewed, bounded, task-bound job)
+## Authorize a blocked operation before submission
 
-For a one-off or rare blocked operation, submit a reviewed job from a **normal
-active task session** (`task_id` + `session_id` from that session). Write the
-payload and submit it on a single line. `cwd_hint` is a **relative** path: the
-daemon resolves it under the workspace root and passes it to the runner as the
-process working directory, so the script must **not** `cd` again.
+For a one-off executor refusal, preserve the skill/version, exact command/cwd,
+redacted refusal and narrow requested scope in the existing task artifact.
+Obtain any required Founder authorization in a thread BEFORE submission. Do
+not submit first to solicit approval: there is no job approval queue. A missing
+binary, credentials, network failure or denied product policy needs its own
+existing resolution; a job supplies no permission or credential grant.
 
-```json
-{
-  "task_id": "<active TASK id>",
-  "session_id": "<active session id>",
-  "title": "Run one blocked deployment command for skill X",
-  "script": "./deploy.sh --check\n",
-  "interpreter": "bash",
-  "cwd_hint": "repos/<repo>",
-  "rationale": "Skill <slug>@<version> step N is refused by the executor permission layer. Minimum requested operation: ./deploy.sh --check in repos/<repo>. Full refusal evidence and the skill step are in output/<task>/permission-request.md (secrets redacted). This authorizes only this command; it does not change agent permissions.",
-  "review_required": true,
-  "persistent": false,
-  "max_runtime_seconds": 300
-}
-```
-
-```bash
-happyranch jobs submit --org <slug> --from-file /tmp/job-permission-request.json
-```
-
-Rules grounded in the serving code:
-
-- `task_id` + `session_id` must come from that active task session. The daemon
-  rejects a non-active task (`400 task_not_active`), a stale session
-  (`409 session_mismatch`), a completion-recovery session
-  (`403 recovery_purpose_forbidden`) and a missing reviewed rationale
-  (`400 rationale_required`).
-- `title`, `script` and `interpreter` are required; `rationale` is required
-  whenever `review_required=true`.
-- `cwd_hint` must be relative — no leading `/` and no `..` (`422 invalid_cwd_hint`).
-  `max_runtime_seconds` is 1..86400; `persistent` is independent of
-  `review_required`.
-- Put the skill id/version, scope and evidence context in the supported
-  `rationale`, or reference an artifact. Do not invent request fields.
-- A submitted reviewed job stays `pending` until the founder approves-and-runs
-  or rejects it.
-- The reviewed job authorizes **only that command**. Approval never grants a
-  lasting permission and never guarantees success.
+Once authorized, use the form below from a normal active task session. The
+thread invocation token is never a job session ID. Keep `cwd_hint` relative to
+the workspace; do not `cd` a second time. `rationale` is optional context and
+may cite the existing authorization artifact; no new token/field is required.
 
 ## The form
 
@@ -143,34 +110,34 @@ You fill in a JSON payload with these fields:
 `max_output_bytes` is an internal record/runner field, not a supported public
 input. A configurable submission override remains unimplemented design intent.
 
-### The two policy flags
+### Admission and persistence
 
-**`review_required`** — set to `true` when:
+Omit deprecated `review_required` or set it to false. Parsed true returns
+`422 review_required_removed` before allocation; the CLI refuses it locally
+with exit2. Never flip true and retry. Obtain any required authorization in a
+thread before submitting. Old clients that require rationale locally may
+upgrade or supply rationale with false mode. A new client cannot change an old
+server's policy; compatible source must be delivered and separately deployed.
 
-- Your script uses credentials your agent doesn't have (`aws`, `stripe`, `ssh`, `sudo`).
-- The leading binary of any line isn't in your `allow_rules`.
-- The script mutates external state in ways you couldn't roll back (`gh pr close`, `git push --force`, anything destructive).
-- You're uncertain about whether the founder would want to review it. **When in doubt, request review.**
+`persistent=false` defaults to300 seconds; `persistent=true` defaults to no
+runtime cap. Explicit `max_runtime_seconds`1..86400 overrides either. Persistence
+is no permission grant: task termination, stop and daemon shutdown still apply.
 
-`rationale` is required when `review_required=true` — the founder needs context to approve.
+HTTP201 / CLI exit0 means admission only, not script success. Automatic launch
+may defer while a root is held or its owner is unavailable. Inspect returned
+status/deferred code, actual terminal reason, exit code and output.
 
-**`persistent`** — set to `true` when:
+Legacy `review_required=true` pending rows remain unchanged and will not run.
+The `/run` endpoint is a nonexecuting410 `job_manual_run_removed` tombstone;
+`jobs run` and `scripts run` exit2 locally. Inspect history and explicitly reject
+one pending ID with a reason if it should close; never mass dispose or resubmit.
 
-- Your script doesn't return on its own (`npm run dev`, `tail -f`, polling loops).
-- You expect to check on it across multiple bash calls in this session.
-
-If `persistent=false`, the job has a default 300-second timeout. Override with `max_runtime_seconds` if you need longer.
-
-If `persistent=true`, the job has no timeout by default. It runs until you stop it, the task transitions terminal, or the daemon shuts down. You can still set `max_runtime_seconds` as a safety cap.
-
-The two flags are independent. All four combinations are valid:
-
-| review_required | persistent | meaning |
-|--|--|--|
-| false | false | Auto-run, one-shot — fire and forget a backup, then check `wait`. |
-| false | true | Auto-run, long-running — dev server, watcher. |
-| true | false | Founder reviews and runs a bounded command — the old "script request" flow. |
-| true | true | Founder reviews and runs a long-running process — rare; use when oversight matters more than speed. |
+Initial cwd/interpreter preflight errors allocate no row. A genuine later loss
+may atomically settle an authenticated, never-launched false pending job as
+failed/spawn_failed, NULL start/exit, actual finish and bounded diagnostic, with
+submitting-agent failure audit and postcommit wake. Holds, unavailable owners,
+lost CAS and unknown launches are preserved. An error for a committed failed job
+identifies its job_id/status; inspect it, do not print success or silently retry.
 
 ## How to submit
 
@@ -200,9 +167,7 @@ Safe push-only publish job example:
 
 ## After submitting — waiting on jobs
 
-When you need to wait for jobs to finish before proceeding (either
-`review_required=true` waiting for founder approval, or `review_required=false`
-jobs you can't move forward without), submit your block via `report-completion`
+When you need an admitted job to finish before proceeding, submit your block via `report-completion`
 with `status=blocked` and `waiting_on_job_ids` populated:
 
 ```json
@@ -323,7 +288,7 @@ Before reporting your task complete, stop any of your own jobs you no longer nee
 - `422 empty_<field>` — required field missing or whitespace-only. Check and resubmit.
 - `422` from validator — auth binding malformed (e.g., supplied both `task_id+session_id` AND `task_id`, or supplied `task_id` without `session_id`).
 - `422 unknown_interpreter` — `interpreter` not in the allowed set.
-- `400 rationale_required` — submitted `review_required=true` without a `rationale`.
+- `422 review_required_removed` — obsolete true mode; obtain thread authorization before submission, omit/set false on a fresh authorized request. No automatic retry.
 - `422 script_too_large` — script body exceeded 64 KB.
 - `422 invalid_cwd_hint` — `cwd_hint` is absolute or contains `..`.
 - `400 task_not_active` — the referenced task is not pending/in-progress.
@@ -331,11 +296,11 @@ Before reporting your task complete, stop any of your own jobs you no longer nee
 - `404 not_found` / `404 unknown_task` — referenced id doesn't exist.
 - `409 session_mismatch` — daemon spawned a newer session for this `(task_id, agent)`. Exit immediately.
 
-Retry once after 1 second on any non-listed error.
+Do not automatically retry job submission or flip policy fields. Reconcile the actual ID/side effects and resolve the error before any fresh authorized submission.
 
 
 ## Root task Pause outcomes
 
-Task-root Pause may leave an authorized submitted job Pending. Founder approval/run and deferred automatic launch are gated at the actual origin root; rejection/stop remain available. Only an ordinary-purpose actual running session (including a normal v2-admitted manager session) captured by that pause generation has the unreviewed auto-run exception, subject to fresh exact task/agent/SID validation. A submission ID, tracker binding or host lease is not running evidence. Preserve truthful pending/terminal receipts; never describe deferral as a PASS or grant broader authority.
+Task-root Pause may leave an authorized submitted job Pending. Automatic launch is gated at the actual origin root; rejection/stop remain available. Manual run is retired410 even after Resume. Only an ordinary-purpose actual running session (including a normal v2-admitted manager session) captured by that pause generation has the unreviewed auto-run exception, subject to fresh exact task/agent/SID validation. A submission ID, tracker binding or host lease is not running evidence. Preserve truthful pending/terminal receipts; never describe deferral as a PASS or grant broader authority.
 
-Pause capture reconciles current tracker bindings and durable real-running evidence at the serialized control COMMIT. A pre-request snapshot grants no exception; new bindings are considered, ended/replaced bindings are excluded, and duplicate Pause never renews capture. Every actual job run still revalidates current ordinary purpose, exact task/agent/SID and the held generation; founder approval/run never uses this exception.
+Pause capture reconciles current tracker bindings and durable real-running evidence at the serialized control COMMIT. A pre-request snapshot grants no exception; new bindings are considered, ended/replaced bindings are excluded, and duplicate Pause never renews capture. Every actual job run still revalidates current ordinary purpose, exact task/agent/SID and the held generation; legacy true rows never use this exception.
