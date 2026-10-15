@@ -233,7 +233,8 @@ describe('THR296 human Default working-hours roster', () => {
     await waitFor(() => {
       for (const row of rows.slice(1)) expect(within(row).getByText('default')).toBeInTheDocument();
     });
-    expect(screen.queryByText('founder')).not.toBeInTheDocument();
+    // Page content only: the shell account row legitimately shows the canonical founder fallback.
+    expect(within(screen.getByRole('main')).queryByText('founder')).not.toBeInTheDocument();
     expect(screen.queryByText('null')).not.toBeInTheDocument();
   });
 });
@@ -273,7 +274,8 @@ describe('C10 Work Hours query availability', () => {
     await waitFor(() => expect(within(row).getByText('default')).toBeInTheDocument());
     expect(within(row).getByText(translate(locale, 'workHours.eligibility.eligible'))).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'consultant_codex' })).toBeInTheDocument();
-    expect(screen.queryByText('founder', { exact: true })).not.toBeInTheDocument();
+    // Page content only: the shell account row legitimately shows the canonical founder fallback.
+    expect(within(screen.getByRole('main')).queryByText('founder', { exact: true })).not.toBeInTheDocument();
     expect(screen.queryByText('null', { exact: true })).not.toBeInTheDocument();
     expect(reads).toBe(2);
   });

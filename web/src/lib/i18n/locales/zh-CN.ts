@@ -454,7 +454,6 @@ export const zhCN: Record<MessageKey, MessageValue> = {
   'shell.noOrg': '无组织',
   'shell.dayCount': '第 {count} 天',
   'shell.account.label': '账户：{name}，{role}',
-  'shell.account.you': '你',
   'shell.account.founder': '创始人',
 
   'shell.switchToLight': '切换到浅色主题',
@@ -1205,7 +1204,6 @@ export const zhCN: Record<MessageKey, MessageValue> = {
   'threads.page.composer.aborting': '正在中止…',
   'threads.page.composer.removeAttachment': '移除附件',
   'threads.page.composer.uploadFailed': '{name}：',
-  'threads.page.avatar.you': '你',
   // @w3a-end:threadsPage
 
   // --- W3a: thread dialogs, strips, NewThreadDialog ----------------------

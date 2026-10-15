@@ -1739,7 +1739,12 @@ cannot rename. A displayed human label provides no authentication proof.
 Provider-aware naming hooks share one org-scoped identity list/query. Successful
 rename/readback refreshes identity metadata, preserving canonical IDs, settings
 and unrelated drafts. Current labels display Name · ID (ID alone when equal or
-unavailable); historical IDs, links, keys, owner/filter/recipient values and
+unavailable). Bounded Founder exception (THR293seq236): the Sidebar account row
+and thread list/detail/message-author/participant-rail sites show the Founder's
+ready current name alone with matching avatar initials, else the canonical
+`founder` ID (unnamed, loading, unavailable, error or another org still loading);
+agents and every other label keep Name · ID. Historical IDs, links, keys,
+owner/filter/recipient values and
 stored message text remain canonical/literal. Metadata follows existing focus/
 reconnect behavior and bounded 30-second polling; availability is never a global
 gate for established ID operations. Editor drafts are scoped by org/kind/ID and

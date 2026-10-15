@@ -457,7 +457,6 @@ export const en = {
   'shell.noOrg': 'No org',
   'shell.dayCount': 'Day {count}',
   'shell.account.label': 'Account: {name}, {role}',
-  'shell.account.you': 'You',
   'shell.account.founder': 'Founder',
 
   'shell.switchToLight': 'Switch to light theme',
@@ -1280,7 +1279,6 @@ export const en = {
   'threads.page.composer.aborting': 'Aborting…',
   'threads.page.composer.removeAttachment': 'Remove attachment',
   'threads.page.composer.uploadFailed': '{name}: ',
-  'threads.page.avatar.you': 'YOU',
   // @w3a-end:threadsPage
 
   // --- W3a: thread dialogs, strips, NewThreadDialog ----------------------

@@ -167,8 +167,9 @@ describe('TASK-5987 — responsive rail seam (AppShell/Sidebar)', () => {
     const rail = within(screen.getByRole('navigation', { name: 'Primary navigation' }));
     // The org context line (slug) is still in the DOM (hidden below md).
     expect(rail.getByText(SLUG)).toBeInTheDocument();
-    // Account identity row keeps its labelled container.
-    expect(screen.getByLabelText('Account: You, Founder')).toBeInTheDocument();
+    // Account identity row keeps its labelled container (unmocked identities
+    // fall back to the canonical founder ID).
+    expect(screen.getByLabelText('Account: founder, Founder')).toBeInTheDocument();
     // Nav items stay keyboard-reachable in the collapsed rail.
     const home = rail.getByRole('link', { name: 'Home' });
     home.focus();

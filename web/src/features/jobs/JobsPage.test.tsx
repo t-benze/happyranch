@@ -742,7 +742,8 @@ describe('JobDetailPage — output', () => {
       expect(screen.getByText('Duration')).toBeInTheDocument();
       expect(screen.getByText('5.0s')).toBeInTheDocument();
       expect(screen.getByText('Reviewed by')).toBeInTheDocument();
-      expect(screen.getByText('founder')).toBeInTheDocument();
+      // Page content only: the shell account row shows the canonical founder fallback.
+      expect(within(screen.getByRole('main')).getByText('founder')).toBeInTheDocument();
     });
   });
 });

@@ -30,6 +30,17 @@ export function useIdentityPresentation() {
   return { query, identity, name: (id: string) => currentName(identity(id), id), label: (id: string) => identityText(identity(id), id) };
 }
 
+/** Avatar initials for a display name: first letters of its first two separator-delimited segments, else its first two characters. */
+export function identityInitials(name: string): string {
+  const parts = name.split(/[_\s.-]+/).filter(Boolean);
+  if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase();
+  return name.slice(0, 2).toUpperCase();
+}
+/** Bounded Founder presentation: the ready current name alone, else the canonical `founder` ID (never a stale or foreign org's name). */
+export function useFounderName(): string {
+  return useIdentityPresentation().name('founder');
+}
+
 /** Descriptor stays locale-neutral; rendering never triggers another request. */
 export function namingAddressError(error: unknown): ThreadErrorDetail | null {
   if (error instanceof ApiError) {

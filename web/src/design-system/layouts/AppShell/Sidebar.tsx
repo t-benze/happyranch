@@ -33,6 +33,7 @@ import { AddOrgDialog } from '@/features/orgs/AddOrgDialog';
 import { useAgentsRoutes } from '@/hooks/agents';
 import { useDashboardSummary } from '@/hooks/dashboard';
 import { useTranslation } from '@/hooks/i18n';
+import { identityInitials, useFounderName, useHasIdentityProvider } from '@/hooks/identities';
 
 import { useKbRoutes } from '@/hooks/kb';
 import { useOrgsList } from '@/hooks/orgs';
@@ -256,37 +257,48 @@ export function Sidebar(): JSX.Element {
         </SidebarNavItem>
       </nav>
 
-      {/* Footer — static account row (BUG-07). */}
+      {/* Footer — Settings + account row (BUG-07). */}
       <div className="border-border mt-auto flex shrink-0 flex-col gap-1 border-t px-3 py-3">
         <SidebarNavItem {...sidebarLink('settings', true)} icon={Settings}>
           {t('shell.nav.settings')}
         </SidebarNavItem>
-        {/* Account row — avatar + identity. Identity is static chrome (no user
-            profile is loaded client-side). It remains keyboard reachable as
-            account context after the footer-pinned Settings item. */}
-        <div
-          tabIndex={0}
-          aria-label={t('shell.account.label', {
-            name: t('shell.account.you'),
-            role: t('shell.account.founder'),
-          })}
-          className="focus-visible:ring-accent flex items-center gap-2.5 rounded-sm px-2 py-1.5 focus-visible:ring-2 focus-visible:outline-none"
-        >
-          <span
-            aria-hidden="true"
-            className="bg-accent text-accent-fg inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[0.65rem] font-semibold"
-          >
-            YT
-          </span>
-          <span className="min-w-0 flex-col leading-tight max-md:hidden md:flex">
-            <span className="text-fg truncate text-sm">{t('shell.account.you')}</span>
-            <span className="text-fg-subtle truncate text-xs">{t('shell.account.founder')}</span>
-          </span>
-        </div>
+        {/* Account row — avatar + the human Founder's current name. */}
+        <AccountRow />
       </div>
 
       {!isPrototype && <AddOrgDialog open={addOrgOpen} onOpenChange={setAddOrgOpen} />}
     </aside>
+  );
+}
+
+/** The Founder's ready current name via the shared org-scoped identity query;
+ * the canonical `founder` ID when unnamed, loading, unavailable or unbound. */
+function AccountRow(): JSX.Element {
+  return useHasIdentityProvider() ? <BoundAccountRow /> : <AccountRowView name="founder" />;
+}
+function BoundAccountRow(): JSX.Element {
+  return <AccountRowView name={useFounderName()} />;
+}
+function AccountRowView({ name }: { name: string }): JSX.Element {
+  const { t } = useTranslation();
+  // Keyboard reachable as account context after the footer-pinned Settings item.
+  return (
+    <div
+      tabIndex={0}
+      aria-label={t('shell.account.label', { name, role: t('shell.account.founder') })}
+      className="focus-visible:ring-accent flex items-center gap-2.5 rounded-sm px-2 py-1.5 focus-visible:ring-2 focus-visible:outline-none"
+    >
+      <span
+        aria-hidden="true"
+        className="bg-accent text-accent-fg inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[0.65rem] font-semibold"
+      >
+        {identityInitials(name)}
+      </span>
+      <span className="min-w-0 flex-col leading-tight max-md:hidden md:flex">
+        <span className="text-fg truncate text-sm">{name}</span>
+        <span className="text-fg-subtle truncate text-xs">{t('shell.account.founder')}</span>
+      </span>
+    </div>
   );
 }
 
