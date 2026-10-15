@@ -584,7 +584,7 @@ def frozen(value):
 def parse_json(raw):
     # Bound nesting/nodes before json.loads, respecting quoted/escaped content.
     text = raw.decode('utf-8', 'strict')
-    depth, nodes, quoted, escape = 0, 0, False, False
+    depth, nodes, quoted, escape, scalar = 0, 0, False, False, False
     for c in text:
         if quoted:
             if escape:
@@ -595,14 +595,20 @@ def parse_json(raw):
                 quoted = False
         elif c == '"':
             quoted = True
+            scalar = False
             nodes += 1
         elif c in '[{':
+            scalar = False
             depth += 1
             nodes += 1
             need(depth <= 16, 'JSON_DEPTH_CAP_EXCEEDED')
         elif c in ']}':
+            scalar = False
             depth -= 1
-        elif c in ',:':
+        elif c in ' \t\r\n,:':
+            scalar = False
+        elif not scalar:
+            scalar = True
             nodes += 1
         need(nodes <= 100000, 'JSON_NODE_CAP_EXCEEDED')
     value = json.loads(text, object_pairs_hook=pairs_hook,
