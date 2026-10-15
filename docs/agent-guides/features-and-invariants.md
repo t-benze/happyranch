@@ -532,6 +532,14 @@ forwarding. Founder remains human and cannot be a task owner or agent participan
 Reads never install/reconcile and preserve baseline canonical-ID availability
 with explicit null label/revision metadata on naming-only failure. The routing parser retains ordinary unknown @text behavior.
 
+The bounded naming diagnostic retains the last actual failed install category
+when a later non-install refresh only observes absent naming. Absence without
+that provenance remains `naming_not_installed`; stale diagnostics are not installer
+evidence. A different current failure takes precedence while observed. A new
+install attempt supersedes the cause, and a successful refresh clears it. This
+volatile diagnostic changes no readiness/admission/write decision or public
+response vocabulary and adds no retry or read-time reconciliation.
+
 
 Current routing source resolves names/IDs case-insensitively with the unchanged
 @token grammar. Former inputs refuse409 with current_name before thread creation,
