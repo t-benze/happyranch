@@ -131,6 +131,8 @@ export function MentionTextarea({
         onKeyUp={refreshMention}
         onClick={refreshMention}
         onKeyDown={(e) => {
+          // The document-level popup listener must not accept an IME commit.
+          if (e.nativeEvent.isComposing || e.keyCode === 229) { e.stopPropagation(); return; }
           if (e.key !== 'Enter') return;
           // Mention popup owns Enter (selects the active match).
           if (popupOpen) return;
@@ -139,7 +141,6 @@ export function MentionTextarea({
           // IME composition: Enter commits the candidate, must not submit.
           // Safari fires keydown for the final Enter after composition with
           // keyCode=229; check both isComposing and the legacy keyCode.
-          if (e.nativeEvent.isComposing || e.keyCode === 229) return;
           e.preventDefault();
           if (onSubmit && value.trim() && !disabled) {
             onSubmit(value);

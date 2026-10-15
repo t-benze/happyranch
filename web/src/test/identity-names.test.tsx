@@ -17,6 +17,7 @@ import { ThreadsPage } from '@/features/threads/ThreadsPage';
 import { TasksPage } from '@/features/tasks/TasksPage';
 import { SkillDetailPage } from '@/features/skills/SkillDetailPage';
 import type { IdentityView, RenameBody, ResolveBody } from '@/lib/api/types';
+import corpus from '../../../protocol/thread-mention-corpus.json';
 import { translate } from '@/lib/i18n';
 
 // Node fetch requires its own AbortSignal realm; keep real query cancellation.
@@ -150,8 +151,11 @@ describe('naming v1 shipping UI — mocked HTTP', () => {
     const inserted = display === 'ready' ? '@Alpha ' : '@agent_a ';
 
     await user.type(body, '@');
+    expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
+    await user.type(recipient, 'agent_a');
+    await user.click(body);
     await screen.findByRole('option', { name: optionName });
-    expect(screen.getAllByRole('option')).toHaveLength(2);
+    expect(screen.getAllByRole('option')).toHaveLength(1);
     expect(screen.queryByRole('option', { name: /Human/ })).not.toBeInTheDocument();
     for (const prefix of ['Bo', 'Boss', 'fo', 'founder']) {
       await user.clear(body); await user.type(body, `@${prefix}`);
@@ -170,6 +174,7 @@ describe('naming v1 shipping UI — mocked HTTP', () => {
       expect(body.selectionEnd).toBe(inserted.length);
     }
     await user.clear(body);
+    await user.clear(recipient);
     await user.type(recipient, display === 'ready' ? 'Bo' : 'fo');
     await user.click(await screen.findByRole('option', { name: display === 'ready' ? 'Boss · founder Human' : 'founder Human' }));
     expect(recipient).toHaveValue('founder, ');
@@ -205,7 +210,7 @@ describe('naming v1 shipping UI — mocked HTTP', () => {
     await waitFor(() => expect(f.effects).toHaveLength(1));
     expect(f.effects[0]).toMatchObject({ kind: 'compose', slug: 'alpha', body: { recipients: ['@founder'], body_markdown: literal } });
     const reads = addressCase === 'unavailable-founder' ? failedReads : f.resolves.map(r => r.body);
-    expect(reads).toContainEqual({ context: 'lookup', addresses: [address] });
+    expect(reads).toContainEqual({ context: 'lookup', addresses: ['founder', address] });
     expect(reads).toContainEqual({ context: 'thread_recipient', addresses: ['founder'] });
     expect(f.effects.some(e => e.kind === 'upload')).toBe(false);
   });
@@ -291,7 +296,7 @@ describe('naming v1 shipping UI — mocked HTTP', () => {
     expect(composer).toHaveFocus();
   });
 
-  test.each(['503','per-token'] as const)('follow-up %s alias failure keeps draft/file and zero uploads; known nonparticipant ID stays reachable', async (failure) => {
+  test.each(['503','per-token'] as const)('follow-up %s alias failure keeps draft/file and zero uploads; known outsider refuses while eligible ID stays reachable', async (failure) => {
     const f=fixture(); const resolves: string[][]=[];
     server.use(http.post('/api/v1/orgs/alpha/identities/resolve',async ({request})=>{
       const body=await request.json() as ResolveBody; resolves.push(body.addresses);
@@ -314,8 +319,13 @@ describe('naming v1 shipping UI — mocked HTTP', () => {
     await user.clear(composer); await user.type(composer,'@agent_b');
     expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
     await user.keyboard('{Enter}');
+    await screen.findByText(/not an eligible participant/);
+    expect(f.effects).toHaveLength(0);
+    expect(composer).toHaveValue('@agent_b');
+    await user.clear(composer); await user.type(composer,'@agent_a');
+    await user.click(screen.getByRole('button',{name:t('threads.page.composer.send')}));
     await waitFor(()=>expect(f.effects).toHaveLength(1));
-    expect(f.effects[0]).toMatchObject({kind:'send',body:{body_markdown:'@agent_b'}});
+    expect(f.effects[0]).toMatchObject({kind:'send',body:{body_markdown:'@agent_a'}});
   });
 
   test.each(['managed', 'user_authored'] as const)('scenario 9 frontend consumer: %s skill rows keep canonical identity and node through label refresh', async (type) => {
@@ -406,13 +416,13 @@ describe('naming v1 shipping UI — mocked HTTP', () => {
     expect(JSON.stringify(f.records.alpha)).toBe(before);
   });
 
-  test('scenario 5: genuine former token in quoted prose stops associated upload and compose; draft and file remain', async () => {
+  test('scenario 5: genuine Former after a literal quoted line stops associated upload and compose; draft and file remain', async () => {
     const f = fixture(); mount('/orgs/alpha/threads'); const user = userEvent.setup();
     await user.click(await screen.findByRole('button', { name: /New thread/i }));
     const dialog = screen.getByRole('dialog');
     await user.type(within(dialog).getByLabelText(t('threads.newThread.subjectLabel')), 'Literal');
     await user.type(within(dialog).getByLabelText(t('threads.newThread.recipientsLabel')), 'agent_a');
-    const body = '> quoted: mail@OldAlpha, `@OldAlpha` and @OldAlpha @Alpha';
+    const body = '> quoted: mail@OldAlpha, `@OldAlpha` and @OldAlpha\n@OldAlpha @Alpha';
     await user.type(within(dialog).getByLabelText(t('threads.newThread.bodyLabel')), body);
     await user.upload(within(dialog).getByLabelText(t('threads.newThread.attachFiles')), new File(['proof'], 'proof.txt', { type: 'text/plain' }));
     await user.click(within(dialog).getByRole('button', { name: t('threads.newThread.send') }));
@@ -499,7 +509,7 @@ describe('naming v1 shipping UI — mocked HTTP', () => {
     f.change('alpha', 'agent_a', 'Renamed');
     await act(async () => { await client.invalidateQueries({ queryKey: ['identities', 'alpha'] }); });
     expect(recipient).toHaveValue('agent_a, ');
-    const literal = 'Keep literal @unrecognized';
+    const literal = corpus.cases.find(row=>row.id==='L01')!.input;
     await user.type(within(dialog).getByLabelText(t('threads.newThread.bodyLabel')), literal);
     await user.click(within(dialog).getByRole('button', { name: t('threads.newThread.send') }));
     await waitFor(() => expect(f.effects.filter((e) => e.kind === 'compose')).toHaveLength(1));

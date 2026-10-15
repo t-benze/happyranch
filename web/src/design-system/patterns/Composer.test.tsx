@@ -2,6 +2,7 @@ import { fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useState } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import corpus from '../../../../protocol/thread-mention-corpus.json';
 import { Composer, type PendingAttachment } from './Composer';
 
 const NOOP_SEND = vi.fn(async () => {});
@@ -385,5 +386,24 @@ describe('Composer / explicit prose caret', () => {
     expect(ta).toHaveFocus();
     expect([ta.selectionStart,ta.selectionEnd]).toEqual([prefix.length+13,prefix.length+13]);
     expect(NOOP_SEND).not.toHaveBeenCalled();
+  });
+});
+
+// C19: actual Composer/MentionTextarea, shared accepted occurrence input.
+// Exact insertion/focus/caret catches first-occurrence and whole-token replacement;
+// mounted browser events only, never real server/storage/IME proof.
+describe('THR310 repeated occurrence insertion', () => {
+  it.each(corpus.cases.filter(row => ['L49','L50'].includes(row.id)))('$id retains suffix and focus', async row => {
+    const user=userEvent.setup();
+    localStorage.setItem('happyranch:draft:mention-qa:THR-REPEAT',row.input);
+    render(<Composer agents={[{name:'case_worker',addressable_name:'Current',team:null}]} threadId="THR-REPEAT" orgSlug="mention-qa" pending={false} onSend={NOOP_SEND} />);
+    const ta=screen.getByRole<HTMLTextAreaElement>('textbox',{name:/compose/i});
+    ta.focus();ta.setSelectionRange(row.caret_utf16!,row.caret_utf16!);fireEvent.click(ta);
+    await screen.findByRole('option');
+    fireEvent.keyDown(ta,{key:'Enter',code:'Enter',isComposing:true});
+    expect(ta.value).toBe(row.input);expect(NOOP_SEND).not.toHaveBeenCalled();
+    await user.keyboard('{Enter}');
+    expect(ta.value).toBe(row.id==='L49'?'@Current @Current rent suffix':'@Current @Current  suffix');
+    expect([ta.selectionStart,ta.selectionEnd]).toEqual([18,18]);expect(ta).toHaveFocus();expect(NOOP_SEND).not.toHaveBeenCalled();
   });
 });

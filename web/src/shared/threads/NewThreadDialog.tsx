@@ -58,11 +58,15 @@ export function NewThreadDialog({ open, onClose, prefill, onCreated, agents = []
   const slug = useOrgSlug();
   const compose = useComposeThread();
   const recipientIdentityOptions = useIdentityOptions(agents, true);
-  const bodyIdentityOptions = useIdentityOptions(agents);
   const preflight = usePreflightAddresses();
   const knownAgentIds = useKnownAgentIds(agents);
   const [subject, setSubject] = useState('');
   const [recipientsRaw, setRecipientsRaw] = useState('');
+  const selectedAddresses = new Set(recipientsRaw.split(',').map(a => a.trim().replace(/^@/, '').toLowerCase()));
+  const selectedIds = new Set(recipientIdentityOptions.filter(option => option.kind === 'agent'
+    && (selectedAddresses.has(option.name.toLowerCase()) || selectedAddresses.has((option.addressable_name ?? option.name).toLowerCase()))).map(option => option.name));
+  const bodyIdentityOptions = useIdentityOptions(agents.filter(agent => selectedIds.has(agent.name)));
+
   const [body, setBody] = useState('');
   const [pendingAttachments, setPendingAttachments] = useState<PendingAttachment[]>([]);
   // Locale-neutral error descriptor (key/params or raw diagnostic), rendered

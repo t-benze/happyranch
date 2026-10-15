@@ -68,8 +68,19 @@ export const mockIdentitiesApi: IdentitiesApi = {
         if (!owner || (owner.kind === 'founder' ? !args.allowFounder : owner.lifecycle !== 'active')) throw new IdentityAddressError({ address, status: 'ineligible_identity', identity: owner ?? null, eligible: false });
         return owner.kind === 'founder' ? '@founder' : owner.canonical_id;
       }
-      bodyAddresses(args.body ?? '').forEach((a) => resolve(a, true));
-      return { recipients: [...new Set((args.recipients ?? []).map((a) => resolve(a, false) as string))] };
+      const mentions = bodyAddresses(args.body ?? '');
+      [...(args.recipients ?? []), ...mentions].forEach(a => resolve(a, true));
+      const recipients = [...new Set((args.recipients ?? []).map(a => resolve(a, false) as string))];
+      const roster = new Set(args.bodyAgentIds ?? recipients);
+      for (const address of mentions) {
+        const claim = m.claims[address.toLowerCase()];
+        const owner = claim && m.identities.find(i => i.kind === claim.kind && i.canonical_id === claim.id);
+        if (owner?.kind === 'founder') continue;
+        if (!owner || owner.lifecycle !== 'active' || !roster.has(owner.canonical_id)) {
+          throw new IdentityAddressError({ address, status: owner ? 'ineligible_identity' : 'unknown_identity', identity: owner ?? null, eligible: false }, true, [...roster].slice(0,3));
+        }
+      }
+      return { recipients };
     }, retry: false });
   },
 };

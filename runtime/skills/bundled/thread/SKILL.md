@@ -14,9 +14,8 @@ the current name and do not forward. Founder is a separate human; recipient
 transport remains `@founder`. Metadata failure gives ID-only context.
 
 CLI send/reply and both compose upload modes preflight former tokens before
-associated uploads; forward validates final quoted+note text. Ordinary quoted
-prose remains eligible; email/word interiors, escaped tokens
-and supported code are literal. Unknown body text is unchanged. Preflight is
+associated uploads; forward validates final quoted+note text. ASCII quoted prose remains eligible; explicit blockquote lines are literal; email/word interiors, escaped tokens
+and supported code are literal. Unknown/ineligible body intentions follow the THR310 caller policy below; raw text stays unchanged. Preflight is
 read-only, not a reservation or rollback across upload/message requests. The
 server still owns admission; a rename between requests can leave an independent
 upload before the message refuses. Resumed/fallback prompts refresh current
@@ -32,8 +31,7 @@ Human recipients and @mentions may use current names or permanent IDs; the
 server resolves them to canonical IDs. Former names refuse409 with the current
 name and never forward, including mixed former/current/founder text. The ASCII
 token charset is unchanged; explicit prose boundaries exclude email/word
-interiors, escaped tokens and supported code. Unknown text normally retains
-fallback. Founder-only
+interiors, escaped tokens and supported code. Agent unknown text retains conditional fallback; Founder invalid intentions refuse422. Founder-only
 current mentions create no new agent wake but retain existing due catch-up and
 delivery obligations. Founder is a human inbox recipient, never an executor.
 Do not substitute names for composer/speaker/agent/task/session/invocation-token
@@ -47,7 +45,7 @@ described above; neither source paragraph claims behavioral verification.
 Keep the existing callback shapes and authentication mechanics below.
 
 New-message body admission excludes email/word interiors, escaped tokens and
-supported inline/fenced code; ordinary quoted prose remains eligible. Literal-only
+supported inline/fenced code; ASCII quoted prose remains eligible; explicit blockquote lines are literal. Literal-only
 bodies perform no body naming lookup. Genuine body aliases fail closed on service
 failure, including empty explicit recipients and per-token unavailability. Known
 actual canonical IDs retain owner checks; ID-shaped aliases supply no evidence.
@@ -418,3 +416,49 @@ to append to a thread remains **post-as-agent** (attributed to you) or
 ## Root task Pause outcomes
 
 Root Pause refuses work-starting Continue/supersede/revisit and thread dispatch(resolves) at the actual origin before mutation/token consumption. Thread Continue remains retired410. Resume does not consume an invocation or invent a successor. A genuine accepted manager supersession retains its separately created NULL-parent unheld root; root holds do not propagate through thread/revisit/supersession history. Existing thread callback/session rules remain.
+
+## Literal text and recipient intentions (THR310 seq3/13)
+
+All Founder-authenticated writes, including an unbound agent-launched CLI, reject
+unknown/nonparticipant body intentions with422 and eligible current-name/ID guidance.
+Genuine Former anywhere in To/body retains409 before body422; unknown explicit To
+retains404 and unresolved aliases retain503 under naming failure. Preserve native
+structural/auth/binding/lifecycle/file errors. To alone selects participants (plus
+a genuine agent composer). BODY suggestions are eligible selected prospective
+agents in a new thread, current participants in an existing one; Founder is human,
+never an agent participant or BODY suggestion. Manual `@founder` remains valid.
+
+Validated agent writers retain compatibility; CLI stderr describes ignored tokens
+and canonical narrowed targets or conditional fallback: recipients minus speaker
+outside an exchange, frozen cohort intersect recipients minus speaker inside one,
+possibly empty. Prior catch-up is independent; pending_replies proves neither
+audience nor storage/launches. Direct agent API/internal authors receive no warning
+channel (accepted limitation). Complete valid JSON-only bindings count for CLI
+warning/upload attribution; partial/invalid bindings retain native refusal. No
+response warning field/header/auth change or preflight reservation is introduced.
+Founder-only suppresses new selection while preserving obligations/prior catch-up;
+Founder+unknown differs, and self-only/quote-only use ordinary conditional fallback.
+
+Only start, finite whitespace, or `(` `[` `{` ASCII single/double quote opens an
+unescaped ASCII token. Explicit physical lines with0–3 ASCII spaces then `>` are
+literal; unprefixed lazy continuation and four-space indentation are outside this
+quote rule. Top-level unclosed fences mask to EOF; quoted ticks/fences cannot own
+later notes. The precise finite whitespace/code grammar and examples are in the
+identity-names core spec's THR310 section; this is not a full Markdown parser.
+Nonblank authored bodies remain exact through storage, including controls,
+indentation, CRLF/bare CR and trailing whitespace. The existing strip emptiness
+predicate and attachment-only null outcomes remain; subjects/history are unchanged.
+
+Forwarders quote every physical source line/header/blank/marker. Generated source
+separators may become LF; notes remain verbatim, including CLI note-file newlines.
+CLI's fully serialized quoted excerpt is at most4096 UTF8 bytes, metadata/prefixes/
+newlines/marker included; separator and note excluded. Reserve the quoted marker
+and retain the longest valid source prefix. Web retains its last-message selection
+and size policy. Raw occurrence ranges keep duplicates; admission spellings dedup.
+Insertion replaces only the prefix through caret, preserving suffix/spaces/focus.
+Thread-body rendering styles only proven exact raw intervals, noninteractively;
+ambiguous transformations stay plain, code/Mermaid stay undecorated, task/KB defaults
+and historical delivery stay unchanged. No render-time naming or recipient inference.
+Shared data is protocol/thread-mention-corpus.json (51 lexical +13 write-path rows).
+Public-unexposed mentions_json, authentic debt/outage and genuine task/dream/callback
+proof require actual evidence and cannot be inferred from static/mock checks.

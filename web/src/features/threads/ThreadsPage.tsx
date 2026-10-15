@@ -584,7 +584,7 @@ export function ThreadsPage(): JSX.Element {
   // participant invite/remove invalidation. NewThreadDialog and InviteDialog
   // still receive the full roster (agents), not this filtered set.
   const composerAgents = useMemo(() => {
-    if (!activeThread.data?.participants) return agents;
+    if (!activeThread.data?.participants) return [];
     const participantSet = new Set(activeThread.data.participants);
     return agents.filter((a) => participantSet.has(a.name));
   }, [agents, activeThread.data?.participants]);
@@ -733,13 +733,10 @@ export function ThreadsPage(): JSX.Element {
     const lastFounderMsg = messages
       .filter((m) => m.kind === 'message' && m.body_markdown)
       .at(-1);
-    const quoted = lastFounderMsg
-      ? `> from ${threadId} by ${lastFounderMsg.speaker}\n>\n` +
-        lastFounderMsg.body_markdown!
-          .split('\n')
-          .map((l) => `> ${l}`)
-          .join('\n')
-      : `> from ${threadId}`;
+    const source = lastFounderMsg
+      ? `from ${threadId} by ${lastFounderMsg.speaker}\n\n${lastFounderMsg.body_markdown!}`
+      : `from ${threadId}`;
+    const quoted = source.split(/\r\n|\r|\n/).map(line => line ? `> ${line}` : '>').join('\n');
     setNewPrefill({
       subject: `Fwd: ${activeThread.data.subject}`,
       body: `${quoted}\n\n`,
@@ -773,7 +770,7 @@ export function ThreadsPage(): JSX.Element {
     // succeed so a later send failure is never blamed on the last file.
     let failedUpload: PendingAttachment | null = null;
     try {
-      await preflight.mutateAsync({ slug: capturedSlug, context: 'thread_recipient', thread_id: capturedThreadId, body: markdown, canonicalAgentIds: knownAgentIds, allowFounder: true });
+      await preflight.mutateAsync({ slug: capturedSlug, context: 'thread_recipient', thread_id: capturedThreadId, body: markdown, canonicalAgentIds: knownAgentIds, bodyAgentIds: composerAgents.map(a => a.name), allowFounder: true });
       const refs: ThreadAttachmentRef[] = [];
       for (const pending of attachments) {
         failedUpload = pending;

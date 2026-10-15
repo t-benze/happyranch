@@ -36,6 +36,7 @@ export const en = {
   "identity.refresh": "Refresh identity",
   "identity.currentLabel": "Current name · permanent ID; historical attribution remains ID-bound.",
   "identity.former": "“{address}” is a former name. Use “{current}” or the permanent ID. Nothing was submitted by this preview.",
+  "identity.invalidBodyMention": "@{address} is not an eligible participant. Select the intended recipient in To, then use their current name or permanent ID. Suggestions: {suggestions}",
   "identity.invalidAddress": "“{address}” is not an eligible address for this action.",
   "identity.human": "Human",
 
