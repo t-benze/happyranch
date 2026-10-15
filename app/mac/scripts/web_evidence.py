@@ -391,6 +391,14 @@ def begin_web(s,preparation):
     for name in ['web/vite.config.ts','web/tsconfig.json','web/scripts/packaging-custody.ts','web/scripts/packaging-tailwind.ts','app/mac/scripts/web_evidence.py','web/vendor/vite/css-relation.patch','web/vendor/vite/UPSTREAM.json']:
         token,raw=s.intern_subject(s.paths.exported_source,name);source.append({'path':name,'token':token})
     context_subjects=list(s.subjects)
+    listing=A['git'](s.paths,'ls-tree','-rz',s.candidate.source_sha,'--','web',cap=8*MiB)
+    for line in listing.split(b'\0')[:-1]:
+        meta,name=line.split(b'\t',1);name=name.decode('utf-8')
+        if name.startswith(EXCLUSIONS) or not name.endswith('.css'):continue
+        need(meta.split(b' ')[0] in (b'100644',b'100755'),'CSS_SOURCE_MODE',name)
+        s.intern_subject(s.paths.exported_source,name)
+    s.intern_subject(s.paths.exported_source,'web/node_modules/highlight.js/styles/github-dark-dimmed.css')
+    context_subjects=list(s.subjects)
     plan=s.prepare_css_inputs();plan_token=s.write('css-inputs',{'plan':plan,'subjects':s.subjects},{'preparation':preparation})
     token=s.write('context',{'binding_sha256':s.binding_sha,'preparation':preparation,'css_inputs':plan_token['record_sha256'],'sources':source,'tools':tools,'originals':originals,'subjects':context_subjects},{'preparation':preparation,'asset_source':s.binding['asset_source_sha256']})
     return token

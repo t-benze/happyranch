@@ -88,7 +88,7 @@ export class PackagingCustody {
   }
 
   private next(kind: string, data: Row): Row {
-    if (this.observations.length >= MAX) throw new Error('WEB_OBSERVATION_CAP');
+    if (this.observations.length >= MAX) throw new Error('WEB_OBSERVATION_CAP:' + JSON.stringify(this.observations.reduce((counts, row) => { const key = row.kind === 'hook_call' ? row.hook : row.kind; counts[key] = (counts[key] ?? 0) + 1; return counts; }, {} as Record<string, number>)));
     const row = { schema: 'web-observation@1', kind, id: `o${this.observations.length + 1}`, ...data };
     this.observations.push(row);
     return row;
