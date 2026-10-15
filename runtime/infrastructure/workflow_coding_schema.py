@@ -6,7 +6,9 @@ neither installs a schema nor resolves repositories or current authority.
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
+import threading
 
 # Accepted TASK10693 step34: 3987 UTF8 bytes, SHA256
 # 2c4b556671ef76582cdcbaed1e68d8575d9648ce29773f52c3d947ceaeeb0d70.
@@ -280,10 +282,65 @@ def validate_empty_coding_data(conn: sqlite3.Connection, *, layout: str) -> None
         if not selected_columns:
             continue
         selected = ','.join('"' + column.replace('"', '""') + '"' for column in selected_columns)
-        for row in conn.execute(f'SELECT {selected} FROM "{quoted}"'):
+        file_key = _audit_log_file_key(conn) if table == 'audit_log' else None
+        watermark = _audit_log_watermark(conn, file_key)
+        last_id = watermark
+        query = f'SELECT rowid, {selected} FROM "{quoted}"' + (' WHERE rowid > ? ORDER BY rowid' if file_key else '')
+        for rowid, *row in conn.execute(query, (watermark,) if file_key else ()):
             for column, raw in zip(selected_columns, row, strict=True):
                 if column in scalar:
                     if _coding_scalar(column, raw):
                         raise ValueError(f'workflow_coding_data_unsupported: {table}.{column}; coding reader required')
                 else:
                     _refuse_coding_metadata(raw, location=f'{table}.{column}')
+            last_id = rowid
+        if file_key is not None:
+            _advance_audit_log_watermark(conn, file_key, last_id)
+
+
+# audit_log is insert-only at runtime (AUTOINCREMENT id; only the one-time
+# pre-serving legacy script->job schema migration rewrites rows). Rescanning
+# every historical payload on each classify_task held Database._lock for
+# seconds per task step, so rows already verified clean in this process are
+# skipped. Keyed by the database file identity (never id(conn), which can be
+# reused); in-memory/unidentifiable databases always rescan fully. A refusal
+# never advances the watermark. Direct same-UID rewrites of already-verified
+# rows remain outside this cooperative guarantee, as elsewhere.
+_AUDIT_LOG_WATERMARKS: dict[tuple[int, int], int] = {}
+_AUDIT_LOG_WATERMARK_LOCK = threading.Lock()
+
+
+def _audit_log_file_key(conn: sqlite3.Connection) -> tuple[int, int] | None:
+    try:
+        path = next((row[2] for row in conn.execute('PRAGMA database_list') if row[1] == 'main'), '')
+        if not path:
+            return None
+        stat = os.stat(path)
+    except (sqlite3.DatabaseError, OSError):
+        return None
+    return (stat.st_dev, stat.st_ino)
+
+
+def _audit_log_watermark(conn: sqlite3.Connection, file_key: tuple[int, int] | None) -> int:
+    if file_key is None:
+        return 0
+    with _AUDIT_LOG_WATERMARK_LOCK:
+        watermark = _AUDIT_LOG_WATERMARKS.get(file_key, 0)
+    current_max = conn.execute('SELECT COALESCE(MAX(rowid), 0) FROM audit_log').fetchone()[0]
+    if type(current_max) is int and current_max >= watermark:
+        return watermark
+    # Rows vanished or ids regressed: the cached proof no longer applies, and
+    # a stale higher mark must not later skip reused ids.
+    with _AUDIT_LOG_WATERMARK_LOCK:
+        _AUDIT_LOG_WATERMARKS.pop(file_key, None)
+    return 0
+
+
+def _advance_audit_log_watermark(conn: sqlite3.Connection, file_key: tuple[int, int], last_id: int) -> None:
+    # Inside an open transaction our own uncommitted rows are visible; a
+    # rollback would reuse their AUTOINCREMENT ids, so never cache past them.
+    if conn.in_transaction:
+        return
+    with _AUDIT_LOG_WATERMARK_LOCK:
+        if last_id > _AUDIT_LOG_WATERMARKS.get(file_key, 0):
+            _AUDIT_LOG_WATERMARKS[file_key] = last_id
