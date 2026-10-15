@@ -40,6 +40,18 @@ native-run source or consume an allocation. Six actual candidate closures
 remain UNEXECUTED/UNMET; native build, macOS/WKWebView behavior, minimum OS,
 install, trust and release acceptance remain separate.
 
+Web font source delivery retains unmodified Hanken Grotesk and Newsreader
+variable TTFs plus their two full co-version original OFL texts under
+`web/public/fonts/`. The pinned source/notice relations are in
+[`font-assets.json`](../../packaging/notice-data/font-assets.json). The
+existing Vite public-copy step emits all five files to `web/dist/fonts/`,
+and existing app assembly copies that directory with the rest of dist to
+`Contents/Resources/web/dist/`. Font bytes total 1,080,240 (+850,516 versus
+the removed WOFF2 subsets), with another 8,796 bytes of notices before
+transport compression. This source retention does not establish actual
+app/archive custody, macOS 14 / WKWebView font loading or rasterization,
+SVG/icon rights, ICNS transformation evidence or any of the six closures.
+
 The existing hosted workflow installs exact native arm64 Go **1.23.12** with
 `actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e` (v7.0.0), with
 shared setup caching disabled. Before packaging it logs PATH, the resolved Go

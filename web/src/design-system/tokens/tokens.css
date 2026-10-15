@@ -16,7 +16,7 @@
 
 /* ========================================================================== */
 /* SELF-HOSTED FONTS — Hanken Grotesk + Newsreader, SIL OFL 1.1              */
-/* Latin subsets only; weights matched to the type scale below.              */
+/* Unmodified full upstream TTFs; weights match the type scale below.              */
 /* ========================================================================== */
 
 @font-face {
@@ -24,7 +24,7 @@
   font-style: normal;
   font-weight: 400 700;
   font-display: swap;
-  src: url('/fonts/HankenGrotesk-latin.woff2') format('woff2');
+  src: url('/fonts/HankenGrotesk-wght.ttf') format('truetype');
 }
 
 @font-face {
@@ -32,7 +32,7 @@
   font-style: normal;
   font-weight: 400 600;
   font-display: swap;
-  src: url('/fonts/Newsreader-normal-latin.woff2') format('woff2');
+  src: url('/fonts/Newsreader-opsz-wght.ttf') format('truetype');
 }
 
 @font-face {
@@ -40,7 +40,7 @@
   font-style: italic;
   font-weight: 400;
   font-display: swap;
-  src: url('/fonts/Newsreader-italic-latin.woff2') format('woff2');
+  src: url('/fonts/Newsreader-Italic-opsz-wght.ttf') format('truetype');
 }
 
 @import "tailwindcss";

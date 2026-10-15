@@ -618,10 +618,15 @@ See the frontmatter for the full palette. The opinion behind it:
 
 # Typography
 
-- **Public Sans** for sans, **JetBrains Mono** for mono. Both ship as
-  open-source weights 400 / 500 / 600 / 700; we self-host the WOFF2 files
-  in `web/public/fonts/` (~80KB after subsetting). System fallbacks named
-  in the stack so the page never blanks on first paint.
+- **Hanken Grotesk** for sans and **Newsreader** for display text. We
+  self-host three unmodified full upstream variable TTFs in
+  `web/public/fonts/`: Hanken normal 400–700, Newsreader normal 400–600
+  and italic 400. The fonts total 1,080,240 bytes before transport
+  compression; their two full original OFL texts add 8,796 bytes in the
+  same directory. Pinned origins and notice relations are recorded in
+  `packaging/notice-data/font-assets.json`. Vite copies these public files
+  unchanged. System fallbacks and `font-display: swap` keep text visible
+  while fonts load; the existing mono stack remains system-provided.
 - **Scale is purposeful, not modular.** `body` is 14px / 22px (1.57
   line-height) — Tailwind's `text-sm`. `body_lg` is 15px / 24px (1.6) —
   used only where a human is reading prose (message bodies, the composer
