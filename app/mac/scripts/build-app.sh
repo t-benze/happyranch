@@ -4,6 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd -P)"
 VERIFY="$SCRIPT_DIR/verify-release.sh"
+ASSETS="$SCRIPT_DIR/asset_evidence.py"
 VERSION="" BUILD="" SOURCE_SHA="" SOURCE_TREE="" ARCH="" OUTPUT=""
 while [ "$#" -gt 0 ]; do
     [ "$#" -ge 2 ] || { echo 'RELEASE_ARGUMENT_MISSING' >&2; exit 2; }
@@ -27,6 +28,7 @@ PREFLIGHT="$(bash "$VERIFY" preflight --source "$REPO_ROOT" --version "$VERSION"
 for tool in go swift uv npm node xcrun iconutil ditto ar nm otool lipo file; do
     command -v "$tool" >/dev/null || { echo "BUILD_TOOL_MISSING: $tool" >&2; exit 1; }
 done
+ICONUTIL_PATH="$(command -v iconutil)"
 [ "$(node -p 'process.versions.node.split(".")[0]')" = 24 ] || { echo NODE24_REQUIRED >&2; exit 1; }
 [ "$(go env GOHOSTARCH)" = arm64 ] || { echo GO_HOST_ARCH_MISMATCH >&2; exit 1; }
 # Atomic mkdir reserves only a previously absent destination. Failures preserve
@@ -234,6 +236,20 @@ export MACOSX_DEPLOYMENT_TARGET=14.0 GOOS=darwin GOARCH=arm64 CGO_ENABLED=1
     npm --version
     df -h "$OUTPUT"
 } > "$OUTPUT/diagnostics/toolchains.txt"
+ICONSET="$OUTPUT/scratch/AppIcon.iconset"
+ASSET_ARGS=(--source "$REPO_ROOT" --exported-source "$SOURCE" --dist "$SOURCE/web/dist"
+    --app "$APP" --output-dir "$OUTPUT" --evidence-dir "$OUTPUT/diagnostics" --iconset "$ICONSET"
+    --source-sha "$SOURCE_SHA" --source-tree "$SOURCE_TREE" --version "$VERSION" --build "$BUILD"
+    --arch "$ARCH" --run-id "$RUN_ID")
+# Successful synchronous tokens are invocation-held expectations; never recover
+# them from candidate diagnostics or the legacy mapping. No eval or fallback.
+asset_field() { python3 "$ASSETS" token-field --token "$1" --field "$2"; }
+ASSET_START_TOKEN="$(python3 "$ASSETS" begin "${ASSET_ARGS[@]}" --iconutil-path "$ICONUTIL_PATH" \
+    --toolchains-path "$OUTPUT/diagnostics/toolchains.txt")"
+ASSET_CONTEXT="$(asset_field "$ASSET_START_TOKEN" context)"
+ASSET_SOURCE="$(asset_field "$ASSET_START_TOKEN" source)"
+ASSET_TOOLCHAINS="$(asset_field "$ASSET_START_TOKEN" toolchains_sha256)"
+ASSET_ICONUTIL="$(asset_field "$ASSET_START_TOKEN" iconutil_sha256)"
 STAGE=go
 cd "$PROJECT/tsnet-bridge"
 # Fresh archive in an exported immutable tree, readonly existing module graph.
@@ -253,7 +269,10 @@ STAGE=web
 cd "$SOURCE/web"
 npm ci
 # Emitted source maps are build evidence; they are not copied into the app.
+python3 "$ASSETS" check-public "${ASSET_ARGS[@]}" --asset-context-sha256 "$ASSET_CONTEXT" --asset-source-sha256 "$ASSET_SOURCE"
 npm run build -- --sourcemap
+ASSET_DIST_TOKEN="$(python3 "$ASSETS" observe-dist "${ASSET_ARGS[@]}" --asset-context-sha256 "$ASSET_CONTEXT" --asset-source-sha256 "$ASSET_SOURCE")"
+ASSET_DIST="$(asset_field "$ASSET_DIST_TOKEN" sha256)"
 STAGE=swift
 cd "$PROJECT"
 LINK_MAP="$OUTPUT/diagnostics/swift-link.map"
@@ -266,9 +285,12 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/web" "$APP/Contents/Reso
 cp "$BIN_DIR/HappyRanchApp" "$APP/Contents/MacOS/HappyRanch"
 shasum -a 256 "$BIN_DIR/HappyRanchApp" "$APP/Contents/MacOS/HappyRanch" > "$OUTPUT/diagnostics/swift-release.sha256"
 cp -R "$OUTPUT/scratch/freeze-dist/happyranch-daemon" "$APP/Contents/Resources/daemon"
+python3 "$ASSETS" check-dist "${ASSET_ARGS[@]}" --asset-context-sha256 "$ASSET_CONTEXT" --asset-dist-sha256 "$ASSET_DIST"
 cp -R "$SOURCE/web/dist" "$APP/Contents/Resources/web/dist"
 # Keep web source-map graph outside shipped web; remove only fresh copied maps.
 find "$APP/Contents/Resources/web/dist" -name '*.map' -type f -delete
+ASSET_APP_TOKEN="$(python3 "$ASSETS" observe-app "${ASSET_ARGS[@]}" --asset-context-sha256 "$ASSET_CONTEXT" --asset-dist-sha256 "$ASSET_DIST")"
+ASSET_APP="$(asset_field "$ASSET_APP_TOKEN" sha256)"
 cp "$SOURCE/LICENSE" "$APP/Contents/Resources/licenses/LICENSE"
 chmod 644 "$APP/Contents/Resources/licenses/LICENSE"
 for executable in happyranch-daemon happyranch; do
@@ -294,14 +316,9 @@ for src in files:
     os.chmod(dest, stat.S_IMODE(src.stat().st_mode))
 PYMODES
 STAGE=icon
-ICONSET="$OUTPUT/scratch/AppIcon.iconset"
-mkdir "$ICONSET"
-for size in 16 32 128 256 512; do
-    double=$((size * 2))
-    cp "$PROJECT/Resources/AppIcon.appiconset/icon_${size}.png" "$ICONSET/icon_${size}x${size}.png"
-    cp "$PROJECT/Resources/AppIcon.appiconset/icon_${double}.png" "$ICONSET/icon_${size}x${size}@2x.png"
-done
-iconutil -c icns -o "$APP/Contents/Resources/AppIcon.icns" "$ICONSET"
+ASSET_ICON_TOKEN="$(python3 "$ASSETS" icon "${ASSET_ARGS[@]}" --asset-context-sha256 "$ASSET_CONTEXT" \
+    --iconutil-path "$ICONUTIL_PATH" --iconutil-sha256 "$ASSET_ICONUTIL")"
+ASSET_ICON="$(asset_field "$ASSET_ICON_TOKEN" sha256)"
 STAGE=plist
 python3 - "$PROJECT/scripts/Info.plist" "$APP/Contents/Info.plist" "$VERSION" "$BUILD" "$SOURCE_SHA" "$SOURCE_TREE" "$ARCH" <<'PY'
 import plistlib, sys
@@ -317,10 +334,10 @@ PY
 STAGE=notices
 cp -R "$OUTPUT/scratch/freeze-work/notices" "$APP/Contents/Resources/licenses/python"
 cp "$SOURCE/packaging/THIRD_PARTY_NOTICES.md" "$APP/Contents/Resources/licenses/THIRD_PARTY_NOTICES.md"
-python3 - "$SOURCE" "$APP" "$OUTPUT" <<'PYNOTICES'
+ASSET_NOTICES_TOKEN="$(python3 - "$SOURCE" "$APP" "$OUTPUT" "$ASSETS" "$REPO_ROOT" "$RUN_ID" "$SOURCE_SHA" "$SOURCE_TREE" "$VERSION" "$BUILD" "$ARCH" "$ASSET_CONTEXT" "$ASSET_APP" <<'PYNOTICES'
 import hashlib, json, os, re, shutil, stat, sys
 from pathlib import Path
-source, app, output = map(Path, sys.argv[1:])
+source, app, output = map(Path, sys.argv[1:4])
 notice_data = source / 'packaging/notice-data'
 notice_helpers = __import__('runpy').run_path(str(notice_data / 'retained_notices.py'))
 mapping = json.loads((output / 'scratch/freeze-work/license-mapping.json').read_text())
@@ -596,8 +613,19 @@ components.append({'component': 'HappyRanch first-party code and 29 source resou
                                 'destination': 'Contents/Resources/licenses/LICENSE'}]})
 # Actual extraction/chunk/SDK and attribution reconciliation requires the native
 # owner. Retain explicit gaps; a dependency list cannot set closure_complete.
+asset = __import__('runpy').run_path(sys.argv[4])
+candidate = asset['Candidate'](*sys.argv[7:12])
+paths = asset['Paths'](Path(sys.argv[5]), source, source / 'web/dist', app, output,
+                       output / 'diagnostics', output / 'scratch/AppIcon.iconset')
+font_rows, font_token = asset['retain_font_notices'](candidate, paths, sys.argv[6], sys.argv[12], sys.argv[13])
+components.extend(font_rows)
 (output / 'diagnostics/license-mapping.json').write_text(json.dumps(mapping, indent=2) + '\n')
+# The token leaves this actual caller only after the unchanged False mapping
+# (all prior rows/sentinels/ordinary failures included) is successfully written.
+asset['print_token'](font_token)
 PYNOTICES
+)"
+ASSET_NOTICES="$(asset_field "$ASSET_NOTICES_TOKEN" sha256)"
 STAGE=verification
 INSPECTION_STAGE=resources
 bash "$VERIFY" resources --app "$APP" > "$OUTPUT/diagnostics/resources.json"
@@ -633,7 +661,11 @@ bash "$VERIFY" catalog --app "$APP" --list-json "$OUTPUT/diagnostics/cli-5.stdou
 INSPECTION_STAGE=trust
 bash "$VERIFY" trust --app "$APP" > "$OUTPUT/diagnostics/trust.json"
 INSPECTION_STAGE=licenses
-bash "$VERIFY" licenses --app "$APP" --mapping "$OUTPUT/diagnostics/license-mapping.json" > "$OUTPUT/diagnostics/licenses.json"
+bash "$VERIFY" licenses "${ASSET_ARGS[@]}" --mapping "$OUTPUT/diagnostics/license-mapping.json" \
+    --asset-context-sha256 "$ASSET_CONTEXT" --toolchains-sha256 "$ASSET_TOOLCHAINS" \
+    --iconutil-path "$ICONUTIL_PATH" --iconutil-sha256 "$ASSET_ICONUTIL" \
+    --asset-source-sha256 "$ASSET_SOURCE" --asset-dist-sha256 "$ASSET_DIST" --asset-app-sha256 "$ASSET_APP" \
+    --asset-icon-sha256 "$ASSET_ICON" --asset-notices-sha256 "$ASSET_NOTICES" > "$OUTPUT/diagnostics/licenses.json"
 STAGE=archive
 ZIP="$OUTPUT/HappyRanch-${VERSION}-${BUILD}-${ARCH}.zip"
 ditto -c -k --keepParent "$APP" "$ZIP"
