@@ -5,6 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd -P)"
 VERIFY="$SCRIPT_DIR/verify-release.sh"
 ASSETS="$SCRIPT_DIR/asset_evidence.py"
+FREEZER="$SCRIPT_DIR/freezer_evidence.py"
 VERSION="" BUILD="" SOURCE_SHA="" SOURCE_TREE="" ARCH="" OUTPUT=""
 while [ "$#" -gt 0 ]; do
     [ "$#" -ge 2 ] || { echo 'RELEASE_ARGUMENT_MISSING' >&2; exit 2; }
@@ -46,6 +47,10 @@ finish() {
     local code=$?
     if [ "$code" -ne 0 ]; then
         printf 'BUILD_FAILED stage=%s exit=%s run=%s\n' "$STAGE" "$code" "$RUN_ID"
+        # Preserve original process status even when custody persistence fails.
+        if [ -n "${FREEZER_CONTEXT:-}" ]; then
+            python3 "$FREEZER" fail "${ASSET_ARGS[@]}" --freezer-context-sha256 "$FREEZER_CONTEXT" --original-exit "$code" || printf 'FREEZER_FAILURE_PERSISTENCE_FAILED\n' >&2
+        fi
         # Evidence errors must never replace the original build exit.
         python3 - "$OUTPUT" "$STAGE" "$code" "$RUN_ID" "$SOURCE_SHA" "$SOURCE_TREE" "$VERSION" "$BUILD" "$ARCH" "${INSPECTION_STAGE:-not-started}" <<'PYFAIL' || printf 'DIAGNOSTIC_COLLECTION_FAILED\n' >&2
 import gzip, hashlib, json, os, stat, sys
@@ -262,7 +267,17 @@ ar -t libtsnet.a > "$OUTPUT/diagnostics/go-members.txt"
 nm -m libtsnet.a > "$OUTPUT/diagnostics/go-symbols.txt"
 STAGE=freeze
 cd "$SOURCE"
+# Verify the committed local wheel before the unchanged frozen sync.
+FREEZER_START="$(python3 "$FREEZER" begin "${ASSET_ARGS[@]}" --asset-context-sha256 "$ASSET_CONTEXT" --toolchains-sha256 "$ASSET_TOOLCHAINS")"
+freezer_field() { python3 "$FREEZER" token-field --token "$1" --field "$2"; }
+FREEZER_CONTEXT="$(freezer_field "$FREEZER_START" context)"
+export HAPPYRANCH_FREEZER_CALLER
+HAPPYRANCH_FREEZER_CALLER="$(freezer_field "$FREEZER_START" caller)"
 bash packaging/build_daemon.sh --dist-dir "$OUTPUT/scratch/freeze-dist" --work-dir "$OUTPUT/scratch/freeze-work"
+FREEZER_RETURN="$(python3 "$FREEZER" accept "${ASSET_ARGS[@]}" --freezer-context-sha256 "$FREEZER_CONTEXT")"
+FREEZER_INPUTS="$(freezer_field "$FREEZER_RETURN" inputs)"
+FREEZER_OUTPUT="$(freezer_field "$FREEZER_RETURN" output)"
+FREEZER_ARGS=(--freezer-context-sha256 "$FREEZER_CONTEXT" --freezer-inputs-sha256 "$FREEZER_INPUTS" --freezer-output-sha256 "$FREEZER_OUTPUT")
 cp "$OUTPUT/scratch/freeze-work/analysis.json" "$OUTPUT/diagnostics/analysis.json"
 cp "$OUTPUT/scratch/freeze-work/python-toolchain.json" "$OUTPUT/diagnostics/python-toolchain.json"
 STAGE=web
@@ -284,6 +299,7 @@ STAGE=assembly
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/web" "$APP/Contents/Resources/licenses"
 cp "$BIN_DIR/HappyRanchApp" "$APP/Contents/MacOS/HappyRanch"
 shasum -a 256 "$BIN_DIR/HappyRanchApp" "$APP/Contents/MacOS/HappyRanch" > "$OUTPUT/diagnostics/swift-release.sha256"
+python3 "$FREEZER" before-copy "${ASSET_ARGS[@]}" "${FREEZER_ARGS[@]}"
 cp -R "$OUTPUT/scratch/freeze-dist/happyranch-daemon" "$APP/Contents/Resources/daemon"
 python3 "$ASSETS" check-dist "${ASSET_ARGS[@]}" --asset-context-sha256 "$ASSET_CONTEXT" --asset-dist-sha256 "$ASSET_DIST"
 cp -R "$SOURCE/web/dist" "$APP/Contents/Resources/web/dist"
@@ -315,6 +331,8 @@ for src in files:
         raise SystemExit(f'RESOURCE_MISSING: {src.relative_to(source)}: {dest}')
     os.chmod(dest, stat.S_IMODE(src.stat().st_mode))
 PYMODES
+FREEZER_COPY_TOKEN="$(python3 "$FREEZER" copy "${ASSET_ARGS[@]}" "${FREEZER_ARGS[@]}")"
+FREEZER_COPY="$(freezer_field "$FREEZER_COPY_TOKEN" sha256)"
 STAGE=icon
 ASSET_ICON_TOKEN="$(python3 "$ASSETS" icon "${ASSET_ARGS[@]}" --asset-context-sha256 "$ASSET_CONTEXT" \
     --iconutil-path "$ICONUTIL_PATH" --iconutil-sha256 "$ASSET_ICONUTIL")"
@@ -665,7 +683,8 @@ bash "$VERIFY" licenses "${ASSET_ARGS[@]}" --mapping "$OUTPUT/diagnostics/licens
     --asset-context-sha256 "$ASSET_CONTEXT" --toolchains-sha256 "$ASSET_TOOLCHAINS" \
     --iconutil-path "$ICONUTIL_PATH" --iconutil-sha256 "$ASSET_ICONUTIL" \
     --asset-source-sha256 "$ASSET_SOURCE" --asset-dist-sha256 "$ASSET_DIST" --asset-app-sha256 "$ASSET_APP" \
-    --asset-icon-sha256 "$ASSET_ICON" --asset-notices-sha256 "$ASSET_NOTICES" > "$OUTPUT/diagnostics/licenses.json"
+    --asset-icon-sha256 "$ASSET_ICON" --asset-notices-sha256 "$ASSET_NOTICES" \
+    "${FREEZER_ARGS[@]}" --freezer-copy-sha256 "$FREEZER_COPY" > "$OUTPUT/diagnostics/licenses.json"
 STAGE=archive
 ZIP="$OUTPUT/HappyRanch-${VERSION}-${BUILD}-${ARCH}.zip"
 ditto -c -k --keepParent "$APP" "$ZIP"

@@ -681,6 +681,8 @@ for key in ('version', 'build', 'source-sha', 'source-tree', 'arch', 'run-id'):
 asset = __import__('runpy').run_path(ASSET_HELPER)
 q = s.add_parser('licenses', allow_abbrev=False)
 asset['add_arguments'](q, expectations=True)
+freezer = __import__('runpy').run_path(str(Path(ASSET_HELPER).with_name('freezer_evidence.py')))
+freezer['add_arguments'](q)
 q.add_argument('--mapping', type=Path, required=True, action=asset['Once'])
 a = p.parse_args()
 if a.mode == 'native':
@@ -851,6 +853,7 @@ try:
               'approved_url': None, 'signing_chain': 'SUPPLIED_RELATIONS_ONLY' if a.transform_chain else 'UNEXECUTED', 'public_admission_owner': 'TASK-11196'})
     elif a.mode == 'licenses':
         asset['verify_arguments'](a)
+        freezer['verify_arguments'](a)
         a.app = Path(a.app)
         mapping = json.loads(a.mapping.read_text())
         errors = []
