@@ -698,7 +698,8 @@ def run_value(value):
 
 
 def pair_shape(value):
-    keys(value, ('source_root', 'target_root', 'source', 'target'), 'pair')
+    keys(value, ('source_root', 'target_root', 'source', 'target', 'rights_relation'), 'pair')
+    need(value['rights_relation'] == 'UNRESOLVED', 'COPY_RIGHTS_RELATION_INVALID')
     need(value['source_root'] in ('public', 'dist', 'source', 'generated') and
          value['target_root'] in ('dist', 'app', 'retained', 'iconset'), 'PAIR_ROOT_INVALID')
     subject_shape(value['source'])
@@ -1109,7 +1110,8 @@ def check_public_before_build(candidate, paths, expected_run_id, expected_contex
 
 
 def pair(source_root, target_root, source, target):
-    return dict(source_root=source_root, target_root=target_root, source=source, target=target)
+    return dict(source_root=source_root, target_root=target_root, source=source, target=target,
+                rights_relation='UNRESOLVED')
 
 
 def measured_dist(paths, source, upstream):
