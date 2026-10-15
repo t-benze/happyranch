@@ -132,6 +132,7 @@ class Session:
         self.dirs,self.owner,self.preflight=A['bindings'](self.candidate,self.paths,self.run)
         self.binding_sha=sha(canonical(binding));self.subjects=[];self.subject_index={}
         if binding['venue']=='native':
+            need(sys.platform=='darwin' and __import__('platform').machine()=='arm64','NATIVE_PLATFORM_REQUIRED')
             for f in ('asset_context_sha256','asset_source_sha256','toolchains_sha256'):digest_shape(binding[f])
             A['check_context'](self.candidate,self.paths,self.run,binding['asset_context_sha256'])
             A['checked_source'](self.candidate,self.paths,self.run,binding['asset_context_sha256'],binding['asset_source_sha256'])
@@ -634,7 +635,16 @@ def validate_build(s,payload,context,preparation):
     need(profile['css']['devSourcemap'] is False and profile['css']['postcss']=={'plugins':[]},'PROFILE_UNSUPPORTED')
     keys(profile['build'],{'outDir','assetsDir','assetsInlineLimit','cssCodeSplit','sourcemap','minify','cssMinify','target','cssTarget','write','copyPublicDir','lib','ssr','watch','modulePreload','commonjsOptions'})
     need(profile['build']['outDir']=='dist' and profile['build']['assetsDir']=='assets' and profile['build']['assetsInlineLimit']==4096 and profile['build']['write'] is True and profile['build']['copyPublicDir'] is True,'PROFILE_UNSUPPORTED')
-    keys(profile['css'],{'devSourcemap','postcss','transformer'});need(profile['css']['transformer']=='postcss','PROFILE_UNSUPPORTED')
+    keys(profile['css'],{'devSourcemap','postcss','transformer'});need(profile['css']['transformer'] is None,'PROFILE_UNSUPPORTED')
+    need(profile['define']=={},'PROFILE_DEFINE_UNSUPPORTED')
+    expected_env={'BASE_URL':'/','MODE':'production','DEV':'false','PROD':'true'}
+    need(profile['env']=={k:{'size':len(v.encode()),'sha256':sha(v.encode())} for k,v in expected_env.items()},'PROFILE_ENV_UNSUPPORTED')
+    need(profile['esbuild']=={'jsx':'automatic','jsxDev':False,'jsxImportSource':None},'PROFILE_ESBUILD_UNSUPPORTED')
+    targets=['es2020','edge88','firefox78','chrome87','safari14']
+    need(profile['build']['target']==targets==profile['build']['cssTarget'] and profile['build']['modulePreload']=={'polyfill':True},'PROFILE_TARGET_UNSUPPORTED')
+    need(profile['build']['commonjsOptions']=={'include':[{'pattern':'node_modules','flags':''}],'extensions':['.js','.cjs']},'PROFILE_COMMONJS_UNSUPPORTED')
+    need(profile['input']==str(s.paths.exported_source/'web/index.html') and profile['output']=={'addons':[],'dir':'dist','format':'es'},'PROFILE_OUTPUT_UNSUPPORTED')
+    need(profile['config_dependencies']==[str(s.paths.exported_source/name) for name in ('web/scripts/packaging-custody.ts','web/scripts/packaging-tailwind.ts','web/vite.config.ts')],'PROFILE_CONFIG_DEPENDENCIES')
     expected_names=['commonjs--resolver','vite:build-metadata','vite:watch-package-data','vite:pre-alias','alias','i18n-browser-evidence-instrumentation','vite:react-babel','vite:react-refresh','happyranch:packaging-tailwind','vite:modulepreload-polyfill','vite:resolve','vite:html-inline-proxy','vite:css','vite:esbuild','vite:json','vite:wasm-helper','vite:worker','vite:asset','happyranch:html-pre','happyranch:html-post','vite:wasm-fallback','vite:define','vite:css-post','vite:build-html','vite:worker-import-meta-url','vite:asset-import-meta-url','vite:force-systemjs-wrap-complete','commonjs','vite:data-uri','vite:dynamic-import-vars','vite:import-glob','happyranch:packaging-custody','vite:build-import-analysis','vite:esbuild-transpile','vite:terser','vite:reporter','vite:load-fallback']
     need([x['name'] for x in profile['plugins']]==expected_names,'PLUGIN_INVENTORY_MISMATCH')
     for ordinal,item in enumerate(profile['plugins']):
@@ -792,36 +802,60 @@ def retain_web_notices(s,context,preparation,build,dist,asset_app,components):
     d=s.load('dist',dist);need(d['upstream']['build']==build,'DIST_BINDING')
     if s.binding['venue']=='native':A['load_record']('app',s.candidate,s.paths,s.run,asset_app,s.binding['asset_context_sha256'])
     rows=[];refused=[];retained=[]
-    owners={r['package'] for r in p['originals'] if 'darwin-arm64' not in r['package']}
+    owners={'web/node_modules/'+r['package']:r['package'] for r in p['originals'] if 'darwin-arm64' not in r['package']}
     # Ordinary participating owners use the innermost installed manifest; no
     # parent climbing and no source-map-only provenance assumption.
     for module in record['payload']['modules']:
         path=module['source']
         if path and '/node_modules/' in path:
-            relative=path.split('/node_modules/',1)[1];parts=relative.split('/');owners.add('/'.join(parts[:2]) if parts[0].startswith('@') else parts[0])
-    for owner in sorted(owners):
-        base='web/node_modules/'+owner;owner_id=sha(owner.encode());notices=[];problem=None
+            prefix,relative=path.rsplit('/node_modules/',1);parts=relative.split('/');name='/'.join(parts[:2]) if parts[0].startswith('@') else parts[0];base=Path(prefix+'/node_modules/'+name).relative_to(s.paths.exported_source).as_posix();owners[base]=name
+    for base,owner in sorted(owners.items()):
+        owner_id=sha(base.encode());notices=[];problem=None
         try:
             token,raw=s.intern_subject(s.paths.exported_source,base+'/package.json',256*1024);manifest=parse(raw)
+            need(manifest.get('name')==owner and type(manifest.get('version')) is str and bool(manifest['version']),'OWNER_METADATA_CONFLICT',base)
             with A['root_for'](s.paths.exported_source/base) as root:
                 names=[n for n in sorted(os.listdir(root.fd)) if re.match(r'(?i)^(licen[cs]e|notice|copying)(?:[.\-_].*)?$',n)]
-            need(0<len(names)<=32,'OWNER_ORIGINAL_MISSING',owner)
+            need(len(names)<=32,'OWNER_ORIGINAL_CAP',owner)
+            notice_sources=[base+'/'+name for name in names]
+            if not names and owner.startswith('@radix-ui/'):
+                # Reuse only the existing exact fallback, after guarding its
+                # implementation, identity map, inputs and metadata ourselves.
+                helper='packaging/notice-data/retained_notices.py'
+                helper_token,_=s.intern_subject(s.paths.exported_source,helper)
+                with A['root_for'](s.paths.exported_source) as root:
+                    A['verify_git_subject'](s.candidate,s.paths,root,helper,s.subjects[int(helper_token['subject_id'][1:])-1]['descriptor'])
+                s.intern_subject(s.paths.exported_source,'packaging/notice-data/identity-map.json',256*1024)
+                inputs=[]
+                for module in record['payload']['modules']:
+                    path=module['source']
+                    if path and Path(path).is_relative_to(s.paths.exported_source/base):
+                        relative=Path(path).relative_to(s.paths.exported_source).as_posix()
+                        source_token,_=s.intern_subject(s.paths.exported_source,relative)
+                        inputs.append({'input':path,'source_sha256':source_token['content']['sha256'],'metadata_chain':[{'path':str(s.paths.exported_source/base/'package.json'),'sha256':token['content']['sha256']}]})
+                helpers=runpy.run_path(str(s.paths.exported_source/helper))
+                recovered=helpers['radix_original'](s.paths.exported_source/'packaging/notice-data',owner,manifest['version'],s.paths.exported_source/base,inputs)
+                if recovered is not None:
+                    original_path,_=recovered
+                    need(original_path.is_relative_to(s.paths.exported_source/'packaging/notice-data'),'OWNER_FALLBACK_ROOT')
+                    notice_sources=[original_path.relative_to(s.paths.exported_source).as_posix()]
+            need(notice_sources,'OWNER_ORIGINAL_MISSING',owner)
             pending=[]
-            for name in names:
-                original,raw=s.intern_subject(s.paths.exported_source,base+'/'+name,256*1024);need(raw and decode(raw).encode()==raw,'OWNER_ORIGINAL_UTF8',owner)
-                target='Contents/Resources/licenses/web-generated/'+owner_id+'/'+name
+            for source in notice_sources:
+                original,raw=s.intern_subject(s.paths.exported_source,source,256*1024);need(raw and decode(raw).encode()==raw,'OWNER_ORIGINAL_UTF8',owner)
+                target='Contents/Resources/licenses/web-generated/'+owner_id+'/'+Path(source).name
                 with A['root_for'](s.paths.app) as root:
                     if not is_absent(root,target):
                         existing=A['read_subject'](root,target,A['NOTICE']);need(existing['sha256']==sha(raw) and existing['size']==len(raw),'OWNER_TARGET_CONFLICT',owner)
-                pending.append((original,base+'/'+name,target))
+                pending.append((original,source,target))
             # Prevalidate ALL sources/targets before creating any for this owner.
             for original,source,target in pending:
                 with A['root_for'](s.paths.exported_source) as source_root,A['root_for'](s.paths.app) as target_root:
                     A['copy_once'](source_root,source,target_root,target,A['NOTICE'],allow_identical_existing=True)
                     retained_row=A['read_subject'](target_root,target,A['NOTICE'])
                 notices.append({'destination':target,'sha256':retained_row['sha256']});retained.append({'owner':owner,'original':original,'target':retained_row})
-        except (OSError,ValueError,KeyError) as exc:problem=str(exc);refused.append({'owner':owner,'reason':problem})
-        rows.append({'component':owner,'scope':'web-generated','disposition':'LICENSE_UNRESOLVED' if problem else 'RETAINED_TEXT','reason':problem or 'candidate_notice_retention; applicability unestablished','inclusion':[],'notices':notices if not problem else []})
+        except (OSError,ValueError,KeyError) as exc:problem=str(exc);refused.append({'owner':base,'reason':problem})
+        rows.append({'component':owner,'scope':'web-generated','disposition':'LICENSE_UNRESOLVED' if problem else 'RETAINED_TEXT','reason':problem or 'candidate_notice_retention; applicability unestablished','inclusion':[{'package_root':base}],'notices':notices if not problem else []})
     token=s.write('notices',{'prefix':[sha(canonical(r)) for r in components],'appended':rows,'retained':retained,'refused':refused,'subjects':s.subjects},{'context':context,'preparation':preparation,'build':build,'dist':dist,'asset_app':asset_app})
     return rows,token
 

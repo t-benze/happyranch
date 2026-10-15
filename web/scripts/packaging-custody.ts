@@ -21,6 +21,7 @@ const digest = (raw: Buffer | string): Bytes => {
 const codeOf = (value: any): string | Buffer | null => typeof value === 'string' || Buffer.isBuffer(value) ? value : value && typeof value.code === 'string' ? value.code : null;
 const clean = (value: any): any => {
   if (value === undefined) return null;
+  if (value instanceof RegExp) return { pattern: value.source, flags: value.flags };
   if (Array.isArray(value)) return value.map(clean);
   if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, clean(v)]));
   return value;
@@ -52,6 +53,7 @@ export class PackagingCustody {
   readonly fd: number;
 
   constructor() {
+    if (Number(process.versions.node.split('.')[0]) !== 24) throw new Error('WEB_NODE24_REQUIRED');
     const names = ['HAPPYRANCH_WEB_CALLER', 'HAPPYRANCH_WEB_CONTEXT', 'HAPPYRANCH_WEB_PREPARATION', 'HAPPYRANCH_WEB_PYTHON', 'HAPPYRANCH_WEB_HELPER', 'HAPPYRANCH_WEB_COMPLETION_FD'];
     for (const name of names) if (!process.env[name]) throw new Error(`WEB_BINDING_MISSING:${name}`);
     this.caller = process.env.HAPPYRANCH_WEB_CALLER!;
@@ -232,7 +234,7 @@ export class PackagingCustody {
           command: config.command, mode: config.mode, isProduction: config.isProduction, isWorker: config.isWorker, root: config.root, base: config.base, appType: config.appType,
           input: options.input, output: { dir: config.build.outDir, format: 'es', addons: [] },
           build: clean(Object.fromEntries(['outDir','assetsDir','assetsInlineLimit','cssCodeSplit','sourcemap','minify','cssMinify','target','cssTarget','write','copyPublicDir','lib','ssr','watch','modulePreload','commonjsOptions'].map(k => [k, (config.build as any)[k]]))),
-          css: { devSourcemap: false, postcss: { plugins: [] }, transformer: config.css.transformer },
+          css: { devSourcemap: false, postcss: { plugins: [] }, transformer: config.css.transformer ?? null },
           esbuild: clean(config.esbuild), define: clean(config.define ?? {}), env: Object.fromEntries(Object.entries(config.env).map(([k,v]) => [k,digest(String(v))])),
           config_dependencies: config.configFileDependencies,
           plugins: all.map((p, i) => ({ ordinal: i, name: p.name, hooks: HOOKS.filter(h => p[h]).map(h => ({ name: h, order: order(p[h]) ?? null, sequential: typeof p[h] === 'object' ? p[h].sequential ?? false : false })) })),
