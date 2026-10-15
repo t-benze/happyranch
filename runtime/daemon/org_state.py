@@ -38,6 +38,7 @@ from runtime.orchestrator.orchestrator import Orchestrator
 from runtime.orchestrator.org_validation import validate_team_membership
 from runtime.orchestrator.teams import TeamsRegistry
 from runtime.workflows.authority import WorkflowAuthorityCoordinator
+from runtime.workflows.coding_setup import CodingSetupStore
 from runtime.workflows.activation import WorkflowActivationStore
 from runtime.workflows.draft_dispatch import WorkflowDraftDispatcher
 from runtime.workflows.submissions import WorkflowSubmissionStore
@@ -68,6 +69,7 @@ class OrgState:
     orchestrator: Orchestrator
     workflow_authority: WorkflowAuthorityCoordinator = field(init=False)
     workflow_activations: WorkflowActivationStore = field(init=False)
+    workflow_coding_setup: CodingSetupStore = field(init=False)
     workflow_drafts: WorkflowDraftDispatcher = field(init=False)
     workflow_submissions: WorkflowSubmissionStore = field(init=False)
     workflow_revisions: WorkflowRevisionStore = field(init=False)
@@ -136,6 +138,7 @@ class OrgState:
             teams=self.teams,
         )
         self.workflow_activations = WorkflowActivationStore(self)
+        self.workflow_coding_setup = CodingSetupStore(self)
         self.workflow_drafts = WorkflowDraftDispatcher(self)
         self.workflow_submissions = WorkflowSubmissionStore(self)
         self.workflow_revisions = WorkflowRevisionStore(self)

@@ -1,5 +1,69 @@
 # Web And CLI
 
+## K2b first setup producer checkpoint — ROOT10693 / Founder139562
+
+Manager step65 and THR139seq595/596 select **one K2b draft PR**, continuing
+merged1082. Each writer ships its own complete saved/current/native/cold readers;
+future run/stage readers are required with their corresponding writers. Earlier
+K2a1/K2a2 sections below are historical checkpoint evidence, including their
+then-current empty-only/no-producer and all-future-readers-first descriptions.
+They do not impose another reader-only publication or change accepted encoding.
+
+This checkpoint supplies Founder setup ISSUE/WITHDRAW, selected GET and exact
+replay. POST `/api/v1/orgs/{slug}/workflows/coding/capabilities` accepts only
+canonical UTF8 `workflow-coding-capability-setup-command@1` with exactly
+`format,operation_key,setup_key,expected_authorization_revision,mode,scope`.
+Issue scope fixes repository, actual published manager/team and configured store
+owners, finite actions/path/argv maxima, source_rule and base_rule. Empty path
+or command scope grants none. Withdrawal requires null scope and genuine prior
+issue; its new immutable issuance is an inactive tombstone. No body identity,
+agent session, bearer forwarding, query parameters or automatic retry is allowed.
+Existing `_require_human` derives the Founder principal on the server.
+
+CLI `happyranch workflows coding capability-set --org ORG --from-file ABS --json`
+uses existing human transport and preserves the full original canonical command.
+GET `/api/v1/orgs/{slug}/workflows/coding/capabilities/{setup_key}` returns only
+the selected closed `workflow-coding-capability-setup-receipt@1`: original
+IDs/revision/key/digest/replayed plus current active/inactive/revoked disposition.
+Both endpoints are CLI-only/browser-excluded and native remote-denied; denial
+checks raw and normalized candidates independently before forwarding. No shared
+normalizer, credential or permission semantics change.
+
+Setup records require compatible complete J. Every native admission's five
+columns, original Q/issuance bytes, full snapshot/profile mirror/publication
+journal, contiguous revision prefix, unique setup/operation/admission identities
+and exact latest pointer are checked. One native admission transaction inserts
+admission/revision and CAS-updates the pointer; failed validation rolls all back.
+Discovery and independent whole-native schema reference construction precede
+transactions; final admission uses captured data with current authority checks.
+No file/object I/O or await occurs in the writer. Replay compares full original
+bytes before fresh CAS, changes no pointer/revision, and reports original IDs
+with current inactive/revoked state after withdrawal/replacement/policy loss.
+Cold-valid history never establishes current authority or action permission.
+
+Central J validation (also validate_data=False), reopen, recovery's pre-legacy
+boundary, drain and downgrade recognize exactly complete setup closure. All
+mapping/source/P/run/attempt/event/receipt coding families remain categorically
+unsupported; malformed/duplicate/orphan/foreign values refuse. F–I/J DDL and
+independent references stay unchanged; create-org remains I, startup never
+upgrades, even empty J requires compatible code. Generic Database/runtime-audit
+remain workflow-free. K0 stays disabled and K1 current resolution unavailable.
+
+**K2b remains incomplete and DRAFT/unmerged.** SAME-PR mandatory remainder:
+explicit fixed release import; mapping publication/local-store adoption/current
+K1 resolution; source attenuation and genuine nonallocating task/SID/invocation/
+Pause/ancestor capture producers, each with complete own current/native/cold
+consumers. K2c owns role defaults/overrides/fresh J; first run writer is K3;
+K4/K5 own revision/QA/CI/merge closure, K6 operator entry/cutover. No live setup,
+grant/adoption, SQL fixture, deployment/restart/migration/assignment, provider/
+browser/native build/ad hoc E2E or retired trial execution follows source work.
+Python units RETIRED; integration INCLUDING callback SKIPPED24342; SQL/parser/
+security/negative/mutation/repetition/behavior/executable QA UNEXECUTED/
+FOUNDER-WAIVED139429/430. Lint/static evidence supplies no behavioral PASS.
+Fresh FULL independent review and same-final-head scoped SOURCE QA return to
+SAME sole ROOT10693. No setup-only merge or complete K2b acceptance is claimed.
+
+
 ## CLI human names and fresh prompt context
 
 The naming CLI provides `identities list/resolve/rename` using the

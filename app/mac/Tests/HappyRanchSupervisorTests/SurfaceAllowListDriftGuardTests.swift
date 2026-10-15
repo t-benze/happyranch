@@ -50,6 +50,7 @@ struct SurfaceAllowListDriftGuardTests {
         ("{instance_id}", "instance-1"),
         ("{revision_operation_id}", "revision-1"),
         ("{request_id}", "request-1"),
+        ("{setup_key}", String(repeating: "a", count: 64)),
     ]
 
     /// Replace template placeholders in a path with concrete values.

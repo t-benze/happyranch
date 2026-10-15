@@ -597,13 +597,13 @@ def _validate_installed(
     if actual != expected:
         raise ValueError("workflow_schema_layout_mismatch")
 
-    from runtime.infrastructure.workflow_coding_schema import validate_empty_coding_data
-    validate_empty_coding_data(conn, layout=layout)
-    # Unknown native admission owners (including coding without its reader)
+    from runtime.infrastructure.workflow_coding_schema import validate_coding_data
+    validate_coding_data(conn, layout=layout, expected_org_slug=expected_org_slug)
+    # Unknown native admission owners (including unsupported coding families)
     # never become a legacy observation on an earlier workflow layout.
     from runtime.infrastructure.task_pause_controls import validate_pause_schema
     validate_pause_schema(conn, org_slug=expected_org_slug, allow_absent=True)
-    # Empty-only J still requires all retained I/document/native readers even
+    # J with complete setup closure still requires all retained I/document/native readers even
     # on cutover's metadata path. The flag never bypasses the new boundary.
     if layout == "J":
         validate_data = True

@@ -164,6 +164,14 @@
         "ANY /api/v1/orgs/{slug}/<new-route-not-in-allow>",
         "ANY /metrics"
       ]
+    },
+    {
+      "id": "coding_setup_cli_only",
+      "description": "Founder-only reusable coding setup mutation and selected metadata are CLI-only, never remote. No credential/normalization policy change.",
+      "examples": [
+        "POST /api/v1/orgs/{slug}/workflows/coding/capabilities",
+        "GET /api/v1/orgs/{slug}/workflows/coding/capabilities/{setup_key}"
+      ]
     }
   ],
   "allow": [

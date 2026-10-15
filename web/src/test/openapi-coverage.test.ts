@@ -84,6 +84,15 @@ describe('openapi coverage', () => {
     expect(INCLUDED_PATHS.has('POST /api/v1/orgs/{slug}/workflows/reviews/stages')).toBe(false);
   });
 
+  test('K2b setup endpoints remain Founder CLI-only', () => {
+    const writer = 'POST /api/v1/orgs/{slug}/workflows/coding/capabilities';
+    const reader = 'GET /api/v1/orgs/{slug}/workflows/coding/capabilities/{setup_key}';
+    expect(EXCLUDED_PATHS.get(writer)).toBe('Founder-only CLI setup mutation; no browser or remote grant');
+    expect(EXCLUDED_PATHS.get(reader)).toBe('Founder-only CLI setup metadata; no browser or remote grant');
+    expect(INCLUDED_PATHS.has(writer)).toBe(false);
+    expect(INCLUDED_PATHS.has(reader)).toBe(false);
+  });
+
   test('I includes owner return and safe receipt, excluding new-author mutation', () => {
     expect(INCLUDED_PATHS.has('POST /api/v1/orgs/{slug}/workflows/instances/{instance_id}/revisions')).toBe(true);
     expect(INCLUDED_PATHS.has('GET /api/v1/orgs/{slug}/workflows/revisions/{revision_operation_id}')).toBe(true);
