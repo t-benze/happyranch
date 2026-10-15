@@ -2772,6 +2772,42 @@ equivalent replay authenticates the original committed boundary and preserves
 its ID/time. Invalidations remain append-only; reset requires fresh QA and exact
 predecessor. The exact closed projection is in the corrective memory spec.
 
+G1 owned-job admission preserves the original submitting invocation. A completed
+independent QA result may retain that SID, or use exactly one ordinary same-task,
+same-agent job-result continuation. The latter requires the existing submission
+audit's original SID corroborated by unique original identity/start records, the
+actual original blocked result and its complete job wait, matching completion
+and blocked audits, and one orchestrator resume with the same wait and actual
+terminal owned-job outcomes. The referenced probe job must still be completed
+exit0 with its original command, ownership and complete stdout/stderr evidence.
+The two contiguous ordinary child/worker identity/start tuples must match actual
+parent/type/provider/model facts; the current completed QA result independently
+passes the existing admitted-role check. The blocked callback follows submission;
+both the resume event and new identity follow blocking and precede the resumed
+start, which precedes the final result. Identity preparation may occur on either
+side of the resume audit. Job completion can precede the blocked callback, but
+must precede resume. Audit-ID and timestamp order must both agree with these
+causal boundaries. Before timestamp selection, the reader establishes the audit
+interval from the unique original identity through the unique resumed start and,
+separately, the task-result interval from the unique original-SID blocked result
+through the selected final result. Every intervening same-task row is checked;
+misdated rows before the original identity or after the final result cannot
+disappear. Missing or unparseable timestamps fail closed. Timestamp-overlapping
+evidence outside the ID intervals still participates in ambiguity checks.
+IDs from different tables are never compared as one clock. Legitimate earlier
+history and later callbacks outside both intervals remain outside this chain.
+
+Only ordinary `block_submit` and `job_terminal` resume triggers are supported.
+Every waited job needs its actual matching owned terminal record; unavailable
+records, missing original submission SID, mismatched waits, duplicate/conflicting
+evidence, intervening invocations/starts/results, recovery-purpose launches and
+retry/startup-recovery paths refuse. A supplied SID, same-agent/task label or
+absence of contradictory rows cannot replace these positive joins. This read-side
+correction changes no writers, storage, public envelope, job/session lifecycle,
+independence, probe plan, current installed health, final-commit freshness,
+original-epoch continuity or atomic publication rules. Source verification and
+merge establish no installed C acceptance or collection start.
+
 
 ### S2 initial draft consumers
 
