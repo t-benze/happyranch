@@ -57,7 +57,7 @@ _TOKEN_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*(?:\.[A-Za-z0-9_-]+)*")
 _LINE_RE = re.compile(r"[^\r\n]*(?:\r\n|\r|\n|$)")
 _QUOTE_RE = re.compile(r" {0,3}> ?")
 _FENCE_RE = re.compile(r" {0,3}(`{3,}|~{3,})(.*)")
-_BOUNDARIES = frozenset("([{<>\"'\u2018\u201c,:;!?")
+_BOUNDARIES = frozenset("([{\"'")
 
 
 def _mention_space(char: str) -> bool:
@@ -77,8 +77,7 @@ def _code_mask(text: str) -> bytearray:
     mask = bytearray(len(text))
     region_start: int | None = None
     region_end = 0
-    region_depth = 0
-    fence: tuple[int, str, int] | None = None
+    fence: tuple[str, int] | None = None
 
     def finish_region() -> None:
         nonlocal region_start
@@ -111,35 +110,30 @@ def _code_mask(text: str) -> bytearray:
         if start == end:
             continue
         content = line.group().rstrip("\r\n")
-        depth = 0
-        offset = 0
-        while prefix := _QUOTE_RE.match(content, offset):
-            depth += 1
-            offset = prefix.end()
-        residual = content[offset:]
-        if fence is not None and fence[0] > 0 and depth != fence[0]:
-            fence = None
-        marker = _FENCE_RE.fullmatch(residual)
+        # An already-open top-level fence owns even quote-prefixed lines.
+        marker = _FENCE_RE.fullmatch(content)
         if fence is not None:
             mask[start:end] = b"\x01" * (end - start)
-            if (depth == fence[0] and marker is not None
-                    and marker[1][0] == fence[1] and len(marker[1]) >= fence[2]
-                    and not marker[2].strip(" \t")):
+            if (marker is not None and marker[1][0] == fence[0]
+                    and len(marker[1]) >= fence[1] and not marker[2].strip(" \t")):
                 fence = None
+            continue
+        # Explicit physical quote lines are wholly literal and never open or
+        # close outside code. Lazy continuation is ordinary prose.
+        if _QUOTE_RE.match(content):
+            finish_region()
+            mask[start:end] = b"\x01" * (end - start)
             continue
         if marker is not None and (marker[1][0] != "`" or "`" not in marker[2]):
             finish_region()
-            fence = (depth, marker[1][0], len(marker[1]))
+            fence = (marker[1][0], len(marker[1]))
             mask[start:end] = b"\x01" * (end - start)
             continue
-        if not residual.strip(" \t"):
+        if not content.strip(" \t"):
             finish_region()
             continue
-        if region_start is not None and region_depth != depth:
-            finish_region()
         if region_start is None:
             region_start = start
-            region_depth = depth
         region_end = end
     finish_region()
     return mask
@@ -149,7 +143,7 @@ def parse_mentions(body_markdown: str | None) -> list[str]:
     """Extract explicit prose addresses, exact-spelling dedup in input order.
 
     Email/word interiors, escaped tokens and supported code are literal.
-    Ordinary quoted prose remains eligible. No owner/routing knowledge or I/O.
+    Explicit quote lines are literal; ASCII quoted prose remains eligible. No owner/routing knowledge or I/O.
     """
     if not body_markdown:
         return []

@@ -145,7 +145,7 @@ async def complete_dream(slug: str, dream_id: str, body: DreamCompleteBody, org:
             # agent-initiated compose. Recipients are @founder only: the dream
             # agent is the sole participant; no other agent is looped in.
             turn_cap = resolve_org_setting_threads(org.db, code_default=OrgConfig())["default_turn_cap"]
-            founder_thread_preview = body.founder_thread.body_markdown.strip()
+            founder_thread_preview = body.founder_thread.body_markdown
             founder_thread_id, founder_thread_seq, _tokens, _addressed = _create_agent_thread_locked(
                 org,
                 composer=dream.agent_name,

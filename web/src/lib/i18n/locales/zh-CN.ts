@@ -35,6 +35,7 @@ export const zhCN: Record<MessageKey, MessageValue> = {
   "identity.refresh": "刷新身份信息",
   "identity.currentLabel": "当前名称 · 永久 ID；历史归属仍使用 ID。",
   "identity.former": "“{address}”是旧名称。请使用“{current}”或永久 ID。本次预检查未提交操作。",
+  "identity.invalidBodyMention": "@{address} 不是可接收消息的参与者。请先在收件人中选择目标，再使用当前名称或永久 ID。建议：{suggestions}",
   "identity.invalidAddress": "“{address}”不是此操作可用的地址。",
   "identity.human": "人类",
 

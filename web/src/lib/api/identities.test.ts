@@ -3,7 +3,8 @@ import { beforeEach, describe, expect, test } from 'vitest';
 import { http, HttpResponse } from 'msw';
 import { server } from '@/test/server';
 import { bodyAddresses, isEditableAddressableName, listIdentities, preflightAddresses, renameAgent, renameFounder, resolveIdentities } from './identities';
-import { openMention } from '../threadMentions';
+import corpus from '../../../../protocol/thread-mention-corpus.json';
+import { scanMentions, openMention } from '../threadMentions';
 import type { IdentityView } from './types';
 
 const agent: IdentityView = { canonical_id: 'worker', kind: 'agent', lifecycle: 'active', addressable_name: 'Current', name_revision: 2, canonical_definition_revision: null, naming_status: 'ready' };
@@ -31,17 +32,17 @@ describe('naming adapters — mocked source contract', () => {
   test('editable grammar is exact; historical underscore IDs never widen rename grammar', () => {
     for (const name of ['A', '0_name-Test', 'a'.repeat(64)]) expect(isEditableAddressableName(name)).toBe(true);
     for (const name of ['', '_worker', ' A', 'A ', '张三', 'A.B', 'a'.repeat(65)]) expect(isEditableAddressableName(name)).toBe(false);
-    expect(bodyAddresses('> "mail@Former and @Current" @unknown @A.B @_worker')).toEqual(['Current', 'unknown', 'A.B']);
+    expect(bodyAddresses('> "mail@Former and @Current" @unknown @A.B @_worker')).toEqual([]);
   });
-  test('recognized former body is refused before resolving recipients; unknown body stays literal', async () => {
+  test('genuine Former precedes recipient errors; unknown body refuses; quote remains literal', async () => {
     const calls: unknown[] = [];
     server.use(http.post('/api/v1/orgs/one/identities/resolve', async ({ request }) => {
       const body = await request.json() as { addresses: string[]; context: string }; calls.push(body);
       return HttpResponse.json({ resolutions: body.addresses.map((address) => ({ address, status: address === 'Former' ? 'former_name' : 'unknown_identity', identity: address === 'Former' ? agent : null, eligible: false })) });
     }));
-    await expect(preflightAddresses({ slug: 'one', context: 'thread_recipient', recipients: ['worker'], body: '> @Former', canonicalAgentIds: ['worker'] })).rejects.toMatchObject({ resolution: { status: 'former_name' } });
-    expect(calls).toEqual([{ addresses: ['Former'], context: 'lookup' }]);
-    expect(await preflightAddresses({ slug: 'one', context: 'thread_recipient', body: '@unknown', canonicalAgentIds: [] })).toEqual({ recipients: [] });
+    await expect(preflightAddresses({ slug: 'one', context: 'thread_recipient', recipients: ['worker'], body: '@Former', canonicalAgentIds: ['worker'] })).rejects.toMatchObject({ resolution: { status: 'former_name' } });
+    expect(calls).toEqual([{ addresses: ['worker', 'Former'], context: 'lookup' }]);
+    await expect(preflightAddresses({ slug: 'one', context: 'thread_recipient', body: '@unknown', canonicalAgentIds: [] })).rejects.toMatchObject({ bodyIntent: true, resolution: {status: 'unknown_identity'} });
   });
   test('unavailable naming retains known permanent IDs but never licenses an alias or retries', async () => {
     let requests = 0;
@@ -67,14 +68,14 @@ const lexicalCases: [string, string[]][] = [
   ['`\r\r@Current\r\r`', ['Current']],
   ['`\n@Current', ['Current']],
   ['> `\n@Current\n`', ['Current']],
-  ['`\n> @Current\n`', ['Current']],
+  ['`\n> @Current\n`', []],
   ['`\n@Current\n`', []],
   ['> `\n> @Former\n> `\n@Current', ['Current']],
   [' > ```\n> @Former\n@Current', ['Current']],
   [' > ```\r\n> @Former\r\n@Current', ['Current']],
   [' > ```\n> @Former\n>\n> @Other\n@Current', ['Current']],
   [' > ```\n> @Former\n\n@Current', ['Current']],
-  [' > ```\n> @Former\n>> @Current', ['Current']],
+  [' > ```\n> @Former\n>> @Current', []],
   ['```\n@Former\n> @Current', []],
   ['```\n@Former\n```\n@Current', ['Current']],
   ['~~~~ info `\n@Former\n~~~\n@Other\n~~~~~ \t\n@Current', ['Current']],
@@ -127,7 +128,7 @@ describe('new-message lexical contract', () => {
   });
   test('known body IDs and manual Founder survive unavailable naming, ID-shaped aliases do not', async () => {
     server.use(http.post('/api/v1/orgs/one/identities/resolve', () => HttpResponse.json({detail:{code:'naming_unavailable'}},{status:503})));
-    expect(await preflightAddresses({slug:'one',context:'thread_recipient',body:'@WORKER @founder',canonicalAgentIds:['worker'],allowFounder:true})).toEqual({recipients:[]});
+    expect(await preflightAddresses({slug:'one',context:'thread_recipient',body:'@WORKER @founder',bodyAgentIds:['worker'],canonicalAgentIds:['worker'],allowFounder:true})).toEqual({recipients:[]});
     await expect(preflightAddresses({slug:'one',context:'thread_recipient',recipients:['worker'],body:'@unknown',canonicalAgentIds:['worker']})).rejects.toMatchObject({resolution:{status:'naming_unavailable',address:'unknown'}});
     // Lookup compatibility applies only to explicit read targets, never body aliases.
     await expect(preflightAddresses({slug:'one',context:'lookup',body:'@unknown',canonicalAgentIds:[]})).rejects.toMatchObject({resolution:{status:'naming_unavailable'}});
@@ -149,5 +150,32 @@ describe('new-message lexical contract', () => {
     const body = ['@Former',...Array.from({length:128},(_,i)=>`@unknown${i}`)].join(' ');
     await expect(preflightAddresses({slug:'one',context:'thread_recipient',recipients:['worker'],body,canonicalAgentIds:['worker']})).rejects.toMatchObject({resolution:{status:'former_name'}});
     expect(reads).toBe(1);
+  });
+});
+
+// C10/C19/C25: accepted shared source data drives the shipping scanner/caret.
+// Four answers: raw scanner seam; exact tokens/occurrences/caret; catches drift
+// and duplicate suppression; lexical support only, public writes/UI still needed.
+describe('THR310 shared corpus', () => {
+  beforeEach(() => sessionStorage.setItem('happyranch.token', 'mock-token'));
+  test.each(corpus.cases)('$id $requirement', row => {
+    expect(bodyAddresses(row.input)).toEqual(row.expected_tokens);
+    expect(scanMentions(row.input).filter(m => m.query).map(m => ({ token: m.query,
+      start_codepoint: Array.from(row.input.slice(0,m.tokenStart)).length,
+      end_codepoint: Array.from(row.input.slice(0,m.end)).length,
+      start_utf16: m.tokenStart, end_utf16: m.end }))).toEqual(row.expected_ranges);
+    if (row.caret_utf16 !== null) expect(openMention(row.input,row.caret_utf16)).toEqual(row.expected_open_mention);
+    for (const sample of 'parameter_samples' in row ? row.parameter_samples! : []) {
+      expect(bodyAddresses(sample.input)).toEqual(sample.expected_tokens);
+      expect(scanMentions(sample.input).filter(m => m.query).map(m => ({token:m.query,start_codepoint:m.tokenStart,end_codepoint:m.end,start_utf16:m.tokenStart,end_utf16:m.end}))).toEqual(sample.expected_ranges);
+    }
+  });
+  test('To Former beats unknown body; unknown To beats invalid body', async () => {
+    server.use(http.post('/api/v1/orgs/one/identities/resolve', async ({request}) => {
+      const body=await request.json() as {addresses:string[]};
+      return HttpResponse.json({resolutions:body.addresses.map(address=>({address,status:address==='Former'?'former_name':'unknown_identity',identity:address==='Former'?agent:null,eligible:false}))});
+    }));
+    await expect(preflightAddresses({slug:'one',context:'thread_recipient',recipients:['Former'],body:'@Typo',canonicalAgentIds:[]})).rejects.toMatchObject({resolution:{status:'former_name'}});
+    await expect(preflightAddresses({slug:'one',context:'thread_recipient',recipients:['missing'],body:'@Typo',canonicalAgentIds:[]})).rejects.toMatchObject({bodyIntent:false,resolution:{address:'missing'}});
   });
 });

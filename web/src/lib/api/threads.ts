@@ -40,7 +40,7 @@ export interface ComposeThreadBody {
 export const composeThread = (
   slug: string,
   body: ComposeThreadBody,
-): Promise<{ thread_id: string; started_at: string; pending_replies: number }> =>
+): Promise<{ thread_id: string; started_at: string; pending_replies: string[] }> =>
   request(`/orgs/${slug}/threads`, { method: 'POST', body });
 
 export function listThreads(

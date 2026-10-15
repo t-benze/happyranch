@@ -125,45 +125,102 @@ def agent_target(client, slug: str, address: str, *, lifecycles=None, historical
                            historical=historical)[0]
 
 
-def preflight_body(client, slug: str, body: str | None) -> None:
-    """Read-only NEW-message prose admission before associated uploads.
+def preflight_body(
+    client, slug: str, body: str | None, *, recipients: list[str] | None = None,
+    thread_id: str | None = None, agent: str | None = None,
+) -> list[str] | None:
+    """Read-only whole-input preview before associated uploads, never authority.
 
-    Literal email/code/escaped text performs no body naming lookup. Historical
-    target lookup compatibility is separate; server revalidates the final body.
+    Founder writers reject unknown/ineligible intentions. Agent warnings describe
+    conditional audience; the final existing binding/action validates authority.
+    Literal-only bodies perform no body naming classification.
     """
+    from difflib import get_close_matches
     from runtime.infrastructure.thread_mentions import parse_mentions
     validate_body(body)
+    if recipients is not None:
+        validate_recipients(recipients)
     tokens = parse_mentions(body)
+    explicit = [a.removeprefix('@') for a in recipients or []]
+    all_tokens = explicit + tokens if tokens else []
+    all_rows: list[dict] = []
     known_ids: set[str] | None = None
+    known_lifecycles: dict[str, str] = {}
 
     def known_body_id(address: str) -> bool:
         nonlocal known_ids
         if address.lower() == "founder":
             return True
         if known_ids is None:
-            # Actual canonical owner projection, never infer IDs from spelling.
-            known_ids = {row["canonical_id"] for row in identity_rows(client, slug)
-                         if row.get("kind") == "agent" and isinstance(row.get("canonical_id"), str)
-                         and row.get("lifecycle") in ("active", "pending", "terminated")}
+            known_lifecycles.update({row["canonical_id"]: row["lifecycle"] for row in identity_rows(client, slug)
+                                     if row.get("kind") == "agent" and isinstance(row.get("canonical_id"), str)
+                                     and row.get("lifecycle") in ("active", "pending", "terminated")})
+            known_ids = set(known_lifecycles)
         return address.lower() in known_ids
 
-    for start in range(0, len(tokens), 128):
-        chunk = tokens[start:start + 128]
+    unavailable: list[str] = []
+    for start in range(0, len(all_tokens), 128):
+        chunk = all_tokens[start:start + 128]
         try:
             rows = _resolutions(client, slug, chunk, context="lookup", body_preflight=True)
         except httpx.RequestError:
-            if any(not known_body_id(address) for address in chunk):
-                fail("naming service request failed; message addressing could not be checked; retry the service read")
             rows = None
-        # Former takes precedence over unavailable peers in this chunk and
-        # later chunks; do not perform an upload or contextual target lookup.
         for row in rows or []:
             _former(row)
         for index, address in enumerate(chunk):
-            status = rows[index].get("status") if rows is not None else "naming_unavailable"
-            if status == "naming_unavailable" and not known_body_id(address):
-                fail("naming service is unavailable; current-name addressing cannot be checked; "
-                     "retry, or use a known permanent ID for the intended recipient")
+            row = rows[index] if rows is not None else {"address": address, "status": "naming_unavailable"}
+            all_rows.append(row)
+            if row.get('status') == 'naming_unavailable' and not known_body_id(address):
+                unavailable.append(address)
+    if unavailable:
+        fail("naming service is unavailable; current-name addressing cannot be checked; "
+             "retry, or use a known permanent ID for the intended recipient")
+    # Explicit To owns its existing404/native CLI target diagnostics. All
+    # observed Former inputs above precede those and the new body diagnostic.
+    resolved = resolve_recipients(client, slug, recipients) if recipients is not None else None
+    roster = set(resolved or []) - {'@founder', 'founder'}
+    if thread_id is not None and tokens:
+        response = client.get(f"/api/v1/orgs/{slug}/threads/{thread_id}")
+        if response.status_code != 200:
+            return resolved  # final action preserves lifecycle/not-found errors
+        roster = set(response.json().get('participants') or [])
+    if agent:
+        roster.add(agent)  # new agent compose implicitly includes its composer
+    invalid: list[str] = []
+    valid: list[str] = []
+    self_only = False
+    for token, row in zip(tokens, all_rows[len(explicit):]):
+        identity = row.get('identity') or {}
+        canonical_id = identity.get('canonical_id')
+        if row.get('status') == 'naming_unavailable' and known_body_id(token):
+            canonical_id = token.lower()
+        if canonical_id == 'founder':
+            continue
+        elif canonical_id in roster and (identity.get('lifecycle') == 'active' or (row.get('status') == 'naming_unavailable' and known_lifecycles.get(canonical_id) == 'active')):
+            if canonical_id == agent:
+                self_only = True
+            elif canonical_id not in valid:
+                valid.append(canonical_id)
+        else:
+            invalid.append(token)
+    if invalid and not agent:
+        choices = sorted({value for row in identity_rows(client, slug)
+                          if row.get('canonical_id') in roster and row.get('lifecycle') == 'active'
+                          for value in (row.get('canonical_id'), row.get('addressable_name'))
+                          if isinstance(value, str)})
+        suggestions = get_close_matches(invalid[0], choices, n=3, cutoff=0.4)
+        fail(f"invalid_body_mention: @{invalid[0]}; select an eligible recipient in To and use "
+             f"their current name or permanent ID" + (f"; closest: {', '.join(suggestions)}" if suggestions else ""))
+    if agent and (invalid or self_only):
+        ignored = ', '.join('@' + token[:64] + ('…' if len(token) > 64 else '') for token in invalid[:8]) or 'none (self is recognized and excluded)'
+        audience = ("current-message canonical targets: " + ', '.join(valid) if valid else
+                    "conditional fallback: recipients minus speaker outside an exchange; "
+                    "inside an exchange, frozen cohort intersect recipients minus speaker (possibly empty)")
+        print(f"warning: ignored body intentions: {ignored}; {audience}. "
+              "Final binding, roster and exchange state are revalidated by the action. "
+              "Independent prior due catch-up may wake others; pending_replies is not audience proof.", file=sys.stderr)
+    # Founder-only and quote-only require no extra informational lookup/warning.
+    return resolved
 
 
 def filter_target(client, slug: str, address: str | None) -> str | None:

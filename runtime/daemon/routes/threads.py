@@ -38,7 +38,7 @@ from runtime.orchestrator.org_config import OrgConfig, resolve_org_setting_threa
 from runtime.reply_delivery import reply_failure_category
 from runtime.identities.registry import classify_message_addresses
 from runtime.identities.schema import NamingError
-from runtime.infrastructure.thread_mentions import parse_mentions
+from runtime.infrastructure.thread_mentions import MessageAddresses, parse_mentions
 
 from runtime.orchestrator.run_step import (
     _capture_root_worktree_transition, _RootWorktreeTransitions, _root_worktree_batch, _await_root_worktree_batch,
@@ -60,10 +60,47 @@ def _naming_http_error(exc: NamingError) -> HTTPException:
     return HTTPException(status_code=status, detail={'code': code, **getattr(exc, 'details', {})})
 
 
-def _validate_message_addresses(org: Any, body_markdown: str | None) -> None:
-    """Action-boundary revalidation; no queue, SQL write or file mutation."""
+def _validate_message_addresses(
+    org: Any, body_markdown: str | None, *, founder_recipients: list[str] | None = None,
+) -> None:
+    """Action-boundary admission before effects, outside the Database RLock.
+
+    Agent writers retain native compatibility. Only the existing Founder
+    callers supply their current/prospective participant roster.
+    """
     try:
-        addresses = org.db.prepare_thread_message(body_markdown)
+        if founder_recipients is None:
+            addresses = org.db.prepare_thread_message(body_markdown)
+        else:
+            from difflib import get_close_matches
+            tokens = parse_mentions(body_markdown)
+            subjects, proof = classify_message_addresses(org, tokens)
+            addresses = MessageAddresses(
+                tuple(dict.fromkeys(subject.canonical_id for subject in subjects
+                                    if subject is not None and subject.kind == 'agent'
+                                    and subject.lifecycle == 'active')),
+                bool(subjects) and all(subject is not None and subject.kind == 'founder' for subject in subjects),
+                proof,
+            )
+            roster = set(founder_recipients) - {FOUNDER_LITERAL, "founder"}
+            invalid = [(token, subject) for token, subject in zip(tokens, subjects)
+                       if subject is None or (subject.kind == 'agent' and (
+                           subject.lifecycle != 'active' or subject.canonical_id not in roster))]
+            if invalid:
+                # Canonical roster reads retain the ID-only outage path. Never
+                # infer identity from spelling, and suggest only eligible agents.
+                eligible, _ = classify_message_addresses(org, sorted(roster))
+                choices = {value for subject in eligible if subject is not None
+                           and subject.kind == 'agent' and subject.lifecycle == 'active'
+                           for value in (subject.canonical_id, subject.current_label) if value}
+                token, subject = invalid[0]
+                raise HTTPException(status_code=422, detail={
+                    'code': 'invalid_body_mention', 'address': token,
+                    'reason': 'unknown_identity' if subject is None else 'not_participant',
+                    'suggestions': get_close_matches(token, sorted(choices), n=3, cutoff=0.4),
+                    'guidance': 'Use an eligible current participant name or permanent ID; '
+                                'select a recipient in To before mentioning them.',
+                })
         org.db.validate_thread_message(addresses)
     except NamingError as exc:
         raise _naming_http_error(exc) from exc
@@ -433,10 +470,10 @@ def _normalize_message_body(
     body_markdown: str | None,
     attachments: list[ThreadAttachment],
 ) -> str | None:
-    body_text = (body_markdown or "").strip()
-    if not body_text and not attachments:
+    has_text = bool(body_markdown and body_markdown.strip())
+    if not has_text and not attachments:
         raise HTTPException(status_code=422, detail={"code": "empty_body"})
-    return body_text or None
+    return body_markdown if has_text else None
 
 
 async def _compose_thread_multipart(
@@ -524,9 +561,18 @@ async def _compose_thread_multipart(
 
     uploaded_contents = [await file_field.read(MAX_THREAD_ATTACHMENT_BYTES + 1) for file_field in file_fields]
 
+    for file_field, content in zip(file_fields, uploaded_contents):
+        if len(content) > MAX_THREAD_ATTACHMENT_BYTES:
+            raise HTTPException(status_code=413, detail={
+                "code": "attachment_too_large", "max_bytes": MAX_THREAD_ATTACHMENT_BYTES,
+            })
+        _validate_display_name(getattr(file_field, 'filename', None) or "attachment")
+    if not file_fields:
+        _normalize_message_body(body.body_markdown, shared_attachments)
+
     async with org.db_lock:
         body.recipients = _resolve_message_recipients(org, raw_recipients, body.body_markdown)
-        _validate_message_addresses(org, body.body_markdown)
+        _validate_message_addresses(org, body.body_markdown, founder_recipients=body.recipients)
         addressed_agents = [name for name in body.recipients if name != FOUNDER_LITERAL]
         thread_id = org.db.next_thread_id()
         org.db.insert_thread(ThreadRecord(
@@ -704,7 +750,7 @@ async def compose_thread(
 
     async with org.db_lock:
         body.recipients = _resolve_message_recipients(org, raw_recipients, body.body_markdown)
-        _validate_message_addresses(org, body.body_markdown)
+        _validate_message_addresses(org, body.body_markdown, founder_recipients=body.recipients)
         addressed_agents = [name for name in body.recipients if name != FOUNDER_LITERAL]
         thread_id = org.db.next_thread_id()
         org.db.insert_thread(ThreadRecord(
@@ -888,6 +934,15 @@ async def _compose_agent_thread_multipart(
     ]
 
     uploaded_contents = [await file_field.read(MAX_THREAD_ATTACHMENT_BYTES + 1) for file_field in file_fields]
+
+    for file_field, content in zip(file_fields, uploaded_contents):
+        if len(content) > MAX_THREAD_ATTACHMENT_BYTES:
+            raise HTTPException(status_code=413, detail={
+                "code": "attachment_too_large", "max_bytes": MAX_THREAD_ATTACHMENT_BYTES,
+            })
+        _validate_display_name(getattr(file_field, 'filename', None) or "attachment")
+    if not file_fields:
+        _normalize_message_body(body.body_markdown, shared_attachments)
 
     async with org.db_lock:
         recipients = _resolve_message_recipients(org, raw_recipients, body.body_markdown)
@@ -2193,7 +2248,9 @@ async def _send_thread_message_inprocess(
 
     tokens_to_enqueue: list[str] = []
     async with org.db_lock:
-        _validate_message_addresses(org, body_text)
+        _validate_message_addresses(org, body_text, founder_recipients=[
+            p.agent_name for p in org.db.list_thread_participants(thread_id)
+        ])
         seq, arrivals = org.db.record_conversational_arrival(
             thread_id=thread_id, speaker=speaker,
             kind=ThreadMessageKind.MESSAGE,

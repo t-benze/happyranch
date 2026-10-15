@@ -584,7 +584,7 @@ export function ThreadsPage(): JSX.Element {
   // participant invite/remove invalidation. NewThreadDialog and InviteDialog
   // still receive the full roster (agents), not this filtered set.
   const composerAgents = useMemo(() => {
-    if (!activeThread.data?.participants) return agents;
+    if (!activeThread.data?.participants) return [];
     const participantSet = new Set(activeThread.data.participants);
     return agents.filter((a) => participantSet.has(a.name));
   }, [agents, activeThread.data?.participants]);
@@ -733,13 +733,13 @@ export function ThreadsPage(): JSX.Element {
     const lastFounderMsg = messages
       .filter((m) => m.kind === 'message' && m.body_markdown)
       .at(-1);
-    const quoted = lastFounderMsg
-      ? `> from ${threadId} by ${lastFounderMsg.speaker}\n>\n` +
-        lastFounderMsg.body_markdown!
-          .split('\n')
-          .map((l) => `> ${l}`)
-          .join('\n')
-      : `> from ${threadId}`;
+    const source = lastFounderMsg
+      ? `from ${threadId} by ${lastFounderMsg.speaker}\n\n${lastFounderMsg.body_markdown!}`
+      : `from ${threadId}`;
+    const quoted = source
+      .split(/\r\n|\r|\n/)
+      .map(line => line ? `> ${line}` : '>')
+      .join('\n');
     setNewPrefill({
       subject: `Fwd: ${activeThread.data.subject}`,
       body: `${quoted}\n\n`,
@@ -773,7 +773,7 @@ export function ThreadsPage(): JSX.Element {
     // succeed so a later send failure is never blamed on the last file.
     let failedUpload: PendingAttachment | null = null;
     try {
-      await preflight.mutateAsync({ slug: capturedSlug, context: 'thread_recipient', thread_id: capturedThreadId, body: markdown, canonicalAgentIds: knownAgentIds, allowFounder: true });
+      await preflight.mutateAsync({ slug: capturedSlug, context: 'thread_recipient', thread_id: capturedThreadId, body: markdown, canonicalAgentIds: knownAgentIds, bodyAgentIds: composerAgents.map(a => a.name), allowFounder: true });
       const refs: ThreadAttachmentRef[] = [];
       for (const pending of attachments) {
         failedUpload = pending;
@@ -1398,9 +1398,9 @@ function DetailColumn({
         }
       />
       <PinErrorBanner message={pinError} />
-      <div className="flex min-h-0 flex-1">
-        <div className="flex min-w-0 flex-1 flex-col">
-          <div className="flex-1 overflow-auto">
+      <div className="flex min-h-0 flex-1 flex-col overflow-y-auto md:flex-row md:overflow-hidden">
+        <div className="flex min-h-64 min-w-0 shrink-0 flex-col md:min-h-0 md:flex-1">
+          <div className="max-h-96 min-h-32 flex-1 overflow-auto md:max-h-none md:min-h-0">
             <ThreadDetailTranscript
               messages={messages}
               loading={messagesLoading}
@@ -1410,15 +1410,15 @@ function DetailColumn({
               replyDelivery={replyDelivery}
             />
           </div>
-          <footer className="border-border-default bg-surface-sunken border-t p-3">
+          <footer className="border-border-default bg-surface-sunken shrink-0 border-t p-3">
             {composer}
           </footer>
         </div>
-        {/* Properties rail — 244px wide, Direction-A Pasture. Structured as
-            Participants (avatars) · properties · Artifacts (THREADDET-02). */}
+        {/* Stack properties below the conversation on narrow screens; md restores
+            the 244px rail. Both panes stay mounted with every control. */}
         <aside
           aria-label={t('threads.page.rail.aria')}
-          className="border-border-default bg-surface-sunken w-rail flex shrink-0 flex-col gap-3 overflow-auto border-l p-4"
+          className="border-border-default bg-surface-sunken flex w-full min-w-0 shrink-0 flex-col gap-3 overflow-auto border-t p-4 md:w-rail md:border-t-0 md:border-l"
         >
           {/* Participants — LED + mono name + latest-response status (THR-061
               a-thread-detail .prow). Status is derived from responder_status
