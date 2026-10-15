@@ -49,7 +49,25 @@ def sha(raw):
     return hashlib.sha256(raw).hexdigest()
 
 def canonical(value):
-    return json.dumps(value,sort_keys=True,separators=(',',':'),ensure_ascii=False,allow_nan=False).encode()
+    # Encode exact bounded descriptor integers without changing the interpreter's
+    # global digit guard. JS counters are separately constrained by js_size.
+    def integer_text(number):
+        negative=number<0;number=abs(number);parts=[]
+        while number:
+            number,part=divmod(number,10**1000);parts.append(str(part))
+        result='0' if not parts else parts[-1]+''.join(part.zfill(1000) for part in reversed(parts[:-1]))
+        return ('-' if negative else '')+result
+    def text(item):
+        if item is None:return 'null'
+        if type(item) is bool:return 'true' if item else 'false'
+        if type(item) is int:return integer_text(item)
+        if isinstance(item,str):return json.dumps(item,ensure_ascii=False,allow_nan=False)
+        if isinstance(item,list):return '['+','.join(text(child) for child in item)+']'
+        if isinstance(item,dict):
+            need(all(isinstance(key,str) for key in item),'JSON_KEY_INVALID')
+            return '{'+','.join(text(key)+':'+text(item[key]) for key in sorted(item))+'}'
+        raise WebError('WEB_JSON_SCALAR')
+    return text(value).encode('utf-8','strict')
 
 def parse(raw, cap=CAP):
     need(len(raw)<=cap,'JSON_CAP')

@@ -33,22 +33,26 @@
  function cssPlugin(config) {
    const isBuild = config.command === "build";
    let moduleCache;
-@@ -36131,7 +36139,14 @@
+@@ -36131,7 +36139,17 @@
        if (!isCSSRequest(id) || commonjsProxyRE.test(id) || SPECIAL_QUERY_RE.test(id)) {
          return;
        }
+-      const urlReplacer = async (url, importer) => {
 +      hrCss(config, "admit", { id, raw });
 +      const hrUrls = [];
-       const urlReplacer = async (url, importer) => {
-+        const result = await hrOriginalUrlReplacer(url, importer);
-+        hrUrls.push({ url, importer, decoded: decodeURI(url), result });
++      const urlReplacer = !config.__happyranchCssCustody ? (url, importer) => hrOriginalUrlReplacer(url, importer) : (url, importer) => {
++        const result = hrOriginalUrlReplacer(url, importer);
++        result.then((value) => {
++          if (hrUrls.length >= 32768) hrCss(config, "capture_error", { reason: "CSS_URL_CAP" });
++          else hrUrls.push({ url, importer, decoded: decodeURI(url), result: value });
++        }, () => {});
 +        return result;
 +      };
 +      const hrOriginalUrlReplacer = async (url, importer) => {
          const decodedUrl = decodeURI(url);
          if (checkPublicFile(decodedUrl, config)) {
            if (encodePublicUrlsInCSS(config)) {
-@@ -36175,6 +36190,7 @@
+@@ -36175,6 +36193,7 @@
          preprocessorWorkerController,
          urlReplacer
        );
@@ -56,7 +60,7 @@
        if (modules) {
          moduleCache.set(id, modules);
        }
-@@ -36282,8 +36298,10 @@
+@@ -36282,8 +36301,10 @@
          ].join("\n");
          return { code: code2, map: { mappings: "" } };
        }
@@ -67,7 +71,7 @@
        }
        let code;
        if (modulesCode) {
-@@ -36310,7 +36328,9 @@
+@@ -36310,7 +36331,9 @@
        const isJsChunkEmpty = code === "" && !chunk.isEntry;
        let isPureCssChunk = true;
        const ids = Object.keys(chunk.modules);
@@ -77,7 +81,7 @@
          if (styles.has(id)) {
            if (!transformOnlyRE.test(id)) {
              chunkCSS += styles.get(id);
-@@ -36322,6 +36342,7 @@
+@@ -36322,6 +36345,7 @@
            isPureCssChunk = false;
          }
        }
@@ -85,7 +89,7 @@
        const publicAssetUrlMap = publicAssetUrlCache.get(config);
        const resolveAssetUrlsInCss = (chunkCSS2, cssAssetName) => {
          const encodedPublicUrls = encodePublicUrlsInCSS(config);
-@@ -36333,10 +36354,12 @@
+@@ -36333,10 +36357,12 @@
            );
            return relativePath[0] === "." ? relativePath : "./" + relativePath;
          };
@@ -100,7 +104,7 @@
              toOutputFilePathInCss(
                filename,
                "asset",
-@@ -36346,14 +36369,19 @@
+@@ -36346,14 +36372,19 @@
                toRelative
              )
            );
@@ -122,7 +126,7 @@
                toOutputFilePathInCss(
                  publicUrl,
                  "public",
-@@ -36363,7 +36391,10 @@
+@@ -36363,7 +36394,10 @@
                  () => `${relativePathToPublicFromCSS}/${publicUrl}`
                )
              );
@@ -133,7 +137,7 @@
          }
          return chunkCSS2;
        };
-@@ -36466,6 +36497,7 @@
+@@ -36466,6 +36500,7 @@
                originalFileName,
                source: chunkCSS
              });
@@ -141,7 +145,7 @@
              generatedAssets.get(config).set(referenceId, { originalFileName, isEntry });
              chunk.viteMetadata.importedCss.add(this.getFileName(referenceId));
            } else if (!config.build.ssr) {
-@@ -37033,13 +37065,18 @@
+@@ -37033,13 +37068,18 @@
  const viteHashUpdateMarker = "/*$vite$:1*/";
  const viteHashUpdateMarkerRE = /\/\*\$vite\$:\d+\*\//;
  async function finalizeCss(css, minify, config) {
@@ -161,7 +165,7 @@
    return css;
  }
  async function resolvePostcssConfig(config) {
-@@ -37193,6 +37230,7 @@
+@@ -37193,6 +37233,7 @@
    return `@import ${wrap}${await replacer(rawUrl)}${wrap}`;
  }
  async function minifyCSS(css, config, inlined) {
@@ -169,7 +173,7 @@
    if (config.build.cssMinify === "lightningcss") {
      const { code, warnings } = (await importLightningCSS()).transform({
        ...config.css?.lightningcss,
-@@ -37213,11 +37251,13 @@
+@@ -37213,11 +37254,13 @@
      return decoder.decode(code) + (inlined ? "" : "\n");
    }
    try {

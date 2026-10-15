@@ -45,6 +45,7 @@ export class PackagingCustody {
   private config: ResolvedConfig | null = null;
   private finalBundle: Row[] = [];
   private completion = false;
+  private originalFailed = false;
   readonly caller: string;
   readonly context: string;
   readonly preparation: string;
@@ -103,6 +104,7 @@ export class PackagingCustody {
 
   /** Fixed private sink, called by the original patched CSS operations. */
   record(stage: string, supplied: Row): void {
+    if (stage === 'capture_error') { this.sticky ??= new Error('WEB_' + supplied.reason); return; }
     if (stage === 'admit') {
       const id = supplied.id as string;
       if (!/\.css(?:\?transform-only)?$/.test(id) || /\.module\.css(?:\?|$)/.test(id) || /@import\s+(?:url\()?\s*["'](?:\.|\/[^/])/.test(supplied.raw)) throw new Error(`WEB_CSS_PROFILE_UNSUPPORTED:${id}`);
@@ -205,10 +207,10 @@ export class PackagingCustody {
         const result: any = row ? self.scope.run(row, () => Reflect.apply(original, self.facade(this), args)) : Reflect.apply(original, this, args);
         if (result && typeof result.then === 'function') {
           // Observe settlement, return the exact original promise/thenable.
-          result.then((value: any) => settle(value), () => settle(null, true));
+          result.then((value: any) => settle(value), () => { self.originalFailed = true; settle(null, true); });
         } else settle(result);
         return result;
-      } catch (error) { settle(null, true); throw error; }
+      } catch (error) { self.originalFailed = true; settle(null, true); throw error; }
     };
     if (typeof descriptor === 'function') return handler;
     return Object.create(Object.getPrototypeOf(descriptor), { ...Object.getOwnPropertyDescriptors(descriptor), handler: { ...Object.getOwnPropertyDescriptor(descriptor, 'handler'), value: handler } });
@@ -246,12 +248,16 @@ export class PackagingCustody {
           return Object.create(Object.getPrototypeOf(p), descriptors);
         }) };
       } },
+      buildEnd(error) { if (error) self.originalFailed = true; },
       writeBundle: { order: 'post', sequential: true, handler(_options, bundle) {
         if (!self.writeSeen) { self.writeSeen = true; self.core('write_input', self.entries(bundle)); }
         self.finalBundle = self.entries(bundle);
         for (const row of self.observations) if (row.kind === 'plugin_emission') row.resolved_file_name = this.getFileName(row.reference_id);
       } },
       closeBundle: { order: 'post', sequential: true, handler() {
+        // Preserve the original rejected/thrown tool error during cleanup.
+        // The native caller's finish path records failure, never a completion.
+        if (self.originalFailed) return;
         if (self.sticky) throw self.sticky;
         if (self.pending.size || self.completion || !self.writeSeen) throw new Error('WEB_CALL_INCOMPLETE');
         const payload = { complete: true, profile: self.profile, observations: self.observations, css_operations: self.operations, modules: [...self.modules.values()], final_bundle: self.finalBundle, counts: { observations: self.observations.length, operations: self.operations.length, processed_bytes: self.processed } };

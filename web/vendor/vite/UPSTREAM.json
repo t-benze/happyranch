@@ -1,16 +1,16 @@
 {
   "original_sha256": "1974803337cb6a1a86a6fdcf45a05ff0555220140d5ca70a58306f9f9b895af6",
   "version": "5.4.21+hr.css-relation.1",
-  "patch_sha256": "39e62e728ec2edc0c361e34ddedf6447abc861b9070b4e24b7811d209c29f76b",
-  "archive_sha256": "a01e3bf184641805c7ea4d5f0d812e3b5b1563c2312aeb7ddb35eca808d20da9",
-  "archive_size": 754102,
-  "integrity": "sha512-Ovd/PIU8rLI/oUli/WpU0OhO9jA0mPnzPCbX1seQvQHY5C/QfspL4urpYPaYTRlFffXXjefVHjJUJQKR5vjRkg==",
+  "patch_sha256": "a76815b6c5e9226136aeb2bcbc48dc37ce6a1d996c2423da0c7ef4f40195f89b",
+  "archive_sha256": "d4707e275fbf31c91a588a2d7048ae8af27963fd6a6f6033dbe2a948f750ae92",
+  "archive_size": 754222,
+  "integrity": "sha512-CTdXs4mlB5AHDFXPrq4EeCdlOPhoTTfoo4UyNcC2Um1EXXzrBnfBFKZw2NfCmxVYHfWUFG1+Gp0mRyWF4kKX2Q==",
   "member_delta": [
     {
       "path": "package/dist/node/chunks/dep-BK3b2jBa.js",
       "original_sha256": "bfa94186daff535fefdf286088c1588fad6b02c01ef11cd3b42a6cb3e4c90767",
-      "sha256": "4766a41f688f6c8f612f463e6d5328c15357b5e766d897044e28a8eab819ce85",
-      "size": 2088878,
+      "sha256": "7384f1c76b7a23ed83a354e9e3c060573b77f28e927138dfa10e947913168494",
+      "size": 2089123,
       "mode": 420
     },
     {
@@ -78,8 +78,8 @@
     },
     {
       "path": "package/dist/node/chunks/dep-BK3b2jBa.js",
-      "size": 2088878,
-      "sha256": "4766a41f688f6c8f612f463e6d5328c15357b5e766d897044e28a8eab819ce85",
+      "size": 2089123,
+      "sha256": "7384f1c76b7a23ed83a354e9e3c060573b77f28e927138dfa10e947913168494",
       "mode": 420
     },
     {
