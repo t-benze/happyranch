@@ -619,7 +619,15 @@ containment apply to both phases. Git additionally requires owned registration,
 clean/nonignored-untracked status and HEAD reachability through retained local
 branches/remotes; branches remain, ignored contents are disposable. Git removal
 is nonforce, with at most one fully refreshed contained repair/retry. Dry run
-never chmods/removes/prunes. Uncertain Git-prune scope remains untouched.
+never chmods/removes/prunes. Before trusting Git exit0, a complete no-follow
+linked-admin census reconciles entries, metadata pointers and worktree backlinks
+with Git output and literal task roots. Missing/unreadable/aliased/conflicting
+metadata retains that entire repository as a literal unknown scope with null
+candidate count; independent scopes continue within the same deadline. Identities
+are refreshed before Git removal, repair, retry and prune; earlier partial effects
+stay unknown rather than becoming zero-effect success. A genuinely absent admin
+with primary-only inventory and no task roots remains valid. Partial discovery
+and uncertain Git-prune scope prohibit prune.
 
 Manual dry run: `python -m runtime.daemon.disk_sweeper --dry-run --runtime-root
 /absolute/runtime` (one command). JSON is in `<daemon_home>/disk-sweep/`; existing

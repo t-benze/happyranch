@@ -20,6 +20,7 @@ import os
 import re
 import signal
 import sqlite3
+import stat
 import subprocess
 import sys
 import time
@@ -38,6 +39,10 @@ LOG = logging.getLogger(__name__)
 BUDGET_SECONDS = 1800
 TERMINAL = {'completed', 'failed', 'cancelled'}
 TASK = re.compile(r'TASK-[0-9]+\Z')
+
+
+class _RegistrationUnknown(Retain):
+    """The entire repository registration scope is uncertain."""
 
 
 def git(repo: Path, deadline: float, *args: str) -> str:
@@ -60,8 +65,131 @@ def git(repo: Path, deadline: float, *args: str) -> str:
     return result.stdout.decode('utf-8', errors='strict')
 
 
-def registrations(repo: Path, deadline: float) -> dict[str, dict]:
-    raw = git(repo, deadline, 'worktree', 'list', '--porcelain', '-z')
+def _metadata_file(path: Path, deadline: float, *, text: bool = False) -> tuple:
+    """Read metadata only through literal, no-follow parents and regular files."""
+    check(deadline)
+    try:
+        with directory(path.parent, deadline) as parent:
+            fd = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
+            try:
+                observed = os.fstat(fd)
+                if not stat.S_ISREG(observed.st_mode) or observed.st_nlink != 1:
+                    raise Retain('unknown_metadata_type_or_hardlink')
+                raw = os.read(fd, 65537 if text else 1)
+                if text and (len(raw) > 65536 or len(raw) != observed.st_size or b'\0' in raw):
+                    raise Retain('unknown_metadata_text')
+                if signature(os.fstat(fd)) != signature(observed):
+                    raise Retain('metadata_changed_during_read')
+                check(deadline)
+                return signature(observed), raw.decode('utf-8', errors='strict') if text else None
+            finally:
+                os.close(fd)
+    except Expired:
+        raise
+    except Exception as exc:
+        raise Retain(f'unknown_git_metadata:{path}: {exc}') from exc
+
+
+def _registration_metadata(repo: Path, deadline: float) -> tuple[dict[str, Path], dict]:
+    """Complete linked-admin census, including Git's reciprocal pointers.
+
+    Git silently omits unreadable/missing gitdir records, so its exit0/list is
+    never the census. No aliased entry, pointer or ancestor is read by Git.
+    The stamp binds observations across Git reads and final action gates.
+    """
+    common, stamp, linked = repo / '.git', {}, {}
+    admin = common / 'worktrees'
+    try:
+        absent = False
+        with directory(common, deadline) as fd:
+            stamp[str(common)] = signature(os.fstat(fd))
+            # A primary common directory must not itself redirect Git.
+            for name in ('commondir', 'gitdir'):
+                if os.path.lexists(common / name):
+                    raise Retain(f'unexpected_primary_pointer:{common / name}')
+            try:
+                os.stat('worktrees', dir_fd=fd, follow_symlinks=False)
+            except FileNotFoundError:
+                stamp[str(admin)] = None
+                absent = True
+        tree = {} if absent else snapshot(admin, deadline)
+        for relative, observed in tree.items():
+            check(deadline)
+            path = admin / relative
+            if stat.S_ISDIR(observed.st_mode):
+                stamp[str(path)] = signature(observed)
+            elif stat.S_ISREG(observed.st_mode):
+                seen, _ = _metadata_file(path, deadline)
+                if seen != signature(observed):
+                    raise Retain(f'metadata_changed:{path}')
+                stamp[str(path)] = seen
+            else:
+                raise Retain(f'aliased_or_special_metadata:{path}')
+        entries = []
+        if not absent:
+            with directory(admin, deadline) as fd:
+                entries = names(fd, deadline)
+        for name in entries:
+            check(deadline)
+            entry = admin / name
+            with directory(entry, deadline):
+                pass
+            _, gitdir = _metadata_file(entry / 'gitdir', deadline, text=True)
+            _, commondir = _metadata_file(entry / 'commondir', deadline, text=True)
+            _, head = _metadata_file(entry / 'HEAD', deadline, text=True)
+            # Canonical absolute backlinks, and Git's ordinary ../.. common
+            # pointer (or its exact absolute equivalent); no alias/.. spelling.
+            gitdir = gitdir.removesuffix('\n')
+            if not gitdir or gitdir != os.path.abspath(gitdir) or Path(gitdir).name != '.git':
+                raise Retain(f'malformed_gitdir:{entry / "gitdir"}')
+            path = Path(gitdir).parent
+            if str(path) in linked or path == repo:
+                raise Retain(f'conflicting_gitdir:{entry / "gitdir"}')
+            if commondir not in ('../..\n', str(common) + '\n'):
+                raise Retain(f'redirected_commondir:{entry / "commondir"}')
+            if not (re.fullmatch(r'(?:[0-9a-f]{40}|[0-9a-f]{64})\n', head) or re.fullmatch(r'ref: refs/[^\s]+\n', head)):
+                raise Retain(f'malformed_head:{entry / "HEAD"}')
+            with directory(path, deadline) as fd:
+                stamp[str(path)] = identity(os.fstat(fd))
+            seen, backlink = _metadata_file(Path(gitdir), deadline, text=True)
+            if backlink != 'gitdir: ' + str(entry) + '\n':
+                raise Retain(f'conflicting_worktree_backlink:{gitdir}')
+            stamp[gitdir] = seen
+            linked[str(path)] = entry
+        # A missing admin ENTRY is also invisible to Git. Reconcile literal
+        # task worktree roots so their surviving backlinks cannot disappear
+        # from the inventory. Never scan arbitrary repository children.
+        prefix = repo / '.claude/worktrees'
+        try:
+            with directory(repo / '.claude', deadline) as fd:
+                try:
+                    os.stat('worktrees', dir_fd=fd, follow_symlinks=False)
+                except FileNotFoundError:
+                    return linked, stamp
+        except FileNotFoundError:
+            return linked, stamp
+        with directory(prefix, deadline) as fd:
+            stamp[str(prefix)] = signature(os.fstat(fd))
+            roots = names(fd, deadline)
+        for name in roots:
+            check(deadline)
+            if TASK.fullmatch(name):
+                path = prefix / name
+                if str(path) not in linked:
+                    raise Retain(f'unknown_unregistered_task_worktree:{path}')
+        return linked, stamp
+    except Expired:
+        raise
+    except Exception as exc:
+        raise _RegistrationUnknown(f'unknown_git_registrations:{admin}: {exc}') from exc
+
+
+def registrations(repo: Path, deadline: float, *, metadata: dict | None = None) -> dict[str, dict]:
+    linked, before = _registration_metadata(repo, deadline)
+    try:
+        raw = git(repo, deadline, 'worktree', 'list', '--porcelain', '-z')
+    except (Retain, UnicodeError) as exc:
+        raise _RegistrationUnknown(f'unknown_git_registration_list:{repo}: {exc}') from exc
     result = {}
     for block in raw.strip('\0').split('\0\0'):
         row = {}
@@ -70,8 +198,17 @@ def registrations(repo: Path, deadline: float) -> dict[str, dict]:
             row[key] = value
         path = row.get('worktree')
         if not path or path in result:
-            raise Retain('unknown_git_registration')
+            raise _RegistrationUnknown(f'unknown_git_registration:{repo}')
         result[path] = row
+    if set(result) != {str(repo), *linked}:
+        raise _RegistrationUnknown(f'unknown_git_registration_inventory:{repo / ".git/worktrees"}')
+    for path in linked:
+        if not re.fullmatch(r'(?:[0-9a-f]{40}|[0-9a-f]{64})', result[path].get('HEAD', '')) or set(result[path]['HEAD']) == {'0'}:
+            raise _RegistrationUnknown(f'unknown_git_registration_head:{linked[path]}')
+    if _registration_metadata(repo, deadline) != (linked, before):
+        raise _RegistrationUnknown(f'git_metadata_changed_during_inventory:{repo}')
+    if metadata is not None:
+        metadata.update(before)
     return result
 
 
@@ -171,7 +308,8 @@ def _worktree_gate(candidate: dict, deadline: float) -> tuple:
             or guard.get('primary_root') != candidate['repo']):
         raise Retain('unknown_worktree_owner')
     repo = Path(candidate['repo'])
-    row = registrations(repo, deadline).get(str(path))
+    metadata = {}
+    row = registrations(repo, deadline, metadata=metadata).get(str(path))
     if row is None or 'locked' in row or 'prunable' in row:
         raise Retain('git_unregistered_locked_or_prunable')
     branch = row.get('branch')
@@ -189,7 +327,7 @@ def _worktree_gate(candidate: dict, deadline: float) -> tuple:
         raise Retain('dirty_or_untracked')
     if git(path, deadline, 'rev-list', '-n1', 'HEAD', '--not', '--branches', '--remotes').strip():
         raise Retain('unique_head_commit')
-    return row.get("HEAD"), row.get("branch"), common
+    return row.get("HEAD"), row.get("branch"), common, metadata
 
 def admit(candidate: dict, evidence: Evidence, deadline: float, *, now: float | None = None, repairs: dict | None = None) -> dict:
     """Fresh common gates before each candidate mutation/retry admission."""
@@ -241,6 +379,8 @@ def admit(candidate: dict, evidence: Evidence, deadline: float, *, now: float | 
     with directory(path, deadline) as fd:
         if signature(os.fstat(fd)) != signature(tree['']):
             raise Retain('identity_changed')
+    if candidate['phase'] == 'worktree' and _worktree_gate(candidate, deadline) != git_identity:
+        raise Retain('git_identity_changed_before_action')
     return tree
 
 
@@ -373,6 +513,7 @@ def sweep_org(org: Path, deadline: float, *, mode: str, checkpoint=lambda: None,
     evidence = Evidence(org, deadline)
     measured_inodes = measurement_seen if measurement_seen is not None else set()
     removed_inodes = removal_seen if removal_seen is not None else set()
+    uncertain_repos = set()
 
     def on_config():
         from runtime.orchestrator.org_config import load_org_config
@@ -389,6 +530,8 @@ def sweep_org(org: Path, deadline: float, *, mode: str, checkpoint=lambda: None,
             phase = result['phases'][candidate['phase']]
             mutation_started = False
             try:
+                if candidate.get('repo') in uncertain_repos:
+                    raise _RegistrationUnknown('unknown_repository_registration_scope')
                 tree = admit(candidate, evidence, deadline, now=now)
                 amount, _ = allocated(tree, measured_inodes)
                 phase['measured_allocated_bytes'] += amount
@@ -409,11 +552,15 @@ def sweep_org(org: Path, deadline: float, *, mode: str, checkpoint=lambda: None,
                 on_config()
                 if {k: signature(v) for k, v in tree.items()} != {k: signature(v) for k, v in fresh.items()}:
                     raise Retain('tree_changed_before_mutation')
-                mutation_started = True
                 if candidate['phase'] == 'scratch':
+                    mutation_started = True
                     mutate(Path(candidate['path']), fresh, deadline, remove=True)
                 else:
                     repo, path = Path(candidate['repo']), Path(candidate['path'])
+                    # Last local metadata check after config/tree comparisons;
+                    # Git must never consume a known redirected registration.
+                    registrations(repo, deadline)
+                    mutation_started = True
                     try:
                         git(repo, deadline, 'worktree', 'remove', str(path))
                     except Retain as exc:
@@ -425,9 +572,11 @@ def sweep_org(org: Path, deadline: float, *, mode: str, checkpoint=lambda: None,
                         on_config()
                         retry_tree = admit(candidate, evidence, deadline, now=now)
                         on_config()
+                        registrations(repo, deadline)
                         repairs = mutate(path, retry_tree, deadline, remove=False)
                         admit(candidate, evidence, deadline, now=now, repairs=repairs)
                         on_config()
+                        registrations(repo, deadline)
                         candidate['retry_count'] = 1
                         git(repo, deadline, 'worktree', 'remove', str(path))
                     if str(path) in registrations(repo, deadline):
@@ -442,6 +591,12 @@ def sweep_org(org: Path, deadline: float, *, mode: str, checkpoint=lambda: None,
             except Expired:
                 raise
             except Exception as exc:
+                if isinstance(exc, _RegistrationUnknown):
+                    repo = candidate['repo']
+                    if repo not in uncertain_repos:
+                        result['discovery_scopes'].append(dict(path=repo, reason=str(exc), candidate_count=None))
+                        uncertain_repos.add(repo)
+                    result['discovery'] = 'partial'
                 if mutation_started:
                     candidate['state'] = 'partial_or_unknown'
                 else:
@@ -455,19 +610,19 @@ def sweep_org(org: Path, deadline: float, *, mode: str, checkpoint=lambda: None,
         # No reclaimed-byte claim is made for registration maintenance.
         if mode == 'on' and result['discovery'] == 'complete':
             for repo in sorted({c['repo'] for c in candidates if 'repo' in c}):
-                rows = registrations(Path(repo), deadline)
+                try:
+                    on_config()
+                    rows = registrations(Path(repo), deadline)
+                except _RegistrationUnknown as exc:
+                    result['discovery_scopes'].append(dict(path=repo, reason=str(exc), candidate_count=None))
+                    result.update(discovery='partial', outcome='incomplete')
+                    break
                 # There is no path-selective Git prune. Only run its harmless
                 # empty-admin form; ANY linked/unrelated/unknown record keeps
                 # the whole repository's prune scope untouched.
-                common = Path(git(Path(repo), deadline, 'rev-parse', '--path-format=absolute', '--git-common-dir').strip())
-                admin = common / 'worktrees'
-                with directory(common, deadline):
-                    pass
-                admin_empty = not os.path.lexists(admin)
-                if not admin_empty:
-                    with directory(admin, deadline) as fd:
-                        admin_empty = not names(fd, deadline)
-                if set(rows) != {repo} or not admin_empty:
+                # The reconciled no-follow census proves there are no admin
+                # entries as well as no linked rows when only primary remains.
+                if set(rows) != {repo}:
                     result.setdefault('prune_retained', []).append(repo)
                     continue
                 git(Path(repo), deadline, 'worktree', 'prune', '--expire=now')

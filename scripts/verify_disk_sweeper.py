@@ -227,7 +227,7 @@ def c5():
         # This Git version removes registration on permission failure. That
         # partial outcome correctly refuses fresh retry; never recreate it.
         assert row(r,q)['state']=='partial_or_unknown',r
-        _,z=f.worktree('TASK-3');z.chmod(0o555)
+        repo,z=f.worktree('TASK-3','retry-project');z.chmod(0o555)
         real=ds.git;fail_once=[True]
         def fault(repo,deadline,*args):
             if args[:2]==('worktree','remove') and args[-1]==str(z) and fail_once[0]:
@@ -750,7 +750,7 @@ def c16():
         before=candidate_contents(external,p)
         with refuse_mutations(): r=f.sweep('dry_run')
         assert r['outcome']=='incomplete' and row(r,p)['state']=='eligible',r
-        assert len(r['candidates'])==1 and r['discovery_scopes'][0]['path']==str(q),r
+        assert len(r['candidates'])==1 and r['discovery_scopes'][0]['path']==str(repo),r
         assert candidate_contents(external,p)==before
         observed['worktree_parent_alias']='retained unknown; no candidate stat through alias; independent scratch eligible'
     return observed
@@ -809,6 +809,240 @@ def c18():
         return dict(seconds=time.monotonic()-start,unknown_scopes=35,retained=30,removed=2,unknown_total=None)
 
 
+@contextmanager
+def damaged_registration(f, repo, path, kind):
+    """Task-owned real metadata damage; restore only our exact fixture changes."""
+    admin=repo/'.git/worktrees';entry=admin/path.name
+    restore=[]
+    external=f.base/('external-'+kind);external.mkdir()
+    sentinel=external/'sentinel';sentinel.write_bytes(b'external control');sentinel.chmod(0o400)
+    if kind in ('missing_admin','missing_entry'):
+        target=admin if kind=='missing_admin' else entry
+        held=external/'held';target.rename(held)
+        restore.append(lambda: held.rename(target))
+    elif kind=='admin_alias':
+        # QA's valid escape reproducer, with working absolute commondir.
+        for e in admin.iterdir():
+            pointer=e/'commondir';original=pointer.read_bytes()
+            restore.append(lambda pointer=pointer,original=original: pointer.write_bytes(original))
+            pointer.write_text(str(repo/'.git')+'\n')
+        held=external/'held';admin.rename(held);admin.symlink_to(held,target_is_directory=True)
+        restore.append(lambda: (admin.unlink(),held.rename(admin)))
+    elif kind in ('entry_alias','gitdir_alias','commondir_alias','backlink_alias'):
+        target={'entry_alias':entry,'gitdir_alias':entry/'gitdir','commondir_alias':entry/'commondir','backlink_alias':path/'.git'}[kind]
+        held=external/'held';target.rename(held);target.symlink_to(held,target_is_directory=kind=='entry_alias')
+        restore.append(lambda: (target.unlink(),held.rename(target)))
+    elif kind.startswith('unreadable_'):
+        target={'unreadable_admin':admin,'unreadable_entry':entry,'unreadable_gitdir':entry/'gitdir'}[kind]
+        old=target.stat().st_mode & 0o777;target.chmod(0)
+        restore.append(lambda: target.chmod(old))
+    elif kind=='extra_entry':
+        target=admin/'unexpected';target.mkdir();(target/'keep').write_text('not a registration')
+        restore.append(lambda: ((target/'keep').unlink(),target.rmdir()))
+    else:
+        target=path/'.git' if kind=='conflicting_backlink' else entry/('HEAD' if kind in ('missing_head','malformed_head') else 'commondir' if kind=='missing_commondir' else 'gitdir')
+        old=target.read_bytes()
+        if kind.startswith('missing_'): target.unlink()
+        else: target.write_text('gitdir: /conflicting\n' if kind=='conflicting_backlink' else 'a'*41+'\n' if kind=='malformed_head' else 'relative malformed\n')
+        restore.append(lambda: target.write_bytes(old))
+    try:
+        yield dict(sentinel=sentinel,external=external)
+    finally:
+        for action in reversed(restore):action()
+
+
+def c19():
+    """Git exit0 omissions must not create empty/complete inventories."""
+    observed=[]
+    for kind in ('unreadable_admin','unreadable_entry','unreadable_gitdir','missing_admin','missing_entry','missing_gitdir','missing_commondir','missing_head','malformed_head','malformed_gitdir','extra_entry'):
+        with fixture() as f:
+            p=f.scratch('TASK-1');repo,q=f.worktree('TASK-2','a-uncertain')
+            safe,z=f.worktree('TASK-3','z-safe')
+            before=candidate_contents(q,repo/'.git/worktrees')
+            registered=f.git(repo,'worktree','list','--porcelain')
+            calls=[];real=ds.git
+            def trace(repo,deadline,*args):
+                calls.append((str(repo),args));return real(repo,deadline,*args)
+            with damaged_registration(f,repo,q,kind) as damaged:
+                # Real Git's omission is recorded, never used as authority.
+                git_output=f.git(repo,'worktree','list','--porcelain')
+                with patch.object(ds,'git',trace),refuse_mutations():dry=f.sweep('dry_run')
+                assert dry['discovery']=='partial' and dry['outcome']=='incomplete',dry
+                assert dry['unreached'] is None and dry['known_candidate_count']==2,dry
+                assert any(s['path']==str(repo) and s['candidate_count'] is None and str(repo/'.git/worktrees') in s['reason'] for s in dry['discovery_scopes']),dry
+                assert all(c['path']!=str(q) for c in dry['candidates'])
+                assert p.exists() and z.exists() and q.exists()
+                with patch.object(ds,'git',trace):r=f.sweep()
+                assert r['discovery']=='partial' and r['outcome']=='incomplete' and r['unreached'] is None,r
+                assert all(row(r,x)['state']=='removed' and not x.exists() for x in (p,z)),r
+                assert q.exists() and damaged['sentinel'].read_bytes()==b'external control'
+                assert not any(root==str(repo) for root,args in calls),calls
+                assert not any(args[:2]==('worktree','prune') for root,args in calls),calls
+                if kind.startswith('unreadable_'): assert target_mode(repo,q,kind)==0
+                observed.append(dict(kind=kind,git_omitted=str(q) not in git_output,dry='preserved/no mutation',on='independent scratch/repo removed',bad_repo_git_calls=0,unknown_total=None))
+            assert before==candidate_contents(q,repo/'.git/worktrees')
+            assert registered==f.git(repo,'worktree','list','--porcelain')
+            assert f.git(repo,'show-ref','--verify','refs/heads/task/TASK-2')
+    return observed
+
+
+def target_mode(repo,path,kind):
+    target={'unreadable_admin':repo/'.git/worktrees','unreadable_entry':repo/'.git/worktrees'/path.name,'unreadable_gitdir':repo/'.git/worktrees'/path.name/'gitdir'}[kind]
+    return target.lstat().st_mode & 0o777
+
+
+def c20():
+    """Valid alias escape and pointer conflicts stop BEFORE Git consumes them."""
+    observed=[]
+    for kind in ('admin_alias','entry_alias','gitdir_alias','commondir_alias','backlink_alias','conflicting_backlink'):
+        with fixture() as f:
+            p=f.scratch('TASK-1');repo,q=f.worktree('TASK-2')
+            # Preserve valid Git meaning even after the admin-directory move.
+            (repo/'.git/worktrees'/q.name/'commondir').write_text(str(repo/'.git')+'\n')
+            before=candidate_contents(q,repo/'.git/worktrees')
+            registered=f.git(repo,'worktree','list','--porcelain')
+            calls=[];real=ds.git
+            def trace(root,deadline,*args):calls.append((str(root),args));return real(root,deadline,*args)
+            with damaged_registration(f,repo,q,kind) as damaged:
+                protected=candidate_contents(damaged['external'])
+                # This is the actual valid nonzero-HEAD QA reproducer.
+                if kind=='admin_alias':
+                    actual=f.git(repo,'worktree','list','--porcelain')
+                    assert str(q) in actual and 'HEAD 0000000000000000000000000000000000000000' not in actual
+                with patch.object(ds,'git',trace),refuse_mutations():dry=f.sweep('dry_run')
+                with patch.object(ds,'git',trace):r=f.sweep()
+                assert dry['discovery']==r['discovery']=='partial' and r['outcome']=='incomplete',r
+                assert r['unreached'] is None and row(r,p)['state']=='removed' and q.exists(),r
+                assert r['discovery_scopes'][0]['path']==str(repo) and r['discovery_scopes'][0]['candidate_count'] is None,r
+                assert not any(root==str(repo) for root,args in calls),calls
+                assert not any(args[:2] in (('worktree','remove'),('worktree','prune')) for root,args in calls),calls
+                assert protected==candidate_contents(damaged['external'])
+                observed.append(dict(kind=kind,git_calls=0,external_bytes_modes='unchanged',registration_worktree_branch='preserved'))
+            assert before==candidate_contents(q,repo/'.git/worktrees')
+            assert registered==f.git(repo,'worktree','list','--porcelain')
+            assert f.git(repo,'show-ref','--verify','refs/heads/task/TASK-2')
+    return observed
+
+
+def c21():
+    """Transitions wrap actual shipping boundaries, with real Git failures."""
+    from contextlib import ExitStack
+    observations=[]
+    for when in ('after_discovery','after_failure','after_repair','partial_failure'):
+        for kind in ('admin_alias','unreadable_admin','conflicting_backlink'):
+            with fixture() as f, ExitStack() as changes:
+                repo,q=f.worktree('TASK-1');_,sibling=f.worktree('TASK-2')
+                safe,z=f.worktree('TASK-3','z-safe')
+                if when=='partial_failure':q.chmod(0o555)
+                calls=[];repairs=[];damage=[];expected=[];late_git=[];first=[True]
+                realgit=ds.git;realdiscover=ds.discover;realmutate=ds.mutate
+                def change():
+                    expected.append(candidate_contents(q,sibling,repo/'.git/worktrees'))
+                    damage.append(changes.enter_context(damaged_registration(f,repo,q if when!='partial_failure' else sibling,kind)))
+                    expected.append(candidate_contents(damage[0]['external']))
+                def discover(*args,**kw):
+                    result=realdiscover(*args,**kw)
+                    if when=='after_discovery':change()
+                    return result
+                def git(root,deadline,*args):
+                    calls.append((str(root),args))
+                    if root==repo and damage:late_git.append(args)
+                    if root==repo and args[:2]==('worktree','remove') and first[0]:
+                        first[0]=False
+                        try:
+                            if when=='partial_failure':return realgit(root,deadline,*args)
+                            return realgit(root,deadline,'--THR307-controlled-invalid-option')
+                        except ds.Retain:
+                            if when in ('after_failure','partial_failure'):change()
+                            raise
+                    return realgit(root,deadline,*args)
+                def mutate(path,tree,deadline,*,remove):
+                    if not remove:repairs.append(str(path))
+                    result=realmutate(path,tree,deadline,remove=remove)
+                    if not remove and when=='after_repair':change()
+                    return result
+                with patch.object(ds,'discover',discover),patch.object(ds,'git',git),patch.object(ds,'mutate',mutate):r=f.sweep()
+                assert len(damage)==1 and r['discovery']=='partial' and r['unreached'] is None,r
+                assert any(s['path']==str(repo) and s['candidate_count'] is None for s in r['discovery_scopes']),r
+                assert row(r,sibling)['state']=='retained' and sibling.exists(),r
+                assert row(r,z)['state']=='removed' and not z.exists(),r
+                removes=[args for root,args in calls if root==str(repo) and args[:2]==('worktree','remove')]
+                assert len(removes)==(0 if when=='after_discovery' else 1),calls
+                assert len(repairs)==(1 if when=='after_repair' else 0),repairs
+                assert not any(args[:2]==('worktree','prune') for root,args in calls)
+                current=row(r,q)
+                assert current['state']==('retained' if when=='after_discovery' else 'partial_or_unknown'),r
+                assert current.get('removed_attributable_bytes') is None and r['phases']['worktree']['attribution_unknown']==(when!='after_discovery'),r
+                assert damage[0]['sentinel'].read_bytes()==b'external control'
+                if when=='partial_failure':
+                    assert q.exists() and q.stat().st_mode & 0o777==0o555
+                    # Git has really unregistered this root on permission failure.
+                    held=damage[0]['external']/'held' if kind=='admin_alias' else repo/'.git/worktrees'
+                    assert not (held/q.name).exists(),r
+                    assert 'first_remove_error' in current
+                assert late_git==[],late_git
+                assert expected[1]==candidate_contents(damage[0]['external'])
+                changes.close()
+                assert expected[0]==candidate_contents(q,sibling,repo/'.git/worktrees')
+                assert f.git(repo,'show-ref','--verify','refs/heads/task/TASK-1')
+                observations.append(dict(when=when,kind=kind,remove_calls=len(removes),repair_calls=len(repairs),candidate_state=current['state'],partial_bytes='unknown; no invented attribution'))
+    # Metadata changes AFTER a completed removal must prohibit prune without
+    # erasing the real earlier effect or its measured attribution.
+    with fixture() as f:
+        repo,q=f.worktree('TASK-1');external=f.base/'late-external';external.mkdir();(external/'sentinel').write_text('keep')
+        calls=[];real=ds.git;result={};changed=[False]
+        def checkpoint():
+            if any(c['state']=='removed' for c in result.get('candidates',[])) and not changed[0]:
+                changed[0]=True
+                admin=repo/'.git/worktrees'
+                if admin.exists():admin.rename(external/'old-empty')
+                admin.symlink_to(external,target_is_directory=True)
+        def trace(root,deadline,*args):calls.append(args);return real(root,deadline,*args)
+        with patch.object(ds,'git',trace):r=ds.sweep_org(f.org,time.monotonic()+12,mode='on',now=NOW,result=result,checkpoint=checkpoint)
+        assert changed[0] and r['discovery']=='partial' and r['outcome']=='incomplete',r
+        assert row(r,q)['state']=='removed' and row(r,q)['removed_attributable_bytes']>0 and not q.exists(),r
+        assert not any(args[:2]==('worktree','prune') for args in calls)
+        assert (external/'sentinel').read_text()=='keep'
+        assert f.git(repo,'show-ref','--verify','refs/heads/task/TASK-1')
+        observations.append(dict(when='before_prune',prune_calls=0,earlier_removal='preserved with positive attribution',unknown_total=None))
+    return observations
+
+
+def c22():
+    """Primary-only absent-admin control and metadata enumeration deadline."""
+    with fixture() as f:
+        repo,q=f.worktree('TASK-1');f.git(repo,'worktree','remove',str(q))
+        admin=repo/'.git/worktrees'
+        if admin.exists():admin.rmdir()
+        p=f.scratch('TASK-2')
+        r=f.sweep()
+        assert r['discovery']=='complete' and r['outcome']=='complete' and row(r,p)['state']=='removed',r
+        assert ds.registrations(repo,time.monotonic()+3).keys()=={str(repo)}
+        # A locked registration is valid known inventory, retained by admission.
+        _,z=f.worktree('TASK-3');f.git(repo,'worktree','lock',str(z))
+        r=f.sweep();retained(r,z,'locked')
+        assert f.git(repo,'show-ref','--verify','refs/heads/task/TASK-3')
+    with fixture() as f:
+        p=f.scratch('TASK-1');repo,q=f.worktree('TASK-2')
+        later=f.base/'zz-org';(later/'org').mkdir(parents=True);(later/'org/config.yaml').write_text('disk_sweep: {mode: "off"}')
+        real=ds.names;delayed=[False]
+        def names(fd,deadline):
+            values=real(fd,deadline)
+            if os.readlink('/proc/self/fd/'+str(fd))==str(repo/'.git/worktrees'):
+                delayed[0]=True;time.sleep(.09)
+            return values
+        start=time.monotonic();deadline=start+.06
+        with patch.object(ds,'names',names),refuse_mutations():
+            r=ds.sweep([str(f.org),str(later)],deadline,f.base/'summary.json',dry_run=True,scheduled_date=None,revision='fixture',started_monotonic=start)
+        item=r['orgs'][0]
+        assert delayed[0] and r['outcome']=='incomplete' and r['unreached_orgs']==[str(later)],r
+        assert r['deadline_monotonic']==deadline and r['budget_seconds']==deadline-start
+        assert item['discovery']=='unknown' and item['unreached'] is None and item['known_unreached_count']==1,item
+        assert row(item,p)['state']=='unreached' and p.exists() and q.exists()
+        assert any(s.get('interrupted') and s['path']==str(repo) for s in item['discovery_scopes']),item
+        return dict(primary_only_absent_admin='complete; independent scratch removed',locked='retained',metadata_enumeration='original deadline; globally stopped; later org unreached',seconds=time.monotonic()-start)
+
+
 def config_checks():
     assert OrgConfig.load_from_text('').disk_sweep_mode=='dry_run'
     for mode in ('off','dry_run','on'):assert OrgConfig.load_from_text('disk_sweep: {mode: "'+mode+'"}').disk_sweep_mode==mode
@@ -859,7 +1093,7 @@ def isolated_boundary(kind):
 if __name__=='__main__':
     parser=argparse.ArgumentParser(description=__doc__)
     selection=parser.add_mutually_exclusive_group()
-    selection.add_argument('--cases',type=int,nargs='+',choices=range(1,19))
+    selection.add_argument('--cases',type=int,nargs='+',choices=range(1,23))
     selection.add_argument('--isolation-case',choices=('mount','root'),help='only the private executable namespace fixture; exit77 if unavailable')
     args=parser.parse_args()
     # The private helper alone is mapped root; the driver retains its ordinary
@@ -873,8 +1107,8 @@ if __name__=='__main__':
             status=77 if detail['result']=='UNAVAILABLE' else 0
         else:
             config_checks()
-            purposes=('Terminal owned root and attribution','Nonterminal and invalid lineage','Real process cwd/root/exe/fd','Real TMPDIR/TMP/TEMP and alias','Readonly handling and bounded Git retry','Link/ancestor and actual mounted boundaries','Dirty/untracked and ignored Git contents','Nonmutating function and public CLI dry run','Missing/denied evidence and all job lineage','Jobs both phases and fresh retry change','Nested recent writes','Partial removal, deadline, shutdown and event loop','Detached commit retained refs','Same-night progress after refusals and exhaustion','Partial discovery with protected non-Git siblings','Narrow unreadable/broken/alias discovery scopes','Global deadline during partial discovery','Progress after many uncertain subtrees')
-            for number,(fn,purpose) in enumerate(zip((c1,c2,c3,c4,c5,c6,c7,c8,c9,c10,c11,c12,c13,c14,c15,c16,c17,c18),purposes),1):
+            purposes=('Terminal owned root and attribution','Nonterminal and invalid lineage','Real process cwd/root/exe/fd','Real TMPDIR/TMP/TEMP and alias','Readonly handling and bounded Git retry','Link/ancestor and actual mounted boundaries','Dirty/untracked and ignored Git contents','Nonmutating function and public CLI dry run','Missing/denied evidence and all job lineage','Jobs both phases and fresh retry change','Nested recent writes','Partial removal, deadline, shutdown and event loop','Detached commit retained refs','Same-night progress after refusals and exhaustion','Partial discovery with protected non-Git siblings','Narrow unreadable/broken/alias discovery scopes','Global deadline during partial discovery','Progress after many uncertain subtrees','Complete unreadable/missing registration census','No metadata alias or conflicting backlink traversal','Fresh registration gates and truthful partial effects','Primary-only control and metadata enumeration deadline')
+            for number,(fn,purpose) in enumerate(zip((c1,c2,c3,c4,c5,c6,c7,c8,c9,c10,c11,c12,c13,c14,c15,c16,c17,c18,c19,c20,c21,c22),purposes),1):
                 if args.cases is None or number in args.cases:case(number,purpose,fn)
             if any(item['result']=='PARTIAL' for item in RESULTS): status=77
     except Exception:

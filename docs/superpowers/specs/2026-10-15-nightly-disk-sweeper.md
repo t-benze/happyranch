@@ -34,8 +34,12 @@ scope is preserved and named literally in `discovery_scopes` (also under
 not become an empty inventory. Only an immediate repository with a no-follow
 primary `.git` directory is queried; arbitrary children such as `repos/output`
 and `repos/.happyranch` are reported uncertain without walking their contents.
-Workspace/repository/metadata aliases are not followed. Missing optional
-`task-tmp`/`repos` directories are absent; inaccessible or invalid ones are unknown.
+Workspace/repository/metadata aliases are not followed. Before trusting Git's
+list, a complete no-follow linked-admin census reconciles each registration
+and its reciprocal worktree pointer; Git exit0 can silently omit unreadable or
+missing records. A failed census retains the entire repository scope, including
+otherwise readable worktrees. Missing optional `task-tmp`/`repos` directories
+are absent; inaccessible or invalid ones are unknown.
 
 Independent known scopes continue within the SAME deadline. Completed traversal
 with any uncertain scope is `discovery: partial`; org and batch outcomes remain
@@ -140,9 +144,18 @@ Failure is recorded partial/unknown and is never retried with more force.
 
 Only actual Git registrations exactly under an owner's
 `repos/*/.claude/worktrees/TASK-*` qualify. Require matching guard task/worktree/
-primary-root ownership, ordinary no-follow primary `.git`, unlocked/nonprunable
-registration, correct owning task branch or detached HEAD, exact common-dir and
-toplevel, clean porcelain status including every nonignored untracked file, and
+primary-root ownership, ordinary no-follow primary `.git`, and a complete
+`.git/worktrees` inventory reconciled with Git output and literal task-worktree
+roots. The linked-admin directory, each entry and its files must be readable,
+ordinary and unaliased, with matching `gitdir`, `commondir`, `HEAD` and worktree
+`.git` backlinks. Missing, malformed, redirected, conflicting or unexpected
+metadata is unknown; no worktree from that uncertain repository is salvaged.
+A genuinely absent linked-admin directory with primary-only Git inventory and
+no surviving task-worktree roots is a valid empty control. Conservative pointer
+validation accepts canonical absolute backlinks and ordinary `../..` or exact
+absolute common-dir pointers; other spellings retain unknown. Also require an
+unlocked/nonprunable registration, correct owning task branch or detached HEAD,
+exact common-dir and toplevel, clean porcelain status including every nonignored untracked file, and
 empty `git rev-list -n1 HEAD --not --branches --remotes`. These Git facts are
 re-read after slow common inspections. Dirty paths are reported. Unique detached
 commits remain. Local branches/remotes preserve committed work without GitHub
@@ -151,7 +164,12 @@ publication; Git-ignored contents inside an admitted tree are disposable.
 
 Use `git worktree remove` without `--force`; keep branches. After ordinary failure
 there is at most one contained permission repair and retry, each with full fresh
-eligibility. This Git version can unregister a worktree on permission failure;
+eligibility. Registration and containment identities are refreshed immediately
+before removal, repair, retry and prune, including after the first Git failure.
+A metadata transition marks the repository scope unknown with null total counts,
+retains its remaining worktrees and prohibits prune; earlier partial effects and
+verified completed removals retain their actual accounting. This Git version
+can unregister a worktree on permission failure;
 that partial/unregistered root fails fresh admission and is retained, with no
 re-registration, generic rm or stronger retry. Timeout aborts the entire worker,
 so potentially surviving descendants are stopped by its supervisor.
@@ -220,10 +238,19 @@ worktrees before/after failed scopes, real unreadable/broken registrations,
 workspace/repo/metadata aliases and non-directory children, nonmutating dry-run,
 independent org continuation and JSON/audit projection, a real Git timeout during
 discovery with captured/unreached/unknown inventory, and finite progress after
-35 uncertain subtrees plus30 refused candidates:
+35 uncertain subtrees plus30 refused candidates. Cases19–22 cover real mode000
+linked-admin/entry/gitdir and missing admin/entry/pointers, Git success with omitted
+records, valid absolute-commondir aliases, entry/pointer aliases and conflicting
+backlinks. They assert no Git consumption/mutation of uncertain metadata, exact
+restored bytes/modes/registrations and branch preservation, dry-run nonmutation,
+and independent on-mode scratch/repository progress. Task-local orchestration
+changes real metadata after discovery, first actual Git failure, owned repair
+and completed removal before prune. Actual permission-failure unregistration
+remains partial/unknown; no repair/retry or invented bytes follow. Primary-only,
+locked and metadata-enumeration-deadline controls complete the focused cases:
 
 ```bash
-TMPDIR=/absolute/actual-child-task-tmp PYTHONDONTWRITEBYTECODE=1 .venv/bin/python scripts/verify_disk_sweeper.py --cases 15 16 17 18
+TMPDIR=/absolute/actual-child-task-tmp PYTHONDONTWRITEBYTECODE=1 .venv/bin/python scripts/verify_disk_sweeper.py --cases 15 16 17 18 19 20 21 22
 ```
 
 All disposable mutation roots must be inside that actual child's task-tmp.
