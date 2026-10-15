@@ -333,18 +333,36 @@ def reconcile_namespace(org, namespace, *, install=False):
         validate_rows(*read_rows(conn), namespace)
 
 
+def _record_refresh_failure(org: Any, diagnostic: Any, *, install: bool) -> None:
+    if install:
+        # One bounded producer code, never exception text or a prior diagnostic.
+        # Unknown codes still use the route's existing finite-code fallback.
+        org.naming_install_diagnostic = (
+            diagnostic if isinstance(diagnostic, str) and len(diagnostic) <= 64
+            else 'naming_database_unavailable'
+        )
+    elif diagnostic == 'naming_not_installed':
+        diagnostic = getattr(org, 'naming_install_diagnostic', None) or diagnostic
+    org.naming_diagnostic = diagnostic
+
+
 def refresh_names(org, *, install=False):
     """Diagnostic projection; baseline same-ID outcomes remain their owner's."""
     org.naming_readiness = 'unavailable'
+    if install:
+        # A new actual attempt supersedes the previous attempt's provenance.
+        org.naming_install_diagnostic = None
     try:
         snapshot = capture_namespace(org.root, org.teams)
         reconcile_namespace(org, snapshot, install=install)
     except (ValueError, OSError, UnicodeError) as exc:
-        org.naming_diagnostic = getattr(exc, 'code', 'naming_canonical_unavailable')
+        _record_refresh_failure(org, getattr(exc, 'code', 'naming_canonical_unavailable'),
+                                install=install)
         return False
     except Exception:
-        org.naming_diagnostic = 'naming_database_unavailable'
+        _record_refresh_failure(org, 'naming_database_unavailable', install=install)
         return False
+    org.naming_install_diagnostic = None
     org.naming_diagnostic = None
     org.naming_readiness = 'ready'
     return True
