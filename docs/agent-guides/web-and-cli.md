@@ -2827,3 +2827,9 @@ and historical delivery stay unchanged. No render-time naming or recipient infer
 Shared data is protocol/thread-mention-corpus.json (51 lexical +13 write-path rows).
 Public-unexposed mentions_json, authentic debt/outage and genuine task/dream/callback
 proof require actual evidence and cannot be inferred from static/mock checks.
+
+Thread detail stacks its conversation/composer and properties below the medium
+breakpoint. The transcript has bounded scrolling; all properties and participant
+controls remain reachable in the detail scroll area. At desktop widths the
+properties retain their fixed rail. Resize and locale changes preserve the mounted
+composer, draft, attachments and selection; neither action submits a message.

@@ -1398,9 +1398,9 @@ function DetailColumn({
         }
       />
       <PinErrorBanner message={pinError} />
-      <div className="flex min-h-0 flex-1">
-        <div className="flex min-w-0 flex-1 flex-col">
-          <div className="flex-1 overflow-auto">
+      <div className="flex min-h-0 flex-1 flex-col overflow-y-auto md:flex-row md:overflow-hidden">
+        <div className="flex min-h-64 min-w-0 shrink-0 flex-col md:min-h-0 md:flex-1">
+          <div className="max-h-96 min-h-32 flex-1 overflow-auto md:max-h-none md:min-h-0">
             <ThreadDetailTranscript
               messages={messages}
               loading={messagesLoading}
@@ -1410,15 +1410,15 @@ function DetailColumn({
               replyDelivery={replyDelivery}
             />
           </div>
-          <footer className="border-border-default bg-surface-sunken border-t p-3">
+          <footer className="border-border-default bg-surface-sunken shrink-0 border-t p-3">
             {composer}
           </footer>
         </div>
-        {/* Properties rail — 244px wide, Direction-A Pasture. Structured as
-            Participants (avatars) · properties · Artifacts (THREADDET-02). */}
+        {/* Stack properties below the conversation on narrow screens; md restores
+            the 244px rail. Both panes stay mounted with every control. */}
         <aside
           aria-label={t('threads.page.rail.aria')}
-          className="border-border-default bg-surface-sunken w-rail flex shrink-0 flex-col gap-3 overflow-auto border-l p-4"
+          className="border-border-default bg-surface-sunken flex w-full min-w-0 shrink-0 flex-col gap-3 overflow-auto border-t p-4 md:w-rail md:border-t-0 md:border-l"
         >
           {/* Participants — LED + mono name + latest-response status (THR-061
               a-thread-detail .prow). Status is derived from responder_status

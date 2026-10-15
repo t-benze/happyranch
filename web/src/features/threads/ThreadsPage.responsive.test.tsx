@@ -19,7 +19,7 @@
  *   4. Keyboard/accessibility: tabs, filter, and native row links stay
  *      reachable and labelled at the collapsed width.
  */
-import { screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 import { afterEach, describe, expect, test, vi } from 'vitest';
@@ -266,4 +266,65 @@ describe('TASK-5987 — responsive header seam (ThreadsPage)', () => {
       screen.getByRole('textbox', { name: /Filter threads/i }),
     );
   });
+});
+
+// R2 mounted preservation only. Actual 390px bounds/hit targets are checked
+// against the built SPA in the task-owned browser venue; jsdom has no layout.
+test('detail resize keeps the draft, selection and every properties action mounted without writes', async () => {
+  const thread = { ...mkThread('THR-4', 'Detail resize'), participants: ['founder', 'agent_a'] };
+  stubList([thread]);
+  const writes: string[] = [];
+  server.use(
+    http.get(`/api/v1/orgs/${SLUG}/threads/THR-4`, () => HttpResponse.json({ ...thread, messages: [] })),
+    http.get(`/api/v1/orgs/${SLUG}/threads/THR-4/messages`, () =>
+      HttpResponse.json({ messages: [], has_more: false, next_since_seq: 0, reply_delivery: [] })),
+    http.get(`/api/v1/orgs/${SLUG}/threads/THR-4/tasks`, () => HttpResponse.json([])),
+    http.get(`/api/v1/orgs/${SLUG}/threads/THR-4/tail`, () =>
+      HttpResponse.text('', { headers: { 'content-type': 'text/event-stream' } })),
+    http.get(`/api/v1/orgs/${SLUG}/tokens`, () => HttpResponse.json({ rollup: [] })),
+  );
+  const recordWrite = ({ request }: { request: Request }) => {
+    if (!['GET', 'HEAD'].includes(request.method)) writes.push(request.method);
+  };
+  server.events.on('request:start', recordWrite);
+  try {
+    vi.stubGlobal('innerWidth', 390);
+    mountAt(`/orgs/${SLUG}/threads/THR-4`);
+    const user = userEvent.setup();
+    const input = await screen.findByRole('textbox', { name: 'Compose follow-up' }) as HTMLTextAreaElement;
+    await screen.findByText('No tasks dispatched from this thread yet');
+    await user.type(input, '@Current @Current suffix');
+    input.setSelectionRange(9, 17);
+    const rail = screen.getByRole('complementary', { name: 'Thread properties' });
+    const invite = within(rail).getByRole('button', { name: /Invite participant/ });
+    const remove = within(rail).getByRole('button', { name: 'Remove agent_a' });
+    for (const width of [1440, 390]) {
+      await act(async () => {
+        vi.stubGlobal('innerWidth', width);
+        fireEvent(window, new Event('resize'));
+      });
+      expect(screen.getByRole('textbox', { name: 'Compose follow-up' })).toBe(input);
+      expect(input).toHaveValue('@Current @Current suffix');
+      expect(input).toHaveFocus();
+      expect([input.selectionStart, input.selectionEnd]).toEqual([9, 17]);
+      expect(screen.getByRole('complementary', { name: 'Thread properties' })).toBe(rail);
+      expect(within(rail).getByRole('button', { name: /Invite participant/ })).toBe(invite);
+      expect(within(rail).getByRole('button', { name: 'Remove agent_a' })).toBe(remove);
+      expect(within(rail).getByText('THR-4')).toBeInTheDocument();
+      for (const name of ['Rename', 'Pin', 'Archive', 'Send']) {
+        expect(screen.getByRole('button', { name })).toBeInTheDocument();
+      }
+      expect(screen.getByLabelText('Attach files')).toBeInTheDocument();
+    }
+    // Tab from the composer reaches the original send, remove and invite controls.
+    await user.tab();
+    expect(screen.getByRole('button', { name: 'Send' })).toHaveFocus();
+    await user.tab();
+    expect(remove).toHaveFocus();
+    await user.tab();
+    expect(invite).toHaveFocus();
+    expect(writes).toEqual([]);
+  } finally {
+    server.events.removeListener('request:start', recordWrite);
+  }
 });
