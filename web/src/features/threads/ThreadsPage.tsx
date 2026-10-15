@@ -1,4 +1,4 @@
-import { useIdentityOptions, useKnownAgentIds, usePreflightAddresses, namingAddressError } from '@/hooks/identities';
+import { identityInitials, useFounderName, useIdentityOptions, useKnownAgentIds, usePreflightAddresses, namingAddressError } from '@/hooks/identities';
 import { IdentityName } from '@/shared/identities/IdentityName';
 /**
  * ThreadsPage — list + detail reshape (§4.2, design-overhaul).
@@ -152,7 +152,7 @@ function localeTimestamp(locale: Locale, iso: string): string {
  */
 function lastSpeakerChip(speaker: string | null | undefined): { name: string; label?: React.ReactNode; role: 'manager' | 'worker' | 'founder' } | null {
   if (!speaker) return null;
-  if (speaker === 'founder') return { name: 'founder', label: <IdentityName canonicalId="founder" />, role: 'founder' };
+  if (speaker === 'founder') return { name: 'founder', label: <IdentityName canonicalId="founder" founderNameOnly />, role: 'founder' };
   if (speaker === 'system') return { name: 'system', role: 'worker' };
   return { name: speaker, label: <IdentityName canonicalId={speaker} />, role: 'worker' };
 }
@@ -229,16 +229,14 @@ function taskStatusLabel(status: string): string {
 }
 
 /**
- * Two-letter (max) avatar initials for a message sender. `founder` renders as
- * YOU (the founder viewing their own thread); agent names split on separators
- * and take the first letter of the first two segments (engineering_manager →
- * EM, product_lead → PL). Presentational only — no fabricated identity.
+ * Two-letter (max) avatar initials for a message sender. `founder` uses the
+ * Founder's current name (the canonical ID when unnamed/unavailable), matching
+ * the sidebar account row; agent IDs split on separators and take the first
+ * letter of the first two segments (engineering_manager → EM, product_lead →
+ * PL). Presentational only — no fabricated identity.
  */
-function speakerInitials(name: string, youLabel: string): string {
-  if (name === 'founder') return youLabel;
-  const parts = name.split(/[_\s.-]+/).filter(Boolean);
-  if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase();
-  return name.slice(0, 2).toUpperCase();
+function speakerInitials(name: string, founderName: string): string {
+  return identityInitials(name === 'founder' ? founderName : name);
 }
 
 /**
@@ -263,14 +261,14 @@ function latestResponderStatusByAgent(messages: ThreadMessage[]): Map<string, st
  * are decor. `aria-hidden` because the speaker name is announced by the bubble.
  */
 function TurnAvatar({ name }: { name: string }): JSX.Element {
-  const { t } = useTranslation();
+  const founderName = useFounderName();
   const bg = participantChipRole(name) === 'founder' ? 'bg-agent-founder' : 'bg-agent-worker';
   return (
     <span
       aria-hidden="true"
       className={`text-overline flex h-6 w-6 shrink-0 items-center justify-center rounded-full font-bold text-white ${bg}`}
     >
-      {speakerInitials(name, t('threads.page.avatar.you'))}
+      {speakerInitials(name, founderName)}
     </span>
   );
 }
@@ -1028,7 +1026,7 @@ export function ThreadsPage(): JSX.Element {
                     href={path}
                     onSelect={() => { rememberRowNavigationScroll(t.thread_id); navigate(path); }}
                     participants={t.participants}
-                    participantLabels={(t.participants ?? []).map((id, index) => <span key={id}>{index > 0 && " · "}<IdentityName canonicalId={id} /></span>)}
+                    participantLabels={(t.participants ?? []).map((id, index) => <span key={id}>{index > 0 && " · "}<IdentityName canonicalId={id} founderNameOnly /></span>)}
                     labels={rowLabels(t.status)}
                   />
                 );
@@ -1060,7 +1058,7 @@ export function ThreadsPage(): JSX.Element {
                     href={path}
                     onSelect={() => { rememberRowNavigationScroll(t.thread_id); navigate(path); }}
                     participants={t.participants}
-                    participantLabels={(t.participants ?? []).map((id, index) => <span key={id}>{index > 0 && " · "}<IdentityName canonicalId={id} /></span>)}
+                    participantLabels={(t.participants ?? []).map((id, index) => <span key={id}>{index > 0 && " · "}<IdentityName canonicalId={id} founderNameOnly /></span>)}
                     labels={rowLabels(t.status)}
                   />
                 );
@@ -1347,7 +1345,7 @@ function DetailColumn({
         subject={thread.subject}
         status={threadStatusOrFallback(thread.status)}
         participants={thread.participants}
-        participantLabels={thread.participants.map((id, index) => <span key={id}>{index > 0 && ", "}<IdentityName canonicalId={id} /></span>)}
+        participantLabels={thread.participants.map((id, index) => <span key={id}>{index > 0 && ", "}<IdentityName canonicalId={id} founderNameOnly /></span>)}
         archiveSummary={thread.summary}
         dreamOriginated={isDreamOriginated}
         renaming={renaming}
@@ -1422,7 +1420,7 @@ function DetailColumn({
         >
           {/* Participants — LED + mono name + latest-response status (THR-061
               a-thread-detail .prow). Status is derived from responder_status
-              (honest); founder is labelled by role. Remove ✕ preserved. */}
+              (honest); the founder row shows the current name alone. Remove ✕ preserved. */}
           <div>
             <h3 className="text-text-muted mb-1 text-xs font-semibold tracking-wider uppercase">{t('threads.page.rail.participants')}</h3>
             {thread.participants.length > 0 ? (
@@ -1430,16 +1428,12 @@ function DetailColumn({
                 {thread.participants.map((p) => {
                   // Latest responder state drives BOTH the LED color and the
                   // status label (honest, derived — no fabrication). The
-                  // founder is the viewer, shown as "you" with a role label.
+                  // founder shows their current name alone (canonical ID when
+                  // unnamed/unavailable) with no redundant role label.
                   const respStatus = statusByAgent.get(p) ?? null;
                   const led = participantLed(p, respStatus);
-                  const statusLabel =
-                    p === 'founder'
-                      ? t('threads.page.rail.founderRole')
-                      : respStatus
-                        ? responderStatusLabel(respStatus, t)
-                        : null;
-                  const displayName = <IdentityName canonicalId={p} />;
+                  const statusLabel = p !== 'founder' && respStatus ? responderStatusLabel(respStatus, t) : null;
+                  const displayName = <IdentityName canonicalId={p} founderNameOnly />;
                   return (
                     <li key={p} className="flex items-center gap-2 py-1">
                       <span aria-hidden="true" className={`h-1.5 w-1.5 shrink-0 rounded-full ${led}`} />
@@ -1753,7 +1747,7 @@ function ThreadDetailTranscript({ messages, loading, slug, threadId, nowMs, repl
                     variant={variant}
                     seq={m.seq}
                     speaker={m.speaker}
-                    speakerLabel={<IdentityName canonicalId={m.speaker} />}
+                    speakerLabel={<IdentityName canonicalId={m.speaker} founderNameOnly />}
                     speakerRole={m.speaker === 'founder' ? 'founder' : 'worker'}
                     timestamp={m.created_at}
                     body={m.body_markdown}

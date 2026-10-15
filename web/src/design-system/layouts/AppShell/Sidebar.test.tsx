@@ -9,13 +9,19 @@
 import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
-import { describe, expect, test } from 'vitest';
+import { afterAll, beforeAll, describe, expect, test, vi } from 'vitest';
+import { transferableAbortController } from 'node:util';
 import { AppRoutes } from '@/routes';
 import type { NarrativeCounts } from '@/lib/api/types';
 import { renderWithProviders, savedLocaleAdapter } from '@/test/render';
 import { server } from '@/test/server';
 
 const SLUG = 'test-org';
+
+// Node fetch requires its own AbortSignal realm so the signal-bearing identity
+// query resolves (same stub as src/test/identity-names.test.tsx).
+beforeAll(() => vi.stubGlobal('AbortController', transferableAbortController().constructor));
+afterAll(() => vi.unstubAllGlobals());
 
 /**
  * Seed the MSW handlers that the AppShell + Sidebar query on mount.
@@ -73,6 +79,10 @@ function seedSidebarShell(
     ),
     http.get('/api/v1/orgs/:slug/dreams', () =>
       HttpResponse.json({ dreams: [] }),
+    ),
+    // THR-293: the account row renders the saved custom Founder name.
+    http.get(`/api/v1/orgs/${SLUG}/identities`, () =>
+      HttpResponse.json({ identities: [{ canonical_id: 'founder', kind: 'founder', lifecycle: 'founder', addressable_name: 'Benze', name_revision: 2, canonical_definition_revision: null, naming_status: 'ready' }] }),
     ),
   );
 }
@@ -146,7 +156,7 @@ describe('IA-1: Sidebar (left rail replaces the legacy tab bar)', () => {
       const settings = aside.getByRole('link', { name: 'Settings' });
       expect(settings).toHaveAttribute('href', `/orgs/${SLUG}/settings`);
       expect(primaryItems).not.toContainElement(settings);
-      expect(settings.compareDocumentPosition(aside.getByLabelText('Account: You, Founder')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect(settings.compareDocumentPosition(aside.getByLabelText('Account: Benze, Founder')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     });
   });
 
@@ -181,7 +191,7 @@ describe('IA-1: Sidebar (left rail replaces the legacy tab bar)', () => {
       expect(screen.getByLabelText('当前组织')).toBeInTheDocument();
       expect(screen.getByRole('region', { name: '组织切换器' })).toBeInTheDocument();
       expect(aside.getByText(/第\s*3\s*天/)).toBeInTheDocument();
-      expect(screen.getByLabelText('账户：你，创始人')).toBeInTheDocument();
+      expect(screen.getByLabelText('账户：Benze，创始人')).toBeInTheDocument();
       expect(screen.getByLabelText(/主题/)).toBeInTheDocument();
       // AppBar page title is localized too (nav + title both read 首页).
       expect(screen.getAllByText('首页').length).toBeGreaterThanOrEqual(2);
@@ -194,7 +204,8 @@ describe('IA-1: Sidebar (left rail replaces the legacy tab bar)', () => {
     renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/dashboard` });
 
     await waitFor(() => {
-      expect(screen.getByText('You')).toBeInTheDocument();
+      expect(screen.getByText('Benze')).toBeInTheDocument();
+      expect(screen.getByText('BE')).toBeInTheDocument();
       expect(screen.getByText('Founder')).toBeInTheDocument();
     });
   });
@@ -238,13 +249,15 @@ describe('IA-1: Sidebar (left rail replaces the legacy tab bar)', () => {
     seedSidebarShell();
     const user = userEvent.setup();
     renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/dashboard` });
-
+    await waitFor(() => expect(screen.getByLabelText('Active org')).toBeInTheDocument());
+    await screen.findByLabelText('Account: Benze, Founder');
     await waitFor(() => expect(screen.getByLabelText('Active org')).toBeInTheDocument());
     const focusOrder = [
       screen.getByLabelText('Active org'),
       screen.getByRole('link', { name: 'Home' }),
       screen.getByRole('link', { name: 'Threads' }),
       screen.getByRole('link', { name: 'Tasks' }),
+      screen.getByRole('link', { name: 'Reviews' }),
       screen.getByRole('link', { name: 'Jobs' }),
       screen.getByRole('link', { name: 'Todos' }),
       screen.getByRole('link', { name: 'Agents' }),
@@ -257,7 +270,7 @@ describe('IA-1: Sidebar (left rail replaces the legacy tab bar)', () => {
       screen.getByRole('link', { name: 'Usage' }),
       screen.getByRole('link', { name: 'Health' }),
       screen.getByRole('link', { name: 'Settings' }),
-      screen.getByLabelText('Account: You, Founder'),
+      screen.getByLabelText('Account: Benze, Founder'),
     ];
     for (const target of focusOrder) {
       await user.tab();
@@ -341,7 +354,7 @@ describe('THR-046: nav count badges removed — no badge rendered anywhere', () 
       expect(aside.getByText('Dreams').closest('a')).toHaveAttribute('href', `/orgs/${SLUG}/dreams`);
       expect(aside.getByText('Usage').closest('a')).toHaveAttribute('href', `/orgs/${SLUG}/usage`);
       expect(aside.getByText('Health').closest('a')).toHaveAttribute('href', `/orgs/${SLUG}/health`);
-      expect(aside.getByText('You')).toBeInTheDocument();
+      expect(aside.getByText('Benze')).toBeInTheDocument();
     });
   });
 });
@@ -603,7 +616,7 @@ describe('THR-230: the sidebar owns its own vertical overflow', () => {
     expect(header).not.toBeNull();
     expect(header!.className.split(/\s+/)).toContain('shrink-0');
 
-    const footer = screen.getByLabelText('Account: You, Founder').parentElement;
+    const footer = (await screen.findByLabelText('Account: Benze, Founder')).parentElement;
     expect(footer).not.toBeNull();
     expect(footer!.className.split(/\s+/)).toContain('shrink-0');
     // The footer still pins to the bottom of the rail at tall viewports.
@@ -618,15 +631,16 @@ describe('THR-230: the sidebar owns its own vertical overflow', () => {
     const nav = within(aside).getByRole('navigation', { name: 'Primary navigation items' });
 
     // The overflow is carried by an internal scroller, never by dropping,
-    // clipping, or collapsing items: all fourteen survive.
-    expect(within(nav).getAllByRole('link')).toHaveLength(14);
+    // clipping, or collapsing items: all fifteen survive.
+    expect(within(nav).getAllByRole('link')).toHaveLength(15);
     expect(within(nav).getByRole('link', { name: 'Home' })).toBeInTheDocument();
+    expect(within(nav).getByRole('link', { name: 'Reviews' })).toBeInTheDocument();
     expect(within(nav).getByRole('link', { name: 'Health' })).toBeInTheDocument();
 
     // Settings and the account row live in the footer, OUTSIDE the scroller,
     // so they stay pinned and reachable however far the nav scrolls.
     const settings = within(aside).getByRole('link', { name: 'Settings' });
-    const account = within(aside).getByLabelText('Account: You, Founder');
+    const account = await within(aside).findByLabelText('Account: Benze, Founder');
     expect(nav.contains(settings)).toBe(false);
     expect(nav.contains(account)).toBe(false);
     expect(account).toHaveAttribute('tabindex', '0');

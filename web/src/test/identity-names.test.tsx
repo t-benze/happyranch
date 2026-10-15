@@ -19,6 +19,7 @@ import { SkillDetailPage } from '@/features/skills/SkillDetailPage';
 import type { IdentityView, RenameBody, ResolveBody } from '@/lib/api/types';
 import corpus from '../../../protocol/thread-mention-corpus.json';
 import { translate } from '@/lib/i18n';
+import { Sidebar } from '@/design-system/layouts/AppShell/Sidebar';
 
 // Node fetch requires its own AbortSignal realm; keep real query cancellation.
 beforeAll(() => vi.stubGlobal('AbortController', transferableAbortController().constructor));
@@ -528,5 +529,150 @@ describe('naming v1 shipping UI — mocked HTTP', () => {
     fireEvent.click(screen.getByRole('link', { name: 'Mock org alpha' }));
     await waitFor(() => expect(within(editor).getByLabelText(t('identity.name'))).toHaveValue('KeepDraft'));
     expect(f.puts).toHaveLength(1); expect(f.puts[0].slug).toBe('alpha');
+  });
+});
+
+/** THR-293 seq236: bounded Founder presentation in the shipping Sidebar and thread sites. */
+function founderThread() {
+  const at = '2026-10-15T00:00:00Z';
+  const row = { thread_id: 'THR-F', subject: 'Founder naming', status: 'open', started_at: at, archived_at: null, forwarded_from_id: null, forwarded_from_kind: null, turn_cap: 500, turns_used: 2, summary: null, transcript_path: null, composed_from_dream_id: null, last_speaker: 'founder', pinned: false, pinned_at: null, last_activity_at: at, participants: ['founder', 'agent_a'] };
+  const message = (seq: number, speaker: string, body: string) => ({ seq, speaker, kind: 'message', body_markdown: body, decline_reason: null, system_payload: null, created_at: at, responder_status: [] });
+  const messages = [{ ...message(1, 'founder', 'Founder body'), responder_status: [{ agent_name: 'agent_a', status: 'replied' }] }, message(2, 'agent_a', 'Agent body')];
+  server.use(
+    http.get('/api/v1/orgs/:slug/threads', () => HttpResponse.json({ threads: [row], totals: { open: 1, archived: 0, all: 1, dream_origin: 0 }, has_more: false, next_cursor: null, sampled_at: at })),
+    http.get('/api/v1/orgs/:slug/threads/THR-F', () => HttpResponse.json({ ...row, reply_delivery: [], messages })),
+    http.get('/api/v1/orgs/:slug/threads/THR-F/messages', () => HttpResponse.json({ messages, next_before: null })),
+    http.get('/api/v1/orgs/:slug/threads/THR-F/tasks', () => HttpResponse.json({ tasks: [] })),
+    http.get('/api/v1/orgs/:slug/threads/THR-F/tail', () => HttpResponse.text('', { headers: { 'content-type': 'text/event-stream' } })),
+  );
+  return { messages };
+}
+function mountShell(route: string) {
+  sessionStorage.setItem('happyranch.token', 'mock-token');
+  const client = makeQueryClient();
+  const shell = (page: JSX.Element) => <OrgProvider><Sidebar />{page}</OrgProvider>;
+  render(<MemoryRouter initialEntries={[route]}><I18nProvider mode="full" adapter={savedLocaleAdapter('en')}><AppProvider client={client}>
+    <Routes>
+      <Route path="/orgs/:slug/threads/:thread_id?" element={shell(<ThreadsPage />)} />
+      <Route path="/orgs/:slug/settings/*" element={shell(<SettingsPage />)} />
+    </Routes>
+    <Link to="/orgs/beta/threads/THR-F">Mock org beta thread</Link><Link to="/orgs/alpha/threads/THR-F">Mock org alpha thread</Link><Link to="/orgs/alpha/threads">Mock org alpha list</Link>
+  </AppProvider></I18nProvider></MemoryRouter>);
+  return client;
+}
+const accountRow = (name: string) => screen.findByLabelText(`Account: ${name}, Founder`);
+function founderSites() {
+  const transcript = screen.getByText('Founder body').closest('article')!;
+  const rail = screen.getByRole('complementary', { name: t('threads.page.rail.aria') });
+  return { transcript, rail, founderRow: within(rail).getAllByRole('listitem')[0] };
+}
+
+describe('Founder presentation (THR-293 seq236) — shipping Sidebar + threads, mocked HTTP', () => {
+  test('case 1/2/7: saved custom Founder name drives Sidebar, initials and thread sites; agents keep Name · ID', async () => {
+    const f = fixture(); founderThread();
+    mountShell('/orgs/alpha/threads/THR-F');
+    const account = await accountRow('Boss');
+    expect(within(account).getByText('Boss')).toBeInTheDocument();
+    expect(within(account).getByText('BO')).toBeInTheDocument();
+    expect(within(account).queryByText('You')).not.toBeInTheDocument();
+    expect(within(account).queryByText('YT')).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText('Founder body')).toBeInTheDocument());
+    const { transcript, rail, founderRow } = founderSites();
+    await waitFor(() => expect(within(transcript).getByTitle(/^Boss · founder — /)).toHaveTextContent(/^Boss$/));
+    // Message author, avatar initials and participant rail: the current name alone —
+    // no canonical ID and no redundant Founder role label (en "founder" / zh 创始人).
+    const avatar = transcript.parentElement!.parentElement!.firstElementChild!;
+    expect(avatar).toHaveTextContent(/^BO$/);
+    expect(founderRow).toHaveTextContent(/^Boss$/);
+    // The agent rail row keeps Name · ID plus its responder status label.
+    const agentRow = within(rail).getAllByRole('listitem')[1];
+    expect(within(agentRow).getByText('Alpha · agent_a')).toBeInTheDocument();
+    expect(within(agentRow).getByText(t('threads.page.responder.replied'))).toBeInTheDocument();
+    // No visible "Boss · founder" anywhere; the agent keeps its current Name · ID.
+    expect(screen.queryAllByText('Boss · founder')).toHaveLength(0);
+    expect(within(rail).getByText('Alpha · agent_a')).toBeInTheDocument();
+    const agentArticle = screen.getByText('Agent body').closest('article')!;
+    expect(within(agentArticle).getByText('Alpha · agent_a')).toBeInTheDocument();
+    // Thread list: participants and last speaker show the Founder name only.
+    fireEvent.click(screen.getByRole('link', { name: 'Mock org alpha list' }));
+    const list = await screen.findByRole('link', { name: /Founder naming/ });
+    expect(within(list).queryByText(/Boss · founder/)).not.toBeInTheDocument();
+    expect(within(list).getAllByText('Boss').length).toBeGreaterThan(0);
+    expect(within(list).getByText('Alpha · agent_a')).toBeInTheDocument();
+    // Canonical identity data untouched.
+    expect(f.records.alpha.find((i) => i.kind === 'founder')).toMatchObject({ canonical_id: 'founder', addressable_name: 'Boss' });
+  });
+
+  test('case 3: ready default Founder name renders the canonical founder label and FO initials', async () => {
+    const f = fixture(); founderThread();
+    f.records.alpha.find((i) => i.kind === 'founder')!.addressable_name = 'founder';
+    mountShell('/orgs/alpha/threads/THR-F');
+    const account = await accountRow('founder');
+    expect(within(account).getByText('FO')).toBeInTheDocument();
+    expect(within(account).getByText('Founder')).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText('Founder body')).toBeInTheDocument());
+    const { transcript, founderRow } = founderSites();
+    await waitFor(() => expect(within(transcript).getByTitle(/^founder — /)).toHaveTextContent(/^founder$/));
+    expect(within(founderRow).getByText('founder', { selector: 'span.break-words' })).toBeInTheDocument();
+    expect(founderRow).toHaveTextContent(/^founder$/);
+  });
+
+  test('case 4: metadata failure after a ready cache falls back to the canonical ID with no stale custom name', async () => {
+    fixture(); founderThread();
+    const client = mountShell('/orgs/alpha/threads/THR-F');
+    await accountRow('Boss');
+    server.use(http.get('/api/v1/orgs/:slug/identities', () => HttpResponse.json({ detail: { code: 'naming_unavailable' } }, { status: 503 })));
+    await act(async () => { await client.refetchQueries({ queryKey: ['identities', 'alpha'] }); });
+    const account = await accountRow('founder');
+    expect(within(account).getByText('FO')).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText('Founder body')).toBeInTheDocument());
+    const { transcript } = founderSites();
+    expect(within(transcript).getByTitle(/^founder — /)).toHaveTextContent(/^founder$/);
+    expect(founderSites().founderRow).toHaveTextContent(/^founder$/);
+    expect(screen.queryAllByText(/Boss/)).toHaveLength(0);
+    // Established ID UI still works: the agent row keeps its canonical ID.
+    expect(screen.getAllByText('agent_a').length).toBeGreaterThan(0);
+  });
+
+  test('case 5: Founder editor save/readback refreshes Sidebar name and initials without reload; IDs unchanged', async () => {
+    const f = fixture(); founderThread();
+    mountShell('/orgs/alpha/settings/organization');
+    await accountRow('Boss');
+    const editor = await screen.findByRole('region', { name: t('identity.founderHeading') });
+    await waitFor(() => expect(within(editor).getByLabelText(t('identity.name'))).toBeEnabled());
+    await enterName(editor, 'Benze'); fireEvent.click(within(editor).getByRole('button', { name: t('identity.save') }));
+    await waitFor(() => expect(within(editor).getByRole('status')).toHaveTextContent('Saved'));
+    const account = await accountRow('Benze');
+    expect(within(account).getByText('BE')).toBeInTheDocument();
+    expect(f.puts).toEqual([{ slug: 'alpha', id: 'founder', body: { addressable_name: 'Benze', expected_name_revision: 1 } }]);
+    // Same mounted tree: navigate to the thread, the new name is current there too.
+    fireEvent.click(screen.getByRole('link', { name: 'Mock org alpha thread' }));
+    await waitFor(() => expect(screen.getByText('Founder body')).toBeInTheDocument());
+    const { transcript } = founderSites();
+    await waitFor(() => expect(within(transcript).getByTitle(/^Benze · founder — /)).toHaveTextContent(/^Benze$/));
+    expect(f.records.alpha.find((i) => i.kind === 'founder')!.canonical_id).toBe('founder');
+  });
+
+  test('case 6: org switch never leaks the previous org Founder name, including while loading', async () => {
+    fixture(); founderThread();
+    let releaseBeta!: () => void; const betaGate = new Promise<void>((r) => { releaseBeta = r; });
+    const records = { alpha: 'Boss', beta: 'BetaBoss' } as const;
+    server.use(http.get('/api/v1/orgs/:slug/identities', async ({ params }) => {
+      const slug = String(params.slug) as keyof typeof records;
+      if (slug === 'beta') await betaGate;
+      return HttpResponse.json({ identities: [{ canonical_id: 'founder', kind: 'founder', lifecycle: 'founder', addressable_name: records[slug], name_revision: 1, canonical_definition_revision: null, naming_status: 'ready' }] });
+    }));
+    mountShell('/orgs/alpha/threads/THR-F');
+    await accountRow('Boss');
+    fireEvent.click(screen.getByRole('link', { name: 'Mock org beta thread' }));
+    // Beta identities still loading: canonical fallback, never alpha's Boss.
+    await accountRow('founder');
+    expect(screen.queryByLabelText('Account: Boss, Founder')).not.toBeInTheDocument();
+    releaseBeta();
+    const beta = await accountRow('BetaBoss');
+    expect(within(beta).getByText('BE')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('link', { name: 'Mock org alpha thread' }));
+    await accountRow('Boss');
+    expect(screen.queryByLabelText('Account: BetaBoss, Founder')).not.toBeInTheDocument();
   });
 });

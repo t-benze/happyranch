@@ -839,7 +839,9 @@ describe('ThreadsPage — list (design-overhaul reshape)', () => {
       expect(screen.queryByText('487/500')).not.toBeInTheDocument();
       // Last speakers should appear
       expect(screen.getByText(/dev_agent/)).toBeInTheDocument();
-      expect(screen.getByText(/founder/)).toBeInTheDocument();
+      // The unavailable-metadata Founder speaker falls back to the canonical ID
+      // (the shell account row shows the same fallback, so scope by title).
+      expect(screen.getByTitle(/^founder — /)).toHaveTextContent(/^founder$/);
     });
   });
 

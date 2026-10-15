@@ -377,7 +377,9 @@ describe('ThreadsPage detail i18n (zh-CN)', () => {
     const rail = screen.getByRole('complementary', { name: '会话属性' });
     expect(within(rail).getByText('参与者')).toBeInTheDocument();
     expect(within(rail).getByText('founder')).toBeInTheDocument();
-    expect(within(rail).getByText('创始人')).toBeInTheDocument();
+    // The founder row shows the (canonical-fallback) name alone — no redundant role label.
+    expect(within(rail).getAllByRole('listitem')[0]).toHaveTextContent(/^founder$/);
+    expect(within(rail).queryByText('创始人')).not.toBeInTheDocument();
     expect(within(rail).getByText('engineering_manager')).toBeInTheDocument();
     expect(within(rail).getByRole('button', { name: '移除 engineering_manager' })).toBeInTheDocument();
     expect(within(rail).getByRole('button', { name: /邀请参与者/ })).toBeInTheDocument();

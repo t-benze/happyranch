@@ -457,7 +457,6 @@ export const en = {
   'shell.noOrg': 'No org',
   'shell.dayCount': 'Day {count}',
   'shell.account.label': 'Account: {name}, {role}',
-  'shell.account.you': 'You',
   'shell.account.founder': 'Founder',
 
   'shell.switchToLight': 'Switch to light theme',
@@ -1225,7 +1224,6 @@ export const en = {
   'threads.page.rail.aria': 'Thread properties',
   'threads.page.rail.participants': 'Participants',
   'threads.page.rail.you': 'you',
-  'threads.page.rail.founderRole': 'founder',
   'threads.page.rail.removeParticipant': 'Remove {name}',
   'threads.page.rail.none': 'none',
   'threads.page.rail.invite': 'Invite participant',
@@ -1280,7 +1278,6 @@ export const en = {
   'threads.page.composer.aborting': 'Aborting…',
   'threads.page.composer.removeAttachment': 'Remove attachment',
   'threads.page.composer.uploadFailed': '{name}: ',
-  'threads.page.avatar.you': 'YOU',
   // @w3a-end:threadsPage
 
   // --- W3a: thread dialogs, strips, NewThreadDialog ----------------------
