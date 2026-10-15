@@ -331,16 +331,56 @@ print(identity)
   [[ "$process" == "$peer_started" ]] || return 1
   printf '%s' "$identity"
 }
+negative_reference_check() {
+  local stage="$1" reply
+  [[ -n "${negative_ref_write:-}" && -n "${negative_ref_read:-}" ]] || return 1
+  # Isolate SIGPIPE if the holder has already disconnected, including when
+  # called inside the EXIT cleanup; it cannot terminate the controller shell.
+  (printf 'check %s\n' "$stage" >&"$negative_ref_write") || return 1
+  IFS= read -r -t 8 reply <&"$negative_ref_read" || return 1
+  [[ "$reply" == "held $run_id $stage" ]] || return 1
+  printf 'reference=%s held=true\n' "$stage" >>"$diagnostics/missing-consumed-state.log"
+}
+negative_reference_release() {
+  local reply status=0 pid="${negative_ref_pid:-${N3_HISTORY_REF_PID:-}}"
+  [[ "${negative_ref_done:-0}" != 1 ]] || return 0
+  [[ -n "$pid" ]] || return 0
+  if [[ -n "${negative_ref_write:-}" && -n "${negative_ref_read:-}" ]] \
+    && (printf 'release\n' >&"$negative_ref_write") \
+    && IFS= read -r -t 8 reply <&"$negative_ref_read" \
+    && [[ "$reply" == "released $run_id" ]]; then
+    printf 'reference=released\n' >>"$diagnostics/missing-consumed-state.log" || status=1
+  else
+    printf 'reference=release_unconfirmed\n' >>"$diagnostics/missing-consumed-state.log" || true
+    status=1
+  fi
+  # EOF releases an ordinary holder. The original absolute timeout owns a
+  # stuck holder's termination/reap (125s + 1s grace from launch); never signal
+  # a saved numerical PID after Bash could already have reaped that child.
+  if [[ -n "${negative_ref_write:-}" ]]; then exec {negative_ref_write}>&-; fi
+  if [[ -n "${negative_ref_read:-}" ]]; then exec {negative_ref_read}<&-; fi
+  local wait_status=0
+  wait "$pid" || wait_status=$?
+  printf 'reference_wait_status=%s\n' "$wait_status" >>"$diagnostics/missing-consumed-state.log" || status=1
+  (( wait_status == 0 )) || status=1
+  negative_ref_pid=""; negative_ref_write=""; negative_ref_read=""
+  negative_ref_done=1
+  return "$status"
+}
 negative_unit_state() {
   local stage="$1" value
+  negative_reference_check "$stage-before" || return 1
   # Decode raw bounded bytes before shell substitution can erase NUL/framing
   # errors. One named-property read avoids joining different invocations.
-  value="$(timeout --kill-after=1 3 systemctl show happyranch-tsnet-sidecar.service \
+  value="$( { local query_status=0; timeout --kill-after=1 3 systemctl show happyranch-tsnet-sidecar.service \
     -p LoadState -p Type -p ActiveState -p SubState -p Result -p InvocationID \
     -p ActiveEnterTimestampMonotonic -p ExecMainStartTimestampMonotonic \
     -p ExecMainPID -p MainPID -p ControlPID -p NRestarts \
-    -p InactiveExitTimestampMonotonic 2>/dev/null | python -c '
+    -p InactiveExitTimestampMonotonic 2>/dev/null || query_status=$?
+    printf 'stage=%s query_status=%s\n' "$stage" "$query_status" >>"$diagnostics/missing-consumed-state.log"
+    (( query_status == 0 )); } | python -c '
 import re,sys
+sys.excepthook = lambda *_: print("stage=" + sys.argv[1] + " parser=refused", file=sys.stderr)
 raw = sys.stdin.buffer.read(4097)
 if len(raw) > 4096 or not raw or any(c < 32 and c != 10 or c > 126 for c in raw):
     raise ValueError("invalid framing")
@@ -362,7 +402,8 @@ for key in keys[4:]:
     if not re.fullmatch("0|[1-9][0-9]{0,17}",values[key]):
         raise ValueError("invalid number")
 print(" ".join(values[key] for key in keys))
-' 2>/dev/null)" || { printf 'stage=%s state=unavailable\n' "$stage" >>"$diagnostics/missing-consumed-state.log"; return 1; }
+' "$stage" 2>>"$diagnostics/missing-consumed-state.log")" || { printf 'stage=%s state=unavailable\n' "$stage" >>"$diagnostics/missing-consumed-state.log"; return 1; }
+  negative_reference_check "$stage-after" || return 1
   read -r negative_active negative_sub negative_result negative_invocation negative_ready negative_main_started \
     negative_exec_pid negative_main_pid negative_control_pid negative_restarts negative_inactive_exit <<<"$value"
   printf 'stage=%s state=%s\n' "$stage" "$value" >>"$diagnostics/missing-consumed-state.log"
@@ -416,6 +457,33 @@ print("failed_start_job=" + jobs[0])
 ' "$negative_boot" "$negative_start_us" "$negative_end_us" 2>/dev/null >>"$diagnostics/missing-consumed-state.log"
 }
 missing_consumed_state_refused() {
+  local boot reply child_read child_write python_command status=0
+  boot="$(compact_boot_id)"; [[ "$boot" != unavailable ]] || return 1
+  python_command="$(command -v python)" || return 1
+  negative_ref_done=0
+  # A one-shot RefUnit disconnects and loses its pin. Keep this exact client
+  # alive from before the live tuple through the final stopped-history fence.
+  # No installed helper/unit, reconnect, reacquire or shipping unit change.
+  coproc N3_HISTORY_REF { exec timeout --kill-after=1 125 sudo -n "$python_command" -u "$failure_capture_driver" --mode negative-unit-reference --boot-id "$boot" --run-id "$run_id" 2>>"$diagnostics/missing-consumed-state.log"; }
+  negative_ref_pid="${N3_HISTORY_REF_PID:-}"
+  child_read="${N3_HISTORY_REF[0]:-}"; child_write="${N3_HISTORY_REF[1]:-}"
+  [[ -n "$negative_ref_pid" && -n "$child_read" && -n "$child_write" ]] || return 1
+  exec {negative_ref_read}<&"$child_read" || { negative_reference_release || true; return 1; }
+  exec {negative_ref_write}>&"$child_write" || { negative_reference_release || true; return 1; }
+  exec {child_read}<&-
+  exec {child_write}>&-
+  if IFS= read -r -t 8 reply <&"$negative_ref_read" && [[ "$reply" == "held $run_id acquired" ]]; then
+    printf 'reference=acquired boot=%s run=%s\n' "$boot" "$run_id" >>"$diagnostics/missing-consumed-state.log" || status=1
+    (( status != 0 )) || missing_consumed_state_observed || status=$?
+  else
+    printf 'reference=acquisition_unconfirmed\n' >>"$diagnostics/missing-consumed-state.log" || true
+    status=1
+  fi
+  # Release on every ordinary return, without replacing an initiating failure.
+  negative_reference_release || { (( status != 0 )) || status=1; }
+  return "$status"
+}
+missing_consumed_state_observed() {
   local prior_ready prior_invocation enrolled baseline_exit attempt_invocation="" status=0 start_status stop_status
   local negative_boot negative_since negative_start_us negative_end_us
   negative_boot="$(compact_boot_id)"; [[ "$negative_boot" != unavailable ]] || return 1
@@ -1233,6 +1301,9 @@ cleanup() {
   set +e
   printf 'cleanup\n' >>"$diagnostics/cleanup-events.log"
   (( original_status == 0 )) || capture_failure_snapshot failure-before-teardown || true
+  # Cancellation may interrupt the private reference holder. Release it even
+  # when evidence failed; no holder failure may suppress the remaining stops.
+  negative_reference_release || cleanup_failed=1
   # Capture isolates its own option changes; never rely on that here. Teardown
   # must attempt its remaining work after an independent stop/disable/reset
   # failure, and only the saved initiating status may leave this handler.

@@ -1056,9 +1056,153 @@ def capture_connector_journal(boot: str | None, since: int | None, until: int | 
     return result
 
 
+def hold_negative_unit_reference(boot: str | None, run: str | None) -> int:
+    """Hold ONE private observation reference; never reconnect or start a unit."""
+    if (boot is None or re.fullmatch(r"[0-9a-f]{32}", boot) is None
+            or run is None or re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", run) is None):
+        return 1
+    bus = ctypes.c_void_p()
+    library = None
+    try:
+        # libsystemd0 is part of the Ubuntu/systemd venue, not an installed
+        # Python dependency. Missing ABI/library refuses; no fallback client.
+        library = ctypes.CDLL("libsystemd.so.0")
+        pointer, string = ctypes.c_void_p, ctypes.c_char_p
+        signatures = {
+            "sd_bus_open_system": ([ctypes.POINTER(pointer)], ctypes.c_int),
+            "sd_bus_set_method_call_timeout": ([pointer, ctypes.c_uint64], ctypes.c_int),
+            "sd_bus_get_unique_name": ([pointer, ctypes.POINTER(string)], ctypes.c_int),
+            "sd_bus_call_method": ([pointer, string, string, string, string, pointer, ctypes.POINTER(pointer), string], ctypes.c_int),
+            "sd_bus_message_get_sender": ([pointer], string),
+            "sd_bus_message_read_basic": ([pointer, ctypes.c_char, pointer], ctypes.c_int),
+            "sd_bus_get_property": ([pointer, string, string, string, string, pointer, ctypes.POINTER(pointer), string], ctypes.c_int),
+            "sd_bus_message_enter_container": ([pointer, ctypes.c_char, string], ctypes.c_int),
+            "sd_bus_message_exit_container": ([pointer], ctypes.c_int),
+            "sd_bus_message_at_end": ([pointer, ctypes.c_int], ctypes.c_int),
+            "sd_bus_message_unref": ([pointer], pointer),
+            "sd_bus_close": ([pointer], None),
+            "sd_bus_unref": ([pointer], pointer),
+        }
+        for name, (arguments, result) in signatures.items():
+            function = getattr(library, name)
+            function.argtypes, function.restype = arguments, result
+
+        def require(value: int) -> None:
+            if value < 0:
+                raise ValueError("reference query failed")
+
+        def current_boot() -> None:
+            if Path("/proc/sys/kernel/random/boot_id").read_text().strip().replace("-", "") != boot:
+                raise ValueError("changed boot")
+
+        manager = b"org.freedesktop.systemd1"
+        root = b"/org/freedesktop/systemd1"
+        interface = b"org.freedesktop.systemd1.Manager"
+        unit = SIDECAR_UNIT.encode("ascii")
+        deadline = time.monotonic() + 120
+        current_boot()
+        require(library.sd_bus_open_system(ctypes.byref(bus)))
+        require(library.sd_bus_set_method_call_timeout(bus, 2_000_000))
+        own = string()
+        require(library.sd_bus_get_unique_name(bus, ctypes.byref(own)))
+        if own.value is None:
+            raise ValueError("missing client")
+        own_name = own.value
+
+        def call(destination: bytes, method: bytes) -> tuple[bytes | None, bytes | None]:
+            reply = pointer()
+            try:
+                require(library.sd_bus_call_method(bus, destination, root, interface, method,
+                                                  None, ctypes.byref(reply), b"s", string(unit)))
+                sender = library.sd_bus_message_get_sender(reply)
+                path = string()
+                if method == b"GetUnit":
+                    if library.sd_bus_message_read_basic(reply, b"o", ctypes.byref(path)) != 1:
+                        raise ValueError("missing object")
+                    if library.sd_bus_message_at_end(reply, 1) != 1:
+                        raise ValueError("extra object data")
+                return sender, path.value
+            finally:
+                library.sd_bus_message_unref(reply)
+
+        owner, _ = call(manager, b"RefUnit")
+        if owner is None or re.fullmatch(rb":[0-9]+\.[0-9]+", owner) is None:
+            raise ValueError("missing owner")
+        sender, path = call(owner, b"GetUnit")
+        if sender != owner or path != b"/org/freedesktop/systemd1/unit/happyranch_2dtsnet_2dsidecar_2eservice":
+            raise ValueError("changed object")
+
+        def held() -> None:
+            current_boot()
+            if time.monotonic() >= deadline:
+                raise ValueError("expired reference")
+            reply = pointer()
+            try:
+                require(library.sd_bus_get_property(bus, owner, path, b"org.freedesktop.systemd1.Unit",
+                                                   b"Refs", None, ctypes.byref(reply), b"as"))
+                if (library.sd_bus_message_get_sender(reply) != owner
+                        or library.sd_bus_message_enter_container(reply, b"a", b"s") != 1):
+                    raise ValueError("changed owner")
+                matches = 0
+                for _ in range(65):
+                    value = string()
+                    result = library.sd_bus_message_read_basic(reply, b"s", ctypes.byref(value))
+                    require(result)
+                    if result == 0:
+                        break
+                    matches += value.value == own_name
+                else:
+                    raise ValueError("oversize references")
+                if (matches != 1 or library.sd_bus_message_exit_container(reply) != 1
+                        or library.sd_bus_message_exit_container(reply) != 1
+                        or library.sd_bus_message_at_end(reply, 1) != 1):
+                    raise ValueError("lost reference")
+            finally:
+                library.sd_bus_message_unref(reply)
+            current_boot()
+            if time.monotonic() >= deadline:
+                raise ValueError("expired reference")
+
+        held()
+        print(f"held {run} acquired", flush=True)
+        # Ordered fences prevent a buffered old acknowledgement being reused.
+        stages = [f"{stage}-{edge}" for stage in ("live", "baseline", "before-stop", "after-stop", "final")
+                  for edge in ("before", "after")]
+        with selectors.DefaultSelector() as selector:
+            selector.register(sys.stdin, selectors.EVENT_READ)
+            for index in range(11):
+                command = b""
+                # Pipe reads may split a write. Accumulate one bounded frame,
+                # without assuming one read equals one whole command.
+                while not command.endswith(b"\n"):
+                    if len(command) >= 127 or not selector.select(max(0, deadline - time.monotonic())):
+                        raise ValueError("expired or oversized reference command")
+                    chunk = os.read(sys.stdin.fileno(), 128 - len(command))
+                    if not chunk:
+                        raise ValueError("closed reference controller")
+                    command += chunk
+                if command == b"release\n":
+                    call(owner, b"UnrefUnit")
+                    library.sd_bus_close(bus)
+                    print(f"released {run}", flush=True)
+                    return 0
+                if index >= len(stages) or command != f"check {stages[index]}\n".encode("ascii"):
+                    raise ValueError("invalid reference command")
+                held()
+                print(f"held {run} {stages[index]}", flush=True)
+    except Exception:
+        # Fixed category only; no DBus errors, environment or traceback bytes.
+        print("reference=unavailable", file=sys.stderr)
+    finally:
+        if library is not None and bus.value is not None:
+            library.sd_bus_close(bus)
+            library.sd_bus_unref(bus)
+    return 1
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--mode", choices=("receipts", "jobs", "plain", "headscale", "headscale-process", "headscale-read", "headscale-log", "headscale-nodes", "connector", "connector-process", "connector-journal"), default="receipts")
+    parser.add_argument("--mode", choices=("receipts", "jobs", "plain", "headscale", "headscale-process", "headscale-read", "headscale-log", "headscale-nodes", "connector", "connector-process", "connector-journal", "negative-unit-reference"), default="receipts")
     parser.add_argument("--input", type=Path)
     parser.add_argument("--invocation-id")
     parser.add_argument("--boot-id")
@@ -1067,7 +1211,10 @@ def main() -> int:
     parser.add_argument("--work")
     parser.add_argument("--headscale-pid")
     parser.add_argument("--connector-pid", type=int)
+    parser.add_argument("--run-id")
     args = parser.parse_args()
+    if args.mode == "negative-unit-reference":
+        return hold_negative_unit_reference(args.boot_id, args.run_id)
     if args.mode == "connector-process":
         if args.connector_pid is None or not 1 < args.connector_pid <= 2_147_483_647:
             parser.error("invalid connector PID")
