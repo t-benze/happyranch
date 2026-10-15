@@ -1,7 +1,13 @@
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from runtime.infrastructure.database import Database
 from runtime.models import CompletionReport, TokenUsage
+
+
+if TYPE_CHECKING:
+    from runtime.orchestrator.thread_move import ThreadPreparation
 
 
 class AuditLogger:
@@ -1065,36 +1071,23 @@ class AuditLogger:
         self, *, agent_role_map: dict[str, str] | None = None,
         current_time: "datetime | None" = None,
     ) -> dict:
-        """Acquire four streams in one synchronized SELECT, then reduce purely.
-
-        Roles are descriptive. No report input can supply G1/G3 authority.
-        A failed SELECT is an unavailable acquisition, never partial metrics.
-        """
+        """Acquire complete bounded task/lifecycle facts, then reduce read-only."""
         from datetime import datetime, timezone
-        from runtime.infrastructure.memory_telemetry_report import (
-            ACTIONS, ReportAcquisitionUnavailable, reduce_report,
-        )
-        cutoff = current_time if current_time is not None else datetime.now(timezone.utc)
+        from runtime.infrastructure.memory_telemetry_report import ACTIONS, ReportAcquisitionUnavailable, reduce_collection_report
         from runtime.infrastructure.memory_collection import CONTROL_ACTIONS, acquire_collection_report
+        cutoff = current_time if current_time is not None else datetime.now(timezone.utc)
         try:
-            rows = [dict(row) for row in self._db.fetch_all_readonly(
-                "SELECT id, timestamp, agent, task_id, action, payload FROM audit_log"
-                " WHERE action IN (?, ?, ?, ?, ?, ?) ORDER BY id", (*ACTIONS, *sorted(CONTROL_ACTIONS)),
-            )]
+            tables = self._db.read_memory_collection_evidence(audit_actions=(*ACTIONS, *sorted(CONTROL_ACTIONS)))
+            if any(row["action"] in CONTROL_ACTIONS for row in tables["audit_log"]):
+                context = getattr(self._db, "_memory_collection_context", None)
+                if context is None:
+                    raise ReportAcquisitionUnavailable()
+                tables, view, outputs, cutoff = acquire_collection_report(context, current_time=cutoff)
+            else:
+                view, outputs = {}, {}
+            return reduce_collection_report(tables, view, outputs, agent_role_map, cutoff)
         except Exception as exc:
             raise ReportAcquisitionUnavailable() from exc
-        if any(row["action"] in CONTROL_ACTIONS for row in rows):
-            context = getattr(self._db, "_memory_collection_context", None)
-            if context is None:
-                raise ReportAcquisitionUnavailable()
-            from runtime.infrastructure.memory_telemetry_report import reduce_collection_report
-            tables, view, outputs, cutoff = acquire_collection_report(context, current_time=cutoff)
-            return reduce_collection_report(tables, view, outputs, agent_role_map, cutoff)
-        streams = {action: [row for row in rows if row["action"] == action] for action in ACTIONS}
-        return reduce_report(
-            streams["memory_digest_impression"], streams["memory_read"], streams["memory_search"],
-            agent_role_map, cutoff, session_start_rows=streams["session_start"],
-        )
 
     def log_thread_started(
         self,
@@ -1237,9 +1230,10 @@ class AuditLogger:
         executor: str,
         stale_session_id: str,
         error: str,
+        _move_owner: ThreadPreparation | None = None,
     ) -> None:
-        """Fires when a resume reported session-not-found and we rebuilt a fresh
-        full-context session. Watch frequency: high rates mean the agent CLI's
+        """Records an exact session-not-found observation before fresh fallback
+        admission, even when that launch is deferred. High rates mean the CLI's
         local session TTL is shorter than our typical inter-turn gap.
 
         THR-200: this is now the single transactional seam — the audit row and
@@ -1253,6 +1247,7 @@ class AuditLogger:
             stale_session_id=stale_session_id,
             error=error,
             executor=executor,
+            _move_owner=_move_owner,
         )
 
     def log_thread_task_followup_enqueued(

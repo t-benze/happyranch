@@ -1,5 +1,69 @@
 # Agent Executors And Permissions
 
+## Approved online team move — C1 task/host and C2 thread source (THR296seq135)
+
+Manage-agent update retains team/role and cannot transfer or demote agents.
+The approved eventual online move reuses native rendering/permission/reset
+owners without changing execution enforcement or explicit allow rules. C1 adds task/host business admission exclusion, not executor permission
+enforcement. Permanent agent identity comes from trusted task ownership and
+survives host retries. C3/D materialization/publisher/other-producer/recovery
+closure remains absent. Shared founder bearer cannot prove human presence. No ambient agent
+credential, name, type/model or source acceptance grants move authority.
+Move admission deferral propagates through the inner launch handler to the existing
+pending-work owner without task failure, parent wake, followup or callback consumption.
+Malformed installed state retains its actionable admission error. Direct 429 and
+supervised passthrough retries preserve each returned uncertain attempt as a separate
+Pause journal/reservation blocker; the next actual attempt keeps the original retry
+budget, session and enqueue age and rechecks durable admission before FIFO/commit.
+Provider return never proves containment. Durable Pause attribution remains through
+workflow reconciliation and the actual outer cleanup batch. Its explicit disposition
+distinguishes safe no-action/preservation from halted, unreaped, action/report failure
+or unknown teardown; uncertainty retains the exact task/session owner and cleanup
+facts, without changing the normal terminal result or expanding cleanup authority.
+Retry attribution uses the existing entry id, task/agent/SID, owner identity,
+fingerprint, generation and retry fields; the retained reservation adopts that
+entry id only after journal COMMIT. The closed Pause journal format is unchanged.
+Failed-tail diagnostics append to existing `cleanup.suffix_lines` within its
+65536-byte UTF8 allowance, preserving earlier lines; excess new diagnostics are
+explicitly truncated and logged. `execution_unknown` retains ownership independently
+of diagnostic capacity. These lines are diagnostics, never quiescence proof or
+permission to replay an unknown entry. A refused save retains failed ownership
+and propagates unless an original exception is already unwinding; then that
+original exception carries the settlement failure note and log. Every collected
+outer-tail owner is visited even if another settlement fails.
+
+C2 now reserves trusted thread/participant/INTEGER invocation/SID ownership before
+preparation, then composes final claims and launch with the short gate, DB and
+host terminal ordering. All purposes and actual host/direct429, eviction and
+bounded-nudge paths participate. The existing thread audit owner stores strict
+bounded append-only attempt/deferral evidence; no schema or task-Pause format
+changes. Unknown prior retries stay blockers after later clean outcomes.
+Captured actual running turns alone may settle under WAITING; no drain label
+admits new work. Queue dedup spans queued/in-flight work, typed deferrals release
+notification ownership, and complete durable runnable discovery/redelivery keeps
+pending tokens/ranges/probe/catchup obligations intact. Native thread recovery
+and raw reapers preserve held/C2-owned history. Participant/session writes
+cooperate during future forward reset; messages remain admissible. The bounded
+thread census/drain and post-release seams are available to D, whose complete
+startup/containment/operation/old-reader closure remains absent. No public apply
+or COMPLETE writer; APPLY_AVAILABLE stays false. Behavior remains UNEXECUTED,
+integration SKIPPED24342; no new product tests/fixtures or activation authority.
+Native archive admission precedes delivery discard, BOOTSTRAP reaping, status,
+participant resets, their audits and the archive system message in one DB-owned
+transaction serialized against a forward decision. Refusal leaves all those
+obligations and history unchanged; transcript files/events follow COMMIT.
+Authentic provider eviction audit and compare-and-clear of the attempted stale
+SID commit before fallback phase selection/admission. Only the actual live
+producer's durable launched/settled initial attempt can record that observation
+under a winning hold; callback/drain/new-launch and general participant guards
+remain unchanged. Watermarks, delivery ranges/tokens and runtime SID are retained;
+unknown cleanup remains a blocker. Deferred re-entry cannot reuse the evicted SID.
+These archive/eviction/re-entry behavioral observations remain UNEXECUTED.
+
+See the [approved contract](../superpowers/specs/2026-10-14-online-team-move.md).
+Behavior/recovery remains UNEXECUTED; source/static acceptance is separate.
+
+
 ## Founder-managed Default (THR296)
 
 
@@ -1014,6 +1078,40 @@ not add a directory-fsync/crash-durability guarantee. On observer write failure,
 report retains its native batch/source/binding/write causes, blocks even against
 success-valued pending bytes, and separately retains admitted-result/pending facts.
 A missing canonical sequence also produces blocked intent with an evidence error.
+The local evidence ordering is attempt envelope → fresh native gates → canonical
+eligibility → first mutation → native terminal outcome → verified fsynced journal
+append → canonical reference-only acknowledgement → whole-coverage admission.
+The batch journal is the sole ordered outcome ledger. Direct Bash use needs the
+same bound manifest/history/journal/evidence sink; stdout alone grants no action.
+Cache isolation-directory creation is mutation. Failed rename/rmdir causes and
+separate original/cache/directory identity and measurements survive; only positive
+restoration/absence/source/status/raw-index proof admits safe refusal. Residue or
+uncertainty halts. Git read observations suppress optional index refresh.
+
+Each attempt and acknowledgement uses the existing exclusive pending write,
+flush/fsync/close and exclusive hard-link publisher. A canonical file with its
+identical expected staging sibling is valid; pending alone, conflict or collision
+is not. Acknowledgements reference binding, envelope/eligibility identities and
+exact journal prefix/row range/hash/ordinal, without a second success ledger.
+Batch resume and report preflight the entire bounded namespace and journal before
+any skip/admission; orphan or unacknowledged terminal evidence blocks, including
+when fallback is missing/truncated. Explicit native failure/interruption wins over
+readable files. Same-batch acknowledged prefix progress and later enclosing native
+batch/sequence/postcheck completeness are separate prerequisites. No automatic
+recovery or directory-fsync/crash-atomic guarantee follows. Historical bytes remain
+historical, with missing new-contract proof explicit; never rebind or retry them.
+
+Captured native uncertainty (output cap, timeout, spawn/capture failure, signal or
+failed publication) is distinct from a fully captured ordinary nonzero gate
+denial. The writer and every eligibility/coverage/resume/report reader retain
+the native cause and block action or next admission, even with healthy enclosing
+files or missing fallback. Native action/capture children inherit the candidate
+cancellation group. The batch stops and reconciles its owned group before
+terminal observations; outer capture allows that cleanup before forced kill.
+Residual or unproven survival is unknown and unsafe, never clean completion or
+permission to retry. Possible mutation remains partial/unknown without reuse.
+
+
 A genuine bound completion callback is the final session action. This repair grants no cleanup allocation.
 
 Its bundled read-only helper `runtime/skills/bundled/workspace-cleanup/scripts/check_path_use.py`

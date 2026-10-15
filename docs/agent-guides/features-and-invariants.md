@@ -1,5 +1,75 @@
 # Features And Invariants
 
+## Approved online team move — C1 task/host and C2 thread source (THR296seq135)
+
+B supplies private durable storage; C1 connects holds to task allocation/claim,
+preparation and final Pause/host commitment. Causal task/workflow closure and
+actual retry/callback/cleanup ownership participate; unknown quiescence stays
+reserved. C3/D producer/recovery/startup/old-reader closure remains absent.
+Same-key/body replay is read-only; changed body/active conflict/stale CAS refuse.
+Precommit refusal may release empty progress; postcommit repair retains its hold
+without TTL. No public commands or COMPLETE writer exist until full C2-D closure and
+actual canonical/context/reset/ready-authority validation. Manage-agent cannot
+transfer teams. Preserve histories/IDs/paths/permissions and Engineering routing.
+History validation shares the writer's finite forward/repair edges, requires the
+initial empty WAITING reservation and phase-local decision/receipt evidence,
+and forbids terminal resurrection. Repair returns only to its interrupted phase;
+retained recovery ownership remains required. Unchanged replay adds no audit.
+Move admission deferral propagates through the inner launch handler to the existing
+pending-work owner without task failure, parent wake, followup or callback consumption.
+Malformed installed state retains its actionable admission error. Direct 429 and
+supervised passthrough retries preserve each returned uncertain attempt as a separate
+Pause journal/reservation blocker; the next actual attempt keeps the original retry
+budget, session and enqueue age and rechecks durable admission before FIFO/commit.
+Provider return never proves containment. Durable Pause attribution remains through
+workflow reconciliation and the actual outer cleanup batch. Its explicit disposition
+distinguishes safe no-action/preservation from halted, unreaped, action/report failure
+or unknown teardown; uncertainty retains the exact task/session owner and cleanup
+facts, without changing the normal terminal result or expanding cleanup authority.
+Retry attribution uses the existing entry id, task/agent/SID, owner identity,
+fingerprint, generation and retry fields; the retained reservation adopts that
+entry id only after journal COMMIT. The closed Pause journal format is unchanged.
+Failed-tail diagnostics append to existing `cleanup.suffix_lines` within its
+65536-byte UTF8 allowance, preserving earlier lines; excess new diagnostics are
+explicitly truncated and logged. `execution_unknown` retains ownership independently
+of diagnostic capacity. These lines are diagnostics, never quiescence proof or
+permission to replay an unknown entry. A refused save retains failed ownership
+and propagates unless an original exception is already unwinding; then that
+original exception carries the settlement failure note and log. Every collected
+outer-tail owner is visited even if another settlement fails.
+
+C2 now reserves trusted thread/participant/INTEGER invocation/SID ownership before
+preparation, then composes final claims and launch with the short gate, DB and
+host terminal ordering. All purposes and actual host/direct429, eviction and
+bounded-nudge paths participate. The existing thread audit owner stores strict
+bounded append-only attempt/deferral evidence; no schema or task-Pause format
+changes. Unknown prior retries stay blockers after later clean outcomes.
+Captured actual running turns alone may settle under WAITING; no drain label
+admits new work. Queue dedup spans queued/in-flight work, typed deferrals release
+notification ownership, and complete durable runnable discovery/redelivery keeps
+pending tokens/ranges/probe/catchup obligations intact. Native thread recovery
+and raw reapers preserve held/C2-owned history. Participant/session writes
+cooperate during future forward reset; messages remain admissible. The bounded
+thread census/drain and post-release seams are available to D, whose complete
+startup/containment/operation/old-reader closure remains absent. No public apply
+or COMPLETE writer; APPLY_AVAILABLE stays false. Behavior remains UNEXECUTED,
+integration SKIPPED24342; no new product tests/fixtures or activation authority.
+Native archive admission precedes delivery discard, BOOTSTRAP reaping, status,
+participant resets, their audits and the archive system message in one DB-owned
+transaction serialized against a forward decision. Refusal leaves all those
+obligations and history unchanged; transcript files/events follow COMMIT.
+Authentic provider eviction audit and compare-and-clear of the attempted stale
+SID commit before fallback phase selection/admission. Only the actual live
+producer's durable launched/settled initial attempt can record that observation
+under a winning hold; callback/drain/new-launch and general participant guards
+remain unchanged. Watermarks, delivery ranges/tokens and runtime SID are retained;
+unknown cleanup remains a blocker. Deferred re-entry cannot reuse the evicted SID.
+These archive/eviction/re-entry behavioral observations remain UNEXECUTED.
+
+See the [approved contract](../superpowers/specs/2026-10-14-online-team-move.md).
+Behavior/recovery remains UNEXECUTED; source/static acceptance is separate.
+
+
 
 **Mounted generic owner review — THR139465/480/493/506, ROOT TASK10693.**
 The normal `/orgs/:slug/reviews` list and `/orgs/:slug/reviews/:activationId`
@@ -848,6 +918,26 @@ cannot exclude future writers or a hostile same-UID race.
 
 ### Orchestration core
 
+Each attachment storage_key can be claimed by one task only, including within
+the same tree. Each direct, child or then-leg list allows at most five refs;
+keys must be unique across the entire initial decision, including siblings and
+nested legs. Carrier top-level refs belong to the carrier; its first leg reads
+through ancestry without a second claim. Initial fanout preserves both child
+and nested attachment fields; later chain advancement keeps its existing rules.
+
+Recognized initial pre-child errors include too_many_attachments,
+duplicate_attachment, task_attachment_not_found, attachment_already_claimed,
+invalid_attachment_display_name and unsupported_attachment_type. Feedback gives
+the code, escaped key when supplied, and remediation. Correct in a genuinely
+new authorized session/result; never replay the consumed result. Each
+decision-owning task has at most TWO committed attachment-error feedback
+opportunities shared across sessions and initial delegate/fanout/parallel.
+Committed A consumes a chance even if B/enqueue is lost. The third recognized
+error uses the existing root ESCALATED or nonroot FAILED disposition. A valid
+correction after two remains eligible under current authority and revision
+limits. Other authoring, revise, slice and total-step rules stay unchanged.
+
+
 - **Orchestrator & task state machine.** The daemon-side loop that advances each task one step at a time, drives manager-decision turns, spawns children, and records terminal state. Spec `docs/superpowers/specs/2026-04-14-orchestrator-daemon-design.md`; current contract `docs/agent-guides/orchestrator-contracts.md`; impl `runtime/orchestrator/run_step.py`, `runtime/orchestrator/orchestrator.py`.
 - **Forward-only root-terminal worktree reconciliation.** Original winning structural roots in all four terminal states (`completed`, `failed`, `cancelled`, `superseded`), including NULL-parent workflow tasks, reconsider their parent tree once after teardown. Old child deferrals are advisory only at this pass; dirty/local-only/open/active/held/successor-used/protected/unknown paths retain. Shared fresh exact-HEAD Git preservation gives live owning branches precedence; recursive/action-time identity and unchanged same-user scanner gates remain. Committed start INTEGER identity is stable; interrupted/repeated notices never retry. Shared10s work/1s report/1s reap targets, numeric caps and exact frontier/remainder distinguish complete retention from partial action anomalies. Child/manual/daily policies remain separate. [Owner and evidence contract](orchestrator-contracts.md#forward-only-terminal-task-worktrees).
 
@@ -1046,13 +1136,46 @@ Readers never write, reseal, repair, invalidate or start epochs.
 
 Backend and canonical CLI JSON/text share the report core. G1 acquisition
 exhausts original tasks/results/jobs/audit evidence with stable bookends and
-complete owned outputs; legacy diagnostics still acquire all four memory
-streams and roles before empty/short returns. HTTP/decoder/timeout, cursor or
+complete owned outputs. No-epoch diagnostics exhaust all relevant memory and
+lifecycle action pages plus a coherent complete task snapshot and roles before
+empty/short returns. Unrelated audit history does not consume their existing
+100000-row bound; authority readers retain the default unfiltered snapshot. HTTP/decoder/timeout, cursor or
 SELECT failures refuse as `acquisition_unavailable`, without partial CLI stdout.
+Task pages use `(created_at, id)` descending, with parsed wire timestamps and
+the last ID as the server-resolved transport cursor, rather than ID ordering.
 Natural population excludes designated probes/retries, recovery and all
-pre-start invocations, including their late events. D1 remains the later of
+pre-start invocations from qualifying metrics. Credited late events on old
+tuples remain visible to the retirement diagnostic and can close eligibility. D1 remains the later of
 original epoch start and first qualifying natural impression, counting complete
 UTC days only. Valid short samples remain `insufficient_sample`.
+
+D reporting (THR-091 seq389–390) adds `by_session_kind` and
+`session_lifecycle` to both backend and CLI JSON/text. The disjoint kinds are
+`first_launch`, `job_resume`, `retry`, `retry_job_resume`, `other_continuation`
+and `unknown`. A runtime-written `tasks.revisit_of_task_id` identifies a retry;
+a unique actual `task_resumed_from_jobs` between the previous same-task start
+and this start proves a job resume. A later session alone is an
+`other_continuation` (or `retry` with a diagnostic flag), never an inferred job
+resume. Kind correlated-session totals reconcile to the aggregate; lifecycle
+session counts additionally include credited old tuples inspected for damage.
+Per-kind pull-through is diagnostic only and introduces no thresholds.
+
+Retirement joins exact boot/ordinal/task/agent/SID runtime identity, launch and
+terminal with session start/end. SID-less `session_end` joins only a unique
+ordered task/agent interval ending at its own runtime terminal. Natural and
+excluded recovery/thread/dream intervals participate in end ownership before
+natural-only classification and source validation. Audit IDs resolve
+ordering, including equal timestamps; no latest-agent inference is used. Any
+credited read **or** search after end, terminal or a later same-task start is
+reported per kind, excluded from valid read metrics and closes collection
+eligibility under the existing explicit reset contract. Valid earlier history
+is retained. Missing, duplicate, misjoined or ambiguous lifecycle/lineage is
+unknown, with null hard-zero diagnostics where evidence is unavailable. An
+exact current in-progress task/agent/SID may lawfully remain active without a
+terminal. Empty kinds say `no_observed_population`, never PASS. These read-only
+diagnostics cannot detect which caller supplied another *live* task's SID;
+TASK-11402/JOB-4624's foreign-credit defect remains unaccepted pending the
+separately authorized caller-context decision. No control row is written.
 
 Source tests and source publication do not accept a production canary, start
 an official epoch, or fulfill the independently owned durable health check
@@ -1112,6 +1235,15 @@ Traps:
 - `happyranch memory promote` is one-way: it replaces the body with a stub and locks the entry.
 
 ## Shared Artifacts
+
+Keep task-only evidence in output/<actual-task-id>, report output_dir and use
+supported recall. Do not reattach an already-claimed maker key to a reviewer.
+For a distinct attachment handoff upload a fresh authorized copy with
+`happyranch attach-upload --org ORG --as-agent CURRENT_AGENT --file /absolute/source`
+within the actual authorized environment (upload has no --session-id flag).
+Inherited access grants reading, not another claim. Never upload task-only
+logs/screenshots/review packets to Shared Artifacts as an ownership workaround.
+
 
 Per-org artifacts live at `<runtime>/orgs/<slug>/artifacts/`. They are opaque files produced by any agent and visible to every other agent in the same org.
 
@@ -1312,7 +1444,9 @@ Traps:
   a database-owned transaction: the participant reset and its
   `thread_session_invalidated` audit commit atomically (termination runs
   reset+audit inside the existing terminate-cleanup transaction; archive wraps
-  the status flip, every participant reset, and the audit in one transaction).
+  admission, delivery discard/BOOTSTRAP reaping, breaker/exchange suppression,
+  status flip, every participant reset, native audits and the archive message
+  in one transaction).
   A reset/audit failure leaves no partial lifecycle state — a failed switch is
   rolled back (no new executor installed) and a failed archive leaves the
   thread OPEN with every session row unmodified. Participant removal deletes
@@ -1514,6 +1648,17 @@ no observed-only authority-v2 claim rule.
 
 ## Root task Pause and Resume (THR-292)
 
+Transient child_wait observations preserve stored lifecycle and exact report
+identity; completed reports on in_progress rows do not rewrite those rows or
+prove consumed results. Capped/unread evidence is unavailable, not empty.
+Detail unknown/job blockers say descendant cleanup unconfirmed; no terminal-job,
+exit0 or absent-PID heuristic discharges them. The future job-owned closure
+producer is excluded from TASK-11437, and historical unknowns stay fail-closed.
+Seven fanout row categories and genuine prior audit attribution never infer
+running/queued/succeeded or parent resumed/completed. Backend/protected proof
+remains unexecuted; synthetic frontend observations establish only that boundary.
+
+
 Task Pause is a separate root control with generation-checked, idempotent toggles. New Pending-root Pause is409; terminal lifecycle wins. Pausing means committed work or unavailable drain evidence remains; Paused requires complete absence of blockers. A callback, PID0 placeholder, persisted PID or passthrough CLEAN receipt cannot prove tree quiescence. Committed work can settle while held, but future steps/retries/job approvals and founder origin Continue/supersede/revisit/dispatch(resolves) are gated. Only a captured ordinary-purpose actually running session (including a normal v2-admitted manager session) retains its unreviewed auto-job exception. Cancel, job reject/stop and genuine result settlement remain available. Another accepted manager successor root remains unheld. Overview is bounded/read-only and never safe-to-restart. [Current contract](../superpowers/specs/2026-10-10-root-task-pause-resume.md).
 
 Unclaimed completion recovery retains the actual original return and SIDs while held, with no running deadline. Its 120-second deadline is pinned atomically with the accepted real admission/claim, binding and launch journal. Preclaim/admission waiting spends nothing; claimed recovery retains its expiry across Resume, duplicates, retry and restart, including committed no-launch failure. Unresolved original host/tree evidence is separately retained under the original session/owner/generation before recovery conversion. It remains an unknown drain blocker after callbacks, terminal lifecycle, restart or quiescent recovery, without owning a new producer. Known-quiescent originals add no unknown blocker, and deferred unclaimed recovery alone is not execution.
@@ -1657,3 +1802,504 @@ Naming namespace capture includes active/pending executable agent managers and
 workers. Mainline typed human Founder managers have no agent definition and are
 excluded from that agent set; Founder remains the separate human naming owner.
 The combined I/roster/naming behavior remains unverified; see the current naming spec.
+
+
+## Disabled coding release catalog — K0
+
+K0 is a release catalog, always disabled. The pure reader accepts only the fixed
+634-byte canonical `workflow-coding-definition@1` preimage (SHA256
+`6ee02be98738d3c95fe584b165abe07d0dbef66e510133c117ee0d62c953cad8`), rejecting
+missing/duplicate/unknown keys, scalar type substitutions, bounds violations,
+nonfinite/BOM/noncanonical bytes and any changed pin. It uses only the constant
+package resource, never DB/defaults or a configurable path. Projection and GET
+perform no workflow writes, template import, task allocation or readiness lookup.
+`enabled:false,reason:release_catalog_only` cannot become runnable from catalog
+bytes, labels, hashes or successful reads. Existing document/code-admission refusal
+and all historical families retain their meaning.
+
+See [the current ordered-coding K0 contract](../superpowers/specs/2026-10-14-ordered-coding-workflow.md).
+Independent final-head source review/scoped QA and lint/static checks remain
+separate gates. Python units RETIRED; integration including callback SKIPPED24342;
+behavioral/negative/mutation/repetition/protected proof UNEXECUTED /
+FOUNDER-WAIVED139429/430. No package/native build or ad hoc daily E2E is authorized.
+
+## Bounded repository artifact source — K1
+
+`repository_artifacts.py` supplies closed canonical saved binding/adoption/presentation
+readers; the private `repository_artifact_objects.py` supplies bounded no-follow
+adopted-primary-store copies, sanitized typed Git reads, recomputed object hashes
+and complete raw base/head tree manifests. Allocation failures are category-only
+storage_unavailable with no launch or acquired directory. Every refusal retains
+the parent's acquired private-directory identity for owner remediation; process
+quiescence and omitted child metadata do not prove cleanup. Worker cleanup stays
+alarm-bounded; the parent performs no recursive cleanup and accepts success only
+after witnessing directory absence. Unknown launch/nested process/reap ownership
+remains internal. Retained directory identity is not a claim of present storage.
+Saved validation proves historical integrity only. OrgState mounts `WorkflowRepositoryArtifactService`; its current
+resolve operation categorically refuses before decode or object I/O because K2b's
+authenticated adoption/current authority producer is absent. No constructor flag,
+caller Boolean, record/digest or injected callback authorizes content access.
+K0 readiness remains false and code activation still refuses before allocation.
+Current document formats/producers, routes/CLI/DTOs/schema/receipt/recovery and
+native permissions are unchanged. Later coding writers must ship complete selected
+read/stage/prelaunch/receipt/closeout consumers with before-I/O admission and
+post-await authority revalidation. No live adoption/setup, execution or coding
+readiness is delivered. Python units RETIRED; integration/callback SKIPPED24342;
+behavior/security/protected proof UNEXECUTED/FOUNDER-WAIVED139429/430. Source-only
+review/static checks cannot establish reader-security or behavioral acceptance.
+See [the current K0/K1 contract](../superpowers/specs/2026-10-14-ordered-coding-workflow.md).
+
+## Empty-only coding schema — K2a1
+
+Founder THR139seq562 approving559/329 and sole ROOT TASK10693 authorize this
+bounded source slice. Layout J is exact I plus `workflow_coding_mappings`,
+`workflow_coding_runs`, `workflow_coding_attempts`, `workflow_coding_events`:
+3987 UTF8 SQL bytes/SHA256
+`2c4b556671ef76582cdcbaed1e68d8575d9648ce29773f52c3d947ceaeeb0d70`,32 event
+kinds,17 expected automatic constraint indexes (4/2/7/4), no explicit index or
+marker. F–I DDL/history and document @1–@4/r1/r2/one-human formats remain literal.
+The complete owned-layout reader and every metadata/cutover path admit J ONLY
+with all four coding tables empty and valid retained I/document/native data.
+Partial/extra/changed layout, any populated coding table, reserved coding
+format/pin/import/source ownership or native coding audit without its readers
+refuses; it never returns legacy. Arbitrary document content is not a family
+discriminator; formats/kinds are checked in owned metadata. K2a2 must supply complete populated saved-data
+readers before any coding producer, including setup/import/mappings.
+
+Independent whole reference selection retains all six layouts F–J, all four
+fresh/v0/v2/v2-organic histories, naming0/1, Pause and team-move combinations,
+the five-component cache key and whole historical preimages. No candidate SQL
+baseline or object filter is permitted. Failed reference construction remains
+unavailable. Authority-v2 remains observed-only; generic Database/runtime-audit
+remain workflow-free. The proven-empty J initializer primitive serves reference
+construction, validating the two completed native remote-schema marker rows and
+requiring every operational table empty; no schema object is excluded from
+comparison. Actual create-org still explicitly initializes I. Startup/reopen/
+enable validate, never install J; I remains usable for document work and gives
+actionable offline guidance. Empty J uses the existing I draft/submission/handoff/
+revision and document drain readers. Any J, even empty, blocks pre-J downgrade;
+retain compatible J code or a separately approved verified pre-J backup. No
+stripping, automatic migration or old-reader downgrade claim follows.
+
+The operator source `scripts/migrate_workflow_coding_schema.py --runtime-root
+/absolute/runtime --org ORG [--check] [--confirm-cooperative-offline]` implements
+the approved cooperative offline I→J path. All invocations open read-only first:
+valid I --check returns3 (migration needed), compatible empty J replay returns0,
+and invalid or unavailable observations return1. Only exact I with explicit
+cooperative offline confirmation can reopen mode=rw. The independently resolved
+owned org path and pre-open device/inode/mode observation bind the RO PRAGMA
+main path; ORIGINAL identity survives RO close/RW reopen, is compared before
+and after writer open, after BEGIN EXCLUSIVE and before commit. Main/path and
+attachment checks, regular/single-link/current uid, org root/slug/marker and
+symlink constraints retain the shipped G pattern. Missing observations or known
+path/file/lifecycle drift refuse with original-owner remediation; the writer's
+replacement file never becomes a new source baseline.
+
+This is cooperative pathname/file observation, not independent native descriptor
+proof or hostile/direct same-user swap protection. Founder270 approving265/269
+and Founder562 preserve that limit. Step43 withdraws step41/42's excess native
+opened-file bridge requirement; their categorical binding_unavailable refusal,
+FAILED11447 and adverse11446/11448 receipts remain historical. No native bridge,
+extension/dependency/VFS/raw-pointer/ctypes change is supplied or needed under
+this model. Direct same-user file/DB swapping between observations remains a
+disclosed cooperative limit; source-only delivery cannot certify its behavior.
+
+Writes additionally require documented daemon stop, reconciled hosts/outer tails
+and exclusion of cooperative restarts/publication/profile/move until return.
+Neither confirmation nor PID absence, TTL, terminal labels or producer_settled
+uncertainty releases ownership. Complete source-idle checks retain publication/
+profile, F5/draft/recovery/source claims, Pause release and team-move reservations.
+Exact I/source SQL types/rowids/bytes/FKs, unchanged retained equality, four empty
+additions, complete independent J validation, FK ON and rollback remain required.
+The primitive receives the script's original source identity and independently
+compares it, never derives a replacement baseline. Runnable source is supplied;
+valid check/replay/migration/rollback and drift refusal remain UNEXECUTED, with
+no migration-safety or OS isolation claim. Earlier scripts keep original targets.
+
+The finite shared discriminator inventory covers typed scalar fields and
+structured metadata using the same rules. Malformed lexical member scanning
+recognizes complete, escaped, duplicate and incomplete reserved envelopes
+without searching quoted document prose. Authority `source_pin` and coding
+setup namespaces are checked independently of canonical/hash-valid bytes,
+including orphan rows and current authority pointers. Typed scalar/native
+`business_purpose=coding-replacement-selection@1` participates in the same
+valid/malformed/duplicate/escaped/incomplete metadata rules. Ordinary
+worker_execution/session purpose and free document prose remain noncoding.
+Recovery.classify_task runs the empty/reserved boundary under its existing lock/error fence before
+no-workflow and no-root/draft/F5 legacy returns; any coding-family schema
+object, including unknown/case-changed names or wrong types, also requires the
+complete central reader. Names and owning-table names are each checked for
+tables/views/indexes/triggers; no old ownership alias is needed. Missing org identity
+reconciles categorically before either legacy return. Unknown/malformed coding
+returns reconciliation_required, with no coding ownership, task writer or dispatch.
+Ordinary noncoding legacy and the existing document draft/F5 paths remain.
+
+K0 stays disabled; K1 current resolution still refuses before private decode or
+object I/O. No capability/setup/import/mapping/adoption/start/stage/native task/
+event/audit producer, new route/DTO/native permission/dependency/hook, live SQL,
+rollout/deploy/restart/assignment or trial renewal is delivered. Source inspection
+and lint/static receipts cannot prove migration, readers, security, behavior or
+upgrade safety: all remain UNEXECUTED. Python units RETIRED; general integration
+INCLUDING callback SKIPPED24342; broad/negative/mutation/repetition/protected proof
+UNEXECUTED/FOUNDER-WAIVED139429/430. Full independent review, same-final-head scoped
+QA and Source Boundary Lint + Web Lint(Node24)/local all remain required, followed
+by manager guarded merge. Root owns K2a2–K6 and operational/real-agent acceptance.
+
+
+## Saved coding grammar source — K2a2a
+
+Sole ROOT TASK10693, manager step48 and Founder THR139seq562/559/329
+bound `runtime/workflows/coding_saved_records.py` to pure, unmounted saved-record
+inspection. All eight entry points check complete canonical bytes, strict types,
+bounds and contained equalities. Original command bytes/IDs/CAS/selectors remain
+intact; contextual coding repository roles preserve K1 identity/owner invariants
+without widening document/K1 readers. Parsing creates no adoption or authority.
+
+Accepted TASK11459 B2/D1 appendix SHA256
+`5a1baa4967ffefb07967d1aa5e5771b6048801bfcd71b37d690ab74aa3722c9b`
+closes ready/pointer/profiles/full mirror, exact Founder provenance and complete
+five-column native admission plus capture on issue AND withdrawal. Native v1/v2
+snapshots retain their complete original projection and ordering; reconstruction
+includes all consumers, generations and digests. Genuine empty profiles differ
+from missing evidence; other-namespace/removed/unbound/unused mirror rows remain
+validated. Historical pointer/journal/fence are retained, never read from today.
+
+Grant selection is position-specific: setup/issuance terminates in full original
+issue/withdraw Q; mapping uses closed M with 1–8 ordered distinct complete U
+setups; capability selects its permitted U/P parent. Complete preimages/hash,
+ID/parent/time/source ownership, source versus mint admission, level/action,
+queued-null versus actual bound SID and component/argv radius attenuation are
+checked without format fallback or truncation. Each ancestry ends at U→issue Q,
+with at most64 capability nodes/16MiB decoded ancestry and original1MiB limits.
+Mapping cannot union one repository's setup onto another. U subtree digest is
+not the containing native issuance-wrapper digest. Fixed repository/base/head
+and provider subject are separate from navigation. Saved ready/Founder strings,
+a hash or a parsed grant never prove authentic native rows or current access.
+
+Full relational/native↔J/event/history readers remain required BEFORE every
+producer: identical genuine admissions and historical cache_installed journals,
+setup issuance-subtree/native-wrapper/pointer/withdrawal, source result/start
+claim and native task/session/parent chronology, mapped role eligibility and
+independence, mapping generation/adoption authenticity, run/context/binding/
+activation/request/receipt/contributor closure, journal replay/CAS and host/
+cleanup/provider/effect ownership. Current-use owners revalidate every setup/
+ancestor/grant, cancellation/Pause/move and actual executor permissions after
+waits. Valid revoked history permits no new launch/disclosure/effect. No store,
+roster, object, provider, DB or network I/O, resolver or trusted flag is supplied.
+
+K2a1 still refuses ALL populated/reserved coding data including validate_data=False;
+F–I/J schema/reference/cache/recovery/migration owners, create-org I and document
+history are unchanged. K0 stays disabled and K1 current resolution unavailable.
+No mount, native admission insertion, producer, transport/auth/permission change,
+live setup/migration/assignment/deployment/restart or retired trial follows.
+Python units RETIRED; integration INCLUDING callback SKIPPED24342; behavior/
+security/negative/mutation/repetition/protected/executable proof UNEXECUTED/
+FOUNDER-WAIVED139429/430. AST/raw-byte inspection and lint/static checks establish
+no behavioral or test-authoring PASS. Fresh FULL independent review then
+same-final-head scoped SOURCE QA and manager guarded merge remain required.
+
+
+## Retained native setup issuance history — K2a2b1
+
+Sole ROOT TASK10693 step50 / Founder THR139seq562/559/329 adds unmounted
+`coding_authority_history.read_setup_issuance_history`. The caller must admit
+the complete native schema and own a coherent read transaction/connection/lock
+with raw native storage values. Fixed-table parameterized SELECTs only; no
+BEGIN, commit, writer, repair, resolver or injected truth flag is supplied.
+The org-wide setup namespace inventory checks complete canonical issuance
+wrappers, exact native types, source pin `coding-capability-issuer@1`, namespace,
+ID/revision/time, full original command, expected-revision CAS and unique
+Founder operation keys/setup subtrees. The selected native authorization ID
+resolves one contiguous same-namespace prefix with a genuine prior issue for
+withdrawal. Setup IDs and authorization row IDs are distinct identities.
+
+For every issue AND withdrawal in that prefix, the complete five-column native
+admission matches the saved command digest/Founder principal/org publication
+namespace/generation/ID. The named complete twelve-column historical journal
+must match namespace/generation/expected generation, exact full snapshot
+bytes/digest/profile fence and cache_installed state, without native NULL/type
+coercion. The shipped pure readers reconstruct saved v1/v2 snapshot/profile/full
+mirror evidence, including genuine empty profiles. Neither today's pointer,
+cache, roster nor mirror is historical proof. Exact setup_bytes are the issue's
+canonical subtree; its digest differs from the native issuance-wrapper digest.
+Valid old issuance remains history after withdrawal and never restores activity.
+
+All three SELECTs gate every projected value by exact native storage class
+before Python fetch: TEXT plus byte length via CAST AS BLOB (including multibyte
+characters and embedded-NUL suffixes), BLOB plus byte length, INTEGER scalar
+only. Invalid/oversize values return a bounded NULL refusal sentinel while
+original typeof evidence stays intact. Genuine nullable file_phase_owner NULL
+is preserved; accepted values retain exact historical bytes/types without
+coercion or truncation. Each projected text/BLOB value is at most1MiB.
+Inventory admits at most1024 org setup rows; one additional bounded row can be
+fetched only to refuse overflow. After each bounded fetch, the shared budget
+enforces16MiB cumulative accepted raw native text/BLOB bytes across inventory
+and required admission/journal reads. This is retained-byte accounting, not a
+total process-memory ceiling: SQLite engine work, rejected fetched rows and
+decoded/copied structures are outside that accounting. Overflow/missing/
+mismatched/ambiguous/malformed/unsupported evidence refuses categorically.
+Only the selected prefix's admissions/journals are established, not unrelated/
+later histories. No live human, current grant, source task/SID/result or populated-J
+admission follows. Full capability/task/result/session ancestry, mapping/J/run/
+event/receipt/heartbeat and current-use closure remain NEXT serial units before
+any producer; K2a2 is incomplete. No mount/OrgState/DDL/reference/cache/recovery/
+migration/selector or public/CLI/TS/auth/permission/dependency/hook change.
+K2a1 populated/reserved refusal INCLUDING validate_data=False, create-org I,
+document history, disabled K0 and unavailable K1 current resolution stay intact.
+Python units RETIRED; integration INCLUDING callback SKIPPED24342; behavior/
+security/migration/negative/mutation/repetition/protected proof UNEXECUTED/
+FOUNDER-WAIVED139429/430. Source/static evidence is not behavioral acceptance.
+Fresh FULL independent review then same-final-head scoped SOURCE QA return to
+sole ROOT10693; no operational action or trial renewal is authorized.
+
+
+## Retained mapping history and setup links — K2a2b2
+
+Sole ROOT TASK10693 step53 / Founder THR139seq562/559/329 adds unmounted
+`coding_mapping_history.read_mapping_history`. Caller admission of the complete
+native/J structural schema and one coherent raw-value read snapshot/connection/
+lock precede this SELECT-only call. It neither starts nor ends a transaction.
+The selected native mapping ID resolves its complete same-org/release generation
+prefix, never the current default. All ten native columns and original typeof
+labels are retained, with full saved mapping bytes/digest, original complete
+command/digest/key, strict INTEGER generation and expected_generation CAS,
+original time and operation principal independently compared. Attribution follows
+`WorkflowTemplatePrincipal.operation_principal`: agent:<issuer.principal>,
+separate from raw role IDs and human:founder issuance provenance. Missing/gapped/
+forked/conflicting operations refuse; no newest-row or same-digest fallback.
+
+For each required mapping, its actual complete five-column admission matches the
+original command digest/agent operation principal/capture namespace/generation/
+ID. Its historical twelve-column publication journal matches full snapshot bytes/
+digest/profile fence/expected generation/cache_installed and original nullable
+owner. Shipped `read_saved_mapping_record` checks complete canonical mapping/
+command/adoption/M grammar, setup prior-source and adoption times, repository
+radius and all binding/adoption/capture pin equalities. Each M.setup resolves by
+setup ID AND full canonical bytes to one genuine issuance.setup subtree, then
+its complete earlier issuance/admission/publication prefix. The private native
+setup composition shares the existing history owner; wrapper hash is distinct
+from setup hash. Founder issue/withdraw semantics and authentic later withdrawal
+remain historical facts; this read never restores a grant. No current pointer,
+roster, cache, filesystem/store scan, adoption or remote-origin attestation.
+
+Every projected value in all four fixed-table parameterized SELECTs gates exact
+SQLite storage class BEFORE fetch: TEXT byte length via CAST AS BLOB, BLOB byte
+length, native INTEGER scalar; genuine owner NULL remains NULL. Invalid/oversize
+values become bounded NULL refusal sentinels with original typeof evidence, not
+coercion/truncation. Per text/BLOB value at most1MiB; each mapping/setup inventory
+at most1024 rows plus one bounded overflow fetch solely for refusal. Across the
+whole composed call one shared budget limits8192 accepted native rows,16384
+traversal steps and16MiB cumulative accepted raw text/BLOB bytes after bounded
+fetch. Call-local indexed inventory/verified history can avoid repeated reads;
+no per-root/recursion budget reset. SQL engine work, rejected-row and decoded/
+copied structures are outside this accounting; no total memory ceiling claim.
+Existing `read_setup_issuance_history` signature/result and retained semantics
+remain unchanged; its established smaller inventories fit these added call caps.
+
+Return values establish complete inventory grammar/attribution/operation
+uniqueness and selected mapping-prefix admissions/publications plus the required
+setup issuance prefixes only. They do not authenticate actual issuer task/SID/
+policy/source_rule/current grant/capability/J graph or live store observations.
+Full capability/native task/result/session/ancestry/J/run/event/request/receipt/
+contributor/heartbeat/current-use/recovery/cutover readers still precede EVERY
+producer; K2a2 remains incomplete. No mount/__init__/OrgState/schema/reference/
+cache/recovery/migration/selector/producer/public/CLI/TS/native/auth/permission/
+dependency/hook change. Populated/reserved coding refusal INCLUDING
+validate_data=False, create-org I, document history, disabled K0 and unavailable
+K1 current resolution remain intact. Root retains K2a2–K6 and genuine-agent/
+two-org/override/backup-copy operational delivery. Accepted C01/C03/C09/C14/C15/
+C16 and appendix variants remain source-scoped; no new case study/execution.
+Python units RETIRED; integration INCLUDING callback SKIPPED24342; parser/SQL/
+product/security/negative/mutation/repetition/protected proof UNEXECUTED/
+FOUNDER-WAIVED139429/430. Static lint/source assessment is not behavioral proof.
+Fresh FULL independent review then same-final-head scoped SOURCE QA return to
+sole ROOT10693; no maker verdict/merge/operational action or trial renewal.
+
+
+## Retained native capability ancestry — K2a2b3
+
+Sole ROOT TASK10693 step56 / Founder THR139seq562/559/329 accepts capability
+encoding contract SHA25638d80c7a4cc7a3283fdea37dd6f21fb366df9c2eba5fc47415ebe2061051fc7f
+following independent DESIGN PASS11478. Unmounted
+`coding_capability_history.read_capability_history` adds the retained capability
+closure after the earlier K2a2b1/b2 checkpoints. Their historical descriptions
+of then-missing capability readers remain history; full K2a2 is still incomplete.
+
+A selected actual authorization ID resolves all seven native columns: ID=P.id,
+namespace=org/{org}/coding-capability/{P.id}, INTEGER revision1, complete canonical
+P BLOB, full-P SHA256 TEXT, literal workflow-coding-capability@1 source pin and
+exact P.created_at TEXT. ID/namespace/digest aliases conflict rather than act as
+fallbacks. Each P's OWN complete five-column native admission matches its capture
+ID/org publication namespace/INTEGER generation, H(complete P) request_digest
+and historical agent:<P.issuer.principal> operation attribution. Neither parent
+capture nor original source_admission_id substitutes for a child's admission.
+H(P) is finite; capture.grant_digest still hashes the complete upstream P or U.
+Historical attribution does not authenticate a currently acting source/service.
+
+The existing pure saved reader validates the selected complete canonical P/U/Q
+ancestry once, including immutable source ownership/admission, level/action,
+component/argv radius attenuation, refinements, queued-null versus bound SID
+and effect subject equalities. Every embedded P must then resolve to its OWN
+native row with byte-identical complete P, exact envelope, own admission and
+historical publication capture. Terminal U resolves by setup ID AND complete
+canonical subtree bytes to the actual containing issue plus complete preceding
+issuance/admission/publication history. U ID is not an authorization row alias;
+H(U) is not H(issuance wrapper). Terminal original ISSUE Q stays intact. Missing,
+duplicate/conflicting/cyclic/cross-org/wrong-type/mismatched evidence refuses
+with one category, no private bytes or SQL diagnostics and no partial history.
+
+Caller must admit the complete native/J structural schema and own one coherent
+raw-value read transaction/connection/lock. Fixed parameterized SELECTs only,
+no transaction control. All new/reused projected values gate exact SQLite storage
+class and byte length BEFORE fetch; TEXT uses BLOB byte length including NUL
+suffixes/multibyte characters. Original typeof/refusal sentinels and genuine
+nullable journal-owner NULL survive; no coercion or truncation. Each variable
+value is at most1MiB. One shared whole-call budget permits8192 accepted native
+rows,16384 traversal steps,16MiB accepted raw TEXT/BLOB bytes, setup inventory1024
+and selected capability ancestry64. One bounded overflow fetch only refuses.
+Call-local setup caching retains complete histories; no recursive budget reset.
+Enclosing/decoded saved bounds remain and can refuse before64 nodes. These raw
+byte limits do not bound total SQLite/process/decoded-copy memory.
+
+`CodingCapabilityHistory` retains source-to-selected native capability facts,
+all seven columns/original typeof/matched own admissions, and actual setup issue
+history. Later withdrawal preserves history without restoring any grant. No
+current pointer/cache/roster/store/object/network is read. Necessary timestamp
+equalities/order do not prove actual mint order, source execution, native
+allocation/task/SID/result/assignment/ancestry/policy, acting-service ownership
+or full J graph. Complete native source/action-claim/task/session/result/policy,
+run/context/binding/activation/event/replay/request/receipt/contributor/heartbeat,
+current-use/recovery/cutover readers still precede EVERY producer. No source-rule
+verifier, current permission, genuine launch or provider effect follows.
+
+Existing setup/mapping APIs and source owners are unchanged; their bounded
+private composition suffices without a new helper or owner edit. No mount/
+__init__/OrgState/producer/schema/reference/cache/recovery/migration/public/CLI/
+TS/native/auth/permission/dependency/hook change. Populated/reserved refusal
+INCLUDING validate_data=False, create-org I, document history, disabled K0 and
+unavailable K1 current resolution remain intact. Original contract9f0cab1c,
+appendix5a1baa49/cases17d50aa2 stay byte-preserved; only the four accepted native
+envelope/own-mint/full-ancestry/history-and-bounds variants are appended to task
+case evidence. Python units RETIRED; integration INCLUDING callback SKIPPED24342;
+all SQL/parser/product/security/negative/mutation/repetition/protected executable
+proof UNEXECUTED/FOUNDER-WAIVED139429/430. Static/source assessment establishes
+no behavioral or test-authoring PASS. Fresh FULL independent reviewer then
+same-final-head scoped SOURCE QA return to SAME root, with actual lint/static
+checks, normal publication/hooks and manager guarded merge. Root retains full
+K2a2–K6 and real-agent/two-org/override/backup-copy operational acceptance; human
+trial remains retired and no live operation is authorized.
+
+
+### Retained native source identities — K2a2b4
+
+ROOT10693 step60 / Founder139562/559/329 accepts TASK11484 appendix
+4ee1d1819d3b58ff1350b192d6438fa8ed8bf99ba7cc06abfb0fe315fb4312e1/cases
+f55f71a1db09cf708dbad083cd8c955cd5241cf5f244586eaa3b19d7909c24ae after DESIGN11485.
+Unmounted `coding_source_history.read_source_native_records` composes genuine
+source-level P and complete native P/U/own-admission/publication history, sharing
+one call budget/setup cache with the existing unchanged public readers. It returns
+exactly immutable capability_history, source_task_record, ancestor_task_records,
+session_start_audit_record and same_session_result_records.
+
+Complete27 task/18 result/6 audit columns retain native storage classes/NULLs,
+empty free text, all UTF8/JSON bytes, original timestamp spelling and finite REAL
+cost. Source/parent-to-NULL rows are TODAY'S coherent records; ancestry includes
+source within20 and follows no revisit alias. Missing/cyclic/foreign-team ancestry
+refuses. The original source task/principal/SID selects exactly one native
+manager_decision session_start under its closed owner grammar and the entire
+bounded same-SID result inventory. Selected allocating INTEGER/full result must
+match the source tuple and full closed workflow_start command/INITIAL work radius, never
+latest result/action label alone. Nonallocating NULL selection proves neither
+original callback absence nor absence of a later callback. Current assignment/SID,
+tracker reconstruction, source admission/claim/current policy are separate facts.
+
+Caller independently admits complete native/J structure and holds one raw-value
+connection/transaction/lock; fixed parameterized SELECTs only, no await/transaction
+control/DTO/default/converter. Original typeof/native byte gates precede fetch,
+including multibyte/NUL suffixes; each new native row's combined variable bytes
+must fit remaining budget. Singleton keyset pages renew that gate; bounded task
+uniqueness probe prevents LIMIT1 conflict masking. Every fetched/rejected/overflow
+candidate shares8192 rows/16384 steps/16MiB raw bytes,1MiB per value,P64/setup1024/
+source20. Nullable/empty/finite-REAL accounting does not weaken existing mandatory
+setup/admission validation. This is not a total process/SQLite/copy memory bound.
+Category-only coding_source_history_invalid returns no partial records/private SQL.
+
+Fixed callback C0/source C1 captures and independent historical consumer remain
+unimplemented here: independently admitted C0/C1 compare exactly25 named fields
+and preserve both timestamp observations only at the first boundary; ALL27 C1=C2
+must agree after preflight, so intervening heartbeat refuses with zero partial
+coding allocation/debit/publication. Full27 replay and version-aware heartbeat
+handoff remain mandatory after bootstrap. Complete captures/J/native/authority/
+invocation/Pause/move/host/recovery/cutover consumers must precede EVERY producer.
+No capture/native writer/public mount or live authority follows. F–J/refusal,
+create-org I/document history, disabled K0 and unavailable K1 remain unchanged.
+FIRST FULL independent reviewer, same-final-head scoped SOURCE QA, static local
+all/hosted lint, normal hooks/nonforce push and manager guarded merge remain.
+Python units RETIRED; integration INCLUDING callback SKIPPED24342; all SQL/parser/
+product/native/security/negative/mutation/repetition/executable proof UNEXECUTED/
+FOUNDER-WAIVED139429/430. Root retains K2a2–K6 and operational acceptance.
+
+Native result `learnings` is nullable free TEXT, inserted unchanged by its owner:
+NULL, empty, prose and UTF8 bytes remain exact in EVERY same-SID result. Only
+owner-serialized JSON columns undergo JSON validation; all native storage/UTF8/
+prefetch per-value and shared-byte gates remain. The selected allocating callback's
+full original work repository/object-format/base/paths matches the INITIAL source
+P exactly, taken from the first node of the already validated complete native
+source-to-selected lineage. Same-issuer source refinements may narrow paths and
+retain that original callback; the selected P and all parent attenuation checks
+remain intact. A callback matching only a narrower child, conflicting identity,
+missing native ancestor or widening refuses; no caller-picked ancestor, broad
+subset substitute, extra query, historical rewrite or current grant follows.
+
+### Original source-capture history — K2a2b5
+
+ROOT10693 step63 / Founder139562/559/329 selects accepted TASK11484 appendix
+4ee1d1819d3b58ff1350b192d6438fa8ed8bf99ba7cc06abfb0fe315fb4312e1 and cases
+f55f71a1db09cf708dbad083cd8c955cd5241cf5f244586eaa3b19d7909c24ae after DESIGN11485.
+Unmounted `coding_source_admission_history.read_source_admission_history` consumes
+the fixed `coding_source_admission` / `workflow-coding-source-admission@1` audits.
+It returns immutable original source/callback captures, explicit INITIAL native P
+and native identity links, and allocating full-decision fingerprint. Selection by
+authorization_id keeps the complete selected attenuation but never substitutes a
+refinement's own mint admission or a mapping capture for the original source P.
+The existing five-field native identity API and its free-text learnings/INITIAL
+work-radius behavior remain intact through private shared-budget composition.
+
+Closed phase/owner/claim/budget and lossless typed27-task/18-result rows retain
+NULL/empty UTF8 bytes, strict signed INTEGER and finite binary64 bits, complete
+ordered original parent-to-NULL ancestry, original command and raw native audit
+JSON bytes (which need not be canonical). Native immutable task identity/parent,
+full result/decision and genuine unique manager_decision session-start links are
+checked separately from today's mutable assignment/SID/counters. Allocating C0
+and C1 compare exactly25 named load-bearing fields in every source/ancestor row;
+both original updated_at/last_heartbeat observations remain independently valid
+and retained. Nonallocating captured NULL means absence at that admitted boundary,
+never absence of later callbacks or allocating permission. Source claim/invocation
+ID/frozen limits are retained facts; actual invocation/Pause and policy proof is
+still separate. Zero max_revise_rounds keeps its native meaning.
+
+One coherent caller-owned raw SQLite transaction/lock; SELECT only. Complete
+bounded fixed-action audit inventory exposes duplicate/conflicting/foreign owners
+without JSON-selection predicates or latest-row fallback. Native typeof and each
+row's remaining row/byte ceilings gate payloads BEFORE fetch. Shared8192 fetched
+candidates/16384 traversal steps/16MiB byte budget includes conservative decoded
+byte copies, with1MiB per value/whole raw audit, source20/P64/setup1024. These are
+not total SQLite/process/JSON-object memory limits. Missing required captures
+raise coding_source_capture_unavailable; invalid evidence raises category-only
+coding_source_history_invalid, without private details or partial return.
+
+This delivers the historical capture consumer only. Callback/source capture
+WRITERS, direct mapping-history capture selection, C1=C2 ALL27 writer equality,
+full J run_started/source-baseline/replay/native meaningful-writer and heartbeat
+bridges, actual invocation/Pause/move/host/terminal/outer cleanup, historical and
+current policy/source_rule/base/permission and recovery/cutover readers remain
+mandatory BEFORE EVERY producer. No J validator, complete source authorization,
+valid-run Boolean, native/public/CLI/TS mount or producer permission is supplied.
+F–J/populated/reserved refusal including validate_data=False, create-org I,
+document histories, disabled K0/unavailable K1 and protected owners stay unchanged.
+FIRST independent FULL review, then same-final-head scoped SOURCE QA, then SAME
+ROOT10693; static local all/Source Boundary Lint/Web Lint(Node24), normal hooks,
+nonforce push and manager guarded merge remain. Python units RETIRED; integration
+INCLUDING callback SKIPPED24342; SQL/parser/product/security/protected/executable
+proof UNEXECUTED/FOUNDER-WAIVED139429/430. Root retains K2a2–K6, real-agent/two-org/
+override/backup-copy operational acceptance. No live action or trial renewal.

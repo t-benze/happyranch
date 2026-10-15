@@ -578,6 +578,7 @@ class WorkflowActivationStore:
                         bound = _binding(instance_id=instance_id, activation_id=activation_id,
                             authorization_id=authorization_id, template=template, request=frozen)
                         binding_bytes = canonical_bytes(bound)
+                        self.db._check_team_move_workflow_uncommitted(binding_bytes=binding_bytes)
                         binding_id = _id("workflow-binding", instance_id, digest(binding_bytes))
                         admission = dict(org_slug=self.org.slug, instance_id=instance_id, activation_id=activation_id,
                             activation_revision=1, attempt_sequence=1, predecessor_intent_id=None,

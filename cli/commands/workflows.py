@@ -471,9 +471,42 @@ def cmd_workflow_revision(args: argparse.Namespace) -> None:
     else:
         print(f"{result['core']['revision_operation_id']}: {result['current']['state']} author_task={result['core']['author_task_id']} replayed={str(result['replayed']).lower()}")
 
+def cmd_workflow_release_template(args: argparse.Namespace) -> None:
+    from pydantic import ValidationError
+    from runtime.workflows.release_templates import ReleaseTemplateReceipt
+
+    try:
+        with _founder_client() as client:
+            slug = resolve_org_slug(args_org=args.org, available=_shared._fetch_available_orgs(client))
+            response = client.get(
+                f"/api/v1/orgs/{slug}/workflows/release-templates/{args.kind}/{args.version}"
+            )
+    except httpx.HTTPError as exc:
+        print("error: release catalog transport unavailable", file=sys.stderr)
+        raise SystemExit(1) from exc
+    if response.status_code != 200:
+        _print_error(response)
+    try:
+        result = ReleaseTemplateReceipt.model_validate(response.json()).model_dump()
+    except (ValueError, ValidationError) as exc:
+        print("error: invalid disabled release catalog receipt", file=sys.stderr)
+        raise SystemExit(1) from exc
+    if args.json:
+        print(json.dumps(result, sort_keys=True))
+    else:
+        print(f"{result['identity']} v{result['version']} digest={result['definition_digest']} "
+              "enabled=false reason=release_catalog_only")
+
+
 def register(sub: argparse._SubParsersAction) -> None:
     workflows = sub.add_parser("workflows", help="Publish templates and activate bounded workflow drafts")
     workflow_sub = workflows.add_subparsers(dest="workflows_command", required=True)
+    release = workflow_sub.add_parser("release-template", help="Read the disabled release catalog")
+    release.add_argument("kind", choices=["coding"])
+    release.add_argument("--version", required=True, type=int, choices=[1])
+    release.add_argument("--org")
+    release.add_argument("--json", action="store_true")
+    release.set_defaults(func=cmd_workflow_release_template)
     revisions = workflow_sub.add_parser('revisions', help='Explicit owner return, safe receipt and new-author r2 staging')
     revision_sub = revisions.add_subparsers(dest='revision_command', required=True)
     for action in ('start', 'show', 'stage'):

@@ -331,10 +331,13 @@ class TaskPauseStore:
         return root, row
 
     @contextmanager
-    def writer(self, task_id: str, *, commit_guard: Any = None, committed: Any = None) -> Iterator[tuple[dict, dict | None]]:
+    def writer(self, task_id: str, *, commit_guard: Any = None, committed: Any = None, admission: bool = False) -> Iterator[tuple[dict, dict | None]]:
         with self.db._lock:
             root_id = self.root_uncommitted(task_id)["id"]
-        with self.gate(root_id), self.db._lock:
+        move = getattr(self.db, "_team_move_coordinator", None)
+        # Terminal/journal settlement deliberately does not acquire this gate.
+        # Existing producer/root ownership precedes move gate, DB and terminal.
+        with self.gate(root_id), move.gate if admission and move is not None else nullcontext(), self.db._lock:
             if self.db._conn.in_transaction:
                 raise PauseControlError("pause_control_unavailable")
             self.db._conn.execute("BEGIN IMMEDIATE")

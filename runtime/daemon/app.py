@@ -38,6 +38,7 @@ from runtime.daemon.routes import (
     tokens,
     usage,
     workflow_templates,
+    workflow_release_templates,
     workflow_cutover,
     workflow_activations,
     workflow_submissions,
@@ -444,6 +445,17 @@ async def metrics_timing_middleware(request: Request, call_next):
 def create_app(state: DaemonState) -> FastAPI:
     app = FastAPI(title="HappyRanch Daemon", version="0.2.0", lifespan=_lifespan)
     app.state.daemon = state
+    from runtime.orchestrator.team_move import DeferredTeamMove
+    from runtime.infrastructure.team_move_store import TeamMoveError
+    from fastapi.responses import JSONResponse
+
+    @app.exception_handler(TeamMoveError)
+    @app.exception_handler(DeferredTeamMove)
+    async def team_move_task_conflict(request: Request, exc: DeferredTeamMove | TeamMoveError) -> JSONResponse:
+        return JSONResponse(status_code=409, content={"detail": {
+            "code": exc.code, "operation_id": getattr(exc, "operation_id", None),
+            "required_action": "Resolve the owning team-move hold or named admission owner before retrying",
+        }})
     # Wire metrics registry into the run_step worker queue for loop-tick recording.
     state.queue._metrics_registry = state.metrics_registry
 
@@ -465,6 +477,7 @@ def create_app(state: DaemonState) -> FastAPI:
     app.include_router(workflow_cutover.router, prefix="/api/v1/orgs/{slug}", tags=["workflow-cutover"])
     app.include_router(workflow_activations.router, prefix="/api/v1/orgs/{slug}", tags=["workflow-activations"])
     app.include_router(workflow_templates.router, prefix="/api/v1/orgs/{slug}", tags=["workflow-templates"])
+    app.include_router(workflow_release_templates.router, prefix="/api/v1/orgs/{slug}", tags=["workflow-release-templates"])
     app.include_router(workflow_submissions.router, prefix="/api/v1/orgs/{slug}", tags=["workflow-submissions"])
     app.include_router(workflow_revisions.router, prefix="/api/v1/orgs/{slug}", tags=["workflow-revisions"])
     app.include_router(workflow_reviews.router, prefix="/api/v1/orgs/{slug}", tags=["workflow-reviews"])

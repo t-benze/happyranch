@@ -1,9 +1,10 @@
+import { resolveTaskWaitingQualifier, taskWaitingLabels } from '@/shared/tasks/child-wait';
 import { IdentityName } from '@/shared/identities/IdentityName';
 import { AddressableNameEditor } from '@/shared/identities/AddressableNameEditor';
 import { SystemPromptEditor } from './SystemPromptEditor';
 /**
  * AgentDetailDrawer — opens when `:agent_name` is in the URL. Slides in
- * from the right (480px) over the active tab.
+ * from the right with the desktop clamp capped to the current viewport.
  *
  * Sections:
  *   1. Header — AgentChip, role + team metadata.
@@ -66,7 +67,8 @@ export function AgentDetailDrawer({ agentName }: AgentDetailDrawerProps): JSX.El
 
   return (
     <Drawer open onOpenChange={(o) => !o && onClose()}>
-      <DrawerContent>
+      {/* eslint-disable-next-line tailwindcss/no-arbitrary-value -- accepted local viewport cap preserves the desktop clamp and shared primitive */}
+      <DrawerContent className="max-w-[100vw]">
         <div className="p-4"><AddressableNameEditor canonicalId={agentName} /></div>
         <header className="border-border-subtle border-b p-4">
           <DrawerTitle className="text-fg flex items-center gap-3 text-lg">
@@ -115,13 +117,24 @@ export function AgentDetailDrawer({ agentName }: AgentDetailDrawerProps): JSX.El
             <p className="text-fg-muted text-xs">{t('agents.detail.loadingTasks')}</p>
           ) : tasksQuery.data && tasksQuery.data.tasks.length > 0 ? (
             <ul className="space-y-2">
-              {tasksQuery.data.tasks.map((t) => (
-                <li key={t.task_id}>
+              {tasksQuery.data.tasks.map((task) => (
+                <li key={task.task_id}>
                   <TaskCard
-                    task={t}
-                    agentLabel={t.assigned_agent ? <IdentityName canonicalId={t.assigned_agent} /> : undefined}
-                    to={taskRoutes.detail(t.task_id)}
+                    task={task}
+                    waitingQualifier={resolveTaskWaitingQualifier(task, taskWaitingLabels(t))}
+                    agentLabel={task.assigned_agent ? <IdentityName canonicalId={task.assigned_agent} /> : undefined}
+                    to={taskRoutes.detail(task.task_id)}
                     density={density}
+                    labels={{
+                      age: {
+                        justNow: t('tasks.age.justNow'),
+                        minutes: (count) => t('tasks.age.minutes', { count }),
+                        hours: (count) => t('tasks.age.hours', { count }),
+                        days: (count) => t('tasks.age.days', { count }),
+                      },
+                      supersedes: (id) => render('tasks.row.supersedes', { id }),
+                      supersededBy: (id) => render('tasks.row.supersededBy', { id }),
+                    }}
                     taskRoutes={taskRoutes}
                   />
                 </li>

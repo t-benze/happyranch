@@ -166,6 +166,8 @@ class ProviderThrottle:
             result: Any = None
             from runtime.orchestrator.task_pause import current_invocation
             invocation = current_invocation()
+            from runtime.orchestrator.thread_move import current_thread_preparation
+            thread_owner = current_thread_preparation()
             first_attempt = 0
             if invocation is not None and backoff_seconds != ():
                 with invocation.store.db._lock:
@@ -177,6 +179,9 @@ class ProviderThrottle:
                     attempts = 1 + retry["budget"]
                 elif invocation.owner not in {"draft", "recovery"}:
                     invocation.retry_attempt(boundary="provider", ordinal=0, budget=len(schedule), schedule=tuple(schedule))
+            if thread_owner is not None and backoff_seconds != ():
+                first_attempt, schedule = thread_owner.retry_schedule("provider", tuple(schedule))
+                attempts = 1 + len(schedule)
             for attempt in range(first_attempt, attempts):
                 self._spacing_gate(provider)
                 result = launch()
@@ -198,6 +203,9 @@ class ProviderThrottle:
                 if not retry_worthy or attempt == attempts - 1:
                     return result
                 backoff = schedule[attempt]
+                if thread_owner is not None:
+                    thread_owner.direct_terminal()
+                    thread_owner.next_attempt(attempt + 1)
                 if invocation is not None:
                     invocation.retry_attempt(boundary="provider", ordinal=attempt + 1,
                                              budget=len(schedule), backoff=backoff, schedule=tuple(schedule))

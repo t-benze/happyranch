@@ -840,9 +840,9 @@ def loaded_identity(org: Any) -> dict:
                  CollectionObserver._record, CollectionObserver._persist, CollectionObserver._seal,
                  _identity_bytes, _identity_file_hash, _hash_metadata, _code_projection, _find_code, _serving_snapshot,
                  _serving_revision, _check_serving_snapshot, _now, serving_observation, loaded_identity]
-    from runtime.infrastructure.memory_telemetry_report import reduce_report, reduce_collection_report
+    from runtime.infrastructure.memory_telemetry_report import reduce_report, reduce_collection_report, _session_diagnostics
     from runtime.infrastructure.audit_logger import AuditLogger
-    from cli.commands.learning import cmd_memory_report, _compute_report, _print_report
+    from cli.commands.learning import cmd_memory_report, _compute_report, _print_report, _paginate, _report_projection, _fetch_agent_roles
     functions.extend([org.orchestrator._log_step_result, org.memory_collection.reconcile_acceptance,
                       org.memory_collection.context.memory_collection_observation,
                       inspect.unwrap(Database.read_memory_collection_evidence), Database.append_memory_collection_transition,
@@ -851,12 +851,12 @@ def loaded_identity(org: Any) -> dict:
                       Database._retry_escalation_edge, Database._retry_dispatch_edge,
                       parse_acceptance, normalize_own_reference, _identity_schema, _closed, _strict_json, _identifier, _sha256, _reference,
                       collection_record_projection, collection_control_head, collection_logical_key, equivalent_collection_control, _decoded_tables,
-                      _one, _decision, _exact_role_result, _approved_probe_plan, _validate_job, _resolve_probe_slots,
+                      _one, _decision, _exact_role_result, _approved_probe_plan, _validate_job_continuation, _validate_job, _resolve_probe_slots,
                       _validate_probe_operations, _census_from_view, validate_acceptance_evidence, _view_projection,
                       _referenced_probe_jobs, _local_job_outputs, _registered_cohort, validate_epoch_candidate, prepare_acceptance, reconcile_acceptance, acquire_collection_report,
                       _collection_pages, _http_collection_capture, acquire_http_collection_report,
-                      current_epoch_references, reduce_report, reduce_collection_report, AuditLogger.compute_memory_telemetry_report,
-                      cmd_memory_report, _compute_report, _print_report])
+                      current_epoch_references, reduce_report, reduce_collection_report, _session_diagnostics, AuditLogger.compute_memory_telemetry_report,
+                      cmd_memory_report, _compute_report, _print_report, _paginate, _report_projection, _fetch_agent_roles])
     code_rows = []
     compiled: dict[str, CodeType] = {}
     def fingerprint(function: Any) -> None:
@@ -1256,6 +1256,139 @@ HEALTH_DEFINITION_SHA256 = hashlib.sha256(
 ).hexdigest()
 
 
+def _validate_job_continuation(data: dict, job: dict, submitted: dict, finished: dict,
+                               original: dict, qa_result: dict, qa_task: dict) -> None:
+    """Authenticate one ordinary owned-job wait, never retry/recovery ancestry.
+
+    The resume audit has no SID. Its unique blocked result/event and the two
+    contiguous real invocation/start tuples supply the causal join instead.
+    Identity preparation can precede or follow the resume audit; launch cannot.
+    """
+    from runtime.infrastructure.memory_telemetry_report import aware_utc
+    category = "acceptance_job_continuation"
+    end = aware_utc(qa_result["created_at"])
+    beginning = aware_utc(original["timestamp"])
+    own = [row for row in data["audit_log"] if row["task_id"] == qa_task["id"]]
+    current = _one([row for row in own if row["action"] == "memory_runtime_identity"
+                    and row["payload"].get("session_id") == qa_result["session_id"]], category)
+    identities = [original, current]
+    sids = [row["payload"].get("session_id") for row in identities]
+    if (any(not isinstance(sid, str) or not sid for sid in sids) or sids[0] == sids[1]
+            or submitted["payload"].get("submit_session_id") != sids[0]
+            or qa_result["session_id"] != sids[1]):
+        raise AcceptanceUnavailable(category)
+    starts = []
+    for identity, sid in zip(identities, sids):
+        # Global tuple uniqueness catches duplicate/conflicting evidence outside
+        # the selected time window too. Same-task foreign actors are not ignored.
+        _one([row for row in data["audit_log"] if row["task_id"] == qa_task["id"]
+              and row["action"] == "memory_runtime_identity" and row["payload"].get("session_id") == sid], category)
+        start = _one([row for row in data["audit_log"] if row["task_id"] == qa_task["id"]
+                      and row["action"] == "session_start" and row["payload"].get("session_id") == sid], category)
+        facts = identity["payload"]
+        if (identity["agent"] != qa_result["agent"] or start["agent"] != qa_result["agent"]
+                or facts.get("task_id") != qa_task["id"] or facts.get("agent") != qa_result["agent"]
+                or facts.get("population") != "child" or facts.get("parent_known") is not True
+                or facts.get("parent_task_id") != qa_task["parent_task_id"]
+                or facts.get("task_type") != "subtask" or qa_task["task_type"] != "subtask"
+                or facts.get("invocation_purpose") != "worker_execution"
+                or any(facts.get(key) != current["payload"].get(key)
+                       or start["payload"].get(key) != facts.get(key)
+                       for key in ("executor", "model", "invocation_purpose"))
+                or identity["id"] >= start["id"]
+                or not (aware_utc(qa_task["created_at"]) <= aware_utc(identity["timestamp"])
+                        <= aware_utc(start["timestamp"]) <= end)):
+            raise AcceptanceUnavailable(category)
+        starts.append(start)
+
+    def chain_rows(rows: list[dict], first_id: int, last_id: int, time_key: str) -> list[dict]:
+        # IDs are comparable only within this one table. Establish the interval
+        # before consulting timestamps, so misdated intervening rows cannot hide.
+        selected = []
+        for row in rows:
+            in_ids = first_id <= row["id"] <= last_id
+            try:
+                timestamp = aware_utc(row.get(time_key))
+            except (TypeError, ValueError) as exc:
+                raise AcceptanceUnavailable(category) from exc
+            in_time = beginning <= timestamp <= end
+            if in_ids and not in_time:
+                raise AcceptanceUnavailable(category)
+            # Keep time-overlapping evidence too, including contradictory events
+            # after the current start. Earlier history/later callbacks outside
+            # both intervals do not belong to this continuation.
+            if in_ids or in_time:
+                selected.append(row)
+        return selected
+
+    own = chain_rows(own, original["id"], starts[1]["id"], "timestamp")
+    if sorted([row for row in own if row["action"] == "memory_runtime_identity"],
+              key=lambda row: row["id"]) != identities:
+        raise AcceptanceUnavailable(category)
+    if (sorted([row for row in own if row["action"] == "session_start"], key=lambda row: row["id"]) != starts
+            or starts[0]["id"] >= submitted["id"]
+            or not (aware_utc(starts[0]["timestamp"]) <= aware_utc(job["created_at"])
+                    <= aware_utc(submitted["timestamp"]))):
+        raise AcceptanceUnavailable(category)
+    results = [row for row in data["task_results"] if row["task_id"] == qa_task["id"]]
+    blocked = _one([row for row in results if row["session_id"] == sids[0]], category)
+    results = chain_rows(results, blocked["id"], qa_result["id"], "created_at")
+    if (len(results) != 2 or qa_result not in results or blocked["id"] >= qa_result["id"]
+            or blocked["agent"] != qa_result["agent"] or blocked["status"] != "blocked"
+            or blocked["decision_json"] is not None):
+        raise AcceptanceUnavailable(category)
+    waiting = blocked.get("waiting_on_job_ids")
+    waiting = _strict_json(waiting) if isinstance(waiting, str) else waiting
+    if (not isinstance(waiting, list) or not waiting or len(waiting) > MAX_CENSUS_READ_ROWS
+            or any(not isinstance(jid, str) for jid in waiting)
+            or len(set(waiting)) != len(waiting) or job["id"] not in waiting):
+        raise AcceptanceUnavailable(category)
+    for jid in waiting:
+        _identifier(jid, "JOB")
+    reported_wait = waiting
+    waiting = sorted(waiting)
+    lifecycle = [row for row in own if row["action"] in {
+        "completion_report", "task_blocked_on_jobs", "task_resumed_from_jobs"}]
+    callback = _one([row for row in lifecycle if row["action"] == "completion_report"], category)
+    block = _one([row for row in lifecycle if row["action"] == "task_blocked_on_jobs"], category)
+    resume = _one([row for row in lifecycle if row["action"] == "task_resumed_from_jobs"], category)
+    report, resumed = callback["payload"], resume["payload"]
+    if (callback["agent"] != qa_result["agent"] or report.get("task_id") != qa_task["id"]
+            or report.get("agent") != qa_result["agent"] or report.get("status") != "blocked"
+            or report.get("output_summary") != blocked["output_summary"]
+            or report.get("waiting_on_job_ids") != reported_wait
+            or block["agent"] != qa_result["agent"] or block["payload"].get("agent") != qa_result["agent"]
+            or block["payload"].get("blocking_job_ids") != waiting
+            or resume["agent"] != "orchestrator" or resumed.get("blocking_job_ids") != waiting
+            or resumed.get("trigger") not in {"block_submit", "job_terminal"}
+            or (resumed.get("trigger") == "block_submit" and resumed.get("triggering_job_id") is not None)
+            or (resumed.get("trigger") == "job_terminal" and resumed.get("triggering_job_id") not in waiting)
+            or not isinstance(resumed.get("job_outcomes"), dict) or set(resumed["job_outcomes"]) != set(waiting)
+            or not (submitted["id"] < callback["id"] < block["id"] < resume["id"] < starts[1]["id"])
+            or not (block["id"] < current["id"] and finished["id"] < current["id"]
+                    and finished["id"] < resume["id"])
+            or not (aware_utc(submitted["timestamp"]) <= aware_utc(blocked["created_at"])
+                    <= aware_utc(callback["timestamp"]) <= aware_utc(block["timestamp"])
+                    <= aware_utc(current["timestamp"]))
+            or not (aware_utc(block["timestamp"]) <= aware_utc(resume["timestamp"])
+                    <= aware_utc(starts[1]["timestamp"]))
+            or aware_utc(finished["timestamp"]) > aware_utc(current["timestamp"])
+            or aware_utc(finished["timestamp"]) > aware_utc(resume["timestamp"])):
+        raise AcceptanceUnavailable(category)
+    jobs_by_id: dict[str, list[dict]] = {}
+    for row in data["jobs"]:
+        jobs_by_id.setdefault(row["id"], []).append(row)
+    for jid in waiting:
+        owned = _one(jobs_by_id.get(jid, []), category)
+        if (owned["task_id"] != qa_task["id"] or owned["agent_name"] != qa_result["agent"]
+                or owned["status"] not in {"completed", "failed", "rejected"}
+                or resumed["job_outcomes"][jid] != owned["status"]
+                or not (aware_utc(owned["created_at"])
+                        <= aware_utc(owned["reviewed_at"] if owned["status"] == "rejected" else owned["finished_at"])
+                        <= aware_utc(resume["timestamp"]))):
+            raise AcceptanceUnavailable(category)
+
+
 def _validate_job(data: dict, receipt: dict, qa_result: dict, qa_task: dict, plan: dict, output: dict) -> tuple[dict, dict]:
     from runtime.infrastructure.memory_telemetry_report import aware_utc
     job = _one([row for row in data["jobs"] if row["id"] == receipt["job_id"]], "acceptance_job_missing")
@@ -1280,11 +1413,15 @@ def _validate_job(data: dict, receipt: dict, qa_result: dict, qa_task: dict, pla
     if not sessions:
         raise AcceptanceUnavailable("acceptance_job_session")
     latest_session = max(sessions, key=lambda row: row["id"])
-    if (latest_session["payload"].get("session_id") != qa_result["session_id"]
-            or any(row["action"] == "memory_runtime_identity" and row["task_id"] == qa_task["id"]
-                   and row["agent"] == qa_result["agent"] and row["payload"].get("session_id") != qa_result["session_id"]
+    if ("submit_session_id" in submitted["payload"]
+            and submitted["payload"]["submit_session_id"] != latest_session["payload"].get("session_id")):
+        raise AcceptanceUnavailable("acceptance_job_session")
+    if latest_session["payload"].get("session_id") != qa_result["session_id"]:
+        _validate_job_continuation(data, job, submitted, finished, latest_session, qa_result, qa_task)
+    elif any(row["action"] == "memory_runtime_identity" and row["task_id"] == qa_task["id"]
+                   and (row["agent"] != qa_result["agent"] or row["payload"].get("session_id") != qa_result["session_id"])
                    and aware_utc(submitted["timestamp"]) <= aware_utc(row["timestamp"]) <= aware_utc(qa_result["created_at"])
-                   for row in data["audit_log"])):
+                   for row in data["audit_log"]):
         raise AcceptanceUnavailable("acceptance_job_session")
     if any(row["task_id"] != qa_task["id"] for row in (submitted, started, finished)) or submitted["agent"] != qa_result["agent"]:
         raise AcceptanceUnavailable("acceptance_job_owner")
@@ -1719,8 +1856,9 @@ def acquire_collection_report(org: Any, *, current_time: datetime | None = None)
 
 
 def _collection_pages(client: Any, org: str, *, tasks: bool = False) -> list[dict]:
-    from runtime.infrastructure.memory_telemetry_report import ReportAcquisitionUnavailable
+    from runtime.infrastructure.memory_telemetry_report import aware_utc, ReportAcquisitionUnavailable
     items, seen, cursors, cursor = [], set(), set(), None
+    task_anchor = None
     while True:
         params = {"limit": 200 if tasks else 5000}
         if cursor is not None:
@@ -1731,29 +1869,53 @@ def _collection_pages(client: Any, org: str, *, tasks: bool = False) -> list[dic
         page = response.json()
         _closed(page, {"tasks" if tasks else "entries", "next_cursor"})
         rows = page["tasks" if tasks else "entries"]
-        if not isinstance(rows, list) or len(items) + len(rows) > MAX_CENSUS_READ_ROWS:
+        if (not isinstance(rows, list) or len(rows) > params["limit"]
+                or len(items) + len(rows) > MAX_CENSUS_READ_ROWS):
             raise ReportAcquisitionUnavailable()
         for index, row in enumerate(rows):
             if tasks and isinstance(row, dict):
                 row = dict(row)
+                if (not isinstance(row.get("task_id"), str) or not row["task_id"].strip()
+                        or not isinstance(row.get("created_at"), str)):
+                    raise ReportAcquisitionUnavailable()
                 row["id"] = row.pop("task_id")
                 rows[index] = row
             if not isinstance(row, dict) or row.get("id") in seen:
                 raise ReportAcquisitionUnavailable()
             seen.add(row["id"])
+        order = [row["id"] for row in rows]
+        # /tasks uses (created_at, id) DESC, with an ID-only transport cursor.
+        # Parse the wire datetime: UTC serialization uses Z, whose lexical
+        # order relative to fractional seconds is not chronological.
+        # /audit returns each newest keyset page in
+        # ascending audit-ID order (not descending timestamp order).
+        try:
+            anchors = ([(aware_utc(row["created_at"]), row["id"]) for row in rows] if tasks else
+                       [(row["timestamp"], row["id"]) for row in rows])
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ReportAcquisitionUnavailable() from exc
+        if (tasks and anchors != sorted(anchors, reverse=True)) or (not tasks and order != sorted(set(order))):
+            raise ReportAcquisitionUnavailable()
+        if cursor is not None and order:
+            from runtime.infrastructure.database import _decode_cursor
+            if max(anchors) >= (task_anchor if tasks else _decode_cursor(cursor)):
+                raise ReportAcquisitionUnavailable()
         items.extend(rows)
         next_cursor = page["next_cursor"]
+        if tasks and (len(rows) == params["limit"]) != (next_cursor is not None):
+            raise ReportAcquisitionUnavailable()
         if next_cursor is None:
             break
         if not rows or not isinstance(next_cursor, str) or not next_cursor or next_cursor in cursors:
             raise ReportAcquisitionUnavailable()
         if tasks:
-            if next_cursor != rows[-1]["id"] or (cursor is not None and next_cursor >= cursor):
+            if next_cursor != rows[-1]["id"]:
                 raise ReportAcquisitionUnavailable()
+            task_anchor = anchors[-1]
         else:
             from runtime.infrastructure.database import _decode_cursor
             anchor = _decode_cursor(next_cursor)
-            if not any((row.get("timestamp"), row["id"]) == anchor for row in rows):
+            if anchor != min(anchors):
                 raise ReportAcquisitionUnavailable()
             if cursor is not None and anchor >= _decode_cursor(cursor):
                 raise ReportAcquisitionUnavailable()
@@ -1777,10 +1939,22 @@ def _http_collection_capture(client: Any, org: str) -> tuple[dict, dict, dict]:
     results, jobs, outputs = [], [], {}
     # All original parent/plan results participate in prior-delegation and
     # retry validation; accepting only final references would omit evidence.
-    for task_id in sorted(row["id"] for row in tasks):
+    result_ids = set()
+    for task in tasks:
+        task_id = task["id"]
         _identifier(task_id, "TASK")
         detail = get(f"tasks/{task_id}")
-        if not isinstance(detail.get("results"), list):
+        current = detail.get("task")
+        if (not isinstance(current, dict) or current.get("task_id") != task_id
+                or any(current.get(key) != value for key, value in task.items() if key not in {"id", "pause"})
+                or not isinstance(detail.get("results"), list)):
+            raise ReportAcquisitionUnavailable()
+        for result in detail["results"]:
+            if (not isinstance(result, dict) or type(result.get("id")) is not int or result["id"] <= 0
+                    or result["id"] in result_ids or result.get("task_id") != task_id):
+                raise ReportAcquisitionUnavailable()
+            result_ids.add(result["id"])
+        if len(results) + len(detail["results"]) > MAX_CENSUS_READ_ROWS:
             raise ReportAcquisitionUnavailable()
         results.extend(detail["results"])
     job_ids = _referenced_probe_jobs(results)

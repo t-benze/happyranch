@@ -106,7 +106,13 @@ export interface TaskPauseOverview {
   unavailable_roots: TaskPauseProjection[];
 }
 
+export interface TaskChildWait {
+  state: 'waiting_children' | 'pending_children' | 'child_results_received' | 'continuation_pending' | 'unavailable';
+  observed_at: string;
+}
+
 export interface TaskRecord {
+  child_wait?: TaskChildWait | null;
   pause?: TaskPauseProjection;
   task_id: string;
   team: string;

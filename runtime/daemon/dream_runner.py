@@ -423,6 +423,7 @@ async def run_dream(
                 AdmissionRequest(
                     org=org_state.slug,
                     invocation_kind="dream",
+                    agent_id=dream.agent_name,
                     logical_id=dream_id,
                     executor_profile=executor_name,
                     enqueued_at=time.monotonic(),

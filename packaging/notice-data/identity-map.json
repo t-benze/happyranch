@@ -1,0 +1,288 @@
+{
+  "schema": 1,
+  "evidence_task": "TASK-11312",
+  "python": {
+    "notice": {
+      "file": "cpython-LICENSE",
+      "sha256": "3b2f81fe21d181c499c59a256c8e1968455d6689d269aa85373bfb6af41da3bf",
+      "size": 13936,
+      "source_url": "https://raw.githubusercontent.com/python/cpython/0cc81280367df838c4b199f8f0378837165071c2/LICENSE",
+      "revision": "0cc81280367df838c4b199f8f0378837165071c2",
+      "git_blob_sha1": "f26bcf4d2de6eb136e31006ca3ab447d5e488adf"
+    },
+    "implementation": "cpython",
+    "toolchain": {
+      "version": "3.12.10 (v3.12.10:0cc81280367, Apr  8 2025, 08:46:59) [Clang 13.0.0 (clang-1300.0.29.30)]",
+      "platform": "darwin",
+      "machine": "arm64"
+    },
+    "stdlib": {
+      "threading.py": "846f450ae794e4aab823a163f8c71d27751148af33e91dd3de886686a4e8ebfb",
+      "contextlib.py": "8b7a477f978a8532852fd81e241c78182516bc4975d672d580a5848a76e11eb6",
+      "string.py": "24aeae1f0526250f442022022bf98df9a823b1cb330543ee79e70e44907462e9"
+    }
+  },
+  "radix": {
+    "notice": {
+      "file": "radix-LICENSE",
+      "sha256": "0e80a2d229d2fd4fc7e8636142ec5d0ff0bc031f14c15b682e2ac01dfd5b5138",
+      "size": 1063,
+      "source_url": "https://raw.githubusercontent.com/radix-ui/primitives/fcef0668a5c827e5a4baac405474d75680f9a4eb/LICENSE",
+      "revision": "fcef0668a5c827e5a4baac405474d75680f9a4eb",
+      "git_blob_sha1": "a18858fb7b014098cba85703e66609be66a26ef5"
+    },
+    "version_relation": "Published stable versions are distinct from upstream -rc.9 metadata; official registry gitHead and exact published source-map contents bind the immutable revision.",
+    "packages": [
+      {
+        "name": "@radix-ui/number",
+        "version": "1.1.1",
+        "metadata_sha256": "c1a398060a438655c46112033017bff1688a85e3264b5296e3589119e391d49e",
+        "emitted_sources": {
+          "dist/index.mjs": "3010b237139e0172f6387d2b58fb3400d71e7f6fe185ae7b36d9ba26779e0c46"
+        },
+        "registry_url": "https://registry.npmjs.org/@radix-ui%2fnumber/1.1.1",
+        "registry_gitHead": "fcef0668a5c827e5a4baac405474d75680f9a4eb",
+        "archive_url": "https://registry.npmjs.org/@radix-ui/number/-/number-1.1.1.tgz",
+        "archive_integrity": "sha512-MkKCwxlXTgz6CFoJx3pCwn07GKp36+aZyu/u2Ln2VrA5DcdyCZkASEDBTd8x5whTQQL5CiYf4prXKLcgQdv29g==",
+        "upstream_metadata": {
+          "path": "packages/core/number/package.json",
+          "sha256": "3894471eee9e0b6ff3169e84fa4c77056d758f3f5ae049549844e00f83729af0",
+          "version": "1.1.1-rc.9"
+        },
+        "published_source_map_sha256": "715d48fdd121c6434a5c38b921075b31f6b8876566940d8fe8894f91052115e4",
+        "upstream_source_bindings": [
+          {
+            "published_map_source": "../src/number.ts",
+            "upstream_path": "packages/core/number/src/number.ts",
+            "content_sha256": "de3970c50c0537030d70b5de085b78e998ff307fb201bd23f6cdfa0d8a48f6c8"
+          }
+        ]
+      },
+      {
+        "name": "@radix-ui/react-compose-refs",
+        "version": "1.1.2",
+        "metadata_sha256": "4373969b0a688de99b33ed5c24cf91d707f638573f24fbd2dd2ad2c441c9b34c",
+        "emitted_sources": {
+          "dist/index.mjs": "dc0dc6528057301bc5f1226f863918252308fb6286655bcccd9f4cd66e34ff48"
+        },
+        "registry_url": "https://registry.npmjs.org/@radix-ui%2freact-compose-refs/1.1.2",
+        "registry_gitHead": "fcef0668a5c827e5a4baac405474d75680f9a4eb",
+        "archive_url": "https://registry.npmjs.org/@radix-ui/react-compose-refs/-/react-compose-refs-1.1.2.tgz",
+        "archive_integrity": "sha512-z4eqJvfiNnFMHIIvXP3CY57y2WJs5g2v3X0zm9mEJkrkNv4rDxu+sg9Jh8EkXyeqBkB7SOcboo9dMVqhyrACIg==",
+        "upstream_metadata": {
+          "path": "packages/react/compose-refs/package.json",
+          "sha256": "2fb5371da0d346fad9809621177e3357eaf6c78a379ff3bb0f6798d8aba94e91",
+          "version": "1.1.2-rc.9"
+        },
+        "published_source_map_sha256": "3a238556712daaadf56b8c4f7218fc0c0a4b008ff4d6aa85923db2e6ea3eae9c",
+        "upstream_source_bindings": [
+          {
+            "published_map_source": "../src/compose-refs.tsx",
+            "upstream_path": "packages/react/compose-refs/src/compose-refs.tsx",
+            "content_sha256": "958d7d87f44c080fc72f0dcf02a38f820545d8df82d851a7531624fce2ff7498"
+          }
+        ]
+      },
+      {
+        "name": "@radix-ui/react-context",
+        "version": "1.1.2",
+        "metadata_sha256": "70bee29bb1a5a8cc5fca28805bc5a4b9ddbe56ec7c914a28163b3e8bfe6edcb7",
+        "emitted_sources": {
+          "dist/index.mjs": "ed77646c94c41c9623f1b17ef94fc012dc35ef21ed2f50a2798dcb8df9b6b21a"
+        },
+        "registry_url": "https://registry.npmjs.org/@radix-ui%2freact-context/1.1.2",
+        "registry_gitHead": "fcef0668a5c827e5a4baac405474d75680f9a4eb",
+        "archive_url": "https://registry.npmjs.org/@radix-ui/react-context/-/react-context-1.1.2.tgz",
+        "archive_integrity": "sha512-jCi/QKUM2r1Ju5a3J64TH2A5SpKAgh0LpknyqdQ4m6DCV0xJ2HG1xARRwNGPQfi1SLdLWZ1OJz6F4OMBBNiGJA==",
+        "upstream_metadata": {
+          "path": "packages/react/context/package.json",
+          "sha256": "a18ab02a59363c8bafab708ed755e40ca5a29585cf3f79423504a4e421b257ec",
+          "version": "1.1.2-rc.9"
+        },
+        "published_source_map_sha256": "c03eed3d19787f6ff89ec0918b535aaa3a4bb0c0d369d099b52545972782f424",
+        "upstream_source_bindings": [
+          {
+            "published_map_source": "../src/create-context.tsx",
+            "upstream_path": "packages/react/context/src/create-context.tsx",
+            "content_sha256": "80348e05f4a464485193f3fbc61911a68e5e23ae516887107f9ab3cf36338ae0"
+          }
+        ]
+      },
+      {
+        "name": "@radix-ui/react-direction",
+        "version": "1.1.1",
+        "metadata_sha256": "cf9134c4c5e4495c71fb536c77dd2588cfbab3886c18b049ee39c9d120ea502f",
+        "emitted_sources": {
+          "dist/index.mjs": "253b501a586f7da39aa4f970e2192e6e824debe5920ad841234a772b55f0a44b"
+        },
+        "registry_url": "https://registry.npmjs.org/@radix-ui%2freact-direction/1.1.1",
+        "registry_gitHead": "fcef0668a5c827e5a4baac405474d75680f9a4eb",
+        "archive_url": "https://registry.npmjs.org/@radix-ui/react-direction/-/react-direction-1.1.1.tgz",
+        "archive_integrity": "sha512-1UEWRX6jnOA2y4H5WczZ44gOOjTEmlqv1uNW4GAJEO5+bauCBhv8snY65Iw5/VOS/ghKN9gr2KjnLKxrsvoMVw==",
+        "upstream_metadata": {
+          "path": "packages/react/direction/package.json",
+          "sha256": "458a6c1bd8053486d715d94d8ed7894913a629f153a0ae1a7bcedaeaca5f2e15",
+          "version": "1.1.1-rc.9"
+        },
+        "published_source_map_sha256": "6dc2781fa84a9b3fd5ba5c86fa90ca839d068b95f2ab9dd5348b298d1d1fb8b6",
+        "upstream_source_bindings": [
+          {
+            "published_map_source": "../src/direction.tsx",
+            "upstream_path": "packages/react/direction/src/direction.tsx",
+            "content_sha256": "342eea1d875b1c385e4a0bd35126405dde9cac6b7bdf6d0ebf4bc99a2a938974"
+          }
+        ]
+      },
+      {
+        "name": "@radix-ui/react-id",
+        "version": "1.1.1",
+        "metadata_sha256": "7f478427006dd8e521ac26a963bd63de2237b5cc4cb592ca936881a68eccb365",
+        "emitted_sources": {
+          "dist/index.mjs": "a580710854bc9461a46e20eedb2d9fa9a2347adb52bc6889a1aa4cbb28bdeeeb"
+        },
+        "registry_url": "https://registry.npmjs.org/@radix-ui%2freact-id/1.1.1",
+        "registry_gitHead": "fcef0668a5c827e5a4baac405474d75680f9a4eb",
+        "archive_url": "https://registry.npmjs.org/@radix-ui/react-id/-/react-id-1.1.1.tgz",
+        "archive_integrity": "sha512-kGkGegYIdQsOb4XjsfM97rXsiHaBwco+hFI66oO4s9LU+PLAC5oJ7khdOVFxkhsmlbpUqDAvXw11CluXP+jkHg==",
+        "upstream_metadata": {
+          "path": "packages/react/id/package.json",
+          "sha256": "5bf28a99d7685a9fe4b86750160670613c56393b787fa5eeb97f787da5249d9b",
+          "version": "1.1.1-rc.9"
+        },
+        "published_source_map_sha256": "d218cbf0828c1b6494a3a3fdc581ce209fd78a54ffc678964e10313c4e0566ba",
+        "upstream_source_bindings": [
+          {
+            "published_map_source": "../src/id.tsx",
+            "upstream_path": "packages/react/id/src/id.tsx",
+            "content_sha256": "f9dad475d2ec3fd8f64837d71bbd1f651707c5cfae1bc4adb2137bb5cc0ec5ad"
+          }
+        ]
+      },
+      {
+        "name": "@radix-ui/react-use-callback-ref",
+        "version": "1.1.1",
+        "metadata_sha256": "5440709ff10a782eed7151b71e5ad1d0e76de5c14e38502b45d22de8a3400ea4",
+        "emitted_sources": {
+          "dist/index.mjs": "eddebebf6c618ade6278d16d6a7690803697ade3191a4a289a1344df435746e1"
+        },
+        "registry_url": "https://registry.npmjs.org/@radix-ui%2freact-use-callback-ref/1.1.1",
+        "registry_gitHead": "fcef0668a5c827e5a4baac405474d75680f9a4eb",
+        "archive_url": "https://registry.npmjs.org/@radix-ui/react-use-callback-ref/-/react-use-callback-ref-1.1.1.tgz",
+        "archive_integrity": "sha512-FkBMwD+qbGQeMu1cOHnuGB6x4yzPjho8ap5WtbEJ26umhgqVXbhekKUQO+hZEL1vU92a3wHwdp0HAcqAUF5iDg==",
+        "upstream_metadata": {
+          "path": "packages/react/use-callback-ref/package.json",
+          "sha256": "8a99446208eb85eeaa72a5fbd85d1bdd830f4db767d722f1fe87760dcce7c2ad",
+          "version": "1.1.1-rc.9"
+        },
+        "published_source_map_sha256": "0ec3e675bf53b13cc266644e958518bb16284acbc7535f294bfb63ea7cd89e6d",
+        "upstream_source_bindings": [
+          {
+            "published_map_source": "../src/use-callback-ref.tsx",
+            "upstream_path": "packages/react/use-callback-ref/src/use-callback-ref.tsx",
+            "content_sha256": "e0592c6479498ba8761b26c8187efaff572febd0df0d52d89d6b350ae2684847"
+          }
+        ]
+      },
+      {
+        "name": "@radix-ui/react-use-escape-keydown",
+        "version": "1.1.1",
+        "metadata_sha256": "a1706f4010a2ed8309b0c109d2b884cf13aa02d27765b27ba755e7eb2a495d35",
+        "emitted_sources": {
+          "dist/index.mjs": "e5d57f547daef18a27f811b3950224dddd296f3f9ecc9cec43927402a7afcf16"
+        },
+        "registry_url": "https://registry.npmjs.org/@radix-ui%2freact-use-escape-keydown/1.1.1",
+        "registry_gitHead": "fcef0668a5c827e5a4baac405474d75680f9a4eb",
+        "archive_url": "https://registry.npmjs.org/@radix-ui/react-use-escape-keydown/-/react-use-escape-keydown-1.1.1.tgz",
+        "archive_integrity": "sha512-Il0+boE7w/XebUHyBjroE+DbByORGR9KKmITzbR7MyQ4akpORYP/ZmbhAr0DG7RmmBqoOnZdy2QlvajJ2QA59g==",
+        "upstream_metadata": {
+          "path": "packages/react/use-escape-keydown/package.json",
+          "sha256": "81b139eeb87fc5f95a628c21750de3ca524e2cc3ba917dc327b0645604776cc1",
+          "version": "1.1.1-rc.9"
+        },
+        "published_source_map_sha256": "5e37cf2df7de8ee2a140dfc9caa5bf5fadcd002a8ab9fb27a437fc5ce015fb02",
+        "upstream_source_bindings": [
+          {
+            "published_map_source": "../src/use-escape-keydown.tsx",
+            "upstream_path": "packages/react/use-escape-keydown/src/use-escape-keydown.tsx",
+            "content_sha256": "88115ae6e31e0f12a9d1464293e00d02c61b3e9b158e4262cc5c69fa36d26739"
+          }
+        ]
+      },
+      {
+        "name": "@radix-ui/react-use-layout-effect",
+        "version": "1.1.1",
+        "metadata_sha256": "b18e430ab5bbaf53945f55b495838dd71582f4203193747a939e2a7593f76744",
+        "emitted_sources": {
+          "dist/index.mjs": "d035366390f938e57f0601f8b551c1da2510364c1d7cb7628596cc3b253895c0"
+        },
+        "registry_url": "https://registry.npmjs.org/@radix-ui%2freact-use-layout-effect/1.1.1",
+        "registry_gitHead": "fcef0668a5c827e5a4baac405474d75680f9a4eb",
+        "archive_url": "https://registry.npmjs.org/@radix-ui/react-use-layout-effect/-/react-use-layout-effect-1.1.1.tgz",
+        "archive_integrity": "sha512-RbJRS4UWQFkzHTTwVymMTUv8EqYhOp8dOOviLj2ugtTiXRaRQS7GLGxZTLL1jWhMeoSCf5zmcZkqTl9IiYfXcQ==",
+        "upstream_metadata": {
+          "path": "packages/react/use-layout-effect/package.json",
+          "sha256": "8fe79108b3af08d0337071fa8ab04d03dbcba63b9ddfa04da7e263b1cf40aaf8",
+          "version": "1.1.1-rc.9"
+        },
+        "published_source_map_sha256": "3a71f18c1160bb6c545f094befac5a273c0701c246ad3dc2ee2561ecdd6c39f6",
+        "upstream_source_bindings": [
+          {
+            "published_map_source": "../src/use-layout-effect.tsx",
+            "upstream_path": "packages/react/use-layout-effect/src/use-layout-effect.tsx",
+            "content_sha256": "e548e715d32bc984ef2b72531c0feeb6058a7487ee33bb9c2020d4b207aed809"
+          }
+        ]
+      },
+      {
+        "name": "@radix-ui/react-use-previous",
+        "version": "1.1.1",
+        "metadata_sha256": "ca657d76c2581244474df4988dca5727fc3187f4a947c52c252a8be6dc0d735a",
+        "emitted_sources": {
+          "dist/index.mjs": "0fdf25338b86ce48cdd648a170b2d3267ff52773b0719c54a10ceb7c0f1bff16"
+        },
+        "registry_url": "https://registry.npmjs.org/@radix-ui%2freact-use-previous/1.1.1",
+        "registry_gitHead": "fcef0668a5c827e5a4baac405474d75680f9a4eb",
+        "archive_url": "https://registry.npmjs.org/@radix-ui/react-use-previous/-/react-use-previous-1.1.1.tgz",
+        "archive_integrity": "sha512-2dHfToCj/pzca2Ck724OZ5L0EVrr3eHRNsG/b3xQJLA2hZpVCS99bLAX+hm1IHXDEnzU6by5z/5MIY794/a8NQ==",
+        "upstream_metadata": {
+          "path": "packages/react/use-previous/package.json",
+          "sha256": "ba9216bf53737923b34744e20c72c74d710014684bd6e744c7add95bd1551e0a",
+          "version": "1.1.1-rc.9"
+        },
+        "published_source_map_sha256": "523af78ae0355b6c291ede6159ce4a77b2686126288fe153602e3da8b036f62a",
+        "upstream_source_bindings": [
+          {
+            "published_map_source": "../src/use-previous.tsx",
+            "upstream_path": "packages/react/use-previous/src/use-previous.tsx",
+            "content_sha256": "7298caa3779de9ad02ec27197d9b809ec06094eb5da38ecfa6753ca788ffe95d"
+          }
+        ]
+      },
+      {
+        "name": "@radix-ui/react-use-size",
+        "version": "1.1.1",
+        "metadata_sha256": "eb31b5e5e1220a8c0a1657937e24d9f639d73521bce8e9ec9522f28c46b989e0",
+        "emitted_sources": {
+          "dist/index.mjs": "cdd12856107463184f8d14011d761e55b0d959f256de5a8b0cbd3f665ea3993a"
+        },
+        "registry_url": "https://registry.npmjs.org/@radix-ui%2freact-use-size/1.1.1",
+        "registry_gitHead": "fcef0668a5c827e5a4baac405474d75680f9a4eb",
+        "archive_url": "https://registry.npmjs.org/@radix-ui/react-use-size/-/react-use-size-1.1.1.tgz",
+        "archive_integrity": "sha512-ewrXRDTAqAXlkl6t/fkXWNAhFX9I+CkKlw6zjEwk86RSPKwZr3xpBRso655aqYafwtnbpHLj6toFzmd6xdVptQ==",
+        "upstream_metadata": {
+          "path": "packages/react/use-size/package.json",
+          "sha256": "db01f1df52bd01ebb2deb083ec8773e6208c2c7b9a28ba03f8995b00695090b4",
+          "version": "1.1.1-rc.9"
+        },
+        "published_source_map_sha256": "fc88a65b40a6c3579ff05c4f7ddc4d079cc83cc4cbc5d77faf22879885db51ee",
+        "upstream_source_bindings": [
+          {
+            "published_map_source": "../src/use-size.tsx",
+            "upstream_path": "packages/react/use-size/src/use-size.tsx",
+            "content_sha256": "a233612daa3826fcecf257e9f4a4023799c40f4c83a5435afeb89196058be6cf"
+          }
+        ]
+      }
+    ]
+  }
+}

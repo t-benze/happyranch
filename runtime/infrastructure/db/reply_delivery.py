@@ -206,6 +206,9 @@ class ReplyDeliveryMixin:
         lease_id: str, now: datetime | None = None,
     ) -> ThreadReplyBreakerEpisode | None:
         """Acquire the single durable half-open lease when its cooldown is due."""
+        move = getattr(self, "_team_move_coordinator", None)
+        if move is not None and move.threads.held_uncommitted(agent_name) is not None:
+            return None
         at_s = (now or _now()).astimezone(timezone.utc).isoformat()
         cursor = self._conn.execute(
             "UPDATE thread_reply_breaker_episodes SET state='probe',"
@@ -259,6 +262,7 @@ class ReplyDeliveryMixin:
                     invocation_token=queued["queued_invocation_token"],
                     kind="breaker_probe",
                 ))
+            move = getattr(self, "_team_move_coordinator", None)
             cutoff_s = (at - timedelta(seconds=cooldown_seconds)).isoformat()
             for candidate in self._conn.execute(
                 "SELECT d.thread_id,d.agent_name,d.updated_at FROM "
@@ -273,6 +277,8 @@ class ReplyDeliveryMixin:
                 "ORDER BY d.updated_at,d.thread_id,d.agent_name",
                 (cutoff_s,),
             ).fetchall():
+                if move is not None and move.threads.held_uncommitted(candidate["agent_name"]) is not None:
+                    continue
                 pair = (candidate["thread_id"], candidate["agent_name"])
                 executor_key = (no_episode_executor_keys or {}).get(pair)
                 if executor_key is None:
@@ -310,6 +316,8 @@ class ReplyDeliveryMixin:
                 (at_s,),
             ).fetchall()
             for row in rows:
+                if move is not None and move.threads.held_uncommitted(row["agent_name"]) is not None:
+                    continue
                 if (row["queued_invocation_token"] is not None
                         or row["running_invocation_token"] is not None
                         or int(row["required_through_seq"] or 0)
@@ -529,7 +537,10 @@ class ReplyDeliveryMixin:
             participants = [
                 p.agent_name for p in self.list_thread_participants(thread_id)
             ]
+            move = getattr(self, "_team_move_coordinator", None)
             for agent_name in participants:
+                if move is not None and move.threads.preserve_pair_uncommitted(thread_id, agent_name):
+                    continue
                 existing = self._conn.execute(
                     "SELECT 1 FROM thread_reply_delivery_state "
                     "WHERE thread_id = ? AND agent_name = ?",
@@ -669,7 +680,10 @@ class ReplyDeliveryMixin:
         ).fetchall()
         try:
             self._conn.execute("BEGIN IMMEDIATE")
+            move = getattr(self, "_team_move_coordinator", None)
             for row in rows:
+                if move is not None and move.threads.preserve_pair_uncommitted(row["thread_id"], row["agent_name"]):
+                    continue
                 thread_id = row["thread_id"]
                 agent_name = row["agent_name"]
                 running_token = row["running_invocation_token"]
@@ -992,6 +1006,8 @@ class ReplyDeliveryMixin:
             ).fetchall():
                 thread_id = d["thread_id"]
                 agent_name = d["agent_name"]
+                if move is not None and move.threads.preserve_pair_uncommitted(thread_id, agent_name):
+                    continue
                 srow = self._conn.execute(
                     "SELECT * FROM thread_reply_delivery_state "
                     "WHERE thread_id = ? AND agent_name = ?",
@@ -1356,6 +1372,9 @@ class ReplyDeliveryMixin:
         (the durable recorded form); a queued settlement attributes only
         messages minted-at-or-before the wake.
         """
+        move = getattr(self, "_team_move_coordinator", None)
+        if move is not None:
+            move.threads.settlement_uncommitted(token)
         now = _now().isoformat()
         row = self._conn.execute(
             "SELECT * FROM thread_reply_delivery_state "
@@ -1689,6 +1708,9 @@ class ReplyDeliveryMixin:
         arrivals: list[ThreadReplyArrival] = []
         try:
             self._conn.execute("BEGIN IMMEDIATE")
+            move = getattr(self, "_team_move_coordinator", None)
+            if move is not None:
+                move.threads.callback_uncommitted(token)
             settlement = self._settle_reply_uncommitted(
                 token,
                 outcome=outcome,
@@ -1730,6 +1752,9 @@ class ReplyDeliveryMixin:
         settlement: ThreadReplySettlement | None = None
         try:
             self._conn.execute("BEGIN IMMEDIATE")
+            move = getattr(self, "_team_move_coordinator", None)
+            if move is not None:
+                move.threads.callback_uncommitted(token)
             self.validate_thread_message(_addresses)
             participants = [
                 p["agent_name"] for p in self._conn.execute(
@@ -1837,12 +1862,31 @@ class ReplyDeliveryMixin:
         return seq, settlement, arrivals
 
     @_synchronized
+    def peek_conversational_reply(self, token: str) -> ThreadReplyClaim | None:
+        inv = self.get_pending_invocation(token)
+        if inv is None:
+            return None
+        row = self._conn.execute("SELECT * FROM thread_reply_delivery_state WHERE thread_id=? AND agent_name=?",
+            (inv.thread_id, inv.agent_name)).fetchone()
+        if row is None:
+            return None
+        running = row["running_invocation_token"] == token
+        if not running and (row["queued_invocation_token"] != token or row["running_invocation_token"] is not None):
+            return None
+        ack, req = int(row["acknowledged_through_seq"]), int(row["required_through_seq"])
+        return ThreadReplyClaim(thread_id=inv.thread_id, agent_name=inv.agent_name, invocation_token=token,
+            acknowledged_through_seq=ack, required_through_seq=req,
+            running_from_seq=int(row["running_from_seq"]) if running else ack + 1,
+            running_through_seq=int(row["running_through_seq"]) if running else req)
+
+    @_synchronized
     def claim_conversational_reply(
         self,
         token: str,
         *,
         executor: str | None = None,
         model: str | None = None,
+        _move_owner: object | None = None,
     ) -> ThreadReplyClaim | None:
         """Durable queued→running CAS for a conversational REPLY.
 
@@ -1855,14 +1899,26 @@ class ReplyDeliveryMixin:
         """
         now = _now().isoformat()
         try:
-            self._conn.execute("BEGIN IMMEDIATE")
+            if _move_owner is None:
+                self._conn.execute("BEGIN IMMEDIATE")
+            move = getattr(self, "_team_move_coordinator", None)
+            if move is not None:
+                inv_owner = self.get_invocation_any_status(token)
+                if inv_owner is not None:
+                    move.threads.check_agent_uncommitted(inv_owner.agent_name)
+                if (_move_owner is None or _move_owner.admission is not move.threads
+                        or move.threads.live.get(_move_owner.inv.id) is not _move_owner
+                        or _move_owner.inv.invocation_token != token):
+                    from runtime.orchestrator.team_move import DeferredTeamMove
+                    raise DeferredTeamMove("team_move_thread_preparation_missing")
             row = self._conn.execute(
                 "SELECT * FROM thread_reply_delivery_state "
                 "WHERE queued_invocation_token = ?",
                 (token,),
             ).fetchone()
             if row is None or row["running_invocation_token"] is not None:
-                self._conn.commit()
+                if _move_owner is None:
+                    self._conn.commit()
                 return None
             inv = self._conn.execute(
                 "SELECT * FROM thread_invocations WHERE invocation_token = ?",
@@ -1877,17 +1933,24 @@ class ReplyDeliveryMixin:
                 and inv["started_at"] is None
             )
             if not valid:
-                self._conn.commit()
+                if _move_owner is None:
+                    self._conn.commit()
                 return None
+            if _move_owner is not None:
+                expected = _move_owner.claim
+                if (expected is None or expected.acknowledged_through_seq != row["acknowledged_through_seq"]
+                        or expected.required_through_seq != row["required_through_seq"]):
+                    from runtime.orchestrator.team_move import DeferredTeamMove
+                    raise DeferredTeamMove("team_move_thread_context_changed")
             acknowledged = int(row["acknowledged_through_seq"] or 0)
             required = int(row["required_through_seq"] or 0)
             running_from = acknowledged + 1
             running_through = required
             self._conn.execute(
-                "UPDATE thread_invocations SET started_at = ?, executor = ?, "
+                "UPDATE thread_invocations SET started_at = ?, session_id = ?, executor = ?, "
                 "model = ? "
                 "WHERE invocation_token = ? AND status = 'pending'",
-                (now, executor, model, token),
+                (now, _move_owner.session_id if _move_owner is not None else None, executor, model, token),
             )
             self._conn.execute(
                 "UPDATE thread_reply_delivery_state SET "
@@ -1908,9 +1971,11 @@ class ReplyDeliveryMixin:
                     "token_prefix": token[:8],
                 },
             )
-            self._conn.commit()
-        except Exception:
-            self._conn.rollback()
+            if _move_owner is None:
+                self._conn.commit()
+        except BaseException:
+            if _move_owner is None:
+                self._conn.rollback()
             raise
         return ThreadReplyClaim(
             thread_id=row["thread_id"],
@@ -1931,6 +1996,28 @@ class ReplyDeliveryMixin:
         decline_reason: str,
         status: ThreadInvocationStatus = ThreadInvocationStatus.FAILED,
     ) -> int:
+        """Standalone discard transaction; compound archive owns its commit."""
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            rows = self._discard_reply_delivery_uncommitted(
+                thread_id, agent_name=agent_name,
+                decline_reason=decline_reason, status=status,
+            )
+            self._conn.commit()
+            return rows
+        except BaseException:
+            self._conn.rollback()
+            raise
+
+    @_synchronized
+    def _discard_reply_delivery_uncommitted(
+        self,
+        thread_id: str,
+        *,
+        agent_name: str | None = None,
+        decline_reason: str,
+        status: ThreadInvocationStatus = ThreadInvocationStatus.FAILED,
+    ) -> int:
         """Terminalize owned conversational REPLY state with an explicit
         discard boundary (abort / archive / participant removal).
 
@@ -1942,161 +2029,156 @@ class ReplyDeliveryMixin:
         TASK_FOLLOWUP rows and never resurrects a discarded wake.
         Returns the number of reply invocation rows terminalized.
         """
+        # Caller holds DB ownership and owns the transaction/rollback.
         now = _now().isoformat()
-        try:
-            self._conn.execute("BEGIN IMMEDIATE")
-            # Snapshot the per-pair obligations BEFORE the terminalizing
-            # UPDATE so each affected pair emits exactly one truthful cancelled
-            # audit. Two obligation classes are merged: (a) every pair with a
-            # pending REPLY invocation (legacy-only pairs without a state row
-            # included), and (b) every pair with a live delivery-state
-            # obligation — a queued/running token, or an unacknowledged
-            # retry_required range — even when no pending receipt row exists
-            # (e.g. a failed wake awaiting the next conversational arrival).
-            # Boundary = state required watermark when present, else the
-            # pair's max triggering seq.
-            if agent_name is None:
-                pair_rows = self._conn.execute(
-                    "SELECT agent_name, COUNT(*) AS n, MAX(triggering_seq) "
-                    "AS max_seq FROM thread_invocations "
-                    "WHERE thread_id = ? AND status = 'pending' "
-                    "AND purpose = 'reply' GROUP BY agent_name",
-                    (thread_id,),
-                ).fetchall()
-                state_rows = self._conn.execute(
-                    "SELECT agent_name FROM thread_reply_delivery_state "
-                    "WHERE thread_id = ? AND (queued_invocation_token IS NOT NULL "
-                    "OR running_invocation_token IS NOT NULL "
-                    "OR required_through_seq > acknowledged_through_seq)",
-                    (thread_id,),
-                ).fetchall()
+        # Snapshot the per-pair obligations BEFORE the terminalizing
+        # UPDATE so each affected pair emits exactly one truthful cancelled
+        # audit. Two obligation classes are merged: (a) every pair with a
+        # pending REPLY invocation (legacy-only pairs without a state row
+        # included), and (b) every pair with a live delivery-state
+        # obligation — a queued/running token, or an unacknowledged
+        # retry_required range — even when no pending receipt row exists
+        # (e.g. a failed wake awaiting the next conversational arrival).
+        # Boundary = state required watermark when present, else the
+        # pair's max triggering seq.
+        if agent_name is None:
+            pair_rows = self._conn.execute(
+                "SELECT agent_name, COUNT(*) AS n, MAX(triggering_seq) "
+                "AS max_seq FROM thread_invocations "
+                "WHERE thread_id = ? AND status = 'pending' "
+                "AND purpose = 'reply' GROUP BY agent_name",
+                (thread_id,),
+            ).fetchall()
+            state_rows = self._conn.execute(
+                "SELECT agent_name FROM thread_reply_delivery_state "
+                "WHERE thread_id = ? AND (queued_invocation_token IS NOT NULL "
+                "OR running_invocation_token IS NOT NULL "
+                "OR required_through_seq > acknowledged_through_seq)",
+                (thread_id,),
+            ).fetchall()
+        else:
+            pair_rows = self._conn.execute(
+                "SELECT agent_name, COUNT(*) AS n, MAX(triggering_seq) "
+                "AS max_seq FROM thread_invocations "
+                "WHERE thread_id = ? AND agent_name = ? "
+                "AND status = 'pending' AND purpose = 'reply' "
+                "GROUP BY agent_name",
+                (thread_id, agent_name),
+            ).fetchall()
+            state_rows = self._conn.execute(
+                "SELECT agent_name FROM thread_reply_delivery_state "
+                "WHERE thread_id = ? AND agent_name = ? "
+                "AND (queued_invocation_token IS NOT NULL "
+                "OR running_invocation_token IS NOT NULL "
+                "OR required_through_seq > acknowledged_through_seq)",
+                (thread_id, agent_name),
+            ).fetchall()
+        # Merge state-only pairs (n = 0 receipts terminalized by the sweep)
+        # into the audit set without duplicate rows.
+        seen: set[str] = set()
+        merged: list[dict] = []
+        for pr in pair_rows:
+            merged.append(pr)
+            seen.add(pr["agent_name"])
+        for sr in state_rows:
+            if sr["agent_name"] not in seen:
+                merged.append({"agent_name": sr["agent_name"], "n": 0,
+                               "max_seq": None})
+                seen.add(sr["agent_name"])
+        if agent_name is None:
+            cursor = self._conn.execute(
+                "UPDATE thread_invocations SET status = ?, decline_reason = ?, "
+                "consumed_at = ? WHERE thread_id = ? AND status = 'pending' "
+                "AND purpose = 'reply'",
+                (status.value, decline_reason, now, thread_id),
+            )
+        else:
+            cursor = self._conn.execute(
+                "UPDATE thread_invocations SET status = ?, decline_reason = ?, "
+                "consumed_at = ? WHERE thread_id = ? AND agent_name = ? "
+                "AND status = 'pending' AND purpose = 'reply'",
+                (status.value, decline_reason, now, thread_id, agent_name),
+            )
+        if agent_name is None:
+            self._conn.execute(
+                "UPDATE thread_reply_breaker_episodes SET state='closed',"
+                "consecutive_failures=0,opened_at=NULL,cooldown_until=NULL,"
+                "probe_lease_id=NULL,last_failure_category=NULL,updated_at=? "
+                "WHERE thread_id=?",
+                (now, thread_id),
+            )
+        else:
+            self._conn.execute(
+                "UPDATE thread_reply_breaker_episodes SET state='closed',"
+                "consecutive_failures=0,opened_at=NULL,cooldown_until=NULL,"
+                "probe_lease_id=NULL,last_failure_category=NULL,updated_at=? "
+                "WHERE thread_id=? AND agent_name=?",
+                (now, thread_id, agent_name),
+            )
+        if agent_name is None:
+            self._conn.execute(
+                "UPDATE thread_reply_delivery_state SET "
+                "acknowledged_through_seq = required_through_seq, "
+                "queued_invocation_token = NULL, "
+                "running_invocation_token = NULL, running_from_seq = NULL, "
+                "running_through_seq = NULL, "
+                "last_terminal_reason = ?, last_terminal_at = ?, "
+                "updated_at = ? WHERE thread_id = ?",
+                (decline_reason, now, now, thread_id),
+            )
+            # TASK-5966: whole-thread discard (abort/archive) SUPPRESSES
+            # any open exchange — no catch-up is ever minted (G5: the
+            # human stopped). Idempotent per-exchange CAS.
+            if decline_reason == "archive_started":
+                _exchange_reason = "thread_archived"
             else:
-                pair_rows = self._conn.execute(
-                    "SELECT agent_name, COUNT(*) AS n, MAX(triggering_seq) "
-                    "AS max_seq FROM thread_invocations "
-                    "WHERE thread_id = ? AND agent_name = ? "
-                    "AND status = 'pending' AND purpose = 'reply' "
-                    "GROUP BY agent_name",
-                    (thread_id, agent_name),
-                ).fetchall()
-                state_rows = self._conn.execute(
-                    "SELECT agent_name FROM thread_reply_delivery_state "
-                    "WHERE thread_id = ? AND agent_name = ? "
-                    "AND (queued_invocation_token IS NOT NULL "
-                    "OR running_invocation_token IS NOT NULL "
-                    "OR required_through_seq > acknowledged_through_seq)",
-                    (thread_id, agent_name),
-                ).fetchall()
-            # Merge state-only pairs (n = 0 receipts terminalized by the sweep)
-            # into the audit set without duplicate rows.
-            seen: set[str] = set()
-            merged: list[dict] = []
-            for pr in pair_rows:
-                merged.append(pr)
-                seen.add(pr["agent_name"])
-            for sr in state_rows:
-                if sr["agent_name"] not in seen:
-                    merged.append({"agent_name": sr["agent_name"], "n": 0,
-                                   "max_seq": None})
-                    seen.add(sr["agent_name"])
-            if agent_name is None:
-                cursor = self._conn.execute(
-                    "UPDATE thread_invocations SET status = ?, decline_reason = ?, "
-                    "consumed_at = ? WHERE thread_id = ? AND status = 'pending' "
-                    "AND purpose = 'reply'",
-                    (status.value, decline_reason, now, thread_id),
-                )
-            else:
-                cursor = self._conn.execute(
-                    "UPDATE thread_invocations SET status = ?, decline_reason = ?, "
-                    "consumed_at = ? WHERE thread_id = ? AND agent_name = ? "
-                    "AND status = 'pending' AND purpose = 'reply'",
-                    (status.value, decline_reason, now, thread_id, agent_name),
-                )
-            if agent_name is None:
-                self._conn.execute(
-                    "UPDATE thread_reply_breaker_episodes SET state='closed',"
-                    "consecutive_failures=0,opened_at=NULL,cooldown_until=NULL,"
-                    "probe_lease_id=NULL,last_failure_category=NULL,updated_at=? "
-                    "WHERE thread_id=?",
-                    (now, thread_id),
-                )
-            else:
-                self._conn.execute(
-                    "UPDATE thread_reply_breaker_episodes SET state='closed',"
-                    "consecutive_failures=0,opened_at=NULL,cooldown_until=NULL,"
-                    "probe_lease_id=NULL,last_failure_category=NULL,updated_at=? "
-                    "WHERE thread_id=? AND agent_name=?",
-                    (now, thread_id, agent_name),
-                )
-            if agent_name is None:
-                self._conn.execute(
-                    "UPDATE thread_reply_delivery_state SET "
-                    "acknowledged_through_seq = required_through_seq, "
-                    "queued_invocation_token = NULL, "
-                    "running_invocation_token = NULL, running_from_seq = NULL, "
-                    "running_through_seq = NULL, "
-                    "last_terminal_reason = ?, last_terminal_at = ?, "
-                    "updated_at = ? WHERE thread_id = ?",
-                    (decline_reason, now, now, thread_id),
-                )
-                # TASK-5966: whole-thread discard (abort/archive) SUPPRESSES
-                # any open exchange — no catch-up is ever minted (G5: the
-                # human stopped). Idempotent per-exchange CAS.
-                if decline_reason == "archive_started":
-                    _exchange_reason = "thread_archived"
-                else:
-                    _exchange_reason = "founder_aborted"
-                self._suppress_open_exchanges_uncommitted(
-                    thread_id, reason=_exchange_reason,
-                )
-            else:
-                self._conn.execute(
-                    "UPDATE thread_reply_delivery_state SET "
-                    "acknowledged_through_seq = required_through_seq, "
-                    "queued_invocation_token = NULL, "
-                    "running_invocation_token = NULL, running_from_seq = NULL, "
-                    "running_through_seq = NULL, "
-                    "last_terminal_reason = ?, last_terminal_at = ?, "
-                    "updated_at = ? WHERE thread_id = ? AND agent_name = ?",
-                    (decline_reason, now, now, thread_id, agent_name),
-                )
-                # TASK-5966: participant removal suppresses the removed
-                # agent's held deferral rows in any open exchange (the pair is
-                # terminal — a removed member never receives a catch-up). The
-                # exchange itself stays open; closure fires at the next
-                # evaluation point (write/reaper/reconcile) with proper
-                # enqueue, so no catch-up token can strand.
-                self._conn.execute(
-                    "UPDATE thread_exchange_deferrals SET state = 'suppressed' "
-                    "WHERE thread_id = ? AND agent_name = ? AND state = 'held'",
-                    (thread_id, agent_name),
-                )
-            for pr in merged:
-                pair_agent = pr["agent_name"]
-                st = self._conn.execute(
-                    "SELECT required_through_seq FROM thread_reply_delivery_state "
-                    "WHERE thread_id = ? AND agent_name = ?",
-                    (thread_id, pair_agent),
-                ).fetchone()
-                boundary = (
-                    int(st["required_through_seq"] or 0)
-                    if st is not None else int(pr["max_seq"] or 0)
-                )
-                self._emit_reply_wake_audit(
-                    thread_id=thread_id, agent_name=pair_agent,
-                    action="thread_reply_wake_cancelled",
-                    payload={
-                        "agent_name": pair_agent,
-                        "boundary_seq": boundary,
-                        "reason": decline_reason,
-                        "swept_count": int(pr["n"]),
-                    },
-                )
-            self._conn.commit()
-        except Exception:
-            self._conn.rollback()
-            raise
+                _exchange_reason = "founder_aborted"
+            self._suppress_open_exchanges_uncommitted(
+                thread_id, reason=_exchange_reason,
+            )
+        else:
+            self._conn.execute(
+                "UPDATE thread_reply_delivery_state SET "
+                "acknowledged_through_seq = required_through_seq, "
+                "queued_invocation_token = NULL, "
+                "running_invocation_token = NULL, running_from_seq = NULL, "
+                "running_through_seq = NULL, "
+                "last_terminal_reason = ?, last_terminal_at = ?, "
+                "updated_at = ? WHERE thread_id = ? AND agent_name = ?",
+                (decline_reason, now, now, thread_id, agent_name),
+            )
+            # TASK-5966: participant removal suppresses the removed
+            # agent's held deferral rows in any open exchange (the pair is
+            # terminal — a removed member never receives a catch-up). The
+            # exchange itself stays open; closure fires at the next
+            # evaluation point (write/reaper/reconcile) with proper
+            # enqueue, so no catch-up token can strand.
+            self._conn.execute(
+                "UPDATE thread_exchange_deferrals SET state = 'suppressed' "
+                "WHERE thread_id = ? AND agent_name = ? AND state = 'held'",
+                (thread_id, agent_name),
+            )
+        for pr in merged:
+            pair_agent = pr["agent_name"]
+            st = self._conn.execute(
+                "SELECT required_through_seq FROM thread_reply_delivery_state "
+                "WHERE thread_id = ? AND agent_name = ?",
+                (thread_id, pair_agent),
+            ).fetchone()
+            boundary = (
+                int(st["required_through_seq"] or 0)
+                if st is not None else int(pr["max_seq"] or 0)
+            )
+            self._emit_reply_wake_audit(
+                thread_id=thread_id, agent_name=pair_agent,
+                action="thread_reply_wake_cancelled",
+                payload={
+                    "agent_name": pair_agent,
+                    "boundary_seq": boundary,
+                    "reason": decline_reason,
+                    "swept_count": int(pr["n"]),
+                },
+            )
         return cursor.rowcount
 
     @_synchronized

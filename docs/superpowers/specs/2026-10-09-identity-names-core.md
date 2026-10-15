@@ -281,7 +281,12 @@ gate for established ID operations. Editor drafts are scoped by org/kind/ID and
 survive locale changes and identity refetches.
 
 Real thread compose/follow-up/invite/forward and task read-filter pickers search
-current names and permanent IDs. Selected values stay IDs across renames. Founder
+current names and permanent IDs. Selected values stay IDs across renames. Thread-detail
+composer @mention hints offer only eligible participant agents, including their
+current Name · ID labels and permanent-ID matching; human Founder is never
+suggested, even after renaming. Manually typed current Founder names and
+`@founder` remain literal and retain existing preflight/send behavior. Human
+recipient controls elsewhere still offer the separate Founder option. Founder
 is a separate human option routed as established `@founder`, never an agent
 participant or task owner. There is no task-create owner GUI in the present web
 source; the existing task agent filter is the relevant selector. Prospective
