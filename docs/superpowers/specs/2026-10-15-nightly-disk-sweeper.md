@@ -27,6 +27,31 @@ unreached scope and interrupted mutation remain unknown/incomplete. Refusal cost
 is not promised. Many refusals before an eligible root are a finite disposable
 acceptance case, not a general fairness guarantee.
 
+Discovery retains the known candidate set when an independent workspace,
+task-temp subtree, repository or registered path cannot be read. Each failed
+scope is preserved and named literally in `discovery_scopes` (also under
+`unknown_scope`), with its actual reason and `candidate_count: null`. It does
+not become an empty inventory. Only an immediate repository with a no-follow
+primary `.git` directory is queried; arbitrary children such as `repos/output`
+and `repos/.happyranch` are reported uncertain without walking their contents.
+Workspace/repository/metadata aliases are not followed. Missing optional
+`task-tmp`/`repos` directories are absent; inaccessible or invalid ones are unknown.
+
+Independent known scopes continue within the SAME deadline. Completed traversal
+with any uncertain scope is `discovery: partial`; org and batch outcomes remain
+incomplete. Known candidates retain phase/oldest/path ordering and pass all
+current action-time gates. Partial discovery never permits Git prune. On
+expiry/shutdown, discovery stops globally: captured candidates remain explicitly
+unreached, discovery is unknown, and `unfinished_discovery_root` names the extent
+whose remaining inventory is unknown. `known_candidate_count` and
+`known_unreached_count` describe only captured candidates; `unreached` remains
+null unless discovery is complete. Other candidate/retention/allocation counts
+likewise describe the known set, never an uncertain total. Discovery checkpoints
+retain captured candidates and failed scopes without a cursor or budget reset.
+The existing supervisor conservatively retains `partial_mutation: unknown` for
+a nonzero worker exit, even when an incomplete report was fully written; this
+field is not evidence of deletion.
+
 ```yaml
 # <runtime>/orgs/<slug>/org/config.yaml
 # Quote on/off: YAML 1.1 parses unquoted tokens as booleans, which are rejected.
@@ -189,7 +214,20 @@ containment; dirty/untracked/ignored worktrees; fully nonmutating dry run and
 public CLI; missing/denied evidence; all active job states and retry change;
 nested recent writes; partial failure/deadline/shutdown/event-loop responsiveness;
 unique detached versus retained refs; fifty refusals before an eligible candidate
-and separate discovery exhaustion. Actual mount/chroot isolation availability
+and separate discovery exhaustion. Focused correction cases15–18 additionally
+cover the real first-night non-Git sibling failure, valid scratch and registered
+worktrees before/after failed scopes, real unreadable/broken registrations,
+workspace/repo/metadata aliases and non-directory children, nonmutating dry-run,
+independent org continuation and JSON/audit projection, a real Git timeout during
+discovery with captured/unreached/unknown inventory, and finite progress after
+35 uncertain subtrees plus30 refused candidates:
+
+```bash
+TMPDIR=/absolute/actual-child-task-tmp PYTHONDONTWRITEBYTECODE=1 .venv/bin/python scripts/verify_disk_sweeper.py --cases 15 16 17 18
+```
+
+All disposable mutation roots must be inside that actual child's task-tmp.
+Actual mount/chroot isolation availability
 and any missing cases must be reported, not laundered into PASS. No protected
 mutation proof or historical/real cleanup runs here. General integration remains
 SKIPPED24342, Python units RETIRED, Product E2E daily-only. Independent full code
@@ -255,4 +293,6 @@ These fixtures are authored executable sources; their availability and actual
 results must accompany each handoff. QA11530's EPERM mount/chroot attempts and
 lineage defect, and TASK11525's alias defect, remain historical evidence. No
 source approval/static success replaces fresh independent behavioral QA, and
-unavailable positive mount/root evidence stays open until actually executed.
+the two positive mount/root fixtures remain SKIPPED/UNEXECUTED under Founder
+THR307 seq62, never PASS. They are excluded from correction verification; do not
+execute them through cases3/6, the full driver or isolation flags on this waiver.

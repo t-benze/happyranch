@@ -62,9 +62,9 @@ class Fixture:
         (s.root / 'nested/payload').write_bytes(b'payload' * 2048)
         return s.root
 
-    def worktree(self, name):
+    def worktree(self, name, project="project"):
         self.task(name)
-        repo = self.workspace / 'repos/project'
+        repo = self.workspace / 'repos' / project
         if not repo.exists():
             repo.mkdir(parents=True)
             self.git(repo,'init','-q')
@@ -636,6 +636,179 @@ def c14():
         return '50 older refused roots precede actual removal within 12 seconds; separately exhausted discovery reports unknown/unreached, without cursor or refill.'
 
 
+def c15():
+    """First-night reproducer: known scratch/repos survive non-Git siblings."""
+    observations=[]
+    for mode in ('dry_run', 'on'):
+        with fixture() as f:
+            p=f.scratch('TASK-1')
+            a,x=f.worktree('TASK-2','a-project')
+            z,y=f.worktree('TASK-3','z-project')
+            protected=[]
+            for name in ('.happyranch','output'):
+                root=f.workspace/'repos'/name
+                (root/'TASK-8928').mkdir(parents=True)
+                (root/'TASK-8928/keep').write_text('protected noncandidate')
+                protected.append(root)
+            # Detect accidental Git reads in protected noncandidate children.
+            before=candidate_contents(p,x,y,*protected)
+            controls=candidate_contents(*protected)
+            registrations={str(repo):f.git(repo,'worktree','list','--porcelain') for repo in (a,z)}
+            calls=[]
+            realgit=ds.git
+            def trace(repo,deadline,*args):
+                calls.append((str(repo),args))
+                value=realgit(repo,deadline,*args)
+                assert repo not in protected, ('protected Git traversal',repo)
+                return value
+            with patch.object(ds,'git',trace):
+                if mode=='dry_run':
+                    with refuse_mutations(): r=f.sweep(mode)
+                else: r=f.sweep(mode)
+            assert all(repo not in {str(v) for v in protected} for repo,args in calls),calls
+            assert not any(args[:2]==('worktree','prune') for repo,args in calls),calls
+            assert r['outcome']=='incomplete' and r['discovery']=='partial',r
+            assert {c['path'] for c in r['candidates']}=={str(p),str(x),str(y)},r
+            assert [c['path'] for c in r['candidates']]==[str(p),str(x),str(y)],r
+            scopes=r['unknown_scope']['discovery_scopes']
+            assert {s['path'] for s in scopes}=={str(v) for v in protected},r
+            assert all(s['candidate_count'] is None and s['reason'] for s in scopes),r
+            assert r['known_candidate_count']==3 and r['known_unreached_count']==0,r
+            assert r['unreached'] is None,r
+            assert candidate_contents(*protected)==controls
+            if mode=='dry_run':
+                assert candidate_contents(p,x,y,*protected)==before
+                assert all(row(r,v)['state']=='eligible' for v in (p,x,y)),r
+                assert all(f.git(repo,'worktree','list','--porcelain')==registrations[str(repo)] for repo in (a,z))
+                other=f.base/'zz-independent';(other/'workspaces').mkdir(parents=True)
+                summary=f.base/'summary.json'
+                with refuse_mutations():
+                    aggregate=ds.sweep([str(f.org),str(other)],time.monotonic()+5,summary,dry_run=True,scheduled_date=None,revision='fixture')
+                assert aggregate['outcome']=='incomplete' and aggregate['unreached_orgs']==[],aggregate
+                assert aggregate['orgs'][1]['outcome']=='complete',aggregate
+                assert json.loads(summary.read_text())==aggregate
+                assert ds._audit_payload(aggregate,aggregate['orgs'][0],summary)['org']['discovery_scopes']==scopes
+            else:
+                assert all(row(r,v)['state']=='removed' and not v.exists() for v in (p,x,y)),r
+                assert all(f.git(repo,'show-ref','--verify',f'refs/heads/task/{v.name}') for repo,v in ((a,x),(z,y)))
+            observations.append(dict(mode=mode,known=3,unknown_scopes=scopes,states=[c['state'] for c in r['candidates']],git_calls=len(calls)))
+    return observations
+
+
+def c16():
+    """Real inaccessible/broken Git and workspace scopes; aliases stay literal."""
+    with fixture() as f:
+        p=f.scratch('TASK-1')
+        repo,q=f.worktree('TASK-2','z-project')
+        repos=f.workspace/'repos'
+        broken=repos/'b-broken';(broken/'.git').mkdir(parents=True)
+        # A broken .git may cause real Git to find a valid ancestor instead.
+        f.git(f.base,'init','-q')
+        unreadable=repos/'c-unreadable';(unreadable/'.git').mkdir(parents=True);(unreadable/'.git').chmod(0)
+        alias=repos/'a-alias';alias.symlink_to(repo,target_is_directory=True)
+        file=repos/'d-file';file.write_text('not a repository')
+        git_alias=repos/'e-git-alias';git_alias.mkdir();(git_alias/'.git').symlink_to(repo/'.git',target_is_directory=True)
+        owner_file=f.org/'workspaces/aa-file';owner_file.write_text('not a workspace')
+        owner_alias=f.org/'workspaces/ab-alias';owner_alias.symlink_to(f.workspace,target_is_directory=True)
+        # A failed scratch subtree must not hide this workspace's Git roots.
+        tmp=p.parent;tmp.chmod(0)
+        before=candidate_contents(q,broken,file,owner_file)
+        realgit=ds.git;calls=[]
+        def trace(repo,deadline,*args):
+            calls.append(str(repo))
+            assert repo not in (alias,owner_alias), ('followed alias',repo)
+            return realgit(repo,deadline,*args)
+        with patch.object(ds,'git',trace),refuse_mutations(): r=f.sweep('dry_run')
+        assert r['outcome']=='incomplete' and row(r,q)['state']=='eligible',r
+        expected={tmp,broken,unreadable,alias,file,git_alias,owner_file,owner_alias}
+        scopes=r['unknown_scope']['discovery_scopes']
+        assert {s['path'] for s in scopes}=={str(v) for v in expected},r
+        assert all(s['candidate_count'] is None and s['reason'] for s in scopes),r
+        assert before==candidate_contents(q,broken,file,owner_file)
+        assert str(broken) in calls,calls
+        assert not {str(v) for v in (alias,unreadable,git_alias,owner_alias)} & set(calls),calls
+        assert all(c['path']!=str(p) for c in r['candidates']),r
+        observed=dict(known=1,unknown_scopes=scopes,alias_git_calls=0)
+    with fixture() as f:
+        repo,q=f.worktree('TASK-1')
+        external=f.base/'external';(external/'task-tmp/TASK-999').mkdir(parents=True)
+        (external/'task-tmp/TASK-999/keep').write_text('durable alias target')
+        (f.workspace/'.happyranch').symlink_to(external,target_is_directory=True)
+        before=candidate_contents(external,q)
+        with refuse_mutations(): r=f.sweep('dry_run')
+        assert r['outcome']=='incomplete' and row(r,q)['state']=='eligible',r
+        assert len(r['candidates'])==1 and len(r['discovery_scopes'])==1,r
+        assert r['discovery_scopes'][0]['path']==str(f.workspace/'.happyranch/task-tmp'),r
+        assert candidate_contents(external,q)==before
+        observed['scratch_ancestor_alias']='retained; external target unchanged; independent worktree eligible'
+    with fixture() as f:
+        p=f.scratch('TASK-1')
+        repo,q=f.worktree('TASK-2')
+        external=f.base/'protected-worktrees'
+        q.parent.rename(external)
+        q.parent.symlink_to(external,target_is_directory=True)
+        before=candidate_contents(external,p)
+        with refuse_mutations(): r=f.sweep('dry_run')
+        assert r['outcome']=='incomplete' and row(r,p)['state']=='eligible',r
+        assert len(r['candidates'])==1 and r['discovery_scopes'][0]['path']==str(q),r
+        assert candidate_contents(external,p)==before
+        observed['worktree_parent_alias']='retained unknown; no candidate stat through alias; independent scratch eligible'
+    return observed
+
+
+def c17():
+    """Actual Git timeout midway through discovery is a global stop."""
+    with fixture() as f:
+        p=f.scratch('TASK-1')
+        repo,q=f.worktree('TASK-2','a-project')
+        late,z=f.worktree('TASK-3','z-project')
+        blocker=f.workspace/'repos/m-blocker';(blocker/'.git').mkdir(parents=True)
+        binpath=f.base/'bin';binpath.mkdir()
+        realgit=shutil.which('git')
+        shim=binpath/'git'
+        shim.write_text('#!'+sys.executable+'\nimport os,sys,time\nif '+repr(str(blocker))+' in sys.argv: time.sleep(2)\nos.execv('+repr(realgit)+',["git",*sys.argv[1:]])\n')
+        shim.chmod(0o700)
+        later=f.base/'zz-org';(later/'org').mkdir(parents=True);(later/'org/config.yaml').write_text('disk_sweep: {mode: "off"}')
+        summary=f.base/'report.json'
+        start=time.monotonic();deadline=start+.3
+        with patch.dict(os.environ,PATH=str(binpath)+os.pathsep+os.environ['PATH']),refuse_mutations():
+            r=ds.sweep([str(f.org),str(later)],deadline,summary,dry_run=True,scheduled_date=None,revision='fixture',started_monotonic=start)
+        item=r['orgs'][0]
+        assert r['outcome']=='incomplete' and r['unreached_orgs']==[str(later)],r
+        assert r['deadline_monotonic']==deadline and r['budget_seconds']==deadline-start,r
+        assert item['discovery']=='unknown' and item['unreached'] is None,item
+        assert item['unknown_scope']['unfinished_discovery_root']==str(f.org/'workspaces'),item
+        assert item['known_candidate_count']==item['known_unreached_count']==2,item
+        assert {c['path'] for c in item['candidates']}=={str(p),str(q)},item
+        assert all(c['state']=='unreached' for c in item['candidates']),item
+        assert any(s['path']==str(blocker) and 'deadline' in s['reason'] for s in item['unknown_scope']['discovery_scopes']),item
+        assert all(v.exists() for v in (p,q,z))
+        assert time.monotonic()-start<2
+        assert ds._audit_payload(r,item,summary)['org']==item
+        return dict(seconds=time.monotonic()-start,known_unreached=2,unknown_total=None,unreached_orgs=r['unreached_orgs'],discovery_scopes=item['unknown_scope']['discovery_scopes'])
+
+
+def c18():
+    """No count cap: many real uncertain repos and refused roots precede work."""
+    with fixture() as f:
+        for n in range(1,31):
+            p=f.scratch(f'TASK-{n}','superseded');os.utime(p,(time.time()-20000-n,)*2)
+        eligible=f.scratch('TASK-100')
+        repo,q=f.worktree('TASK-101','z-project')
+        for n in range(35):
+            root=f.workspace/'repos'/f'a-unknown-{n:02d}'
+            root.mkdir();(root/'keep').write_text('protected')
+        start=time.monotonic();r=f.sweep(seconds=12)
+        assert r['outcome']=='incomplete' and r['discovery']=='partial',r
+        assert len(r['unknown_scope']['discovery_scopes'])==35,r
+        assert r['retained_count']==30 and r['known_candidate_count']==32,r
+        assert all(row(r,v)['state']=='removed' and not v.exists() for v in (eligible,q)),r
+        ordered=sorted(r['candidates'],key=lambda c:(c['phase']!='scratch',c['oldest'],c['path']))
+        assert ordered==r['candidates'],r
+        assert all((f.workspace/'repos'/f'a-unknown-{n:02d}/keep').read_text()=='protected' for n in range(35))
+        return dict(seconds=time.monotonic()-start,unknown_scopes=35,retained=30,removed=2,unknown_total=None)
+
+
 def config_checks():
     assert OrgConfig.load_from_text('').disk_sweep_mode=='dry_run'
     for mode in ('off','dry_run','on'):assert OrgConfig.load_from_text('disk_sweep: {mode: "'+mode+'"}').disk_sweep_mode==mode
@@ -686,7 +859,7 @@ def isolated_boundary(kind):
 if __name__=='__main__':
     parser=argparse.ArgumentParser(description=__doc__)
     selection=parser.add_mutually_exclusive_group()
-    selection.add_argument('--cases',type=int,nargs='+',choices=range(1,15))
+    selection.add_argument('--cases',type=int,nargs='+',choices=range(1,19))
     selection.add_argument('--isolation-case',choices=('mount','root'),help='only the private executable namespace fixture; exit77 if unavailable')
     args=parser.parse_args()
     # The private helper alone is mapped root; the driver retains its ordinary
@@ -700,8 +873,8 @@ if __name__=='__main__':
             status=77 if detail['result']=='UNAVAILABLE' else 0
         else:
             config_checks()
-            purposes=('Terminal owned root and attribution','Nonterminal and invalid lineage','Real process cwd/root/exe/fd','Real TMPDIR/TMP/TEMP and alias','Readonly handling and bounded Git retry','Link/ancestor and actual mounted boundaries','Dirty/untracked and ignored Git contents','Nonmutating function and public CLI dry run','Missing/denied evidence and all job lineage','Jobs both phases and fresh retry change','Nested recent writes','Partial removal, deadline, shutdown and event loop','Detached commit retained refs','Same-night progress after refusals and exhaustion')
-            for number,(fn,purpose) in enumerate(zip((c1,c2,c3,c4,c5,c6,c7,c8,c9,c10,c11,c12,c13,c14),purposes),1):
+            purposes=('Terminal owned root and attribution','Nonterminal and invalid lineage','Real process cwd/root/exe/fd','Real TMPDIR/TMP/TEMP and alias','Readonly handling and bounded Git retry','Link/ancestor and actual mounted boundaries','Dirty/untracked and ignored Git contents','Nonmutating function and public CLI dry run','Missing/denied evidence and all job lineage','Jobs both phases and fresh retry change','Nested recent writes','Partial removal, deadline, shutdown and event loop','Detached commit retained refs','Same-night progress after refusals and exhaustion','Partial discovery with protected non-Git siblings','Narrow unreadable/broken/alias discovery scopes','Global deadline during partial discovery','Progress after many uncertain subtrees')
+            for number,(fn,purpose) in enumerate(zip((c1,c2,c3,c4,c5,c6,c7,c8,c9,c10,c11,c12,c13,c14,c15,c16,c17,c18),purposes),1):
                 if args.cases is None or number in args.cases:case(number,purpose,fn)
             if any(item['result']=='PARTIAL' for item in RESULTS): status=77
     except Exception:

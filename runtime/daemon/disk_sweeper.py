@@ -24,6 +24,8 @@ import subprocess
 import sys
 import time
 from collections import Counter
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -242,44 +244,84 @@ def admit(candidate: dict, evidence: Evidence, deadline: float, *, now: float | 
     return tree
 
 
-def discover(org: Path, deadline: float):
-    """Discovery completes before stable oldest-first ordering; partial is unknown."""
-    candidates = []
-    workspaces = org / 'workspaces'
-    with directory(workspaces, deadline) as wfd:
-        owners = names(wfd, deadline)
-    for owner in owners:
+@contextmanager
+def _discovery_scope(path: Path, inventory: dict, deadline: float, checkpoint: Callable[[], None], *, missing_ok: bool = False) -> Iterator[None]:
+    """Retain an uncertain literal scope; expiry always unwinds the batch."""
+    try:
         check(deadline)
-        workspace = workspaces / owner
-        with directory(workspace, deadline):
-            pass
-        tmp = workspace / '.happyranch/task-tmp'
-        if tmp.exists() or tmp.is_symlink():
-            with directory(tmp, deadline) as fd:
-                for name in names(fd, deadline):
-                    if TASK.fullmatch(name):
-                        s = os.stat(name, dir_fd=fd, follow_symlinks=False)
-                        candidates.append(dict(phase='scratch', path=str(tmp / name), workspace=str(workspace), oldest=s.st_mtime_ns))
-        repos = workspace / 'repos'
-        if not repos.exists():
-            continue
-        with directory(repos, deadline) as fd:
-            repositories = names(fd, deadline)
-        for name in repositories:
-            repo = repos / name
-            with directory(repo, deadline):
-                pass
-            # A non-Git repository directory is unknown, not an empty inventory.
-            rows = registrations(repo, deadline)
-            prefix = repo / '.claude/worktrees'
-            for literal, row in rows.items():
-                check(deadline)
-                path = Path(literal)
-                if path.parent != prefix or not TASK.fullmatch(path.name):
-                    continue
-                s = path.lstat() if path.exists() or path.is_symlink() else None
-                candidates.append(dict(phase='worktree', path=str(path), workspace=str(workspace), repo=str(repo), oldest=s.st_mtime_ns if s else 0))
-    return sorted(candidates, key=lambda c: (c['phase'] != 'scratch', c['oldest'], c['path']))
+        yield
+    except Expired as exc:
+        # Nested scopes unwind; retain the narrowest interrupted path once.
+        if not inventory['discovery_scopes'] or not inventory['discovery_scopes'][-1].get('interrupted'):
+            inventory['discovery_scopes'].append(dict(path=str(path), reason=str(exc), candidate_count=None, interrupted=True))
+        raise
+    except FileNotFoundError as exc:
+        if not missing_ok:
+            inventory['discovery_scopes'].append(dict(path=str(path), reason=str(exc), candidate_count=None))
+    except Exception as exc:
+        inventory['discovery_scopes'].append(dict(path=str(path), reason=str(exc) or type(exc).__name__, candidate_count=None))
+    finally:
+        try:
+            checkpoint()
+        except Exception as exc:
+            raise Expired('discovery checkpoint failed; global stop: ' + str(exc)) from exc
+
+
+def discover(org: Path, deadline: float, *, inventory: dict | None = None, checkpoint: Callable[[], None] = lambda: None) -> list[dict]:
+    """Stable ordering of known candidates; uncertain scopes are never empty."""
+    inventory = inventory if inventory is not None else {}
+    inventory.update(candidates=[], discovery_scopes=[], discovery='unknown', discovery_root=str(org / 'workspaces'))
+    candidates = inventory['candidates']
+    workspaces = org / 'workspaces'
+    with _discovery_scope(workspaces, inventory, deadline, checkpoint):
+        with directory(workspaces, deadline) as wfd:
+            owners = names(wfd, deadline)
+        for owner in owners:
+            workspace = workspaces / owner
+            with _discovery_scope(workspace, inventory, deadline, checkpoint):
+                with directory(workspace, deadline):
+                    pass
+                tmp = workspace / '.happyranch/task-tmp'
+                with _discovery_scope(tmp, inventory, deadline, checkpoint, missing_ok=True):
+                    with directory(tmp, deadline) as fd:
+                        for name in names(fd, deadline):
+                            if TASK.fullmatch(name):
+                                with _discovery_scope(tmp / name, inventory, deadline, checkpoint):
+                                    s = os.stat(name, dir_fd=fd, follow_symlinks=False)
+                                    candidates.append(dict(phase='scratch', path=str(tmp / name), workspace=str(workspace), oldest=s.st_mtime_ns, state='unreached'))
+                repos = workspace / 'repos'
+                with _discovery_scope(repos, inventory, deadline, checkpoint, missing_ok=True):
+                    with directory(repos, deadline) as fd:
+                        repositories = names(fd, deadline)
+                    for name in repositories:
+                        repo = repos / name
+                        with _discovery_scope(repo, inventory, deadline, checkpoint):
+                            with directory(repo, deadline):
+                                pass
+                            # Never walk arbitrary children or let Git find an
+                            # ancestor repository. Only literal primary .git.
+                            with directory(repo / '.git', deadline):
+                                pass
+                            rows = registrations(repo, deadline)
+                            if str(repo) not in rows:
+                                raise Retain('unknown_git_primary_registration')
+                            prefix = repo / '.claude/worktrees'
+                            for literal in rows:
+                                check(deadline)
+                                path = Path(literal)
+                                if path.parent != prefix or not TASK.fullmatch(path.name):
+                                    continue
+                                with _discovery_scope(path, inventory, deadline, checkpoint):
+                                    with directory(path.parent, deadline) as fd:
+                                        try:
+                                            s = os.stat(path.name, dir_fd=fd, follow_symlinks=False)
+                                        except FileNotFoundError:
+                                            s = None
+                                    candidates.append(dict(phase='worktree', path=str(path), workspace=str(workspace), repo=str(repo), oldest=s.st_mtime_ns if s else 0, state='unreached'))
+    check(deadline)
+    candidates.sort(key=lambda c: (c['phase'] != 'scratch', c['oldest'], c['path']))
+    inventory['discovery'] = 'partial' if inventory['discovery_scopes'] else 'complete'
+    return candidates
 
 
 def atomic_json(path: Path, value: dict) -> None:
@@ -304,7 +346,13 @@ def _summarize_org(result: dict) -> None:
     result['known_eligible_leftovers'] = [c['path'] for c in candidates if c.get('state') == 'eligible']
     for phase, values in result.get('phases', {}).items():
         values['attribution_unknown'] = any(c.get('state') in ('mutation_in_flight', 'partial_or_unknown') for c in candidates if c['phase'] == phase)
+    result['known_candidate_count'] = len(candidates)
+    result['known_unreached_count'] = sum(c.get('state') == 'unreached' for c in candidates)
+    # A known subset count must never stand in for an uncertain total.
+    result['unreached'] = result['known_unreached_count'] if result.get('discovery') == 'complete' else None
     result['unknown_scope'] = {
+        'discovery_scopes': result.get('discovery_scopes', []),
+        'unfinished_discovery_root': result.get('discovery_root') if result.get('discovery') == 'unknown' else None,
         'discovery': result.get('discovery', 'unknown'), 'unreached': result.get('unreached'),
         'inspecting': [c['path'] for c in candidates if c.get('state') == 'inspecting'],
         'partial_mutation': [c['path'] for c in candidates if c.get('state') in ('mutation_in_flight', 'partial_or_unknown')],
@@ -318,6 +366,10 @@ def sweep_org(org: Path, deadline: float, *, mode: str, checkpoint=lambda: None,
     if mode == 'off':
         result.update(outcome='off', discovery='not_performed')
         return result
+    def report_checkpoint() -> None:
+        _summarize_org(result)
+        checkpoint()
+
     evidence = Evidence(org, deadline)
     measured_inodes = measurement_seen if measurement_seen is not None else set()
     removed_inodes = removal_seen if removal_seen is not None else set()
@@ -328,15 +380,12 @@ def sweep_org(org: Path, deadline: float, *, mode: str, checkpoint=lambda: None,
         if load_org_config(OrgPaths(org)).disk_sweep_mode != 'on':
             raise Retain('configuration_no_longer_on')
     try:
-        candidates = discover(org, deadline)
-        result.update(discovery='complete', unreached=len(candidates))
-        checkpoint()
+        candidates = discover(org, deadline, inventory=result, checkpoint=report_checkpoint)
+        report_checkpoint()
         for candidate in candidates:
             check(deadline)
-            result['candidates'].append(candidate)
-            result['unreached'] -= 1
             candidate['state'] = 'inspecting'
-            checkpoint()
+            report_checkpoint()
             phase = result['phases'][candidate['phase']]
             mutation_started = False
             try:
@@ -345,7 +394,7 @@ def sweep_org(org: Path, deadline: float, *, mode: str, checkpoint=lambda: None,
                 phase['measured_allocated_bytes'] += amount
                 candidate['allocated_bytes'] = amount
                 candidate['state'] = 'eligible'
-                checkpoint()
+                report_checkpoint()
                 if mode != 'on':
                     continue
                 # The entire admission is repeated immediately before mutation;
@@ -354,7 +403,7 @@ def sweep_org(org: Path, deadline: float, *, mode: str, checkpoint=lambda: None,
                 # writing a large summary cannot stale mutation admission.
                 candidate['state'] = 'mutation_in_flight'
                 phase['attribution_unknown'] = True
-                checkpoint()
+                report_checkpoint()
                 on_config()
                 fresh = admit(candidate, evidence, deadline, now=now)
                 on_config()
@@ -398,12 +447,13 @@ def sweep_org(org: Path, deadline: float, *, mode: str, checkpoint=lambda: None,
                 else:
                     candidate['state'] = 'retained'
                 candidate['reason'] = str(exc) or type(exc).__name__
-            checkpoint()
-        result['outcome'] = 'error' if any(c['state'] == 'partial_or_unknown' for c in result['candidates']) else 'complete'
+            report_checkpoint()
+        result['outcome'] = ('error' if any(c['state'] == 'partial_or_unknown' for c in candidates)
+                             else 'complete' if result['discovery'] == 'complete' else 'incomplete')
         # Git prune has repo-wide scope, with no exact-entry option. Never
         # prune if ANY missing/prunable/unknown registration could be affected.
         # No reclaimed-byte claim is made for registration maintenance.
-        if mode == 'on':
+        if mode == 'on' and result['discovery'] == 'complete':
             for repo in sorted({c['repo'] for c in candidates if 'repo' in c}):
                 rows = registrations(Path(repo), deadline)
                 # There is no path-selective Git prune. Only run its harmless
@@ -423,7 +473,8 @@ def sweep_org(org: Path, deadline: float, *, mode: str, checkpoint=lambda: None,
                 git(Path(repo), deadline, 'worktree', 'prune', '--expire=now')
     except Expired as exc:
         result.update(outcome='incomplete', error=str(exc))
-        checkpoint()
+        result['candidates'].sort(key=lambda c: (c['phase'] != 'scratch', c['oldest'], c['path']))
+        report_checkpoint()
         raise
     except Exception as exc:
         result.update(outcome='incomplete', error=str(exc) or type(exc).__name__)
