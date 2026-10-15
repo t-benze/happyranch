@@ -62,7 +62,7 @@ snapshot, and gains no new success assertion. Numeric modes are metadata, not
 token bytes, ACL identities, hashes, service capability, ownership proof or a
 readiness API. No local product exercise/build, Product E2E/Jenkins, publication,
 trigger registration, rerun, merge, deploy or permission change is authorized
-in the maker leg. Seq428, seq435, seq455 and seq464 are consumed1/1; COMPLETED11354 consumed seq464 with FAILED run38518279270 attempt1. The separate current seq491 allocation belongs to sole root TASK11547 below and remains0/1 pending root-manager publication after fresh exact-head gates.
+in the maker leg. Seq428, seq435, seq455 and seq464 are consumed1/1; COMPLETED11354 consumed seq464 with FAILED run38518279270 attempt1. Seq491 is also consumed1/1 by COMPLETED11547 / FAILED38689824548 attempt1; current seq498 belongs to sole root TASK11641 and remains0/3, local preparation only.
 
 ## Harness continuation cases — THR228seq435 / TASK11067 / TASK11071
 
@@ -96,7 +96,7 @@ has run here. No assertion sensitivity or behavioral/test-authoring PASS exists.
 | H19 EXIT/INT/TERM | Original37, INT130 or TERM143 plus capture/stop/reset/delete/query failures | One saved-status teardown, all attempts; only original nonzero leaves; successful origin may fail cleanup | Re-armed errexit, replaced initiating status, second pass or dropped teardown; source only, signal proof UNEXECUTED |
 | H20 host listener/process census | Successful ss full selected-port query or ps full PID census; failure/malformed/empty census alternative | Zero listener rows/no matching PID may pass; failed query and malformed/empty PID census refuse | Negative port/kill error used as absence; static only, real census proof UNEXECUTED |
 | H21 watchdog/numeric timestamps | Ready/order/watchdog queries fail, are empty or nonnumeric; equality queried after stop | Successful canonical bounded numeric acquisition before arithmetic/equality; no empty==empty pass | Failed substitution/nonnumeric arithmetic accepted; static only |
-| H22 two CI boundaries | PR800 synchronize on t-benze/happyranch, same repo/task6475/main; beforeb3df7794, changed canonical40-hex after=head and attempt1; current manager pins reviewed after/tree | Both job selection and pre-build guard bind seq491; old before86ec1dca/112f90ec/590768ff, later update and other trigger/attempt refuse; Python rejects malformed after before build | Different before in either boundary, removed repo/branch/attempt binding or broader trigger; exact-head SOURCE/STATIC only; allocated hosted N3 remains manager-owned |
+| H22 two CI boundaries | PR800 synchronize on t-benze/happyranch, same repo/task6475/main; beforea750114b, changed canonical40-hex after=head and attempt1; current manager pins reviewed after/tree | Both job selection and pre-build guard bind seq498 first update; old beforeb3df7794/86ec1dca/112f90ec/590768ff, later update and other trigger/attempt refuse; Python rejects malformed after before build | Different before in either boundary, removed repo/branch/attempt binding or broader trigger; exact-head SOURCE/STATIC only; allocated hosted N3 remains manager-owned |
 | H23 cleanup diagnostic limits | Multiple failures across shipping/final and trap reentry | Existing closed phase/predicate vocabulary, 23 shipping+24 final deduplicated pairs/<4096B (seq444 final-label split); no raw output | New arbitrary failure prose/value, unbounded tokens or capture budget drift; source only |
 | H24 six virtual removal sites | Final/shipping cleanup, health loss, Stop barrier, readiness loss and shutdown; bind known active instance before stop, or initial NEVER-STARTED full conjunction | Successful same-instance Stop plus unsuccessful real probe and current peer identity permit local removal inference; reachable peer vetoes; initial branch emits no peer observation | Missing target alone or failed nc alone never passes; protected observation/capture boundaries unchanged; source/static only |
 
@@ -171,7 +171,7 @@ collector/native/systemd venue; no Python-unit replacement. Present evidence for
 every row is SOURCE/STATIC authoring only; behavioral/assertion/red-green/mutation/
 repetition proof UNEXECUTED/SUSPENDED. Integration/actual callback SKIPPED24342.
 See the package guide's prepared seq444 diagnostic contract for finite reasons, bounds and
-identity/loss details. Historical seq464 allocation is consumed; current seq491 is separate and manager-owned; no worker publication/run authority follows.
+identity/loss details. Historical seq464 allocation is consumed; current seq498 is separate and root-owned; no worker publication/run authority follows.
 
 | Case / behavior | Real seam, preconditions and action/input | Observable expected outcome | Defect detected when execution is authorized |
 | --- | --- | --- | --- |
@@ -188,7 +188,7 @@ identity/loss details. Historical seq464 allocation is consumed; current seq491 
 | D11 no storm | Repeated ctx.Done/stopChild loops with refused admission; duplicate states; normal healthy polls | One first, each distinct observation/consequence once; no per-poll healthy output | Unbounded labels, first repeats or healthy polling noise |
 | D12 compatibility | Producer fixed grammar -> connector-journal worker -> failure-snapshot; parse maintained docs/case keys and bound ledger | Exact names, null original attribution,82s/32256B accounted unchanged split; old allocations remain spent; only the seq464 target correction/guard/parity updated | Grammar/cap/doc drift, acceptance ledger changes or old allocation renewed |
 
-## H22 current allocation scenarios — THR228seq491 / sole root TASK11547
+## H22 current first-candidate scenarios — THR228seq498 / sole root TASK11641
 
 These details refine the existing H22 record; the91 P/M/H/D records and their
 four answers are retained. Requirement: one manager-published exact reviewed
@@ -199,13 +199,13 @@ detection are stated below; level is SOURCE/STATIC inspection now, intended
 environment is the single manager-owned disposable hosted Ubuntu24.04 N3. No
 scenario has executable/assertion/red-green/mutation/repetition proof here.
 
-- Correct input: event pull_request/synchronize, repo/head repo t-benze/happyranch, PR800, task/TASK-6475/main, beforeb3df7794c84866f1e3e5ccfee6a8804bfee0001f, distinct40-lowercase-hex after equal actual head, attempt1, manager fresh reviewed receipt. Expect selection and pre-build admission using that after; denial or another source subject is a defect.
-- Spent input: before86ec1dca, before112f90ec, before590768ff or any earlier allocation head. Expect refusal; either guard retaining an old before or admitted build renews a spent allocation.
-- Second update: before equals the first seq491 after instead ofb3df7794. Expect refusal; admission would allocate a second run.
+- Correct input: event pull_request/synchronize, repo/head repo t-benze/happyranch, PR800, task/TASK-6475/main, beforea750114baf651b5d7688baf6e03e0b4c92138b77, distinct40-lowercase-hex after equal actual head, attempt1, manager fresh reviewed receipt. Expect selection and pre-build admission using that after; denial or another source subject is a defect.
+- Spent input: beforeb3df7794, before86ec1dca, before112f90ec, before590768ff or any earlier allocation head. Expect refusal; either guard retaining an old before or admitted build renews a spent allocation.
+- Second update: before equals the first seq498 after instead ofa750114b. Expect refusal; admission would allocate a second run.
 - Duplicate/rerun/manual: same selected run attempt2+, workflow_dispatch, reopen/open, push/main or unrelated event. Expect refusal/no build; missing job or pre-build attempt/action check is a defect. Identical no-change push creates no synchronize; transport uncertainty requires manager readback, never blind repeat. This guard does not claim a new durable event-deduplication mechanism.
 - Unrelated subject: change each repo, head repo, PR number, head branch or base independently. Expect refusal; any bypass of the corresponding predicate is a defect.
 - Invalid/mismatched after: empty, missing, nonstring, non40-hex, uppercase/nonhex, equal before or different from actual head. Expect no build; empty/equal/mismatch are excluded by selection, Python's canonical SHA check additionally refuses invalid shapes before build. A job selected on a malformed nonempty matching value is not execution admission.
-- Prepublication drift/ancestry: remote PR head differs fromb3df7794, integrated main changes, reviewed after/tree changes or nonforce ancestry fails. Expect manager to withhold push and re-integrate/renew actual full review/QA/static gates; publication on stale receipts or blind retry after transport loss is a defect. No Git SHA constant pretends to supply these manager gates.
+- Prepublication drift/ancestry: remote PR head differs froma750114b, integrated main changes, reviewed after/tree changes or nonforce ancestry fails. Expect manager to withhold push and re-integrate/renew actual full review/QA/static gates; publication on stale receipts or blind retry after transport loss is a defect. No Git SHA constant pretends to supply these manager gates.
 
 D01–D12/H01–H50 and P/M unaffected acceptance remains unchanged:40 fixed
 Go categories; first local decision distinct from consequences; after-exit
@@ -258,7 +258,7 @@ preserved. Seq464 is consumed1/1 at b3df7794/run38518279270/attempt1 FAILED at
 staged provenance query after initial READY; exact OS error was not captured.
 Initial snapshot health is not sustained READY or full lifecycle acceptance;
 virtual_removal_unconfirmed is missing proof, not demonstrated residue.
-The existing H22 scenarios above now select seq491 at BOTH boundaries.
+The historical I04 guard below selected seq491. H22 above now selects only the first seq498 update at BOTH boundaries; seq491 is consumed1/1, not renewed.
 
 These four affected rows extend the maintained cases. Evidence now is local
 SOURCE/STATIC inspection only. Intended execution environment is the single
@@ -275,4 +275,48 @@ malformed installer recovery and N6 obligations remain unproved.
 | I01 fixed canonical staging | After both READY waits, check_staged_credential at the fixed connector daemon.token and sidecar enrollment.key paths; runner cannot traverse staging, root can; include wrong canonical target, nonregular type, final/component symlink and failed readlink with matching output | sudo readlink -f -- succeeds with exact canonical path before regular-file/non-symlink predicates and metadata-only observation; any failed query, escape, wrong type or symlink refuses; no token content read/log | Bare runner canonical query, unchecked acquisition or weakened equality/type/symlink acceptance; SOURCE/STATIC now, allocated hosted N3 behavior UNEXECUTED |
 | I02 independent service capability | Same fixed file/directory checks under happyranch; root-readable but service-unreadable input, writable file or directory, or failed sudo/query | Separate sudo -u happyranch read check and test_false -w with -u happyranch all succeed only for service-readable/nonwritable staging; existing owner/mode/type predicates and explicit errors remain | Root inspection substituted for service access, removed metadata predicate or failed privilege query accepted; SOURCE/STATIC now, allocated hosted N3 behavior UNEXECUTED |
 | I03 later private inspections and teardown | Trace explicit stop, missing-consumed restart, interrupted/fresh enrollment, health-loss/watchdog, automatic restart, both ordering barriers, readiness-loss, shutdown, installer rollback and shipping/final cleanup plus called helpers; private path inaccessible to runner or query fails | Existing sudo in test_false/absent, barriers, journal/peer queries and installer find/sha256sum supplies required inspection privilege; system-bus scalar acquisition remains checked; failures remain failure/missing evidence; same Stop/peer/dial, cleanup ownership, saved exit and all teardown attempts remain | Bare private traversal, query error called absence/PASS, blanket elevation, weakened assertion or skipped cleanup; SOURCE/STATIC trace now, allocated hosted N3 behavior UNEXECUTED |
-| I04 seq491 one-update guard | ci.yml selection then pre-build refusal then after checkout/package/proof; exact PR800 same-repo task/TASK-6475/main, beforeb3df7794c84866f1e3e5ccfee6a8804bfee0001f to distinct canonical after=actual head, attempt1; exercise the finite H22 denial inputs when execution is authorized | Only authorized update reaches build; old before including86ec1dca, second update, rerun/manual/open/reopen/push/main/wrong repo/branch/base and malformed/mismatched after refuse before build; manager independently binds actual reviewed head/tree | Either boundary retains old pin or loses an event/head/attempt/refusal predicate, package/proof uses another source or old allocation renewed; SOURCE/STATIC now, manager-only allocated hosted N3 behavior UNEXECUTED |
+| I04 historical seq491 one-update guard | ci.yml selection then pre-build refusal then after checkout/package/proof; exact PR800 same-repo task/TASK-6475/main, beforeb3df7794c84866f1e3e5ccfee6a8804bfee0001f to distinct canonical after=actual head, attempt1; exercise the finite H22 denial inputs when execution is authorized | Only authorized update reaches build; old before including86ec1dca, second update, rerun/manual/open/reopen/push/main/wrong repo/branch/base and malformed/mismatched after refuse before build; manager independently binds actual reviewed head/tree | Either boundary retains old pin or loses an event/head/attempt/refusal predicate, package/proof uses another source or old allocation renewed; SOURCE/STATIC now, manager-only allocated hosted N3 behavior UNEXECUTED |
+
+
+## Missing-consumed-state correction — THR228seq498 / sole root TASK11641
+
+Seq498 is0/3 root-wide. This first candidate is LOCAL SOURCE/STATIC ONLY; all
+older allocations, including seq4911/1, are consumed. H22 binds exactly the
+first before=a750114b update and attempt1, with distinct canonical after=head
+before build. Later update needs a new pin and fresh root budget/ownership/
+history/main/review/QA reconciliation, not automatic renewal of three runs.
+Root alone publishes/observes/reports. Stop on success, product defect, required
+out-of-harness work or third run. Preserve all historical source/failures/jobs.
+The predecessor SubState is unknown/parse_loss; neither auto-restart nor product
+correctness is established. Initial READY is not sustained startup acceptance.
+
+Every row supplies requirement; exact seam/preconditions/action; observable
+expectation; defect detection and intended level/environment. All local legs
+inspect source only. Behavioral/assertion/red-green/mutation/repetition/
+executable-QA proof is UNEXECUTED/SUSPENDED, never test-authoring PASS. Intended
+behavior venue is only a later root-authorized existing automatic Ubuntu N3.
+The existing evidence schema and complete assertion requirements are unchanged.
+
+| Case / requirement | Exact seam, preconditions and action | Observable expectation | Defect detected / level and environment |
+| --- | --- | --- | --- |
+| S01 missing marker fails before main/admission | missing_consumed_state_refused after both real READY/staging checks; pin live nonzero ActiveEnter and online enrolled ID, stop target and both services, validate stopped/process/offline baseline; retire source/drop-in already absent, move marker and issue bounded managed start under unchanged on-failure policy | Actual start status1, one same-boot/interval PID1 UID0 failed sidecar start job, new invocation, unchanged nonzero ActiveEnter, ExecMainStart/PID0, current main/control PID0 and NRestarts0; pending auto-restart allowed ONLY with all evidence and independently completed stop | Old two-state inference, discarded status, stale job, snapshot alone or blind activating acceptance; SOURCE/STATIC now / later automatic hosted N3 |
+| S02 brief unauthorized readiness/admission | Same attempt; sidecar briefly reaches READY or main executes before failing, retrying or harness stop | Changed ActiveEnter or nonzero main-execution metadata refuses; executed/enqueued retry increments NRestarts, so later timestamp reset cannot hide prior execution; no completed assertion | READY then failure treated as never-started, or pre-READY admission concealed by stop; SOURCE/STATIC now / later hosted N3 |
+| S03 unknown observation refuses | Each bounded raw named-property/journal/peer read: timeout/error, NUL/CR/control/framing/overflow, missing/empty/duplicate/unknown values, boot/invocation change, unavailable job/history/peer, ambiguous transition or unit GC/unload | Refuse with retained partial safe log and no missing_consumed_state_failed_closed record; nonzero query cannot authenticate plausible output; lost nonzero baseline never becomes zero-history proof | Parse/query failure accepted, malformed receipt or stale identity admitted; SOURCE/STATIC now / later hosted N3 |
+| S04 retry/stop/reset race | Preserve pre-stop state regardless of start outcome; independently stop owned target AND both services; verify NRestarts/history before and after stop and final peer read; only then return for marker restore/reset/new start | Any enqueued retry, lost/changed baseline or invocation refuses; stop never rewrites saved start status/history, unknown stop fails, initiating timeout/launch status retained, EXIT cleanup still attempts independent teardown | Snapshot after stop substitutes for never-started, restore admits retry, reset erases counter or capture suppresses teardown; SOURCE/STATIC now / later hosted N3 |
+| S05 subsequent credential-free restart | Only after S01–S04 acceptance, restore marker while target and both services proved stopped, reset and run existing restart stage | Distinct READY/source/drop-in assertions remain mandatory; prior initial READY or negative-leg result never supplies credential_free_stopped_restart | Earlier readiness relabeled as restart/durable lifecycle acceptance; SOURCE/STATIC now / later hosted N3 |
+| S07 both queue orientations | Existing start-entered and stop-entered barriers; list-jobs may contain the opposite target job, desired job not yet enqueued, duplicate/malformed records, query timeout/error or a running rather than waiting target | Bounded exact target/type/waiting match required in each orientation, otherwise unconfirmed; no completed barrier assertion from name alone | Name-only false positive or query error accepted; SOURCE/STATIC now / later hosted N3 |
+| S06 finite guard and budget | Both H22 selection/pre-build boundaries, exact beforea750114b to after=head attempt1, plus each existing denial scenario and second update | One pin only; wrong before/after/repo/PR/ref/base/event, second update and reruns refuse; unknown publication outcome reconciled by root, failed pre-harness attempts consume root slot | Open three-run guard or spent allocation reuse; SOURCE/STATIC now / root-only later hosted N3 |
+
+Finite assertion sweep: startup READY ordering/staged metadata, explicit stop,
+credential-free/interrupted/fresh enrollment, watchdog/health-loss, automatic
+restart, both ordering barriers, readiness-loss, shutdown, installer checkpoints
+and shipping/final teardown retain their predicates except the two job-queue reads: target-name-only grep did not identify type/state; target_job_pending now requires exactly one target job of the requested type in waiting state under a successful bounded, well-framed query. Missing/racing/changed queue observation refuses rather than claiming the opposite ordering. Their actual predicates and gaps
+are recorded in maker sweep.md. The initial missing-source sibling's process/
+inventory assertions describe absence AFTER explicit stop; they do not prove
+never-started history, and remain a documented gap rather than expanded claims.
+Apart from that orientation mismatch, no other demonstrable state-word-to-success inversion was found. Snapshot,
+transitional polling and historical Stop/removal proof are not broadened.
+No concrete product defect is established by static inspection. All unreached
+behavior, durable commit, malformed-installer recovery, N6 and cleanup remain
+unproved; general integration/actual callback SKIPPED24342, Python units RETIRED,
+lint/static-only gates and daily-only Product E2E unchanged.

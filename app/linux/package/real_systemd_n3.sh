@@ -20,6 +20,19 @@ wait_for() {
 }
 port_open() { timeout 1 bash -c "</dev/tcp/127.0.0.1/$1" 2>/dev/null; }
 active() { sudo systemctl is-active --quiet "$1"; }
+target_job_pending() {
+  # A target-name match alone can be the opposite job already at the barrier.
+  # Retain the exact requested ordering; unknown/changed queues are no proof.
+  local kind="$1"
+  timeout --kill-after=1 3 systemctl list-jobs --no-legend --no-pager --full 2>/dev/null | LC_ALL=C awk -v kind="$kind" '
+    NF != 4 || $0 ~ /[^[:print:]\t]/ || $1 !~ /^[1-9][0-9]*$/ { invalid=1 }
+    $2 == "happyranch-managed.target" {
+      count++
+      if ($3 != kind || $4 != "waiting") invalid=1
+    }
+    END { exit (invalid || count != 1) }
+  '
+}
 # Encode a false test inside the privileged command: sudo's own exit1 is
 # never affirmative absence. Errors remain failures even in conditional callers.
 test_false() {
@@ -263,6 +276,214 @@ if peers is not None:
 ' "$peer_node" 2>/dev/null || return 1
   process="$(peer_process_identity)" || return 1
   [[ "$process" == "$peer_started" ]]
+}
+# This later negative leg has an already enrolled identity. Offline is only a
+# supporting snapshot: the single-attempt execution history below proves that
+# no new sidecar process could have admitted traffic, including before READY.
+negative_peer_state() {
+  local online="$1" expected="$2" process identity
+  process="$(peer_process_identity)" || return 1
+  [[ "$process" == "$peer_started" ]] || return 1
+  identity="$(timeout --kill-after=1 3 sudo "$ts_dir/tailscale" --socket="$work/peer.sock" status --json 2>/dev/null | python -c '
+import ipaddress,json,sys
+def unique(pairs):
+    result = {}
+    for key,value in pairs:
+        if key in result:
+            raise ValueError("duplicate")
+        result[key] = value
+    return result
+def invalid_constant(_):
+    raise ValueError("nonfinite")
+raw = sys.stdin.buffer.read(65537)
+if len(raw) > 65536:
+    raise ValueError("oversize")
+data = json.loads(raw.decode("utf-8", "strict"), object_pairs_hook=unique, parse_constant=invalid_constant)
+own = data.get("Self")
+if (data.get("BackendState") != "Running" or not isinstance(own,dict)
+        or own.get("ID") != sys.argv[1] or own.get("HostName") != "synthetic-peer-ci"):
+    raise ValueError("changed observer")
+peers = data.get("Peer")
+if not isinstance(peers,dict):
+    raise ValueError("unavailable inventory")
+matches = []
+for key,peer in peers.items():
+    if (not isinstance(key,str) or not key or not isinstance(peer,dict)
+            or not isinstance(peer.get("HostName"),str)):
+        raise ValueError("malformed peer")
+    if peer["HostName"] == "home-sidecar-ci":
+        matches.append(peer)
+if len(matches) != 1:
+    raise ValueError("ambiguous sidecar")
+peer = matches[0]
+identity = peer.get("ID")
+ips = peer.get("TailscaleIPs")
+if (not isinstance(identity,str) or not identity.isascii() or not identity.isalnum()
+        or (sys.argv[3] != "new" and identity != sys.argv[3])
+        or peer.get("Online") is not (sys.argv[2] == "true")
+        or not isinstance(ips,list) or not ips or not all(isinstance(ip,str) and ip for ip in ips)):
+    raise ValueError("unconfirmed admission state")
+for ip in ips:
+    ipaddress.ip_address(ip)
+print(identity)
+' "$peer_node" "$online" "$expected" 2>/dev/null)" || return 1
+  process="$(peer_process_identity)" || return 1
+  [[ "$process" == "$peer_started" ]] || return 1
+  printf '%s' "$identity"
+}
+negative_unit_state() {
+  local stage="$1" value
+  # Decode raw bounded bytes before shell substitution can erase NUL/framing
+  # errors. One named-property read avoids joining different invocations.
+  value="$(timeout --kill-after=1 3 systemctl show happyranch-tsnet-sidecar.service \
+    -p LoadState -p Type -p ActiveState -p SubState -p Result -p InvocationID \
+    -p ActiveEnterTimestampMonotonic -p ExecMainStartTimestampMonotonic \
+    -p ExecMainPID -p MainPID -p ControlPID -p NRestarts \
+    -p InactiveExitTimestampMonotonic 2>/dev/null | python -c '
+import re,sys
+raw = sys.stdin.buffer.read(4097)
+if len(raw) > 4096 or not raw or any(c < 32 and c != 10 or c > 126 for c in raw):
+    raise ValueError("invalid framing")
+values = {}
+for line in raw.decode("ascii").removesuffix("\n").split("\n"):
+    key,sep,value = line.partition("=")
+    if not sep or key in values:
+        raise ValueError("invalid property")
+    values[key] = value
+keys = "ActiveState SubState Result InvocationID ActiveEnterTimestampMonotonic ExecMainStartTimestampMonotonic ExecMainPID MainPID ControlPID NRestarts InactiveExitTimestampMonotonic".split()
+if set(values) != set(keys) | {"LoadState","Type"} or values["LoadState"] != "loaded" or values["Type"] != "notify":
+    raise ValueError("unavailable unit")
+for key in keys[:3]:
+    if not re.fullmatch("[a-z][a-z-]{0,31}",values[key]):
+        raise ValueError("invalid state")
+if not re.fullmatch("[0-9a-f]{32}",values["InvocationID"]) or int(values["InvocationID"],16) == 0:
+    raise ValueError("unavailable invocation")
+for key in keys[4:]:
+    if not re.fullmatch("0|[1-9][0-9]{0,17}",values[key]):
+        raise ValueError("invalid number")
+print(" ".join(values[key] for key in keys))
+' 2>/dev/null)" || { printf 'stage=%s state=unavailable\n' "$stage" >>"$diagnostics/missing-consumed-state.log"; return 1; }
+  read -r negative_active negative_sub negative_result negative_invocation negative_ready negative_main_started \
+    negative_exec_pid negative_main_pid negative_control_pid negative_restarts negative_inactive_exit <<<"$value"
+  printf 'stage=%s state=%s\n' "$stage" "$value" >>"$diagnostics/missing-consumed-state.log"
+}
+negative_start_job() {
+  # Only manager-authenticated completed jobs from this boot/attempt interval.
+  # Keep raw prose out of diagnostics; overflow, malformed or ambiguous history
+  # refuses. This read is not used as a complete process-execution history.
+  timeout --kill-after=1 3 sudo journalctl --sync >/dev/null 2>&1 || return 1
+  timeout --kill-after=1 3 sudo journalctl -b "$negative_boot" --since="@$negative_since" \
+    --no-pager --all -o json \
+    --output-fields=UNIT,JOB_ID,JOB_TYPE,JOB_RESULT,MESSAGE_ID,_PID,_UID,_BOOT_ID,__MONOTONIC_TIMESTAMP \
+    JOB_TYPE=start UNIT=happyranch-tsnet-sidecar.service 2>/dev/null | python -c '
+import json,re,sys
+def unique(pairs):
+    result = {}
+    for key,value in pairs:
+        if key in result:
+            raise ValueError("duplicate")
+        result[key] = value
+    return result
+def invalid_constant(_):
+    raise ValueError("nonfinite")
+raw = sys.stdin.buffer.read(16385)
+if len(raw) > 16384 or not raw.endswith(b"\n"):
+    raise ValueError("unavailable history")
+jobs = []
+for line in raw.splitlines():
+    event = json.loads(line.decode("utf-8","strict"),object_pairs_hook=unique, parse_constant=invalid_constant)
+    stamp = event.get("__MONOTONIC_TIMESTAMP")
+    if (event.get("_PID") != "1" or event.get("_UID") != "0"
+            or event.get("_BOOT_ID") != sys.argv[1] or not isinstance(stamp,str)
+            or not re.fullmatch("[0-9]{1,18}",stamp)):
+        raise ValueError("unattributed job")
+    if int(stamp) < int(sys.argv[2]):
+        continue
+    if int(stamp) > int(sys.argv[3]):
+        raise ValueError("outside interval")
+    if event.get("MESSAGE_ID") == "7d4958e842da4a758f6c1cdc7b36dcc5":
+        continue
+    job = event.get("JOB_ID")
+    if (event.get("UNIT") != "happyranch-tsnet-sidecar.service" or event.get("JOB_TYPE") != "start"
+            or event.get("MESSAGE_ID") != "be02cf6855d2428ba40df7e9d022f03d"
+            or event.get("JOB_RESULT") != "failed" or not isinstance(job,str)
+            or not re.fullmatch("[1-9][0-9]{0,9}",job) or int(job) > 4294967295):
+        raise ValueError("not an affirmative failed start")
+    jobs.append(job)
+if len(jobs) != 1:
+    raise ValueError("ambiguous start history")
+print("failed_start_job=" + jobs[0])
+' "$negative_boot" "$negative_start_us" "$negative_end_us" 2>/dev/null >>"$diagnostics/missing-consumed-state.log"
+}
+missing_consumed_state_refused() {
+  local prior_ready prior_invocation enrolled baseline_exit attempt_invocation="" status=0 start_status stop_status
+  local negative_boot negative_since negative_start_us negative_end_us
+  negative_boot="$(compact_boot_id)"; [[ "$negative_boot" != unavailable ]] || return 1
+  negative_unit_state live || return 1
+  [[ "$negative_active:$negative_sub" == active:running && "$negative_ready" != 0 \
+    && "$negative_main_started" != 0 && "$negative_main_pid" != 0 \
+    && "$negative_exec_pid" == "$negative_main_pid" && "$negative_main_started" -le "$negative_ready" ]] || return 1
+  prior_ready="$negative_ready"; prior_invocation="$negative_invocation"
+  enrolled="$(negative_peer_state true new)" || return 1
+  timeout --kill-after=1 15 sudo systemctl stop happyranch-managed.target happyranch-tsnet-sidecar.service happyranch-connector.service || return "$?"
+  negative_unit_state baseline || return 1
+  [[ "$negative_active:$negative_sub" == inactive:dead && "$negative_ready" == "$prior_ready" \
+    && "$negative_invocation" == "$prior_invocation" && "$negative_restarts" == 0 \
+    && "$negative_main_pid:$negative_control_pid" == 0:0 ]] || return 1
+  negative_peer_state false "$enrolled" >/dev/null || return 1
+  baseline_exit="$negative_inactive_exit"
+  sudo mv /var/lib/happyranch-tsnet-sidecar/credential.consumed "$work/credential.consumed.held" || return "$?"
+  absent /etc/happyranch/enrollment.key
+  absent /etc/systemd/system/happyranch-tsnet-sidecar.service.d/10-enrollment-credential.conf
+  absent /var/lib/happyranch-tsnet-sidecar/credential.consumed
+  [[ "$(compact_boot_id)" == "$negative_boot" ]] || return 1
+  negative_since="$(date +%s)" || return 1
+  negative_start_us="$(python -c 'import time; print(time.monotonic_ns() // 1000)')" || return 1
+  [[ "$prior_ready" -lt "$negative_start_us" && "$baseline_exit" -lt "$negative_start_us" ]] || return 1
+  printf 'boot=%s start_us=%s\n' "$negative_boot" "$negative_start_us" >>"$diagnostics/missing-consumed-state.log" || return 1
+  service_start_attempted=1
+  if timeout --kill-after=1 15 sudo systemctl start happyranch-managed.target; then start_status=0; else start_status=$?; fi
+  printf 'start_status=%s\n' "$start_status" >>"$diagnostics/missing-consumed-state.log" || status=1
+  # Preserve pre-stop observations even on a successful/unknown start. Never
+  # let their failure skip the independently attempted stop of the owned loop.
+  if negative_unit_state before-stop; then
+    attempt_invocation="$negative_invocation"
+    case "$negative_active:$negative_sub" in failed:failed|inactive:dead|activating:auto-restart) ;; *) status=1 ;; esac
+    [[ "$negative_result" == exit-code && "$negative_ready" == "$prior_ready" \
+      && "$attempt_invocation" != "$prior_invocation" && "$negative_restarts" == 0 \
+      && "$negative_main_started:$negative_exec_pid:$negative_main_pid:$negative_control_pid" == 0:0:0:0 \
+      && "$negative_inactive_exit" -gt "$baseline_exit" && "$negative_inactive_exit" -ge "$negative_start_us" ]] || status=1
+  else status=1; fi
+  if timeout --kill-after=1 15 sudo systemctl stop happyranch-managed.target happyranch-tsnet-sidecar.service happyranch-connector.service; then stop_status=0; else stop_status=$?; fi
+  printf 'stop_status=%s\n' "$stop_status" >>"$diagnostics/missing-consumed-state.log" || status=1
+  # No reset/reload/start/unload before this history fence. Stop leaves the
+  # restart count available until the NEXT start; any queued retry that raced
+  # the read/stop has incremented it. A lost nonzero READY baseline refuses GC.
+  negative_unit_state after-stop || status=1
+  case "$negative_active:$negative_sub" in inactive:dead|failed:failed) ;; *) status=1 ;; esac
+  [[ "$(compact_boot_id)" == "$negative_boot" && "$negative_result" == exit-code \
+    && "$negative_ready" == "$prior_ready" && "$negative_invocation" == "$attempt_invocation" \
+    && "$negative_restarts" == 0 && "$negative_main_started:$negative_exec_pid:$negative_main_pid:$negative_control_pid" == 0:0:0:0 ]] || status=1
+  negative_end_us="$(python -c 'import time; print(time.monotonic_ns() // 1000)')" || status=1
+  printf 'end_us=%s\n' "$negative_end_us" >>"$diagnostics/missing-consumed-state.log" || status=1
+  [[ "$negative_end_us" -ge "$negative_start_us" ]] && (( negative_end_us - negative_start_us <= 45000000 )) || status=1
+  negative_start_job || status=1
+  if negative_peer_state false "$enrolled" >/dev/null; then
+    printf 'peer_after=offline\n' >>"$diagnostics/missing-consumed-state.log" || status=1
+  else
+    printf 'peer_after=unconfirmed\n' >>"$diagnostics/missing-consumed-state.log" || true
+    status=1
+  fi
+  negative_unit_state final || status=1
+  case "$negative_active:$negative_sub" in inactive:dead|failed:failed) ;; *) status=1 ;; esac
+  [[ "$(compact_boot_id)" == "$negative_boot" && "$negative_result" == exit-code \
+    && "$negative_ready" == "$prior_ready" && "$negative_invocation" == "$attempt_invocation" \
+    && "$negative_restarts" == 0 && "$negative_main_started:$negative_exec_pid:$negative_main_pid:$negative_control_pid" == 0:0:0:0 ]] || status=1
+  # Status1 is the expected failed systemctl transaction, not proof by itself.
+  # Preserve timeout/launch/query/stop failure as a failure, never acceptance.
+  (( start_status == 1 )) || { (( start_status != 0 )) && return "$start_status"; return 1; }
+  (( stop_status == 0 )) || return "$stop_status"
+  (( status == 0 ))
 }
 systemctl_absent_value() {
   local unit="$1" property="$2" expected="$3" value
@@ -1392,12 +1613,7 @@ evidence "startup" "sidecar_staged_credential_service_readable_non_writable"
 evidence "startup" "credential_source_retired"
 evidence "startup" "credential_dropin_retired"
 evidence "startup" "composite_ready_after_sidecar"
-sudo systemctl stop happyranch-managed.target
-sudo mv /var/lib/happyranch-tsnet-sidecar/credential.consumed "$work/credential.consumed.held"
-service_start_attempted=1
-sudo systemctl start happyranch-managed.target || true
-sleep 2
-inactive happyranch-tsnet-sidecar.service || fail "missing consumed state started sidecar"
+missing_consumed_state_refused || { negative_status=$?; echo 'n3-real-systemd: missing consumed state refusal unproved; retained attempt evidence' >&2; exit "$negative_status"; }
 evidence "startup" "missing_consumed_state_failed_closed"
 sudo mv "$work/credential.consumed.held" /var/lib/happyranch-tsnet-sidecar/credential.consumed
 # Best-effort reset request, not absence evidence: an unloaded unit is valid.
@@ -1481,7 +1697,7 @@ service_start_attempted=1
 sudo systemctl start happyranch-managed.target & start_job=$!
 wait_for "start barrier entered" sudo test -e "$barrier_dir/start-entered"
 sudo systemctl stop happyranch-managed.target & stop_job=$!
-systemctl list-jobs --no-legend | grep -q 'happyranch-managed.target' || fail "stop was not queued behind entered start"
+target_job_pending stop || fail "stop queue ordering unconfirmed behind entered start"
 evidence "concurrency_reentry" "start_then_stop_barrier"
 : | sudo tee "$barrier_dir/start-release" >/dev/null; wait "$start_job" || true; wait "$stop_job"
 inactive happyranch-tsnet-sidecar.service || fail "start-then-stop did not stop"
@@ -1502,7 +1718,7 @@ wait_for "stop barrier entered" sudo test -e "$barrier_dir/stop-entered"
 virtual_removed stop_barrier || fail "Stop-barrier listener teardown unconfirmed"
 service_start_attempted=1
 sudo systemctl start happyranch-managed.target & start_job=$!
-systemctl list-jobs --no-legend | grep -q 'happyranch-managed.target' || fail "start was not queued behind entered stop"
+target_job_pending start || fail "start queue ordering unconfirmed behind entered stop"
 evidence "concurrency_reentry" "stop_then_start_barrier"
 : | sudo tee "$barrier_dir/stop-release" >/dev/null; wait "$stop_job"; wait "$start_job"
 sudo rm -f /etc/systemd/system/happyranch-tsnet-sidecar.service.d/90-ci-barrier.conf
