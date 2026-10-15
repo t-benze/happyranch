@@ -10,6 +10,8 @@ from __future__ import annotations
 import argparse
 import asyncio
 import base64
+from copy import deepcopy
+from datetime import datetime, timezone
 import hashlib
 import json
 import os
@@ -96,6 +98,106 @@ def observe(org: object) -> dict:
 def unrelated(snapshot: dict) -> dict:
     return {'objects': {s: [r for r in rows if not r[1].startswith('identity_name_') and not r[2].startswith('identity_name_')] for s, rows in snapshot['objects'].items()},
             'tables': {k: v for k, v in snapshot['tables'].items() if not k.startswith('main.identity_name_')}, 'files': snapshot['files']}
+
+
+def snapshot_row(snapshot: dict, table: str, **key: object) -> dict:
+    """Select one complete typed row without consulting product readers."""
+    data = snapshot['tables']['main.' + table]
+    rows = [dict(zip(data['columns'], row, strict=True)) for row in data['rows']]
+    selected = [row for row in rows if all(row[k] == typed(v) for k, v in key.items())]
+    assert len(selected) == 1, (table, key, selected)
+    return selected[0]
+
+
+def replace_snapshot_row(snapshot: dict, table: str, row: dict, **changes: object) -> None:
+    data = snapshot['tables']['main.' + table]
+    original = [row[c] for c in data['columns']]
+    index = data['rows'].index(original)
+    updated = {**row, **{k: typed(v) for k, v in changes.items()}}
+    data['rows'][index] = [updated[c] for c in data['columns']]
+    data['rows'].sort(key=lambda r: json.dumps(r))
+
+
+def append_snapshot_row(snapshot: dict, table: str, **values: object) -> None:
+    data = snapshot['tables']['main.' + table]
+    assert set(values) == set(data['columns']), (table, values)
+    data['rows'].append([typed(values[c]) for c in data['columns']])
+    data['rows'].sort(key=lambda r: json.dumps(r))
+
+
+def assert_allowed_delta(name: str, before: dict, after: dict, expected: dict) -> None:
+    """Compare every fact, retaining bounded real changed rows for handoff."""
+    assert after == expected, (name, 'outside finite allowed delta')
+    delta = {}
+    for table, old in before['tables'].items():
+        new = after['tables'][table]
+        if old != new:
+            delta[table] = {
+                'columns': old['columns'],
+                'removed_rows': [r for r in old['rows'] if r not in new['rows']],
+                'added_rows': [r for r in new['rows'] if r not in old['rows']],
+            }
+    save(name + '-allowed-delta', {
+        'before_sha256': digest(json.dumps(before, sort_keys=True).encode()),
+        'after_sha256': digest(json.dumps(after, sort_keys=True).encode()),
+        'expected_sha256': digest(json.dumps(expected, sort_keys=True).encode()),
+        'changed_rows': delta, 'complete_snapshot_equal_to_expected': True,
+        'objects_metadata_files_and_all_other_rows_exact': True,
+    })
+
+
+def assert_lifecycle_delta(before: dict, after: dict) -> None:
+    expected = deepcopy(before)
+    owner = snapshot_row(before, 'identity_name_owners', kind='agent', canonical_id='maker')
+    assert [owner[k] for k in ('lifecycle', 'current_label', 'revision')] == [typed(v) for v in ('active', 'CurrentOne', 7)]
+    # Frozen independent_names facts: terminal still reserves its ID. No claim
+    # is added/removed/changed, including oldone and the absent gone owner.
+    replace_snapshot_row(expected, 'identity_name_owners', owner, lifecycle='terminated', revision=8)
+    assert_allowed_delta('terminal-lifecycle', before, after, expected)
+
+
+def assert_rename_delta(before: dict, after: dict, *, ident: str, label: str,
+                        revision: int, started: datetime, finished: datetime) -> None:
+    # Only these three independently declared fixture transitions are exercised.
+    old_label, old_permanent = {
+        ('maker', 'CurrentOne', 1): ('maker', 0),
+        ('maker', 'CurrentTwo', 2): ('CurrentOne', 1),
+        ('founder', 'HumanOwner', 1): ('founder', 0),
+    }[(ident, label, revision)]
+    kind = 'founder' if ident == 'founder' else 'agent'
+    expected = deepcopy(before)
+    owner = snapshot_row(before, 'identity_name_owners', kind=kind, canonical_id=ident)
+    assert [owner[k] for k in ('lifecycle', 'current_label', 'revision')] == [typed(v) for v in ('founder' if kind == 'founder' else 'active', old_label, revision)]
+    replace_snapshot_row(expected, 'identity_name_owners', owner, current_label=label, revision=revision+1)
+    claim = snapshot_row(before, 'identity_name_claims', normalized_name=old_label.lower())
+    assert [claim[k] for k in ('owner_kind', 'owner_id', 'id_reserved', 'permanent')] == [typed(v) for v in (kind, ident, int(old_label == ident), old_permanent)]
+    replace_snapshot_row(expected, 'identity_name_claims', claim, permanent=1)
+    claims = before['tables']['main.identity_name_claims']
+    assert all(r[claims['columns'].index('normalized_name')] != typed(label.lower()) for r in claims['rows'])
+    claim_rowid = max(r[claims['columns'].index('rowid')][1] for r in claims['rows']) + 1
+    append_snapshot_row(expected, 'identity_name_claims', rowid=claim_rowid,
+                        normalized_name=label.lower(), owner_kind=kind, owner_id=ident,
+                        id_reserved=0, permanent=1)
+    sequence = snapshot_row(before, 'sqlite_sequence', name='audit_log')
+    audit = before['tables']['main.audit_log']
+    assert sequence['seq'] == typed(max(r[audit['columns'].index('id')][1] for r in audit['rows']))
+    new_id = sequence['seq'][1] + 1
+    replace_snapshot_row(expected, 'sqlite_sequence', sequence, seq=new_id)
+    new_audit = snapshot_row(after, 'audit_log', id=new_id)
+    timestamp = new_audit['timestamp']
+    assert timestamp[0] == 'str'
+    instant = datetime.fromisoformat(timestamp[1])
+    assert instant.tzinfo == timezone.utc and instant.isoformat() == timestamp[1]
+    assert started <= instant <= finished, (started, instant, finished)
+    payload = {'org_slug': SLUG, 'kind': kind, 'canonical_id': ident,
+               'old_label': old_label, 'new_label': label, 'old_revision': revision,
+               'new_revision': revision+1, 'source': 'founder', 'actor': 'founder'}
+    append_snapshot_row(expected, 'audit_log', rowid=new_id, id=new_id,
+                        timestamp=timestamp[1], task_id='founder', agent='founder',
+                        action='identity_name_changed', payload=json.dumps(payload, sort_keys=True))
+    name = 'rename-' + ident + '-' + label
+    assert_allowed_delta(name, before, after, expected)
+    save(name + '-timestamp-bound', {'started': started.isoformat(), 'actual': timestamp[1], 'finished': finished.isoformat()})
 
 
 def record(name: str, **details: object) -> None:
@@ -698,7 +800,9 @@ def case06(base: Path) -> None:
     (org.root / 'org/agents/maker.md').rename(org.root / 'org/agents/_terminated/maker.md')
     org.teams = TeamsRegistry({'engineering': TeamManager('manager', 'engineering', ('pending_one',))}, root=org.root)
     org.teams.save()
+    before = observe(org)
     attempt(org, 'terminal-lifecycle')
+    assert_lifecycle_delta(before, observe(org))
     assert tuple(org.db._conn.execute("SELECT lifecycle,current_label,revision FROM identity_name_owners WHERE canonical_id='maker'").fetchone()) == ('terminated','CurrentOne',8)
     before = observe(org)
     attempt(org, 'terminal-repeat')
@@ -801,7 +905,9 @@ async def public(org: object, *, rename: bool) -> None:
                 audit_before = org.db._conn.execute('SELECT count(*) FROM audit_log').fetchone()[0]
                 seq_before = org.db._conn.execute("SELECT seq FROM sqlite_sequence WHERE name='audit_log'").fetchone()[0]
                 suffix = '/founder/addressable-name' if ident == 'founder' else '/agents/'+ident+'/addressable-name'
+                started = datetime.now(timezone.utc)
                 response = await client.put(prefix+suffix, json={'addressable_name':label, 'expected_name_revision':revision})
+                finished = datetime.now(timezone.utc)
                 assert response.status_code == 200, response.text
                 assert response.json()['name_revision'] == revision+1
                 assert tuple(org.db._conn.execute('SELECT current_label,revision FROM identity_name_owners WHERE canonical_id=?',(ident,)).fetchone()) == (label,revision+1)
@@ -814,11 +920,10 @@ async def public(org: object, *, rename: bool) -> None:
                 assert detail['old_label'] == {('maker',1):'maker',('maker',2):'CurrentOne',('founder',1):'founder'}[(ident,revision)]
                 assert detail['old_revision'] == revision and detail['new_revision'] == revision+1 and detail['new_label'] == label
                 rename_after = observe(org)
-                left, right = unrelated(rename_before), unrelated(rename_after)
-                for snapshot in (left, right):
-                    snapshot['tables'].pop('main.audit_log')
-                    snapshot['tables']['main.sqlite_sequence']['rows'] = [r for r in snapshot['tables']['main.sqlite_sequence']['rows'] if ['str','audit_log'] not in r]
-                assert left == right
+                save('rename-'+ident+'-'+label+'-before', rename_before)
+                save('rename-'+ident+'-'+label+'-after', rename_after)
+                assert_rename_delta(rename_before, rename_after, ident=ident, label=label,
+                                    revision=revision, started=started, finished=finished)
                 record('rename-'+ident+'-'+label, actual='one audit and revision increment', audit_payload=detail)
         before = observe(org)
         for context in ('lookup', 'thread_recipient', 'task_owner'):

@@ -35,3 +35,14 @@ reported MISSING. Traces and actual SQLite error names accompany rollback proof.
 Existing validator controls are attributed separately from new structural guards.
 The independent full case/four-answer acceptance record belongs to TASK11597;
 TASK11601 output records actual commands, failures, repairs and missing results.
+
+B-SA-06's terminal transition compares the complete typed before/after snapshot
+against only maker lifecycle active→terminated and revision7→8. Its chosen and
+former claims, other owners, audit history, schema metadata and unrelated facts
+remain exact. B-SA-08's three non-no-op renames each permit only the selected
+label/revision, specified old/current permanent claims and new claim row, one
+genuine audit append and its sequence increment. Expected cells come from frozen
+fixture facts and the pre-operation snapshot; the new timestamp is bounded by the
+actual request's UTC interval. All other typed cells, retained rowids, metadata,
+schema, sequences and canonical files compare exactly. Complete snapshots and
+bounded actual changed-row/timestamp receipts accompany these assertions.
