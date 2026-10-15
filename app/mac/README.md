@@ -65,7 +65,10 @@ failures. Installed-original Python/Radix precedence is unchanged.
 The same helper prepares seven PNG originals into ten iconset members, then
 runs the selected real iconutil once on Darwin/arm64 into new private
 `scratch/icon-output/AppIcon.icns`. Exclusive publication to the app is a byte
-copy, not another transform. Six one-shot local records and two bounded tool
+copy, not another transform. Catchable interruption is deferred until the child
+handle is owned; bounded cleanup preserves the first failure and actual exit
+(or explicit unknown) and attempts each acquired resource independently.
+Six one-shot local records and two bounded tool
 streams bind explicit caller roots, candidate, run, tool and synchronous stage
 tokens. The independent licenses reader reopens complete subjects before the
 unchanged strict legacy license checks; it never reruns iconutil. See the

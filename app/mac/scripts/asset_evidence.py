@@ -1329,27 +1329,41 @@ def prepare_iconset(candidate, paths, expected_run_id, expected_context_sha256):
     return icon_inputs(candidate, paths)
 
 
-def process_signals(function):
-    @functools.wraps(function)
-    def call(*args, **kwargs):
-        saved = {}
+@contextlib.contextmanager
+def process_signals(failures):
+    """Defer catchable interruption until capture owns the launched handle.
 
-        def interrupted(signum, _frame):
-            raise AssetError('PROCESS_INTERRUPTED', str(signum))
+    Never block signals across Popen: the child keeps its normal signal mask.
+    The first failure wins, including during cleanup; repeated signals cannot
+    unwind registration, reaping or closure. Synchronous CLI/main-thread only.
+    """
+    saved = {}
 
-        try:
-            # Production callers are synchronous CLI invocations. Signal setup
-            # refuses before launch if used from an unsupported worker thread.
-            for signum in (signal.SIGHUP, signal.SIGINT, signal.SIGTERM):
-                saved[signum] = signal.signal(signum, interrupted)
-            return function(*args, **kwargs)
-        finally:
-            for signum, handler in saved.items():
+    def interrupted(signum, _frame):
+        if not failures:
+            failures.append(AssetError('PROCESS_INTERRUPTED', str(signum)))
+
+    try:
+        for signum in (signal.SIGHUP, signal.SIGINT, signal.SIGTERM):
+            # Save before installing; even a partial setup is restored below.
+            saved[signum] = signal.getsignal(signum)
+            signal.signal(signum, interrupted)
+        yield
+    except BaseException as exc:
+        if not failures:
+            failures.append(exc)
+        raise failures[0]
+    finally:
+        # Restore every saved handler even after partial setup or an error.
+        # Owned process resources are already cleaned before normal restoration.
+        for signum, handler in saved.items():
+            try:
                 signal.signal(signum, handler)
-    return call
+            except BaseException as exc:
+                if not failures:
+                    failures.append(exc)
 
 
-@process_signals
 def process_capture(argv, cwd, stdout_cap, stderr_cap, *, streams=None, stdout_consumer=None, git_transport=False):
     """One real process group, bounded pipes/deadline, TERM/KILL and wait.
 
@@ -1359,20 +1373,25 @@ def process_capture(argv, cwd, stdout_cap, stderr_cap, *, streams=None, stdout_c
     drain. Missing quiescence never supplies a successful receipt.
     """
     start, wall = time.monotonic_ns(), time.time_ns()
-    env = dict(os.environ)
-    if git_transport:
-        env = {k: os.environ[k] for k in ('PATH', 'HOME', 'TMPDIR', 'SYSTEMROOT') if k in os.environ}
-        env.update(GIT_CONFIG_NOSYSTEM='1', GIT_CONFIG_GLOBAL=os.devnull, GIT_NO_REPLACE_OBJECTS='1', GIT_TERMINAL_PROMPT='0')
-    proc = subprocess.Popen(argv, cwd=cwd, env=env, stdin=subprocess.DEVNULL,
-                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
+    proc = selector = None
+    owned_fds = []
+    code = None
+    group_gone = False
     output = [bytearray(), bytearray()]
     counts, retained, eof = [0, 0], [0, 0], [False, False]
     caps = (stdout_cap, stderr_cap)
-    timed_out = overflow = False
-    selector = selectors.DefaultSelector()
+    timed_out = overflow = killed = False
     deadline = start / 1_000_000_000 + 60
-    killed = False
-    internal_error = None
+    failures = []
+
+    def checkpoint():
+        if failures:
+            raise failures[0]
+
+    def close_fd(fd):
+        # Never retry a close with an uncertain result or skip later resources.
+        owned_fds.remove(fd)
+        os.close(fd)
 
     def terminate(sig):
         try:
@@ -1380,88 +1399,149 @@ def process_capture(argv, cwd, stdout_cap, stderr_cap, *, streams=None, stdout_c
         except ProcessLookupError:
             pass
 
-    try:
-        for index, pipe in enumerate((proc.stdout, proc.stderr)):
-            os.set_blocking(pipe.fileno(), False)
-            selector.register(pipe, selectors.EVENT_READ, index)
-        while selector.get_map() or proc.poll() is None:
-            now = time.monotonic()
-            if now >= deadline:
-                if killed:
-                    break
-                timed_out = True
-            if (timed_out or overflow) and not killed:
-                terminate(signal.SIGTERM)
-                # One short grace interval, then kill the entire owned group.
-                grace = time.monotonic() + 0.25
-                while proc.poll() is None and time.monotonic() < grace:
-                    time.sleep(0.01)
-                terminate(signal.SIGKILL)
-                killed = True
-                deadline = time.monotonic() + 1
-            for key, _ in selector.select(min(0.1, max(0, deadline - time.monotonic()))):
-                index = key.data
-                chunk = os.read(key.fileobj.fileno(), 64 * KiB)
-                if not chunk:
-                    eof[index] = True
-                    selector.unregister(key.fileobj)
-                    continue
-                remaining = max(0, caps[index] - counts[index])
-                kept = chunk[:remaining]
-                counts[index] += len(chunk)
-                if streams:
-                    view = memoryview(kept)
-                    while view:
-                        written = os.write(streams[index], view)
-                        need(written > 0, 'ICON_STREAM_WRITE_FAILED')
-                        retained[index] += written
-                        view = view[written:]
-                elif index == 0 and stdout_consumer is not None:
-                    stdout_consumer(kept)
-                    retained[index] += len(kept)
+    with process_signals(failures):
+        try:
+            env = dict(os.environ)
+            if git_transport:
+                env = {k: os.environ[k] for k in ('PATH', 'HOME', 'TMPDIR', 'SYSTEMROOT') if k in os.environ}
+                env.update(GIT_CONFIG_NOSYSTEM='1', GIT_CONFIG_GLOBAL=os.devnull, GIT_NO_REPLACE_OBJECTS='1', GIT_TERMINAL_PROMPT='0')
+            # Retain even partially initialized resources before fallible init.
+            selector = selectors.DefaultSelector.__new__(selectors.DefaultSelector)
+            selector.__init__()
+            checkpoint()
+            # Own transport endpoints before Popen, including partial setup.
+            out_read, out_write = os.pipe()
+            owned_fds.extend((out_read, out_write))
+            err_read, err_write = os.pipe()
+            owned_fds.extend((err_read, err_write))
+            null_fd = os.open(os.devnull, os.O_RDONLY)
+            owned_fds.append(null_fd)
+            checkpoint()
+            # Popen does not guarantee child reaping on every post-fork init
+            # error. Own the instance before init so pid/pipes remain reachable.
+            # Recording handlers do not unwind the fork-to-pid handoff, and no
+            # blocked signal mask is inherited by the child. Exactly one init.
+            proc = subprocess.Popen.__new__(subprocess.Popen)
+            checkpoint()
+            proc.__init__(argv, cwd=cwd, env=env, stdin=null_fd,
+                          stdout=out_write, stderr=err_write, start_new_session=True)
+            checkpoint()
+            for fd in (out_write, err_write, null_fd):
+                close_fd(fd)
+            for index, fd in enumerate((out_read, err_read)):
+                os.set_blocking(fd, False)
+                selector.register(fd, selectors.EVENT_READ, index)
+                checkpoint()
+            while selector.get_map() or proc.poll() is None:
+                checkpoint()
+                now = time.monotonic()
+                if now >= deadline:
+                    if killed:
+                        break
+                    timed_out = True
+                if (timed_out or overflow) and not killed:
+                    terminate(signal.SIGTERM)
+                    # One short grace interval, then kill the entire owned group.
+                    grace = time.monotonic() + 0.25
+                    while proc.poll() is None and time.monotonic() < grace:
+                        checkpoint()
+                        time.sleep(0.01)
+                    terminate(signal.SIGKILL)
+                    killed = True
+                    deadline = time.monotonic() + 1
+                for key, _ in selector.select(min(0.1, max(0, deadline - time.monotonic()))):
+                    checkpoint()
+                    index = key.data
+                    chunk = os.read(key.fd, 64 * KiB)
+                    if not chunk:
+                        eof[index] = True
+                        selector.unregister(key.fileobj)
+                        continue
+                    remaining = max(0, caps[index] - counts[index])
+                    kept = chunk[:remaining]
+                    counts[index] += len(chunk)
+                    if streams:
+                        view = memoryview(kept)
+                        while view:
+                            checkpoint()
+                            written = os.write(streams[index], view)
+                            need(written > 0, 'ICON_STREAM_WRITE_FAILED')
+                            retained[index] += written
+                            view = view[written:]
+                    elif index == 0 and stdout_consumer is not None:
+                        stdout_consumer(kept)
+                        retained[index] += len(kept)
+                    else:
+                        output[index].extend(kept)
+                        retained[index] += len(kept)
+                    overflow |= counts[index] > caps[index]
+            checkpoint()
+        except BaseException as exc:
+            if not failures:
+                failures.append(exc)
+        finally:
+            # Each acquired resource gets its own attempt, even if an earlier
+            # cleanup fails. No checkpoints here: signals keep the first failure
+            # and cannot abort cleanup. Reaping has a finite independent bound.
+            pid = getattr(proc, 'pid', None)
+            if pid is not None:
+                try:
+                    if failures or proc.poll() is None:
+                        terminate(signal.SIGKILL)
+                except BaseException as exc:
+                    if not failures:
+                        failures.append(exc)
+                try:
+                    code = proc.wait(timeout=1)
+                except BaseException as exc:
+                    code = proc.returncode  # Actual status if known; else None.
+                    if not failures:
+                        failures.append(exc)
+                try:
+                    # EOF alone is not quiescence. Kill surviving descendants,
+                    # but never label an observed live/unknown group as gone.
+                    os.killpg(proc.pid, 0)
+                except ProcessLookupError:
+                    group_gone = True
+                except BaseException as exc:
+                    if not failures:
+                        failures.append(exc)
                 else:
-                    output[index].extend(kept)
-                    retained[index] += len(kept)
-                overflow |= counts[index] > caps[index]
-        if proc.poll() is None:
-            terminate(signal.SIGKILL)
-        try:
-            code = proc.wait(timeout=1)
-        except subprocess.TimeoutExpired:
-            code = None
-        # EOF alone is not quiescence: a surviving descendant is a failure too.
-        try:
-            os.killpg(proc.pid, 0)
-        except ProcessLookupError:
-            group_gone = True
-        else:
-            group_gone = False
-            terminate(signal.SIGKILL)
-    except BaseException as exc:
-        internal_error = exc
-        terminate(signal.SIGKILL)
-        try:
-            code = proc.wait(timeout=1)
-        except subprocess.TimeoutExpired:
-            code = None
-        group_gone = False
-    finally:
-        selector.close()
-        proc.stdout.close()
-        proc.stderr.close()
-    observed = dict(pid=proc.pid, start_ns=start, end_ns=time.monotonic_ns(),
-                    wall_start_ns=wall, wall_end_ns=time.time_ns(), exit=code,
-                    signal=-code if code is not None and code < 0 else 0,
-                    quiescent=code is not None and group_gone and all(eof),
-                    stdout_complete=eof[0] and counts[0] <= caps[0],
-                    stderr_complete=eof[1] and counts[1] <= caps[1],
-                    timed_out=timed_out, overflow=overflow, unread_bytes_unknown=not all(eof))
-    for index, name in enumerate(('stdout', 'stderr')):
-        observed.update({name + '_bytes_observed': counts[index], name + '_bytes_retained': retained[index],
-                         name + '_omitted_observed': counts[index] - retained[index]})
-    if internal_error is not None:
+                    try:
+                        terminate(signal.SIGKILL)
+                    except BaseException as exc:
+                        if not failures:
+                            failures.append(exc)
+            # These endpoints are ours even if Popen init never returned.
+            for fd in tuple(owned_fds):
+                try:
+                    close_fd(fd)
+                except BaseException as exc:
+                    if not failures:
+                        failures.append(exc)
+            if selector is not None:
+                try:
+                    selector.close()
+                except BaseException as exc:
+                    if not failures:
+                        failures.append(exc)
+        if pid is None:
+            # No child identity was acquired; retain the original setup error.
+            raise failures[0]
+        observed = dict(pid=pid, start_ns=start, end_ns=time.monotonic_ns(),
+                        wall_start_ns=wall, wall_end_ns=time.time_ns(), exit=code,
+                        signal=-code if code is not None and code < 0 else 0,
+                        quiescent=not failures and code is not None and group_gone and all(eof),
+                        stdout_complete=eof[0] and counts[0] <= caps[0],
+                        stderr_complete=eof[1] and counts[1] <= caps[1],
+                        timed_out=timed_out, overflow=overflow, unread_bytes_unknown=not all(eof))
+        for index, name in enumerate(('stdout', 'stderr')):
+            observed.update({name + '_bytes_observed': counts[index], name + '_bytes_retained': retained[index],
+                             name + '_omitted_observed': counts[index] - retained[index]})
+    if failures:
+        observed['quiescent'] = False
         raise IconFailure('PROCESS_CAPTURE_FAILED', observed, argv, original_exit=code,
-                          inspection_error=str(internal_error)) from internal_error
+                          inspection_error=str(failures[0])) from failures[0]
     return dict(process=observed, stdout=bytes(output[0]), stderr=bytes(output[1]))
 
 

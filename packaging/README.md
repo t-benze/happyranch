@@ -128,6 +128,10 @@ exclusive app byte copy. Bounded real streams, argv/cwd, pre/post subjects,
 process exit/signal/timing and quiescence are retained. Timeout/overflow
 terminates and reaps the owned process without retry; failure preserves the
 original tool exit separately from inspection errors and retains partial files.
+Catchable HUP/INT/TERM is deferred through launch/handle registration and cleanup;
+the first failure is retained. Setup precedes launch where possible, and each
+owned pipe/selector is closed independently after bounded termination/reaping.
+An unknown exit or failed cleanup never supplies a quiescent success.
 The tool's own file API is not O_EXCL: private single-writer custody is required.
 There is no hostile same-UID or executed-image attestation guarantee.
 
