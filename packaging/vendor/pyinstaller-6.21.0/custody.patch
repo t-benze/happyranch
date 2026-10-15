@@ -59,7 +59,7 @@
 +            before_normalize = self.custody.rows(self.toc, 'PYZ_selected')
          self.toc = normalize_pyz_toc(self.toc)
 +        if self.custody:
-+            self.custody.event('normalization', {'raw': before_normalize, 'normalized': self.toc,
++            self.custody.event('normalization', {'raw': before_normalize, 'normalized': list(self.toc),
 +                               'edges': self.custody.normalize(before_normalize, self.toc, 'PYZ')})
  
          # Alphabetically sort the TOC to enable reproducible builds.
@@ -124,7 +124,7 @@
 +            self.custody.admit(self.custody_raw, 'EXE')
          self.toc = normalize_toc(self.toc)
 +        if self.custody:
-+            self.custody.event('normalization', {'raw': self.custody_raw, 'normalized': self.toc,
++            self.custody.event('normalization', {'raw': self.custody_raw, 'normalized': list(self.toc),
 +                               'edges': self.custody.normalize(self.custody_raw, self.toc, 'EXE')})
  
          self.pkg = PKG(
@@ -253,7 +253,7 @@
          # Normalize TOC
          self.toc = normalize_toc(self.toc)
 +        if self.custody:
-+            self.custody.event('normalization', {'raw': raw, 'normalized': self.toc,
++            self.custody.event('normalization', {'raw': raw, 'normalized': list(self.toc),
 +                               'edges': self.custody.normalize(raw, self.toc, 'COLLECT')})
  
          # Alphabetically sort the TOC to ensure that order of processing is predictable and reproducible.

@@ -423,7 +423,7 @@ dependencies = [
     { name = "setuptools" },
 ]
 wheels = [
-    { filename = "pyinstaller-6.21.0-1happyranchcustody1-py3-none-macosx_10_13_universal2.whl", hash = "sha256:917d4d6c298985e6267c5ae3aad21443de1ec3e427fff86ff223aa0091788652" },
+    { filename = "pyinstaller-6.21.0-1happyranchcustody1-py3-none-macosx_10_13_universal2.whl", hash = "sha256:3685d33a344585e96083fcfeb916780120ba0c30a63e919549da5e6028fc02d3" },
 ]
 
 [package.metadata]

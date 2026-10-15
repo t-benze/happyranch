@@ -1086,6 +1086,7 @@ def snapshot_target(session, lane, target, kind):
             lane_data['exefiles'] = session.rows(target.exefiles,lane,'exefiles')
             lane_data['pkg'] = session.snapshot(target.pkg.name,lane,'PKG')
             lane_data['pkg_toc'] = [list(row) for row in target.pkg.toc]
+            lane_data['python_library'] = target.pkg.python_lib_name
 
 
 def spec_collect_inputs(session, exe, exe_cli, shared):
@@ -1271,7 +1272,7 @@ def archive_observations(session, inputs):
             need(pkg_map['start'] == 0 and pkg_map['end'] == len(raw_pkg), 'PKG_COMPLETE_RANGE')
         with container_subject(exe['output'],session) as raw_exe:
             exe_map = pkg_members(raw_exe,magic,tool['python_version'],session.budget,pkg['sha256'])
-        need(pkg_map['members'] == exe_map['members'], 'EXE_PKG_BINDING')
+        need(pkg_map['members'] == exe_map['members'] and pkg_map['python_library'] == info['python_library'], 'EXE_PKG_BINDING')
         with container_subject(pyz,session) as raw_pyz:
             pyz_map = pyz_members(raw_pyz,magic,session.budget)
         embedded = [m for m in pkg_map['members'] if m['kind'] == 'z']
@@ -1368,7 +1369,7 @@ def check_inputs(session, inputs):
         analysis = inputs['analysis'][lane]
         keys(analysis, {'scripts','pure','binaries','datas'}, 'ANALYSIS_SCHEMA')
         info = inputs['lanes'][lane]
-        keys(info, {'PYZ','PYZ_output','PYZ_dependencies','EXE','EXE_output','EXE_dependencies','EXE_arguments','exefiles','pkg','pkg_toc'}, 'LANE_SCHEMA')
+        keys(info, {'PYZ','PYZ_output','PYZ_dependencies','EXE','EXE_output','EXE_dependencies','EXE_arguments','exefiles','pkg','pkg_toc','python_library'}, 'LANE_SCHEMA')
         need(not match_prior_rows(analysis['pure'],fragment_event(info['PYZ'],'pyz_candidates'),'PYZ'), 'PYZ_EXTRA_PRIOR_OCCURRENCE')
         check_exe_arguments(info['EXE_arguments'],fragment_event(info['EXE'],'exe_arguments'))
         match_prior_rows(info['PYZ_dependencies']+analysis['scripts'],fragment_event(info['EXE'],'normalization')['raw'],'EXE')
