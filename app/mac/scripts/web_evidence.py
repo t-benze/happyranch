@@ -610,7 +610,7 @@ def validate_build(s,payload,context,preparation):
     need(payload['complete'] is True,'CALL_INCOMPLETE');profile=payload['profile']
     keys(profile,{'command','mode','isProduction','isWorker','root','base','appType','input','output','build','css','esbuild','define','env','config_dependencies','plugins'})
     need(profile['command']=='build' and profile['mode']=='production' and profile['isProduction'] is True and profile['isWorker'] is False and profile['root']==str(s.paths.exported_source/'web') and profile['base']=='/' and profile['appType']=='spa','PROFILE_UNSUPPORTED')
-    need(profile['build']['sourcemap'] is True and profile['build']['cssCodeSplit'] is True and profile['build']['cssMinify']=='esbuild' and profile['build']['minify']=='esbuild' and profile['build']['ssr'] is False and profile['build']['watch'] is None and profile['build']['lib'] is False,'PROFILE_UNSUPPORTED')
+    need(profile['build']['sourcemap'] is True and profile['build']['cssCodeSplit'] is True and profile['build']['cssMinify'] in (True,'esbuild') and profile['build']['minify']=='esbuild' and profile['build']['ssr'] is False and profile['build']['watch'] is None and profile['build']['lib'] is False,'PROFILE_UNSUPPORTED')
     need(profile['css']['devSourcemap'] is False and profile['css']['postcss']=={'plugins':[]},'PROFILE_UNSUPPORTED')
     observations=payload['observations'];need(type(observations) is list and len(observations)<=MAX_ROWS,'OBSERVATION_CAP')
     ids={};calls={};refs={};snapshots={};delta=None;render={};write=None;generated=None

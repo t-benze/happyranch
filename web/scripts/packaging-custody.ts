@@ -226,7 +226,8 @@ export class PackagingCustody {
         if (optionsHandlers.at(-1) !== observer) throw new Error('WEB_OPTIONS_BARRIER_INVALID');
         const close = [...all.filter(p => p.closeBundle && order(p.closeBundle) !== 'post'), ...all.filter(p => order(p.closeBundle) === 'post')];
         if (close.at(-1) !== observer) throw new Error('WEB_CLOSE_BARRIER_INVALID');
-        if (config.build.lib || config.build.ssr || config.build.watch || config.isWorker || config.base !== '/' || config.css.devSourcemap || config.build.cssCodeSplit !== true || config.build.cssMinify !== 'esbuild' || config.build.minify !== 'esbuild' || options.input !== path.join(config.root, 'index.html') || config.build.rollupOptions.plugins || config.build.rollupOptions.output) throw new Error('WEB_PROFILE_UNSUPPORTED');
+        const unsupported = { lib: !!config.build.lib, ssr: !!config.build.ssr, watch: !!config.build.watch, worker: config.isWorker, base: config.base !== '/', cssMap: !!config.css.devSourcemap, split: config.build.cssCodeSplit !== true, cssMinifier: !['esbuild', true].includes(config.build.cssMinify), minifier: config.build.minify !== 'esbuild', input: options.input !== path.join(config.root, 'index.html'), outputPlugins: !!config.build.rollupOptions.plugins, outputOverride: !!config.build.rollupOptions.output };
+        for (const [key, invalid] of Object.entries(unsupported)) if (invalid) throw new Error(`WEB_PROFILE_UNSUPPORTED:${key}`);
         self.profile = {
           command: config.command, mode: config.mode, isProduction: config.isProduction, isWorker: config.isWorker, root: config.root, base: config.base, appType: config.appType,
           input: options.input, output: { dir: config.build.outDir, format: 'es', addons: [] },
