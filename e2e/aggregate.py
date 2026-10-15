@@ -1515,6 +1515,8 @@ def main() -> int:
             if (directory / "result.json").is_file():
                 result = json.loads((directory / "result.json").read_text())
                 rows.append(result)
+                if result.get("python") != version or result.get("exercise") != "baseline":
+                    health["errors"].append(f"e2e-{version}: directory/interpreter/exercise mismatch")
                 try:
                     validate_e04(result, json.loads((directory / "observations.json").read_text()),
                                  json.loads((directory / "browser-events.json").read_text()), directory)

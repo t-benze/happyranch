@@ -34,6 +34,15 @@ class Controller:
         self.root, self.source = args.root, args.source
         self.revision, self.deadline = args.sha, args.deadline
         self.local_bounds = threading.local()
+        self.timer_phases: list[tuple[str, float]] = []
+        delay, interval = signal.getitimer(signal.ITIMER_REAL)
+        require(interval == 0, "controller requires a one-shot timer owner")
+        self.inherited_alarm = time.monotonic() + delay if delay > 0 else float("inf")
+        self.primary_error: BaseException | None = None
+        self.primary_traceback: Any = None
+        self.failures: list[dict] = []
+        self.observer_join: dict = dict(attempted=False, reason="nonterminal")
+        self.redaction_ready = False
         self.boots = []
         self.env = dict(os.environ, E2E_SCENARIO_DEADLINE=str(args.deadline))
         self.publish_end()
@@ -173,7 +182,43 @@ class Controller:
 
     def effective_end(self) -> float:
         return min(self.deadline, getattr(self, "case_deadline", self.deadline),
-                   getattr(self.local_bounds, "end", self.deadline))
+                   getattr(self.local_bounds, "end", self.deadline),
+                   getattr(self, "observation_end", self.deadline), self.inherited_alarm)
+
+    def _timer_sync(self) -> None:
+        if threading.current_thread() is not threading.main_thread():
+            return
+        end = min(self.effective_end(), self.inherited_alarm,
+                  *(bound for _, bound in self.timer_phases))
+        native = bool(self.timer_phases and self.timer_phases[-1][0] == "native")
+        left = end - time.monotonic()
+        # An expired owner is never restored as its old duration. The caller
+        # checks expiry synchronously; no short alarm enters native dispatch.
+        signal.setitimer(signal.ITIMER_REAL, left if left > 0 and not native else 0)
+
+    @contextmanager
+    def phase(self, end: float, *, native: bool = False) -> Any:
+        require(threading.current_thread() is threading.main_thread(), "native/Python phase main-thread owner")
+        bound = min(end, self.effective_end(), self.inherited_alarm,
+                    *(value for _, value in self.timer_phases))
+        require(bound > time.monotonic(), "phase absolute deadline exhausted")
+        self.timer_phases.append(("native" if native else "python", bound))
+        failed = False
+        try:
+            self._timer_sync()
+            yield
+            require(time.monotonic() < bound, "phase absolute deadline exhausted")
+        except BaseException:
+            failed = True
+            raise
+        finally:
+            self.timer_phases.pop()
+            try:
+                self._timer_sync()
+            except BaseException as exc:
+                self.record_error("timer-restore", exc)
+                if not failed:
+                    raise
 
     def publish_end(self) -> None:
         end = self.effective_end()
@@ -184,29 +229,21 @@ class Controller:
         temporary.replace(path)
         if getattr(self, "browser_relay", None) and not getattr(self, "browser_relay_closed", False):
             self.browser_relay.deadline = end
-        if threading.current_thread() is threading.main_thread():
-            left = end-time.monotonic()
-            require(left > 0, "deadline exhausted while publishing bound")
-            signal.setitimer(signal.ITIMER_REAL, left)
+        self._timer_sync()
+        require(end > time.monotonic(), "deadline exhausted while publishing bound")
 
     @contextmanager
-    def bounded(self, end: float):
+    def bounded(self, end: float) -> Any:
         previous = getattr(self.local_bounds, "end", self.deadline)
         self.local_bounds.end = min(previous, end)
         try:
             self.remaining()
-            if threading.current_thread() is threading.main_thread():
-                left = self.effective_end()-time.monotonic()
-                require(left > 0, "predicate deadline exhausted")
-                signal.setitimer(signal.ITIMER_REAL, left)
+            self._timer_sync()
             yield
             self.remaining()
         finally:
             self.local_bounds.end = previous
-            if threading.current_thread() is threading.main_thread():
-                left = self.effective_end()-time.monotonic()
-                if left > 0:
-                    signal.setitimer(signal.ITIMER_REAL, left)
+            self._timer_sync()
 
     def remaining(self, cap: float = 30) -> float:
         if not self.observer_stop.is_set():
@@ -629,55 +666,132 @@ class Controller:
         require(variant not in self.results, "duplicate variant result", variant)
         self.results[variant] = dict(status="PASS", evidence=evidence or {}, at=time.monotonic())
 
-    def close(self) -> None:
-        failures = []
+    def record_error(self, stage: str, error: BaseException) -> None:
+        if self.primary_error is None:
+            self.primary_error = error
+            self.primary_traceback = error.__traceback__
+        # Fixed stage/type only until full sanitation context is established.
+        self.failures.append(dict(stage=stage, error=type(error).__name__, at=time.monotonic()))
+
+    def _attempt(self, stage: str, action: Callable[[], Any], *, blocking: bool = True) -> Any:
         try:
-            self.capture_thread_secrets()
-        except Exception:
-            failures.append("unknown E05 token redaction context")
+            if blocking:
+                end = self.effective_end()
+                require(end > time.monotonic(), "cleanup unavailable: work exhausted")
+                with self.bounded(end):
+                    return action()
+            return action()
+        except BaseException as exc:
+            self.record_error(stage, exc)
+            return None
+
+    def prepare_redaction(self) -> None:
+        self.redaction_ready = False
+        try:
+            require(isinstance(self.token, str) and bool(self.token), "complete bearer redaction context")
+            if self.threads_active:
+                require(self.effective_end() > time.monotonic(), "full thread redaction context unavailable after expiry")
+                self.capture_thread_secrets()
+            self.redaction_ready = True
+        except BaseException as exc:
+            self.record_error("redaction-context-unavailable", exc)
+
+    def _atomic_text(self, path: Path, text: str) -> None:
+        require(self.redaction_ready, "unsafe evidence withheld without full redaction context")
+        temporary = path.with_name(path.name + ".tmp")
+        temporary.write_text(self.sanitize(text))
+        temporary.replace(path)
+
+    def _atomic_json(self, path: Path, value: Any) -> None:
+        self._atomic_text(path, json.dumps(value, indent=2))
+
+    def stage_browser_trace(self) -> None:
+        if self.browser:
+            self._attempt("stage-main-browser-trace", lambda: self._atomic_json(
+                self.root / "raw/browser-events.json", list(self.browser.events)), blocking=False)
+        if self.browser and hasattr(self.browser, "thread_events"):
+            self._attempt("stage-thread-browser-trace", lambda: self._atomic_json(
+                self.root / "raw/e05-browser-events.json", list(self.browser.thread_events)), blocking=False)
+
+    def stage_small_evidence(self) -> None:
+        if not self.redaction_ready:
+            return
+        self._attempt("stage-scenario", lambda: self._atomic_json(self.root / "scenario.json",
+                      dict(variants=self.results, scenario_phases=self.phases, failures=self.failures,
+                           evidence_state="partial/unvalidated")), blocking=False)
+        self._attempt("stage-browser-trace", self.stage_browser_trace, blocking=False)
+        if self.primary_error is not None:
+            self._attempt("stage-primary-error", lambda: self._atomic_text(self.root / "raw/failure.txt",
+                "".join(traceback.format_exception(type(self.primary_error), self.primary_error, self.primary_traceback))),
+                blocking=False)
+
+    def observer_snapshot(self) -> tuple[list[dict], dict]:
+        begin = time.monotonic()
+        alive_before = self.observer_thread.is_alive()
+        rows = list(self.observer)  # Full stable prefix; rows are never mutated.
+        finished = time.monotonic()
+        alive_after = self.observer_thread.is_alive()
+        state = dict(stop_requested=self.observer_stop.is_set(), join=dict(self.observer_join),
+                     alive_before=alive_before, alive_after=alive_after, error=self.observer_error,
+                     copy_begin=begin, cutoff=finished, rows=len(rows),
+                     partial=(alive_before or alive_after or self.observer_error is not None
+                              or not self.observer_join.get("finished", False)))
+        return rows, state
+
+    def close(self) -> None:
+        # Stop requested != observer terminated. Nothing here borrows Owned's
+        # cleanup/export allowance or grants another controller work interval.
+        self.observer_stop.set()
+        for name, transport in (("thread-proxy", self.browser_relay), ("late-transport", self.late_transport)):
+            if transport:
+                self._attempt(name + "-release", transport.release.set, blocking=False)
+        self.prepare_redaction()
+        self.stage_small_evidence()  # Before any screenshot/exit/bulky snapshot.
+        self.observer_join = dict(attempted=False, reason="work exhausted", entered=time.monotonic())
+        available = self.effective_end() - time.monotonic()
+        if available > 0:
+            self.observer_join.update(attempted=True, reason=None)
+            self._attempt("provider-observer-join", lambda: self.observer_thread.join(timeout=min(1, max(0, self.effective_end()-time.monotonic()))))
+            self.observer_join["finished"] = not self.observer_thread.is_alive()
+        self.observer_join.update(alive=self.observer_thread.is_alive(), cutoff=time.monotonic())
+        if self.observer_error is not None or self.observer_thread.is_alive():
+            self.record_error("provider-observer-incomplete", RuntimeError("observer error/live at cutoff"))
+        if self.browser:
+            self._attempt("browser-teardown", self.browser.close, blocking=False)
         if self.browser_relay:
-            self.browser_relay.release.set()
-            try:
-                if self.browser:
-                    self.browser.close_threads_context()
-            except Exception as exc:
-                failures.append(type(exc).__name__ + ": E05 browser close")
-            finally:
-                closure = self.browser_relay.close(self.deadline)
+            closure = self._attempt("thread-proxy-close", lambda: self.browser_relay.close(self.effective_end()))
+            if closure is not None:
+                self.browser_relay_closed = True
                 self.durable.append(dict(thread_proxy_closure=closure))
                 if closure["workers_alive"] or closure["listener_alive"] or closure["connections"] or closure["errors"]:
-                    failures.append("E05 proxy closure/transport failure")
+                    self.record_error("thread-proxy-closure", RuntimeError("proxy closure/transport failure"))
         if self.late_transport:
-            closure = self.late_transport.close(self.deadline)
-            self.e07["transport_closure"] = closure
-            if closure["listener_alive"] or closure["workers_alive"] or closure["sockets"] or closure["errors"]:
-                failures.append("E07 transport closure")
-        if self.browser:
-            try:
-                self.browser.close()
-            except Exception as exc:
-                failures.append(repr(exc))
+            closure = self._attempt("late-transport-close", lambda: self.late_transport.close(self.effective_end()))
+            if closure is not None:
+                self.e07["transport_closure"] = closure
+                if closure["listener_alive"] or closure["workers_alive"] or closure["sockets"] or closure["errors"]:
+                    self.record_error("late-transport-closure", RuntimeError("late transport closure failure"))
         for connection, stream in self.peer_connections:
-            stream.close()
-            connection.close()
-        self.observer_stop.set()
-        self.observer_thread.join(timeout=self.remaining(1))
-        failures.extend([self.observer_error] if self.observer_error else [])
-        if self.observer_thread.is_alive():
-            failures.append("provider observer did not stop")
-        self.server.close()
-        self.socket_path.unlink(missing_ok=True)
+            if self.effective_end() <= time.monotonic():
+                self._attempt("peer-socket-shutdown", lambda connection=connection: connection.shutdown(socket.SHUT_RDWR), blocking=False)
+            def close_stream(connection: Any = connection, stream: Any = stream) -> None:
+                cap = connection.gettimeout()
+                require(cap is not None and cap > 0, "peer retains finite socket cap")
+                left = self.effective_end()-time.monotonic()
+                require(left > 0, "peer stream close has existing positive time")
+                connection.settimeout(min(cap, left))
+                stream.close()
+            self._attempt("peer-stream-close", close_stream)
+            self._attempt("peer-socket-close", connection.close, blocking=False)
+        self._attempt("provider-server-close", self.server.close, blocking=False)
+        self._attempt("provider-socket-unlink", lambda: self.socket_path.unlink(missing_ok=True), blocking=False)
         if self.relay:
-            self.relay.close(self.deadline)
+            self._attempt("cli-relay-close", lambda: self.relay.close(self.effective_end()))
         if self.daemon and self.daemon.poll() is None:
-            self.daemon.send_signal(signal.SIGTERM)
-            try:
-                self.daemon.wait(timeout=self.remaining(20))
-            except subprocess.TimeoutExpired:
-                pass  # Outer watcher owns verified-PID escalation and failure receipt.
+            self._attempt("daemon-term", lambda: self.daemon.send_signal(signal.SIGTERM), blocking=False)
+            self._attempt("daemon-wait", lambda: self.daemon.wait(timeout=max(0, min(20, self.effective_end()-time.monotonic()))))
         if hasattr(self, "daemon_log"):
-            self.daemon_log.close()
-        require(not failures, "browser cleanup/evidence failed", failures)
+            self._attempt("daemon-log-close", self.daemon_log.close)
 
     def collect_e07_launches(self) -> tuple[list[dict], list[dict]]:
         """Retain each valid record; a missing sibling cannot erase evidence."""
@@ -749,34 +863,45 @@ class Controller:
         return records, failures
 
     def evidence(self) -> None:
-        self.capture_thread_secrets()
+        # cancellation_hold calls this nonterminally: do not stop/join observer.
+        self.prepare_redaction()
+        self.stage_small_evidence()
+        if not self.redaction_ready:
+            raise RuntimeError("unsafe evidence withheld: full redaction context unavailable")
+        observer, state = self.observer_snapshot()
         rows = dict(variants=self.results, starts=self.starts, commands=self.commands,
-                    http=self.http, durable=self.durable, relay=self.relay.records if self.relay else [],
+                    http=self.http, durable=self.durable, relay=list(self.relay.records) if self.relay else [],
                     provider_commands=self.provider_commands, provider_attempts=self.provider_attempts,
-                    provider_observer=self.observer, observer_error=self.observer_error)
+                    provider_observer=observer, observer_error=self.observer_error, observer_state=state,
+                    failures=self.failures)
         if self.e07:
-            launches, failures = self.collect_e07_launches()
-            self.e07.update(partial_launches=launches, launch_record_failures=failures)
-            (self.root / "raw/e07.json").write_text(self.sanitize(json.dumps(self.e07, indent=2)))
+            def e07_evidence() -> None:
+                launches, failures = self.collect_e07_launches()
+                self.e07.update(partial_launches=launches, launch_record_failures=failures)
+                self._atomic_json(self.root / "raw/e07.json", self.e07)
+            self._attempt("export-e07", e07_evidence, blocking=False)
         rows.update(e07=self.e07, e07_commands=self.e07_commands, boots=self.boots)
         rows.update(thread_commands=self.thread_commands, thread_attempts=self.thread_attempts,
-                    thread_proxy=self.browser_relay.records if self.browser_relay else [])
+                    thread_proxy=list(self.browser_relay.records) if self.browser_relay else [])
         witness = self.root / "witness/identities.jsonl"
         if witness.exists():
-            # Keep genuine partial-run source witnesses even when no final case
-            # or final closure record could be completed. Do not export headers.
-            data = witness.read_bytes()
-            rows["launch_witnesses"] = [json.loads(line) for line in data.split(b"\n")[:-1]]
-            rows["witness_bytes"] = len(data)
-            rows["witness_sha256"] = sha(witness)
-            (self.root / "raw/launch-witnesses.jsonl").write_text(self.sanitize(data.decode()))
-            rows["witness_incomplete_line"] = bool(data and not data.endswith(b"\n"))
-        raw = self.sanitize(json.dumps(rows, indent=2))
-        (self.root / "raw" / "observations.json").write_text(raw)
-        (self.root / "scenario.json").write_text(self.sanitize(json.dumps(dict(variants=self.results, scenario_phases=self.phases, e07=self.e07))))
-        # Fail only after all available sanitized evidence has been serialized.
-        # Sanitation/context errors above remain fatal and are never caught here.
+            def witness_evidence() -> None:
+                # Digest and parse exactly the same frozen genuine prefix.
+                data = witness.read_bytes()
+                rows["witness_bytes"] = len(data)
+                rows["witness_sha256"] = hashlib.sha256(data).hexdigest()
+                rows["witness_incomplete_line"] = bool(data and not data.endswith(b"\n"))
+                self._atomic_text(self.root / "raw/launch-witnesses.jsonl", data.decode())
+                rows["launch_witnesses"] = [json.loads(line) for line in data.split(b"\n")[:-1]]
+            self._attempt("export-launch-witness", witness_evidence, blocking=False)
+        self._attempt("export-observations", lambda: self._atomic_json(self.root / "raw/observations.json", rows), blocking=False)
+        self._attempt("export-scenario", lambda: self._atomic_json(self.root / "scenario.json",
+            dict(variants=self.results, scenario_phases=self.phases, e07=self.e07, failures=self.failures,
+                 observer_state=state)), blocking=False)
+        self._attempt("export-browser-trace", self.stage_browser_trace, blocking=False)
+        # All available evidence attempts precede the existing final assertion.
         require(not self.e07.get("launch_record_failures"), "E07 launch record evidence incomplete")
+        require(not self.failures, "evidence/cleanup failed", self.failures)
 
 
 def cancellation_hold(controller: Controller) -> None:
@@ -846,19 +971,25 @@ def main() -> None:
                 exercise_cancellation(controller)
         finally:
             controller.phases.append(dict(name="actions", seconds=time.monotonic() - begin))
-    except BaseException:
-        controller.capture_thread_secrets()
-        (controller.root / "raw" / "failure.txt").write_text(controller.sanitize(traceback.format_exc()))
-        raise
+    except BaseException as exc:
+        # Save the actual first exception/traceback before any cleanup/export.
+        controller.record_error("controller-action", exc)
+        if controller.browser:
+            controller.browser.poison(exc)  # No dispatcher re-entry after interruption.
     finally:
+        begin = time.monotonic()
         try:
-            begin = time.monotonic()
-            try:
-                controller.close()
-            finally:
-                controller.phases.append(dict(name="cleanup-drain", seconds=time.monotonic() - begin))
+            controller.close()
+        except BaseException as exc:
+            controller.record_error("controller-close", exc)
         finally:
+            controller.phases.append(dict(name="cleanup-drain", seconds=time.monotonic() - begin))
+        try:
             controller.evidence()
+        except BaseException as exc:
+            controller.record_error("controller-evidence", exc)
+        if controller.primary_error is not None:
+            raise controller.primary_error.with_traceback(controller.primary_traceback)
 
 
 if __name__ == "__main__":

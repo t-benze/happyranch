@@ -1102,7 +1102,8 @@ on disposable GitHub Ubuntu with exact Python/browser inputs, Node24, bounded
 owned-process cleanup and complete variant/cell receipts. Retained pytest
 integration/platform/callback selections keep the existing parent fences.
 `Product E2E` admits only the daily default-branch schedule under THR-291 seq69.
-First scheduled execution remains PENDING; historical baseline is separate evidence.
+Scheduled runs38482572306 and38644465643 failed at their own sources; corrected
+behavior remains pending the existing daily lane. Historical baseline is separate evidence.
 The aggregate also requires real TERM/INT launcher diagnostics with non-success
 and complete owned cleanup; product cancellation remains uncovered.
 See `e2e/README.md` and `docs/local-ci.md`. Old units remain retired.
@@ -1248,10 +1249,15 @@ behavioral regressions can be detected only later when their coverage executes.
 
 Fresh Product E2E runs **schedule only**, `0 19 * * *` (19:00 UTC / 03:00
 Asia/Shanghai), on default-branch immutable `github.sha`. Baseline Python
-3.12/3.13/3.14 and existing TERM3.12/INT3.14 launcher diagnostics feed
-`Daily Product E2E Health`. It is never a merge check. No local E2E alias,
+3.12/3.14 and existing TERM3.12/INT3.14 launcher diagnostics feed
+`Daily Product E2E Health`: exactly56 variants on each baseline and four execution
+artifacts (`e2e-3.12`, `e2e-3.14`, `e2e-cancel-TERM`, `e2e-cancel-INT`).
+Product Python support is unchanged. It is never a merge check. No local E2E alias,
 manual/PR/push/release dispatch, auto-retry or extra schedule is supported.
-First scheduled execution is **PENDING**; prior first-slice receipts remain
+Scheduled historical runs38482572306 and38644465643 were observed and failed
+at their own immutable sources. Corrected behavior remains **PENDING** until
+the existing daily default-source lane executes the repair; historical3.13
+failures and all-six-cell evidence remain unchanged. Prior first-slice receipts remain
 historical evidence at their own source, not daily/final-head verification.
 Engineering_manager owns daily failure/missing-evidence triage through existing
 tasks/threads; no new notifications or guaranteed response SLA is implied.
@@ -1317,7 +1323,7 @@ scripts/build_web.sh
 cd web && npm run dev
 happyranch web [--no-open]
 
-scripts/local_ci.sh              # default: lint/static only; daily E2E PENDING
+scripts/local_ci.sh              # default: lint/static only; corrected daily E2E pending after historical failures
 scripts/local_ci.sh boundary-lint # source-only lint + synthetic validation
 scripts/local_ci.sh python       # retired target: refuses with exit 2
 scripts/local_ci.sh web          # Web static CI (colour scan + ESLint + typecheck)
@@ -1505,7 +1511,7 @@ are separate from lint gates and behavioral Pause acceptance. No live control,
 deployment/restart or historical closure is authorized. See the current Pause spec.
 
 
-Root Pause/Resume (THR-292) is an org-owned control, separate from TaskStatus/BlockKind. New Pause requires a NULL-parent in_progress root; Pending refuses409 without claiming it. Descendants inherit only actual ancestry. Final producer commitment arbitrates with the hold before ordinary/v2/workflow admission and binding. Committed work and genuine results drain; every retry retains the original SID/G/count/owner and budget and checks again. Unknown host/tree/ACTION evidence remains a blocker, including terminal diagnostics. Only actual ordinary-purpose running sessions (including normal v2-admitted manager sessions) captured by that hold generation retain the unreviewed job exception; founder work-starting origin actions refuse before mutation. Separate manager successor roots remain unheld. Org-only installation leaves generic Database/runtime-audit unchanged and requires a compatible reader for rollback. Read-only overview/CLI/TS contract is in docs/superpowers/specs/2026-10-10-root-task-pause-resume.md; PR2 owns web controls. Python unit source/gates are RETIRED under THR-291 seq40, never PASS; fresh product E2E remains PENDING. Required current CI and independent exact-head review/QA remain.
+Root Pause/Resume (THR-292) is an org-owned control, separate from TaskStatus/BlockKind. New Pause requires a NULL-parent in_progress root; Pending refuses409 without claiming it. Descendants inherit only actual ancestry. Final producer commitment arbitrates with the hold before ordinary/v2/workflow admission and binding. Committed work and genuine results drain; every retry retains the original SID/G/count/owner and budget and checks again. Unknown host/tree/ACTION evidence remains a blocker, including terminal diagnostics. Only actual ordinary-purpose running sessions (including normal v2-admitted manager sessions) captured by that hold generation retain the unreviewed job exception; founder work-starting origin actions refuse before mutation. Separate manager successor roots remain unheld. Org-only installation leaves generic Database/runtime-audit unchanged and requires a compatible reader for rollback. Read-only overview/CLI/TS contract is in docs/superpowers/specs/2026-10-10-root-task-pause-resume.md; PR2 owns web controls. Python unit source/gates are RETIRED under THR-291 seq40, never PASS; corrected product E2E behavior remains pending after historical failures. Required current CI and independent exact-head review/QA remain.
 
 Pause reads all current non-recovery tracker bindings inside the serialized root/DB writer and keeps the short tracker mutex through COMMIT. Durable positively-running evidence, exact current task/agent/SID and server-admitted ordinary purpose must agree. New or moved bindings are considered there; ended or replaced SIDs are excluded. Advisory pre-request snapshots never decide capture. The tracker mutex is a leaf lock: no binding lease is acquired beneath root/DB, and no await, host/provider operation or backoff runs under these locks. Duplicate Pause preserves capture; Resume followed by a new Pause replaces previous-generation capture.
 
