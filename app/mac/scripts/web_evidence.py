@@ -335,6 +335,29 @@ def prepare_esbuild_alias(session):
         _,raw=s.raw(s.paths.exported_source,base+package+'/package.json')
         need(parse(raw)['version']==(VITE_VERSION if package=='vite' else '0.21.5'),'ESBUILD_ROUTE',package)
     lock=s.lock()['packages'];member_name='package/bin/esbuild'
+    with A['root_for'](s.paths.exported_source) as root:
+        for name in ('web/package-lock.json','web/vendor/vite/UPSTREAM.json'):
+            row=A['read_subject'](root,name)
+            A['verify_git_subject'](s.candidate,s.paths,root,name,row)
+        need(is_absent(root,base+'vite/node_modules/esbuild'),'ESBUILD_IMPORT_ROUTE')
+        with A['parent_at'](root,base+'.bin/esbuild') as (parent,leaf):
+            if not is_absent(root,base+'.bin/esbuild'):
+                link=os.stat(leaf,dir_fd=parent,follow_symlinks=False)
+                need(stat.S_ISLNK(link.st_mode) and os.readlink(leaf,dir_fd=parent)=='../esbuild/bin/esbuild','ESBUILD_BIN_LINK')
+    _,parent_archive=s.raw(s.originals,'esbuild.tgz')
+    need(lock['node_modules/esbuild']['integrity']=='sha512-'+base64.b64encode(hashlib.sha512(parent_archive).digest()).decode(),'ESBUILD_PARENT_ORIGINAL')
+    with tarfile.open(fileobj=io.BytesIO(parent_archive),mode='r:gz') as archive:
+        for member_name_checked in ('lib/main.js','install.js','package.json'):
+            member=archive.getmember('package/'+member_name_checked)
+            need(member.isfile() and member.size<=CAP,'ESBUILD_PARENT_MEMBER')
+            body=archive.extractfile(member).read(CAP+1)
+            _,installed=s.raw(s.paths.exported_source,base+'esbuild/'+member_name_checked)
+            need(body==installed,'ESBUILD_PARENT_MEMBER_MISMATCH',member_name_checked)
+    _,manifest_raw=s.raw(s.paths.exported_source,'web/vendor/vite/UPSTREAM.json')
+    vite_manifest=parse(manifest_raw)
+    expected_chunk=next(row for row in vite_manifest['members'] if row['path']=='package/dist/node/chunks/dep-BK3b2jBa.js')
+    _,vite_chunk=s.raw(s.paths.exported_source,base+'vite/dist/node/chunks/dep-BK3b2jBa.js')
+    need(sha(vite_chunk)==expected_chunk['sha256'],'ESBUILD_IMPORTER_MISMATCH')
     if s.binding['venue']=='native':
         _,raw=s.raw(s.originals,'@esbuild_darwin-arm64.tgz')
         need(lock['node_modules/'+platform_name]['integrity']=='sha512-'+base64.b64encode(hashlib.sha512(raw).digest()).decode(),'ESBUILD_ORIGINAL')
@@ -803,6 +826,7 @@ def retain_web_notices(s,context,preparation,build,dist,asset_app,components):
     if s.binding['venue']=='native':A['load_record']('app',s.candidate,s.paths,s.run,asset_app,s.binding['asset_context_sha256'])
     rows=[];refused=[];retained=[]
     owners={'web/node_modules/'+r['package']:r['package'] for r in p['originals'] if 'darwin-arm64' not in r['package']}
+    owners['web/node_modules/highlight.js']='highlight.js'
     # Ordinary participating owners use the innermost installed manifest; no
     # parent climbing and no source-map-only provenance assumption.
     for module in record['payload']['modules']:
