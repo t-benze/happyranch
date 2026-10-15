@@ -104,6 +104,64 @@ ZIP/release finalization with `closure_complete=false`. Scoped non-native
 package/browser checks do not establish final emitted closure, legal
 applicability, actual native custody or Mac acceptance.
 
+The Mac wrapper's private `asset_evidence.py` adds local asset observations,
+without a new dependency, Vite change or rights policy. A complete bounded
+Git/export census includes hidden/unreferenced public files, fonts and OFLs.
+Public `index.html`/`assets` reservations and exact/case/NFC/prefix collisions
+refuse. Every ordinary dist file is measured; unknown generated/other assets
+remain `UNRESOLVED`. The actual app web tree must equal dist except every
+existing basename `*.map` removal, each recorded explicitly. No historical
+18/119-file count substitutes for a census.
+
+At the existing notices stage, all three original font/copy relations and both
+retention targets are validated before either notice is written. Three distinct
+font component rows reference two exact original OFLs retained under
+`Contents/Resources/licenses/assets/`. Both Newsreader owners share one notice
+and are withheld together on a shared conflict. Safe identical existing notices
+keep their inode/mtime; conflicts and incomplete stage files cannot be resumed.
+No synthetic text or root Apache reassignment is allowed.
+
+Seven direct PNG originals produce exactly ten iconset copies. Only the actual
+Darwin/arm64 operation runs iconutil, once, at the selected absolute executable;
+its output goes into newly reserved private `scratch/icon-output`, then an
+exclusive app byte copy. Bounded real streams, argv/cwd, pre/post subjects,
+process exit/signal/timing and quiescence are retained. Timeout/overflow
+terminates and reaps the owned process without retry; failure preserves the
+original tool exit separately from inspection errors and retains partial files.
+The tool's own file API is not O_EXCL: private single-writer custody is required.
+There is no hostile same-UID or executed-image attestation guarantee.
+
+Fixed local diagnostics are `assets-{context,source,dist,app,icon,notices}.json`
+and `iconutil.{stdout,stderr}`. Each successful stage returns its bounded token
+directly to the wrapper; the context precedes source, dist and app, with icon
+and notices referencing earlier bindings. Expectations are never recovered from
+the candidate records. Standalone readers require independently retained caller
+arguments/tokens and the original subjects. Missing native evidence refuses the
+full reader; there is no partial-success reader. The unchanged mapping reader
+still requires literal Boolean True and preserves all failed components. It
+does **not** implement the future exact-six-result/sentinel identity contract.
+
+Both producer and independent reader use descriptor-relative no-follow,
+nonblocking, regular/single-link and stable-identity reads with complete stable
+membership walks. Selected roots must have safe physical ancestry and owned
+private output parents. Limits apply together: files16MiB; notices/manifest and
+icon/notices records256KiB; owner128B; preflight16KiB; context64KiB;
+toolchains/each stream1MiB; source/dist/app records8MiB each. Trees permit4096
+entries including directories, depth16 and4MiB names. JSON is closed with
+unique keys, depth16/100,000 nodes; per-invocation reads total512MiB and local
+JSON32MiB. Process waits are60s with bounded termination/drain; tokens4KiB.
+Overflow refuses, never a truncated completeness claim. No whole-mapping cap is
+introduced. Failure bundles retain their existing allowlist/caps; new records
+and original subjects remain local, and a summary upload cannot replace them.
+
+Source delivery and portable fixtures do not establish actual PYNOTICES
+append/False/sentinel/error/token behavior, wrapper-to-licenses integration,
+full independent reader or native operation custody. Those remain native-only
+UNEXECUTED/NOT_REACHED, alongside Mac14/WKWebView/install and future all-six
+finalizer cases. Native execution is not a prerequisite for this bounded source
+review; the parent retains actual changed-source/input/custodian disposition.
+All six closures remain UNEXECUTED/UNMET, including ASSET_ATTRIBUTION.
+
 Failure diagnostics include
 `web-attribution.json`: first 100 rejected records, string fields capped at 512
 characters and serialized records capped at 2048 bytes, with explicit
@@ -164,8 +222,18 @@ bash app/mac/scripts/verify-release.sh native --app "/owned/HappyRanch.app" \
   --link-map "/owned/run/diagnostics/swift-link.map"
 bash app/mac/scripts/verify-release.sh catalog --app "/owned/HappyRanch.app" \
   --list-json "/owned/list.json" --validate-json "/owned/validate.json"
-bash app/mac/scripts/verify-release.sh licenses --app "/owned/HappyRanch.app" \
-  --mapping "/owned/license-mapping.json"
+# All values below are independently retained invocation arguments/tokens,
+# not discovered from the candidate. Each option occurs exactly once.
+bash app/mac/scripts/verify-release.sh licenses \
+  --source "$REPO" --exported-source "$OUTPUT/scratch/source" \
+  --dist "$OUTPUT/scratch/source/web/dist" --app "$OUTPUT/scratch/HappyRanch.app" \
+  --output-dir "$OUTPUT" --evidence-dir "$OUTPUT/diagnostics" \
+  --iconset "$OUTPUT/scratch/AppIcon.iconset" --mapping "$OUTPUT/diagnostics/license-mapping.json" \
+  --source-sha "$SOURCE_SHA" --source-tree "$SOURCE_TREE" --version "$VERSION" --build "$BUILD" \
+  --arch arm64 --run-id "$RUN_ID" --asset-context-sha256 "$CONTEXT" \
+  --toolchains-sha256 "$TOOLCHAINS" --iconutil-path "$ICONUTIL_PATH" --iconutil-sha256 "$ICONUTIL" \
+  --asset-source-sha256 "$SOURCE_TOKEN" --asset-dist-sha256 "$DIST_TOKEN" \
+  --asset-app-sha256 "$APP_TOKEN" --asset-icon-sha256 "$ICON_TOKEN" --asset-notices-sha256 "$NOTICES_TOKEN"
 ```
 
 Resource expectations are the accepted 29-member source baseline, with regular
