@@ -257,6 +257,7 @@ describe('IA-1: Sidebar (left rail replaces the legacy tab bar)', () => {
       screen.getByRole('link', { name: 'Home' }),
       screen.getByRole('link', { name: 'Threads' }),
       screen.getByRole('link', { name: 'Tasks' }),
+      screen.getByRole('link', { name: 'Reviews' }),
       screen.getByRole('link', { name: 'Jobs' }),
       screen.getByRole('link', { name: 'Todos' }),
       screen.getByRole('link', { name: 'Agents' }),
@@ -630,9 +631,10 @@ describe('THR-230: the sidebar owns its own vertical overflow', () => {
     const nav = within(aside).getByRole('navigation', { name: 'Primary navigation items' });
 
     // The overflow is carried by an internal scroller, never by dropping,
-    // clipping, or collapsing items: all fourteen survive.
-    expect(within(nav).getAllByRole('link')).toHaveLength(14);
+    // clipping, or collapsing items: all fifteen survive.
+    expect(within(nav).getAllByRole('link')).toHaveLength(15);
     expect(within(nav).getByRole('link', { name: 'Home' })).toBeInTheDocument();
+    expect(within(nav).getByRole('link', { name: 'Reviews' })).toBeInTheDocument();
     expect(within(nav).getByRole('link', { name: 'Health' })).toBeInTheDocument();
 
     // Settings and the account row live in the footer, OUTSIDE the scroller,
