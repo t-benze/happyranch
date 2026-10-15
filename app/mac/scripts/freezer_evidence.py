@@ -605,13 +605,14 @@ def resolve_link(root, relative, budget):
 
 def tree(root, budget):
     root = absolute(root)
-    rows, folded = [], set()
+    rows, folded, observed = [], set(), []
     with ASSET['RootHandle'](root,'/',True) as pinned:
         device = os.fstat(pinned.fd).st_dev
     def walk(path, depth):
         need(depth <= 24, 'TREE_DEPTH')
         with ASSET['RootHandle'](path, '/', True) as handle:
-            before = sorted(os.listdir(handle.fd))
+            root_before = ident(os.fstat(handle.fd))
+            before = {leaf:ident(os.stat(leaf,dir_fd=handle.fd,follow_symlinks=False)) for leaf in sorted(os.listdir(handle.fd))}
             for leaf in before:
                 relative = name((path / leaf).relative_to(root).as_posix())
                 budget.charge(1, 'members')
@@ -621,6 +622,8 @@ def tree(root, budget):
                 need(canonical not in folded, 'TREE_ALIAS')
                 folded.add(canonical)
                 s = os.stat(leaf, dir_fd=handle.fd, follow_symlinks=False)
+                need(ident(s) == before[leaf], 'TREE_MEMBER_CHANGED')
+                observed.append((path/leaf,ident(s)))
                 need(s.st_dev == device, 'CROSS_DEVICE_DESCENT')
                 need(s.st_uid == os.getuid() and (stat.S_ISLNK(s.st_mode) or not s.st_mode & 0o022), 'TREE_OWNER_MODE')
                 row = {'relative': relative, 'mode': stat.S_IMODE(s.st_mode), 'kind': None,
@@ -647,8 +650,14 @@ def tree(root, budget):
                     rows.append(row)
                 else:
                     raise FreezerError('FREEZER_TREE_SPECIAL_MEMBER')
-            need(sorted(os.listdir(handle.fd)) == before, 'TREE_MEMBERSHIP_CHANGED')
+            after = {leaf:ident(os.stat(leaf,dir_fd=handle.fd,follow_symlinks=False)) for leaf in sorted(os.listdir(handle.fd))}
+            need(after == before and ident(os.fstat(handle.fd)) == root_before, 'TREE_MEMBERSHIP_CHANGED')
     walk(root, 0)
+    # Recheck every measured edge after the complete walk, including hidden and
+    # nested subjects. The serial producer owns writes outside this read interval.
+    for path,old in observed:
+        with ASSET['RootHandle'](path.parent,'/',True) as parent:
+            need(ident(os.stat(path.name,dir_fd=parent.fd,follow_symlinks=False)) == old, 'TREE_MEMBER_CHANGED')
     return sorted(rows, key=lambda r: r['relative'])
 
 
