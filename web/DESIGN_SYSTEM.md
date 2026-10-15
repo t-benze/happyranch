@@ -35,7 +35,9 @@ The three `@font-face` rules in `tokens.css` load unmodified full upstream
 variable TTFs from `public/fonts/`: Hanken Grotesk normal 400–700 and
 Newsreader normal 400–600 / italic 400. Family names, weight ranges,
 `font-display: swap`, fallbacks and automatic optical sizing stay in the
-existing type system. No external font service is used.
+existing type system. These three faces use local URLs. The existing Baloo 2
+brand stylesheet in `web/index.html` still uses Google Fonts and is outside
+this replacement.
 
 The font payload is 1,080,240 bytes before transport compression, replacing
 229,724 bytes of WOFF2 subsets (+850,516 bytes). The full original
