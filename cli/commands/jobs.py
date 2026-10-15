@@ -12,7 +12,7 @@ from cli.client.client import DaemonNotRunning, DaemonStateInconsistent, OpcClie
 def _jobs_submit_payload_from_file(path: str) -> dict:
     """Load a jobs-submit payload from a JSON file (mirrors manage-repo / dispatch pattern).
 
-    Two mutually-exclusive auth paths (same shape as manage-agent / threads compose):
+    Auth binding (same task/session shape as manage-agent / threads compose):
 
     - Task path: ``task_id`` + ``session_id`` from an active task session.
 

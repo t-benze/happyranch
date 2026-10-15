@@ -5,7 +5,7 @@ import { describe, expect, test } from 'vitest';
 import { Route, Routes } from 'react-router-dom';
 import { JobDetailPane } from './JobDetailPane';
 import { AppRoutes } from '@/routes';
-import { renderWithProviders } from '@/test/render';
+import { renderWithProviders, savedLocaleAdapter } from '@/test/render';
 import { server } from '@/test/server';
 import type { JobRecord, TaskRecord } from '@/lib/api/types';
 
@@ -58,8 +58,9 @@ function makeJob(overrides: Partial<JobRecord>): JobRecord {
   return { ...JOB, ...overrides };
 }
 
-// A spread across all five JobStatus values; exactly one pending.
+// All five statuses plus automatic deferred pending; only one legacy disposition.
 const LIST_JOBS: JobRecord[] = [
+  makeJob({ id: 'JOB-DEFERRED', status: 'pending', review_required: false, title: 'Paused automatic job' }),
   makeJob({
     id: 'JOB-0005',
     status: 'pending',
@@ -129,7 +130,7 @@ describe('JobsPage — approval-queue list', () => {
       ).toBeInTheDocument(),
     );
 
-    // Amber callout total = pending count (exactly one pending in the fixture).
+    // Legacy disposition count excludes the other, automatic deferred pending row.
     expect(screen.getByText(/1 legacy pending job needs disposition/)).toBeInTheDocument();
 
     // Outcome pills render for running / terminal statuses.
@@ -143,16 +144,16 @@ describe('JobsPage — approval-queue list', () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     stubJobsList([
       makeJob({ id: 'JOB-OK', status: 'completed', exit_code: 0, script_text: 'ok-cmd' }),
-      makeJob({ id: 'JOB-BAD', status: 'failed', exit_code: 1, script_text: 'bad-cmd' }),
+      makeJob({ id: 'JOB-BAD', status: 'completed', exit_code: 7, script_text: 'bad-cmd' }),
     ]);
     mountAt(`/orgs/${SLUG}/jobs`);
 
     // exit 0 → positive tone → green tinted FILL (not a bare outline).
     const ok = await screen.findByText('exit 0');
     expect(ok).toHaveClass('bg-tier-green-tint');
-    // non-zero exit → danger tone → red tinted fill, and the row shows the
+    // Natural completed/nonzero → danger tone → red tinted fill, and the row shows the
     // real exit code (THR-099 Batch 2: outcome chips converge on semanticTone).
-    const bad = await screen.findByText('exit 1');
+    const bad = await screen.findByText('exit 7');
     expect(bad).toHaveClass('bg-tier-red-tint');
   });
 
@@ -167,7 +168,7 @@ describe('JobsPage — approval-queue list', () => {
     // pending group carries the design's "Pending" label.
     const pending = await screen.findByRole('region', { name: 'Pending' });
     // The header carries the group count (exactly one pending in the fixture).
-    expect(within(pending).getByText('1')).toBeInTheDocument();
+    expect(within(pending).getByText('2')).toBeInTheDocument();
     expect(screen.getByRole('region', { name: 'Running' })).toBeInTheDocument();
     expect(screen.getByRole('region', { name: 'Completed' })).toBeInTheDocument();
     expect(screen.getByRole('region', { name: 'Failed' })).toBeInTheDocument();
@@ -664,12 +665,12 @@ describe('JobDetailPage — output', () => {
 
 
 describe('JobDetailPane — no manual launch', () => {
-  test.each([true, false])('pending review_required=%s retains reject without run', async (reviewRequired) => {
+  test.each([['en', true], ['en', false], ['zh-CN', true], ['zh-CN', false]] as const)('%s pending review_required=%s retains reject without run', async (locale, reviewRequired) => {
     sessionStorage.setItem('happyranch.token', 'tok');
     stubJobDetail({ ...JOB, review_required: reviewRequired });
     renderWithProviders(<Routes><Route path="/orgs/:slug/jobs/:job_id" element={<JobDetailPane jobId={JOB.id} />} /></Routes>,
-      { route: `/orgs/${SLUG}/jobs/${JOB.id}` });
-    expect(await screen.findByRole('button', { name: 'Reject' })).toBeInTheDocument();
+      { route: `/orgs/${SLUG}/jobs/${JOB.id}`, i18n: { adapter: savedLocaleAdapter(locale) } });
+    expect(await screen.findByRole('button', { name: locale === 'en' ? 'Reject' : '拒绝' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /Run|Approve|run/ })).not.toBeInTheDocument();
     expect(screen.getByText('docker image prune -af')).toBeInTheDocument();
   });

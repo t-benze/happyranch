@@ -1,5 +1,22 @@
 # Web And CLI
 
+## Jobs — automatic admission (THR309seq1)
+
+Both detail surfaces omit callable Run/Approve actions, dialogs and providers;
+pending retains explicit one-ID reasoned Reject, running retains Stop/output,
+and historical review fields remain readable. Lists count only legacy
+pending+true disposition backlog; the dashboard retains pending_review_jobs's
+actual query/count, inspection links and truthful attention/empty state.
+The old /run route is nonexecuting410 after auth/model/unknown/hold/nonpending
+precedence; jobs run and scripts run exit2 locally. New submit omitted/false
+uses automatic admission, optional rationale; parsed true refuses422 before
+allocation (new CLI exit2), never flip/retry. Obtain required authorization in
+a thread BEFORE submission. Old CLI may need upgrading or rationale for false;
+new clients cannot change old-daemon policy. Admission is not script success:
+retain status/reason/output and natural completed/nonzero. Served OpenAPI uses
+the supported non-test scripts/generate_openapi_snapshot.py; browser
+classification excludes the compatibility tombstone. [Current jobs contract](../superpowers/specs/2026-05-26-jobs-design.md).
+
 ## CLI human names and fresh prompt context
 
 The naming CLI provides `identities list/resolve/rename` using the

@@ -1,4 +1,4 @@
-"""Script request endpoints (spec §5)."""
+"""Automatic job admission, history and nonexecuting legacy disposition."""
 from __future__ import annotations
 
 import asyncio
@@ -841,11 +841,11 @@ async def _run_job_core(
     trigger_actor: str | None = None,
     submit_session_id: str | None = None,
 ) -> dict:
-    """Shared core for HTTP and in-process run paths.
+    """Automatic admission core used by submit and authenticated Pause rediscovery.
 
     ``trigger`` picks the audit action and the ``reviewed_by`` value:
 
-    - ``"founder"`` (default) — the founder /run path. Logs job_run_started
+    - ``"founder"`` (default) — legacy internal initiator (no HTTP caller). Logs job_run_started
       and stamps ``reviewed_by="founder"`` on the row.
     - ``"agent"`` — the auto-run-at-submit path. Logs job_auto_started with
       the agent's name, stamps ``reviewed_by=<agent>`` so audit traces stay
@@ -937,6 +937,7 @@ async def _run_job_core(
                         owned_entries = [e for e in entries if e["owner"] == "job"
                                          and e["owner_identity"].get("job_id") == job_id]
                         if (trigger != "agent" or len(owned_entries) != 1
+                                or preflight_error.detail.get("code") not in {"cwd_missing", "interpreter_unavailable"}
                                 or job_entry["started_at"] is not None
                                 or job_entry["captured_generation"] is not None):
                             raise preflight_error
@@ -1167,7 +1168,7 @@ async def _run_job_core(
     }
 
 
-@router.post("/jobs/{job_id}/run", deprecated=True, responses={
+@router.post("/jobs/{job_id}/run", status_code=410, deprecated=True, responses={
     404: {"description": "Unknown job"}, 409: {"description": "Held root or nonpending job"},
     410: {"description": "job_manual_run_removed: manual execution is retired; no job was run"},
 })

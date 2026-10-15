@@ -1,4 +1,5 @@
 import { IdentityName } from '@/shared/identities/IdentityName';
+import { useTranslation } from '@/hooks/i18n';
 import { useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import {
@@ -44,6 +45,7 @@ interface JobDetailPaneProps {
 }
 
 export function JobDetailPane({ jobId }: JobDetailPaneProps): JSX.Element {
+  const { t } = useTranslation();
   const navigate = useNavigate();
   const routes = useJobsRoutes();
   const query = useJob(jobId);
@@ -98,13 +100,13 @@ export function JobDetailPane({ jobId }: JobDetailPaneProps): JSX.Element {
                 {job.persistent && (
                   <>
                     <span>·</span>
-                    <span className="tracking-wider uppercase">persistent</span>
+                    <span className="tracking-wider uppercase">{t('jobs.rail.persistent')}</span>
                   </>
                 )}
                 {job.review_required && (
                   <>
                     <span>·</span>
-                    <span className="tracking-wider uppercase">legacy review flag</span>
+                    <span className="tracking-wider uppercase">{t('jobs.rail.reviewRequired')}</span>
                   </>
                 )}
                 {job.created_at && (
@@ -151,6 +153,10 @@ export function JobDetailPane({ jobId }: JobDetailPaneProps): JSX.Element {
                   </pre>
                 </div>
 
+                {job.status === 'pending' && job.review_required && (
+                  <p className="text-text-muted text-sm">{t('jobs.gated.title')}</p>
+                )}
+
                 {/* 4. Action bar — pending or running */}
                 {job.status === 'pending' && (
                   <div className="flex gap-3">
@@ -158,7 +164,7 @@ export function JobDetailPane({ jobId }: JobDetailPaneProps): JSX.Element {
                       variant="secondary"
                       onClick={() => setOpenDialog('reject')}
                     >
-                      Reject
+                      {t('jobs.action.reject')}
                     </Button>
                   </div>
                 )}
@@ -171,7 +177,7 @@ export function JobDetailPane({ jobId }: JobDetailPaneProps): JSX.Element {
                         onClick={onStop}
                         disabled={stop.isPending}
                       >
-                        {stop.isPending ? 'Stopping…' : 'Stop'}
+                        {stop.isPending ? t('jobs.action.stopping') : t('jobs.action.stop')}
                       </Button>
                     </div>
                     {stopError && (

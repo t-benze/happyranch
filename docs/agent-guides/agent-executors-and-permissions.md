@@ -984,10 +984,12 @@ supported lasting-grant channel, and it changes through the team-manager-gated
 `manage-agent` update path (see `runtime/skills/bundled/manage-agent/SKILL.md`):
 a worker cannot re-grant itself, the target must belong to the manager's team,
 `expected_revision` must be a fresh 64-hex revision, and a manager changing its
-own rules (or another manager's) needs a founder escalation. A one-off blocked
-operation instead uses one reviewed bounded **job**
-(`runtime/skills/bundled/jobs/SKILL.md`), which authorizes only that command and
-never expands ongoing permissions.
+own rules (or another manager's) needs a founder escalation. For a one-off blocked operation, obtain exact authorization in an existing
+thread BEFORE submitting an automatic **job** from a genuine ordinary task
+session (`runtime/skills/bundled/jobs/SKILL.md`). Omit/set false for review_required;
+true refuses422 before allocation. Admission never grants authorization over
+contents or expands ongoing permissions. Missing credentials and product policy
+refusals retain their existing resolution; no enforcement change follows.
 
 An `allow_rules` update does **not** produce the same live effect on every
 executor:
