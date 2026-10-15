@@ -965,9 +965,24 @@ def completion_prefix(s,context,preparation,leaf):
         need(is_absent(root,'web-failure.json'),'FAILED_BUILD')
 
 
+@contextlib.contextmanager
+def completion_context(manager):
+    """Preserve primary I/O errors across held-directory cleanup as well."""
+    resource=manager.__enter__()
+    try:
+        yield resource
+    except BaseException as primary:
+        try:manager.__exit__(type(primary),primary,primary.__traceback__)
+        except BaseException as secondary:
+            primary.add_note('secondary completion directory/close: '+str(secondary)[:4096])
+        raise
+    else:
+        manager.__exit__(None,None,None)
+
+
 def completion_write(root,leaf,raw):
     # Preserve an original write/fsync failure if close fails as well.
-    with A['parent_at'](root,leaf) as (parent,name):
+    with completion_context(A['parent_at'](root,leaf)) as (parent,name):
         fd=os.open(name,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW|os.O_CLOEXEC,0o600,dir_fd=parent)
         primary=None
         try:
@@ -991,7 +1006,7 @@ def complete_build(s,context,preparation,token,leaf=COMPLETION_LEAF):
     completion_prefix(s,context,preparation,leaf)
     checked_build(s,context,preparation,token['record_sha256'])
     raw=canonical(body,4095)+b'\n';need(len(raw)==555,'COMPLETION_TOKEN_INVALID')
-    with A['root_for'](s.paths.evidence_dir) as root:
+    with completion_context(A['root_for'](s.paths.evidence_dir)) as root:
         completion_write(root,leaf,raw)
     # main emits these SAME canonical bytes only after the guarded readback.
     return body
@@ -1177,4 +1192,6 @@ def main():
 if __name__=='__main__':
     try:main()
     except (OSError,ValueError,KeyError,tarfile.TarError) as exc:
-        print(str(exc),file=sys.stderr);raise SystemExit(1)
+        print(str(exc),file=sys.stderr)
+        for note in getattr(exc,'__notes__',())[:8]:print(note[:4096],file=sys.stderr)
+        raise SystemExit(1)
