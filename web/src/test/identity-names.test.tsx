@@ -128,6 +128,88 @@ async function enterName(editor: HTMLElement, value: string) {
 }
 
 describe('naming v1 shipping UI — mocked HTTP', () => {
+  test.each(['ready', 'unavailable', 'read-error'] as const)('new-thread body hints exclude Founder with %s identity display; To keeps its human option', async (display) => {
+    const f = fixture();
+    if (display === 'unavailable') {
+      for (const identity of f.records.alpha) {
+        identity.addressable_name = null;
+        identity.naming_status = 'unavailable';
+      }
+    }
+    if (display === 'read-error') {
+      server.use(http.get('/api/v1/orgs/alpha/identities', () =>
+        HttpResponse.json({ detail: { code: 'naming_unavailable' } }, { status: 503 })));
+    }
+    mount('/orgs/alpha/threads');
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole('button', { name: /New thread/i }));
+    const dialog = screen.getByRole('dialog');
+    const body = within(dialog).getByLabelText(t('threads.newThread.bodyLabel')) as HTMLTextAreaElement;
+    const recipient = within(dialog).getByLabelText(t('threads.newThread.recipientsLabel'));
+    const optionName = display === 'ready' ? 'Alpha · agent_a core' : 'agent_a core';
+    const inserted = display === 'ready' ? '@Alpha ' : '@agent_a ';
+
+    await user.type(body, '@');
+    await screen.findByRole('option', { name: optionName });
+    expect(screen.getAllByRole('option')).toHaveLength(2);
+    expect(screen.queryByRole('option', { name: /Human/ })).not.toBeInTheDocument();
+    for (const prefix of ['Bo', 'Boss', 'fo', 'founder']) {
+      await user.clear(body); await user.type(body, `@${prefix}`);
+      expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
+    }
+    // Current labels and canonical IDs select the same eligible agent while
+    // preserving the suffix, focus and caret at the actual mounted body seam.
+    for (const prefix of display === 'ready' ? ['Al', 'agent_a'] : ['agent_a']) {
+      await user.clear(body); await user.type(body, `@${prefix} tail`);
+      act(() => { body.setSelectionRange(prefix.length + 1, prefix.length + 1); });
+      fireEvent.click(body);
+      await user.click(await screen.findByRole('option', { name: optionName }));
+      await waitFor(() => expect(body).toHaveValue(`${inserted} tail`));
+      expect(body).toHaveFocus();
+      expect(body.selectionStart).toBe(inserted.length);
+      expect(body.selectionEnd).toBe(inserted.length);
+    }
+    await user.clear(body);
+    await user.type(recipient, display === 'ready' ? 'Bo' : 'fo');
+    await user.click(await screen.findByRole('option', { name: display === 'ready' ? 'Boss · founder Human' : 'founder Human' }));
+    expect(recipient).toHaveValue('founder, ');
+    expect(f.resolves).toEqual([]);
+    expect(f.effects).toEqual([]);
+  });
+
+  test.each(['Boss', 'founder', 'unavailable-founder'] as const)('new-thread manual genuine %s retains body preflight and human recipient transport', async (addressCase) => {
+    const f = fixture();
+    const address = addressCase === 'unavailable-founder' ? 'founder' : addressCase;
+    const failedReads: ResolveBody[] = [];
+    if (addressCase === 'unavailable-founder') {
+      for (const identity of f.records.alpha) {
+        identity.addressable_name = null;
+        identity.naming_status = 'unavailable';
+      }
+      server.use(http.post('/api/v1/orgs/alpha/identities/resolve', async ({ request }) => {
+        failedReads.push(await request.json() as ResolveBody);
+        return HttpResponse.json({ detail: { code: 'naming_unavailable' } }, { status: 503 });
+      }));
+    }
+    mount('/orgs/alpha/threads');
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole('button', { name: /New thread/i }));
+    const dialog = screen.getByRole('dialog');
+    const literal = `Please ask @${address}`;
+    await user.type(within(dialog).getByLabelText(t('threads.newThread.subjectLabel')), 'Manual human');
+    await user.type(within(dialog).getByLabelText(t('threads.newThread.recipientsLabel')), 'founder');
+    await user.type(within(dialog).getByLabelText(t('threads.newThread.bodyLabel')), literal);
+    await user.click(within(dialog).getByLabelText(t('threads.newThread.subjectLabel')));
+    expect(f.effects).toEqual([]);
+    await user.click(within(dialog).getByRole('button', { name: t('threads.newThread.send') }));
+    await waitFor(() => expect(f.effects).toHaveLength(1));
+    expect(f.effects[0]).toMatchObject({ kind: 'compose', slug: 'alpha', body: { recipients: ['@founder'], body_markdown: literal } });
+    const reads = addressCase === 'unavailable-founder' ? failedReads : f.resolves.map(r => r.body);
+    expect(reads).toContainEqual({ context: 'lookup', addresses: [address] });
+    expect(reads).toContainEqual({ context: 'thread_recipient', addresses: ['founder'] });
+    expect(f.effects.some(e => e.kind === 'upload')).toBe(false);
+  });
+
   test.each(['founder', 'Boss'])('thread-detail hints exclude human %s while human recipients remain available', async (founderName) => {
     const f = fixture();
     f.records.alpha.find((i) => i.kind === 'founder')!.addressable_name = founderName;
