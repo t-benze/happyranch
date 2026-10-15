@@ -438,6 +438,7 @@ def begin_web(s,preparation):
 
 
 def load_context(s,context,preparation):
+    s.subjects=[];s.subject_index={}
     s.verify_esbuild_preparation(preparation)
     # Registry is inherited once, with identical prefix IDs.
     s.subjects=[];s.subject_index={}
@@ -646,8 +647,9 @@ def validate_import_urls(css):
         i+=1
 
 
-def validate_build(s,payload,context,preparation):
+def validate_build(s,payload,context,preparation,*,stored_required=False):
     stored={k:payload[k] for k in ('subjects','source_tool_associations') if k in payload}
+    need(not stored_required or set(stored)=={'subjects','source_tool_associations'},'BUILD_REGISTRY_MISSING')
     payload={k:v for k,v in payload.items() if k not in stored}
     p=load_context(s,context,preparation)
     keys(payload,{'complete','profile','observations','css_operations','modules','final_bundle','counts'})
@@ -803,7 +805,7 @@ def publish_build(s,context,preparation,payload):
 
 
 def seal_dist(s,context,preparation,build,asset_dist=None):
-    record=s.load('build',build);validate_build(s,record['payload'],context,preparation)
+    record=s.load('build',build);validate_build(s,record['payload'],context,preparation,stored_required=True)
     generated=record['payload']['final_bundle']
     with A['root_for'](s.paths.exported_source/'web/public') as root:public=A['census'](root)
     with A['root_for'](s.paths.dist) as root:dist=A['census'](root)
@@ -821,7 +823,7 @@ def seal_dist(s,context,preparation,build,asset_dist=None):
 
 
 def retain_web_notices(s,context,preparation,build,dist,asset_app,components):
-    p=load_context(s,context,preparation);record=s.load('build',build);validate_build(s,record['payload'],context,preparation)
+    p=load_context(s,context,preparation);record=s.load('build',build);validate_build(s,record['payload'],context,preparation,stored_required=True)
     d=s.load('dist',dist);need(d['upstream']['build']==build,'DIST_BINDING')
     if s.binding['venue']=='native':A['load_record']('app',s.candidate,s.paths,s.run,asset_app,s.binding['asset_context_sha256'])
     rows=[];refused=[];retained=[]
@@ -885,7 +887,7 @@ def retain_web_notices(s,context,preparation,build,dist,asset_app,components):
 
 
 def verify_web(s,context,preparation,build,dist,notices=None,asset_app=None,mapping=None):
-    record=s.load('build',build);validate_build(s,record['payload'],context,preparation)
+    record=s.load('build',build);validate_build(s,record['payload'],context,preparation,stored_required=True)
     d=s.load('dist',dist)
     need(d['upstream']['context']==context and d['upstream']['preparation']==preparation and d['upstream']['build']==build,'DIST_BINDING')
     with A['root_for'](s.paths.dist) as root:need(A['census'](root)==d['payload']['census'],'DIST_CENSUS_MISMATCH')
