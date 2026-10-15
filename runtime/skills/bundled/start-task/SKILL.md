@@ -16,6 +16,15 @@ transport remains `@founder`. Metadata failure gives ID-only context.
 
 # start-task
 
+
+THR307's independent daemon disk sweeper defaults to dry_run and has its own
+terminal-task/root, fresh jobs/process, recursive-age and containment contract.
+It never grants an agent cleanup authority, replaces this skill's legacy gates,
+or disables the seven nightly agent sessions. Outputs and sibling task-scratch
+manifests/locks stay durable and excluded. Put regenerable fixture/cache trees
+in runtime task-tmp; retain only concise evidence in output. Do not run historical
+cleanup, activate on-mode, or use a manual fallback on this note's authority.
+
 ## THR-247 recovery-turn exception
 
 When the supplied runtime binding is a completion-recovery turn, use that

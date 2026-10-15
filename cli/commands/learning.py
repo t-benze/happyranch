@@ -375,7 +375,7 @@ def cmd_memory_report(args: argparse.Namespace) -> None:
     """Observe complete bounded task/lifecycle evidence at one aware UTC cutoff."""
     from datetime import datetime, timezone
     from runtime.infrastructure.memory_telemetry_report import ACTIONS, ReportAcquisitionUnavailable, reduce_collection_report
-    from runtime.infrastructure.memory_collection import CONTROL_ACTIONS, MAX_CENSUS_READ_ROWS, _collection_pages, acquire_http_collection_report
+    from runtime.infrastructure.memory_collection import CONTROL_ACTIONS, MAX_CENSUS_READ_ROWS, _collection_pages, acquire_http_collection_report, semantic_task_projection
 
     cutoff = datetime.now(timezone.utc)
     try:
@@ -395,7 +395,8 @@ def cmd_memory_report(args: argparse.Namespace) -> None:
             tasks.append(_collection_pages(client, org, tasks=True))
             roles.append(_fetch_agent_roles(client, org))
         if (_report_projection(sweeps[0], cutoff) != _report_projection(sweeps[1], cutoff)
-                or tasks[0] != tasks[1] or roles[0] != roles[1]):
+                or [semantic_task_projection(task) for task in tasks[0]] != [semantic_task_projection(task) for task in tasks[1]]
+                or roles[0] != roles[1]):
             raise ReportAcquisitionUnavailable()
         tables = {"tasks": tasks[1], "task_results": [], "jobs": [],
                   "audit_log": sorted((row for rows in sweeps[1].values() for row in rows), key=lambda row: row["id"])}

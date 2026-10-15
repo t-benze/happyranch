@@ -416,7 +416,7 @@ describe('ThreadsPage detail i18n (zh-CN)', () => {
 });
 
 describe('ThreadsPage composer across a locale switch', () => {
-  test('draft, attachment chip and focus survive en -> zh-CN -> en with zero requests; one send posts once', async () => {
+  test('draft, selection, attachment chip and controls survive resize and en -> zh-CN -> en with zero requests; one send posts once', async () => {
     stubList([]);
     stubDetail(mkThread('THR-1', 'Composer subject'), [mkMessage(1, 'founder', 'hi')]);
     const sends: unknown[] = [];
@@ -447,11 +447,24 @@ describe('ThreadsPage composer across a locale switch', () => {
     textarea.focus();
     expect(document.activeElement).toBe(textarea);
 
+    textarea.setSelectionRange(5, 12);
+    const properties = screen.getByRole('complementary', { name: 'Thread properties' });
     const requests = await countRequests(async () => {
+      await act(async () => {
+        vi.stubGlobal('innerWidth', 390);
+        fireEvent(window, new Event('resize'));
+      });
       await switchLocale('zh-CN');
       const zhTextarea = screen.getByRole('textbox', { name: '撰写跟进消息' });
       expect(zhTextarea).toBe(textarea);
       expect(zhTextarea).toHaveValue(draft);
+      expect([textarea.selectionStart, textarea.selectionEnd]).toEqual([5, 12]);
+      expect(screen.getByRole('complementary', { name: '会话属性' })).toBe(properties);
+      expect(within(properties).getByRole('button', { name: /邀请参与者/ })).toBeInTheDocument();
+      await act(async () => {
+        vi.stubGlobal('innerWidth', 1440);
+        fireEvent(window, new Event('resize'));
+      });
       expect(document.activeElement).toBe(textarea);
       const zhChip = screen.getByRole('button', { name: '移除附件' }).closest('span');
       expect(zhChip).toBe(chip);
@@ -459,6 +472,13 @@ describe('ThreadsPage composer across a locale switch', () => {
 
       await switchLocale('en');
       expect(screen.getByRole('textbox', { name: 'Compose follow-up' })).toBe(textarea);
+      expect([textarea.selectionStart, textarea.selectionEnd]).toEqual([5, 12]);
+      expect(screen.getByRole('complementary', { name: 'Thread properties' })).toBe(properties);
+      expect(within(properties).getByRole('button', { name: /Invite participant/ })).toBeInTheDocument();
+      await act(async () => {
+        vi.stubGlobal('innerWidth', 390);
+        fireEvent(window, new Event('resize'));
+      });
       expect(textarea).toHaveValue(draft);
       expect(document.activeElement).toBe(textarea);
       expect(screen.getByRole('button', { name: 'Remove attachment' }).closest('span')).toBe(chip);

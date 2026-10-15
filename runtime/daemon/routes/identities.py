@@ -6,7 +6,7 @@ trust surface, which cannot cryptographically identify a human holding it.
 from __future__ import annotations
 
 import re
-from typing import Literal
+from typing import Literal, get_args
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr, ValidationError
@@ -46,8 +46,49 @@ class IdentityView(BaseModel):
     naming_status: Literal['ready', 'unavailable']
 
 
+# Captured naming producer categories only; never expose arbitrary exception text.
+NamingDiagnostic = Literal[
+    'identity_name_unavailable',
+    'naming_absent_chosen_missing',
+    'naming_absent_default_corrupt',
+    'naming_caller_transaction',
+    'naming_canonical_unavailable',
+    'naming_capture_changed',
+    'naming_capture_directory',
+    'naming_capture_symlink',
+    'naming_claim_corrupt',
+    'naming_current_claim_missing',
+    'naming_database_unavailable',
+    'naming_definition_bound',
+    'naming_duplicate_or_founder_id',
+    'naming_file_bound_or_type',
+    'naming_file_total_bound',
+    'naming_foreign_key_corrupt',
+    'naming_founder_missing',
+    'naming_live_id_missing',
+    'naming_lookup_unavailable',
+    'naming_not_initialized',
+    'naming_not_installed',
+    'naming_owner_corrupt',
+    'naming_preflight_unavailable',
+    'naming_projection_mismatch',
+    'naming_release_reference_unavailable',
+    'naming_row_bound',
+    'naming_scan_deadline',
+    'naming_schema_layout_mismatch',
+    'naming_schema_marker_mismatch',
+    'naming_schema_object_bound',
+    'naming_team_malformed',
+    'naming_team_membership_mismatch',
+    'naming_team_memory_disk_mismatch',
+    'naming_whole_database_mismatch',
+]
+_NAMING_DIAGNOSTICS = frozenset(get_args(NamingDiagnostic))
+
+
 class IdentityList(BaseModel):
     identities: list[IdentityView]
+    naming_diagnostic: NamingDiagnostic | None
 
 
 class RenameBody(BaseModel):
@@ -99,8 +140,16 @@ def _definition_revision(org, subject: Subject) -> str | None:
 
 @router.get('/identities', response_model=IdentityList)
 def list_identities(org: OrgDep) -> IdentityList:
-    return IdentityList(identities=[_view(subject, revision)
-                                   for subject, revision in current_identity_records(org)])
+    identities = [_view(subject, revision)
+                  for subject, revision in current_identity_records(org)]
+    diagnostic = None
+    if any(identity.naming_status == 'unavailable' for identity in identities):
+        # A fresh metadata read can fail while the cached diagnostic is null.
+        # Rows remain authoritative about availability; never repair on GET.
+        captured = getattr(org, 'naming_diagnostic', None)
+        diagnostic = (captured if isinstance(captured, str) and captured in _NAMING_DIAGNOSTICS
+                      else 'naming_database_unavailable')
+    return IdentityList(identities=identities, naming_diagnostic=diagnostic)
 
 
 @router.post('/identities/resolve', response_model=ResolveResponse)

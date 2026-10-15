@@ -383,6 +383,12 @@ See the [current naming contract](../superpowers/specs/2026-10-09-identity-names
 
 ## Naming v1 core, API and routing source
 
+Naming install alone uses N-SAC-1 transaction-time structural admission over the
+selected org DB, actual task/audit dependencies, closed naming interactions and
+unchanged complete workflow/Pause/move validators. Global workflow/legacy
+references retain their strict contract; naming readiness grants no authority.
+Reads and ordinary non-install refreshes never invoke admission or install names.
+
 Org identity names use the same outer coroutine gate as supported roster and
 consumer writes, with profile-before-publication ordering preserved. The thread
 RLock is distinct and cannot serialize yielding coroutine writers. Naming helpers
@@ -595,6 +601,40 @@ replacement binding cannot receive a cached done disposition.
 `README.md` is for end users. `CLAUDE.md` is for repo-wide agent instructions. Implementation and behavior tests own runtime rules. These guides explain them; `docs/superpowers/specs/` retains design history.
 
 When starting a feature, read the relevant design doc first and follow existing patterns in `runtime/orchestrator/`.
+
+
+## Independent nightly disk sweep (THR307)
+
+The new `disk_sweep: {mode: "dry_run"}` org block defaults to dry run; only quoted
+`"off"`, `"dry_run"`, `"on"` are accepted. This is independent of `workspace_cleanup`
+and its unchanged legacy scheduler/reclamation flag. Machine-local03:00 (not org
+timezone), next future occurrence only, sequential org order and one1800s monotonic
+batch budget. No cursor/rotation or candidate count cap. Unknown eligibility and
+unreached scope retain; the owned worker process group is stopped on deadline or
+shutdown. `output/` and durable scratch manifest/lock siblings stay excluded.
+
+Terminal actual task AND structural root, fresh complete jobs/process evidence,
+recursive mtime+ctime age of at least one hour and no-follow/same-filesystem
+containment apply to both phases. Git additionally requires owned registration,
+clean/nonignored-untracked status and HEAD reachability through retained local
+branches/remotes; branches remain, ignored contents are disposable. Git removal
+is nonforce, with at most one fully refreshed contained repair/retry. Dry run
+never chmods/removes/prunes. Uncertain Git-prune scope remains untouched.
+
+Manual dry run: `python -m runtime.daemon.disk_sweeper --dry-run --runtime-root
+/absolute/runtime` (one command). JSON is in `<daemon_home>/disk-sweep/`; existing
+org audit action is `disk_sweep_summary`. Allocation is inode-deduped and successful
+removal-attributed; retained/partial/unreached bytes and physical freed space stay
+unknown, whole-disk percent is context only. Below20% is flagged in audit/JSON;
+no new notification interface. Linux same-effective-UID all-thread process
+observations are snapshots, not host-wide absence or a writer fence. Missing
+mount/process/ownership evidence refuses.
+
+See the [full current contract](../superpowers/specs/2026-10-15-nightly-disk-sweeper.md)
+for evidence semantics, limitations, finite disposable verification and staged
+operational acceptance. Source publication does not activate deletion. Existing
+seven agent sessions remain until seven actual approved on-night observations
+and a separately approved cutover; no automatic manual-script fallback.
 
 ## Workspace Cleanup Configuration
 

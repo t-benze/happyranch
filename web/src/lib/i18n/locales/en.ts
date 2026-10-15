@@ -21,7 +21,7 @@ export const en = {
   "identity.grammar": "Use 1–64 ASCII letters, digits, _ or -. Start with a letter or digit. Input is used exactly as typed.",
   "identity.loading": "Loading identity…",
   "identity.loadError": "Identity refresh failed. Permanent IDs remain available.",
-  "identity.unavailable": "Naming is unavailable. Use a known permanent ID; retry the identity read before editing.",
+  "identity.unavailable": "Naming service is unavailable. Current-name addressing cannot be checked. Retry, or use a known permanent ID for the intended recipient.",
   "identity.absent": "This identity is absent; rename is unavailable.",
   "identity.saved": "Saved. Current: {current} (revision {revision}).",
   "identity.stale": "The name changed. Current: {current} (revision {revision}). Your draft is preserved. Review it and explicitly resubmit.",
@@ -36,6 +36,7 @@ export const en = {
   "identity.refresh": "Refresh identity",
   "identity.currentLabel": "Current name · permanent ID; historical attribution remains ID-bound.",
   "identity.former": "“{address}” is a former name. Use “{current}” or the permanent ID. Nothing was submitted by this preview.",
+  "identity.invalidBodyMention": "@{address} is not an eligible participant. Select the intended recipient in To, then use their current name or permanent ID. Suggestions: {suggestions}",
   "identity.invalidAddress": "“{address}” is not an eligible address for this action.",
   "identity.human": "Human",
 

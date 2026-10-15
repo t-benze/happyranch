@@ -272,34 +272,22 @@ def _desired(owner_rows, claim_rows, namespace):
 
 
 def reconcile_namespace(org, namespace, *, install=False):
-    # Full reference admission is install-only; existing ID lifecycle paths do
-    # not gain a whole-schema veto or an implicit workflow migration.
-    references = None
+    # Selected-root association and all filesystem resolution precede locking.
+    expected_db_path = None
     if install:
-        from runtime.infrastructure.workflow_schema import validate_workflow_schema
-        from runtime.infrastructure.task_pause_controls import validate_pause_schema
-        from runtime.infrastructure.team_move_store import validate_team_move_schema
-        from runtime.orchestrator.authority import _release_schema_digest, _RELEASE_REFERENCE_HISTORIES
-        with org.db.coherent_read_view() as conn:
-            layout = validate_workflow_schema(conn, expected_org_slug=org.slug)
-            version = validate_names(conn, org_slug=org.slug)
-            pause_layout = validate_pause_schema(conn, org_slug=org.slug, allow_absent=True)
-            team_move_layout = validate_team_move_schema(conn, org_slug=org.slug)
-        # Temporary complete reference construction may do filesystem work.
-        # It must finish before acquisition of the short org SQL transaction.
-        references = tuple(_release_schema_digest(layout, history, version, pause_layout=pause_layout,
-                                                 team_move_layout=team_move_layout)
-                           for history in _RELEASE_REFERENCE_HISTORIES)
-        if 'unavailable' in references:
-            raise NamingError('naming_release_reference_unavailable')
+        from runtime.orchestrator._paths import OrgPaths
+        from .admission import validate_naming_install_admission
+        try:
+            expected = OrgPaths(root=Path(org.root)).db_path.resolve()
+            if Path(org.db.db_path).resolve() != expected:
+                raise NamingError('naming_database_unavailable')
+            expected_db_path = str(expected)
+        except (OSError, ValueError, TypeError) as exc:
+            raise NamingError('naming_database_unavailable') from exc
     with transaction(org.db) as conn:
-        version = validate_names(conn, org_slug=org.slug)
-        if install:
-            validate_workflow_schema(conn, expected_org_slug=org.slug)
-            raw = '\n'.join(str(r[0]) for r in conn.execute(
-                'SELECT sql FROM sqlite_master WHERE sql IS NOT NULL ORDER BY name'))
-            if hashlib.sha256(raw.encode()).hexdigest() not in references:
-                raise NamingError('naming_whole_database_mismatch')
+        version = (validate_naming_install_admission(
+            conn, org_slug=org.slug, expected_db_path=expected_db_path,
+        ) if install else validate_names(conn, org_slug=org.slug))
         if not version:
             if not install:
                 raise NamingError('naming_not_installed')
@@ -331,20 +319,42 @@ def reconcile_namespace(org, namespace, *, install=False):
                              (row[3], row[4], token))
         validate_names(conn, org_slug=org.slug)
         validate_rows(*read_rows(conn), namespace)
+        if install:
+            validate_naming_install_admission(
+                conn, org_slug=org.slug, expected_db_path=expected_db_path,
+            )
+
+
+def _record_refresh_failure(org: Any, diagnostic: Any, *, install: bool) -> None:
+    if install:
+        # One bounded producer code, never exception text or a prior diagnostic.
+        # Unknown codes still use the route's existing finite-code fallback.
+        org.naming_install_diagnostic = (
+            diagnostic if isinstance(diagnostic, str) and len(diagnostic) <= 64
+            else 'naming_database_unavailable'
+        )
+    elif diagnostic == 'naming_not_installed':
+        diagnostic = getattr(org, 'naming_install_diagnostic', None) or diagnostic
+    org.naming_diagnostic = diagnostic
 
 
 def refresh_names(org, *, install=False):
     """Diagnostic projection; baseline same-ID outcomes remain their owner's."""
     org.naming_readiness = 'unavailable'
+    if install:
+        # A new actual attempt supersedes the previous attempt's provenance.
+        org.naming_install_diagnostic = None
     try:
         snapshot = capture_namespace(org.root, org.teams)
         reconcile_namespace(org, snapshot, install=install)
     except (ValueError, OSError, UnicodeError) as exc:
-        org.naming_diagnostic = getattr(exc, 'code', 'naming_canonical_unavailable')
+        _record_refresh_failure(org, getattr(exc, 'code', 'naming_canonical_unavailable'),
+                                install=install)
         return False
     except Exception:
-        org.naming_diagnostic = 'naming_database_unavailable'
+        _record_refresh_failure(org, 'naming_database_unavailable', install=install)
         return False
+    org.naming_install_diagnostic = None
     org.naming_diagnostic = None
     org.naming_readiness = 'ready'
     return True

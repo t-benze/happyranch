@@ -1,0 +1,102 @@
+{
+  "purpose": "Factual original font and notice provenance; no executable reader, trusted attestation, emitted closure or native/archive custody result.",
+  "acquisition": {
+    "task": "TASK-11585",
+    "source_commit": "3828be6170f79e49378298d9f79a5198a3e59ac2"
+  },
+  "files": [
+    {
+      "family": "Hanken Grotesk",
+      "destination": "web/public/fonts/HankenGrotesk-wght.ttf",
+      "size": 132892,
+      "sha256": "813b3f8fa0965405669a89b38e51bbefd95eef6b8e20d1cb2d8c10cce062662f",
+      "git_blob_sha1": "ed6efac663fab76e550a2c994d95ca143587da18",
+      "source": {
+        "repository": "marcologous/hanken-grotesk",
+        "commit": "e6e3c4df55acfe44333c587e3d97ae3c44b7dce5",
+        "tree": "923899fc12050c12012db256e73ff8ce335c5f66",
+        "path": "fonts/variable/HankenGrotesk[wght].ttf",
+        "url": "https://raw.githubusercontent.com/marcologous/hanken-grotesk/e6e3c4df55acfe44333c587e3d97ae3c44b7dce5/fonts/variable/HankenGrotesk%5Bwght%5D.ttf"
+      },
+      "notice": {
+        "destination": "web/public/fonts/HankenGrotesk-OFL.txt",
+        "size": 4402,
+        "sha256": "e02ccb89a86839b22feff7872ff5cc355cc0f58318d29eee20e2cf83a612f16d",
+        "git_blob_sha1": "9c8185d846e13882e03bdd700743e717e67189dc",
+        "source_path": "OFL.txt",
+        "source_url": "https://raw.githubusercontent.com/marcologous/hanken-grotesk/e6e3c4df55acfe44333c587e3d97ae3c44b7dce5/OFL.txt",
+        "source_commit": "e6e3c4df55acfe44333c587e3d97ae3c44b7dce5",
+        "source_tree": "923899fc12050c12012db256e73ff8ce335c5f66",
+        "relationship": "Full original OFL.txt colocated at the same immutable upstream revision as the font; unchanged bytes."
+      },
+      "google_fonts_import": {
+        "commit": "714891563e901b1a0d8ebcaaa003b01604793888",
+        "tree": "8e1584398392db9965ca3fbcab9a731e1da8a544",
+        "relationship": "Import commit names the pinned upstream revision; font and OFL Git blobs match upstream.",
+        "version_note": "Import title says 3.012; body and original font say 3.013."
+      }
+    },
+    {
+      "family": "Newsreader normal",
+      "destination": "web/public/fonts/Newsreader-opsz-wght.ttf",
+      "size": 451664,
+      "sha256": "8a08d13f8a6c0d51be379a60af84f945f65369a67e509ee3c3bdcc421254d7c1",
+      "git_blob_sha1": "ad4a9a8c44ec328c80b61c773f1ba02f6b5ed292",
+      "source": {
+        "repository": "productiontype/NewsReader",
+        "commit": "1ece6a8bfe5db1a2b90c76cc1fe5d3b2eed5dcf3",
+        "tree": "089bfb0a3fda10e71610ebf8f7a7a5237db52dba",
+        "path": "fonts/variable/ttf/Newsreader[opsz,wght].ttf",
+        "url": "https://raw.githubusercontent.com/productiontype/NewsReader/1ece6a8bfe5db1a2b90c76cc1fe5d3b2eed5dcf3/fonts/variable/ttf/Newsreader%5Bopsz,wght%5D.ttf"
+      },
+      "notice": {
+        "destination": "web/public/fonts/Newsreader-OFL.txt",
+        "size": 4394,
+        "sha256": "fdfad38143ec470553cae82a1e45320bdd1b9ec70415d37bd0171051d8a4ded8",
+        "git_blob_sha1": "d2d4f407109e9c74b8ab502fc79b912408ab8e41",
+        "source_path": "OFL.txt",
+        "source_url": "https://raw.githubusercontent.com/productiontype/NewsReader/1ece6a8bfe5db1a2b90c76cc1fe5d3b2eed5dcf3/OFL.txt",
+        "source_commit": "1ece6a8bfe5db1a2b90c76cc1fe5d3b2eed5dcf3",
+        "source_tree": "089bfb0a3fda10e71610ebf8f7a7a5237db52dba",
+        "relationship": "Full original OFL.txt colocated at the same immutable upstream revision as the font; unchanged bytes."
+      },
+      "google_fonts_import": {
+        "commit": "991ce1de6075188e6b8977a5aa9fcd3610a4e946",
+        "tree": "88ab7e1ceae0eaf8e06dae385eb9b5bdb3e5aadb",
+        "relationship": "Import commit names the pinned upstream revision; font and OFL Git blobs match upstream.",
+        "version_note": "Import and original font say 1.003."
+      }
+    },
+    {
+      "family": "Newsreader italic",
+      "destination": "web/public/fonts/Newsreader-Italic-opsz-wght.ttf",
+      "size": 495684,
+      "sha256": "796668611f80b64d5adf182fde3b6f29ed83b4e7cbec7b96937e84ac01364792",
+      "git_blob_sha1": "d25879656a601d44c49836f9e773d100190c62e1",
+      "source": {
+        "repository": "productiontype/NewsReader",
+        "commit": "1ece6a8bfe5db1a2b90c76cc1fe5d3b2eed5dcf3",
+        "tree": "089bfb0a3fda10e71610ebf8f7a7a5237db52dba",
+        "path": "fonts/variable/ttf/Newsreader-Italic[opsz,wght].ttf",
+        "url": "https://raw.githubusercontent.com/productiontype/NewsReader/1ece6a8bfe5db1a2b90c76cc1fe5d3b2eed5dcf3/fonts/variable/ttf/Newsreader-Italic%5Bopsz,wght%5D.ttf"
+      },
+      "notice": {
+        "destination": "web/public/fonts/Newsreader-OFL.txt",
+        "size": 4394,
+        "sha256": "fdfad38143ec470553cae82a1e45320bdd1b9ec70415d37bd0171051d8a4ded8",
+        "git_blob_sha1": "d2d4f407109e9c74b8ab502fc79b912408ab8e41",
+        "source_path": "OFL.txt",
+        "source_url": "https://raw.githubusercontent.com/productiontype/NewsReader/1ece6a8bfe5db1a2b90c76cc1fe5d3b2eed5dcf3/OFL.txt",
+        "source_commit": "1ece6a8bfe5db1a2b90c76cc1fe5d3b2eed5dcf3",
+        "source_tree": "089bfb0a3fda10e71610ebf8f7a7a5237db52dba",
+        "relationship": "Full original OFL.txt colocated at the same immutable upstream revision as the font; unchanged bytes."
+      },
+      "google_fonts_import": {
+        "commit": "991ce1de6075188e6b8977a5aa9fcd3610a4e946",
+        "tree": "88ab7e1ceae0eaf8e06dae385eb9b5bdb3e5aadb",
+        "relationship": "Import commit names the pinned upstream revision; font and OFL Git blobs match upstream.",
+        "version_note": "Import and original font say 1.003."
+      }
+    }
+  ]
+}

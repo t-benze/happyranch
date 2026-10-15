@@ -16,6 +16,20 @@ Preserve owner/session/Pause/possible-launch/race winners, existing running CAS,
 limits and all-terminal resumption. No schema/auth/permission/credential/general
 notifier change or deployment follows. Current contract: [Jobs](docs/superpowers/specs/2026-05-26-jobs-design.md).
 
+**Independent THR307 nightly disk sweeper — Founder seq48–51, ROOT TASK11518.**
+`runtime/daemon/disk_sweeper.py` adds machine-local03:00, default-dry-run, sequential
+org sweeping under one1800s monotonic batch window, with an owned stoppable worker
+process group. Only actual terminal-owner/terminal-root scratch and registered
+clean retained-ref worktrees can pass fresh jobs/process/recursive-age/containment
+checks; unknown retains. Preserve manifests/locks/output, dirty worktrees and
+branches. No legacy receipt/count/rotation policy is imported into this new
+mechanism; legacy cleanup, flags and seven sessions are unchanged. Dry run never
+chmods/removes/prunes. One JSON/existing-shaped audit reports attributable allocated
+removals and unknown/partial/unreached scope, never physical freed-byte invention.
+No activation/deployment follows source delivery. Read the [current contract](docs/superpowers/specs/2026-10-15-nightly-disk-sweeper.md)
+and runtime guide before changing it; independent review/scoped disposable QA and
+normal hooks/static checks remain mandatory. Python units stay retired.
+
 
 **Disabled coding release catalog K0 — Founder THR139seq562/563, ROOT TASK10693.**
 GET `/api/v1/orgs/{slug}/workflows/release-templates/coding/1` authenticates the
@@ -71,7 +85,17 @@ See [the current K0/K1 contract](docs/superpowers/specs/2026-10-14-ordered-codin
 
 **Naming v1 core, API and routing source (THR-293 seq14/22/34).** One daemon controls each org.
 OrgState admits the existing generic/workflow/canonical source before installing
-an org-only, atomic three-table naming extension. Generic Database and
+an org-only, atomic three-table naming extension. Installer-only N-SAC-1 in
+`runtime/identities/admission.py` checks selected/actual DB ownership, task/audit
+shapes, closed naming interactions and unchanged workflow/Pause/move/naming
+validators inside the existing transaction; it builds no whole-release reference.
+Global workflow/legacy reference consumers remain strict and separate. Non-install
+refreshes/readers keep their prior behavior. Finite synthetic verification uses
+`uv run --frozen python scripts/verify_naming_structural_admission.py --case B-SA-01
+--scratch NEW_ABSOLUTE_TASK_TMP_CHILD --evidence NEW_ABSOLUTE_EVIDENCE_CHILD`;
+select B-SA-01 through B-SA-08 separately, per the fixture README. No test Python
+imports, live DB input, repair, provider or daemon lifespan is supported.
+Generic Database and
 runtime-audit remain naming-free. Every naming-installed database, including F,
 requires a compatible naming reader; explicit F/E/G/H/I workflow migrations preserve
 naming rows/revisions and never install absent naming. Flat schema1 still refuses.
@@ -99,24 +123,37 @@ and canonical-definition revision are distinct. Resolution is diagnostic, never
 authorization or reservation.
 
 Routing source now classifies current names and permanent IDs case-insensitively
-to canonical agent IDs using the unchanged @token grammar (including quoted and
-email-interior matches). Any recognized former token rejects the entire current
+to canonical agent IDs using explicit prose @tokens. ASCII quotes remain prose; explicit blockquote lines are literal; email/word interiors, escaped tokens and supported code are literal. Any
+recognized former token rejects the entire current
 message/recipient input with409 former_name and current_name, before thread-ID
 allocation, exchange closure, callback settlement/consumption, message/audit/queue
 mutation or application attachment finalization. Composer, speaker, task/session
 and invocation fields remain ID-only; labels confer no authority. Current names
-of pending/terminated owners do not designate wake targets. Unknown text and
-self/nonparticipant-only mentions retain ordinary fallback when naming is ready.
+of pending/terminated owners do not designate wake targets. Agent unknown/self/nonparticipant-only intentions retain conditional fallback;
+Founder unknown/nonparticipant intentions refuse422.
 Unavailable naming preserves actual ID behavior; non-ID addresses refuse503
 naming_unavailable. No read adapter reconciles or writes names.
+
+
+New-message body admission excludes email/word interiors, escaped tokens and
+supported inline/fenced code; ASCII quoted prose remains eligible; explicit blockquote lines are literal. Literal-only
+bodies perform no body naming lookup. Genuine body aliases fail closed on service
+failure, including empty explicit recipients and per-token unavailability. Known
+actual canonical IDs retain owner checks; ID-shaped aliases supply no evidence.
+Observed Former refusal precedes later chunk failures. en/zh-CN service wording
+asks for retry or a known intended-recipient ID, with no body rewrite, automatic
+retry/send or locale-triggered effect. Historical messages/delivery and release
+measurement keep their original interpretation. The exact finite scanner contract
+is in the current identity-names core spec (THR293seq174).
 
 **Current naming CLI/prompt contract.**
 Operator `identities list/resolve/rename` uses existing API and name-revision CAS,
 local validation and uncertain-failure readback without retries. Human targets
 resolve current names to IDs; founder recipients retain `@founder`. Historical
 ID filters and naming-unavailable ID access preserve owner checks. Every CLI
-managed associated upload checks former body/recipient tokens first, including
-quoted/email-interior grammar, without rewriting bodies or claiming reservation/
+managed associated upload checks former body/recipient tokens first, using
+explicit prose tokens (email/code are literal), without rewriting bodies or
+claiming reservation/
 rollback across HTTP requests. Task/manager/full/resumed/fallback/dream/wake/
 schedule prompts receive current self/founder/ID-selected roster labels; metadata
 failure renders ID-only context without writes or launch gates. Automation,
@@ -1307,6 +1344,29 @@ plus bounded synthetic CLI validation; unconditional PR/push-main hosted
 `Source Boundary Lint` uses Python 3.14 without project dependency installation.
 See the project-layout boundary section and [Local CI](docs/local-ci.md).
 
+## Memory census and report readers (THR-091 seq428)
+
+A closed failed-before-exposure invocation stays in every attempted/persisted
+count, ordinal, digest and seal, with no shown/natural-session denominator.
+Only one ordered authenticated intent/identity/raised-terminal tuple with actual
+failed lifecycle, correct parent/type/population, Boolean false expectation and
+binding, INTEGER0 launch callbacks, explicit null success/returncode and complete
+absence of exposure/callback/credited get/search qualifies for this class.
+Full bounded audit/task/result evidence, independent counts/digests/seals and
+stable semantic bookends are required; missing/unknown/duplicate/contradictory,
+pending/moving/error or all-failure evidence refuses. Normal exposed/in-flight
+checks, temporal post-retirement zero, source/boot/cohort, original epoch/reset
+contract and thresholds remain. Classification grants no B/C/health acceptance.
+
+Canonical CLI and HTTP task comparisons exclude only valid rendering timestamps
+at pause.observed_at, pause.blockers[*].observed_at and child_wait.observed_at.
+Raw evidence, unknown/malformed fields, lifecycle/pause/wait state, results/jobs,
+roles and all serving generation/count/digest/seal/error facts remain intact.
+Invocation-exception diagnostics add only correlated class/bounded frame-location
+metadata; no exception messages/source lines/locals are added. Existing failure,
+terminal, wake/thread and control effects remain. Original launch cause is unknown.
+See the corrective memory spec and the maintained agent guides.
+
 ## Commands
 
 PR1022's TASK10553 continuation retains all 224 C4 parameters and the finite
@@ -1571,8 +1631,9 @@ source; the existing task agent filter is the relevant selector. Prospective
 invite resolve omits `thread_id` because that optional scope means existing
 participants; the actual invite endpoint retains final action eligibility.
 Recognized former body/recipient tokens stop UI-managed associated attachment
-uploads when caught by separate preflight. Unknown body @text remains literal,
-including the existing quoted/email token parser behavior. This read is not a
+uploads when caught by separate preflight. Body intentions follow the THR310 caller policy below,
+with ASCII quotes eligible, explicit blockquote lines literal and email/code/escaped tokens excluded. This read
+is not a
 reservation: final server admission may reject after an intervening rename, and
 already-completed uploads are not claimed rolled back. New en/zh-CN text uses
 existing controls/tokens. The naming browser adapter captures 390×844/1440×900
@@ -2106,3 +2167,49 @@ nonforce push and manager guarded merge remain. Python units RETIRED; integratio
 INCLUDING callback SKIPPED24342; SQL/parser/product/security/protected/executable
 proof UNEXECUTED/FOUNDER-WAIVED139429/430. Root retains K2a2–K6, real-agent/two-org/
 override/backup-copy operational acceptance. No live action or trial renewal.
+
+## Literal text and recipient intentions (THR310 seq3/13)
+
+All Founder-authenticated writes, including an unbound agent-launched CLI, reject
+unknown/nonparticipant body intentions with422 and eligible current-name/ID guidance.
+Genuine Former anywhere in To/body retains409 before body422; unknown explicit To
+retains404 and unresolved aliases retain503 under naming failure. Preserve native
+structural/auth/binding/lifecycle/file errors. To alone selects participants (plus
+a genuine agent composer). BODY suggestions are eligible selected prospective
+agents in a new thread, current participants in an existing one; Founder is human,
+never an agent participant or BODY suggestion. Manual `@founder` remains valid.
+
+Validated agent writers retain compatibility; CLI stderr describes ignored tokens
+and canonical narrowed targets or conditional fallback: recipients minus speaker
+outside an exchange, frozen cohort intersect recipients minus speaker inside one,
+possibly empty. Prior catch-up is independent; pending_replies proves neither
+audience nor storage/launches. Direct agent API/internal authors receive no warning
+channel (accepted limitation). Complete valid JSON-only bindings count for CLI
+warning/upload attribution; partial/invalid bindings retain native refusal. No
+response warning field/header/auth change or preflight reservation is introduced.
+Founder-only suppresses new selection while preserving obligations/prior catch-up;
+Founder+unknown differs, and self-only/quote-only use ordinary conditional fallback.
+
+Only start, finite whitespace, or `(` `[` `{` ASCII single/double quote opens an
+unescaped ASCII token. Explicit physical lines with0–3 ASCII spaces then `>` are
+literal; unprefixed lazy continuation and four-space indentation are outside this
+quote rule. Top-level unclosed fences mask to EOF; quoted ticks/fences cannot own
+later notes. The precise finite whitespace/code grammar and examples are in the
+identity-names core spec's THR310 section; this is not a full Markdown parser.
+Nonblank authored bodies remain exact through storage, including controls,
+indentation, CRLF/bare CR and trailing whitespace. The existing strip emptiness
+predicate and attachment-only null outcomes remain; subjects/history are unchanged.
+
+Forwarders quote every physical source line/header/blank/marker. Generated source
+separators may become LF; notes remain verbatim, including CLI note-file newlines.
+CLI's fully serialized quoted excerpt is at most4096 UTF8 bytes, metadata/prefixes/
+newlines/marker included; separator and note excluded. Reserve the quoted marker
+and retain the longest valid source prefix. Web retains its last-message selection
+and size policy. Raw occurrence ranges keep duplicates; admission spellings dedup.
+Insertion replaces only the prefix through caret, preserving suffix/spaces/focus.
+Thread-body rendering styles only proven exact raw intervals, noninteractively;
+ambiguous transformations stay plain, code/Mermaid stay undecorated, task/KB defaults
+and historical delivery stay unchanged. No render-time naming or recipient inference.
+Shared data is protocol/thread-mention-corpus.json (51 lexical +13 write-path rows).
+Public-unexposed mentions_json, authentic debt/outage and genuine task/dream/callback
+proof require actual evidence and cannot be inferred from static/mock checks.

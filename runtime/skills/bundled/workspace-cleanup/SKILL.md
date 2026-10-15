@@ -5,6 +5,15 @@ description: Shared daily/manual own-workspace cleanup contract — bounded, Git
 
 # workspace-cleanup
 
+
+THR307's independent daemon disk sweeper defaults to dry_run and has its own
+terminal-task/root, fresh jobs/process, recursive-age and containment contract.
+It never grants an agent cleanup authority, replaces this skill's legacy gates,
+or disables the seven nightly agent sessions. Outputs and sibling task-scratch
+manifests/locks stay durable and excluded. Put regenerable fixture/cache trees
+in runtime task-tmp; retain only concise evidence in output. Do not run historical
+cleanup, activate on-mode, or use a manual fallback on this note's authority.
+
 The one shared workspace-cleanup skill for every agent, including no-repo
 agents. It is invoked two ways, and both use exactly this contract:
 

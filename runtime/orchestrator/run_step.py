@@ -1585,6 +1585,33 @@ def _run_step_body(orch: "Orchestrator", task_id: str, metadata: dict | None = N
         # become a business FAILED task, parent wake or thread followup.
         raise
     except Exception as exc:
+        # Metadata only: never format the traceback/exception (which includes
+        # messages and source lines), or inspect frame locals. Diagnostic
+        # failure cannot replace the existing failure/wake/followup sequence.
+        try:
+            source_root = Path(__file__).resolve().parents[2]
+            locations = []
+            trace = exc.__traceback__
+            for _ in range(64):
+                if trace is None:
+                    break
+                filename = Path(trace.tb_frame.f_code.co_filename)
+                location = "external"
+                if filename.is_absolute() and filename.is_relative_to(source_root):
+                    relative = filename.relative_to(source_root).as_posix()
+                    if (len(relative) <= 200 and relative.split("/")[0] in {"runtime", "cli"}
+                            and ".." not in filename.parts and all(c.isalnum() or c in "_./-" for c in relative)):
+                        location = relative
+                locations.append(f"{location}:{trace.tb_lineno}")
+                trace = trace.tb_next
+            exception_class = type(exc).__name__
+            if len(exception_class) > 80 or not exception_class.isidentifier():
+                exception_class = "unavailable"
+            logger.warning("agent invocation exception task=%s agent=%s runtime_session=%s class=%s frames=%s truncated=%s",
+                           task_id, agent, reserved_session_id or "unavailable", exception_class,
+                           locations[-8:], trace is not None or len(locations) > 8)
+        except Exception:
+            pass
         note = f"agent invocation failed: {exc}"
         _fail(orch, task_id, note=note)
         _enqueue_parent_if_waiting(orch, task_id, root_auto_revisit_spawned=False)

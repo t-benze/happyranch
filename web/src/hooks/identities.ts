@@ -37,11 +37,16 @@ export function namingAddressError(error: unknown): ThreadErrorDetail | null {
       const d = error.detail as Record<string, unknown>;
       return { kind: 'mapped', key: 'identity.formerServer', params: { address: typeof d.address === 'string' ? d.address : '', current: typeof d.current_name === 'string' ? d.current_name : typeof d.canonical_id === 'string' ? d.canonical_id : '' } };
     }
+    if (error.code === 'invalid_body_mention' && error.detail && typeof error.detail === 'object') {
+      const d = error.detail as Record<string, unknown>;
+      return { kind: 'mapped', key: 'identity.invalidBodyMention', params: { address: String(d.address ?? ''), suggestions: Array.isArray(d.suggestions) ? d.suggestions.join(', ') : '' } };
+    }
     if (error.code === 'naming_classification_changed') return { kind: 'mapped', key: 'identity.classificationChanged' };
     if (error.code === 'naming_unavailable') return { kind: 'mapped', key: 'identity.unavailable' };
   }
   if (!(error instanceof IdentityAddressError)) return null;
   const r = error.resolution;
+  if (error.bodyIntent) return { kind: 'mapped', key: 'identity.invalidBodyMention', params: { address: r.address, suggestions: error.suggestions.join(', ') } };
   if (r.status === 'former_name') return { kind: 'mapped', key: 'identity.former', params: { address: r.address, current: r.identity?.addressable_name ?? r.identity?.canonical_id ?? '' } };
   return { kind: 'mapped', key: r.status === 'naming_unavailable' ? 'identity.unavailable' : 'identity.invalidAddress', params: { address: r.address } };
 }
@@ -57,4 +62,14 @@ export function useIdentityOptions(agents: readonly { name: string; team: string
     addressable_name: currentName(identity('founder', 'founder'), 'founder'), label: identityText(identity('founder', 'founder'), 'founder'),
   });
   return options;
+}
+
+/** Owner-projected IDs for body fallback; independent of the eligible hint roster. */
+export function useKnownAgentIds(agents: readonly { name: string }[]): string[] {
+  const query = useIdentities();
+  return useMemo(() => [...new Set([
+    ...agents.map(a => a.name),
+    ...(query.isError ? [] : query.data?.identities ?? [])
+      .filter(i => i.kind === 'agent' && i.lifecycle !== 'absent').map(i => i.canonical_id),
+  ])], [agents, query.data, query.isError]);
 }

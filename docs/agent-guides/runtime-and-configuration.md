@@ -6,11 +6,12 @@ The optional team_move_operations table is explicit org-owned storage, never
 generic Database/runtime-audit bootstrap or startup installation in B. Exact
 owned layout/all-record validation and complete independent release references
 include its presence without modifying naming/pause/workflow/v2 history.
-All three whole-release consumers (workflow validation, legacy authority evidence
-and naming installation/reconciliation) select validated optional presence.
-Naming captures workflow/naming/pause/move layouts in one coherent read view,
-builds independent references outside the short SQL transaction, then compares
-the entire database again within that transaction. Absence remains supported;
+Workflow release validation and legacy authority evidence retain complete
+independent whole-release references with validated optional presence. Naming
+installation uses N-SAC-1 structural admission inside its existing transaction:
+selected/actual DB association, task/audit dependency shapes, naming interaction
+closure and unchanged complete workflow/Pause/move/naming validators. It builds
+no whole-release reference. Non-install reconciliation retains its prior behavior. Absence remains supported;
 malformed presence refuses without installation, stripping or history repair.
 C1 binds the coordinator at Orchestrator construction and reads durable holds
 in actual allocation/claim transactions without installing schema. Absent layout
@@ -101,10 +102,31 @@ frontend verification leg. See the [current naming contract](../superpowers/spec
 
 ## Naming v1 core, API and routing source
 
+`GET /api/v1/orgs/{slug}/identities` and `happyranch identities list --json`
+expose additive `naming_diagnostic`: null for ready rows, otherwise a finite
+captured naming category. Unknown, malformed or missing captured codes fall back
+to `naming_database_unavailable` when any row is unavailable, including a fresh
+metadata-read failure with a stale null diagnostic. The response never exposes
+raw exception text, paths or SQL. Older servers may omit the field: absence is
+UNKNOWN, never readiness. Canonical roster, definition revisions and existing
+read/auth errors retain their behavior; GET never reconciles or installs names.
+This category is an observation, not proof of a serving source SHA or root cause.
+Source publication does not establish restored naming or authorize live recovery.
+
+A failed actual install attempt retains one bounded category in memory. Later
+non-install refreshes that only observe absent naming report that last attempt's
+cause; without that provenance they report `naming_not_installed`, never a guessed
+stale cause. A different current failure takes precedence while observed. A new
+install attempt supersedes the retained cause; any successful refresh clears it.
+This diagnostic retention changes no readiness, admission or installation decision
+and adds no retry, persistent history or read-time writer.
+
 Schema2 multi-org attachment installs naming only after baseline admission; no
 flat-schema1 conversion or history-only ID mining is added. Naming failure is
 volatile readiness with an actionable category. Original strict team/attachment
-and complete workflow/reference guards remain. Every naming-installed F/E/G needs
+and complete workflow validators remain; global workflow/legacy reference
+guards are unchanged. Installer-only admission is naming structural compatibility,
+never a global authority grant. Every naming-installed F/E/G needs
 a compatible naming reader; existing explicit workflow commands preserve exact
 naming row identities/revisions and reject malformed naming without repair.
 One daemon controls each organization; no naming cross-process lease is added.
@@ -772,6 +794,45 @@ Per-org `dreaming:` config controls the private nightly reflection scheduler: en
 before any `ZoneInfo()` call. (Pre-TASK-976 an omitted value defaulted to the
 literal `UTC`; orgs relying on that implicit default now schedule on
 machine-local time — host-local night, as intended.)
+
+
+## Independent nightly disk sweep (THR307)
+
+The new `disk_sweep: {mode: "dry_run"}` org block defaults to dry run; only quoted
+`"off"`, `"dry_run"`, `"on"` are accepted. This is independent of `workspace_cleanup`
+and its unchanged legacy scheduler/reclamation flag. Machine-local03:00 (not org
+timezone), next future occurrence only, sequential org order and one1800s monotonic
+batch budget. No cursor/rotation or candidate count cap. Unknown eligibility and
+unreached scope retain; the owned worker process group is stopped on deadline or
+shutdown. `output/` and durable scratch manifest/lock siblings stay excluded.
+
+Terminal actual task AND structural root, fresh complete jobs/process evidence,
+complete structural lineage for every observed job owner even when its status is
+completed/failed/rejected, recursive mtime+ctime age of at least one hour, and
+no-follow/same-filesystem containment apply to both phases. Git additionally requires owned registration,
+clean/nonignored-untracked status and HEAD reachability through retained local
+branches/remotes; branches remain, ignored contents are disposable. Git removal
+is nonforce, with at most one fully refreshed contained repair/retry. Dry run
+never chmods/removes/prunes. Uncertain Git-prune scope remains untouched.
+
+Manual dry run: `python -m runtime.daemon.disk_sweeper --dry-run --runtime-root
+/absolute/runtime` (one command). JSON is in `<daemon_home>/disk-sweep/`; existing
+org audit action is `disk_sweep_summary`. Allocation is inode-deduped and successful
+removal-attributed; retained/partial/unreached bytes and physical freed space stay
+unknown, whole-disk percent is context only. Below20% is flagged in audit/JSON;
+no new notification interface. Linux same-effective-UID all-thread process
+observations are snapshots, not host-wide absence or a writer fence. Missing
+mount/process/ownership evidence refuses.
+
+See the [full current contract](../superpowers/specs/2026-10-15-nightly-disk-sweeper.md)
+for evidence semantics, limitations, finite disposable verification and staged
+operational acceptance. The focused standalone driver supports `--cases 9 10`
+for job lineage/retry controls and `--isolation-case mount` / `--isolation-case root`
+for real disposable namespace boundaries. Run as the ordinary user; only its
+private helper is mapped root. Missing capabilities return77/UNAVAILABLE, never
+PASS; no privileged fallback or new automated check is authorized. Source
+publication does not activate deletion. Existing seven agent sessions remain until seven actual approved on-night observations
+and a separately approved cutover; no automatic manual-script fallback.
 
 ## Org Config: Workspace Cleanup
 

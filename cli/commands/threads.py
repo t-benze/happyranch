@@ -42,6 +42,7 @@ def _merge_uploaded_attachments(
     agent: str,
     thread_id: str | None,
     use_shared_artifacts: bool = False,
+    preflight_done: bool = False,
 ) -> dict:
     """Merge --attach files into the payload as attachment refs.
 
@@ -49,7 +50,9 @@ def _merge_uploaded_attachments(
     (TASK-1616). Set use_shared_artifacts=True for the explicit cross-task
     handoff escape hatch.
     """
-    identities.preflight_body(client, slug, payload.get("body_markdown"))
+    if not preflight_done:
+        identities.preflight_body(client, slug, payload.get("body_markdown"),
+                                  thread_id=thread_id, agent=agent if agent != 'founder' else None)
     refs = list(payload.get("attachments") or [])
     for path in attach_paths or []:
         if thread_id is not None and not use_shared_artifacts:
@@ -127,8 +130,14 @@ def cmd_threads_compose(args: argparse.Namespace) -> None:
         if args.session_id:
             payload["session_id"] = args.session_id
 
-        identities.preflight_body(client, slug, payload.get("body_markdown"))
-        payload["recipients"] = identities.resolve_recipients(client, slug, payload.get("recipients") or [])
+        if not all(isinstance(payload.get(key), str) and payload[key]
+                   for key in ("composer", "task_id", "session_id")):
+            # Preserve native model/binding errors, without associated uploads
+            # or accidentally applying the Founder body policy to partial input.
+            _ok(client.post(f"/api/v1/orgs/{slug}/threads/compose-as-agent", json=payload))
+            return
+        payload["recipients"] = identities.preflight_body(
+            client, slug, payload.get("body_markdown"), recipients=payload["recipients"], agent=payload.get("composer"))
         if attach_paths and not use_shared:
             # Thread-scoped multipart upload (TASK-1616).
             import mimetypes as _mime
@@ -148,7 +157,7 @@ def cmd_threads_compose(args: argparse.Namespace) -> None:
                     attach_paths=attach_paths,
                     agent=payload.get("composer", ""),
                     thread_id=None,
-                    use_shared_artifacts=True,
+                    use_shared_artifacts=True, preflight_done=True,
                 )
             r = client.post(
                 f"/api/v1/orgs/{slug}/threads/compose-as-agent", json=payload,
@@ -171,8 +180,8 @@ def cmd_threads_compose(args: argparse.Namespace) -> None:
         "body_markdown": args.body or "",
     }
 
-    identities.preflight_body(client, slug, payload.get("body_markdown"))
-    payload["recipients"] = identities.resolve_recipients(client, slug, payload["recipients"])
+    payload["recipients"] = identities.preflight_body(
+        client, slug, payload.get("body_markdown"), recipients=payload["recipients"])
     if attach_paths and not use_shared:
         # Thread-scoped multipart upload (TASK-1616).
         import mimetypes as _mime
@@ -191,7 +200,7 @@ def cmd_threads_compose(args: argparse.Namespace) -> None:
                 client=client, slug=slug, payload=payload,
                 attach_paths=attach_paths, agent="founder",
                 thread_id=None,
-                use_shared_artifacts=True,
+                use_shared_artifacts=True, preflight_done=True,
             )
         r = client.post(f"/api/v1/orgs/{slug}/threads", json=payload)
     if not _ok(r):
@@ -395,12 +404,15 @@ def cmd_threads_send(args: argparse.Namespace) -> None:
             sys.exit(2)
         agent = composer
     else:
-        agent = "founder"
+        agent = payload.get("composer") if all(isinstance(payload.get(k), str) and payload[k]
+                 for k in ("composer", "task_id", "session_id")) else "founder"
     client = OpcClient.from_env()
     slug = resolve_org_slug(
         args_org=args.org, available=_shared._fetch_available_orgs(client),
     )
-    payload = _merge_uploaded_attachments(
+    binding_values = [payload.get(k) for k in ("composer", "task_id", "session_id")]
+    malformed_binding = any(v is not None for v in binding_values) and not all(isinstance(v, str) and v for v in binding_values)
+    payload = payload if malformed_binding else _merge_uploaded_attachments(
         client=client,
         slug=slug,
         payload=payload,
@@ -623,7 +635,10 @@ def cmd_threads_forward(args: argparse.Namespace) -> None:
     slug = resolve_org_slug(
         args_org=args.org, available=_shared._fetch_available_orgs(client),
     )
-    note = Path(args.note_file).read_text(encoding="utf-8") if args.note_file else ""
+    note = ""
+    if args.note_file:
+        with Path(args.note_file).open(encoding="utf-8", newline="") as note_file:
+            note = note_file.read()
     source = args.source
     if source.startswith("THR-"):
         from cli.thread_forward import build_forward_body_from_thread
@@ -653,11 +668,11 @@ def cmd_threads_forward(args: argparse.Namespace) -> None:
         sys.exit(2)
 
     body = quoted + note
-    identities.preflight_body(client, slug, body)
+    recipients = identities.preflight_body(client, slug, body, recipients=
+        [r.strip() for r in args.recipients.split(",") if r.strip()])
     payload = {
         "subject": args.subject or default_subject,
-        "recipients": identities.resolve_recipients(client, slug,
-            [r.strip() for r in args.recipients.split(",") if r.strip()]),
+        "recipients": recipients,
         "body_markdown": body,
         "forwarded_from_id": source,
         "forwarded_from_kind": kind,
