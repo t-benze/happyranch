@@ -289,7 +289,7 @@ class Session:
             meta,name=line.split(b'\t',1);name=name.decode('utf-8');mode,kind,oid=meta.decode().split(' ')
             if name.startswith(EXCLUSIONS) or Path(name).suffix not in EXTENSIONS:continue
             need(mode in ('100644','100755') and kind=='blob','CONTENT_SOURCE_MODE',name)
-            path_name(name);result.append((name,oid))
+            path_name(name);need(len(result)<MAX_ROWS,'CONTENT_INPUT_CAP');result.append((name,oid))
         result.sort(key=lambda row:row[0].encode())
         need(len(result)<=MAX_ROWS,'CONTENT_INPUT_CAP')
         # Complete selected namespace walk; no silently admitted export extras.
@@ -303,7 +303,7 @@ class Session:
                 if stat.S_ISDIR(info.st_mode):
                     with A['root_for'](self.paths.exported_source/name) as child:walk(child,name+'/')
                 elif Path(name).suffix in EXTENSIONS:
-                    need(stat.S_ISREG(info.st_mode),'CONTENT_SOURCE_MODE',name);selected.append(name)
+                    need(stat.S_ISREG(info.st_mode),'CONTENT_SOURCE_MODE',name);path_name(name);need(len(selected)<MAX_ROWS,'CONTENT_INPUT_CAP');selected.append(name)
             need(sorted(os.listdir(root.fd))==before,'CONTENT_NAMESPACE_CHANGED')
         with A['root_for'](self.paths.exported_source/'web') as root:walk(root,'web/')
         need(set(selected)=={n for n,_ in result},'CSS_INPUT_SET_MISMATCH')
