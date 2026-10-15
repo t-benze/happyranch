@@ -256,7 +256,15 @@ Plain split ES CSS with esbuild minification is the admitted profile; unsupporte
 imports/modules/source directives/URL forms refuse instead of silently extending
 it. The prepared P/A binary paths are both revalidated throughout custody.
 
-The dedicated completion token and direct caller-held `WEB_CALLER`,
+The final observer uses the fixed `web-completion.jsonl` leaf, never an extra
+inherited FD. Python completes only the actual publish token after independent
+full validation, exclusive write/fsync/close/readback, then echoes its exact
+555-byte canonical line. TS admits only raw equality to the original direct
+caller/context/preparation and actual published token. The wrapper independently
+requires actual npm exit0 before accept/seal; later postbuild failure wins.
+Existing markers/attempts remain evidence and cannot be deleted for retry.
+
+The completion token and direct caller-held `WEB_CALLER`,
 `WEB_CONTEXT`, `WEB_PREPARATION`, `WEB_BUILD`, `WEB_DIST` and `WEB_NOTICES` values
 must survive from the genuine wrapper, alongside all existing asset/freezer
 expectations. Standalone `verify-release.sh licenses` additionally requires
@@ -269,3 +277,13 @@ and portable web observations are distinct from a real Mac wrapper/licenses run.
 All six actual closures remain UNEXECUTED/UNMET; literal False, six sentinels and
 ordinary failed rows still prevent archive acceptance. Release=null,
 available=false and approved_url=null remain unchanged.
+
+Generated web evidence uses the fixed `web-private-plain@2` profile documented
+in packaging/README.md: lossless262144 observations, other named domains32768,
+96 MiB input /112 MiB envelope (+16 MiB),12582912 build nodes/depth32,
+1024 MiB represented body work, unchanged512 MiB guarded regular reads and
+web-only192 MiB aggregate JSON per command. Native asset lanes retain one
+persistent512/32 MiB submeter through the whole command; reentry and nested
+bounded calls never replenish it. Every repeated parse/read counts. Default
+asset/freezer limits and shared census semantics stay unchanged. Portable
+measurements are separate from actual Mac execution and release acceptance.

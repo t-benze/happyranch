@@ -396,9 +396,16 @@ operations retain actual argument/result associations through genuine emission,
 final bundle and write. Unavailable core internal references stay null. Python
 publish/read stages validate caller-held context/preparation/build/dist/app
 bindings, original bytes and finite relation graphs. Exact stat integers never
-round-trip through JavaScript. A dedicated completion FD is independent of npm
-logs; nonzero npm exit, absent/duplicate completion or incomplete relations yield
-no accepted build. Generated/public collisions refuse after npm exits and before
+round-trip through JavaScript. The final observer passes the actual successful
+publish token to synchronous `complete-build`. That helper independently checks
+the original caller/context/preparation and complete live build, exclusively
+writes `web-completion.jsonl` under the held evidence directory, fsyncs/closes
+and reads back, then echoes the SAME canonical 555-byte completion line. The TS
+observer compares raw bytes to its original direct inputs and actual publish
+token before acknowledging completion. Only actual npm lifecycle exit 0 enters
+`accept-build`; a later postbuild failure defeats even a valid marker. Missing,
+foreign, malformed, duplicate or unsafe completion leaves diagnostic evidence
+and no accepted build. Existing attempts/markers are never deleted for retry. Generated/public collisions refuse after npm exits and before
 app-copy acceptance, including equal-byte collisions. Existing asset census and
 map removal remain the copy authority.
 
@@ -409,3 +416,27 @@ the web reader before the existing ordinary/global license gate. Unsigned source
 portable/component/browser observations establish only their measured local
 scope. They establish neither legal applicability nor actual Darwin/native
 custody, any of the six full closures, or release availability.
+
+The private `web-private-plain@2` resource profile retains all null and non-null
+observations: 262144 rows; 32768 each for modules, subjects, CSS operations,
+snapshots, selected content and candidates; 262144 call/association memberships;
+4096 outputs, 256 plugins, 1024 owners and 32 notices per owner. Input JSON is
+96 MiB, the complete envelope 112 MiB with at most 16 MiB added, build lexical
+nodes 12582912/depth32. Other record byte/node caps stay unchanged. Every body
+capture, including repeated equal bytes, contributes to the independently
+recomputed 1024 MiB producer-work limit; this is separate from filesystem I/O.
+Bounded canonical emission avoids only a redundant producer self-parse; complete,
+accept, seal and fresh verify independently parse/reopen their actual inputs.
+
+Each web command owns one fixed 512 MiB regular / 192 MiB JSON budget and ONE
+persistent 512/32 MiB asset submeter. Successive/nested native asset lanes share
+that submeter; nested bounded calls keep the active view. Attempted charges stay
+monotonic, including refused work and repeated reads/parses. `read_closed_json`
+charges regular N / JSON N; web `Session.load` conservatively charges regular
+2N / JSON N. Counters are read-only; concurrent census accounting is shared and
+unchanged. Default asset and independent freezer limits remain unchanged. There
+is no numeric override, inner reset, repeated-read exemption or whole-npm I/O
+ceiling. Limits are conjunctions: path4096/component255/depth16 admits at most
+4095 path bytes, and the closed completion body is exactly555 bytes, so neither
+has a reachable valid4096-byte semantic positive. Capacity/headroom requires
+actual scoped measurements; source/static success establishes none of it.

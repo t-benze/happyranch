@@ -4,7 +4,7 @@ import { compile } from 'tailwindcss';
 import { optimize } from '@tailwindcss/node';
 import { Scanner } from '@tailwindcss/oxide';
 import type { Plugin } from 'vite';
-import type { PackagingCustody, CssRead } from './packaging-custody';
+import { boundedJson, type PackagingCustody, type CssRead } from './packaging-custody';
 
 /** Reject ambiguous imported URL syntax before content reaches the compiler. */
 function importedUrls(css: string): void {
@@ -60,6 +60,7 @@ export function packagingTailwind(custody: PackagingCustody): Plugin {
         async loadStylesheet(module, moduleBase) {
           const response = custody.request('read-input', { site: 'stylesheet', id: module, base: moduleBase }) as CssRead;
           importedUrls(response.content);
+          if (imports.length >= 32768) throw new Error('WEB_CSS_IMPORT_CAP');
           imports.push({ id: module, base: moduleBase, relative: response.relative, content: response.content, raw_sha256: response.raw_sha256, decoded_sha256: response.content_sha256 });
           return { path: response.path, base: response.base, content: response.content };
         },
@@ -74,13 +75,14 @@ export function packagingTailwind(custody: PackagingCustody): Plugin {
         for (let offset = 0, batch = 0; offset < manifest.entries.length; offset += 64, batch++) {
           const rows = manifest.entries.slice(offset, offset + 64).map((r: any) => ({ relative_path: r.relative_path, extension: r.extension, content: r.content }));
           const result = scanner.scanFiles(rows.map((r: any) => ({ content: r.content, extension: r.extension })));
-          custody.record('content_scan', { module: id, batch, inputs: JSON.stringify(rows), returned: JSON.stringify(result) });
-          for (const candidate of result) { candidates.add(candidate); if (candidates.size > 32768) throw new Error('WEB_CSS_CANDIDATE_CAP'); }
+          custody.record('content_scan', { module: id, batch, inputs: boundedJson(rows).toString('utf8'), returned: boundedJson(result).toString('utf8') });
+          if (result.length > 32768) throw new Error('WEB_CSS_CANDIDATE_CAP');
+          for (const candidate of result) { if (!candidates.has(candidate) && candidates.size >= 32768) throw new Error('WEB_CSS_CANDIDATE_CAP'); candidates.add(candidate); }
         }
       }
       const ordered = [...candidates];
       const built = compiler.build(ordered);
-      custody.record('candidate_build', { module: id, candidates: JSON.stringify(ordered), output: built, utilities });
+      custody.record('candidate_build', { module: id, candidates: boundedJson(ordered).toString('utf8'), output: built, utilities });
       const options = { file: id, minify: true, map: undefined };
       const result = optimize(built, options);
       custody.record('optimize', { module: id, input: built, options: { file: id, minify: true, map: null }, output: result.code, map: result.map ?? null });

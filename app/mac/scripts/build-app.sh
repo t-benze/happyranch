@@ -298,24 +298,32 @@ from pathlib import Path
 sha,tree,version,build,arch,repo,source,app,output,iconset,run,context,source_token,tools,originals=sys.argv[1:]
 print(json.dumps({'candidate':dict(source_sha=sha,source_tree=tree,version=version,build=build,arch=arch),
  'roots':dict(repo=repo,exported_source=source,dist=source+'/web/dist',app=app,output=output,evidence_dir=output+'/diagnostics',iconset=iconset),
- 'run_id':run,'venue':'native','asset_context_sha256':context,'asset_source_sha256':source_token,'toolchains_sha256':tools,'originals':originals},separators=(',',':')))
+ 'run_id':run,'venue':'native','asset_context_sha256':context,'asset_source_sha256':source_token,'toolchains_sha256':tools,'originals':originals},sort_keys=True,separators=(',',':')))
 PYWEB
 )"
 web_field() { python3 "$WEB" token-field --token "$1" --field "$2"; }
 WEB_PREP_TOKEN="$(python3 "$WEB" prepare --caller "$WEB_CALLER")"
 WEB_PREPARATION="$(web_field "$WEB_PREP_TOKEN" record_sha256)"
-WEB_CONTEXT_TOKEN="$(python3 "$WEB" begin --caller "$WEB_CALLER" --preparation "$WEB_PREPARATION")"
+WEB_CONTEXT_TOKEN="$(python3 "$WEB" begin --caller "$WEB_CALLER" --preparation "$WEB_PREPARATION" --completion-leaf web-completion.jsonl)"
 WEB_CONTEXT="$(web_field "$WEB_CONTEXT_TOKEN" record_sha256)"
 export HAPPYRANCH_WEB_CALLER="$WEB_CALLER" HAPPYRANCH_WEB_CONTEXT="$WEB_CONTEXT" HAPPYRANCH_WEB_PREPARATION="$WEB_PREPARATION"
 export HAPPYRANCH_WEB_HELPER="$WEB" HAPPYRANCH_WEB_PYTHON
 HAPPYRANCH_WEB_PYTHON="$(command -v python3)"
 # Emitted source maps are evidence; only the existing app-copy strips them.
 python3 "$ASSETS" check-public "${ASSET_ARGS[@]}" --asset-context-sha256 "$ASSET_CONTEXT" --asset-source-sha256 "$ASSET_SOURCE"
-# Exclusive dedicated completion channel, independent of npm stdout/stderr.
-(set -o noclobber; : > "$OUTPUT/diagnostics/web-completion.jsonl")
-HAPPYRANCH_WEB_COMPLETION_FD=3 npm run build -- --sourcemap 3> "$OUTPUT/diagnostics/web-completion.jsonl"
-unset HAPPYRANCH_WEB_CALLER HAPPYRANCH_WEB_CONTEXT HAPPYRANCH_WEB_PREPARATION HAPPYRANCH_WEB_HELPER HAPPYRANCH_WEB_PYTHON
-WEB_BUILD_TOKEN="$(python3 "$WEB" accept-build --caller "$WEB_CALLER" --context "$WEB_CONTEXT" --preparation "$WEB_PREPARATION")"
+# The helper exclusively writes the admitted fixed leaf after genuine publish.
+# Preserve the actual lifecycle status; a postbuild failure defeats a valid marker.
+export HAPPYRANCH_WEB_COMPLETION_LEAF=web-completion.jsonl
+if npm run build -- --sourcemap; then
+    WEB_NPM_STATUS=0
+else
+    WEB_NPM_STATUS=$?
+fi
+unset HAPPYRANCH_WEB_CALLER HAPPYRANCH_WEB_CONTEXT HAPPYRANCH_WEB_PREPARATION HAPPYRANCH_WEB_HELPER HAPPYRANCH_WEB_PYTHON HAPPYRANCH_WEB_COMPLETION_LEAF
+if [ "$WEB_NPM_STATUS" -ne 0 ]; then
+    exit "$WEB_NPM_STATUS"
+fi
+WEB_BUILD_TOKEN="$(python3 "$WEB" accept-build --caller "$WEB_CALLER" --context "$WEB_CONTEXT" --preparation "$WEB_PREPARATION" --completion-leaf web-completion.jsonl)"
 WEB_BUILD="$(web_field "$WEB_BUILD_TOKEN" record_sha256)"
 ASSET_DIST_TOKEN="$(python3 "$ASSETS" observe-dist "${ASSET_ARGS[@]}" --asset-context-sha256 "$ASSET_CONTEXT" --asset-source-sha256 "$ASSET_SOURCE")"
 ASSET_DIST="$(asset_field "$ASSET_DIST_TOKEN" sha256)"

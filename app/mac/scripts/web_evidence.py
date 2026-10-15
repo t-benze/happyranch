@@ -10,6 +10,7 @@ import argparse
 import base64
 import contextlib
 from dataclasses import asdict
+import functools
 import hashlib
 import io
 import json
@@ -27,12 +28,29 @@ MiB = 1024**2
 CAP = 16*MiB
 TOOL = 32*MiB
 MAX_ROWS = 32768
+MAX_OBSERVATIONS = 262144
+BUILD_INPUT = 96*MiB
+BUILD_ENVELOPE = 112*MiB
+BUILD_ADDITION = 16*MiB
+BUILD_NODES = 12582912
+BODY_WORK = 1024*MiB
+RESOURCE_PROFILE = 'web-private-plain@2'
+COMPLETION_LEAF = 'web-completion.jsonl'
+
+
+def web_bounded(function):
+    @functools.wraps(function)
+    def call(*args, **kwargs):
+        with A['budget_scope']('web-evidence-v1'):
+            return function(*args, **kwargs)
+    return call
+
 EXTENSIONS = {'.html','.js','.jsx','.mjs','.cjs','.ts','.tsx','.mts','.cts','.vue','.svelte','.astro','.md','.mdx','.json','.svg'}
 EXCLUSIONS = ('web/vendor/','web/node_modules/','web/dist/')
 POLICY = 'pinned-web-content@1'
 VITE_VERSION = '5.4.21+hr.css-relation.1'
 ARCHIVES = {'vite':'5.4.21','rollup':'4.60.3','@vitejs/plugin-react':'4.7.0','@tailwindcss/vite':'4.3.0','@tailwindcss/node':'4.3.0','@tailwindcss/oxide':'4.3.0','tailwindcss':'4.3.0','lightningcss':'1.32.0','esbuild':'0.21.5','@esbuild/darwin-arm64':'0.21.5','@rollup/rollup-darwin-arm64':'4.60.3','@tailwindcss/oxide-darwin-arm64':'4.3.0','lightningcss-darwin-arm64':'1.32.0','postcss':'8.5.14'}
-KINDS = {'esbuild-attempt':256*1024,'esbuild-preparation':256*1024,'attempt':256*1024,'context':256*1024,'css-inputs':8*MiB,'build':16*MiB,'dist':8*MiB,'notices':8*MiB,'failure':256*1024}
+KINDS = {'esbuild-attempt':256*1024,'esbuild-preparation':256*1024,'attempt':256*1024,'context':256*1024,'css-inputs':8*MiB,'build':BUILD_ENVELOPE,'dist':8*MiB,'notices':8*MiB,'failure':256*1024}
 BIND_KEYS = {'candidate','roots','run_id','venue','asset_context_sha256','asset_source_sha256','toolchains_sha256','originals'}
 
 class WebError(ValueError):
@@ -48,28 +66,50 @@ def keys(value, expected):
 def sha(raw):
     return hashlib.sha256(raw).hexdigest()
 
-def canonical(value):
-    # Encode exact bounded descriptor integers without changing the interpreter's
-    # global digit guard. JS counters are separately constrained by js_size.
+def canonical(value, cap=CAP, *, node_cap=500000, size_only=False):
+    # Stream bounded canonical pieces, preserving exact descriptor integers.
+    output=bytearray();nodes=0;size=0
+    def append(piece):
+        nonlocal size
+        raw=piece.encode('utf-8','strict')
+        size+=len(raw);need(size<=cap,'RECORD_CAP')
+        if not size_only:output.extend(raw)
     def integer_text(number):
         negative=number<0;number=abs(number);parts=[]
         while number:
             number,part=divmod(number,10**1000);parts.append(str(part))
         result='0' if not parts else parts[-1]+''.join(part.zfill(1000) for part in reversed(parts[:-1]))
         return ('-' if negative else '')+result
-    def text(item):
-        if item is None:return 'null'
-        if type(item) is bool:return 'true' if item else 'false'
-        if type(item) is int:return integer_text(item)
-        if isinstance(item,str):return json.dumps(item,ensure_ascii=False,allow_nan=False)
-        if isinstance(item,list):return '['+','.join(text(child) for child in item)+']'
-        if isinstance(item,dict):
-            need(all(isinstance(key,str) for key in item),'JSON_KEY_INVALID')
-            return '{'+','.join(text(key)+':'+text(item[key]) for key in sorted(item))+'}'
-        raise WebError('WEB_JSON_SCALAR')
-    return text(value).encode('utf-8','strict')
+    def emit(item,depth=0):
+        nonlocal nodes
+        nodes+=1;need(nodes<=node_cap and depth<=32,'JSON_COMPLEXITY_CAP')
+        if item is None:append('null')
+        elif type(item) is bool:append('true' if item else 'false')
+        elif type(item) is int:append(integer_text(item))
+        elif isinstance(item,str):
+            # Escape in bounded pieces; never form an unbounded escaped string.
+            append('"')
+            for offset in range(0,len(item),8192):
+                append(json.dumps(item[offset:offset+8192],ensure_ascii=False,allow_nan=False)[1:-1])
+            append('"')
+        elif isinstance(item,list):
+            need(depth<32,'JSON_COMPLEXITY_CAP');append('[')
+            for i,child in enumerate(item):
+                if i:append(',')
+                emit(child,depth+1)
+            append(']')
+        elif isinstance(item,dict):
+            need(depth<32 and all(isinstance(key,str) for key in item),'JSON_KEY_INVALID');append('{')
+            for i,key in enumerate(sorted(item)):
+                if i:append(',')
+                emit(key,depth+1);append(':');emit(item[key],depth+1)
+            append('}')
+        else:raise WebError('WEB_JSON_SCALAR')
+    emit(value)
+    return size if size_only else bytes(output)
 
-def parse(raw, cap=CAP):
+def parse(raw, cap=CAP, *, build=False, charged=False):
+    if not charged:A['_budget'].get().charge_json(len(raw))
     need(len(raw)<=cap,'JSON_CAP')
     text=raw.decode('utf-8','strict')
     depth=nodes=0;quoted=escaped=scalar=False
@@ -83,7 +123,7 @@ def parse(raw, cap=CAP):
         elif c in ']}':depth-=1;scalar=False
         elif c in ' \n\r\t,:':scalar=False
         elif not scalar:nodes+=1;scalar=True
-        need(depth<=32 and nodes<=500000,'JSON_COMPLEXITY_CAP')
+        need(depth<=32 and nodes<=(BUILD_NODES if build else 500000),'JSON_COMPLEXITY_CAP')
     def pairs(rows):
         out={}
         for k,v in rows:
@@ -152,8 +192,9 @@ class Session:
         if binding['venue']=='native':
             need(sys.platform=='darwin' and __import__('platform').machine()=='arm64','NATIVE_PLATFORM_REQUIRED')
             for f in ('asset_context_sha256','asset_source_sha256','toolchains_sha256'):digest_shape(binding[f])
-            A['check_context'](self.candidate,self.paths,self.run,binding['asset_context_sha256'])
-            A['checked_source'](self.candidate,self.paths,self.run,binding['asset_context_sha256'],binding['asset_source_sha256'])
+            with A['_budget'].get().asset_lane():
+                A['check_context'](self.candidate,self.paths,self.run,binding['asset_context_sha256'])
+                A['checked_source'](self.candidate,self.paths,self.run,binding['asset_context_sha256'],binding['asset_source_sha256'])
         else:
             need(binding['asset_context_sha256'] is None and binding['asset_source_sha256'] is None,'PORTABLE_NATIVE_PREFIX_FORBIDDEN')
             digest_shape(binding['toolchains_sha256'])
@@ -174,8 +215,14 @@ class Session:
         return {'schema':'web-evidence@1','kind':kind,'candidate':asdict(self.candidate),'run_id':self.run,'roots':A['paths_dict'](self.paths),'owner':self.owner,'preflight':self.preflight,'asset_context_sha256':self.binding['asset_context_sha256'],'toolchains_sha256':self.binding['toolchains_sha256'],'upstream':upstream,'payload':payload}
 
     def write(self,kind,payload,upstream=None):
-        raw=canonical(self.envelope(kind,payload,upstream or {}))+b'\n'
-        need(len(raw)<=KINDS[kind],'RECORD_CAP',kind);parse(raw,KINDS[kind])
+        value=self.envelope(kind,payload,upstream or {})
+        raw=canonical(value,KINDS[kind]-1,node_cap=BUILD_NODES if kind=='build' else 500000)+b'\n'
+        if kind=='build':
+            base={k:v for k,v in payload.items() if k not in ('subjects','source_tool_associations')}
+            original=canonical(base,BUILD_INPUT,node_cap=BUILD_NODES,size_only=True)
+            need(len(raw)-original<=BUILD_ADDITION,'BUILD_ADDITION_CAP')
+        # Structural construction plus bounded emission replaces only the
+        # producer self-parse. Independent consumers still parse every load.
         with A['root_for'](self.paths.evidence_dir) as root:
             row=A['create_once'](root,'web-'+kind+'.json',raw,A['ReadDomain'](KINDS[kind],True))
         return {'schema':'web-'+kind+'-token@1','record_sha256':row['sha256'],'context_binding_sha256':self.binding_sha}
@@ -186,7 +233,7 @@ class Session:
             row,raw=A['read_bytes'](root,'web-'+kind+'.json',A['ReadDomain'](KINDS[kind],True))
         A['_budget'].get().charge(len(raw),json_bytes=True)
         need(row['sha256']==expected,'RECORD_DIGEST_MISMATCH',kind)
-        value=parse(raw,KINDS[kind]);keys(value,self.envelope(kind,None,{}))
+        value=parse(raw,KINDS[kind],build=kind=='build',charged=True);keys(value,self.envelope(kind,None,{}))
         need({k:v for k,v in value.items() if k not in ('payload','upstream')}=={k:v for k,v in self.envelope(kind,None,{}).items() if k not in ('payload','upstream')},'CALLER_BINDING_MISMATCH',kind)
         return value
 
@@ -433,8 +480,11 @@ def prepare_esbuild_alias(session):
     return s.write('esbuild-preparation',{'route':route,'member':expected,'mode':0o755,'pre_state':pre,'subjects':s.subjects,'post_tokens':post,'action':action})
 
 
-def begin_web(s,preparation):
-    s.write('attempt',{'binding_sha256':s.binding_sha})
+def begin_web(s,preparation,completion_leaf=COMPLETION_LEAF):
+    need(completion_leaf==COMPLETION_LEAF,'COMPLETION_LEAF_INVALID')
+    with A['root_for'](s.paths.evidence_dir) as root:
+        need(is_absent(root,COMPLETION_LEAF) and is_absent(root,'web-failure.json'),'COMPLETION_TARGET_EXISTS')
+    s.write('attempt',{'binding_sha256':s.binding_sha,'completion_leaf':completion_leaf})
     s.verify_esbuild_preparation(preparation)
     originals=s.check_originals();tools=s.check_installed(originals)
     source=[]
@@ -451,7 +501,7 @@ def begin_web(s,preparation):
     s.intern_subject(s.paths.exported_source,'web/node_modules/highlight.js/styles/github-dark-dimmed.css')
     context_subjects=list(s.subjects)
     plan=s.prepare_css_inputs();plan_token=s.write('css-inputs',{'plan':plan,'subjects':s.subjects},{'preparation':preparation})
-    token=s.write('context',{'binding_sha256':s.binding_sha,'preparation':preparation,'css_inputs':plan_token['record_sha256'],'sources':source,'tools':tools,'originals':originals,'subjects':context_subjects},{'preparation':preparation,'asset_source':s.binding['asset_source_sha256']})
+    token=s.write('context',{'binding_sha256':s.binding_sha,'completion_leaf':completion_leaf,'preparation':preparation,'css_inputs':plan_token['record_sha256'],'sources':source,'tools':tools,'originals':originals,'subjects':context_subjects},{'preparation':preparation,'asset_source':s.binding['asset_source_sha256']})
     return token
 
 
@@ -461,8 +511,8 @@ def load_context(s,context,preparation):
     # Registry is inherited once, with identical prefix IDs.
     s.subjects=[];s.subject_index={}
     record=s.load('context',context);p=record['payload']
-    keys(p,{'binding_sha256','preparation','css_inputs','sources','tools','originals','subjects'})
-    need(p['binding_sha256']==s.binding_sha and p['preparation']==preparation,'CALLER_BINDING_MISMATCH')
+    keys(p,{'binding_sha256','completion_leaf','preparation','css_inputs','sources','tools','originals','subjects'})
+    need(p['binding_sha256']==s.binding_sha and p['completion_leaf']==COMPLETION_LEAF and p['preparation']==preparation,'CALLER_BINDING_MISMATCH')
     s.import_subjects(p['subjects'])
     plan=s.load('css-inputs',p['css_inputs'])['payload']
     need(plan['subjects'][:len(s.subjects)]==s.subjects,'SUBJECT_PREFIX_MISMATCH')
@@ -551,8 +601,10 @@ def validate_css(s,operations,plan,observations):
                 expected=plan['entries'][offset+index]
                 need(item['relative_path']==expected['relative_path'] and item['extension']==expected['extension'],'CSS_SCAN_INPUT_INVALID')
                 raw=s.resolve_subject_token(expected['source_token']);need(item['content']==decode(raw),'CSS_SCAN_INPUT_INVALID');state['entries'].append(item['relative_path'])
+            need(len(returned)<=MAX_ROWS,'CANDIDATE_CAP')
             for candidate in returned:
-                if candidate not in state['candidates']:state['candidates'].append(candidate)
+                if candidate not in state['candidates']:
+                    need(len(state['candidates'])<MAX_ROWS,'CANDIDATE_CAP');state['candidates'].append(candidate)
         elif stage=='candidate_build':
             keys(d,{'module','candidates','output','utilities'})
             state=states.get(d['module']);need(state and state['phase'] in ('compile','scan'),'CSS_STATE_CHAIN_INVALID')
@@ -670,7 +722,8 @@ def validate_build(s,payload,context,preparation,*,stored_required=False):
     need(not stored_required or set(stored)=={'subjects','source_tool_associations'},'BUILD_REGISTRY_MISSING')
     payload={k:v for k,v in payload.items() if k not in stored}
     p=load_context(s,context,preparation)
-    keys(payload,{'complete','profile','observations','css_operations','modules','final_bundle','counts'})
+    keys(payload,{'resource_profile','complete','profile','observations','css_operations','modules','final_bundle','counts'})
+    need(payload['resource_profile']==RESOURCE_PROFILE,'RESOURCE_PROFILE')
     need(payload['complete'] is True,'CALL_INCOMPLETE');profile=payload['profile']
     keys(profile,{'command','mode','isProduction','isWorker','root','base','appType','input','output','build','css','esbuild','define','env','config_dependencies','plugins'})
     need(profile['command']=='build' and profile['mode']=='production' and profile['isProduction'] is True and profile['isWorker'] is False and profile['root']==str(s.paths.exported_source/'web') and profile['base']=='/' and profile['appType']=='spa','PROFILE_UNSUPPORTED')
@@ -694,9 +747,10 @@ def validate_build(s,payload,context,preparation,*,stored_required=False):
         keys(item,{'ordinal','name','hooks'});need(type(item['ordinal']) is int and item['ordinal']==ordinal,'PLUGIN_ORDINAL')
         if item['name']=='vite:react-babel':need(not item['hooks'],'REACT_BABEL_PROFILE')
     keys(payload['counts'],{'observations','operations','processed_bytes'})
-    js_size(payload['counts']['processed_bytes'],512*MiB)
+    js_size(payload['counts']['processed_bytes'],BODY_WORK)
     need(type(payload['counts']['observations']) is int and payload['counts']['observations']==len(payload['observations']) and type(payload['counts']['operations']) is int and payload['counts']['operations']==len(payload['css_operations']),'COUNTS_MISMATCH')
-    observations=payload['observations'];need(type(observations) is list and len(observations)<=MAX_ROWS,'OBSERVATION_CAP')
+    observations=payload['observations'];need(type(observations) is list and len(observations)<=MAX_OBSERVATIONS,'OBSERVATION_CAP')
+    need(len(profile['plugins'])<=256,'PLUGIN_CAP')
     ids={};calls={};refs={};snapshots={};delta=None;render={};render_inputs={};write=None;generated=None
     hooks={'load','transform','moduleParsed','resolveId','renderStart','renderChunk','generateBundle','writeBundle','buildEnd','closeBundle','banner','footer','intro','outro'}
     entry_keys={'path','preliminary_path','type','bytes','module_ids','sourcemap_path'}
@@ -770,9 +824,14 @@ def validate_build(s,payload,context,preparation,*,stored_required=False):
         need(after['bytes']=={'size':len(final),'sha256':sha(final)},'CSS_FINALIZE_CHAIN_INVALID')
         need(any(o['kind']=='bundle_delta' and payload['profile']['plugins'][calls[o['call_id']]['plugin_ordinal']]['name']=='vite:css-post' and any(r['path']==filename and r['bytes']==after['bytes'] for r in o['after_entries']) for o in observations),'CSS_FINALIZE_CHAIN_INVALID')
     need(payload['modules'] and len(payload['modules'])<=MAX_ROWS,'MODULE_CAP')
+    memberships=0;module_ids=set();all_members=set()
     for module in payload['modules']:
         keys(module,{'id','code','calls','source'})
         need(module['calls'] and all(c in calls for c in module['calls']),'GENERATED_RELATION_MISSING')
+        need(module['id'] not in module_ids,'MODULE_DUPLICATE');module_ids.add(module['id'])
+        memberships+=len(module['calls']);need(memberships<=MAX_OBSERVATIONS,'CALL_MEMBERSHIP_CAP')
+        need(len(set(module['calls']))==len(module['calls']) and not all_members.intersection(module['calls']),'CALL_MEMBERSHIP_DUPLICATE');all_members.update(module['calls'])
+        need(module['calls']==sorted(module['calls'],key=lambda v:int(v[1:])),'CALL_ORDER')
         current=None
         if module['source'] is not None:
             path=Path(module['source']);need(path.is_relative_to(s.paths.exported_source/'web'),'MODULE_SOURCE_ROOT')
@@ -798,6 +857,9 @@ def validate_build(s,payload,context,preparation,*,stored_required=False):
     associations=source_associations(s,p,payload)
     if stored:
         need(set(stored)=={'subjects','source_tool_associations'} and stored['subjects']==s.subjects and stored['source_tool_associations']==associations,'SOURCE_ASSOCIATION_MISMATCH')
+    need(sum(len(r['outer_ids']) for r in associations)<=MAX_OBSERVATIONS,'ASSOCIATION_MEMBERSHIP_CAP')
+    need(producer_work(payload)==payload['counts']['processed_bytes'],'BODY_WORK_MISMATCH')
+    metadata_limits(payload)
     s.associations=associations
     return result
 
@@ -827,6 +889,128 @@ def source_associations(s,context,payload):
     return rows
 
 
+def producer_work(payload):
+    total=0;seen=set()
+    def digests(value):
+        nonlocal total
+        if isinstance(value,dict):
+            if set(value)=={'size','sha256'}:
+                js_size(value['size']);digest_shape(value['sha256']);total+=value['size']
+                need(total<=BODY_WORK,'AGGREGATE_BODY_CAP')
+            else:
+                for child in value.values():digests(child)
+        elif isinstance(value,list):
+            for child in value:digests(child)
+    digests(payload['observations']);digests(payload['final_bundle']);digests(payload['profile']['env'])
+    def snapshots(value):
+        nonlocal total
+        if isinstance(value,dict):
+            if set(value)=={'path','size','sha256','descriptor_sha256'}:
+                need(value['path'] not in seen,'SNAPSHOT_REFERENCE_DUPLICATE')
+                seen.add(value['path']);js_size(value['size']);total+=value['size']
+                need(total<=BODY_WORK and len(seen)<=MAX_ROWS,'AGGREGATE_BODY_CAP')
+            else:
+                for child in value.values():snapshots(child)
+        elif isinstance(value,list):
+            for child in value:snapshots(child)
+    snapshots(payload['css_operations'])
+    return total
+
+
+def metadata_limits(payload):
+    # Occurrences of logical names, including repeated names, never a set of paths.
+    names=0
+    fields={'path','preliminary_path','sourcemap_path','chunk_id','document_id','reference_id',
+            'declared_file_name','resolved_file_name','names','original_names','watch_ids',
+            'module_ids','id','source','module','file','base','from','relative','relative_path',
+            'filename','cssAssetName','originalFileName','source_site','config_dependencies',
+            'input','root','dir','outDir','assetsDir','name'}
+    def visit(value,field='',depth=0):
+        nonlocal names
+        need(depth<=32,'JSON_COMPLEXITY_CAP')
+        if isinstance(value,str):
+            raw=value.encode('utf-8','strict');need(len(raw)<=4096,'METADATA_STRING_CAP')
+            if field in fields:
+                names+=len(raw);need(names<=4*MiB,'AGGREGATE_NAME_CAP')
+        elif isinstance(value,dict):
+            for key,child in value.items():visit(child,key,depth+1)
+        elif isinstance(value,list):
+            need(len(value)<=MAX_OBSERVATIONS,'METADATA_LIST_CAP')
+            for child in value:visit(child,field,depth+1)
+    visit(payload)
+
+
+def build_token(s,value):
+    keys(value,{'schema','record_sha256','context_binding_sha256'})
+    need(value['schema']=='web-build-token@1' and value['context_binding_sha256']==s.binding_sha,'COMPLETION_TOKEN_INVALID')
+    digest_shape(value['record_sha256']);digest_shape(value['context_binding_sha256'])
+    return value
+
+
+def completion_body(s,context,preparation,token,leaf):
+    need(leaf==COMPLETION_LEAF,'COMPLETION_LEAF_INVALID')
+    digest_shape(context);digest_shape(preparation);build_token(s,token)
+    return {'schema':'web-completion@1','context_binding_sha256':s.binding_sha,
+            'context_sha256':context,'preparation_sha256':preparation,
+            'completion_leaf':leaf,'build_token':token}
+
+
+def completion_prefix(s,context,preparation,leaf):
+    need(leaf==COMPLETION_LEAF,'COMPLETION_LEAF_INVALID')
+    attempt=s.load('attempt',s.raw(s.paths.evidence_dir,'web-attempt.json',KINDS['attempt'])[0]['sha256'])
+    need(attempt['payload']=={'binding_sha256':s.binding_sha,'completion_leaf':leaf},'COMPLETION_ATTEMPT_MISMATCH')
+    p=load_context(s,context,preparation)
+    need(p['completion_leaf']==leaf,'COMPLETION_LEAF_INVALID')
+    with A['root_for'](s.paths.evidence_dir) as root:
+        need(is_absent(root,'web-failure.json'),'FAILED_BUILD')
+
+
+def completion_write(root,leaf,raw):
+    # Preserve an original write/fsync failure if close fails as well.
+    with A['parent_at'](root,leaf) as (parent,name):
+        fd=os.open(name,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW|os.O_CLOEXEC,0o600,dir_fd=parent)
+        primary=None
+        try:
+            view=memoryview(raw)
+            while view:
+                n=os.write(fd,view[:65536]);need(n>0,'COMPLETION_WRITE_INCOMPLETE');view=view[n:]
+            os.fsync(fd)
+        except BaseException as exc:
+            primary=exc;raise
+        finally:
+            try:os.close(fd)
+            except OSError as exc:
+                if primary is None:raise
+                primary.add_note('secondary completion close: '+str(exc)[:4096])
+    row,actual=A['read_bytes'](root,leaf,A['ReadDomain'](4096,True))
+    need(actual==raw and row['sha256']==sha(raw),'COMPLETION_READBACK_MISMATCH')
+
+
+def complete_build(s,context,preparation,token,leaf=COMPLETION_LEAF):
+    body=completion_body(s,context,preparation,token,leaf)
+    completion_prefix(s,context,preparation,leaf)
+    checked_build(s,context,preparation,token['record_sha256'])
+    raw=canonical(body,4095)+b'\n';need(len(raw)==555,'COMPLETION_TOKEN_INVALID')
+    with A['root_for'](s.paths.evidence_dir) as root:
+        completion_write(root,leaf,raw)
+    # main emits these SAME canonical bytes only after the guarded readback.
+    return body
+
+
+def accept_build(s,context,preparation,leaf=COMPLETION_LEAF):
+    need(leaf==COMPLETION_LEAF,'COMPLETION_LEAF_INVALID')
+    descriptor,raw=s.raw(s.paths.evidence_dir,leaf,4096)
+    value=parse(raw,4096)
+    keys(value,{'schema','context_binding_sha256','context_sha256','preparation_sha256','completion_leaf','build_token'})
+    expected=completion_body(s,context,preparation,value['build_token'],leaf)
+    need(value==expected and raw==canonical(expected,4095)+b'\n','COMPLETION_TOKEN_INVALID')
+    completion_prefix(s,context,preparation,leaf)
+    checked_build(s,context,preparation,value['build_token']['record_sha256'])
+    after,reopened=s.raw(s.paths.evidence_dir,leaf,4096)
+    need(after==descriptor and reopened==raw,'COMPLETION_UNSTABLE')
+    return value['build_token']
+
+
 def publish_build(s,context,preparation,payload):
     result=validate_build(s,payload,context,preparation)
     return s.write('build',{**payload,'subjects':s.subjects,'source_tool_associations':s.associations},{'context':context,'preparation':preparation,'css_relation':result})
@@ -853,14 +1037,17 @@ def seal_dist(s,context,preparation,build,asset_dist=None):
     need(expected=={r['relative']:{k:r[k] for k in ('size','sha256')} for r in dist['files']},'DIST_CENSUS_MISMATCH')
     if s.binding['venue']=='native':
         need(asset_dist is not None,'ASSET_DIST_TOKEN_REQUIRED')
-        A['check_dist_before_copy'](s.candidate,s.paths,s.run,s.binding['asset_context_sha256'],asset_dist)
+        with A['_budget'].get().asset_lane():
+            A['check_dist_before_copy'](s.candidate,s.paths,s.run,s.binding['asset_context_sha256'],asset_dist)
     return s.write('dist',{'census':dist,'public':public,'generated':generated},{'context':context,'preparation':preparation,'build':build,'asset_dist':asset_dist})
 
 
 def retain_web_notices(s,context,preparation,build,dist,asset_app,components):
     p=load_context(s,context,preparation);record=checked_build(s,context,preparation,build)
     d=s.load('dist',dist);need(d['upstream']['build']==build,'DIST_BINDING')
-    if s.binding['venue']=='native':A['load_record']('app',s.candidate,s.paths,s.run,asset_app,s.binding['asset_context_sha256'])
+    if s.binding['venue']=='native':
+        with A['_budget'].get().asset_lane():
+            A['load_record']('app',s.candidate,s.paths,s.run,asset_app,s.binding['asset_context_sha256'])
     rows=[];refused=[];retained=[]
     owners={'web/node_modules/'+r['package']:r['package'] for r in p['originals'] if 'darwin-arm64' not in r['package']}
     owners['web/node_modules/highlight.js']='highlight.js'
@@ -870,6 +1057,7 @@ def retain_web_notices(s,context,preparation,build,dist,asset_app,components):
         path=module['source']
         if path and '/node_modules/' in path:
             prefix,relative=path.rsplit('/node_modules/',1);parts=relative.split('/');name='/'.join(parts[:2]) if parts[0].startswith('@') else parts[0];base=Path(prefix+'/node_modules/'+name).relative_to(s.paths.exported_source).as_posix();owners[base]=name
+    need(len(owners)<=1024,'OWNER_CAP')
     for base,owner in sorted(owners.items()):
         owner_id=sha(base.encode());notices=[];problem=None
         try:
@@ -954,7 +1142,7 @@ def add_arguments(parser):
     for name in ('web-caller','web-context-sha256','web-preparation-sha256','web-build-sha256','web-dist-sha256','web-notices-sha256','web-tool-originals'):
         parser.add_argument('--'+name,required=True,action=A['Once'])
 
-@A['bounded']
+@web_bounded
 def verify_arguments(args):
     s=Session(parse(args.web_caller.encode(),256*1024))
     need(str(s.originals)==args.web_tool_originals,'ORIGINALS_CALLER_MISMATCH')
@@ -962,22 +1150,22 @@ def verify_arguments(args):
     return verify_web(s,args.web_context_sha256,args.web_preparation_sha256,args.web_build_sha256,args.web_dist_sha256,args.web_notices_sha256,args.asset_app_sha256,parse(raw,8*MiB))
 
 
-@A['bounded']
+@web_bounded
 def main():
-    p=argparse.ArgumentParser(allow_abbrev=False);p.add_argument('stage',choices=['prepare','begin','read-input','snapshot','publish-build','accept-build','seal-dist','notices','verify','fail','token-field'])
-    p.add_argument('--caller');p.add_argument('--context');p.add_argument('--preparation');p.add_argument('--build');p.add_argument('--dist');p.add_argument('--notices');p.add_argument('--asset-dist');p.add_argument('--asset-app');p.add_argument('--index',type=int);p.add_argument('--token');p.add_argument('--field');p.add_argument('--original-exit',type=int)
+    p=argparse.ArgumentParser(allow_abbrev=False);p.add_argument('stage',choices=['prepare','begin','read-input','snapshot','publish-build','complete-build','accept-build','seal-dist','notices','verify','fail','token-field'])
+    p.add_argument('--caller');p.add_argument('--context');p.add_argument('--preparation');p.add_argument('--build');p.add_argument('--dist');p.add_argument('--notices');p.add_argument('--asset-dist');p.add_argument('--asset-app');p.add_argument('--index',type=int);p.add_argument('--token');p.add_argument('--field');p.add_argument('--original-exit',type=int);p.add_argument('--completion-leaf',default=COMPLETION_LEAF)
     a=p.parse_args()
     if a.stage=='token-field':
         token=parse(a.token.encode(),4096);value=token[a.field];print(json.dumps(value,separators=(',',':')) if isinstance(value,(dict,list)) else value);return
     s=Session(parse(a.caller.encode(),256*1024))
     if a.stage=='prepare':result=prepare_esbuild_alias(s)
-    elif a.stage=='begin':result=begin_web(s,a.preparation)
+    elif a.stage=='begin':result=begin_web(s,a.preparation,a.completion_leaf)
     elif a.stage=='read-input':result=css_read(s,a.context,a.preparation,parse(sys.stdin.buffer.read(4097),4096))
     elif a.stage=='snapshot':result=snapshot(s,a.context,a.preparation,a.index,sys.stdin.buffer.read(CAP+1))
-    elif a.stage=='publish-build':result=publish_build(s,a.context,a.preparation,parse(sys.stdin.buffer.read(32*MiB+1),32*MiB))
-    elif a.stage=='accept-build':
-        _,raw=s.raw(s.paths.evidence_dir,'web-completion.jsonl',4096);need(raw.count(b'\n')==1 and raw.endswith(b'\n'),'COMPLETION_TOKEN_INVALID');result=parse(raw,4096)
-        keys(result,{'schema','record_sha256','context_binding_sha256'});need(result['schema']=='web-build-token@1' and result['context_binding_sha256']==s.binding_sha,'COMPLETION_TOKEN_INVALID');s.load('build',result['record_sha256'])
+    elif a.stage=='publish-build':result=publish_build(s,a.context,a.preparation,parse(sys.stdin.buffer.read(BUILD_INPUT+1),BUILD_INPUT,build=True))
+    elif a.stage=='complete-build':
+        result=complete_build(s,a.context,a.preparation,parse(sys.stdin.buffer.read(4097),4096),a.completion_leaf)
+    elif a.stage=='accept-build':result=accept_build(s,a.context,a.preparation,a.completion_leaf)
     elif a.stage=='seal-dist':result=seal_dist(s,a.context,a.preparation,a.build,a.asset_dist)
     elif a.stage=='notices':
         mapping=parse(sys.stdin.buffer.read(8*MiB+1),8*MiB);rows,token=retain_web_notices(s,a.context,a.preparation,a.build,a.dist,a.asset_app,mapping['components']);result={'rows':rows,'token':token}
