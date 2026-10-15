@@ -35,3 +35,7 @@ working_hours:
       window: { start: "09:00", end: "18:00", timezone: "Asia/Hong_Kong" }
       interval: "2h"
       days: [mon, tue, wed, thu, fri]
+
+# Independent THR307 nightly disk sweeper; deletion requires explicit activation.
+disk_sweep:
+  mode: "dry_run"
