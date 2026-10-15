@@ -366,6 +366,12 @@ See the [current naming contract](../superpowers/specs/2026-10-09-identity-names
 
 ## Naming v1 core, API and routing source
 
+Naming install alone uses N-SAC-1 transaction-time structural admission over the
+selected org DB, actual task/audit dependencies, closed naming interactions and
+unchanged complete workflow/Pause/move validators. Global workflow/legacy
+references retain their strict contract; naming readiness grants no authority.
+Reads and ordinary non-install refreshes never invoke admission or install names.
+
 Org identity names use the same outer coroutine gate as supported roster and
 consumer writes, with profile-before-publication ordering preserved. The thread
 RLock is distinct and cannot serialize yielding coroutine writers. Naming helpers

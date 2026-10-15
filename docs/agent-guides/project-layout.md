@@ -4,7 +4,12 @@
 
 `runtime/identities/schema.py` owns the org-only naming v1 layout and closed
 validation; `registry.py` owns bounded canonical capture, lifecycle reconciliation,
-typed classification and the internal CAS rename/audit transaction. OrgState and
+typed classification and the internal CAS rename/audit transaction.
+`admission.py` owns installer-only DB structural admission; it calls unchanged
+workflow/Pause/move/naming validators without global reference construction.
+`scripts/verify_naming_structural_admission.py` and its independent literal
+`scripts/fixtures/naming_structural_admission/` assets provide finite synthetic
+verification outside retired Python suites, with owned new task scratch only. OrgState and
 existing supported caller intervals integrate it. Generic Database/runtime-audit
 never install these tables. Naming fixtures and independent literals live under
 `tests/helpers/identity_names/`; the finite core selector file is

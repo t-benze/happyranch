@@ -6,11 +6,12 @@ The optional team_move_operations table is explicit org-owned storage, never
 generic Database/runtime-audit bootstrap or startup installation in B. Exact
 owned layout/all-record validation and complete independent release references
 include its presence without modifying naming/pause/workflow/v2 history.
-All three whole-release consumers (workflow validation, legacy authority evidence
-and naming installation/reconciliation) select validated optional presence.
-Naming captures workflow/naming/pause/move layouts in one coherent read view,
-builds independent references outside the short SQL transaction, then compares
-the entire database again within that transaction. Absence remains supported;
+Workflow release validation and legacy authority evidence retain complete
+independent whole-release references with validated optional presence. Naming
+installation uses N-SAC-1 structural admission inside its existing transaction:
+selected/actual DB association, task/audit dependency shapes, naming interaction
+closure and unchanged complete workflow/Pause/move/naming validators. It builds
+no whole-release reference. Non-install reconciliation retains its prior behavior. Absence remains supported;
 malformed presence refuses without installation, stripping or history repair.
 C1 binds the coordinator at Orchestrator construction and reads durable holds
 in actual allocation/claim transactions without installing schema. Absent layout
@@ -123,7 +124,9 @@ and adds no retry, persistent history or read-time writer.
 Schema2 multi-org attachment installs naming only after baseline admission; no
 flat-schema1 conversion or history-only ID mining is added. Naming failure is
 volatile readiness with an actionable category. Original strict team/attachment
-and complete workflow/reference guards remain. Every naming-installed F/E/G needs
+and complete workflow validators remain; global workflow/legacy reference
+guards are unchanged. Installer-only admission is naming structural compatibility,
+never a global authority grant. Every naming-installed F/E/G needs
 a compatible naming reader; existing explicit workflow commands preserve exact
 naming row identities/revisions and reject malformed naming without repair.
 One daemon controls each organization; no naming cross-process lease is added.
