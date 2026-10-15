@@ -1367,7 +1367,9 @@ sidecar_ready="$(systemctl_number happyranch-tsnet-sidecar.service ActiveEnterTi
 check_staged_credential() {
   local path="$1" directory="$2" name="$3" resolved_path file_metadata directory_metadata
   [[ "$path" == "$directory/$name" ]] || fail "staged credential provenance mismatch"
-  resolved_path="$(readlink -f -- "$path")" || fail "staged credential provenance query failed"
+  # Canonical metadata inspection must traverse root-private systemd staging.
+  # Service access is proved separately below under the happyranch identity.
+  resolved_path="$(sudo readlink -f -- "$path")" || fail "staged credential provenance query failed"
   [[ "$resolved_path" == "$path" ]] || fail "staged credential escape mismatch"
   sudo test -f "$path" || fail "staged credential type mismatch"
   test_false -L "$path" || fail "staged credential symlink mismatch"
