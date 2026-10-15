@@ -87,9 +87,22 @@ offline originals and exact pinned identities in `packaging/notice-data/`.
 Installed originals take precedence. The CPython fallback requires matching
 effective toolchain and three stdlib hashes in both Analysis lanes; the ten
 Radix fallbacks require pinned metadata and every actual emitted source hash.
-Unsafe paths, corrupt inputs and conflicts refuse retention. Scroll-bar 2.3.8
-remains missing, all six unresolved labels remain, and strict license verification
-still blocks ZIP/release finalization with `closure_complete=false`.
+Unsafe paths, corrupt inputs and conflicts refuse retention. The web dependency
+now installs a local derivative of upstream scroll-bar source
+`8ca9ba5ea52de03308fe8ced94f7b159a44d28ff` (upstream version 2.3.7), including
+its byte-preserved original MIT LICENSE. This replaces the registry 2.3.8 input;
+it does not establish notice provenance for that former publication. See
+[`web/vendor/react-remove-scroll-bar/README.md`](../web/vendor/react-remove-scroll-bar/README.md)
+for source authentication, locked-tool compilation, reproducible tarball and
+installed-byte checks. The ordinary node_modules package remains within this
+collector's existing third-party attribution boundary. The checked-in tarball
+and all preparation inputs survive the release wrapper's git archive export;
+ordinary npm ci requires no local package lifecycle build.
+
+All six unresolved labels remain, and strict license verification still blocks
+ZIP/release finalization with `closure_complete=false`. Scoped non-native
+package/browser checks do not establish final emitted closure, legal
+applicability, actual native custody or Mac acceptance.
 
 Failure diagnostics include
 `web-attribution.json`: first 100 rejected records, string fields capped at 512
