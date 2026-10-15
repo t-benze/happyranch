@@ -202,23 +202,38 @@ class Controller:
         bound = min(end, self.effective_end(), self.inherited_alarm,
                     *(value for _, value in self.timer_phases))
         require(bound > time.monotonic(), "phase absolute deadline exhausted")
-        self.timer_phases.append(("native" if native else "python", bound))
-        failed = False
+        depth = len(self.timer_phases)
+        error: BaseException | None = None
+        error_traceback: Any = None
         try:
+            self.timer_phases.append(("native" if native else "python", bound))
             self._timer_sync()
             yield
             require(time.monotonic() < bound, "phase absolute deadline exhausted")
-        except BaseException:
-            failed = True
+        except BaseException as exc:
+            # Caller recording happens after this unwind. Pin the actual
+            # incoming object/traceback before an armed alarm can interrupt it.
+            error, error_traceback = exc, exc.__traceback__
+            self.record_error("phase", exc)
             raise
         finally:
-            self.timer_phases.pop()
             try:
-                self._timer_sync()
-            except BaseException as exc:
-                self.record_error("timer-restore", exc)
-                if not failed:
-                    raise
+                try:
+                    del self.timer_phases[depth:]
+                except BaseException as exc:
+                    if error is None:
+                        error, error_traceback = exc, exc.__traceback__
+                    self.record_error("phase-state-restore", exc)
+                finally:
+                    try:
+                        self._timer_sync()
+                    except BaseException as exc:
+                        if error is None:
+                            error, error_traceback = exc, exc.__traceback__
+                        self.record_error("timer-restore", exc)
+            finally:
+                if error is not None:
+                    raise error.with_traceback(error_traceback)
 
     def publish_end(self) -> None:
         end = self.effective_end()
@@ -235,15 +250,36 @@ class Controller:
     @contextmanager
     def bounded(self, end: float) -> Any:
         previous = getattr(self.local_bounds, "end", self.deadline)
-        self.local_bounds.end = min(previous, end)
+        error: BaseException | None = None
+        error_traceback: Any = None
         try:
+            self.local_bounds.end = min(previous, end)
             self.remaining()
             self._timer_sync()
             yield
             self.remaining()
+        except BaseException as exc:
+            error, error_traceback = exc, exc.__traceback__
+            self.record_error("bounded", exc)
+            raise
         finally:
-            self.local_bounds.end = previous
-            self._timer_sync()
+            try:
+                try:
+                    self.local_bounds.end = previous
+                except BaseException as exc:
+                    if error is None:
+                        error, error_traceback = exc, exc.__traceback__
+                    self.record_error("bound-state-restore", exc)
+                finally:
+                    try:
+                        self._timer_sync()
+                    except BaseException as exc:
+                        if error is None:
+                            error, error_traceback = exc, exc.__traceback__
+                        self.record_error("timer-restore", exc)
+            finally:
+                if error is not None:
+                    raise error.with_traceback(error_traceback)
 
     def remaining(self, cap: float = 30) -> float:
         if not self.observer_stop.is_set():
