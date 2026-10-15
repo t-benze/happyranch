@@ -25,7 +25,7 @@ design-system/primitives/Tabs.tsx	70	150	border-transparent	legacy default Tailw
 features/agents/AgentsPage.tsx	210	80	border-transparent	legacy default Tailwind special colour utility
 features/audit/AuditPage.tsx	195	63	border-transparent	legacy default Tailwind special colour utility
 features/health/HealthPage.tsx	549	34	border-transparent	legacy default Tailwind special colour utility
-features/jobs/JobDetailPage.tsx	291	72	bg-current	legacy default Tailwind special colour utility
+features/jobs/JobDetailPage.tsx	260	72	bg-current	legacy default Tailwind special colour utility
 features/jobs/JobDetailPane.tsx	23	44	bg-transparent	legacy default Tailwind special colour utility
 features/jobs/JobDetailPane.tsx	25	43	bg-transparent	legacy default Tailwind special colour utility
 features/kb/KbPage.tsx	152	12	border-transparent	legacy default Tailwind special colour utility
