@@ -197,6 +197,17 @@ null/partial/malformed. Descriptive headers are ignored for authority and cannot
 override bound denial. No auth/helper/permission change; shared bearer possession
 cannot cryptographically prove an unbound caller is human.
 
+`GET /api/v1/orgs/{slug}/identities` and `happyranch identities list --json`
+expose additive `naming_diagnostic`: null for ready rows, otherwise a finite
+captured naming category. Unknown, malformed or missing captured codes fall back
+to `naming_database_unavailable` when any row is unavailable, including a fresh
+metadata-read failure with a stale null diagnostic. The response never exposes
+raw exception text, paths or SQL. Older servers may omit the field: absence is
+UNKNOWN, never readiness. Canonical roster, definition revisions and existing
+read/auth errors retain their behavior; GET never reconciles or installs names.
+This category is an observation, not proof of a serving source SHA or root cause.
+Source publication does not establish restored naming or authorize live recovery.
+
 IdentityView separates canonical_id, kind, lifecycle, addressable_name,
 name_revision, canonical_definition_revision and naming_status. Agent list and
 enrollment summaries add addressable_name/name_revision/naming_status; existing
