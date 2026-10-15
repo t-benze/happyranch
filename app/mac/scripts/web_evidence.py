@@ -572,7 +572,7 @@ def blob(s,row):
 
 
 def validate_css(s,operations,plan,observations):
-    need(len(operations)<=MAX_ROWS,'OPERATION_CAP');states={};styles={};assets={};finalized={};minifies=[];emits=[];last_chunk=None;last_url=None
+    need(len(operations)<=MAX_ROWS,'OPERATION_CAP');states={};styles={};assets={};finalized={};minifies={};emits=[];chunks={};urls={}
     def b(row):return decode(blob(s,row))
     for ordinal,op in enumerate(operations,1):
         keys(op,{'schema','id','parent_outer_call','stage','data','status','error'})
@@ -636,10 +636,13 @@ def validate_css(s,operations,plan,observations):
                 if value['present']:
                     need(b(value['css'])==styles[value['id']],'CSS_STYLE_STATE_INVALID')
                     if not value['transform_only']:joined+=styles[value['id']]
-            need(joined==b(d['css']),'CSS_CONCAT_MISMATCH');last_chunk=joined;last_url=None
+            # Vite awaits its emission queues between chunk capture and URL /
+            # finalization. Other render calls may interleave during that wait;
+            # only the recorded enclosing call owns this CSS chain.
+            need(joined==b(d['css']),'CSS_CONCAT_MISMATCH');chunks[parent]=joined;urls.pop(parent,None)
         elif stage=='css_url':
             keys(d,{'pass','input','output','replacements','cssAssetName','base','assetsDir'})
-            value=b(d['input']);need(value==(last_url if last_url is not None else last_chunk),'CSS_URL_RELATION_INVALID')
+            value=b(d['input']);need(parent in chunks and value==urls.get(parent,chunks[parent]),'CSS_URL_RELATION_INVALID')
             # Offsets are JS UTF16 code units. Reconstruct exact literal replaces.
             raw=value.encode('utf-16-le');cursor=0;pieces=[]
             for r in d['replacements']:
@@ -647,16 +650,17 @@ def validate_css(s,operations,plan,observations):
                 need(offset>=cursor and raw[offset:offset+len(matched)]==matched,'CSS_URL_RELATION_INVALID')
                 if d['pass']=='asset':need(r['fileHash'] in {o['reference_id'] for o in observations.values() if o['kind']=='plugin_emission'},'CSS_URL_RELATION_INVALID')
                 pieces.extend([raw[cursor:offset],r['replacement'].encode('utf-16-le')]);cursor=offset+len(matched)
-            pieces.append(raw[cursor:]);need(b''.join(pieces).decode('utf-16-le')==b(d['output']),'CSS_URL_RELATION_INVALID');last_url=b(d['output'])
+            pieces.append(raw[cursor:]);need(b''.join(pieces).decode('utf-16-le')==b(d['output']),'CSS_URL_RELATION_INVALID');urls[parent]=b(d['output'])
         elif stage=='css_minify':
             keys(d,{'input','options','code','inlined','output'})
-            need(d['inlined'] is False and d['options']=={'loader':'css','target':['es2020','edge88','firefox78','chrome87','safari14'],'charset':'utf8','logLevel':None,'logLimit':None,'logOverride':None,'legalComments':None,'minify':True} and b(d['code'])==b(d['output']),'CSS_MINIFY_INPUT_MISMATCH');minifies.append(d)
+            need(d['inlined'] is False and d['options']=={'loader':'css','target':['es2020','edge88','firefox78','chrome87','safari14'],'charset':'utf8','logLevel':None,'logLimit':None,'logOverride':None,'legalComments':None,'minify':True} and b(d['code'])==b(d['output']),'CSS_MINIFY_INPUT_MISMATCH');minifies.setdefault(parent,[]).append(d)
         elif stage=='css_finalize':
             keys(d,{'input','hoist','hoisted','minify','minified','marker','output'})
-            need(b(d['input'])==(last_url if last_url is not None else last_chunk),'CSS_FINALIZE_CHAIN_INVALID')
+            need(parent in chunks and b(d['input'])==urls.get(parent,chunks[parent]),'CSS_FINALIZE_CHAIN_INVALID')
             if not d['hoist']:need(b(d['input'])==b(d['hoisted']),'CSS_FINALIZE_CHAIN_INVALID')
             if d['minify']:
-                need(minifies and b(minifies[-1]['input'])==b(d['hoisted']) and b(minifies[-1]['output'])==b(d['minified']),'CSS_MINIFY_INPUT_MISMATCH')
+                own_minifies=minifies.get(parent,[])
+                need(own_minifies and b(own_minifies[-1]['input'])==b(d['hoisted']) and b(own_minifies[-1]['output'])==b(d['minified']),'CSS_MINIFY_INPUT_MISMATCH')
             else:need(b(d['hoisted'])==b(d['minified']),'CSS_MINIFY_INPUT_MISMATCH')
             need(d['marker']=='/*$vite$:1*/' and b(d['output'])==b(d['minified'])+d['marker'],'CSS_FINALIZE_CHAIN_INVALID');finalized[parent]=b(d['output'])
         elif stage=='css_emit':

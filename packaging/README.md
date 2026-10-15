@@ -393,7 +393,9 @@ it is not asserted equivalent to automatic scanner discovery.
 
 Private public-hook envelopes, HTML/core snapshots and original patched CSS
 operations retain actual argument/result associations through genuine emission,
-final bundle and write. Unavailable core internal references stay null. Python
+final bundle and write. CSS chunk, URL and minifier chains follow their recorded
+enclosing render call across interleaved emission-queue waits. Unavailable core
+internal references stay null. Python
 publish/read stages validate caller-held context/preparation/build/dist/app
 bindings, original bytes and finite relation graphs. Exact stat integers never
 round-trip through JavaScript. The final observer passes the actual successful
