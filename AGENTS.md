@@ -1,5 +1,20 @@
 # Project: HappyRanch - Multi-Agent Org Runtime
 
+**Independent THR307 nightly disk sweeper — Founder seq48–51, ROOT TASK11518.**
+`runtime/daemon/disk_sweeper.py` adds machine-local03:00, default-dry-run, sequential
+org sweeping under one1800s monotonic batch window, with an owned stoppable worker
+process group. Only actual terminal-owner/terminal-root scratch and registered
+clean retained-ref worktrees can pass fresh jobs/process/recursive-age/containment
+checks; unknown retains. Preserve manifests/locks/output, dirty worktrees and
+branches. No legacy receipt/count/rotation policy is imported into this new
+mechanism; legacy cleanup, flags and seven sessions are unchanged. Dry run never
+chmods/removes/prunes. One JSON/existing-shaped audit reports attributable allocated
+removals and unknown/partial/unreached scope, never physical freed-byte invention.
+No activation/deployment follows source delivery. Read the [current contract](docs/superpowers/specs/2026-10-15-nightly-disk-sweeper.md)
+and runtime guide before changing it; independent review/scoped disposable QA and
+normal hooks/static checks remain mandatory. Python units stay retired.
+
+
 **Disabled coding release catalog K0 — Founder THR139seq562/563, ROOT TASK10693.**
 GET `/api/v1/orgs/{slug}/workflows/release-templates/coding/1` authenticates the
 existing bearer and resolves an existing org before reading the constant package
