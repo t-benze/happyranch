@@ -142,7 +142,7 @@ def main() -> int:
         if not Path(args.python).is_absolute():
             raise RuntimeError("interpreter must be absolute")
         version = subprocess.check_output([args.python, "-I", "-c", "import sys; print('.'.join(map(str,sys.version_info[:2])))"], text=True).strip()
-        if version not in {"3.12", "3.13", "3.14"}:
+        if version not in {"3.12", "3.14"}:
             raise RuntimeError("unsupported Python")
         receipt["python"] = version
         receipt["source_sha"] = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=source, text=True).strip()

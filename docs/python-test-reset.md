@@ -74,10 +74,13 @@ behavioral regressions can be detected only later when their coverage executes.
 
 Fresh Product E2E runs **schedule only**, `0 19 * * *` (19:00 UTC / 03:00
 Asia/Shanghai), on default-branch immutable `github.sha`. Baseline Python
-3.12/3.13/3.14 and existing TERM3.12/INT3.14 launcher diagnostics feed
+3.12/3.14 and existing TERM3.12/INT3.14 launcher diagnostics feed
 `Daily Product E2E Health`. It is never a merge check. No local E2E alias,
 manual/PR/push/release dispatch, auto-retry or extra schedule is supported.
-First scheduled execution is **PENDING**; prior first-slice receipts remain
+Scheduled historical runs38482572306 and38644465643 were observed and failed
+at their own immutable sources. Corrected behavior remains **PENDING** until
+the existing daily default-source lane executes the repair; historical3.13
+failures and all-six-cell evidence remain unchanged. Prior first-slice receipts remain
 historical evidence at their own source, not daily/final-head verification.
 The bounded launcher uses one baseline-scenario cap480 (other five commands
 and cancellation scenarios240), clipped by original start+720 and shared by
@@ -151,7 +154,7 @@ missing/wrong bearer, colliding IDs across two orgs, and UI org switching.
 Jobs, threads, cancellation/late callback and actual daemon restart/recovery
 follow. The first eight cases are implemented in the separately authorized
 standalone lane; [its case record](../e2e/README.md) distinguishes source from
-actual execution/authoring evidence. The daily-only matrix is 3.12/3.13/3.14; first scheduled run is PENDING. The aggregate requires every cell/variant, exact
+actual execution/authoring evidence. The daily-only matrix is 3.12/3.14; historical scheduled runs38482572306/38644465643 failed; corrected behavior is pending. The aggregate requires every cell/variant, exact
 source, zero skips and cleanup; no installed ruleset enforcement is inferred.
 Public API creates ordinary tasks; the built browser verifies lifecycle and
 alpha-beta-alpha isolation. No ordinary-task creation UI is added or covered.
@@ -183,7 +186,7 @@ corrections have no behavioral, persistence, sanitation or fit proof yet.
 The [E04 case/control records](../e2e/README.md#e04-jobs-prefix-task-10686--thr-291)
 carry all four authoring answers and consumer mapping. Source/static checks do
 not establish execution, assertion sensitivity, fit, sanitation or cleanup.
-All new behavior/proof remains MISSING/UNEXECUTED; first daily PENDING per owner.
+All new behavior/proof remains MISSING/UNEXECUTED; corrected daily behavior pending after observed historical failures.
 E05 and later cancellation/restart remain future work; no entire-program PASS.
 The480 baseline/240 other commands/720 cutoff/60 cleanup/120 export/900 hard
 bounds and19UTC daily-only cadence remain; no extra trigger/build/test merge
@@ -230,11 +233,11 @@ The E05 witness prefix is bound to its actual byte/record offset, with every
 E07 suffix record accounted. [Case and four-answer records](../e2e/README.md#e07-c-source-increment--task-10773)
 retain all missing proof. R/full remains HELD, with no new restart/rotation code.
 C50 uses fixed16/12/8/6/8 partitions within unchanged480/original720;425 is
-unmeasured arithmetic. Daily-only19UTC and the five artifacts are unchanged.
+unmeasured arithmetic. Daily-only19UTC and the four execution artifacts are unchanged.
 Source-only authoring is not independent review, merge, execution or acceptance.
 All behavior/sensitivity/provenance/fit/closure/sanitation proof is UNEXECUTED;
 dedicated controls UNAUTHORED; protected12 and repetitions unauthorized.
 General/actual callback integration SKIPPED THR243seq42; retired units untouched.
 The live cancel-CLI print mismatch and E04 output-cap/persistent-stop remain
 unresolved. Root TASK10680 owns delivery/daily acceptance, TASK10555 owns
-first-daily/Pause (PENDING per owner). No entire-reset or test-authoring PASS.
+corrected daily/Pause behavior (pending after historical failures). No entire-reset or test-authoring PASS.

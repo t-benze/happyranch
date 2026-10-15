@@ -85,8 +85,8 @@ class PauseBrowser:
         # Detail is reached through the actual list link, then genuinely reloaded.
         path = f"/api/v1/orgs/alpha/tasks/{root}"
         with (
-            self.b.response(path, mode="action"),
-            self.b.response(path + "/recall", mode="action", tree=True),
+            self.b.response(path, mode="action", document=f"/orgs/alpha/tasks/{root}"),
+            self.b.response(path + "/recall", mode="action", document=f"/orgs/alpha/tasks/{root}", tree=True),
         ):
             main.locator(f'a[href="/orgs/alpha/tasks/{root}"]').first.click(timeout=self.c.remaining(self.b.page_timeout)*1000)
             self.c.remaining()

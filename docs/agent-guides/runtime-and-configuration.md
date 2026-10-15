@@ -1256,7 +1256,8 @@ The former default `not integration` selection was deleted, including its
 unmarked component, contract and system acceptance cases. Git history preserves
 that source; do not restore it as a hidden unit or renamed E2E suite.
 `scripts/local_ci.sh python` refuses with exit 2. `all` runs source boundary and
-Web lint/static checks on Node 24 and reports units RETIRED and daily E2E PENDING.
+Web lint/static checks on Node 24 and reports units RETIRED. Its literal daily
+PENDING message means corrected behavior is unproved; historical schedules failed.
 There is no default Python selection: pytest requires explicit existing canonical
 platform file selectors, or the isolated parent with `-m integration`.
 
@@ -1278,10 +1279,13 @@ behavioral regressions can be detected only later when their coverage executes.
 
 Fresh Product E2E runs **schedule only**, `0 19 * * *` (19:00 UTC / 03:00
 Asia/Shanghai), on default-branch immutable `github.sha`. Baseline Python
-3.12/3.13/3.14 and existing TERM3.12/INT3.14 launcher diagnostics feed
+3.12/3.14 and existing TERM3.12/INT3.14 launcher diagnostics feed
 `Daily Product E2E Health`. It is never a merge check. No local E2E alias,
 manual/PR/push/release dispatch, auto-retry or extra schedule is supported.
-First scheduled execution is **PENDING**; prior first-slice receipts remain
+Scheduled historical runs38482572306 and38644465643 were observed and failed
+at their own immutable sources. Corrected behavior remains **PENDING** until
+the existing daily default-source lane executes the repair; historical3.13
+failures and all-six-cell evidence remain unchanged. Prior first-slice receipts remain
 historical evidence at their own source, not daily/final-head verification.
 Engineering_manager owns daily failure/missing-evidence triage through existing
 tasks/threads; no new notifications or guaranteed response SLA is implied.

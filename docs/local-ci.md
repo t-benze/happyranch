@@ -18,10 +18,13 @@ behavioral regressions can be detected only later when their coverage executes.
 
 Fresh Product E2E runs **schedule only**, `0 19 * * *` (19:00 UTC / 03:00
 Asia/Shanghai), on default-branch immutable `github.sha`. Baseline Python
-3.12/3.13/3.14 and existing TERM3.12/INT3.14 launcher diagnostics feed
+3.12/3.14 and existing TERM3.12/INT3.14 launcher diagnostics feed
 `Daily Product E2E Health`. It is never a merge check. No local E2E alias,
 manual/PR/push/release dispatch, auto-retry or extra schedule is supported.
-First scheduled execution is **PENDING**; prior first-slice receipts remain
+Scheduled historical runs38482572306 and38644465643 were observed and failed
+at their own immutable sources. Corrected behavior remains **PENDING** until
+the existing daily default-source lane executes the repair; historical3.13
+failures and all-six-cell evidence remain unchanged. Prior first-slice receipts remain
 historical evidence at their own source, not daily/final-head verification.
 Engineering_manager owns daily failure/missing-evidence triage through existing
 tasks/threads; no new notifications or guaranteed response SLA is implied.
@@ -60,7 +63,7 @@ stubs. Target600s/hard900s includes setup/actions/cleanup; actions stop720s with
 cleanup/evidence reserves. Missing/failed/skipped cells, wrong source/version,
 incomplete diagnostics/artifacts or unknown cleanup give nonzero daily health.
 The Actions summary identifies the actual source, expected `e2e-3.12`,
-`e2e-3.13`, `e2e-3.14`, `e2e-cancel-TERM`, `e2e-cancel-INT` artifacts,
+`e2e-3.14`, `e2e-cancel-TERM`, `e2e-cancel-INT` artifacts,
 7-day retention, job states and missing/failure evidence. Launcher cleanup is
 not product cancellation/restart coverage. The case record keeps four authoring
 answers and twelve UNEXECUTED/unauthorized protected defect proposals;
@@ -903,7 +906,7 @@ Merged PR1025 (`d88ba446`) supersedes the historical PR1022 feature-shard and
 behavioral merge-check configuration under THR-291 seq69. PR/main checks are now
 lint/static only; retained C1–C10/platform/callback sources are not automatic
 merge requirements. Product E2E runs daily from default-branch source at 19:00 UTC;
-its first observed scheduled execution remains PENDING. No PR/manual/ad hoc
+scheduled historical runs38482572306/38644465643 failed; corrected behavior remains pending. No PR/manual/ad hoc
 execution, causal/repetition allocation or held M proof follows. Historical
 feature failures, in-flight run38104839795 and all held proof remain authentic;
 source inspection, scoped QA and independent review cannot claim behavioral PASS.
@@ -945,7 +948,7 @@ corrections have no behavioral, persistence, sanitation or fit proof yet.
 The [E04 case/control records](../e2e/README.md#e04-jobs-prefix-task-10686--thr-291)
 carry all four authoring answers and consumer mapping. Source/static checks do
 not establish execution, assertion sensitivity, fit, sanitation or cleanup.
-All new behavior/proof remains MISSING/UNEXECUTED; first daily PENDING per owner.
+All new behavior/proof remains MISSING/UNEXECUTED; corrected daily behavior pending after observed historical failures.
 E05 and later cancellation/restart remain future work; no entire-program PASS.
 The480 baseline/240 other commands/720 cutoff/60 cleanup/120 export/900 hard
 bounds and19UTC daily-only cadence remain; no extra trigger/build/test merge
@@ -965,7 +968,7 @@ guard sensitivity, denial immutability, delivery, sanitation, closure and measur
 fit remain MISSING/UNEXECUTED; protected12/RED-restoration-GREEN/repetitions remain
 unauthorized/unexecuted. General integration SKIPPED; Python units RETIRED.
 Lint-only PR/main checks, daily-only19UTC cadence,480 common scenarios clipped by
-original720, cleanup60/export120, target600/hard900 and existing five artifacts
+original720, cleanup60/export120, target600/hard900 and four execution artifacts
 are unchanged. TASK10555 retains first-daily collection/Pause acceptance; collected
 results must be joined to their actual source SHA. Later cancellation/late-callback/
 restart and full daily acceptance remain unfinished root-owned work.
@@ -991,14 +994,14 @@ The E05 witness prefix is bound to its actual byte/record offset, with every
 E07 suffix record accounted. [Case and four-answer records](../e2e/README.md#e07-c-source-increment--task-10773)
 retain all missing proof. R/full remains HELD, with no new restart/rotation code.
 C50 uses fixed16/12/8/6/8 partitions within unchanged480/original720;425 is
-unmeasured arithmetic. Daily-only19UTC and the five artifacts are unchanged.
+unmeasured arithmetic. Daily-only19UTC and the four execution artifacts are unchanged.
 Source-only authoring is not independent review, merge, execution or acceptance.
 All behavior/sensitivity/provenance/fit/closure/sanitation proof is UNEXECUTED;
 dedicated controls UNAUTHORED; protected12 and repetitions unauthorized.
 General/actual callback integration SKIPPED THR243seq42; retired units untouched.
 The live cancel-CLI print mismatch and E04 output-cap/persistent-stop remain
 unresolved. Root TASK10680 owns delivery/daily acceptance, TASK10555 owns
-first-daily/Pause (PENDING per owner). No entire-reset or test-authoring PASS.
+corrected daily/Pause behavior (pending after historical failures). No entire-reset or test-authoring PASS.
 
 ### E07 R hold restoration — TASK-10804
 
@@ -1025,8 +1028,8 @@ measured-fit claim. Complete raw C evidence survives; only validated Pause
 observation stamps differ in nonmutating cross-observation copies. Aggregate
 independently reopens serialized content and exact same-observation joins.
 
-Daily19UTC/default immutable source/Ubuntu/Python3.12,3.13,3.14 plus TERM3.12/
-INT3.14/five7day artifacts and TASK10555/JOB4257/Pause ownership are unchanged.
+Daily19UTC/default immutable source/Ubuntu/Python3.12,3.14 plus TERM3.12/
+INT3.14/four7day execution artifacts and TASK10555/JOB4257/Pause ownership are unchanged.
 Root10680 alone assesses owner timing and the hold; no new collector or run.
 Required checks remain lint/static-only, normal hooks, independent full review,
 scoped static QA and manager guarded merge. All behavior/sensitivity/provenance/
