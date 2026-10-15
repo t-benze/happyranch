@@ -29,6 +29,23 @@ Feature compositions keep using the stable `@/design-system/...` import paths.
 - Components are pure props-in/events-out unless a documented role requires an
   isolation-safe local provider. Reuse them instead of feature-local copies.
 
+## Self-hosted typography
+
+The three `@font-face` rules in `tokens.css` load unmodified full upstream
+variable TTFs from `public/fonts/`: Hanken Grotesk normal 400–700 and
+Newsreader normal 400–600 / italic 400. Family names, weight ranges,
+`font-display: swap`, fallbacks and automatic optical sizing stay in the
+existing type system. No external font service is used.
+
+The font payload is 1,080,240 bytes before transport compression, replacing
+229,724 bytes of WOFF2 subsets (+850,516 bytes). The full original
+`HankenGrotesk-OFL.txt` and `Newsreader-OFL.txt` add 8,796 bytes alongside the
+fonts. Vite's existing public-copy step carries all five files unchanged
+into `dist/fonts/`. Immutable upstream revisions, true Git trees, blobs and
+notice relations are factual metadata in
+[`font-assets.json`](../packaging/notice-data/font-assets.json); that record
+does not establish complete emitted or native package attribution.
+
 ## Storybook is the catalogue
 
 Storybook supersedes the former committed JSON registry and in-app
