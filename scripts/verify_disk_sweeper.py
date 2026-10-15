@@ -293,6 +293,48 @@ def c8():
         return 'Function dry-run tree bytes/modes and Git registrations unchanged; invocation trace has no mutation. Public manual CLI real worker exit0, one audit summary and JSON; candidate roots remain.'
 
 
+# Unsupported aliases are literal unknown values, never guessed terminal states.
+UNKNOWN_JOB_STATES = ('cancelled', 'succeeded', 'interrupted', 'timed_out', 'unknown', ' completed ', '', None, b'completed')
+
+
+def candidate_contents(*roots):
+    return {
+        str(path): (path.lstat().st_mode, path.read_bytes() if path.is_file() else None)
+        for root in roots for path in (root, *root.rglob('*'))
+    }
+
+
+@contextmanager
+def refuse_mutations():
+    calls=[]
+    realgit=ds.git
+    def forbidden(name):
+        def fail(*a,**kw):
+            calls.append(name)
+            raise AssertionError('unexpected mutation: '+name)
+        return fail
+    def trace(repo,deadline,*args):
+        if args[:2] in (('worktree','remove'), ('worktree','prune')):
+            return forbidden('git '+args[1])()
+        return realgit(repo,deadline,*args)
+    with patch.object(ds,'git',trace), patch.object(os,'chmod',forbidden('chmod')), patch.object(os,'fchmod',forbidden('fchmod')), patch.object(os,'unlink',forbidden('unlink')), patch.object(os,'rmdir',forbidden('rmdir')):
+        yield calls
+    assert calls==[],calls
+
+
+def job_refusal(f,status,reason):
+    p=f.scratch('TASK-1');repo,q=f.worktree('TASK-2')
+    (p/'nested').chmod(0o555);q.chmod(0o555)
+    f.db.executemany('INSERT INTO jobs VALUES(?,?)',[('TASK-1',status),('TASK-2',status)]);f.db.commit()
+    before=candidate_contents(p,q);registered=f.git(repo,'worktree','list','--porcelain')
+    with refuse_mutations():r=f.sweep()
+    retained(r,p,reason);retained(r,q,reason)
+    assert before==candidate_contents(p,q)
+    assert registered==f.git(repo,'worktree','list','--porcelain')
+    assert all(phase['removed_attributable_bytes']==0 for phase in r['phases'].values()),r
+    return dict(status=repr(status),scratch=row(r,p)['reason'],worktree=row(r,q)['reason'],unchanged=True,mutation_calls=0)
+
+
 def c9():
     with fixture() as f:
         p=f.scratch('TASK-1')
@@ -309,10 +351,28 @@ def c9():
         with patch.object(os,'readlink',deny): retained(f.sweep(),z,'unknown_process_denied')
         f.db.execute('DROP TABLE jobs');f.db.commit()
         assert row(f.sweep(),z)['state']=='retained'
-        return 'Missing manifest/jobs, actual unreadable child directory, controlled proc syscall denial all retain. Proc denial injection is not actual OS-denial proof.'
+    unknown=[]
+    for status in UNKNOWN_JOB_STATES:
+        with fixture() as f:unknown.append(job_refusal(f,status,'unknown_job_status'))
+    return dict(evidence='Missing manifest/jobs, actual unreadable child directory, controlled proc syscall denial all retain. Proc denial injection is not actual OS-denial proof.',unknown_jobs=unknown)
 
 
 def c10():
+    active=[]
+    for status in ('pending','queued','running'):
+        with fixture() as f:active.append(job_refusal(f,status,'active_job'))
+    terminal=[]
+    for status in ('completed','failed','rejected'):
+        with fixture() as f:
+            p=f.scratch('TASK-1');repo,q=f.worktree('TASK-2')
+            f.db.executemany('INSERT INTO jobs VALUES(?,?)',[('TASK-1',status),('TASK-2',status)]);f.db.commit()
+            r=f.sweep()
+            assert row(r,p)['state']==row(r,q)['state']=='removed',r
+            assert not p.exists() and not q.exists()
+            assert str(q) not in f.git(repo,'worktree','list','--porcelain')
+            assert 'task/TASK-2' in f.git(repo,'branch','--list')
+            assert all(phase['removed_attributable_bytes']>0 for phase in r['phases'].values()),r
+            terminal.append(dict(status=status,scratch='removed',worktree='removed',branch_retained=True))
     with fixture() as f:
         p=f.scratch('TASK-1');repo,q=f.worktree('TASK-2')
         for status in ('pending','queued','running'):
@@ -333,7 +393,36 @@ def c10():
         with patch.object(ds,'git',change):r=f.sweep()
         assert row(r,q)['state']=='partial_or_unknown' and 'active_job' in row(r,q)['reason'],r
         assert q.stat().st_mode & 0o777==0o555 and not row(r,q).get('retry_count')
-        return 'Each job state blocks both phases; real Git failure followed by newly queued job refuses chmod/retry.'
+    retries=[]
+    for status in UNKNOWN_JOB_STATES[:4]:
+        with fixture() as f:
+            repo,q=f.worktree('TASK-1');q.chmod(0o555)
+            f.db.execute("INSERT INTO jobs VALUES('TASK-1','completed')");f.db.commit()
+            before=candidate_contents(q);registered=f.git(repo,'worktree','list','--porcelain')
+            real=ds.git;removes=[];mutations=[]
+            def change_to_unknown(repo,deadline,*args):
+                if args[:2]==('worktree','remove'):
+                    removes.append(args)
+                    assert len(removes)==1,'second removal attempted'
+                    try:return real(repo,deadline,'--THR307-controlled-invalid-option')
+                    except fs.Retain:
+                        f.db.execute('UPDATE jobs SET status=?',(status,));f.db.commit()
+                        raise
+                if args[:2]==('worktree','prune'):
+                    mutations.append('prune');raise AssertionError('unexpected prune')
+                return real(repo,deadline,*args)
+            def forbidden(*a,**kw):
+                mutations.append('permission/removal');raise AssertionError('mutation after first failure')
+            with patch.object(ds,'git',change_to_unknown), patch.object(os,'chmod',forbidden), patch.object(os,'fchmod',forbidden), patch.object(os,'unlink',forbidden), patch.object(os,'rmdir',forbidden):r=f.sweep()
+            item=row(r,q)
+            assert item['state']=='partial_or_unknown' and 'unknown_job_status' in item['reason'],r
+            assert item['first_remove_error'].startswith('git_failed:') and not item.get('retry_count'),r
+            assert len(removes)==1 and mutations==[]
+            assert before==candidate_contents(q) and registered==f.git(repo,'worktree','list','--porcelain')
+            assert r['outcome']=='error' and r['phases']['worktree']['attribution_unknown'],r
+            assert r['phases']['worktree']['removed_attributable_bytes']==0,r
+            retries.append(dict(status=status,state=item['state'],reason=item['reason'],remove_calls=1,repair_calls=0,unchanged=True))
+    return dict(active_jobs=active,native_terminal_controls=terminal,active_retry='Original newly queued job after real Git failure still refuses chmod/retry.',unknown_retries=retries)
 
 
 def c11():

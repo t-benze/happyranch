@@ -146,7 +146,9 @@ class Evidence:
                 if row['status'] in ('pending', 'queued', 'running'):
                     if ancestry(row['task_id']) == root:
                         raise Retain('active_job:' + row['status'])
-                elif row['status'] not in ('completed', 'failed', 'cancelled', 'rejected', 'succeeded', 'interrupted', 'timed_out'):
+                # Only native JobStatus terminal values are safe; TEXT storage
+                # cannot rule out unsupported aliases or malformed values.
+                elif row['status'] not in ('completed', 'failed', 'rejected'):
                     raise Retain('unknown_job_status')
         finally:
             conn.close()
