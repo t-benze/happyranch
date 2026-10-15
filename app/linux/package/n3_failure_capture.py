@@ -1166,11 +1166,12 @@ def hold_negative_unit_reference(boot: str | None, run: str | None) -> int:
         held()
         print(f"held {run} acquired", flush=True)
         # Ordered fences prevent a buffered old acknowledgement being reused.
-        stages = [f"{stage}-{edge}" for stage in ("live", "baseline", "before-stop", "after-stop", "final")
+        stages = [f"{stage}-{edge}" for stage in ("live", "baseline", "prepare-1", "prepare-2", "prepare-3", "prepare-4", "before-stop", "after-stop", "final")
                   for edge in ("before", "after")]
         with selectors.DefaultSelector() as selector:
             selector.register(sys.stdin, selectors.EVENT_READ)
-            for index in range(11):
+            index = 0
+            for _ in range(19):
                 command = b""
                 # Pipe reads may split a write. Accumulate one bounded frame,
                 # without assuming one read equals one whole command.
@@ -1186,10 +1187,15 @@ def hold_negative_unit_reference(boot: str | None, run: str | None) -> int:
                     library.sd_bus_close(bus)
                     print(f"released {run}", flush=True)
                     return 0
+                # Preparation may finish after any one of four observations.
+                # Only skip unused whole pairs, never duplicate/reorder a fence.
+                if command == b"check before-stop-before\n" and index in (6, 8, 10):
+                    index = 12
                 if index >= len(stages) or command != f"check {stages[index]}\n".encode("ascii"):
                     raise ValueError("invalid reference command")
                 held()
                 print(f"held {run} {stages[index]}", flush=True)
+                index += 1
     except Exception:
         # Fixed category only; no DBus errors, environment or traceback bytes.
         print("reference=unavailable", file=sys.stderr)

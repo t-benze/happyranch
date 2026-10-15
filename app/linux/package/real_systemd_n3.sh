@@ -281,64 +281,117 @@ if peers is not None:
 # supporting snapshot: the single-attempt execution history below proves that
 # no new sidecar process could have admitted traffic, including before READY.
 negative_peer_state() {
-  local online="$1" expected="$2" process identity
-  process="$(peer_process_identity)" || return 1
-  [[ "$process" == "$peer_started" ]] || return 1
-  identity="$(timeout --kill-after=1 3 sudo "$ts_dir/tailscale" --socket="$work/peer.sock" status --json 2>/dev/null | python -c '
+  local online="$1" expected="$2" process observation identity observed
+  process="$(peer_process_identity)" || { negative_refusal peer_process_query; return 1; }
+  [[ "$process" == "$peer_started" ]] || { negative_refusal peer_process_changed; return 1; }
+  observation="$( { local query_status=0; timeout --kill-after=1 3 sudo "$ts_dir/tailscale" --socket="$work/peer.sock" status --json 2>/dev/null || query_status=$?
+    printf 'peer_query_status=%s\n' "$query_status" >>"$diagnostics/missing-consumed-state.log" || return 1
+    (( query_status == 0 )); } | python -c '
 import ipaddress,json,sys
+sys.excepthook = lambda *_: print("peer_parser=refused", file=sys.stderr)
+def refuse(reason):
+    print("peer_refusal=" + reason, file=sys.stderr)
+    raise ValueError(reason)
 def unique(pairs):
     result = {}
     for key,value in pairs:
         if key in result:
-            raise ValueError("duplicate")
+            refuse("duplicate")
         result[key] = value
     return result
 def invalid_constant(_):
-    raise ValueError("nonfinite")
+    refuse("nonfinite")
 raw = sys.stdin.buffer.read(65537)
 if len(raw) > 65536:
-    raise ValueError("oversize")
+    refuse("oversize")
 data = json.loads(raw.decode("utf-8", "strict"), object_pairs_hook=unique, parse_constant=invalid_constant)
+if not isinstance(data,dict):
+    refuse("root_shape")
 own = data.get("Self")
 if (data.get("BackendState") != "Running" or not isinstance(own,dict)
         or own.get("ID") != sys.argv[1] or own.get("HostName") != "synthetic-peer-ci"):
-    raise ValueError("changed observer")
+    refuse("observer_changed")
 peers = data.get("Peer")
 if not isinstance(peers,dict):
-    raise ValueError("unavailable inventory")
+    refuse("inventory_unavailable")
 matches = []
 for key,peer in peers.items():
     if (not isinstance(key,str) or not key or not isinstance(peer,dict)
             or not isinstance(peer.get("HostName"),str)):
-        raise ValueError("malformed peer")
+        refuse("peer_shape")
     if peer["HostName"] == "home-sidecar-ci":
         matches.append(peer)
 if len(matches) != 1:
-    raise ValueError("ambiguous sidecar")
+    refuse("peer_missing_or_ambiguous")
 peer = matches[0]
 identity = peer.get("ID")
 ips = peer.get("TailscaleIPs")
 if (not isinstance(identity,str) or not identity.isascii() or not identity.isalnum()
-        or (sys.argv[3] != "new" and identity != sys.argv[3])
-        or peer.get("Online") is not (sys.argv[2] == "true")
-        or not isinstance(ips,list) or not ips or not all(isinstance(ip,str) and ip for ip in ips)):
-    raise ValueError("unconfirmed admission state")
+        or (sys.argv[2] != "new" and identity != sys.argv[2])):
+    refuse("identity_changed")
+if type(peer.get("Online")) is not bool:
+    refuse("online_nonboolean")
+if not isinstance(ips,list) or not ips or not all(isinstance(ip,str) and ip for ip in ips):
+    refuse("addresses_unavailable")
 for ip in ips:
     ipaddress.ip_address(ip)
-print(identity)
-' "$peer_node" "$online" "$expected" 2>/dev/null)" || return 1
-  process="$(peer_process_identity)" || return 1
-  [[ "$process" == "$peer_started" ]] || return 1
+print(identity, "true" if peer["Online"] else "false")
+' "$peer_node" "$expected" 2>>"$diagnostics/missing-consumed-state.log")" || { negative_refusal peer_observation; return 1; }
+  process="$(peer_process_identity)" || { negative_refusal peer_process_query; return 1; }
+  [[ "$process" == "$peer_started" ]] || { negative_refusal peer_process_changed; return 1; }
+  read -r identity observed <<<"$observation"
+  printf 'peer_online=%s\n' "$observed" >>"$diagnostics/missing-consumed-state.log" || return 1
+  # A valid observation is distinct from a requested predicate. Only the
+  # PRE-attempt acquisition uses either; errors never return a settling value.
+  if [[ "$online" == either ]]; then printf '%s' "$observed"; return 0; fi
+  [[ "$observed" == "$online" ]] || { negative_refusal peer_state_mismatch; return 1; }
   printf '%s' "$identity"
 }
+negative_refusal() {
+  # All callers supply fixed categories, never external bytes or raw errors.
+  case "$1" in
+    peer_process_query|peer_process_changed|peer_observation|peer_state_mismatch|reference_lost|live_predicate|baseline_predicate|prepare_history|prepare_boot|prepare_deadline|prepare_online|prepare_clock|prepare_sleep|prepare_stop) ;;
+    *) return 1 ;;
+  esac
+  printf 'refusal=%s\n' "$1" >>"$diagnostics/missing-consumed-state.log"
+}
+negative_prepare_offline() {
+  local enrolled="$1" baseline="$2" start now deadline observed attempt
+  start="$(python -c 'import time; print(time.monotonic_ns() // 1000)')" || { negative_refusal prepare_clock; return 1; }
+  # At most12s, and never beyond40s from holder launch. The original120s
+  # holder/125s outer bound stays unchanged; no new lifetime is allocated.
+  deadline=$((start + 12000000))
+  (( deadline <= negative_reference_started_us + 40000000 )) || deadline=$((negative_reference_started_us + 40000000))
+  for attempt in 1 2 3 4; do
+    now="$(python -c 'import time; print(time.monotonic_ns() // 1000)')" || { negative_refusal prepare_clock; return 1; }
+    (( now < deadline )) || { negative_refusal prepare_deadline; return 1; }
+    observed="$(negative_peer_state either "$enrolled")" || return 1
+    negative_unit_state "prepare-$attempt" || return 1
+    [[ "$(compact_boot_id)" == "$negative_boot" ]] || { negative_refusal prepare_boot; return 1; }
+    [[ "$negative_active $negative_sub $negative_result $negative_invocation $negative_ready $negative_main_started $negative_exec_pid $negative_main_pid $negative_control_pid $negative_restarts $negative_inactive_exit" == "$baseline" ]] || { negative_refusal prepare_history; return 1; }
+    now="$(python -c 'import time; print(time.monotonic_ns() // 1000)')" || { negative_refusal prepare_clock; return 1; }
+    (( now < deadline )) || { negative_refusal prepare_deadline; return 1; }
+    printf 'prepare_attempt=%s peer_online=%s\n' "$attempt" "$observed" >>"$diagnostics/missing-consumed-state.log" || return 1
+    case "$observed" in
+      false) return 0 ;;
+      true) ;;
+      *) negative_refusal peer_observation; return 1 ;;
+    esac
+    (( attempt < 4 )) || break
+    sleep 0.5 || { negative_refusal prepare_sleep; return 1; }
+  done
+  negative_refusal prepare_online
+  return 1
+}
+
 negative_reference_check() {
   local stage="$1" reply
-  [[ -n "${negative_ref_write:-}" && -n "${negative_ref_read:-}" ]] || return 1
+  [[ -n "${negative_ref_write:-}" && -n "${negative_ref_read:-}" ]] || { negative_refusal reference_lost; return 1; }
   # Isolate SIGPIPE if the holder has already disconnected, including when
   # called inside the EXIT cleanup; it cannot terminate the controller shell.
-  (printf 'check %s\n' "$stage" >&"$negative_ref_write") || return 1
-  IFS= read -r -t 8 reply <&"$negative_ref_read" || return 1
-  [[ "$reply" == "held $run_id $stage" ]] || return 1
+  (printf 'check %s\n' "$stage" >&"$negative_ref_write") || { negative_refusal reference_lost; return 1; }
+  IFS= read -r -t 8 reply <&"$negative_ref_read" || { negative_refusal reference_lost; return 1; }
+  [[ "$reply" == "held $run_id $stage" ]] || { negative_refusal reference_lost; return 1; }
   printf 'reference=%s held=true\n' "$stage" >>"$diagnostics/missing-consumed-state.log"
 }
 negative_reference_release() {
@@ -460,6 +513,8 @@ missing_consumed_state_refused() {
   local boot reply child_read child_write python_command status=0
   boot="$(compact_boot_id)"; [[ "$boot" != unavailable ]] || return 1
   python_command="$(command -v python)" || return 1
+  local negative_reference_started_us
+  negative_reference_started_us="$(python -c 'import time; print(time.monotonic_ns() // 1000)')" || return 1
   negative_ref_done=0
   # A one-shot RefUnit disconnects and loses its pin. Keep this exact client
   # alive from before the live tuple through the final stopped-history fence.
@@ -484,21 +539,22 @@ missing_consumed_state_refused() {
   return "$status"
 }
 missing_consumed_state_observed() {
-  local prior_ready prior_invocation enrolled baseline_exit attempt_invocation="" status=0 start_status stop_status
+  local prior_ready prior_invocation enrolled baseline_exit baseline_tuple attempt_invocation="" status=0 start_status stop_status
   local negative_boot negative_since negative_start_us negative_end_us
   negative_boot="$(compact_boot_id)"; [[ "$negative_boot" != unavailable ]] || return 1
   negative_unit_state live || return 1
   [[ "$negative_active:$negative_sub" == active:running && "$negative_ready" != 0 \
     && "$negative_main_started" != 0 && "$negative_main_pid" != 0 \
-    && "$negative_exec_pid" == "$negative_main_pid" && "$negative_main_started" -le "$negative_ready" ]] || return 1
+    && "$negative_exec_pid" == "$negative_main_pid" && "$negative_main_started" -le "$negative_ready" ]] || { negative_refusal live_predicate; return 1; }
   prior_ready="$negative_ready"; prior_invocation="$negative_invocation"
   enrolled="$(negative_peer_state true new)" || return 1
-  timeout --kill-after=1 15 sudo systemctl stop happyranch-managed.target happyranch-tsnet-sidecar.service happyranch-connector.service || return "$?"
+  timeout --kill-after=1 15 sudo systemctl stop happyranch-managed.target happyranch-tsnet-sidecar.service happyranch-connector.service || { local stop_error=$?; negative_refusal prepare_stop; return "$stop_error"; }
   negative_unit_state baseline || return 1
   [[ "$negative_active:$negative_sub" == inactive:dead && "$negative_ready" == "$prior_ready" \
     && "$negative_invocation" == "$prior_invocation" && "$negative_restarts" == 0 \
-    && "$negative_main_pid:$negative_control_pid" == 0:0 ]] || return 1
-  negative_peer_state false "$enrolled" >/dev/null || return 1
+    && "$negative_main_pid:$negative_control_pid" == 0:0 ]] || { negative_refusal baseline_predicate; return 1; }
+  baseline_tuple="$negative_active $negative_sub $negative_result $negative_invocation $negative_ready $negative_main_started $negative_exec_pid $negative_main_pid $negative_control_pid $negative_restarts $negative_inactive_exit"
+  negative_prepare_offline "$enrolled" "$baseline_tuple" || return 1
   baseline_exit="$negative_inactive_exit"
   sudo mv /var/lib/happyranch-tsnet-sidecar/credential.consumed "$work/credential.consumed.held" || return "$?"
   absent /etc/happyranch/enrollment.key
