@@ -209,3 +209,31 @@ notary UUID/log, stapled-app and final ZIP receipts. Parent TASK11196 owns publi
 admission and anonymous download verification; local matching never sets
 `available=true` or an approved URL. No Gatekeeper-bypass installation procedure
 is supplied. See accepted TASK11214 C01–C18 for the full independent contract.
+
+The freezer operation observer uses the original-backed PyInstaller input and
+bounded independent archive reader described in
+[the freezer contract](../../packaging/README.md#freezer-operation-custody).
+Darwin selects custody revision 2 with descriptor-relative snapshot writes and
+ZIP metadata budgets enforced before allocation. Historical revision 1 evidence
+remains attributed to its original input. The existing daemon freeze and app cp-R
+execute once; observers retain their
+actual generations and results. Preserve the full local scratch tree for the
+independent reader. Removing intermediate subjects makes custody unavailable.
+
+The strict `licenses` invocation additionally requires each of these original
+caller-held tokens exactly once:
+
+```sh
+--freezer-context-sha256 "$FREEZER_CONTEXT" \
+--freezer-inputs-sha256 "$FREEZER_INPUTS" \
+--freezer-output-sha256 "$FREEZER_OUTPUT" \
+--freezer-copy-sha256 "$FREEZER_COPY"
+```
+
+These tokens cannot be discovered from candidate diagnostics. The ordinary
+wrapper retains them synchronously and supplies them alongside unchanged asset
+expectations. Missing/foreign/partial observations refuse. Selected technical
+relations and portable fixtures do not resolve any of the six actual closures
+or establish native/full-reader execution. The fifth native allocation remains
+unused and separately source-pinned; whole replacement-input review remains a
+root-owned prerequisite before any changed-source native use.
