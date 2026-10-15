@@ -62,7 +62,7 @@ snapshot, and gains no new success assertion. Numeric modes are metadata, not
 token bytes, ACL identities, hashes, service capability, ownership proof or a
 readiness API. No local product exercise/build, Product E2E/Jenkins, publication,
 trigger registration, rerun, merge, deploy or permission change is authorized
-in the maker leg. Seq428, seq435 and seq455 are consumed1/1; current seq464 is0/1 pending root-manager publication after fresh exact-head gates.
+in the maker leg. Seq428, seq435, seq455 and seq464 are consumed1/1; COMPLETED11354 consumed seq464 with FAILED run38518279270 attempt1. The separate current seq491 allocation belongs to sole root TASK11547 below and remains0/1 pending root-manager publication after fresh exact-head gates.
 
 ## Harness continuation cases — THR228seq435 / TASK11067 / TASK11071
 
