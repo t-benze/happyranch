@@ -872,8 +872,18 @@ C3 schedule preparation/spec/execution uses the SAME pinned runtime SID;
 provider resume identity remains separate. Native caught materialization,
 integrity/package/repository failures retain sticky failed_cleanup after source
 terminalization; normal return is not cleanup proof. Agent custom-skill identity
-admission precedes reservations; exact validation-only refusals with completed
-rollback/temporary cleanup can settle, while real partial effects stay unknown.
+admission precedes reservations. Authority/profile sync/async intervals expose
+the same native disposition to explicit pre-effect validators, including stale
+rename/prompt revisions and roster/profile fallback paths. Naming refresh must
+complete its finite native transaction; caught reconciliation/publication/clone
+failures retain uncertainty even on a normal return. An unfenced interval or an
+HTTP status never certifies absence of effects. Exact validation exceptions may
+settle only after native rollback and terminal reconciliation finish. Scratch
+cleanup uses no-follow lstat: only ENOENT establishes literal absence; surviving
+entries (including dangling symlinks), inspection errors and prior uncertainty
+remain blockers, with actual cleanup causes retained in logs/exception notes.
+Cancellation, partial files/packages, failed rollback or uncertain compensation
+stay unknown. Existing unknown history is immutable; there is no clear writer.
 Retry initialization explicitly freezes EMPTY as well as nonempty schedules;
 missing legacy facts preserve history but cannot grant new retries or automatic
 ambiguous reentry. These are source corrections only; behavior UNEXECUTED,

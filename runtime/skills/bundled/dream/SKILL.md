@@ -69,3 +69,13 @@ happyranch dreams complete --org <slug> --dream-id <DREAM-ID> --from-file /tmp/d
 - Do not dispatch tasks or other agents from a dream.
 - Do not call `happyranch report-completion`.
 - Use `body_path` for KB candidate bodies so the JSON payload stays small.
+
+C3 writer disposition follows the actual authority/profile interval through
+native naming reconciliation and explicit leading validation. Stale rename or
+prompt CAS may settle only after successful native rollback/reconciliation;
+unfenced status alone proves nothing. Caught reconciliation/publication/clone
+failure, cancellation and partial effects retain unknown ownership. Skill scratch
+cleanup requires no-follow lstat ENOENT; surviving entries, inspection errors and
+prior uncertainty stay unknown. Cleanup causes are retained; existing unknown
+history is never cleared. These are source accounting rules, not behavioral
+verification or new execution/activation authority.

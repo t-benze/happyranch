@@ -333,16 +333,20 @@ def reconcile_namespace(org, namespace, *, install=False):
         validate_rows(*read_rows(conn), namespace)
 
 
-def refresh_names(org, *, install=False):
+def refresh_names(org, *, install=False, writer=None):
     """Diagnostic projection; baseline same-ID outcomes remain their owner's."""
     org.naming_readiness = 'unavailable'
     try:
         snapshot = capture_namespace(org.root, org.teams)
         reconcile_namespace(org, snapshot, install=install)
     except (ValueError, OSError, UnicodeError) as exc:
+        if writer is not None:
+            writer.uncertain = True
         org.naming_diagnostic = getattr(exc, 'code', 'naming_canonical_unavailable')
         return False
     except Exception:
+        if writer is not None:
+            writer.uncertain = True
         org.naming_diagnostic = 'naming_database_unavailable'
         return False
     org.naming_diagnostic = None
@@ -350,8 +354,8 @@ def refresh_names(org, *, install=False):
     return True
 
 
-def require_new_id(org, name):
-    if not refresh_names(org):
+def require_new_id(org, name, *, writer=None):
+    if not refresh_names(org, writer=writer):
         raise NamingError('naming_unavailable')
     with org.db.coherent_read_view() as conn:
         validate_names(conn, org_slug=org.slug)
@@ -363,40 +367,45 @@ def require_new_id(org, name):
 @asynccontextmanager
 async def naming_writer(org, interval):
     """Inside the existing gate, outside its short canonical/profile leases."""
-    refresh_names(org)
+    refresh_names(org, writer=interval.native_disposition)
     try:
         yield interval
     finally:
         # Route cancellation has already drained _finish_consumer_write before
         # this synchronous terminal projection. No await and no new lock.
-        refresh_names(org)
+        refresh_names(org, writer=interval.native_disposition)
 
 
 async def rename_owner(org, *, kind, canonical_id, label, expected_revision):
     editable_label(label)  # ID default exceptions never broaden editing.
     if type(expected_revision) is not int or expected_revision <= 0:
         raise NamingError('invalid_identity_revision')
-    async with org.workflow_authority.async_writer_interval(publisher='identity_name_changed'):
+    async with org.workflow_authority.async_writer_interval(publisher='identity_name_changed') as interval:
         async with org.teams_lock:
-            if not refresh_names(org):
+            if not refresh_names(org, writer=interval.native_disposition):
                 raise NamingError('naming_unavailable')
-            snapshot = capture_namespace(org.root, org.teams)
+            with interval.validation():
+                snapshot = capture_namespace(org.root, org.teams)
             async with org.db_lock:
                 with transaction(org.db) as conn:
-                    validate_names(conn, org_slug=org.slug)
-                    owners, claims = validate_rows(*read_rows(conn), snapshot)
-                    key = (kind, canonical_id)
-                    owner = owners.get(key)
-                    if owner is None or owner[2] == 'absent':
-                        raise NamingError('identity_owner_absent')
-                    if owner[4] != expected_revision:
-                        raise NamingError('stale_identity_revision')
-                    if owner[3] == label:
-                        return Subject(*owner, 'current')
-                    token = label.lower()
-                    claimed = claims.get(token)
-                    if claimed is not None and claimed[1:3] != key:
-                        raise NamingError('identity_name_unavailable')
+                    # Only this read-only segment may certify a refusal. The
+                    # transaction must still finish rollback before interval exit;
+                    # a rollback failure has a different exception identity.
+                    with interval.validation():
+                        validate_names(conn, org_slug=org.slug)
+                        owners, claims = validate_rows(*read_rows(conn), snapshot)
+                        key = (kind, canonical_id)
+                        owner = owners.get(key)
+                        if owner is None or owner[2] == 'absent':
+                            raise NamingError('identity_owner_absent')
+                        if owner[4] != expected_revision:
+                            raise NamingError('stale_identity_revision')
+                        if owner[3] == label:
+                            return Subject(*owner, 'current')
+                        token = label.lower()
+                        claimed = claims.get(token)
+                        if claimed is not None and claimed[1:3] != key:
+                            raise NamingError('identity_name_unavailable')
                     if claimed is None:
                         conn.execute('INSERT INTO identity_name_claims VALUES (?,?,?,?,?)', (token, *key, 0, 1))
                     else:

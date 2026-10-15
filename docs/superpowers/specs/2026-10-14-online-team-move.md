@@ -89,7 +89,22 @@ actual binding lease, then current task/session/agent facts are rechecked under
 ownership. Lexical native validation-only refusals may settle only the exact
 exception after successful rollback and affirmative temporary cleanup. HTTP
 status alone is never cleanup evidence; artifact/commit/compensation/interruption
-or uncertain audit tails remain unknown. Mutable package facts are re-read at
+or uncertain audit tails remain unknown. Authority and profile intervals carry
+the SAME native disposition through sync/async and fallback/naming wrappers.
+Explicit leading read-only validation covers stale rename/prompt CAS and sibling
+agent/roster refusals, with mutable checks retained under native locks. Rename
+certification reaches interval exit only after its native SQL rollback; failed
+rollback cannot inherit the validation exception identity. Completed naming
+refresh is finite reconciliation, not an absent-effect assumption; caught refresh
+failure stays uncertain through both validation refusal and normal return.
+Pre-fence filesystem work, caught clone failures, best-effort publication failure
+and incomplete profile closure likewise retain unknown ownership. No blanket
+unfenced rule, historical settlement rewrite or new recovery/clear writer exists.
+Temporary skill cleanup records the actual removal cause and uses no-follow
+lstat. Only ENOENT positively establishes the literal entry is absent; a surviving
+entry, dangling symlink, permission/I/O/other inspection failure cannot clear local
+uncertainty. Earlier uncertainty remains sticky. Cleanup/probe failures are
+logged and attached to an already-unwinding exception without replacing it. Mutable package facts are re-read at
 the SQL leaf; settings prevalidate before nested publication and preserve unknown
 ownership if a later section fails after an earlier commit. Existing writer
 lock order and strict immutable terminal history remain.

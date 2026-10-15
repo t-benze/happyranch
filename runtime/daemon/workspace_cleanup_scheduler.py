@@ -1198,7 +1198,7 @@ async def trigger_cleanup(
     Historical reports/associations stay unchanged. New trigger audits retain
     all six keys with ``report_thread_id`` null.
     """
-    with native_writer(org.db, publisher='workspace_cleanup', agents=(agent,)):
+    with native_writer(org.db, publisher='workspace_cleanup', agents=(agent,)) as writer:
         if now_utc is None:
             now_utc = datetime.now(timezone.utc)
 
@@ -1227,6 +1227,7 @@ async def trigger_cleanup(
                 ),
             )
         except Exception:
+            writer.uncertain = True
             logger.exception("task scratch cleanup report failed for %s", agent)
 
         # Bounded, fail-open measurement of THE AGENT'S OWN workspace — the gate
@@ -1289,6 +1290,7 @@ async def trigger_cleanup(
                     id=task_id, brief=brief, team=team, assigned_agent=agent,
                 ))
             except Exception:
+                writer.uncertain = True
                 # Ordinary insertion failed: do not enqueue or fabricate a
                 # successful trigger. Preserve the existing skip/retry behavior.
                 logger.exception(

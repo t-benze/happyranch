@@ -703,3 +703,13 @@ unregistration, preserved branch and protected identities. Possibly partial
 post-action/report anomaly halts later mutation. Terminal/results/history/report
 survive refusal/failure. No queue, retry, detached action, extra schedule,
 cache-only root action, deployment or historical authority is added.
+
+C3 writer disposition follows the actual authority/profile interval through
+native naming reconciliation and explicit leading validation. Stale rename or
+prompt CAS may settle only after successful native rollback/reconciliation;
+unfenced status alone proves nothing. Caught reconciliation/publication/clone
+failure, cancellation and partial effects retain unknown ownership. Skill scratch
+cleanup requires no-follow lstat ENOENT; surviving entries, inspection errors and
+prior uncertainty stay unknown. Cleanup causes are retained; existing unknown
+history is never cleared. These are source accounting rules, not behavioral
+verification or new execution/activation authority.

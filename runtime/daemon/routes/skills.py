@@ -13,7 +13,9 @@ from __future__ import annotations
 from runtime.orchestrator.producer_move import native_writer
 
 import hashlib
+import errno
 import logging
+import sys
 from pathlib import Path
 from typing import Optional
 
@@ -801,12 +803,38 @@ def _dry_materialize(
         if not (pkg_dir / "SKILL.md").is_file():
             raise FileNotFoundError("SKILL.md missing after materialization")
     finally:
-        shutil.rmtree(tmp, ignore_errors=True)
+        primary = sys.exception()
+        prior_uncertain = writer.uncertain if writer is not None else False
         if writer is not None:
-            # A failed inspection must not manufacture a clean disposition.
-            prior_uncertain = writer.uncertain
             writer.uncertain = True
-            writer.uncertain = prior_uncertain or tmp.exists()
+        try:
+            shutil.rmtree(tmp)
+        except OSError as cleanup:
+            # Preserve the actual cleanup cause, including on a normal validator
+            # return. Never replace an exception already unwinding from assembly.
+            _logger.warning("Skill scratch cleanup failed: %s", tmp, exc_info=True)
+            if primary is not None:
+                primary.add_note(f"skill scratch cleanup failed: {cleanup}")
+        if writer is not None:
+            try:
+                # Inspect the literal entry: dangling symlinks are survivors.
+                # Path.exists() suppresses OSError on Python 3.14.
+                tmp.lstat()
+            except FileNotFoundError as inspection:
+                if inspection.errno == errno.ENOENT:
+                    writer.uncertain = prior_uncertain
+                else:
+                    _logger.warning("Skill scratch absence unproven: %s", tmp, exc_info=True)
+                    if primary is not None:
+                        primary.add_note(f"skill scratch inspection failed: {inspection}")
+            except OSError as inspection:
+                _logger.warning("Skill scratch absence unproven: %s", tmp, exc_info=True)
+                if primary is not None:
+                    primary.add_note(f"skill scratch inspection failed: {inspection}")
+            else:
+                _logger.warning("Skill scratch entry survived cleanup: %s", tmp)
+                if primary is not None:
+                    primary.add_note(f"skill scratch entry survived cleanup: {tmp}")
 
 
 # ── Store write helpers ─────────────────────────────────────────────────

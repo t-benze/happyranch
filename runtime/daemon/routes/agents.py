@@ -544,7 +544,7 @@ async def init_agents(slug: str, body: InitBody, org: OrgDep):
             try:
                 async with _consumer_writer_interval(
                     org, publisher="init_agents", consumer=agent_name, preserve=True,
-                ):
+                ) as authority_change:
                     workspace = paths.workspaces_dir / agent_name
                     workspace.mkdir(parents=True, exist_ok=True)
                     yield {"data": _json.dumps({"agent": agent_name, "phase": "starting"})}
@@ -563,6 +563,8 @@ async def init_agents(slug: str, body: InitBody, org: OrgDep):
                         ok = await _finish_consumer_write(asyncio.to_thread(
                             ctx.clone_repo, workspace, repo_name, url,
                         ))
+                        if not ok:
+                            authority_change.native_disposition.uncertain = True
                         yield {"data": _json.dumps({
                             "agent": agent_name,
                             "phase": "repo_ready" if ok else "repo_failed",
@@ -614,45 +616,46 @@ async def manage_repo(
         org, publisher="manage_repo", consumer=agent_name, preserve=True,
     ) as authority_change:
         async with org.teams_lock:
-            ctx = ContextBuilder(org.settings, paths, slug=org.slug)
-            agent_def = prompt_loader.load_agent(paths, agent_name)
-            if agent_def is None:
-                raise HTTPException(status_code=404, detail=f"agent {agent_name!r} not found")
+            with authority_change.validation():
+                ctx = ContextBuilder(org.settings, paths, slug=org.slug)
+                agent_def = prompt_loader.load_agent(paths, agent_name)
+                if agent_def is None:
+                    raise HTTPException(status_code=404, detail=f"agent {agent_name!r} not found")
 
-            # THR-095: persist repos to org/agents/<name>.md frontmatter ONLY
-            # (single source of truth).  agent.yaml is no longer the repo store.
-            from runtime.orchestrator.agent_def import render_agent_text
-            new_repos = dict(agent_def.repos)
+                # THR-095: persist repos to org/agents/<name>.md frontmatter ONLY
+                # (single source of truth).  agent.yaml is no longer the repo store.
+                from runtime.orchestrator.agent_def import render_agent_text
+                new_repos = dict(agent_def.repos)
 
-            if body.action == RepoAction.add:
-                if body.repo_name in new_repos:
-                    raise HTTPException(status_code=409, detail=f"repo {body.repo_name!r} already exists")
-                new_repos[body.repo_name] = body.url
-            elif body.action == RepoAction.remove:
-                if body.repo_name not in new_repos:
-                    raise HTTPException(status_code=404, detail=f"repo {body.repo_name!r} not found")
-                del new_repos[body.repo_name]
-            elif body.action == RepoAction.update:
-                if body.repo_name not in new_repos:
-                    raise HTTPException(status_code=404, detail=f"repo {body.repo_name!r} not found")
-                new_repos[body.repo_name] = body.url
+                if body.action == RepoAction.add:
+                    if body.repo_name in new_repos:
+                        raise HTTPException(status_code=409, detail=f"repo {body.repo_name!r} already exists")
+                    new_repos[body.repo_name] = body.url
+                elif body.action == RepoAction.remove:
+                    if body.repo_name not in new_repos:
+                        raise HTTPException(status_code=404, detail=f"repo {body.repo_name!r} not found")
+                    del new_repos[body.repo_name]
+                elif body.action == RepoAction.update:
+                    if body.repo_name not in new_repos:
+                        raise HTTPException(status_code=404, detail=f"repo {body.repo_name!r} not found")
+                    new_repos[body.repo_name] = body.url
 
-            # Atomic write the updated .md
-            updated = AgentDef(
-                name=agent_def.name,
-                team=agent_def.team,
-                role=agent_def.role,
-                executor=agent_def.executor,
-                allow_rules=agent_def.allow_rules,
-                repos=new_repos,
-                enrolled_by=agent_def.enrolled_by,
-                enrolled_at_task=agent_def.enrolled_at_task,
-                enrolled_at=agent_def.enrolled_at,
-                system_prompt=agent_def.system_prompt,
-                description=agent_def.description,
-                model=agent_def.model,
-                reasoning_effort=agent_def.reasoning_effort,
-            )
+                # Atomic write the updated .md
+                updated = AgentDef(
+                    name=agent_def.name,
+                    team=agent_def.team,
+                    role=agent_def.role,
+                    executor=agent_def.executor,
+                    allow_rules=agent_def.allow_rules,
+                    repos=new_repos,
+                    enrolled_by=agent_def.enrolled_by,
+                    enrolled_at_task=agent_def.enrolled_at_task,
+                    enrolled_at=agent_def.enrolled_at,
+                    system_prompt=agent_def.system_prompt,
+                    description=agent_def.description,
+                    model=agent_def.model,
+                    reasoning_effort=agent_def.reasoning_effort,
+                )
             with authority_change.canonical_change():
                 active_path = paths.agents_dir / f"{agent_name}.md"
                 fd, tmp = tempfile.mkstemp(
@@ -672,7 +675,9 @@ async def manage_repo(
         async def finish_write() -> dict:
             # Clone/remove repo dir as before
             if body.action == RepoAction.add:
-                await asyncio.to_thread(ctx.clone_repo, workspace, body.repo_name, body.url)
+                cloned = await asyncio.to_thread(ctx.clone_repo, workspace, body.repo_name, body.url)
+                if not cloned:
+                    authority_change.native_disposition.uncertain = True
             elif body.action == RepoAction.remove:
                 repo_dir = workspace / "repos" / body.repo_name
                 if repo_dir.exists():
@@ -681,7 +686,9 @@ async def manage_repo(
                 repo_dir = workspace / "repos" / body.repo_name
                 if repo_dir.exists():
                     shutil.rmtree(repo_dir)
-                await asyncio.to_thread(ctx.clone_repo, workspace, body.repo_name, body.url)
+                cloned = await asyncio.to_thread(ctx.clone_repo, workspace, body.repo_name, body.url)
+                if not cloned:
+                    authority_change.native_disposition.uncertain = True
 
             # clone_repo can yield to the event loop.  Bootstrap from a fresh
             # canonical snapshot afterwards so an accepted whole-definition update
@@ -725,43 +732,44 @@ async def manage_agent(slug: str, body: ManageAgentBody, org: OrgDep) -> dict:
             naming_writer(org, authority_change),
             org.teams_lock,
         ):
-            _require_naming_id(org, body.name)
-            # Never reuse a name that has ever been enrolled (active, pending,
-            # or terminated), to keep historical identity unambiguous. This must
-            # share the lock with the synchronous pending write: the helper
-            # atomically replaces an existing pending file.
-            if prompt_loader.is_name_unavailable(paths, body.name):
-                detail = {"code": "agent_name_unavailable", "name": body.name}
-                if prompt_loader.is_terminated(paths, body.name):
-                    detail["reason"] = "a terminated agent with this name exists"
-                raise HTTPException(status_code=409, detail=detail)
-            # Validate target_team BEFORE inserting — avoid zombie enrollment files.
-            target_team = body.target_team or manager_team
-            if target_team != manager_team:
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail={
-                        "code": "cross_team_forbidden",
-                        "caller_team": manager_team,
-                        "requested_team": target_team,
-                    },
+            with authority_change.validation():
+                _require_naming_id(org, body.name, interval=authority_change)
+                # Never reuse a name that has ever been enrolled (active, pending,
+                # or terminated), to keep historical identity unambiguous. This must
+                # share the lock with the synchronous pending write: the helper
+                # atomically replaces an existing pending file.
+                if prompt_loader.is_name_unavailable(paths, body.name):
+                    detail = {"code": "agent_name_unavailable", "name": body.name}
+                    if prompt_loader.is_terminated(paths, body.name):
+                        detail["reason"] = "a terminated agent with this name exists"
+                    raise HTTPException(status_code=409, detail=detail)
+                # Validate target_team BEFORE inserting — avoid zombie enrollment files.
+                target_team = body.target_team or manager_team
+                if target_team != manager_team:
+                    raise HTTPException(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        detail={
+                            "code": "cross_team_forbidden",
+                            "caller_team": manager_team,
+                            "requested_team": target_team,
+                        },
+                    )
+                _validate_reasoning_selection(body.executor or "claude", body.model, body.reasoning_effort)
+                agent = AgentDef(
+                    name=body.name,
+                    team=target_team,
+                    role="worker",
+                    executor=body.executor or "claude",
+                    allow_rules=tuple(body.allow_rules or []),
+                    repos=body.repos or {},
+                    enrolled_by=manager_name,
+                    enrolled_at_task=body.task_id,
+                    enrolled_at=datetime.now(timezone.utc),
+                    system_prompt=body.system_prompt,
+                    description=body.description,
+                    model=body.model if body.model else None,
+                    reasoning_effort=body.reasoning_effort,
                 )
-            _validate_reasoning_selection(body.executor or "claude", body.model, body.reasoning_effort)
-            agent = AgentDef(
-                name=body.name,
-                team=target_team,
-                role="worker",
-                executor=body.executor or "claude",
-                allow_rules=tuple(body.allow_rules or []),
-                repos=body.repos or {},
-                enrolled_by=manager_name,
-                enrolled_at_task=body.task_id,
-                enrolled_at=datetime.now(timezone.utc),
-                system_prompt=body.system_prompt,
-                description=body.description,
-                model=body.model if body.model else None,
-                reasoning_effort=body.reasoning_effort,
-            )
             with authority_change.canonical_change():
                 prompt_loader.write_pending_agent(paths, agent)
                 org.teams.add_worker(manager_team, body.name)
@@ -782,57 +790,58 @@ async def manage_agent(slug: str, body: ManageAgentBody, org: OrgDep) -> dict:
             executor=body.executor, preserve=body.executor is None,
         ) as authority_change:
             async with org.teams_lock:
-                loaded = prompt_loader.load_agent_snapshot(paths, body.name)
-                if loaded is None:
-                    raise HTTPException(status_code=404, detail=f"agent {body.name!r} not found")
-                existing, current_revision, original_bytes = loaded
-                agent_team = org.teams.team_for_agent(body.name) if org.teams is not None else None
-                if agent_team != manager_team:
-                    raise HTTPException(
-                        status_code=status.HTTP_403_FORBIDDEN,
-                        detail={
-                            "code": "cross_team_forbidden",
-                            "caller_team": manager_team,
-                            "agent_team": agent_team,
-                        },
+                with authority_change.validation():
+                    loaded = prompt_loader.load_agent_snapshot(paths, body.name)
+                    if loaded is None:
+                        raise HTTPException(status_code=404, detail=f"agent {body.name!r} not found")
+                    existing, current_revision, original_bytes = loaded
+                    agent_team = org.teams.team_for_agent(body.name) if org.teams is not None else None
+                    if agent_team != manager_team:
+                        raise HTTPException(
+                            status_code=status.HTTP_403_FORBIDDEN,
+                            detail={
+                                "code": "cross_team_forbidden",
+                                "caller_team": manager_team,
+                                "agent_team": agent_team,
+                            },
+                        )
+                    if current_revision != body.expected_revision:
+                        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={"code": "stale_agent_revision", "current_revision": current_revision})
+                    if body.executor is not None:
+                        _validate_executor(body.executor)
+                    # Build the updated AgentDef, preserving fields not being updated.
+                    # model: use Pydantic field-set detection to distinguish omitted
+                    # (preserve existing) vs explicit null (clear).
+                    model_is_set = "model" in body.model_fields_set
+                    executor_changed = (
+                        body.executor is not None and body.executor != existing.executor
                     )
-                if current_revision != body.expected_revision:
-                    raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={"code": "stale_agent_revision", "current_revision": current_revision})
-                if body.executor is not None:
-                    _validate_executor(body.executor)
-                # Build the updated AgentDef, preserving fields not being updated.
-                # model: use Pydantic field-set detection to distinguish omitted
-                # (preserve existing) vs explicit null (clear).
-                model_is_set = "model" in body.model_fields_set
-                executor_changed = (
-                    body.executor is not None and body.executor != existing.executor
-                )
-                if model_is_set:
-                    resolved_model = body.model if body.model else None
-                elif executor_changed:
-                    # A model override is executor-specific. Never carry an omitted
-                    # value from the old executor into a newly selected executor.
-                    resolved_model = None
-                else:
-                    resolved_model = existing.model
-                resolved_effort = (body.reasoning_effort if "reasoning_effort" in body.model_fields_set
-                                   else None if executor_changed else existing.reasoning_effort)
-                _validate_reasoning_selection(body.executor or existing.executor, resolved_model, resolved_effort)
-                updated = AgentDef(
-                    name=existing.name,
-                    team=existing.team,
-                    role=existing.role,
-                    executor=body.executor or existing.executor,
-                    allow_rules=tuple(body.allow_rules) if body.allow_rules is not None else existing.allow_rules,
-                    repos=body.repos if body.repos is not None else existing.repos,
-                    enrolled_by=existing.enrolled_by,
-                    enrolled_at_task=existing.enrolled_at_task,
-                    enrolled_at=existing.enrolled_at,
-                    system_prompt=body.system_prompt if body.system_prompt is not None else existing.system_prompt,
-                    description=body.description if body.description is not None else existing.description,
-                    model=resolved_model,
-                    reasoning_effort=resolved_effort,
-                )
+                    if model_is_set:
+                        resolved_model = body.model if body.model else None
+                    elif executor_changed:
+                        # A model override is executor-specific. Never carry an omitted
+                        # value from the old executor into a newly selected executor.
+                        resolved_model = None
+                    else:
+                        resolved_model = existing.model
+                    resolved_effort = (body.reasoning_effort if "reasoning_effort" in body.model_fields_set
+                                       else None if executor_changed else existing.reasoning_effort)
+                    _validate_reasoning_selection(body.executor or existing.executor, resolved_model, resolved_effort)
+                    updated = AgentDef(
+                        name=existing.name,
+                        team=existing.team,
+                        role=existing.role,
+                        executor=body.executor or existing.executor,
+                        allow_rules=tuple(body.allow_rules) if body.allow_rules is not None else existing.allow_rules,
+                        repos=body.repos if body.repos is not None else existing.repos,
+                        enrolled_by=existing.enrolled_by,
+                        enrolled_at_task=existing.enrolled_at_task,
+                        enrolled_at=existing.enrolled_at,
+                        system_prompt=body.system_prompt if body.system_prompt is not None else existing.system_prompt,
+                        description=body.description if body.description is not None else existing.description,
+                        model=resolved_model,
+                        reasoning_effort=resolved_effort,
+                    )
                 with authority_change.canonical_change():
                     active_path = paths.agents_dir / f"{body.name}.md"
                     from runtime.orchestrator.agent_def import render_agent_text
@@ -1034,84 +1043,85 @@ async def manage_agent(slug: str, body: ManageAgentBody, org: OrgDep) -> dict:
             ) as authority_change,
             org.teams_lock,
         ):
-            # The outer checks make ordinary refusals cheap, but this await
-            # permits another accepted writer to change the canonical file,
-            # its role, or archive/workspace occupancy.  Refresh precisely
-            # those facts before this synchronous archive/cleanup segment.
-            loaded = prompt_loader.load_agent_snapshot(paths, body.name)
-            if loaded is None:
-                raise HTTPException(status_code=404, detail=f"agent {body.name!r} not found")
-            existing, _current_revision, archived_agent_bytes = loaded
-            if existing.role == "manager":
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail={
-                        "code": "manager_terminate_forbidden",
-                        "name": body.name,
-                        "reason": "terminating a team manager is not allowed",
-                    },
-                )
-            agent_team = org.teams.team_for_agent(body.name) if org.teams is not None else None
-            if agent_team != manager_team:
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail={
-                        "code": "cross_team_forbidden",
-                        "caller_team": manager_team,
-                        "agent_team": agent_team,
-                    },
-                )
+            with authority_change.validation():
+                # The outer checks make ordinary refusals cheap, but this await
+                # permits another accepted writer to change the canonical file,
+                # its role, or archive/workspace occupancy.  Refresh precisely
+                # those facts before this synchronous archive/cleanup segment.
+                loaded = prompt_loader.load_agent_snapshot(paths, body.name)
+                if loaded is None:
+                    raise HTTPException(status_code=404, detail=f"agent {body.name!r} not found")
+                existing, _current_revision, archived_agent_bytes = loaded
+                if existing.role == "manager":
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail={
+                            "code": "manager_terminate_forbidden",
+                            "name": body.name,
+                            "reason": "terminating a team manager is not allowed",
+                        },
+                    )
+                agent_team = org.teams.team_for_agent(body.name) if org.teams is not None else None
+                if agent_team != manager_team:
+                    raise HTTPException(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        detail={
+                            "code": "cross_team_forbidden",
+                            "caller_team": manager_team,
+                            "agent_team": agent_team,
+                        },
+                    )
 
-            # Re-check quiescence under the lock: new live work may have been
-            # assigned between the outer check and lock acquisition.
-            conflicts = _collect_quiescence_conflicts(org, body.name)
-            if conflicts:
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail={
-                        "code": "agent_not_quiescent",
-                        "name": body.name,
-                        "conflicts": conflicts,
-                    },
-                )
+                # Re-check quiescence under the lock: new live work may have been
+                # assigned between the outer check and lock acquisition.
+                conflicts = _collect_quiescence_conflicts(org, body.name)
+                if conflicts:
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail={
+                            "code": "agent_not_quiescent",
+                            "name": body.name,
+                            "conflicts": conflicts,
+                        },
+                    )
 
-            if terminated_agent_path.exists():
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail={
-                        "code": "archive_collision",
-                        "name": body.name,
-                        "reason": "a terminated agent file already exists",
-                    },
-                )
-            workspace_exists = workspace.exists()
-            if workspace_exists and terminated_workspace.exists():
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail={
-                        "code": "archive_collision",
-                        "name": body.name,
-                        "reason": "a terminated workspace already exists",
-                    },
-                )
-            if workspace_exists and not workspace.is_dir():
-                raise HTTPException(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail={
-                        "code": "workspace_archive_failed",
-                        "name": body.name,
-                        "reason": "workspace path is not a directory",
-                    },
-                )
-            if workspace_exists and not os.access(terminated_workspace_dir, os.W_OK):
-                raise HTTPException(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail={
-                        "code": "workspace_archive_failed",
-                        "name": body.name,
-                        "reason": "terminated workspace directory is not writable",
-                    },
-                )
+                if terminated_agent_path.exists():
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail={
+                            "code": "archive_collision",
+                            "name": body.name,
+                            "reason": "a terminated agent file already exists",
+                        },
+                    )
+                workspace_exists = workspace.exists()
+                if workspace_exists and terminated_workspace.exists():
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail={
+                            "code": "archive_collision",
+                            "name": body.name,
+                            "reason": "a terminated workspace already exists",
+                        },
+                    )
+                if workspace_exists and not workspace.is_dir():
+                    raise HTTPException(
+                        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                        detail={
+                            "code": "workspace_archive_failed",
+                            "name": body.name,
+                            "reason": "workspace path is not a directory",
+                        },
+                    )
+                if workspace_exists and not os.access(terminated_workspace_dir, os.W_OK):
+                    raise HTTPException(
+                        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                        detail={
+                            "code": "workspace_archive_failed",
+                            "name": body.name,
+                            "reason": "terminated workspace directory is not writable",
+                        },
+                    )
 
             # Archive the filesystem identity FIRST. If this fails, no DB or
             # team mutation has occurred yet, so the agent remains fully active.
@@ -1275,31 +1285,32 @@ async def founder_create_agent(
         teams=(body.team or body.new_team,),
     ) as authority_change:
         async with org.teams_lock:
-            _require_naming_id(org, body.name)
-            # Duplicate check inside the lock to close TOCTOU between check + write.
-            # Terminated names are also unavailable to preserve historical identity.
-            if prompt_loader.is_name_unavailable(paths, body.name):
-                detail = {"code": "agent_exists", "name": body.name}
-                if prompt_loader.is_terminated(paths, body.name):
-                    detail["reason"] = "a terminated agent with this name exists"
-                raise HTTPException(status_code=409, detail=detail)
+            with authority_change.validation():
+                _require_naming_id(org, body.name, interval=authority_change)
+                # Duplicate check inside the lock to close TOCTOU between check + write.
+                # Terminated names are also unavailable to preserve historical identity.
+                if prompt_loader.is_name_unavailable(paths, body.name):
+                    detail = {"code": "agent_exists", "name": body.name}
+                    if prompt_loader.is_terminated(paths, body.name):
+                        detail["reason"] = "a terminated agent with this name exists"
+                    raise HTTPException(status_code=409, detail=detail)
 
-            if body.role == "worker":
-                assert body.team is not None
-                if body.team not in org.teams.teams():
-                    raise HTTPException(
-                        status_code=404,
-                        detail={"code": "unknown_team", "team": body.team},
-                    )
-                team_name = body.team
-            else:
-                assert body.new_team is not None
-                if body.new_team in org.teams.teams():
-                    raise HTTPException(
-                        status_code=409,
-                        detail={"code": "team_exists", "team": body.new_team},
-                    )
-                team_name = body.new_team
+                if body.role == "worker":
+                    assert body.team is not None
+                    if body.team not in org.teams.teams():
+                        raise HTTPException(
+                            status_code=404,
+                            detail={"code": "unknown_team", "team": body.team},
+                        )
+                    team_name = body.team
+                else:
+                    assert body.new_team is not None
+                    if body.new_team in org.teams.teams():
+                        raise HTTPException(
+                            status_code=409,
+                            detail={"code": "team_exists", "team": body.new_team},
+                        )
+                    team_name = body.new_team
 
             with authority_change.canonical_change():
                 if body.role == "worker":
@@ -1384,7 +1395,9 @@ async def founder_create_agent(
             repos = agent_def.repos or {}
             ctx = ContextBuilder(org.settings, paths, slug=org.slug)
             for repo_name, url in repos.items():
-                await asyncio.to_thread(ctx.clone_repo, workspace, repo_name, url)
+                cloned = await asyncio.to_thread(ctx.clone_repo, workspace, repo_name, url)
+                if not cloned:
+                    authority_change.native_disposition.uncertain = True
 
             # Cloning yields to the event loop.  Bootstrap from the current active
             # definition so an accepted update is not fed stale prompt/provider
@@ -1979,9 +1992,9 @@ async def _finish_consumer_write(
     return operation.result()
 
 
-def _require_naming_id(org, name):
+def _require_naming_id(org, name, *, interval):
     try:
-        require_new_id(org, name)
+        require_new_id(org, name, writer=interval.native_disposition)
     except NamingError as exc:
         raise HTTPException(status_code=409, detail={"code": exc.code, "name": name}) from None
 
@@ -2119,39 +2132,40 @@ async def set_agent_system_prompt(
         org, publisher="set_agent_system_prompt", consumer=agent_name, preserve=True,
     ) as interval:
         async with org.teams_lock:
-            loaded = prompt_loader.load_agent_snapshot(paths, agent_name)
-            if loaded is None:
-                raise HTTPException(status_code=404, detail={"code": "agent_not_found"})
-            existing, revision, original = loaded
-            if revision != body.expected_revision:
-                raise HTTPException(status_code=409, detail={
-                    "code": "stale_agent_revision", "current_revision": revision,
-                })
-            try:
-                # The same parser normalization used by canonical snapshot reads.
-                authored = body.system_prompt.replace("\r\n", "\n").replace("\r", "\n")
-                updated = parse_agent_text(
-                    render_agent_text(replace(existing, system_prompt=authored)),
-                    expected_name=agent_name,
-                )
-                # Includes the independent active-team-policy scanner, including
-                # individual markers; validate even when no workspace exists.
-                _assert_no_reserved_headers_in_body(agent_name, updated.system_prompt)
-            except ValueError as exc:
-                raise HTTPException(status_code=422, detail=str(exc)) from None
-            _validate_executor(existing.executor)
-            candidate = render_agent_text(updated).encode("utf-8")
-            written_revision = hashlib.sha256(candidate).hexdigest()
-            pair_before = None
-            try:
-                if workspace.exists() or workspace.is_symlink():
-                    pair_before = _prompt_pair_snapshot(workspace)
-            except OSError as exc:
-                logging.getLogger(__name__).exception("Prompt pair capture refused for %s", agent_name)
-                raise HTTPException(status_code=400, detail={
-                    "code": "system_prompt_reconciliation_failed", "error": str(exc)[:1000],
-                    "compensation": {"canonical": "not_required", "workspace": "not_required"},
-                }) from None
+            with interval.validation():
+                loaded = prompt_loader.load_agent_snapshot(paths, agent_name)
+                if loaded is None:
+                    raise HTTPException(status_code=404, detail={"code": "agent_not_found"})
+                existing, revision, original = loaded
+                if revision != body.expected_revision:
+                    raise HTTPException(status_code=409, detail={
+                        "code": "stale_agent_revision", "current_revision": revision,
+                    })
+                try:
+                    # The same parser normalization used by canonical snapshot reads.
+                    authored = body.system_prompt.replace("\r\n", "\n").replace("\r", "\n")
+                    updated = parse_agent_text(
+                        render_agent_text(replace(existing, system_prompt=authored)),
+                        expected_name=agent_name,
+                    )
+                    # Includes the independent active-team-policy scanner, including
+                    # individual markers; validate even when no workspace exists.
+                    _assert_no_reserved_headers_in_body(agent_name, updated.system_prompt)
+                except ValueError as exc:
+                    raise HTTPException(status_code=422, detail=str(exc)) from None
+                _validate_executor(existing.executor)
+                candidate = render_agent_text(updated).encode("utf-8")
+                written_revision = hashlib.sha256(candidate).hexdigest()
+                pair_before = None
+                try:
+                    if workspace.exists() or workspace.is_symlink():
+                        pair_before = _prompt_pair_snapshot(workspace)
+                except OSError as exc:
+                    logging.getLogger(__name__).exception("Prompt pair capture refused for %s", agent_name)
+                    raise HTTPException(status_code=400, detail={
+                        "code": "system_prompt_reconciliation_failed", "error": str(exc)[:1000],
+                        "compensation": {"canonical": "not_required", "workspace": "not_required"},
+                    }) from None
             with interval.canonical_change():
                 _prompt_replace_bytes(active_path, candidate)
 
@@ -2282,135 +2296,136 @@ async def set_agent_executor(
     async with _consumer_writer_interval(
         org, publisher="set_agent_executor", consumer=agent_name, executor=body.executor,
     ) as authority_change:
-        existing = prompt_loader.load_agent(paths, agent_name)
-        if existing is None:
-            raise HTTPException(
-                status_code=404,
-                detail={"code": "agent_not_found", "agent": agent_name},
-            )
-
-        workspace = paths.workspaces_dir / agent_name
-        has_workspace = workspace.exists()
-
-        before_org = existing.executor
-        before_ws = load_agent_config(workspace).get("executor") if has_workspace else None
-
-        # ── Step 0: Preflight — reject the switch before ANY mutation when the
-        # bounded declared-write journal cannot compensate losslessly ──
-        # 1. Structured legacy learnings/ state would trigger the unbounded
-        #    learnings/ -> memory/ migration during bootstrap; fail closed.
-        # 2. Symlinked / non-regular owned paths cannot be restored exactly;
-        #    fail closed BEFORE materialization so the union reconciler can
-        #    never follow a symlinked owned directory (e.g. workspace/.claude)
-        #    into an arbitrary external target.
-        # 3. A present regular owned file whose read_bytes() raises OSError is
-        #    materially distinct from an absent file — the journal must never
-        #    represent it as absent (rollback would delete it); fail closed
-        #    BEFORE materialization and every mutation.
-        # 4. AUTHORITATIVE rollback capture: every pre-existing declared-write
-        #    target must be captured as rollback bytes/state HERE, before the
-        #    first mutation, so materialization/bootstrap/frontmatter/audit can
-        #    never mutate unless capture was lossless. If the capture read fails
-        #    for any declared file (a second-read window after gate 3's read
-        #    succeeded), the switch fails closed before the first mutation.
-        # All gates and the capture run before _executor_switch_materialize and
-        # before any adapter writer — no materialize/bootstrap/frontmatter/audit
-        # mutation.
-        if has_workspace:
-            if _bootstrap_legacy_migration_unsupported(workspace):
+        with authority_change.validation():
+            existing = prompt_loader.load_agent(paths, agent_name)
+            if existing is None:
                 raise HTTPException(
-                    status_code=400,
-                    detail={
-                        "code": "executor_bootstrap_failed",
-                        "error": (
-                            "unsupported structured legacy learnings state: "
-                            "workspace holds learnings/ without memory/, which "
-                            "would require a learnings/ -> memory/ migration "
-                            "during bootstrap"
-                        ),
-                        "message": (
-                            "Executor workspace bootstrap was rejected before "
-                            "any mutation because the workspace holds a "
-                            "structured legacy learnings/ directory that would "
-                            "require a learnings/ -> memory/ migration during "
-                            "the switch. Executor switching does not perform "
-                            "that migration; the previous executor has been "
-                            "preserved. Migrate the workspace via the normal "
-                            "init/session path before retrying."
-                        ),
-                    },
-                )
-            unsupported = _bootstrap_unsupported_owned_paths(workspace)
-            if unsupported:
-                raise HTTPException(
-                    status_code=400,
-                    detail={
-                        "code": "executor_bootstrap_failed",
-                        "error": (
-                            "Bootstrap-owned path is a symlink or unsupported "
-                            "non-regular type: " + ", ".join(sorted(unsupported))
-                        ),
-                        "message": (
-                            "Executor workspace bootstrap was rejected before "
-                            "any mutation because an owned path is a symlink or "
-                            "unsupported non-regular type. The previous executor "
-                            "has been preserved. Resolve the path conflict before "
-                            "retrying."
-                        ),
-                    },
-                )
-            uncapturable = _bootstrap_uncapturable_owned_files(workspace)
-            if uncapturable:
-                raise HTTPException(
-                    status_code=400,
-                    detail={
-                        "code": "executor_bootstrap_failed",
-                        "error": (
-                            "Bootstrap-owned file is present but cannot be "
-                            "captured (read_bytes failed): "
-                            + ", ".join(sorted(uncapturable))
-                        ),
-                        "message": (
-                            "Executor workspace bootstrap was rejected before "
-                            "any mutation because a bootstrap-owned file is "
-                            "present but its contents could not be read, so the "
-                            "switch cannot be compensated losslessly. The "
-                            "previous executor has been preserved. Resolve the "
-                            "file readability issue before retrying."
-                        ),
-                    },
+                    status_code=404,
+                    detail={"code": "agent_not_found", "agent": agent_name},
                 )
 
-            # ── Authoritative rollback capture (before the first mutation) ──
-            # capture() is the single authoritative read of the declared write
-            # surface. It runs BEFORE _executor_switch_materialize so the switch
-            # can never mutate unless every pre-existing declared-write target
-            # has already been captured as rollback type/content/metadata. A
-            # declared file that gate 3 could read but capture cannot (TOCTOU)
-            # fails closed here, before any materialize/bootstrap/frontmatter/
-            # audit mutation.
-            rollback_journal = _BootstrapRollbackJournal.capture(workspace)
-            uncaptured = rollback_journal.uncapturable()
-            if uncaptured:
-                raise HTTPException(
-                    status_code=400,
-                    detail={
-                        "code": "executor_bootstrap_failed",
-                        "error": (
-                            "Bootstrap-owned file is present but cannot be "
-                            "captured (no-follow content/metadata capture failed): "
-                            + ", ".join(uncaptured)
-                        ),
-                        "message": (
-                            "Executor workspace bootstrap was rejected before "
-                            "any mutation because a bootstrap-owned file is "
-                            "present but its contents could not be read, so the "
-                            "switch cannot be compensated losslessly. The "
-                            "previous executor has been preserved. Resolve the "
-                            "file readability issue before retrying."
-                        ),
-                    },
-                )
+            workspace = paths.workspaces_dir / agent_name
+            has_workspace = workspace.exists()
+
+            before_org = existing.executor
+            before_ws = load_agent_config(workspace).get("executor") if has_workspace else None
+
+            # ── Step 0: Preflight — reject the switch before ANY mutation when the
+            # bounded declared-write journal cannot compensate losslessly ──
+            # 1. Structured legacy learnings/ state would trigger the unbounded
+            #    learnings/ -> memory/ migration during bootstrap; fail closed.
+            # 2. Symlinked / non-regular owned paths cannot be restored exactly;
+            #    fail closed BEFORE materialization so the union reconciler can
+            #    never follow a symlinked owned directory (e.g. workspace/.claude)
+            #    into an arbitrary external target.
+            # 3. A present regular owned file whose read_bytes() raises OSError is
+            #    materially distinct from an absent file — the journal must never
+            #    represent it as absent (rollback would delete it); fail closed
+            #    BEFORE materialization and every mutation.
+            # 4. AUTHORITATIVE rollback capture: every pre-existing declared-write
+            #    target must be captured as rollback bytes/state HERE, before the
+            #    first mutation, so materialization/bootstrap/frontmatter/audit can
+            #    never mutate unless capture was lossless. If the capture read fails
+            #    for any declared file (a second-read window after gate 3's read
+            #    succeeded), the switch fails closed before the first mutation.
+            # All gates and the capture run before _executor_switch_materialize and
+            # before any adapter writer — no materialize/bootstrap/frontmatter/audit
+            # mutation.
+            if has_workspace:
+                if _bootstrap_legacy_migration_unsupported(workspace):
+                    raise HTTPException(
+                        status_code=400,
+                        detail={
+                            "code": "executor_bootstrap_failed",
+                            "error": (
+                                "unsupported structured legacy learnings state: "
+                                "workspace holds learnings/ without memory/, which "
+                                "would require a learnings/ -> memory/ migration "
+                                "during bootstrap"
+                            ),
+                            "message": (
+                                "Executor workspace bootstrap was rejected before "
+                                "any mutation because the workspace holds a "
+                                "structured legacy learnings/ directory that would "
+                                "require a learnings/ -> memory/ migration during "
+                                "the switch. Executor switching does not perform "
+                                "that migration; the previous executor has been "
+                                "preserved. Migrate the workspace via the normal "
+                                "init/session path before retrying."
+                            ),
+                        },
+                    )
+                unsupported = _bootstrap_unsupported_owned_paths(workspace)
+                if unsupported:
+                    raise HTTPException(
+                        status_code=400,
+                        detail={
+                            "code": "executor_bootstrap_failed",
+                            "error": (
+                                "Bootstrap-owned path is a symlink or unsupported "
+                                "non-regular type: " + ", ".join(sorted(unsupported))
+                            ),
+                            "message": (
+                                "Executor workspace bootstrap was rejected before "
+                                "any mutation because an owned path is a symlink or "
+                                "unsupported non-regular type. The previous executor "
+                                "has been preserved. Resolve the path conflict before "
+                                "retrying."
+                            ),
+                        },
+                    )
+                uncapturable = _bootstrap_uncapturable_owned_files(workspace)
+                if uncapturable:
+                    raise HTTPException(
+                        status_code=400,
+                        detail={
+                            "code": "executor_bootstrap_failed",
+                            "error": (
+                                "Bootstrap-owned file is present but cannot be "
+                                "captured (read_bytes failed): "
+                                + ", ".join(sorted(uncapturable))
+                            ),
+                            "message": (
+                                "Executor workspace bootstrap was rejected before "
+                                "any mutation because a bootstrap-owned file is "
+                                "present but its contents could not be read, so the "
+                                "switch cannot be compensated losslessly. The "
+                                "previous executor has been preserved. Resolve the "
+                                "file readability issue before retrying."
+                            ),
+                        },
+                    )
+
+                # ── Authoritative rollback capture (before the first mutation) ──
+                # capture() is the single authoritative read of the declared write
+                # surface. It runs BEFORE _executor_switch_materialize so the switch
+                # can never mutate unless every pre-existing declared-write target
+                # has already been captured as rollback type/content/metadata. A
+                # declared file that gate 3 could read but capture cannot (TOCTOU)
+                # fails closed here, before any materialize/bootstrap/frontmatter/
+                # audit mutation.
+                rollback_journal = _BootstrapRollbackJournal.capture(workspace)
+                uncaptured = rollback_journal.uncapturable()
+                if uncaptured:
+                    raise HTTPException(
+                        status_code=400,
+                        detail={
+                            "code": "executor_bootstrap_failed",
+                            "error": (
+                                "Bootstrap-owned file is present but cannot be "
+                                "captured (no-follow content/metadata capture failed): "
+                                + ", ".join(uncaptured)
+                            ),
+                            "message": (
+                                "Executor workspace bootstrap was rejected before "
+                                "any mutation because a bootstrap-owned file is "
+                                "present but its contents could not be read, so the "
+                                "switch cannot be compensated losslessly. The "
+                                "previous executor has been preserved. Resolve the "
+                                "file readability issue before retrying."
+                            ),
+                        },
+                    )
 
         async def finish_write(existing: AgentDef) -> dict:
             # ── Step 1: Materialize the six-context canonical union FIRST ──
@@ -2605,7 +2620,7 @@ async def set_agent_executor(
                                 if not any(claude_dir.iterdir()):
                                     claude_dir.rmdir()
                             except OSError:
-                                pass
+                                authority_change.native_disposition.uncertain = True
 
             AuditLogger(org.db).log_agent_managed(
                 scope_id="founder",
@@ -2653,39 +2668,40 @@ async def set_agent_model(
         org, publisher="set_agent_model", consumer=agent_name, preserve=True,
     ) as authority_change:
         async with org.teams_lock:
-            existing = prompt_loader.load_agent(paths, agent_name)
-            if existing is None:
-                raise HTTPException(
-                    status_code=404,
-                    detail={"code": "agent_not_found", "agent": agent_name},
+            with authority_change.validation():
+                existing = prompt_loader.load_agent(paths, agent_name)
+                if existing is None:
+                    raise HTTPException(
+                        status_code=404,
+                        detail={"code": "agent_not_found", "agent": agent_name},
+                    )
+
+                workspace = paths.workspaces_dir / agent_name
+                has_workspace = workspace.exists()
+
+                if body.expected_executor is not None and body.expected_executor != existing.executor:
+                    raise HTTPException(status_code=409, detail={"code": "reasoning_executor_changed"})
+                selected_model = (body.model or None) if "model" in body.model_fields_set else existing.model
+                selected_effort = body.reasoning_effort if "reasoning_effort" in body.model_fields_set else existing.reasoning_effort
+                _validate_reasoning_selection(existing.executor, selected_model, selected_effort)
+                before_model = existing.model
+
+                # 1. org .md frontmatter — atomic overwrite via tempfile + os.replace.
+                updated = AgentDef(
+                    name=existing.name,
+                    team=existing.team,
+                    role=existing.role,
+                    executor=existing.executor,  # type: ignore[arg-type]
+                    allow_rules=existing.allow_rules,
+                    repos=existing.repos,
+                    enrolled_by=existing.enrolled_by,
+                    enrolled_at_task=existing.enrolled_at_task,
+                    enrolled_at=existing.enrolled_at,
+                    system_prompt=existing.system_prompt,
+                    description=existing.description,
+                    model=selected_model,
+                    reasoning_effort=selected_effort,
                 )
-
-            workspace = paths.workspaces_dir / agent_name
-            has_workspace = workspace.exists()
-
-            if body.expected_executor is not None and body.expected_executor != existing.executor:
-                raise HTTPException(status_code=409, detail={"code": "reasoning_executor_changed"})
-            selected_model = (body.model or None) if "model" in body.model_fields_set else existing.model
-            selected_effort = body.reasoning_effort if "reasoning_effort" in body.model_fields_set else existing.reasoning_effort
-            _validate_reasoning_selection(existing.executor, selected_model, selected_effort)
-            before_model = existing.model
-
-            # 1. org .md frontmatter — atomic overwrite via tempfile + os.replace.
-            updated = AgentDef(
-                name=existing.name,
-                team=existing.team,
-                role=existing.role,
-                executor=existing.executor,  # type: ignore[arg-type]
-                allow_rules=existing.allow_rules,
-                repos=existing.repos,
-                enrolled_by=existing.enrolled_by,
-                enrolled_at_task=existing.enrolled_at_task,
-                enrolled_at=existing.enrolled_at,
-                system_prompt=existing.system_prompt,
-                description=existing.description,
-                model=selected_model,
-                reasoning_effort=selected_effort,
-            )
             with authority_change.canonical_change():
                 from runtime.orchestrator.agent_def import render_agent_text
                 active_path = paths.agents_dir / f"{agent_name}.md"
@@ -2808,38 +2824,39 @@ async def approve_agent(slug: str, agent_name: str, org: OrgDep) -> dict:
         org, publisher="approve_agent", consumer=agent_name, preserve=True,
     ) as authority_change:
         async with org.teams_lock:
-            pending = prompt_loader.load_pending_agent(paths, agent_name)
-            if pending is None:
-                # Check if already approved (active).
-                existing = prompt_loader.load_agent(paths, agent_name)
-                if existing is not None:
-                    raise HTTPException(status_code=409, detail=f"agent is approved, not pending")
-                if prompt_loader.is_terminated(paths, agent_name):
+            with authority_change.validation():
+                pending = prompt_loader.load_pending_agent(paths, agent_name)
+                if pending is None:
+                    # Check if already approved (active).
+                    existing = prompt_loader.load_agent(paths, agent_name)
+                    if existing is not None:
+                        raise HTTPException(status_code=409, detail=f"agent is approved, not pending")
+                    if prompt_loader.is_terminated(paths, agent_name):
+                        raise HTTPException(
+                            status_code=409,
+                            detail={
+                                "code": "agent_name_unavailable",
+                                "name": agent_name,
+                                "reason": "a terminated agent with this name exists",
+                            },
+                        )
+                    raise HTTPException(status_code=404, detail=f"agent {agent_name!r} not found")
+
+                # Refuse to promote an agent whose declared team isn't registered.
+                # For workers, manage-agent enroll already added the team — this is
+                # defense in depth against hand-edited pending files. For managers,
+                # this is the primary guard: bootstrap managers must have their team
+                # wired in teams.yaml first, never the other way around.
+                if org.teams is None or pending.team not in org.teams.teams():
                     raise HTTPException(
                         status_code=409,
                         detail={
-                            "code": "agent_name_unavailable",
-                            "name": agent_name,
-                            "reason": "a terminated agent with this name exists",
+                            "code": "team_not_registered",
+                            "agent": agent_name,
+                            "team": pending.team,
+                            "fix": "add the team to teams.yaml first, then approve",
                         },
                     )
-                raise HTTPException(status_code=404, detail=f"agent {agent_name!r} not found")
-
-            # Refuse to promote an agent whose declared team isn't registered.
-            # For workers, manage-agent enroll already added the team — this is
-            # defense in depth against hand-edited pending files. For managers,
-            # this is the primary guard: bootstrap managers must have their team
-            # wired in teams.yaml first, never the other way around.
-            if org.teams is None or pending.team not in org.teams.teams():
-                raise HTTPException(
-                    status_code=409,
-                    detail={
-                        "code": "team_not_registered",
-                        "agent": agent_name,
-                        "team": pending.team,
-                        "fix": "add the team to teams.yaml first, then approve",
-                    },
-                )
 
             with authority_change.canonical_change():
                 promoted = False
@@ -2883,7 +2900,9 @@ async def approve_agent(slug: str, agent_name: str, org: OrgDep) -> dict:
 
             ctx = ContextBuilder(org.settings, paths, slug=org.slug)
             for repo_name, url in repos.items():
-                await asyncio.to_thread(ctx.clone_repo, workspace, repo_name, url)
+                cloned = await asyncio.to_thread(ctx.clone_repo, workspace, repo_name, url)
+                if not cloned:
+                    authority_change.native_disposition.uncertain = True
 
             # Promotion is synchronous before the first await, but cloning is not.
             # Use a fresh active snapshot for bootstrap; it does not serialize later
@@ -2918,13 +2937,14 @@ async def reject_agent(slug: str, agent_name: str, org: OrgDep) -> dict:
         naming_writer(org, authority_change),
         org.teams_lock,
     ):
-        with authority_change.canonical_change():
+        with authority_change.validation():
             pending = prompt_loader.load_pending_agent(paths, agent_name)
             if pending is None:
                 existing = prompt_loader.load_agent(paths, agent_name)
                 if existing is not None:
                     raise HTTPException(status_code=409, detail=f"agent is approved, not pending")
                 raise HTTPException(status_code=404, detail=f"agent {agent_name!r} not found")
+        with authority_change.canonical_change():
             # Drop the file first; holding teams_lock keeps the synchronous unlink
             # and teams-yaml mutation paired with the freshly read pending state.
             try:

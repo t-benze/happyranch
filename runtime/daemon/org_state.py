@@ -342,8 +342,8 @@ class OrgState:
             state.naming_diagnostic = naming_preflight
             # Cold load has no concurrent route coroutine. Capture/install is
             # outside short authority/profile leases, after baseline admission.
-            with state.workflow_authority.writer_interval(publisher="identity_names_load"):
-                refresh_names(state, install=True)
+            with state.workflow_authority.writer_interval(publisher="identity_names_load") as interval:
+                refresh_names(state, install=True, writer=interval.native_disposition)
             # U2A publishes/reconciles the org authority generation before the
             # state is returned. Failure remains fail-closed in the workflow
             # pointer but does not detach the org or alter legacy task/chain

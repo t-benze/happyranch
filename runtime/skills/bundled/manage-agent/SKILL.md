@@ -244,3 +244,13 @@ Agent names must be lowercase with underscores only (e.g. `content_writer`, `seo
   merely to bless an already-composed stale whole-definition payload.
 - Other `422` responses usually mean the payload is missing required auth
   fields (task_id + session_id) — fix the JSON and retry.
+
+C3 writer disposition follows the actual authority/profile interval through
+native naming reconciliation and explicit leading validation. Stale rename or
+prompt CAS may settle only after successful native rollback/reconciliation;
+unfenced status alone proves nothing. Caught reconciliation/publication/clone
+failure, cancellation and partial effects retain unknown ownership. Skill scratch
+cleanup requires no-follow lstat ENOENT; surviving entries, inspection errors and
+prior uncertainty stay unknown. Cleanup causes are retained; existing unknown
+history is never cleared. These are source accounting rules, not behavioral
+verification or new execution/activation authority.

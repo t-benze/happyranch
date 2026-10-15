@@ -1070,6 +1070,17 @@ async def put_teams(slug: str, org: OrgDep, patch: TeamsPatch) -> dict:
         naming_writer(org, authority_change),
         org.teams_lock,
     ):
+        with authority_change.validation():
+            # The outer preflight preceded an await. Recheck mutable facts under
+            # the original writer/roster locks and capture this rollback base.
+            if patch.team not in set(teams.teams()):
+                raise HTTPException(status_code=404, detail=f"team {patch.team!r} not found")
+            preflight_errors = _preflight_team_workers(
+                paths, teams, patch.team, patch.add_workers, patch.remove_workers,
+            )
+            if preflight_errors:
+                raise HTTPException(status_code=422, detail={"errors": preflight_errors})
+            original_workers = teams.manager_for_team(patch.team).workers
         with authority_change.canonical_change():
             for agent in patch.add_workers:
                 try:
