@@ -272,7 +272,23 @@ never write invalidation/reset rows. Existing admission <=48h freshness and
 no age-only ongoing expiry, 14 complete UTC days AND500 sessions, per-agent30,
 strict activation<10%, NONshown-search>25% and aggregate/majority/pair rules stay
 unchanged. These temporal diagnostics cannot identify the actual caller of a
-foreign *live* SID: JOB-4624 remains runtime failure, not accepted by D.
+foreign *live* SID. Memory get/search credit trusts the supplied live SID after
+matching its live org/agent context and derives the task from that context.
+Deliberately supplying another same-agent task's live SID therefore credits
+that selected session. This is a known observational trust limit, not
+authentication or hostile-caller proof.
+
+Founder THR-091 seq401 declined `caller_task_id` and made explicit foreign-live-
+SID rejection non-gating, with no new API requirement. A is scoped accepted
+from completed JOB-4624's resume, retry, overlap, ended, absent, lifecycle-join
+and cleanup results without rerun. The original JOB-4624 exit1/raw FAIL and
+TASK-11402 QA REVISE remain unchanged historical evidence under the prior
+criterion; this acceptance does not relabel them. Ended/absent selectors must
+remain uncredited, POST-retirement read/search credit must remain zero, and
+earlier legitimate active reads remain valid. D does not establish actual
+caller identity. Restart, source merge and this documentation do not accept
+B, C or an epoch; original admission/current full health, immutable epoch and
+frozen observation requirements remain separate.
 
 Structural returned-data corruption produces the full empty-metrics error object
 (null first event, days0, empty aggregate/by_agent/by_role/read_counts, explicit
