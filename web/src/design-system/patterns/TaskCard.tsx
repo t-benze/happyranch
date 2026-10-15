@@ -62,6 +62,7 @@ export interface TaskCardProps {
   /** Injected by the feature layer so the pattern doesn't import useTasksRoutes. */
   taskRoutes?: TaskCardRoutes;
   /** Feature owners supply presentation only; omitted props retain standalone defaults. */
+  waitingQualifier?: string | null;
   labels?: {
     age: {
       justNow: string;
@@ -71,12 +72,11 @@ export interface TaskCardProps {
     };
     supersedes(id: ReactNode): ReactNode;
     supersededBy(id: ReactNode): ReactNode;
-    waiting: Record<'delegated' | 'blocked_on_job', string>;
   };
 }
 
 /** Direction-A Pasture task card — ds.css .card (bg-surface, rounded-lg 18px, soft shadow). */
-export function TaskCard({ task, agentLabel, to, active, density = 'comfortable', taskRoutes, labels }: TaskCardProps): JSX.Element {
+export function TaskCard({ task, agentLabel, to, active, density = 'comfortable', taskRoutes, labels, waitingQualifier }: TaskCardProps): JSX.Element {
   const pad = density === 'compact' ? 'px-3 py-2' : 'px-4 py-3';
   const rollup = severityRollupStatus(task);
   const revisits = directRevisits(task);
@@ -96,7 +96,9 @@ export function TaskCard({ task, agentLabel, to, active, density = 'comfortable'
         {/* Narrow rows wrap whole groups; the ID, status pill and age keep their own width. */}
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
           <span className="flex shrink-0"><IdBadge kind="task" id={task.task_id} /></span>
-          <span className="flex shrink-0"><StatusBadge status={rollup} blockKind={task.block_kind} waitingLabels={labels?.waiting} /></span>
+          <span className="flex min-w-0 max-w-full"><StatusBadge status={rollup} blockKind={task.block_kind} waitingLabels={{}}
+            waitingQualifier={rollup === task.status && task.status === 'in_progress'
+              && (task.block_kind === 'delegated' || task.block_kind === 'blocked_on_job') ? waitingQualifier : null} /></span>
           <span className="text-text-muted font-mono text-xs tabular-nums">{task.team}</span>
           {task.assigned_agent && (
             <span className="text-text-muted">· {agentLabel ?? task.assigned_agent}</span>

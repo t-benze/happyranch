@@ -38,14 +38,14 @@ describe('StatusBadge — Path B task vocabulary', () => {
     expect(screen.queryByText(/waiting on/)).not.toBeInTheDocument();
   });
 
-  test('parked in_progress + delegated stays active green with "waiting on subtasks"', () => {
+  test('parked in_progress + delegated stays active with neutral missing evidence', () => {
     const { container } = render(
       <StatusBadge status="in_progress" blockKind="delegated" />,
     );
     // Active (green) badge retained — the led dot still renders.
     expect(container.querySelector('[aria-hidden]')).not.toBeNull();
     // Derived muted qualifier names what it is waiting on.
-    expect(screen.getByText('· waiting on subtasks')).toBeInTheDocument();
+    expect(screen.queryByText(/waiting on subtasks/)).not.toBeInTheDocument();
   });
 
   test('parked in_progress + blocked_on_job shows "waiting on jobs"', () => {
@@ -83,4 +83,9 @@ describe('Tasks opt-in presentation', () => {
     expect(normal).toHaveClass(status === 'in_progress' ? 'text-status-open' : 'text-status-escalated');
     expect(normal.textContent).toBe(tasks.textContent);
   });
+});
+
+test.each(['Continuation pending', '等待后续处理', null])('resolved qualifier %s is pure presentation', (waitingQualifier) => {
+  const {container} = render(<StatusBadge status="in_progress" blockKind="delegated" waitingQualifier={waitingQualifier} />);
+  expect(container.textContent).toBe(`in_progress${waitingQualifier ? `· ${waitingQualifier}` : ''}`);
 });

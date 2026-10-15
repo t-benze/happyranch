@@ -56,6 +56,7 @@ def main(argv: list[str] | None = None) -> int:
         path = resolve_org_database(args.runtime_root, args.org)
         conn = sqlite3.connect(path.as_uri() + ('?mode=ro' if args.check else '?mode=rw'),
                                uri=True, timeout=1.0)
+        conn.row_factory = sqlite3.Row
         conn.execute('PRAGMA foreign_keys=ON')
         conn.execute('BEGIN' if args.check else 'BEGIN IMMEDIATE')
         if args.check:

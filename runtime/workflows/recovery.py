@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Literal, Any
 
 from runtime.infrastructure.workflow_schema import validate_workflow_schema
+from runtime.infrastructure.workflow_coding_schema import has_coding_schema_objects, validate_empty_coding_data
 
 
 @dataclass(frozen=True)
@@ -25,10 +26,21 @@ def classify_task(db: Any, task_id: str, *, org_slug: str | None) -> WorkflowTas
     db._lock.acquire(blocking=True)
     try:
         conn = db._conn
-        tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_schema WHERE type='table' AND name LIKE 'workflow_%'")}
-        if not tables:
-            return WorkflowTaskOwnership("legacy")
         try:
+            # Native coding decisions/authority may be orphaned, with no old
+            # root/draft/F5 alias or even any workflow tables. Refuse BEFORE
+            # either legacy return, under the same lock and exception fence.
+            validate_empty_coding_data(conn, layout='recovery')
+            tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_schema WHERE type='table'")
+                      if row[0].startswith('workflow_')}
+            if has_coding_schema_objects(conn):
+                if org_slug is None:
+                    return WorkflowTaskOwnership("reconciliation_required")
+                # Unknown/case-changed tables, views, indexes and triggers must
+                # reach the complete reader before either legacy return.
+                validate_workflow_schema(conn, expected_org_slug=org_slug)
+            if not tables:
+                return WorkflowTaskOwnership("legacy")
             roots = conn.execute("SELECT id FROM workflow_instances WHERE root_task_id=?", (task_id,)).fetchall()
             bridges = conn.execute("SELECT * FROM workflow_request_task_bridges WHERE task_id=?", (task_id,)).fetchall()
             drafts = (conn.execute("SELECT * FROM workflow_draft_dispatch_intents WHERE task_id=?", (task_id,)).fetchall()

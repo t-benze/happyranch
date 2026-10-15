@@ -49,6 +49,7 @@ from runtime.orchestrator import prompt_loader
 from runtime.orchestrator._paths import OrgPaths
 from runtime.orchestrator.escalation_reason import derive_current_escalation_reason
 from runtime.orchestrator.task_pause import assert_origin_unheld, origin_guard
+from runtime.orchestrator.task_wait_readers import ChildWaitBudget, derive_child_wait
 
 logger = logging.getLogger(__name__)
 
@@ -235,12 +236,13 @@ def _require_task_active(task_id: str, task: TaskRecord | None) -> None:
         )
 
 
-def _task_to_dict(t: TaskRecord) -> dict:
+def _task_to_dict(t: TaskRecord, org: OrgState, budget: ChildWaitBudget) -> dict:
     # Wire convention: every other task-shaped response (submit POST, recall)
     # exposes the primary key as `task_id`; thread routes do the same via
     # their own helpers. Rename here so list + detail responses match.
     d = t.model_dump(exclude={"executor_pid"})
     d["task_id"] = d.pop("id")
+    d["child_wait"] = derive_child_wait(org.db, t, budget)
     return d
 
 
@@ -484,16 +486,18 @@ def list_tasks(
     # queries (e.g. `tasks --status in_progress --block-kind delegated`).
     # `blocked_on_job_id` is a DERIVE filter for the Jobs "if-approved"
     # cascade — finds tasks blocked on a specific job id.
-    tasks = org.db.list_tasks(
-        limit=limit, assigned_agent=assigned_agent, before_task_id=before,
-        status=status, block_kind=block_kind,
-        blocked_on_job_id=blocked_on_job_id,
-    )
-    next_cursor = tasks[-1].id if len(tasks) == limit else None
-    return {
-        "tasks": [{**_task_to_dict(t), "pause": _pause_projection(org, t.id)} for t in tasks],
-        "next_cursor": next_cursor,
-    }
+    with org.db.coherent_read_view():
+        tasks = org.db.list_tasks(
+            limit=limit, assigned_agent=assigned_agent, before_task_id=before,
+            status=status, block_kind=block_kind,
+            blocked_on_job_id=blocked_on_job_id,
+        )
+        budget = ChildWaitBudget()
+        next_cursor = tasks[-1].id if len(tasks) == limit else None
+        return {
+            "tasks": [{**_task_to_dict(t, org, budget), "pause": _pause_projection(org, t.id)} for t in tasks],
+            "next_cursor": next_cursor,
+        }
 
 
 @router.get("/tasks/roots")
@@ -514,25 +518,27 @@ def list_roots(
     descendant whose same-parent revisit lineage leaves no unresolved FAILED
     leaf does not dominate). The field name and response shape are unchanged.
     """
-    tasks = org.db.list_roots(
-        limit=limit, assigned_agent=assigned_agent, before_task_id=before,
-        status=status, block_kind=block_kind,
-    )
-    next_cursor = tasks[-1].id if len(tasks) == limit else None
-    # Batch-fetch direct revisits for all returned roots (avoid N+1).
-    root_ids = [t.id for t in tasks]
-    revisits_map = org.db.batch_get_direct_revisits(root_ids)
-    result_tasks: list[dict] = []
-    for t in tasks:
-        d = _task_to_dict(t)
-        d["pause"] = _pause_projection(org, t.id)
-        d["severity_rollup"] = getattr(t, '_severity_rollup', t.status.value)
-        d["direct_revisits"] = revisits_map.get(t.id, [])
-        result_tasks.append(d)
-    return {
-        "tasks": result_tasks,
-        "next_cursor": next_cursor,
-    }
+    with org.db.coherent_read_view():
+        tasks = org.db.list_roots(
+            limit=limit, assigned_agent=assigned_agent, before_task_id=before,
+            status=status, block_kind=block_kind,
+        )
+        budget = ChildWaitBudget()
+        next_cursor = tasks[-1].id if len(tasks) == limit else None
+        # Batch-fetch direct revisits for all returned roots (avoid N+1).
+        root_ids = [t.id for t in tasks]
+        revisits_map = org.db.batch_get_direct_revisits(root_ids)
+        result_tasks: list[dict] = []
+        for t in tasks:
+            d = _task_to_dict(t, org, budget)
+            d["pause"] = _pause_projection(org, t.id)
+            d["severity_rollup"] = getattr(t, '_severity_rollup', t.status.value)
+            d["direct_revisits"] = revisits_map.get(t.id, [])
+            result_tasks.append(d)
+        return {
+            "tasks": result_tasks,
+            "next_cursor": next_cursor,
+        }
 
 
 def _pause_projection(org: OrgState, task_id: str) -> dict:
@@ -585,76 +591,77 @@ async def resume_task(task_id: str, body: TaskPauseControlRequest, org: OrgDep) 
 
 @router.get("/tasks/{task_id}")
 def get_task(task_id: str, org: OrgDep) -> dict:
-    task = org.db.get_task(task_id)
-    if task is None:
-        raise HTTPException(status_code=404, detail=f"task {task_id} not found")
+    with org.db.coherent_read_view():
+        task = org.db.get_task(task_id)
+        if task is None:
+            raise HTTPException(status_code=404, detail=f"task {task_id} not found")
 
-    # Revisit context: chain (this task back to original), direct revisits
-    # (tasks that revisit THIS task), and the predecessor's normalized
-    # prior_status (pulled from the revisit_of audit entry).
-    # truncate=True: revisit history grows naturally over a task's lifetime,
-    # so the read path must not 500 once the chain exceeds the defensive bound.
-    chain = [t.id for t in org.db.walk_revisit_chain(task_id, truncate=True)]
-    direct_revisits = org.db.get_direct_revisits(task_id)
-    audit_log = org.db.get_audit_logs(task_id)
-    prior_status = None
-    if task.revisit_of_task_id is not None:
-        for entry in audit_log:
-            if entry["action"] == "revisit_of":
+        # Revisit context: chain (this task back to original), direct revisits
+        # (tasks that revisit THIS task), and the predecessor's normalized
+        # prior_status (pulled from the revisit_of audit entry).
+        # truncate=True: revisit history grows naturally over a task's lifetime,
+        # so the read path must not 500 once the chain exceeds the defensive bound.
+        chain = [t.id for t in org.db.walk_revisit_chain(task_id, truncate=True)]
+        direct_revisits = org.db.get_direct_revisits(task_id)
+        audit_log = org.db.get_audit_logs(task_id)
+        prior_status = None
+        if task.revisit_of_task_id is not None:
+            for entry in audit_log:
+                if entry["action"] == "revisit_of":
+                    payload = entry.get("payload") or {}
+                    prior_status = payload.get("prior_status")
+                    break
+
+        # When a task is blocked waiting for jobs, include the id+status of each
+        # blocking job so `happyranch details` can show the founder what to act on.
+        blocked_on_jobs: list[dict] | None = None
+        if task.block_kind == BlockKind.BLOCKED_ON_JOB and task.status == TaskStatus.IN_PROGRESS:
+            job_ids = _json.loads(task.blocked_on_job_ids or "[]")
+            blocked_on_jobs = [
+                {"job_id": jid, "status": org.db.get_job_status(jid) or "unknown"}
+                for jid in job_ids
+            ]
+
+        active_chain = None
+        if task.active_chain is not None:
+            try:
+                active_chain = _json.loads(task.active_chain)
+            except _json.JSONDecodeError:
+                active_chain = None  # defensive — never 500 on malformed on-disk state
+
+        # DERIVE: a superseded predecessor is cited by the
+        # escalation_superseded audit row whose structured successor_root
+        # payload names the continuation task that superseded it.
+        superseded_by_task_id: str | None = None
+        for entry in reversed(audit_log):
+            if entry["action"] == "escalation_superseded":
                 payload = entry.get("payload") or {}
-                prior_status = payload.get("prior_status")
+                succ = payload.get("successor_root")
+                if isinstance(succ, str) and succ:
+                    superseded_by_task_id = succ
                 break
 
-    # When a task is blocked waiting for jobs, include the id+status of each
-    # blocking job so `happyranch details` can show the founder what to act on.
-    blocked_on_jobs: list[dict] | None = None
-    if task.block_kind == BlockKind.BLOCKED_ON_JOB and task.status == TaskStatus.IN_PROGRESS:
-        job_ids = _json.loads(task.blocked_on_job_ids or "[]")
-        blocked_on_jobs = [
-            {"job_id": jid, "status": org.db.get_job_status(jid) or "unknown"}
-            for jid in job_ids
-        ]
-
-    active_chain = None
-    if task.active_chain is not None:
-        try:
-            active_chain = _json.loads(task.active_chain)
-        except _json.JSONDecodeError:
-            active_chain = None  # defensive — never 500 on malformed on-disk state
-
-    # DERIVE: a superseded predecessor is cited by the
-    # escalation_superseded audit row whose structured successor_root
-    # payload names the continuation task that superseded it.
-    superseded_by_task_id: str | None = None
-    for entry in reversed(audit_log):
-        if entry["action"] == "escalation_superseded":
-            payload = entry.get("payload") or {}
-            succ = payload.get("successor_root")
-            if isinstance(succ, str) and succ:
-                superseded_by_task_id = succ
-            break
-
-    return {
-        "task": _task_to_dict(task),
-        "results": org.db.get_task_results(task_id),
-        "audit_log": audit_log,
-        "revisit_chain": chain,
-        "direct_revisits": direct_revisits,
-        "predecessor_prior_status": prior_status,
-        "blocked_on_jobs": blocked_on_jobs,
-        "active_chain": active_chain,
-        "superseded_by_task_id": superseded_by_task_id,
-        "escalation_reason": derive_current_escalation_reason(
-            task_status=task.status.value,
-            audit_rows=org.db.get_escalation_episode_audit_tail(task_id),
-        ),
-        # TASK-5522: read-only derived work-status summary. Built from the
-        # task record (last_heartbeat) plus the existing audit rows
-        # (session_start / progress) — no schema, no synthetic audits, no
-        # background monitor. See runtime/daemon/work_status.py.
-        "work_status": derive_work_status(task, audit_log),
-        "pause": _pause_projection(org, task_id),
-    }
+        return {
+            "task": _task_to_dict(task, org, ChildWaitBudget()),
+            "results": org.db.get_task_results(task_id),
+            "audit_log": audit_log,
+            "revisit_chain": chain,
+            "direct_revisits": direct_revisits,
+            "predecessor_prior_status": prior_status,
+            "blocked_on_jobs": blocked_on_jobs,
+            "active_chain": active_chain,
+            "superseded_by_task_id": superseded_by_task_id,
+            "escalation_reason": derive_current_escalation_reason(
+                task_status=task.status.value,
+                audit_rows=org.db.get_escalation_episode_audit_tail(task_id),
+            ),
+            # TASK-5522: read-only derived work-status summary. Built from the
+            # task record (last_heartbeat) plus the existing audit rows
+            # (session_start / progress) — no schema, no synthetic audits, no
+            # background monitor. See runtime/daemon/work_status.py.
+            "work_status": derive_work_status(task, audit_log),
+            "pause": _pause_projection(org, task_id),
+        }
 
 
 def _read_output(

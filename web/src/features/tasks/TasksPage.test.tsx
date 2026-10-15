@@ -56,6 +56,7 @@ function mountAt(route: string) {
 /** A root task fixture with severity_rollup (roots endpoint field). */
 function rootTask(overrides?: Partial<TaskRecord> & Record<string, unknown>): TaskRecord {
   return {
+    child_wait: {state:'waiting_children',observed_at:'2026-10-14T00:00:00Z'},
     task_id: 'TASK-0091',
     team: 'content',
     brief: 'Draft Hong Kong visa guide v2',
@@ -1319,7 +1320,7 @@ describe('TasksPage — Direction-A list reshape (THR-030 TASKS-01/02/03)', () =
   // THR-041: long titles truncate cleanly with ellipsis so they cannot
   // overlap the Agent/Thread/Updated columns.
   // THR-049 msg-9 + task/TASK-1223: STATUS column renders compact primary
-  // task status only — no block_kind derived qualifier ('waiting on subtasks'
+  // task status only — no block_kind derived qualifier ('Waiting on child work'
   // / 'waiting on jobs') and no severity rollup. Both the waiting qualifier
   // and worst-child rollup render as second-line context in the TITLE column.
   // The reduced scope covers the founder-reported case where status=in_progress,
@@ -1327,7 +1328,7 @@ describe('TasksPage — Direction-A list reshape (THR-030 TASKS-01/02/03)', () =
   // was still leaking into the STATUS column through StatusBadge.
   //
   // Case 1: status='in_progress' + block_kind='delegated' + severity_rollup='in_progress'
-  //   → STATUS shows compact 'in_progress', TITLE shows 'waiting on subtasks'.
+  //   → STATUS shows compact 'in_progress', TITLE shows 'Waiting on child work'.
   test('STATUS compact for delegated in_progress task — waiting qualifier in TITLE context (THR-049)', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     const delegated = rootTask({
@@ -1347,14 +1348,14 @@ describe('TasksPage — Direction-A list reshape (THR-030 TASKS-01/02/03)', () =
       expect(screen.getByText('TASK-0800')).toBeInTheDocument();
     });
     const row = document.querySelector('a[href*="/tasks/TASK-0800"]') as HTMLElement;
-    // STATUS column: compact 'in_progress' only, no 'waiting on subtasks'.
+    // STATUS column: compact 'in_progress' only, no 'Waiting on child work'.
     const statusCell = row.querySelector('.whitespace-nowrap') as HTMLElement;
     const statusText = statusCell?.textContent ?? '';
     expect(statusText).toContain('in_progress');
-    expect(statusText).not.toContain('waiting on subtasks');
+    expect(statusText).not.toContain('Waiting on child work');
     expect(statusText).not.toContain('waiting on jobs');
-    // TITLE column: 'waiting on subtasks' appears as second-line context.
-    expect(within(row).getByText('waiting on subtasks')).toBeInTheDocument();
+    // TITLE column: 'Waiting on child work' appears as second-line context.
+    expect(within(row).getByText('Waiting on child work')).toBeInTheDocument();
     // No rollup line when rollup matches own status.
     expect(within(row).queryByText('subtask')).not.toBeInTheDocument();
   });
@@ -1413,8 +1414,8 @@ describe('TasksPage — Direction-A list reshape (THR-030 TASKS-01/02/03)', () =
     expect(statusText).toContain('in_progress');
     expect(statusText).not.toContain('waiting');
     expect(statusText).not.toContain('escalated');
-    // TITLE column: both 'waiting on subtasks' and 'subtask escalated' appear.
-    expect(within(row).getByText('waiting on subtasks')).toBeInTheDocument();
+    // TITLE column: both 'Waiting on child work' and 'subtask escalated' appear.
+    expect(within(row).getByText('Waiting on child work')).toBeInTheDocument();
     expect(within(row).getByText('subtask escalated')).toBeInTheDocument();
   });
 
@@ -2012,9 +2013,9 @@ describe('TaskDetailPage — fan-out status band (TASK-1717)', () => {
 
     const band = await screen.findByRole('region', { name: 'Fan-out status' });
     // Terminal count (1 completed) of width 3, derived from recall statuses.
-    expect(within(band).getByText(/Running fan-out — 1 of 3 done/)).toBeInTheDocument();
+    expect(within(band).getByText(/Fan-out — waiting on child work/)).toBeInTheDocument();
     expect(
-      within(band).getByText(/1 of 3 complete · 1 running · 1 queued/),
+      within(band).getByText(/Terminal child rows: 1\/3 · 1 pending row · 1 in-progress row · 1 completed row/),
     ).toBeInTheDocument();
     // Backed metadata: width + constant join mode.
     expect(within(band).getByText('all-terminal')).toBeInTheDocument();
@@ -2064,8 +2065,8 @@ describe('TaskDetailPage — fan-out status band (TASK-1717)', () => {
     mountDetail();
 
     const band = await screen.findByRole('region', { name: 'Fan-out status' });
-    expect(within(band).getByText(/Fan-out joined — 1 of 2 succeeded/)).toBeInTheDocument();
-    expect(within(band).getByText(/1 subtask did not succeed/)).toBeInTheDocument();
+    expect(within(band).getByText(/Prior fan-out join recorded/)).toBeInTheDocument();
+    expect(within(band).getByText(/Current child row statuses/)).toBeInTheDocument();
     expect(within(band).getByText('all-terminal')).toBeInTheDocument();
     // Inspectable child rows preserved in the execution-subtasks list.
     const subtasks = screen
@@ -2362,7 +2363,7 @@ describe('TaskDetailPage — property grid (TASKDET-03)', () => {
     const rail = await mountAndGetRail();
 
     // The waiting qualifier is rendered and readable inside the rail.
-    const qualifier = within(rail).getByText('· waiting on subtasks');
+    const qualifier = within(rail).getByText('· Waiting on child work');
     expect(qualifier).toBeInTheDocument();
 
     // Responsive layout contract: the row can wrap so the value is not squeezed.
@@ -2888,7 +2889,7 @@ describe('THR-266 current-status subtask rollup presentation', () => {
     expect(screen.queryByText('subtask failed')).not.toBeInTheDocument();
     expect(screen.getByText('in_progress')).toBeInTheDocument();
     // The qualifier comes from the root's OWN status/block_kind.
-    expect(screen.getByText('waiting on subtasks')).toBeInTheDocument();
+    expect(screen.getByText('Waiting on child work')).toBeInTheDocument();
   });
 
   test('C3 refetch drops then restores the stale subtitle from live payloads', async () => {
@@ -2915,7 +2916,7 @@ describe('THR-266 current-status subtask rollup presentation', () => {
     expect(screen.getByText('subtask failed')).toBeInTheDocument();
     expect(eyebrowText()).toBe(eyebrow(1));
     expect(screen.getByText('in_progress')).toBeInTheDocument();
-    expect(screen.getByText('waiting on subtasks')).toBeInTheDocument();
+    expect(screen.getByText('Waiting on child work')).toBeInTheDocument();
 
     // Active retry: the successor is current, so the stale subtitle is gone.
     mutable.tasks = step('in_progress');
@@ -2923,7 +2924,7 @@ describe('THR-266 current-status subtask rollup presentation', () => {
     await waitFor(() => expect(screen.queryByText('subtask failed')).not.toBeInTheDocument());
     expect(eyebrowText()).toBe(eyebrow(0));
     expect(screen.getByText('in_progress')).toBeInTheDocument();
-    expect(screen.getByText('waiting on subtasks')).toBeInTheDocument();
+    expect(screen.getByText('Waiting on child work')).toBeInTheDocument();
 
     // The retry failed again: the truthful subtitle returns.
     mutable.tasks = step('failed');
@@ -2931,7 +2932,7 @@ describe('THR-266 current-status subtask rollup presentation', () => {
     await waitFor(() => expect(screen.getByText('subtask failed')).toBeInTheDocument());
     expect(eyebrowText()).toBe(eyebrow(1));
     expect(screen.getByText('in_progress')).toBeInTheDocument();
-    expect(screen.getByText('waiting on subtasks')).toBeInTheDocument();
+    expect(screen.getByText('Waiting on child work')).toBeInTheDocument();
 
     // F4 completed recovery: the last recovery must execute and clear it.
     mutable.tasks = step('in_progress');
@@ -2939,7 +2940,7 @@ describe('THR-266 current-status subtask rollup presentation', () => {
     await waitFor(() => expect(screen.queryByText('subtask failed')).not.toBeInTheDocument());
     expect(eyebrowText()).toBe(eyebrow(0));
     expect(screen.getByText('in_progress')).toBeInTheDocument();
-    expect(screen.getByText('waiting on subtasks')).toBeInTheDocument();
+    expect(screen.getByText('Waiting on child work')).toBeInTheDocument();
   });
 
   test('C9a in_progress/delegated root refetch keeps qualifier, toggles subtitle', async () => {
@@ -2964,7 +2965,7 @@ describe('THR-266 current-status subtask rollup presentation', () => {
     expect(screen.getByText('subtask failed')).toBeInTheDocument();
     expect(eyebrowText()).toBe(eyebrow(1));
     expect(screen.getByText('in_progress')).toBeInTheDocument();
-    expect(screen.getByText('waiting on subtasks')).toBeInTheDocument();
+    expect(screen.getByText('Waiting on child work')).toBeInTheDocument();
 
     // Step 2: active retry -> stale subtitle absent, root badge/qualifier fixed.
     mutable.tasks = step('in_progress');
@@ -2972,7 +2973,7 @@ describe('THR-266 current-status subtask rollup presentation', () => {
     await waitFor(() => expect(screen.queryByText('subtask failed')).not.toBeInTheDocument());
     expect(eyebrowText()).toBe(eyebrow(0));
     expect(screen.getByText('in_progress')).toBeInTheDocument();
-    expect(screen.getByText('waiting on subtasks')).toBeInTheDocument();
+    expect(screen.getByText('Waiting on child work')).toBeInTheDocument();
 
     // Step 3: completed recovery -> still in_progress rollup, subtitle absent.
     mutable.tasks = step('in_progress');
@@ -2980,7 +2981,7 @@ describe('THR-266 current-status subtask rollup presentation', () => {
     await waitFor(() => expect(screen.queryByText('subtask failed')).not.toBeInTheDocument());
     expect(eyebrowText()).toBe(eyebrow(0));
     expect(screen.getByText('in_progress')).toBeInTheDocument();
-    expect(screen.getByText('waiting on subtasks')).toBeInTheDocument();
+    expect(screen.getByText('Waiting on child work')).toBeInTheDocument();
 
     // Step 4: a newly failed delegated attempt (recurrence) restores it.
     mutable.tasks = step('failed');
@@ -2988,7 +2989,7 @@ describe('THR-266 current-status subtask rollup presentation', () => {
     await waitFor(() => expect(screen.getByText('subtask failed')).toBeInTheDocument());
     expect(eyebrowText()).toBe(eyebrow(1));
     expect(screen.getByText('in_progress')).toBeInTheDocument();
-    expect(screen.getByText('waiting on subtasks')).toBeInTheDocument();
+    expect(screen.getByText('Waiting on child work')).toBeInTheDocument();
   });
 
   test('C9b completed root refetch shows no waiting qualifier at any step', async () => {
@@ -3013,7 +3014,7 @@ describe('THR-266 current-status subtask rollup presentation', () => {
     expect(screen.getByText('subtask failed')).toBeInTheDocument();
     expect(eyebrowText()).toBe(eyebrow(1));
     expect(screen.getByText('completed')).toBeInTheDocument();
-    expect(screen.queryByText('waiting on subtasks')).not.toBeInTheDocument();
+    expect(screen.queryByText('Waiting on child work')).not.toBeInTheDocument();
 
     // Step 2: active retry -> literal subtitle, root badge/qualifier fixed.
     mutable.tasks = step('in_progress');
@@ -3022,7 +3023,7 @@ describe('THR-266 current-status subtask rollup presentation', () => {
     expect(screen.getByText('subtask in progress')).toBeInTheDocument();
     expect(eyebrowText()).toBe(eyebrow(0));
     expect(screen.getByText('completed')).toBeInTheDocument();
-    expect(screen.queryByText('waiting on subtasks')).not.toBeInTheDocument();
+    expect(screen.queryByText('Waiting on child work')).not.toBeInTheDocument();
 
     // Step 3: completed recovery -> root/completed tie, no subtitle.
     mutable.tasks = step('completed');
@@ -3031,7 +3032,7 @@ describe('THR-266 current-status subtask rollup presentation', () => {
     expect(screen.queryByText('subtask failed')).not.toBeInTheDocument();
     expect(eyebrowText()).toBe(eyebrow(0));
     expect(screen.getByText('completed')).toBeInTheDocument();
-    expect(screen.queryByText('waiting on subtasks')).not.toBeInTheDocument();
+    expect(screen.queryByText('Waiting on child work')).not.toBeInTheDocument();
 
     // Step 4: newly failed attempt -> subtitle returns, still no qualifier.
     mutable.tasks = step('failed');
@@ -3039,7 +3040,7 @@ describe('THR-266 current-status subtask rollup presentation', () => {
     await waitFor(() => expect(screen.getByText('subtask failed')).toBeInTheDocument());
     expect(eyebrowText()).toBe(eyebrow(1));
     expect(screen.getByText('completed')).toBeInTheDocument();
-    expect(screen.queryByText('waiting on subtasks')).not.toBeInTheDocument();
+    expect(screen.queryByText('Waiting on child work')).not.toBeInTheDocument();
   });
 
   test('C10 TaskCard and TaskListRow keep their documented separate consumer behavior', async () => {
@@ -3058,7 +3059,7 @@ describe('THR-266 current-status subtask rollup presentation', () => {
       <TaskCard task={stale} to="/orgs/x/tasks/TASK-0091" taskRoutes={routes} />,
     );
     expect(a.getByText('failed')).toBeInTheDocument();
-    expect(a.queryByText('· waiting on subtasks')).not.toBeInTheDocument();
+    expect(a.queryByText('· Waiting on child work')).not.toBeInTheDocument();
     expect(a.getByText('supersedes')).toBeInTheDocument();
     expect(a.getByText('TASK-0088')).toBeInTheDocument();
     expect(a.getByText('superseded by')).toBeInTheDocument();
@@ -3071,9 +3072,9 @@ describe('THR-266 current-status subtask rollup presentation', () => {
       status: 'in_progress', block_kind: 'delegated',
       severity_rollup: 'in_progress', brief: 'Card root',
     });
-    const b = renderWithProviders(<TaskCard task={corrected} to="/orgs/x/tasks/TASK-0091" />);
+    const b = renderWithProviders(<TaskCard task={corrected} waitingQualifier="Waiting on child work" to="/orgs/x/tasks/TASK-0091" />);
     expect(b.getByText('in_progress')).toBeInTheDocument();
-    expect(b.getByText('· waiting on subtasks')).toBeInTheDocument();
+    expect(b.getByText('· Waiting on child work')).toBeInTheDocument();
     b.unmount();
 
     // D2 variant: root-own completed, rollup in_progress, delegated.
@@ -3084,11 +3085,11 @@ describe('THR-266 current-status subtask rollup presentation', () => {
       direct_revisits: ['TASK-0092'],
     });
     const card = renderWithProviders(
-      <TaskCard task={variant} to="/orgs/x/tasks/TASK-0091" taskRoutes={routes} />,
+      <TaskCard task={variant} waitingQualifier="Waiting on child work" to="/orgs/x/tasks/TASK-0091" taskRoutes={routes} />,
     );
-    // The card consumes the ROLLUP for its badge, keeping its own qualifier.
+    // The card consumes the ROLLUP for its badge, suppressing its parent qualifier.
     expect(card.getByText('in_progress')).toBeInTheDocument();
-    expect(card.getByText('· waiting on subtasks')).toBeInTheDocument();
+    expect(card.queryByText('· Waiting on child work')).not.toBeInTheDocument();
     expect(card.getByText('supersedes')).toBeInTheDocument();
     expect(card.getByText('TASK-0088')).toBeInTheDocument();
     card.unmount();
@@ -3103,8 +3104,8 @@ describe('THR-266 current-status subtask rollup presentation', () => {
     // The list row consumes the ROOT-OWN status; the rollup is the subtitle.
     expect(row.getByText('completed')).toBeInTheDocument();
     expect(row.getByText('subtask in progress')).toBeInTheDocument();
-    expect(row.queryByText('waiting on subtasks')).not.toBeInTheDocument();
-    expect(row.queryByText('· waiting on subtasks')).not.toBeInTheDocument();
+    expect(row.queryByText('Waiting on child work')).not.toBeInTheDocument();
+    expect(row.queryByText('· Waiting on child work')).not.toBeInTheDocument();
     expect(row.getByText('supersedes')).toBeInTheDocument();
     expect(row.getByText('superseded by')).toBeInTheDocument();
     row.unmount();
@@ -3117,7 +3118,7 @@ describe('THR-266 current-status subtask rollup presentation', () => {
     });
     const c = renderWithProviders(<TaskCard task={noBlock} to="/orgs/x/tasks/TASK-0091" />);
     expect(c.getByText('in_progress')).toBeInTheDocument();
-    expect(c.queryByText('· waiting on subtasks')).not.toBeInTheDocument();
+    expect(c.queryByText('· Waiting on child work')).not.toBeInTheDocument();
     c.unmount();
 
     const noBlockRow = renderWithProviders(
@@ -3125,7 +3126,7 @@ describe('THR-266 current-status subtask rollup presentation', () => {
     );
     expect(noBlockRow.getByText('completed')).toBeInTheDocument();
     expect(noBlockRow.getByText('subtask in progress')).toBeInTheDocument();
-    expect(noBlockRow.queryByText('waiting on subtasks')).not.toBeInTheDocument();
+    expect(noBlockRow.queryByText('Waiting on child work')).not.toBeInTheDocument();
     noBlockRow.unmount();
   });
 });

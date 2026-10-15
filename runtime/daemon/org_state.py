@@ -27,7 +27,7 @@ from runtime.daemon.thread_queue import ThreadQueue
 from runtime.infrastructure.database import Database
 from runtime.infrastructure.thread_store import ThreadStore
 from runtime.infrastructure.workflow_schema import (
-    draft_migration_guidance, install_or_recover, validate_workflow_schema, submission_migration_guidance,
+    coding_migration_guidance, draft_migration_guidance, install_or_recover, validate_workflow_schema, submission_migration_guidance,
     author_handoff_migration_guidance,
 )
 from runtime.workflows.cutover import WorkflowCutoverStore
@@ -44,6 +44,7 @@ from runtime.workflows.submissions import WorkflowSubmissionStore
 from runtime.workflows.revisions import WorkflowRevisionStore
 from runtime.workflows.review_dispatch import WorkflowReviewDispatcher
 from runtime.workflows.review_receipts import WorkflowReviewReceiptStore
+from runtime.workflows.repository_artifacts import WorkflowRepositoryArtifactService
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +73,7 @@ class OrgState:
     workflow_revisions: WorkflowRevisionStore = field(init=False)
     workflow_reviews: WorkflowReviewDispatcher = field(init=False)
     workflow_review_receipts: WorkflowReviewReceiptStore = field(init=False)
+    workflow_repository_artifacts: WorkflowRepositoryArtifactService = field(init=False)
     memory_collection: CollectionObserver | None = field(init=False, default=None)
     memory_collection_unavailable: str | None = field(init=False, default=None)
     naming_readiness: str = field(init=False, default="unavailable")
@@ -139,6 +141,7 @@ class OrgState:
         self.workflow_revisions = WorkflowRevisionStore(self)
         self.workflow_reviews = WorkflowReviewDispatcher(self)
         self.workflow_review_receipts = WorkflowReviewReceiptStore(self)
+        self.workflow_repository_artifacts = WorkflowRepositoryArtifactService()
         if self.orchestrator is not None:
             self.orchestrator._workflow_drafts = self.workflow_drafts
             self.orchestrator._workflow_submissions = self.workflow_submissions
@@ -281,6 +284,8 @@ class OrgState:
                 ))
             if layout == "G":
                 logger.warning("org %r: %s", slug, author_handoff_migration_guidance())
+            if layout == "I":
+                logger.warning("org %r: coding unavailable; %s", slug, coding_migration_guidance())
             WorkflowCutoverStore(db, org_slug=slug).recover_authorized()
             from runtime.infrastructure.task_pause_controls import install_pause_schema, TaskPauseStore
             install_pause_schema(db, org_slug=slug)

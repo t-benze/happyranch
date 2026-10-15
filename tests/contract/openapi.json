@@ -4373,6 +4373,29 @@
         ]
       }
     },
+    "/api/v1/orgs/{slug}/workflows/release-templates/coding/1": {
+      "GET": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "401",
+          "404",
+          "409",
+          "422",
+          "500",
+          "503"
+        ]
+      }
+    },
     "/api/v1/orgs/{slug}/workflows/reviews/human-receipts": {
       "POST": {
         "params": [

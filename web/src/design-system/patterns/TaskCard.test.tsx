@@ -22,10 +22,23 @@ test('C8 standalone TaskCard keeps English defaults, chained rounding and siblin
       rerender(<MemoryRouter><TaskCard task={{ ...base, updated_at: new Date(now - elapsed).toISOString() }} to="/task" taskRoutes={{ detail: (id) => `/tasks/${id}` }} /></MemoryRouter>);
       expect(screen.getByRole('link', { name: /TASK-DEFAULT/ })).toHaveTextContent(expected);
     }
-    expect(screen.getByRole('link', { name: /TASK-DEFAULT/ })).toHaveTextContent('· waiting on subtasks');
+    expect(screen.getByRole('link', { name: /TASK-DEFAULT/ })).not.toHaveTextContent('waiting on subtasks');
     expect(screen.getByRole('link', { name: /TASK-DEFAULT/ })).toHaveTextContent('Raw brief / 原文');
     expect(screen.getByRole('link', { name: 'supersedes TASK-P' })).toHaveAttribute('href', '/tasks/TASK-P');
     expect(screen.getByRole('link', { name: 'superseded by TASK-R' })).toHaveAttribute('href', '/tasks/TASK-R');
     expect(document.querySelector('a a')).toBeNull();
   } finally { clock.mockRestore(); }
+});
+
+test.each(['en', 'zh-CN'] as const)('resolved own qualifier and worse rollup suppression %s', (locale) => {
+  const qualifier = locale === 'en' ? 'Continuation pending' : '等待后续处理';
+  const task = {task_id:'CARD', team:'engineering', brief:'raw', status:'in_progress', block_kind:'delegated',
+    assigned_agent:null, parent_task_id:null, revisit_of_task_id:null, created_at:'2026-10-14T00:00:00Z',
+    updated_at:'2026-10-14T00:00:00Z', closed_at:null, cancelled_at:null, session_timeout_seconds:null} as TaskRecord;
+  const {container, rerender} = render(<MemoryRouter><TaskCard task={task} to="/task" waitingQualifier={qualifier} /></MemoryRouter>);
+  expect(container).toHaveTextContent(qualifier);
+  for (const [status, severity_rollup] of [['in_progress','failed'], ['completed','in_progress']] as const) {
+    rerender(<MemoryRouter><TaskCard task={{...task,status,severity_rollup}} to="/task" waitingQualifier={qualifier} /></MemoryRouter>);
+    expect(container).not.toHaveTextContent(qualifier);
+  }
 });

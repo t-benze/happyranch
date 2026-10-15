@@ -1,7 +1,7 @@
 """Installed U1A workflow schema and compatibility boundary.
 
 F is the unchanged inert version-one foundation. Existing OrgState.load installs
-only F and validates complete F/E/G/H/I; explicit new-org creation initializes I.
+only F and validates complete F/E/G/H/I/J (empty coding only); explicit new-org creation initializes I.
 The explicit operator scripts alone upgrade existing F/E. Generic Database construction,
 including runtime-audit.db, has no workflow side effect.
 """
@@ -431,22 +431,25 @@ def _layout(conn: sqlite3.Connection) -> tuple[object, ...]:
     return normalized_objects, tuple(table_metadata), tuple(index_metadata)
 
 
-@lru_cache(maxsize=5)
-def _canonical_layout(layout: Literal["F", "E", "G", "H", "I"] = "F") -> tuple[object, ...]:
+@lru_cache(maxsize=6)
+def _canonical_layout(layout: Literal["F", "E", "G", "H", "I", "J"] = "F") -> tuple[object, ...]:
     expected = sqlite3.connect(":memory:")
     try:
         expected.execute("PRAGMA foreign_keys=ON")
-        _execute_ddl(expected, _g_foundation_ddl() if layout in ("G", "H", "I") else CANONICAL_WORKFLOW_DDL)
-        if layout in ("E", "G", "H", "I"):
-            _execute_ddl(expected, _revision_draft_ddl() if layout == "I" else CANONICAL_WORKFLOW_DRAFT_DDL)
+        _execute_ddl(expected, _g_foundation_ddl() if layout in ("G", "H", "I", "J") else CANONICAL_WORKFLOW_DDL)
+        if layout in ("E", "G", "H", "I", "J"):
+            _execute_ddl(expected, _revision_draft_ddl() if layout in ("I", "J") else CANONICAL_WORKFLOW_DRAFT_DDL)
         elif layout != "F":
             raise ValueError("unsupported_workflow_layout")
-        if layout in ("G", "H", "I"):
+        if layout in ("G", "H", "I", "J"):
             _execute_ddl(expected, _g_additions_ddl())
-        if layout in ("H", "I"):
+        if layout in ("H", "I", "J"):
             _execute_ddl(expected, CANONICAL_WORKFLOW_AUTHOR_HANDOFF_DDL)
-        if layout == "I":
+        if layout in ("I", "J"):
             _execute_ddl(expected, CANONICAL_WORKFLOW_DOCUMENT_REVISION_DDL)
+        if layout == "J":
+            from runtime.infrastructure.workflow_coding_schema import CANONICAL_WORKFLOW_CODING_DDL
+            _execute_ddl(expected, CANONICAL_WORKFLOW_CODING_DDL)
         return _layout(expected)
     finally:
         expected.close()
@@ -584,15 +587,31 @@ def _validate_cutover_data(
 def _validate_installed(
     conn: sqlite3.Connection, *, expected_org_slug: str | None = None,
     validate_data: bool = True,
-) -> Literal["F", "E", "G", "H", "I"]:
+) -> Literal["F", "E", "G", "H", "I", "J"]:
     actual = _layout(conn)
     names = {row[1] for row in actual[0]}
-    layout = "I" if "workflow_document_revision_operations" in names else "H" if "workflow_author_handoffs" in names else ("G" if "workflow_submission_schema_versions" in names else ("E" if "workflow_draft_adapter_versions" in names else "F"))
+    layout = "J" if any(name.startswith("workflow_coding_") for name in names) else "I" if "workflow_document_revision_operations" in names else "H" if "workflow_author_handoffs" in names else ("G" if "workflow_submission_schema_versions" in names else ("E" if "workflow_draft_adapter_versions" in names else "F"))
     expected = _canonical_layout(layout)
     if _object_keys(actual) != _object_keys(expected):
         raise ValueError("workflow_schema_object_set_mismatch")
     if actual != expected:
         raise ValueError("workflow_schema_layout_mismatch")
+
+    from runtime.infrastructure.workflow_coding_schema import validate_empty_coding_data
+    validate_empty_coding_data(conn, layout=layout)
+    # Unknown native admission owners (including coding without its reader)
+    # never become a legacy observation on an earlier workflow layout.
+    from runtime.infrastructure.task_pause_controls import validate_pause_schema
+    validate_pause_schema(conn, org_slug=expected_org_slug, allow_absent=True)
+    # Empty-only J still requires all retained I/document/native readers even
+    # on cutover's metadata path. The flag never bypasses the new boundary.
+    if layout == "J":
+        validate_data = True
+        _validate_source_data(conn)
+        from runtime.identities.schema import validate_names
+        from runtime.infrastructure.team_move_store import validate_team_move_schema
+        validate_names(conn, org_slug=expected_org_slug)
+        validate_team_move_schema(conn, org_slug=expected_org_slug)
 
     versions = [
         tuple(row)
@@ -602,25 +621,25 @@ def _validate_installed(
         raise ValueError("unsupported_workflow_adapter_version")
     if versions != [(1,)]:
         raise ValueError("workflow_schema_marker_mismatch")
-    if layout not in ('H', 'I') and any(conn.execute(f"SELECT 1 FROM {table} WHERE compiler_pin IN ('workflow-compiler@3','workflow-compiler@4') LIMIT 1").fetchone()
+    if layout not in ('H', 'I', 'J') and any(conn.execute(f"SELECT 1 FROM {table} WHERE compiler_pin IN ('workflow-compiler@3','workflow-compiler@4') LIMIT 1").fetchone()
                              for table in ('workflow_template_drafts', 'workflow_template_versions')):
         raise ValueError('workflow_author_handoff_schema_required')
 
     _validate_cutover_data(conn, expected_org_slug=expected_org_slug)
-    if layout in ("E", "G", "H", "I"):
+    if layout in ("E", "G", "H", "I", "J"):
         draft_versions = [tuple(row) for row in conn.execute("SELECT version FROM workflow_draft_adapter_versions")]
         if draft_versions != [(1,)]:
             raise ValueError("workflow_draft_schema_marker_mismatch")
         if validate_data:
             _validate_draft_data(conn, expected_org_slug=expected_org_slug)
-    if layout in ("G", "H", "I"):
+    if layout in ("G", "H", "I", "J"):
         if [tuple(row) for row in conn.execute("SELECT version FROM workflow_submission_schema_versions")] != [(1,)]:
             raise ValueError("workflow_submission_schema_marker_mismatch")
         if validate_data:
             _validate_submission_data(conn, expected_org_slug=expected_org_slug)
-    if layout in ("H", "I") and validate_data:
+    if layout in ("H", "I", "J") and validate_data:
         _validate_author_handoff_data(conn, expected_org_slug=expected_org_slug)
-    if layout == "I" and validate_data:
+    if layout in ("I", "J") and validate_data:
         from runtime.workflows.revisions import validate_revision_storage
         validate_revision_storage(conn, expected_org_slug=expected_org_slug)
     return layout
@@ -953,7 +972,7 @@ def _validate_draft_data(conn: sqlite3.Connection, *, expected_org_slug: str | N
         refuse()
 
 
-def validate_workflow_schema(conn: sqlite3.Connection, *, expected_org_slug: str | None) -> Literal['F', 'E', 'G', 'H', 'I']:
+def validate_workflow_schema(conn: sqlite3.Connection, *, expected_org_slug: str | None) -> Literal['F', 'E', 'G', 'H', 'I', 'J']:
     """Complete layout/discriminator/history and stored source/data validation."""
     layout = _validate_installed(conn, expected_org_slug=expected_org_slug)
     _validate_source_data(conn)
@@ -972,7 +991,7 @@ def migrate_draft_schema(conn: sqlite3.Connection, *, expected_org_slug: str) ->
     from runtime.identities.schema import validate_names
     validate_names(conn, org_slug=expected_org_slug)
     _validate_release_database(conn, layout, expected_org_slug=expected_org_slug)
-    if layout in ('E', 'G', 'H', 'I'):
+    if layout in ('E', 'G', 'H', 'I', 'J'):
         return 'ready'
     _execute_ddl(conn, CANONICAL_WORKFLOW_DRAFT_DDL)
     conn.execute('INSERT INTO workflow_draft_adapter_versions VALUES (1)')
@@ -982,15 +1001,39 @@ def migrate_draft_schema(conn: sqlite3.Connection, *, expected_org_slug: str) ->
 
 
 def initialize_complete_org_schema(database: Database, *, expected_org_slug: str,
-                                   layout: Literal["G", "H", "I"] = "G") -> None:
+                                   layout: Literal["G", "H", "I", "J"] = "G") -> None:
     """Deliberate creation only; the POST owner proves the skeleton is fresh."""
-    if layout not in ("G", "H", "I"):
+    if layout not in ("G", "H", "I", "J"):
         raise ValueError("unsupported_workflow_layout")
     with database.workflow_schema_transaction() as conn:
         if _layout(conn)[0]:
             raise ValueError('workflow_fresh_creation_requires_empty_workflow_layout')
+        if layout == "J":
+            # Independent reference/fresh primitive only; the real create-org
+            # owner still selects I. Native generic initialization has exactly
+            # two completed remote-schema marker rows, not operational work.
+            # Validate those independently; inspect every other table too.
+            from runtime.infrastructure.remote_job_schema import (
+                COMPLETE_STAGE, IDENTITY_MIGRATION_NAME, MIGRATION_NAME,
+                validate_identity_enrollment_schema_preflight, validate_remote_job_schema_preflight,
+            )
+            validate_identity_enrollment_schema_preflight(conn)
+            validate_remote_job_schema_preflight(conn)
+            for table, in conn.execute("SELECT name FROM sqlite_schema WHERE type='table'"):
+                quoted = str(table).replace('"', '""')
+                if table == 'remote_runner_schema_migrations':
+                    markers = [tuple(row) for row in conn.execute(f'SELECT * FROM "{quoted}" ORDER BY name')]
+                    if (len(markers) != 2 or {(row[0], row[1]) for row in markers} !=
+                            {(IDENTITY_MIGRATION_NAME, COMPLETE_STAGE), (MIGRATION_NAME, COMPLETE_STAGE)}):
+                        raise ValueError('workflow_coding_fresh_creation_native_marker_mismatch')
+                    for row in markers:
+                        timestamp = datetime.fromisoformat(row[2])
+                        if timestamp.tzinfo is None or timestamp.utcoffset().total_seconds() != 0:
+                            raise ValueError('workflow_coding_fresh_creation_native_marker_mismatch')
+                elif conn.execute(f'SELECT 1 FROM "{quoted}" LIMIT 1').fetchone() is not None:
+                    raise ValueError('workflow_coding_fresh_creation_requires_empty_native_database')
         _install_foundation(conn, expected_org_slug=expected_org_slug)
-        _execute_ddl(conn, _revision_draft_ddl() if layout == "I" else CANONICAL_WORKFLOW_DRAFT_DDL)
+        _execute_ddl(conn, _revision_draft_ddl() if layout in ("I", "J") else CANONICAL_WORKFLOW_DRAFT_DDL)
         conn.execute("INSERT INTO workflow_draft_adapter_versions VALUES (1)")
         # Proven empty creation: no inbound work exists and FK enforcement stays on.
         conn.execute("DROP TABLE workflow_events")
@@ -998,10 +1041,13 @@ def initialize_complete_org_schema(database: Database, *, expected_org_slug: str
         _execute_ddl(conn, CANONICAL_WORKFLOW_SUBMISSION_DDL)
         conn.execute("CREATE INDEX workflow_events_instance_idx ON workflow_events(instance_id)")
         conn.execute("INSERT INTO workflow_submission_schema_versions VALUES (1)")
-        if layout in ("H", "I"):
+        if layout in ("H", "I", "J"):
             _execute_ddl(conn, CANONICAL_WORKFLOW_AUTHOR_HANDOFF_DDL)
-        if layout == "I":
+        if layout in ("I", "J"):
             _execute_ddl(conn, CANONICAL_WORKFLOW_DOCUMENT_REVISION_DDL)
+        if layout == "J":
+            from runtime.infrastructure.workflow_coding_schema import CANONICAL_WORKFLOW_CODING_DDL
+            _execute_ddl(conn, CANONICAL_WORKFLOW_CODING_DDL)
         validate_workflow_schema(conn, expected_org_slug=expected_org_slug)
 
 
@@ -1180,7 +1226,7 @@ def author_handoff_migration_guidance() -> str:
 
 def require_author_handoff_schema(conn: sqlite3.Connection, *, expected_org_slug: str) -> None:
     """Readiness only; existing-org owners never install the extension."""
-    if validate_workflow_schema(conn, expected_org_slug=expected_org_slug) not in ('H', 'I'):
+    if validate_workflow_schema(conn, expected_org_slug=expected_org_slug) not in ('H', 'I', 'J'):
         from runtime.workflows.activation import WorkflowActivationError
         raise WorkflowActivationError('workflow_author_handoff_schema_required', owner='operator',
                                       required_action=author_handoff_migration_guidance())
@@ -1523,7 +1569,7 @@ def migrate_author_handoff_schema(conn: sqlite3.Connection, *, expected_org_slug
         raise ValueError('workflow_author_handoff_migration_requires_idle_foreign_keys')
     layout = validate_workflow_schema(conn, expected_org_slug=expected_org_slug)
     _validate_release_database(conn, layout, expected_org_slug=expected_org_slug)
-    if layout == 'H':
+    if layout in ('H', 'I', 'J'):
         return 'ready'
     if layout != 'G':
         raise ValueError('workflow_author_handoff_requires_g: ' + submission_migration_guidance(org_slug=expected_org_slug))
@@ -1532,7 +1578,7 @@ def migrate_author_handoff_schema(conn: sqlite3.Connection, *, expected_org_slug
         conn.execute('BEGIN IMMEDIATE')
         layout = validate_workflow_schema(conn, expected_org_slug=expected_org_slug)
         _validate_release_database(conn, layout, expected_org_slug=expected_org_slug)
-        if layout == 'H':
+        if layout in ('H', 'I', 'J'):
             conn.rollback()
             return 'ready'
         if layout != 'G':
@@ -1579,7 +1625,7 @@ def _validate_submission_source_ownership(conn: sqlite3.Connection, layout: str)
         ('workflow_request_task_bridges', "state IN ('claimed','running','uncertain')"),
         ('workflow_recovery_claims', "state='claimed'"),
     )
-    if layout in ('E', 'G', 'H', 'I'):
+    if layout in ('E', 'G', 'H', 'I', 'J'):
         queries += (('workflow_draft_dispatch_intents', "state IN ('claimed','running','uncertain') OR "
                      "(cancellation_requested=1 AND state NOT IN ('cancelled','failed','completed')) OR "
                      "(host_launch_started=1 AND state NOT IN ('cancelled','failed','completed'))"),)
@@ -1609,7 +1655,7 @@ def migrate_submission_schema(conn: sqlite3.Connection, *, expected_org_slug: st
     from runtime.identities.schema import validate_names
     validate_names(conn, org_slug=expected_org_slug)
     _validate_release_database(conn, layout, expected_org_slug=expected_org_slug)
-    if layout in ('G', 'H', 'I'):
+    if layout in ('G', 'H', 'I', 'J'):
         return 'ready'
     _validate_submission_source_ownership(conn, layout)
     for event in _records(conn, 'SELECT * FROM workflow_events'):
@@ -1621,7 +1667,7 @@ def migrate_submission_schema(conn: sqlite3.Connection, *, expected_org_slug: st
         conn.execute('BEGIN IMMEDIATE')
         layout = validate_workflow_schema(conn, expected_org_slug=expected_org_slug)
         _validate_release_database(conn, layout, expected_org_slug=expected_org_slug)
-        if layout in ('G', 'H', 'I'):
+        if layout in ('G', 'H', 'I', 'J'):
             conn.rollback()
             return 'ready'
         _validate_submission_source_ownership(conn, layout)
@@ -1676,7 +1722,7 @@ def revision_migration_guidance() -> str:
 
 
 def require_document_revision_schema(conn: sqlite3.Connection, *, expected_org_slug: str) -> None:
-    if validate_workflow_schema(conn, expected_org_slug=expected_org_slug) != 'I':
+    if validate_workflow_schema(conn, expected_org_slug=expected_org_slug) not in ('I', 'J'):
         from runtime.workflows.activation import WorkflowActivationError
         raise WorkflowActivationError('workflow_document_revision_schema_required', owner='operator',
                                       required_action=revision_migration_guidance())
@@ -1688,7 +1734,7 @@ def migrate_document_revision_schema(conn: sqlite3.Connection, *, expected_org_s
         raise ValueError('workflow_document_revision_requires_idle_foreign_keys')
     layout = validate_workflow_schema(conn, expected_org_slug=expected_org_slug)
     _validate_release_database(conn, layout, expected_org_slug=expected_org_slug)
-    if layout == 'I':
+    if layout in ('I', 'J'):
         return 'ready'
     if layout != 'H':
         raise ValueError('workflow_document_revision_requires_h: ' + revision_migration_guidance())
@@ -1729,3 +1775,230 @@ def migrate_document_revision_schema(conn: sqlite3.Connection, *, expected_org_s
         conn.execute('PRAGMA foreign_keys=ON')
         if conn.execute('PRAGMA foreign_keys').fetchone()[0] != 1:
             raise ValueError('workflow_document_revision_fk_restore_failed')
+
+
+def coding_migration_guidance() -> str:
+    return ('Use a compatible reader. Run scripts/migrate_workflow_coding_schema.py --runtime-root '
+            '<absolute-runtime-root> --org <org-slug> --check read-only (exit 3 if migration needed, '
+            'exit 0 if compatible empty J). Writes require --confirm-cooperative-offline, exact I, '
+            'documented daemon stop and reconciled host/producer/outer-tail, '
+            'publication/profile/source/Pause/team-move ownership under cooperative offline control. '
+            'Observed path/file/lifecycle drift or unavailable observations refuse; direct same-user '
+            'file/DB swapping is outside this cooperative guarantee. Migration behavior is unexecuted. '
+            'Startup/reopen/enable never installs J. Even empty J blocks pre-J downgrade; '
+            'populated coding requires K2a2.')
+
+
+def _validate_coding_source_idle(conn: sqlite3.Connection, *, expected_org_slug: str) -> None:
+    """J-only offline ownership fence, without PID/TTL/terminal-label discharge."""
+    def refuse(owner: str) -> None:
+        raise ValueError(f'workflow_coding_source_owner_unresolved: {owner}; '
+                         'original owner must reconcile its complete journal/host/outer-tail closure')
+
+    _validate_submission_source_ownership(conn, 'I')
+    # Queued/admitted operations and source result-action processing also own
+    # work, even before a PID/host reservation exists.
+    for table, predicate in (
+        ('workflow_authority_pointers', "state!='ready'"),
+        ('workflow_dispatch_operations', "state NOT IN ('cancelled','completed')"),
+        ('workflow_dispatch_outbox', "state NOT IN ('cancelled','completed')"),
+        ('workflow_request_task_bridges', "state NOT IN ('cancelled','completed')"),
+        ('workflow_draft_dispatch_intents', "state NOT IN ('cancelled','failed','completed')"),
+        ('tasks', "status NOT IN ('completed','failed','cancelled','superseded') OR "
+                  "active_chain IS NOT NULL OR active_fanout IS NOT NULL OR blocked_on_job_ids IS NOT NULL OR executor_pid IS NOT NULL"),
+        ('task_completion_recoveries', "state!='callback_consumed' OR settled_at IS NULL"),
+        ('jobs', "status NOT IN ('completed','failed','rejected','cancelled')"),
+        ('thread_invocations', "status NOT IN ('consumed','declined','timeout','failed')"),
+        ('dreams', "status NOT IN ('completed','failed','timeout','skipped')"),
+        ('work_hours', "status NOT IN ('completed','failed','timeout','skipped')"),
+        ('schedules', "active=1 OR session_id IS NOT NULL OR status NOT IN ('fired','paused','cancelled','expired','failed','timeout')"),
+        ('remote_job_attempts', "state!='terminal'"),
+        ('remote_runner_workspaces', "active_attempt_id IS NOT NULL OR state IN ('leased','recreate_pending','uncertain')"),
+    ):
+        if conn.execute(f'SELECT 1 FROM {table} WHERE {predicate} LIMIT 1').fetchone():
+            refuse(table)
+    # Authenticate terminal F5 projections and their own actual callbacks and
+    # host terminal evidence; missing or orphan edges are never an idle label.
+    from runtime.workflows.review_dispatch import validate_review_dispatch_storage
+    requests = {r[0] for r in conn.execute('SELECT request_id FROM workflow_dispatch_operations')}
+    if (requests != {r[0] for r in conn.execute('SELECT request_id FROM workflow_dispatch_outbox')}
+            or requests != {r[0] for r in conn.execute('SELECT request_id FROM workflow_request_task_bridges')}):
+        refuse('workflow_dispatch_graph')
+    for request_id in requests:
+        validate_review_dispatch_storage(conn, request_id=request_id)
+    for intent in _records(conn, 'SELECT * FROM workflow_draft_dispatch_intents'):
+        if intent['host_launch_started']:
+            terminal = _records(conn, 'SELECT * FROM workflow_draft_dispatch_events WHERE intent_id=? ORDER BY event_seq DESC LIMIT 1',
+                                (intent['id'],))
+            if (not terminal or _stored_json(terminal[0]['event_bytes'], terminal[0]['event_digest'])
+                    .get('terminal_evidence') != {'host_quiescent': True}):
+                refuse('workflow_draft_dispatch_intents:' + intent['id'])
+    # The source callback/result action claim has no separate lease table:
+    # native current task + recovery + Pause attribution owns it. It cannot
+    # be released by a result label while processing still owns the source.
+    from runtime.infrastructure.task_pause_controls import validate_pause_schema, decode_journal
+    from runtime.infrastructure.team_move_store import validate_team_move_schema
+    if validate_pause_schema(conn, org_slug=expected_org_slug, allow_absent=True):
+        for row in _records(conn, 'SELECT * FROM task_pause_controls'):
+            if (row['held'] or row['release_pending_generation'] is not None
+                    or decode_journal(row['admission_journal_json'])['entries']):
+                # Safe owners remove their entry only after native outer
+                # settlement. producer_settled explicitly retains uncertainty.
+                refuse('task_pause_controls:' + row['root_task_id'])
+    if validate_team_move_schema(conn, org_slug=expected_org_slug):
+        if conn.execute('SELECT 1 FROM team_move_operations WHERE active_slot IS NOT NULL LIMIT 1').fetchone():
+            refuse('team_move_operations')
+    # Validate all retained publication snapshots, plus pointer ownership.
+    # Historical file_phase_owner remains historical after cache installation;
+    # the lease and cooperative stopped-host boundary discharge current use.
+    from runtime.workflows.authority import validate_authority_snapshot
+    journals = {r['id']: r for r in _records(conn, 'SELECT * FROM workflow_publication_journals')}
+    for journal in journals.values():
+        validate_authority_snapshot(_stored_json(journal['snapshot_bytes'], journal['snapshot_digest']))
+        if (type(journal['generation']) is not int or type(journal['expected_generation']) is not int
+                or journal['generation'] != journal['expected_generation'] + 1
+                or not all(isinstance(journal[k], str) and journal[k] for k in
+                           ('namespace', 'publisher', 'publisher_invocation', 'recovery_owner'))):
+            refuse('workflow_publication_journals:' + journal['id'])
+    for pointer in _records(conn, 'SELECT * FROM workflow_authority_pointers'):
+        if pointer['current_generation'] == 0:
+            continue
+        journal = journals.get(pointer['journal_id'])
+        if (journal is None or journal['state'] != 'cache_installed'
+                or journal['namespace'] != pointer['namespace']
+                or journal['generation'] != pointer['current_generation']
+                or journal['snapshot_digest'] != pointer['snapshot_digest']
+                or journal['profile_fence'] != pointer['profile_fence']):
+            refuse('workflow_authority_pointers:' + pointer['namespace'])
+    for operation in _records(conn, 'SELECT * FROM workflow_profile_operations'):
+        members = json.loads(operation['captured_members'])
+        if (not isinstance(members, list) or not members
+                or any(not isinstance(member, str) or not member for member in members)
+                or len(members) != len(set(members))
+                or expected_org_slug not in members
+                or not isinstance(operation['coordinator_invocation'], str) or not operation['coordinator_invocation']
+                or re.fullmatch(r'[0-9a-f]{64}', operation['profile_digest']) is None):
+            refuse('workflow_profile_operations:' + operation['id'])
+    for episode in _records(conn, 'SELECT * FROM task_completion_recoveries'):
+        result = conn.execute('SELECT task_id,agent,session_id FROM task_results WHERE id=?',
+                              (episode['accepted_result_id'],)).fetchone()
+        if (type(episode['accepted_result_id']) is not int or result is None
+                or tuple(result) != (episode['task_id'], episode['agent'], episode['accepted_result_session_id'])):
+            refuse('task_completion_recoveries:' + str(episode['id']))
+    for recovery in _records(conn, 'SELECT * FROM workflow_recovery_claims'):
+        # Effect-recorded is not a standalone quiescence certificate.
+        task = conn.execute('SELECT 1 FROM tasks WHERE id=?', (recovery['record_id'],)).fetchone()
+        if task is None or recovery['record_class'] == 'legacy_task':
+            # An effect-recorded legacy claim lacks a persisted host closure
+            # reader. Terminal/PID/expiry labels cannot replace that evidence.
+            refuse('workflow_recovery_claims:' + recovery['record_id'])
+        drafts = conn.execute('SELECT id FROM workflow_draft_dispatch_intents WHERE task_id=?',
+                              (recovery['record_id'],)).fetchall()
+        bridges = conn.execute('SELECT request_id FROM workflow_request_task_bridges WHERE task_id=?',
+                               (recovery['record_id'],)).fetchall()
+        if len(drafts) + len(bridges) != 1:
+            refuse('workflow_recovery_claims:' + recovery['record_id'])
+
+
+def _coding_retained_rows(conn: sqlite3.Connection) -> dict[str, tuple]:
+    """Preserve whole native/document rows, rowids and exact SQL storage types."""
+    return {table: tuple(tuple((type(value).__name__, value) for value in row) for row in rows)
+            for table, rows in _retained_rows(conn).items()}
+
+
+def _coding_org_identity(conn: sqlite3.Connection, *, expected_org_slug: str,
+                         expected_path: str) -> tuple:
+    """Cooperative G-pattern pathname/file observation, not native FD proof.
+
+    Compare SQLite's exact main path to the caller's independently resolved
+    owned org path. Regular/single-link/uid/device/inode/mode observations
+    bracket the PRAGMA read; known drift and unavailable observations refuse.
+    Direct same-user swaps between observations remain outside D5's guarantee.
+    """
+    import os
+    import stat
+    from pathlib import Path
+    path = Path(expected_path)
+    if (not path.is_absolute() or path.name != 'happyranch.db'
+            or path.parent.name != expected_org_slug or path.parent.parent.name != 'orgs'
+            or path.resolve(strict=True) != path):
+        raise ValueError('workflow_coding_migration_requires_owned_org_database')
+    info = path.lstat()
+    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != os.getuid():
+        raise ValueError('workflow_coding_migration_org_identity_invalid')
+    identity = (str(path), info.st_dev, info.st_ino, info.st_mode)
+    databases = [tuple(row) for row in conn.execute('PRAGMA database_list')]
+    main = [row for row in databases if row[1] == 'main']
+    if len(main) != 1 or main[0][2] != str(path) or any(row[1] not in ('main', 'temp') or
+            (row[1] == 'temp' and row[2]) for row in databases):
+        raise ValueError('workflow_coding_migration_requires_owned_org_database')
+    after = path.lstat()
+    if (path.resolve(strict=True) != path or not stat.S_ISREG(after.st_mode)
+            or after.st_nlink != 1 or after.st_uid != os.getuid()
+            or (str(path), after.st_dev, after.st_ino, after.st_mode) != identity):
+        raise ValueError('workflow_coding_migration_org_identity_changed')
+    return identity
+
+
+def migrate_coding_schema(conn: sqlite3.Connection, *, expected_org_slug: str,
+                          expected_path: str, source_identity: tuple,
+                          offline_check: Callable[[], None]) -> Literal['migrated', 'ready']:
+    """Explicit org-owned I-to-J only; FK ON throughout, no live Database owner.
+
+    The script's ORIGINAL pre-open/RO baseline remains authoritative across RW
+    reopen, exclusive acquisition and commit; never adopt the writer as a new
+    baseline. Offline observations augment explicit operator no-restart control.
+    No runtime calls this primitive; same-user direct mutation is not excluded.
+    """
+    if conn.in_transaction or conn.execute('PRAGMA foreign_keys').fetchone()[0] != 1:
+        raise ValueError('workflow_coding_migration_requires_idle_foreign_keys')
+    identity = _coding_org_identity(conn, expected_org_slug=expected_org_slug, expected_path=expected_path)
+    if identity != source_identity:
+        raise ValueError('workflow_coding_migration_org_identity_changed')
+    try:
+        conn.execute('BEGIN')
+        layout = validate_workflow_schema(conn, expected_org_slug=expected_org_slug)
+        _validate_release_database(conn, layout, expected_org_slug=expected_org_slug)
+        if layout == 'J':
+            offline_check()
+            if _coding_org_identity(conn, expected_org_slug=expected_org_slug, expected_path=expected_path) != source_identity:
+                raise ValueError('workflow_coding_migration_org_identity_changed')
+            conn.rollback()
+            return 'ready'
+        if layout != 'I':
+            raise ValueError('workflow_coding_migration_requires_i: ' + coding_migration_guidance())
+        offline_check()
+        _validate_coding_source_idle(conn, expected_org_slug=expected_org_slug)
+        retained = _coding_retained_rows(conn)
+        conn.rollback()
+        conn.execute('BEGIN EXCLUSIVE')
+        offline_check()
+        if _coding_org_identity(conn, expected_org_slug=expected_org_slug, expected_path=expected_path) != source_identity:
+            raise ValueError('workflow_coding_migration_org_identity_changed')
+        if validate_workflow_schema(conn, expected_org_slug=expected_org_slug) != 'I':
+            raise ValueError('workflow_coding_migration_source_changed')
+        _validate_release_database(conn, 'I', expected_org_slug=expected_org_slug)
+        _validate_coding_source_idle(conn, expected_org_slug=expected_org_slug)
+        if _coding_retained_rows(conn) != retained:
+            raise ValueError('workflow_coding_migration_source_changed')
+        from runtime.infrastructure.workflow_coding_schema import CANONICAL_WORKFLOW_CODING_DDL, CODING_TABLES
+        _execute_ddl(conn, CANONICAL_WORKFLOW_CODING_DDL)
+        if validate_workflow_schema(conn, expected_org_slug=expected_org_slug) != 'J':
+            raise ValueError('workflow_coding_migration_target_mismatch')
+        _validate_release_database(conn, 'J', expected_org_slug=expected_org_slug)
+        after = _coding_retained_rows(conn)
+        if (set(after) != set(retained) | set(CODING_TABLES)
+                or any(after[table] != rows for table, rows in retained.items())
+                or any(after[table] for table in CODING_TABLES)):
+            raise ValueError('workflow_coding_migration_retained_relation_mismatch')
+        _validate_coding_source_idle(conn, expected_org_slug=expected_org_slug)
+        if conn.execute('PRAGMA foreign_keys').fetchone()[0] != 1 or conn.execute('PRAGMA foreign_key_check').fetchone():
+            raise ValueError('workflow_coding_migration_foreign_key_mismatch')
+        offline_check()
+        if _coding_org_identity(conn, expected_org_slug=expected_org_slug, expected_path=expected_path) != source_identity:
+            raise ValueError('workflow_coding_migration_org_identity_changed')
+        conn.commit()
+        return 'migrated'
+    except BaseException:
+        conn.rollback()
+        raise
