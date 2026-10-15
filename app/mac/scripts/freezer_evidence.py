@@ -80,7 +80,20 @@ def encoded(value):
 def parse(raw):
     need(len(raw) <= RECORD_CAP, 'JSON_CAP')
     # Existing guarded parser also refuses duplicate keys, floats and excess depth.
-    return ASSET['parse_json'](raw)
+    value = ASSET['parse_json'](raw)
+    boolean_fields = {'declared_strip','declared_upx','availability','effective_strip','effective_upx',
+                      'strict_arch_validation','append_pkg','closure_complete','ready'}
+    def boolean_shape(item, field=None):
+        if type(item) is bool:
+            need(field in boolean_fields, 'JSON_BOOLEAN_FIELD')
+        elif isinstance(item,dict):
+            for key,child in item.items():
+                boolean_shape(child,key)
+        elif isinstance(item,list):
+            for child in item:
+                boolean_shape(child)
+    boolean_shape(value)
+    return value
 
 
 def name(value):
