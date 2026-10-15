@@ -361,3 +361,51 @@ literal closure False and ordinary failed rows remain. Portable source/parser
 checks are distinct from actual Darwin configure/target/transform/cache/EXE/copy
 and full wrapper/licenses integration, which remain N-only UNEXECUTED. No build
 allocation, signing, release, public distribution or deployment follows.
+
+## Generated web observations
+
+The app wrapper requires `--web-tool-originals /absolute/admitted-directory`.
+This is an inert, disjoint input directory with exactly fourteen original npm
+archives named `<package-with-slash-as-underscore>.tgz`. Originals, installed
+implementations and complete notices are authenticated; the original Vite
+LICENSE.md includes its bundled terms. `web/vendor/vite/prepare.py --original
+/path/vite.tgz --check` independently reproduces the deterministic local repack.
+Only the reviewed CSS/shared asset sites and package version differ from
+Vite 5.4.21. Ordinary callers retain the original Tailwind plugin.
+
+After ordinary npm postinstall, the wrapper authenticates the selected esbuild
+platform member and its optimized alias. Only the exact accounted two-link pair
+can be separated by exclusive copy and replacement of the alias entry. Both
+paths must subsequently remain independent, single-link, authenticated files.
+No other overwrite, alternate binary or install-script suppression is allowed.
+
+A fully bound packaging build selects `packaging-tailwind.ts` and explicit
+PostCSS `plugins=[]`. Content comes from regular pinned Git blobs under web/
+with extensions html/js/jsx/mjs/cjs/ts/tsx/mts/cts/vue/svelte/astro/md/mdx/json/svg,
+excluding vendor/, node_modules/ and dist/. Tests/stories are included, in UTF8
+path-byte order. The adapter passes guarded replacement-decoded content and
+extensions to Scanner.scanFiles, preserves candidate Set order, invokes one
+compiler.build and one whole node.optimize, and returns that result to Vite.
+Imported CSS uses finite loaders; module/config loading, filesystem source
+instructions, ambiguous/relative imported URLs and unsupported CSS profiles
+refuse. This input selection needs matched ordinary-build CSS/UI comparison;
+it is not asserted equivalent to automatic scanner discovery.
+
+Private public-hook envelopes, HTML/core snapshots and original patched CSS
+operations retain actual argument/result associations through genuine emission,
+final bundle and write. Unavailable core internal references stay null. Python
+publish/read stages validate caller-held context/preparation/build/dist/app
+bindings, original bytes and finite relation graphs. Exact stat integers never
+round-trip through JavaScript. A dedicated completion FD is independent of npm
+logs; nonzero npm exit, absent/duplicate completion or incomplete relations yield
+no accepted build. Generated/public collisions refuse after npm exits and before
+app-copy acceptance, including equal-byte collisions. Existing asset census and
+map removal remain the copy authority.
+
+`web-notices.json` retains the canonical digest of every existing component row
+and records appended candidate notice rows. It cannot clear an ordinary failure,
+sentinel, or literal closure False. A fresh licenses command independently runs
+the web reader before the existing ordinary/global license gate. Unsigned source,
+portable/component/browser observations establish only their measured local
+scope. They establish neither legal applicability nor actual Darwin/native
+custody, any of the six full closures, or release availability.

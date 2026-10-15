@@ -1,0 +1,212 @@
+{
+  "original_sha256": "1974803337cb6a1a86a6fdcf45a05ff0555220140d5ca70a58306f9f9b895af6",
+  "version": "5.4.21+hr.css-relation.1",
+  "patch_sha256": "39e62e728ec2edc0c361e34ddedf6447abc861b9070b4e24b7811d209c29f76b",
+  "archive_sha256": "a01e3bf184641805c7ea4d5f0d812e3b5b1563c2312aeb7ddb35eca808d20da9",
+  "archive_size": 754102,
+  "integrity": "sha512-Ovd/PIU8rLI/oUli/WpU0OhO9jA0mPnzPCbX1seQvQHY5C/QfspL4urpYPaYTRlFffXXjefVHjJUJQKR5vjRkg==",
+  "member_delta": [
+    {
+      "path": "package/dist/node/chunks/dep-BK3b2jBa.js",
+      "original_sha256": "bfa94186daff535fefdf286088c1588fad6b02c01ef11cd3b42a6cb3e4c90767",
+      "sha256": "4766a41f688f6c8f612f463e6d5328c15357b5e766d897044e28a8eab819ce85",
+      "size": 2088878,
+      "mode": 420
+    },
+    {
+      "path": "package/package.json",
+      "original_sha256": "e9802045cdc313b6da55ec2e2dd79312074645816089d64f6021f567c10c0a03",
+      "sha256": "30d0b03c11cfe44218a9afc25c1d7c0790ddd54157c03efb15569ec4927fff61",
+      "size": 4912,
+      "mode": 420
+    }
+  ],
+  "members": [
+    {
+      "path": "package/LICENSE.md",
+      "size": 162419,
+      "sha256": "04d9940b3b8b372bff74437c3b153eda8a89642669c4209a4f67135eb3132bc9",
+      "mode": 420
+    },
+    {
+      "path": "package/README.md",
+      "size": 1152,
+      "sha256": "b5fa3b42dc55ef7ca4e8732af201cf6cf090360af6aae32d19e2643f08b4a26e",
+      "mode": 420
+    },
+    {
+      "path": "package/bin/openChrome.applescript",
+      "size": 2691,
+      "sha256": "91516dbb952a792f8e9e85aa8f23d029eb5778058e035b59e2b962196cc32923",
+      "mode": 420
+    },
+    {
+      "path": "package/bin/vite.js",
+      "size": 1670,
+      "sha256": "096985df17d3ba02c437de4b25f22cde3c99eb0d958172cac1333ed3feb20220",
+      "mode": 493
+    },
+    {
+      "path": "package/client.d.ts",
+      "size": 4743,
+      "sha256": "984c09345059b76fc4221c2c54e53511f4c27a0794dfd6e9f81dc60f0b564e05",
+      "mode": 420
+    },
+    {
+      "path": "package/dist/client/client.mjs",
+      "size": 23781,
+      "sha256": "0e706a10ef0e94af0d8f6414293e4a94eb90d6a12b7ae81d851ca70f75195ade",
+      "mode": 420
+    },
+    {
+      "path": "package/dist/client/env.mjs",
+      "size": 643,
+      "sha256": "5bdaca544f5cef6f738fbd103a0f60ceaedacd1051edd3514d912e01448443f2",
+      "mode": 420
+    },
+    {
+      "path": "package/dist/node-cjs/publicUtils.cjs",
+      "size": 160413,
+      "sha256": "e5dcd6c8deba4c7ea1cbade199332095ddae0012b269430ed6f86920c7d05e7f",
+      "mode": 420
+    },
+    {
+      "path": "package/dist/node/chunks/dep-BB45zftN.js",
+      "size": 23212,
+      "sha256": "ec577b7e9f8ad9541aef118a38b2bfc39f95cb53955fba593140880a283cbcb9",
+      "mode": 420
+    },
+    {
+      "path": "package/dist/node/chunks/dep-BK3b2jBa.js",
+      "size": 2088878,
+      "sha256": "4766a41f688f6c8f612f463e6d5328c15357b5e766d897044e28a8eab819ce85",
+      "mode": 420
+    },
+    {
+      "path": "package/dist/node/chunks/dep-D-7KCb9p.js",
+      "size": 331672,
+      "sha256": "bdbe7662a744bdacdc13ac6095f141f3efe872367dc54771af2b5a8831a178d0",
+      "mode": 420
+    },
+    {
+      "path": "package/dist/node/chunks/dep-Dnp7gl8U.js",
+      "size": 232635,
+      "sha256": "d1dfdd2761c1fecf2da9c8bd8fe0e8057ee4aa3a572212135ae8f3a96340a409",
+      "mode": 420
+    },
+    {
+      "path": "package/dist/node/chunks/dep-IQS-Za7F.js",
+      "size": 13409,
+      "sha256": "5566772c672db5b5ef2662c824ffde65c82281f7d5471cc70605c57f72901a97",
+      "mode": 420
+    },
+    {
+      "path": "package/dist/node/cli.js",
+      "size": 27894,
+      "sha256": "d590db8c0c04b6b9a829394cefb4b2dee51cc0cd49f12b38b1e6608740944c3a",
+      "mode": 420
+    },
+    {
+      "path": "package/dist/node/constants.js",
+      "size": 2934,
+      "sha256": "649b40fd266920cdc0a5b1400d1c704fc777b830db3b686d4b395c3747bf8475",
+      "mode": 420
+    },
+    {
+      "path": "package/dist/node/index.d.ts",
+      "size": 126077,
+      "sha256": "257b83faa134d971c738a6b9e4c47e59bb7b23274719d92197580dd662bfafc3",
+      "mode": 420
+    },
+    {
+      "path": "package/dist/node/index.js",
+      "size": 7527,
+      "sha256": "2b295e9da790eb9d1b02b167a4678bd9106253d97e07a75f774cd2f3b1930476",
+      "mode": 420
+    },
+    {
+      "path": "package/dist/node/runtime.d.ts",
+      "size": 2714,
+      "sha256": "82e687ebd99518bc63ea04b0c3810fb6e50aa6942decd0ca6f7a56d9b9a212a6",
+      "mode": 420
+    },
+    {
+      "path": "package/dist/node/runtime.js",
+      "size": 44997,
+      "sha256": "2eabe923c5aa47a7ff18b5e88863b92b3d5d0ac33eb47ba6440163c7fa5c684f",
+      "mode": 420
+    },
+    {
+      "path": "package/dist/node/types.d-aGj9QkWt.d.ts",
+      "size": 9708,
+      "sha256": "8b96046bf5fb0a815cba6b0880d9f97b7f3a93cf187e8dcfe8e2792e97f38f87",
+      "mode": 420
+    },
+    {
+      "path": "package/index.cjs",
+      "size": 1624,
+      "sha256": "9f3d9f0d380bb14380fe3cd9c64be336ae0b892613229b07d837ab44784cbb96",
+      "mode": 420
+    },
+    {
+      "path": "package/index.d.cts",
+      "size": 209,
+      "sha256": "296d036442c7dc89d907bdba74c8151e48b8c6f66a01c93afd8750b31ce959be",
+      "mode": 420
+    },
+    {
+      "path": "package/package.json",
+      "size": 4912,
+      "sha256": "30d0b03c11cfe44218a9afc25c1d7c0790ddd54157c03efb15569ec4927fff61",
+      "mode": 420
+    },
+    {
+      "path": "package/types/customEvent.d.ts",
+      "size": 1143,
+      "sha256": "6222e987b58abfe92597e1273ad7233626285bc2d78409d4a7b113d81a83496b",
+      "mode": 420
+    },
+    {
+      "path": "package/types/hmrPayload.d.ts",
+      "size": 1101,
+      "sha256": "282f98006ed7fa9bb2cd9bdbe2524595cfc4bcd58a0bb3232e4519f2138df811",
+      "mode": 420
+    },
+    {
+      "path": "package/types/hot.d.ts",
+      "size": 1003,
+      "sha256": "cbe726263ae9a7bf32352380f7e8ab66ee25b3457137e316929269c19e18a2be",
+      "mode": 420
+    },
+    {
+      "path": "package/types/import-meta.d.ts",
+      "size": 249,
+      "sha256": "28a9d5c4741fdd62a94faea49ef7585d825e8379e5d23a2d773f723ce56d6b50",
+      "mode": 420
+    },
+    {
+      "path": "package/types/importGlob.d.ts",
+      "size": 1909,
+      "sha256": "7f698624bbbb060ece7c0e51b7236520ebada74b747d7523c7df376453ed6fea",
+      "mode": 420
+    },
+    {
+      "path": "package/types/importMeta.d.ts",
+      "size": 510,
+      "sha256": "4025a454b1ca489b179ee8c684bdd70ff8c1967e382076ade53e7e4653e1daec",
+      "mode": 420
+    },
+    {
+      "path": "package/types/metadata.d.ts",
+      "size": 193,
+      "sha256": "8f07f2b6514744ac96e51d7cb8518c0f4de319471237ea10cf688b8d0e9d0225",
+      "mode": 420
+    },
+    {
+      "path": "package/types/package.json",
+      "size": 109,
+      "sha256": "22fe256ab91f03f1e8ddb5182cedf07448ace5ab09c6a73467ca1be3e83beaf4",
+      "mode": 420
+    }
+  ]
+}

@@ -1,0 +1,187 @@
+--- a/package/dist/node/chunks/dep-BK3b2jBa.js
++++ b/package/dist/node/chunks/dep-BK3b2jBa.js
+@@ -20422,10 +20422,12 @@
+   const cache = assetCache.get(config);
+   const cached = cache.get(id);
+   if (cached) {
++    hrCss(config, "css_asset_hit", { id, url: cached });
+     return cached;
+   }
+   const file = cleanUrl(id);
+   const content = await fsp.readFile(file);
++  hrCss(config, "css_asset_read", { id, file, content });
+   let url;
+   if (shouldInline(config, file, id, content, pluginContext, forceInline)) {
+     if (config.build.lib && isGitLfsPlaceholder(content)) {
+@@ -20454,6 +20456,7 @@
+     url = `__VITE_ASSET__${referenceId}__${postfix ? `$_${postfix}__` : ``}`;
+   }
+   cache.set(id, url);
++  hrCss(config, "css_asset_store", { id, url });
+   return url;
+ }
+ async function urlToBuiltUrl(url, importer, config, pluginContext, forceInline) {
+@@ -36080,6 +36083,11 @@
+   return config.command === "build";
+ }
+ const cssUrlAssetRE = /__VITE_CSS_URL__([\da-f]+)__/g;
++// Private packaging-only observation sink. Ordinary callers keep original operations.
++function hrCss(config, stage, value) {
++  const sink = config.__happyranchCssCustody;
++  if (sink) return sink.record(stage, value);
++}
+ function cssPlugin(config) {
+   const isBuild = config.command === "build";
+   let moduleCache;
+@@ -36131,7 +36139,14 @@
+       if (!isCSSRequest(id) || commonjsProxyRE.test(id) || SPECIAL_QUERY_RE.test(id)) {
+         return;
+       }
++      hrCss(config, "admit", { id, raw });
++      const hrUrls = [];
+       const urlReplacer = async (url, importer) => {
++        const result = await hrOriginalUrlReplacer(url, importer);
++        hrUrls.push({ url, importer, decoded: decodeURI(url), result });
++        return result;
++      };
++      const hrOriginalUrlReplacer = async (url, importer) => {
+         const decodedUrl = decodeURI(url);
+         if (checkPublicFile(decodedUrl, config)) {
+           if (encodePublicUrlsInCSS(config)) {
+@@ -36175,6 +36190,7 @@
+         preprocessorWorkerController,
+         urlReplacer
+       );
++      hrCss(config, "vite_css", { id, input: raw, output: css, urls: hrUrls, modules: modules || null, deps: deps ? [...deps] : [], map: map2 || null });
+       if (modules) {
+         moduleCache.set(id, modules);
+       }
+@@ -36282,8 +36298,10 @@
+         ].join("\n");
+         return { code: code2, map: { mappings: "" } };
+       }
++      hrCss(config, "post_admit", { id, inlined, modules: !!modulesCode, css });
+       if (!inlined) {
+         styles.set(id, css);
++        hrCss(config, "style_store", { id, css });
+       }
+       let code;
+       if (modulesCode) {
+@@ -36310,7 +36328,9 @@
+       const isJsChunkEmpty = code === "" && !chunk.isEntry;
+       let isPureCssChunk = true;
+       const ids = Object.keys(chunk.modules);
++      const hrStyles = [];
+       for (const id of ids) {
++        hrStyles.push({ id, present: styles.has(id), transform_only: transformOnlyRE.test(id), css: styles.has(id) ? styles.get(id) : null });
+         if (styles.has(id)) {
+           if (!transformOnlyRE.test(id)) {
+             chunkCSS += styles.get(id);
+@@ -36322,6 +36342,7 @@
+           isPureCssChunk = false;
+         }
+       }
++      hrCss(config, "css_chunk", { chunk: chunk.fileName, ids, styles: hrStyles, css: chunkCSS, format: opts.format, split: config.build.cssCodeSplit, js: code });
+       const publicAssetUrlMap = publicAssetUrlCache.get(config);
+       const resolveAssetUrlsInCss = (chunkCSS2, cssAssetName) => {
+         const encodedPublicUrls = encodePublicUrlsInCSS(config);
+@@ -36333,10 +36354,12 @@
+           );
+           return relativePath[0] === "." ? relativePath : "./" + relativePath;
+         };
+-        chunkCSS2 = chunkCSS2.replace(assetUrlRE, (_, fileHash, postfix = "") => {
++        const hrBefore = chunkCSS2;
++        const hrReplacements = [];
++        chunkCSS2 = chunkCSS2.replace(assetUrlRE, (matched, fileHash, postfix = "", offset) => {
+           const filename = this.getFileName(fileHash) + postfix;
+           chunk.viteMetadata.importedAssets.add(cleanUrl(filename));
+-          return encodeURIPath(
++          const replacement = encodeURIPath(
+             toOutputFilePathInCss(
+               filename,
+               "asset",
+@@ -36346,14 +36369,19 @@
+               toRelative
+             )
+           );
++          hrReplacements.push({ matched, offset, fileHash, postfix, filename, replacement });
++          return replacement;
+         });
++        hrCss(config, "css_url", { pass: "asset", input: hrBefore, output: chunkCSS2, replacements: hrReplacements, cssAssetName, base: config.base, assetsDir: config.build.assetsDir });
+         if (encodedPublicUrls) {
+           const relativePathToPublicFromCSS = normalizePath$3(
+             path$n.relative(cssAssetDirname, "")
+           );
+-          chunkCSS2 = chunkCSS2.replace(publicAssetUrlRE, (_, hash) => {
++          const hrPublicBefore = chunkCSS2;
++          const hrPublic = [];
++          chunkCSS2 = chunkCSS2.replace(publicAssetUrlRE, (matched, hash, offset) => {
+             const publicUrl = publicAssetUrlMap.get(hash).slice(1);
+-            return encodeURIPath(
++            const replacement = encodeURIPath(
+               toOutputFilePathInCss(
+                 publicUrl,
+                 "public",
+@@ -36363,7 +36391,10 @@
+                 () => `${relativePathToPublicFromCSS}/${publicUrl}`
+               )
+             );
++            hrPublic.push({ matched, offset, hash, publicUrl, replacement });
++            return replacement;
+           });
++          hrCss(config, "css_url", { pass: "public", input: hrPublicBefore, output: chunkCSS2, replacements: hrPublic, cssAssetName, base: config.base, assetsDir: config.build.assetsDir });
+         }
+         return chunkCSS2;
+       };
+@@ -36466,6 +36497,7 @@
+               originalFileName,
+               source: chunkCSS
+             });
++            hrCss(config, "css_emit", { source: chunkCSS, referenceId, filename: this.getFileName(referenceId), cssAssetName, originalFileName });
+             generatedAssets.get(config).set(referenceId, { originalFileName, isEntry });
+             chunk.viteMetadata.importedCss.add(this.getFileName(referenceId));
+           } else if (!config.build.ssr) {
+@@ -37033,13 +37065,18 @@
+ const viteHashUpdateMarker = "/*$vite$:1*/";
+ const viteHashUpdateMarkerRE = /\/\*\$vite\$:\d+\*\//;
+ async function finalizeCss(css, minify, config) {
+-  if (css.includes("@import") || css.includes("@charset")) {
++  const hrInput = css;
++  const hrHoist = css.includes("@import") || css.includes("@charset");
++  if (hrHoist) {
+     css = await hoistAtRules(css);
+   }
++  const hrHoisted = css;
+   if (config.build.cssMinify) {
+     css = await minifyCSS(css, config, false);
+   }
++  const hrMinified = css;
+   css += viteHashUpdateMarker;
++  hrCss(config, "css_finalize", { input: hrInput, hoist: hrHoist, hoisted: hrHoisted, minify: !!config.build.cssMinify, minified: hrMinified, marker: viteHashUpdateMarker, output: css });
+   return css;
+ }
+ async function resolvePostcssConfig(config) {
+@@ -37193,6 +37230,7 @@
+   return `@import ${wrap}${await replacer(rawUrl)}${wrap}`;
+ }
+ async function minifyCSS(css, config, inlined) {
++  if (config.__happyranchCssCustody && config.build.cssMinify === "lightningcss") throw new Error("WEB_CSS_MINIFIER_UNSUPPORTED");
+   if (config.build.cssMinify === "lightningcss") {
+     const { code, warnings } = (await importLightningCSS()).transform({
+       ...config.css?.lightningcss,
+@@ -37213,11 +37251,13 @@
+     return decoder.decode(code) + (inlined ? "" : "\n");
+   }
+   try {
+-    const { code, warnings } = await transform$1(css, {
++    const hrOptions = {
+       loader: "css",
+       target: config.build.cssTarget || void 0,
+       ...resolveMinifyCssEsbuildOptions(config.esbuild || {})
+-    });
++    };
++    const { code, warnings } = await transform$1(css, hrOptions);
++    hrCss(config, "css_minify", { input: css, options: hrOptions, code, inlined, output: inlined ? code.trimEnd() : code });
+     if (warnings.length) {
+       const msgs = await formatMessages(warnings, { kind: "warning" });
+       config.logger.warn(

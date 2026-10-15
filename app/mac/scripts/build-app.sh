@@ -6,10 +6,13 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd -P)"
 VERIFY="$SCRIPT_DIR/verify-release.sh"
 ASSETS="$SCRIPT_DIR/asset_evidence.py"
 FREEZER="$SCRIPT_DIR/freezer_evidence.py"
+WEB="$SCRIPT_DIR/web_evidence.py"
+WEB_TOOL_ORIGINALS=""
 VERSION="" BUILD="" SOURCE_SHA="" SOURCE_TREE="" ARCH="" OUTPUT=""
 while [ "$#" -gt 0 ]; do
     [ "$#" -ge 2 ] || { echo 'RELEASE_ARGUMENT_MISSING' >&2; exit 2; }
     case "$1" in
+        --web-tool-originals) [ -z "$WEB_TOOL_ORIGINALS" ] || exit 2; WEB_TOOL_ORIGINALS="$2" ;;
         --version) [ -z "$VERSION" ] || exit 2; VERSION="$2" ;;
         --build) [ -z "$BUILD" ] || exit 2; BUILD="$2" ;;
         --source-sha) [ -z "$SOURCE_SHA" ] || exit 2; SOURCE_SHA="$2" ;;
@@ -20,6 +23,7 @@ while [ "$#" -gt 0 ]; do
     esac
     shift 2
 done
+[ -n "$WEB_TOOL_ORIGINALS" ] && [[ "$WEB_TOOL_ORIGINALS" = /* ]] || { echo WEB_TOOL_ORIGINALS_REQUIRED >&2; exit 2; }
 # All platform-independent validation precedes tools, writes and build effects.
 PREFLIGHT="$(bash "$VERIFY" preflight --source "$REPO_ROOT" --version "$VERSION" \
     --build "$BUILD" --source-sha "$SOURCE_SHA" --source-tree "$SOURCE_TREE" \
@@ -50,6 +54,9 @@ finish() {
         # Preserve original process status even when custody persistence fails.
         if [ -n "${FREEZER_CONTEXT:-}" ]; then
             python3 "$FREEZER" fail "${ASSET_ARGS[@]}" --freezer-context-sha256 "$FREEZER_CONTEXT" --original-exit "$code" || printf 'FREEZER_FAILURE_PERSISTENCE_FAILED\n' >&2
+        fi
+        if [ -n "${WEB_CALLER:-}" ]; then
+            python3 "$WEB" fail --caller "$WEB_CALLER" --original-exit "$code" || printf 'WEB_FAILURE_PERSISTENCE_FAILED\n' >&2
         fi
         # Evidence errors must never replace the original build exit.
         python3 - "$OUTPUT" "$STAGE" "$code" "$RUN_ID" "$SOURCE_SHA" "$SOURCE_TREE" "$VERSION" "$BUILD" "$ARCH" "${INSPECTION_STAGE:-not-started}" <<'PYFAIL' || printf 'DIAGNOSTIC_COLLECTION_FAILED\n' >&2
@@ -283,11 +290,37 @@ cp "$OUTPUT/scratch/freeze-work/python-toolchain.json" "$OUTPUT/diagnostics/pyth
 STAGE=web
 cd "$SOURCE/web"
 npm ci
-# Emitted source maps are build evidence; they are not copied into the app.
+# Direct caller identity, never recovered from a candidate receipt. Preparation
+# happens after ordinary postinstall and before tsc/Vite consumes esbuild.
+WEB_CALLER="$(python3 - "$SOURCE_SHA" "$SOURCE_TREE" "$VERSION" "$BUILD" "$ARCH" "$REPO_ROOT" "$SOURCE" "$APP" "$OUTPUT" "$ICONSET" "$RUN_ID" "$ASSET_CONTEXT" "$ASSET_SOURCE" "$ASSET_TOOLCHAINS" "$WEB_TOOL_ORIGINALS" <<'PYWEB'
+import json, sys
+from pathlib import Path
+sha,tree,version,build,arch,repo,source,app,output,iconset,run,context,source_token,tools,originals=sys.argv[1:]
+print(json.dumps({'candidate':dict(source_sha=sha,source_tree=tree,version=version,build=build,arch=arch),
+ 'roots':dict(repo=repo,exported_source=source,dist=source+'/web/dist',app=app,output=output,evidence_dir=output+'/diagnostics',iconset=iconset),
+ 'run_id':run,'venue':'native','asset_context_sha256':context,'asset_source_sha256':source_token,'toolchains_sha256':tools,'originals':originals},separators=(',',':')))
+PYWEB
+)"
+web_field() { python3 "$WEB" token-field --token "$1" --field "$2"; }
+WEB_PREP_TOKEN="$(python3 "$WEB" prepare --caller "$WEB_CALLER")"
+WEB_PREPARATION="$(web_field "$WEB_PREP_TOKEN" record_sha256)"
+WEB_CONTEXT_TOKEN="$(python3 "$WEB" begin --caller "$WEB_CALLER" --preparation "$WEB_PREPARATION")"
+WEB_CONTEXT="$(web_field "$WEB_CONTEXT_TOKEN" record_sha256)"
+export HAPPYRANCH_WEB_CALLER="$WEB_CALLER" HAPPYRANCH_WEB_CONTEXT="$WEB_CONTEXT" HAPPYRANCH_WEB_PREPARATION="$WEB_PREPARATION"
+export HAPPYRANCH_WEB_HELPER="$WEB" HAPPYRANCH_WEB_PYTHON
+HAPPYRANCH_WEB_PYTHON="$(command -v python3)"
+# Emitted source maps are evidence; only the existing app-copy strips them.
 python3 "$ASSETS" check-public "${ASSET_ARGS[@]}" --asset-context-sha256 "$ASSET_CONTEXT" --asset-source-sha256 "$ASSET_SOURCE"
-npm run build -- --sourcemap
+# Exclusive dedicated completion channel, independent of npm stdout/stderr.
+(set -o noclobber; : > "$OUTPUT/diagnostics/web-completion.jsonl")
+HAPPYRANCH_WEB_COMPLETION_FD=3 npm run build -- --sourcemap 3> "$OUTPUT/diagnostics/web-completion.jsonl"
+unset HAPPYRANCH_WEB_CALLER HAPPYRANCH_WEB_CONTEXT HAPPYRANCH_WEB_PREPARATION HAPPYRANCH_WEB_HELPER HAPPYRANCH_WEB_PYTHON
+WEB_BUILD_TOKEN="$(python3 "$WEB" accept-build --caller "$WEB_CALLER" --context "$WEB_CONTEXT" --preparation "$WEB_PREPARATION")"
+WEB_BUILD="$(web_field "$WEB_BUILD_TOKEN" record_sha256)"
 ASSET_DIST_TOKEN="$(python3 "$ASSETS" observe-dist "${ASSET_ARGS[@]}" --asset-context-sha256 "$ASSET_CONTEXT" --asset-source-sha256 "$ASSET_SOURCE")"
 ASSET_DIST="$(asset_field "$ASSET_DIST_TOKEN" sha256)"
+WEB_DIST_TOKEN="$(python3 "$WEB" seal-dist --caller "$WEB_CALLER" --context "$WEB_CONTEXT" --preparation "$WEB_PREPARATION" --build "$WEB_BUILD" --asset-dist "$ASSET_DIST")"
+WEB_DIST="$(web_field "$WEB_DIST_TOKEN" record_sha256)"
 STAGE=swift
 cd "$PROJECT"
 LINK_MAP="$OUTPUT/diagnostics/swift-link.map"
@@ -352,7 +385,7 @@ PY
 STAGE=notices
 cp -R "$OUTPUT/scratch/freeze-work/notices" "$APP/Contents/Resources/licenses/python"
 cp "$SOURCE/packaging/THIRD_PARTY_NOTICES.md" "$APP/Contents/Resources/licenses/THIRD_PARTY_NOTICES.md"
-ASSET_NOTICES_TOKEN="$(python3 - "$SOURCE" "$APP" "$OUTPUT" "$ASSETS" "$REPO_ROOT" "$RUN_ID" "$SOURCE_SHA" "$SOURCE_TREE" "$VERSION" "$BUILD" "$ARCH" "$ASSET_CONTEXT" "$ASSET_APP" <<'PYNOTICES'
+ASSET_NOTICES_TOKEN="$(python3 - "$SOURCE" "$APP" "$OUTPUT" "$ASSETS" "$REPO_ROOT" "$RUN_ID" "$SOURCE_SHA" "$SOURCE_TREE" "$VERSION" "$BUILD" "$ARCH" "$ASSET_CONTEXT" "$ASSET_APP" "$WEB" "$WEB_CALLER" "$WEB_CONTEXT" "$WEB_PREPARATION" "$WEB_BUILD" "$WEB_DIST" <<'PYNOTICES'
 import hashlib, json, os, re, shutil, stat, sys
 from pathlib import Path
 source, app, output = map(Path, sys.argv[1:4])
@@ -637,13 +670,22 @@ paths = asset['Paths'](Path(sys.argv[5]), source, source / 'web/dist', app, outp
                        output / 'diagnostics', output / 'scratch/AppIcon.iconset')
 font_rows, font_token = asset['retain_font_notices'](candidate, paths, sys.argv[6], sys.argv[12], sys.argv[13])
 components.extend(font_rows)
+web_custody = __import__('runpy').run_path(sys.argv[14])
+@web_custody['A']['bounded']
+def append_generated():
+    session = web_custody['Session'](web_custody['parse'](sys.argv[15].encode(), 256*1024))
+    return web_custody['retain_web_notices'](session, sys.argv[16], sys.argv[17], sys.argv[18], sys.argv[19], sys.argv[13], components)
+web_rows, web_notice_token = append_generated()
+components.extend(web_rows)
 (output / 'diagnostics/license-mapping.json').write_text(json.dumps(mapping, indent=2) + '\n')
 # The token leaves this actual caller only after the unchanged False mapping
 # (all prior rows/sentinels/ordinary failures included) is successfully written.
-asset['print_token'](font_token)
+print(json.dumps({'asset':font_token,'web':web_notice_token},separators=(',',':')))
 PYNOTICES
 )"
-ASSET_NOTICES="$(asset_field "$ASSET_NOTICES_TOKEN" sha256)"
+WEB_NOTICES="$(web_field "$(web_field "$ASSET_NOTICES_TOKEN" web)" record_sha256)"
+ASSET_NOTICES="$(asset_field "$(web_field "$ASSET_NOTICES_TOKEN" asset)" sha256)"
+WEB_ARGS=(--web-caller "$WEB_CALLER" --web-context-sha256 "$WEB_CONTEXT" --web-preparation-sha256 "$WEB_PREPARATION" --web-build-sha256 "$WEB_BUILD" --web-dist-sha256 "$WEB_DIST" --web-notices-sha256 "$WEB_NOTICES")
 STAGE=verification
 INSPECTION_STAGE=resources
 bash "$VERIFY" resources --app "$APP" > "$OUTPUT/diagnostics/resources.json"
@@ -684,7 +726,7 @@ bash "$VERIFY" licenses "${ASSET_ARGS[@]}" --mapping "$OUTPUT/diagnostics/licens
     --iconutil-path "$ICONUTIL_PATH" --iconutil-sha256 "$ASSET_ICONUTIL" \
     --asset-source-sha256 "$ASSET_SOURCE" --asset-dist-sha256 "$ASSET_DIST" --asset-app-sha256 "$ASSET_APP" \
     --asset-icon-sha256 "$ASSET_ICON" --asset-notices-sha256 "$ASSET_NOTICES" \
-    "${FREEZER_ARGS[@]}" --freezer-copy-sha256 "$FREEZER_COPY" > "$OUTPUT/diagnostics/licenses.json"
+    "${FREEZER_ARGS[@]}" --freezer-copy-sha256 "$FREEZER_COPY" "${WEB_ARGS[@]}" > "$OUTPUT/diagnostics/licenses.json"
 STAGE=archive
 ZIP="$OUTPUT/HappyRanch-${VERSION}-${BUILD}-${ARCH}.zip"
 ditto -c -k --keepParent "$APP" "$ZIP"

@@ -237,3 +237,35 @@ relations and portable fixtures do not resolve any of the six actual closures
 or establish native/full-reader execution. The fifth native allocation remains
 unused and separately source-pinned; whole replacement-input review remains a
 root-owned prerequisite before any changed-source native use.
+
+### Generated web custody inputs and verification
+
+`build-app.sh` now additionally requires `--web-tool-originals
+/absolute/admitted-directory`, containing exactly the fourteen lock-authenticated
+original tarballs described in packaging/README.md. The directory must be
+separate from source/output. Preserve it, the invocation-owned npm tree, scratch
+and diagnostics until independent verification completes. The native workflow
+and its source/input allocation are unchanged; this new input is not an
+execution grant.
+
+The wrapper performs normal npm ci, exact esbuild optimized-alias preparation,
+then one ordinary npm build with a bound packaging Tailwind adapter and the
+original-backed Vite CSS observation patch. The content policy includes pinned
+web tests/stories and needs actual matched baseline/candidate CSS/UI evidence.
+Plain split ES CSS with esbuild minification is the admitted profile; unsupported
+imports/modules/source directives/URL forms refuse instead of silently extending
+it. The prepared P/A binary paths are both revalidated throughout custody.
+
+The dedicated completion token and direct caller-held `WEB_CALLER`,
+`WEB_CONTEXT`, `WEB_PREPARATION`, `WEB_BUILD`, `WEB_DIST` and `WEB_NOTICES` values
+must survive from the genuine wrapper, alongside all existing asset/freezer
+expectations. Standalone `verify-release.sh licenses` additionally requires
+`--web-caller "$WEB_CALLER" --web-context-sha256 "$WEB_CONTEXT"
+--web-preparation-sha256 "$WEB_PREPARATION" --web-build-sha256 "$WEB_BUILD"
+--web-dist-sha256 "$WEB_DIST" --web-notices-sha256 "$WEB_NOTICES"`.
+Never discover expectations from candidate receipts. Retained web originals
+append rows while preserving the complete pre-addition mapping prefix. Source
+and portable web observations are distinct from a real Mac wrapper/licenses run.
+All six actual closures remain UNEXECUTED/UNMET; literal False, six sentinels and
+ordinary failed rows still prevent archive acceptance. Release=null,
+available=false and approved_url=null remain unchanged.

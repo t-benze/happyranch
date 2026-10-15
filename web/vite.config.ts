@@ -5,6 +5,8 @@ import tailwindcss from '@tailwindcss/vite';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { packagingCustody } from './scripts/packaging-custody';
+import { packagingTailwind } from './scripts/packaging-tailwind';
 
 function resolveDaemonPort(): number {
   const home = process.env.HAPPYRANCH_DAEMON_HOME || path.join(os.homedir(), '.happyranch');
@@ -158,8 +160,11 @@ function i18nEvidenceInstrumentation() {
   };
 }
 
+const custody = packagingCustody();
+
 export default defineConfig({
-  plugins: [i18nEvidenceInstrumentation(), react(), tailwindcss()],
+  plugins: [i18nEvidenceInstrumentation(), react(), custody ? packagingTailwind(custody) : tailwindcss(), ...(custody?.plugins() ?? [])],
+  ...(custody ? { css: { postcss: { plugins: [] }, devSourcemap: false } } : {}),
   resolve: {
     alias: { '@': path.resolve(__dirname, 'src') },
   },
