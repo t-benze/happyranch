@@ -237,7 +237,9 @@ bash app/mac/scripts/verify-release.sh licenses \
   --arch arm64 --run-id "$RUN_ID" --asset-context-sha256 "$CONTEXT" \
   --toolchains-sha256 "$TOOLCHAINS" --iconutil-path "$ICONUTIL_PATH" --iconutil-sha256 "$ICONUTIL" \
   --asset-source-sha256 "$SOURCE_TOKEN" --asset-dist-sha256 "$DIST_TOKEN" \
-  --asset-app-sha256 "$APP_TOKEN" --asset-icon-sha256 "$ICON_TOKEN" --asset-notices-sha256 "$NOTICES_TOKEN"
+  --asset-app-sha256 "$APP_TOKEN" --asset-icon-sha256 "$ICON_TOKEN" --asset-notices-sha256 "$NOTICES_TOKEN" \
+  --freezer-context-sha256 "$FREEZER_CONTEXT" --freezer-inputs-sha256 "$FREEZER_INPUTS" \
+  --freezer-output-sha256 "$FREEZER_OUTPUT" --freezer-copy-sha256 "$FREEZER_COPY"
 ```
 
 Resource expectations are the accepted 29-member source baseline, with regular
@@ -294,3 +296,56 @@ remain distinct. Q1–Q13 remain UNEXECUTED/deferred. General integration is
 SKIPPED THR243seq42; Python units are RETIRED. Automated merge checks remain
 lint/static only THR291seq69, with normal hooks, independent review/QA and
 manager guarded merge. No self-review, QA verdict or release acceptance follows.
+
+## Freezer operation custody
+
+The full app wrapper opts into the private `freezer_evidence.py` contract. Before
+the ordinary frozen sync it verifies the exact committed Darwin input described
+in [vendor provenance](vendor/pyinstaller-6.21.0/README.md), captures source and
+asset/toolchain bindings and reserves an exclusive response directory. Other
+platforms keep registry PyInstaller 6.21.0. The shared `build_daemon.sh` command
+is unchanged. Standalone freezer work has no app-custody token.
+
+The spec retains each Analysis/PYZ/EXE generation before later lanes can replace
+it. PYZ bootstrap selections and redirects, EXE raw inputs, both dependency
+lists and every shared Analysis occurrence survive normalization. Equal copies
+can share a physical destination while preserving distinct contributor edges;
+bytes/kind conflicts, missing edges and physical aliases refuse. Ordered options
+remain ordered. Generated equal bytes can refer to different retained generations;
+a changed live generation cannot silently replace the retained source bytes.
+
+The two patched upstream members observe native return/cache/outcome/copy and
+bootloader/copy/PKG-append/final-EXE operations at their actual consuming sites.
+Only effective strip=False/UPX=False is supported for custody. Pinned CONF UPX
+availability is a literal Boolean, with the bounded force environment string
+recorded separately. Constructors, pre-guts/assemble and processing entry/return
+recheck admission. Cache hits need the genuine same-run compatible predecessor;
+non-Mach-O and optional-architecture passthrough remain distinct outcomes.
+Unopted upstream callers retain their existing return types and semantics.
+
+Caller-held digests bind context → inputs → output → app-copy. Early fragments
+have null ledger references. Records and snapshots are exclusive, failures
+persist where writable, and a partial attempt cannot return a success token.
+The wrapper surrounds its existing cp-R with complete two-sided censuses; only
+the existing tracked-skills chmod policy may change modes. At `licenses`, the
+independent reader requires all caller tokens, reopens originals and generations,
+and independently parses bounded PKG/PYZ/base-ZIP membership. Code payloads stay
+opaque; the finite marshal decoder accepts only TOC data forms, never code.
+
+Freezer limits are additional to unchanged asset-helper limits: container512MiB,
+native256MiB, ordinary source16MiB, notice/manifest256KiB; decoded member16MiB
+(native256MiB), container expansion512MiB and ratio1000. Aggregate reads8GiB,
+snapshots2GiB, records32MiB, logical members/operations16,384, tree8,192/depth24,
+names8MiB, alias hops16. Each success record is at most8MiB, context64KiB,
+response4KiB; the reused JSON parser's stricter depth16/100,000-node fence also
+applies. Overflow refuses; these caps have not been calibrated by a native run.
+Container snapshots are hashed in chunks on held stable descriptors; archive
+parsing uses bounded ranges and expansion, without executing or extracting code.
+
+Technical matches cannot complete PYTHON_NATIVE or BOOTLOADER_EXCEPTION_MAPPING.
+Compilation associations remain `declared_compile_origin`/`origin_unobserved`;
+installer custody and terms applicability remain unresolved. All six sentinels,
+literal closure False and ordinary failed rows remain. Portable source/parser
+checks are distinct from actual Darwin configure/target/transform/cache/EXE/copy
+and full wrapper/licenses integration, which remain N-only UNEXECUTED. No build
+allocation, signing, release, public distribution or deployment follows.

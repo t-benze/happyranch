@@ -14,6 +14,7 @@ import importlib.metadata
 import json
 import os
 import shutil
+import runpy
 import sys
 import tomllib
 from pathlib import Path
@@ -23,6 +24,18 @@ from pathlib import Path
 _SPEC_DIR = Path(__file__).resolve().parent if '__file__' in dir() else Path(SPECPATH).resolve()
 # Project root is the parent of the packaging/ directory.
 _PROJ = _SPEC_DIR.parent
+
+# Caller-held helper identity is checked before loading the private observer.
+_freezer_caller = os.environ.get('HAPPYRANCH_FREEZER_CALLER')
+_freezer_helper = _PROJ / 'app/mac/scripts/freezer_evidence.py'
+if _freezer_caller is not None:
+    _expected_helper = json.loads(_freezer_caller)['helper_sha256']
+    if hashlib.sha256(_freezer_helper.read_bytes()).hexdigest() != _expected_helper:
+        raise ValueError('FREEZER_HELPER_SOURCE_MISMATCH')
+_freezer = runpy.run_path(str(_freezer_helper))
+_custody = _freezer['spec_begin'](_PROJ)
+def custody_for(lane, target):
+    return _custody.custody(lane, target) if _custody else None
 
 # Use the wheel's explicit data inventory for frozen releases too. PyInstaller
 # expects destination directories, whereas wheel force-include maps full paths.
@@ -114,22 +127,28 @@ a = Analysis(
     **_common_analysis_kwargs,
 )
 
+_freezer['snapshot_analysis'](_custody, 'daemon', a)
+
 a_cli = Analysis(
     [str(_PROJ / 'cli' / 'main.py')],
     **_common_analysis_kwargs,
 )
 
+_freezer['snapshot_analysis'](_custody, 'cli', a_cli)
+
 # ---- PYZ (pure Python modules archive) -------------------------------------
-pyz = PYZ(a.pure)
-pyz_cli = PYZ(a_cli.pure)
+pyz = PYZ(a.pure, custody=custody_for('daemon', 'PYZ'))
+_freezer['snapshot_target'](_custody, 'daemon', pyz, 'PYZ')
+pyz_cli = PYZ(a_cli.pure, custody=custody_for('cli', 'PYZ'))
+_freezer['snapshot_target'](_custody, 'cli', pyz_cli, 'PYZ')
 
 # ---- EXEs (bootloader + PYZ, shared onedir _internal/) --------------------
+_daemon_exe_args = _freezer['prepare_exe_arguments'](_custody, 'daemon', pyz, a.scripts, [])
 exe = EXE(
-    pyz,
-    a.scripts,
-    [],
+    *_daemon_exe_args,
     exclude_binaries=True,
     name='happyranch-daemon',
+    custody=custody_for('daemon', 'EXE'),
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -137,18 +156,22 @@ exe = EXE(
     console=True,
 )
 
+_freezer['snapshot_target'](_custody, 'daemon', exe, 'EXE')
+
+_cli_exe_args = _freezer['prepare_exe_arguments'](_custody, 'cli', pyz_cli, a_cli.scripts, [])
 exe_cli = EXE(
-    pyz_cli,
-    a_cli.scripts,
-    [],
+    *_cli_exe_args,
     exclude_binaries=True,
     name='happyranch',
+    custody=custody_for('cli', 'EXE'),
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
     console=True,
 )
+
+_freezer['snapshot_target'](_custody, 'cli', exe_cli, 'EXE')
 
 # Both entry points have independent pure-module archives. Shared native/data
 # destinations must agree in bytes AND kind; a duplicate name never wins silently.
@@ -160,8 +183,18 @@ def merge_tocs(*tocs):
             if key.startswith('/') or '..' in Path(key).parts:
                 raise ValueError(f'FREEZE_DESTINATION_UNSAFE: {key}')
             data = Path(source)
-            identity = (kind, hashlib.sha256(data.read_bytes()).hexdigest()
-                        if data.is_file() else str(data.resolve()))
+            if _custody:
+                prior = [r for lane in ('daemon', 'cli') for group in ('binaries', 'datas')
+                         for r in _custody.analysis[lane][group]
+                         if r['destination'] == destination and r['source'] == source and r['kind'] == kind]
+                if not prior:
+                    raise ValueError('FREEZER_ANALYSIS_CONTRIBUTOR_MISSING')
+                for row in prior:
+                    if row['subject']:
+                        _freezer['check_live_generation'](row['subject'], _custody)
+                identity = (kind, prior[0]['literal'] if kind == 'SYMLINK' else prior[0]['subject']['sha256'])
+            else:
+                identity = (kind, source if kind == 'SYMLINK' else hashlib.sha256(data.read_bytes()).hexdigest())
             previous = merged.get(key)
             if previous and previous[1] != identity:
                 raise ValueError(f'FREEZE_DESTINATION_COLLISION: {key}: {previous[0]} / {source}')
@@ -174,10 +207,10 @@ evidence = Path(os.environ['HAPPYRANCH_FREEZE_EVIDENCE'])
 def toc_rows(toc):
     return [{'destination': d, 'source': str(s) if s else None, 'kind': k,
              'sha256': hashlib.sha256(Path(s).read_bytes()).hexdigest()
-             if s and Path(s).is_file() else None} for d, s, k in toc]
+             if k not in ('SYMLINK', 'OPTION') and s not in (None, '-') and Path(s).is_file() else None} for d, s, k in toc]
 
 analysis = {label: {kind: toc_rows(getattr(value, kind))
-                   for kind in ('pure', 'binaries', 'datas')}
+                   for kind in ('scripts', 'pure', 'binaries', 'datas')}
             for label, value in [('daemon', a), ('cli', a_cli)]}
 analysis['cli_only'] = {kind: sorted(set(r['destination'] for r in analysis['cli'][kind])
                                    - set(r['destination'] for r in analysis['daemon'][kind]))
@@ -190,7 +223,7 @@ analysis['shared'] = toc_rows(shared)
 # completeness assertion. Unmapped native/stdlib and compiled layers stay gaps.
 inputs = {Path(row['source']).resolve()
           for value in ('daemon', 'cli') for kind in ('pure', 'binaries', 'datas')
-          for row in analysis[value][kind] if row['source']}
+          for row in analysis[value][kind] if row['source'] and row['kind'] != 'SYMLINK'}
 components = []
 notice_root = evidence / 'notices'
 notice_root.mkdir()
@@ -253,7 +286,10 @@ components += [{'component': name, 'disposition': 'LICENSE_UNRESOLVED', 'notices
 (evidence / 'license-mapping.json').write_text(json.dumps(
     {'closure_complete': False, 'components': components}, indent=2) + '\n')
 
+_collect_custody = _freezer['spec_collect_inputs'](_custody, exe, exe_cli, shared)
 coll = COLLECT(
     exe, exe_cli, shared,
-    strip=False, upx=True, upx_exclude=[], name='happyranch-daemon',
+    strip=False, upx=True, upx_exclude=[], name='happyranch-daemon', custody=_collect_custody,
 )
+
+_freezer['finish_freeze'](_custody, coll)

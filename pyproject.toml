@@ -20,7 +20,7 @@ happyranch = "cli.main:main"
 
 [dependency-groups]
 build = [
-    "pyinstaller>=6.21.0",
+    "pyinstaller==6.21.0",
 ]
 dev = [
     "pytest>=7.0",
@@ -50,3 +50,8 @@ exclude = ["runtime/skills/bundled/**"]
 [tool.hatch.build.targets.wheel.force-include]
 "runtime/skills/bundled" = "runtime/skills/bundled"
 "runtime/workflows/builtin_templates/coding.v1.json" = "runtime/workflows/builtin_templates/coding.v1.json"
+
+[tool.uv.sources]
+pyinstaller = [
+    { path = "packaging/vendor/pyinstaller-6.21.0/dist/pyinstaller-6.21.0-1happyranchcustody1-py3-none-macosx_10_13_universal2.whl", marker = "sys_platform == 'darwin'" },
+]

@@ -1,0 +1,782 @@
+--- a/PyInstaller/building/api.py
++++ b/PyInstaller/building/api.py
+@@ -28,7 +28,8 @@
+ from PyInstaller.archive.writers import CArchiveWriter, ZlibArchiveWriter
+ from PyInstaller.building.datastruct import Target, _check_guts_eq, normalize_pyz_toc, normalize_toc
+ from PyInstaller.building.utils import (
+-    _check_guts_toc, _make_clean_directory, _rmtree, process_collected_binary, get_code_object, compile_pymodule
++    _check_guts_toc, _make_clean_directory, _rmtree, process_collected_binary, get_code_object, compile_pymodule,
++    _HRCustody, _hr_need, _hr_fd, _hr_parse
+ )
+ from PyInstaller.building.splash import Splash  # argument type validation in EXE
+ from PyInstaller.compat import is_cygwin, is_darwin, is_linux, is_win, strict_collect_mode, is_nogil, is_aix
+@@ -77,7 +78,12 @@
+             self.name = os.path.splitext(self.tocfilename)[0] + '.pyz'
+ 
+         # PyInstaller bootstrapping modules.
++        # HappyRanch custody revision 1, changed 2026-10-16.
++        self.custody = _HRCustody(kwargs['custody']) if kwargs.get('custody') is not None else None
+         bootstrap_dependencies = get_bootstrap_modules()
++        if self.custody:
++            bootstrap_raw = self.custody.rows(bootstrap_dependencies, 'bootstrap_selected')
++            self.custody.event('bootstrap_selected', bootstrap_raw)
+ 
+         # Compile the python modules that are part of bootstrap dependencies, so that they can be collected into the
+         # CArchive/PKG and imported by the bootstrap script.
+@@ -98,9 +104,15 @@
+             else:
+                 # Include as is (extensions).
+                 self.dependencies.append((name, src_path, typecode))
++            if self.custody:
++                self.custody.event('bootstrap_generated', self.custody.rows([self.dependencies[-1]], 'bootstrap_' + str(len(self.dependencies))))
+ 
+         # Merge input TOC(s) and their code object dictionaries (if available). Skip the bootstrap modules, which will
+         # be passed on to CArchive/PKG.
++        if self.custody:
++            raw_candidates = self.custody.rows([entry for toc in tocs for entry in toc], 'PYZ_raw')
++            self.custody.event('pyz_candidates', raw_candidates)
++            self.custody.admit(raw_candidates, 'PYZ')
+         bootstrap_module_names = set(name for name, _, typecode in self.dependencies if typecode == 'PYMODULE')
+         self.toc = []
+         self.code_dict = {}
+@@ -116,16 +128,33 @@
+                 assert typecode in {'PYMODULE', 'PYMODULE-1', 'PYMODULE-2'}, f"Invalid entry passed to PYZ: {entry}!"
+                 # Module required during bootstrap; skip to avoid collecting a duplicate.
+                 if name in bootstrap_module_names:
++                    if self.custody:
++                        chosen = [r for r in bootstrap_raw if r['destination'] == name]
++                        incoming = [r for r in raw_candidates if r['destination'] == name]
++                        _hr_need(len(chosen) == 1 and all(r['subject'] and chosen[0]['subject'] and
++                                 r['subject']['sha256'] == chosen[0]['subject']['sha256'] for r in incoming), 'PYZ_BOOTSTRAP_REDIRECT')
++                        self.custody.event('bootstrap_redirect', {'name': name, 'contributors': [r['id'] for r in incoming],
++                                           'selected': chosen[0], 'generated': [r for r in self.dependencies if r[0] == name],
++                                           'origin': 'declared_compile_origin'})
+                     continue
+                 self.toc.append(entry)
+ 
+         # Normalize TOC
++        if self.custody:
++            before_normalize = self.custody.rows(self.toc, 'PYZ_selected')
+         self.toc = normalize_pyz_toc(self.toc)
++        if self.custody:
++            self.custody.event('normalization', {'raw': before_normalize, 'normalized': self.toc,
++                               'edges': self.custody.normalize(before_normalize, self.toc, 'PYZ')})
+ 
+         # Alphabetically sort the TOC to enable reproducible builds.
+         self.toc.sort()
+ 
+         self.__postinit__()
++        if self.custody:
++            self.custody.event('pyz_output', {'subject': self.custody.subject(self.name),
++                               'emitted': self.custody_emitted, 'origin': 'declared_compile_origin'})
++            self.custody_fragment = self.custody.finish()
+ 
+     _GUTS = (
+         # input parameters
+@@ -149,11 +178,14 @@
+                 try:
+                     self.code_dict[name] = get_code_object(name, src_path, optimize=optim_level)
+                 except SyntaxError:
++                    if self.custody:
++                        self.custody.event('pyz_skipped', {'name': name, 'source': src_path, 'reason': 'SyntaxError'})
+                     # The module was likely written for different Python version; exclude it
+                     continue
+             archive_toc.append(entry)
+ 
+         # Create the archive
++        self.custody_emitted = archive_toc
+         ZlibArchiveWriter(self.name, archive_toc, code_dict=self.code_dict)
+         logger.info("Building PYZ (ZlibArchive) %s completed successfully.", self.name)
+ 
+@@ -480,6 +512,11 @@
+ 
+         # UPX needs to be both available and enabled for the target.
+         self.upx = CONF['upx_available'] and kwargs.get('upx', False)
++        self.custody = _HRCustody(kwargs['custody']) if kwargs.get('custody') is not None else None
++        self.custody_declared = (kwargs.get('strip', False), kwargs.get('upx', False))
++        if self.custody:
++            self.custody.options('EXE_constructor', *self.custody_declared, self.strip, self.upx)
++            _hr_need(is_darwin and self.exclude_binaries and self.append_pkg and self.contents_directory == '_internal', 'EXE_MODE_UNSUPPORTED')
+ 
+         # Catch and clear options that are unsupported on specific platforms.
+         if self.versrsrc and not is_win:
+@@ -539,6 +576,14 @@
+ 
+         self.toc = []
+ 
++        if self.custody:
++            arguments = []
++            for argument_ordinal, arg in enumerate(args):
++                _hr_need(isinstance(arg, (PYZ, list, tuple)), 'EXE_ARGUMENT_KIND')
++                toc = [(os.path.basename(arg.name), arg.name, 'PYZ'), *arg.dependencies] if isinstance(arg, PYZ) else arg
++                arguments.append({'ordinal': argument_ordinal, 'kind': 'PYZ' if isinstance(arg, PYZ) else 'TOC',
++                                  'rows': self.custody.rows(toc, 'EXE_argument_' + str(argument_ordinal))})
++            self.custody.event('exe_arguments', arguments)
+         for arg in args:
+             # Valid arguments: PYZ object, Splash object, and TOC-list iterables
+             if isinstance(arg, (PYZ, Splash)):
+@@ -651,7 +696,13 @@
+                 self.python_lib += f"(libpython{_py_major}.{_py_minor}.so)"
+ 
+         # Normalize TOC
++        if self.custody:
++            self.custody_raw = self.custody.rows(self.toc, 'EXE_raw')
++            self.custody.admit(self.custody_raw, 'EXE')
+         self.toc = normalize_toc(self.toc)
++        if self.custody:
++            self.custody.event('normalization', {'raw': self.custody_raw, 'normalized': self.toc,
++                               'edges': self.custody.normalize(self.custody_raw, self.toc, 'EXE')})
+ 
+         self.pkg = PKG(
+             toc=self.toc,
+@@ -672,7 +723,12 @@
+         exe = self._bootloader_file('run', '.exe' if is_win or is_cygwin else '')
+         self.exefiles = [(os.path.basename(exe), exe, 'EXECUTABLE')]
+ 
++        if self.custody:
++            self.custody.options('EXE_pre_guts', *self.custody_declared, self.strip, self.upx)
+         self.__postinit__()
++        if self.custody:
++            _hr_need(hasattr(self, 'custody_operation'), 'EXE_REUSE_WITHOUT_OPERATION')
++            self.custody_fragment = self.custody.finish()
+ 
+     _GUTS = (
+         # input parameters
+@@ -754,6 +810,8 @@
+         return bootloader_file
+ 
+     def assemble(self):
++        if self.custody:
++            self.custody.options('EXE_assemble', *self.custody_declared, self.strip, self.upx)
+         # On Windows, we used to append .notanexecutable to the intermediate/temporary file name to (attempt to)
+         # prevent interference from anti-virus programs with the build process (see #6467). This is now disabled
+         # as we wrap all processing steps that modify the executable in the `_retry_operation` helper; however,
+@@ -773,10 +831,17 @@
+         if not os.path.exists(bootloader_exe):
+             raise SystemExit(_MISSING_BOOTLOADER_ERRORMSG)
+ 
++        if self.custody:
++            selected = self.custody.subject(bootloader_exe, cap=256 * 1024**2)
++            pkg_input = self.custody.subject(self.pkg.name)
+         # Step 1: copy the bootloader file, and perform any operations that need to be done prior to appending the PKG.
+         logger.info("Copying bootloader EXE to %s", build_name)
+         self._retry_operation(shutil.copyfile, bootloader_exe, build_name)
+         self._retry_operation(os.chmod, build_name, 0o755)
++        if self.custody:
++            self.custody.stable(selected)
++            copied = self.custody.subject(build_name, cap=256 * 1024**2)
++            _hr_need((selected['sha256'], selected['size']) == (copied['sha256'], copied['size']), 'BOOTLOADER_COPY_MISMATCH')
+ 
+         if is_win:
+             # First, remove all resources from the file. This ensures that no manifest is embedded, even if bootloader
+@@ -800,7 +865,16 @@
+         elif is_darwin:
+             # Convert bootloader to the target arch
+             logger.info("Converting EXE to target arch (%s)", self.target_arch)
++            if self.custody:
++                with _hr_fd(build_name) as fd:
++                    self.custody.charge(5)
++                    architecture_magic = os.read(fd, 4).hex()
++                _hr_need(architecture_magic in ('cafebabe', 'bebafeca', 'cafebabf', 'bfbafeca',
++                                               'feedface', 'cefaedfe', 'feedfacf', 'cffaedfe'), 'BOOTLOADER_MAGIC')
++                arch_action = 'narrowed' if architecture_magic in ('cafebabe', 'bebafeca', 'cafebabf', 'bfbafeca') else 'passthrough'
+             osxutils.binary_to_target_arch(build_name, self.target_arch, display_name='Bootloader EXE')
++            if self.custody:
++                architecture_output = self.custody.subject(build_name, cap=256 * 1024**2)
+ 
+         # Step 2: append the PKG, if necessary
+         if self.append_pkg:
+@@ -861,7 +935,15 @@
+ 
+             # Append the data
+             logger.info("Appending %s to EXE", append_type)
++            if self.custody:
++                self.custody.stable(pkg_input)
++                before_append = self.custody.subject(build_name)
++                append_input = self.custody.subject(append_file)
++                _hr_need(append_input['sha256'] == pkg_input['sha256'], 'PKG_APPEND_MISMATCH')
+             self._append_data_to_exe(build_name, append_file)
++            if self.custody:
++                self.custody.stable(append_input)
++                after_append = self.custody.subject(build_name)
+ 
+             # Fix Mach-O headers
+             logger.info("Fixing EXE headers for code signing")
+@@ -910,6 +992,15 @@
+         self.mtm = self._retry_operation(miscutils.mtime, build_name)
+         if build_name != self.name:
+             self._retry_operation(os.rename, build_name, self.name)
++        if self.custody:
++            self.custody.stable(pkg_input)
++            self.custody_operation = self.custody.event('exe_operation', {
++                'selected': selected, 'copied': copied, 'pkg': pkg_input, 'append_input': append_input,
++                'before_append': before_append, 'after_append': after_append,
++                'output': self.custody.subject(self.name), 'target_arch': self.target_arch,
++                'branch': 'darwin_binary_to_target_arch', 'append_pkg': self.append_pkg,
++                'architecture_output': architecture_output, 'arch_action': arch_action,
++                'origin': 'origin_unobserved', 'outcome': 'completed'})
+         logger.info("Building EXE from %s completed successfully.", self.tocbasename)
+ 
+     def _copy_windows_resource(self, build_name, resource_spec):
+@@ -1094,6 +1185,9 @@
+         from PyInstaller.config import CONF
+ 
+         super().__init__()
++        self.custody = _HRCustody(kwargs['custody']) if kwargs.get('custody') is not None else None
++        self.custody_declared = (kwargs.get('strip', False), kwargs.get('upx', False))
++        self.custody_operations = []
+ 
+         self.strip_binaries = kwargs.get('strip', False)
+         self.upx_exclude = kwargs.get("upx_exclude", [])
+@@ -1141,13 +1235,36 @@
+             else:
+                 raise TypeError(f"Invalid argument type for COLLECT: {type(arg)!r}")
+ 
++        if self.custody:
++            self.custody.options('COLLECT_constructor', *self.custody_declared, self.strip_binaries, self.upx_binaries)
++            settings = [(x.target_arch, x.codesign_identity, x.entitlements_file, x.contents_directory, x.append_pkg)
++                        for x in args if isinstance(x, EXE)]
++            _hr_need(len(settings) == 2 and settings[0] == settings[1] and settings[0][-1] is True, 'COLLECT_LANE_SETTINGS')
++            raw = self.custody.rows(self.toc, 'COLLECT_raw')
++            self.custody.admit(raw, 'COLLECT')
++            ref = self.custody.value['ledger_ref']
++            _hr_need(type(ref) is dict and set(ref) == {'path', 'size', 'sha256'}, 'COLLECT_LEDGER_REQUIRED')
++            ledger = self.custody.subject(ref['path'], False, cap=8 * 1024**2)
++            _hr_need((ledger['size'], ledger['sha256']) == (ref['size'], ref['sha256']), 'COLLECT_LEDGER_DIGEST')
++            with _hr_fd(ref['path']) as fd:
++                self.custody.charge(ref['size'] + 1)
++                payload = _hr_parse(os.read(fd, 8 * 1024**2 + 1))['payload']
++            expected = payload['collect_arguments']
++            actual = [[r['destination'], r['source'], r['kind']] for r in raw]
++            _hr_need(actual == expected, 'COLLECT_LEDGER_MISMATCH')
++            self.custody.stable(ledger)
+         # Normalize TOC
+         self.toc = normalize_toc(self.toc)
++        if self.custody:
++            self.custody.event('normalization', {'raw': raw, 'normalized': self.toc,
++                               'edges': self.custody.normalize(raw, self.toc, 'COLLECT')})
+ 
+         # Alphabetically sort the TOC to ensure that order of processing is predictable and reproducible.
+         self.toc.sort()
+ 
+         self.__postinit__()
++        if self.custody:
++            self.custody_fragment = self.custody.finish()
+ 
+     _GUTS = (
+         # COLLECT always builds, we just want the TOC to be written out.
+@@ -1159,12 +1276,17 @@
+         return True
+ 
+     def assemble(self):
++        if self.custody:
++            self.custody.options('COLLECT_assemble', *self.custody_declared, self.strip_binaries, self.upx_binaries)
+         _make_clean_directory(self.name)
+         logger.info("Building COLLECT %s", self.tocbasename)
+         for dest_name, src_name, typecode in self.toc:
+             # Ensure that the source file exists, if necessary. Skip the check for DEPENDENCY entries due to special
+             # contents of 'dest_name' and/or 'src_name'. Same for the SYMLINK entries, where 'src_name' is relative
+             # target name for symbolic link.
++            original_name = src_name
++            if self.custody and typecode != 'SYMLINK':
++                _hr_need(os.path.exists(src_name), 'COLLECT_SOURCE_MISSING')
+             if typecode not in {'DEPENDENCY', 'SYMLINK'} and not os.path.exists(src_name):
+                 # If file is contained within python egg, it will be added with the egg.
+                 if strict_collect_mode:
+@@ -1193,7 +1315,12 @@
+                     "but there already exists a file at that path!"
+                 )
+             if typecode in ('EXTENSION', 'BINARY'):
+-                src_name = process_collected_binary(
++                process_context = None
++                if self.custody:
++                    process_context = dict(self.custody.value)
++                    process_context['stage_dir'] = str(pathlib.Path(process_context['stage_dir']) / str(len(self.custody_operations)))
++                    os.mkdir(process_context['stage_dir'], 0o700)
++                native_result = process_collected_binary(
+                     src_name,
+                     dest_name,
+                     use_strip=self.strip_binaries,
+@@ -1203,7 +1330,11 @@
+                     codesign_identity=self.codesign_identity,
+                     entitlements_file=self.entitlements_file,
+                     strict_arch_validation=(typecode == 'EXTENSION'),
++                    custody=process_context,
+                 )
++                src_name = native_result['path'] if self.custody else native_result
++            if self.custody and typecode != 'SYMLINK':
++                consumed = self.custody.subject(src_name, cap=256 * 1024**2 if typecode in ('BINARY', 'EXTENSION') else 512 * 1024**2 if typecode in ('EXECUTABLE', 'PKG') or dest_name == 'base_library.zip' else 16 * 1024**2)
+             if typecode == 'SYMLINK':
+                 # On Windows, ensure that symlink target path (stored in src_name) is using Windows-style back slash
+                 # separators.
+@@ -1230,6 +1361,19 @@
+                 or (typecode == 'DATA' and os.access(src_name, os.X_OK))
+             ):
+                 os.chmod(dest_path, 0o755)
++            if self.custody:
++                if typecode == 'SYMLINK':
++                    _hr_need(os.readlink(dest_path) == src_name, 'COLLECT_LINK_MISMATCH')
++                    copy = {'input': None, 'output': None, 'literal': src_name}
++                else:
++                    self.custody.stable(consumed)
++                    result = self.custody.subject(dest_path, cap=256 * 1024**2 if typecode in ('BINARY', 'EXTENSION') else 512 * 1024**2 if typecode in ('EXECUTABLE', 'PKG') or dest_name == 'base_library.zip' else 16 * 1024**2)
++                    _hr_need((consumed['size'], consumed['sha256']) == (result['size'], result['sha256']), 'COLLECT_COPY_MISMATCH')
++                    copy = {'input': consumed, 'output': result, 'literal': None}
++                self.custody_operations.append(self.custody.event('collect_copy', {
++                    'destination': dest_name, 'source': original_name, 'kind': typecode,
++                    'physical': os.path.relpath(dest_path, self.name), 'copy': copy,
++                    'native': native_result['operation'] if typecode in ('EXTENSION', 'BINARY') else None}))
+         logger.info("Building COLLECT %s completed successfully.", self.tocbasename)
+ 
+ 
+--- a/PyInstaller/building/utils.py
++++ b/PyInstaller/building/utils.py
+@@ -104,6 +104,347 @@
+     return os.path.join(*dest_elements)
+ 
+ 
++# HappyRanch custody revision 1, changed 2026-10-16.
++# Opt-in observations of existing operations; original notices remain above.
++import contextlib as _hr_contextlib
++import json as _hr_json
++import stat as _hr_stat
++import unicodedata as _hr_unicode
++
++_HR_RUNS = {}
++_HR_KEYS = {'run_id', 'stage_dir', 'source_roots', 'lane', 'target', 'ordinal', 'ledger_ref'}
++
++
++def _hr_need(ok, code):
++    if not ok:
++        raise ValueError('FREEZER_' + code)
++
++
++def _hr_identity(s):
++    return [s.st_dev, s.st_ino, s.st_mode, s.st_uid, s.st_nlink, s.st_size, s.st_mtime_ns, s.st_ctime_ns]
++
++
++def _hr_encode(value):
++    return (_hr_json.dumps(value, sort_keys=True, separators=(',', ':'), ensure_ascii=True, allow_nan=False) + '\n').encode()
++
++
++
++def _hr_parse(raw):
++    _hr_need(len(raw) <= 8 * 1024**2, 'JSON_CAP')
++    depth, quoted, escape = 0, False, False
++    for char in raw.decode('utf-8', 'strict'):
++        if quoted:
++            if escape:
++                escape = False
++            elif char == chr(92):
++                escape = True
++            elif char == '"':
++                quoted = False
++        elif char == '"':
++            quoted = True
++        elif char in '[{':
++            depth += 1
++            _hr_need(depth <= 16, 'JSON_DEPTH')
++        elif char in ']}':
++            depth -= 1
++    def pairs(items):
++        value = {}
++        for key, child in items:
++            _hr_need(key not in value, 'JSON_DUPLICATE_KEY')
++            value[key] = child
++        return value
++    value = _hr_json.loads(raw, object_pairs_hook=pairs)
++    nodes = 0
++    def check(item):
++        nonlocal nodes
++        nodes += 1
++        _hr_need(nodes <= 1000000, 'JSON_NODE_CAP')
++        if isinstance(item, dict):
++            for key, child in item.items():
++                check(key)
++                check(child)
++        elif isinstance(item, list):
++            for child in item:
++                check(child)
++        elif isinstance(item, str):
++            _hr_need(len(item.encode()) <= 4096, 'JSON_STRING_CAP')
++        else:
++            _hr_need(item is None or type(item) in (bool, int), 'JSON_SCALAR')
++    check(value)
++    return value
++
++
++
++def _hr_option_identity(option):
++    result = dict(option)
++    entitlement = result.get('entitlements')
++    if entitlement is not None:
++        result['entitlements'] = {k: v for k, v in entitlement.items() if k != 'snapshot'}
++    return result
++
++
++def _hr_name(name):
++    _hr_need(isinstance(name, str) and name and len(name.encode()) <= 1024 and '\\' not in name
++             and not any(ord(c) < 32 or ord(c) == 127 for c in name), 'NAME_INVALID')
++    parts = name.split('/')
++    _hr_need(len(parts) <= 24 and all(p not in ('', '.', '..') and len(p.encode()) <= 255 for p in parts), 'NAME_INVALID')
++    return name
++
++
++@_hr_contextlib.contextmanager
++def _hr_fd(path, directory=False):
++    """Pin every absolute ancestor; never follow an unrecorded link."""
++    path = pathlib.Path(path)
++    _hr_need(path.is_absolute() and '..' not in path.parts, 'ABSOLUTE_PATH_REQUIRED')
++    fds = []
++    chain = []
++    try:
++        fd = os.open('/', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
++        fds.append(fd)
++        for index, part in enumerate(path.parts[1:]):
++            last = index == len(path.parts) - 2
++            flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
++            if not last or directory:
++                flags |= os.O_DIRECTORY
++            child = os.open(part, flags, dir_fd=fd)
++            fds.append(child)
++            info = os.fstat(child)
++            _hr_need(info.st_uid in (0, os.getuid()) and not info.st_mode & 0o022, 'SUBJECT_OWNER_MODE')
++            if not last or directory:
++                _hr_need(_hr_stat.S_ISDIR(info.st_mode), 'DIRECTORY_REQUIRED')
++                identity = [info.st_dev, info.st_ino, info.st_mode, info.st_uid]
++            else:
++                _hr_need(_hr_stat.S_ISREG(info.st_mode) and info.st_nlink == 1, 'REGULAR_SINGLE_LINK_REQUIRED')
++                identity = _hr_identity(info)
++            chain.append((fd, part, child, identity, not last or directory))
++            fd = child
++        yield fd
++        for parent, part, child, old, isdir in chain:
++            for now in (os.fstat(child), os.stat(part, dir_fd=parent, follow_symlinks=False)):
++                actual = [now.st_dev, now.st_ino, now.st_mode, now.st_uid] if isdir else _hr_identity(now)
++                _hr_need(old == actual, 'SUBJECT_UNSTABLE')
++    finally:
++        for fd in reversed(fds):
++            os.close(fd)
++
++
++class _HRCustody:
++    """Closed data interface. No executable callbacks or inferred cache paths."""
++    def __init__(self, value):
++        _hr_need(type(value) is dict and set(value) == _HR_KEYS, 'CUSTODY_SCHEMA')
++        _hr_need(value['lane'] in ('daemon', 'cli', 'shared') and value['target'] in ('PYZ', 'EXE', 'COLLECT'), 'CUSTODY_TARGET')
++        _hr_need(type(value['ordinal']) is int and value['ordinal'] >= 0, 'CUSTODY_ORDINAL')
++        _hr_need(isinstance(value['run_id'], str) and 0 < len(value['run_id']) <= 128, 'CUSTODY_RUN')
++        roots = value['source_roots']
++        _hr_need(type(roots) is list and 0 < len(roots) <= 16 and len(set(roots)) == len(roots), 'CUSTODY_ROOTS')
++        self.value = dict(value)
++        self.roots = [pathlib.Path(p) for p in roots]
++        self.stage = pathlib.Path(value['stage_dir'])
++        _hr_need(all(p.is_absolute() and '..' not in p.parts and str(p) != '/' for p in [self.stage, *self.roots]), 'CUSTODY_ROOTS')
++        _hr_need(any(self.stage.is_relative_to(p) for p in self.roots), 'STAGE_OUTSIDE_ROOTS')
++        stage_root = max((p for p in self.roots if self.stage.is_relative_to(p)), key=lambda p: len(p.parts))
++        with _hr_fd(self.stage, True) as stage_fd, _hr_fd(stage_root, True) as root_fd:
++            _hr_need(os.fstat(stage_fd).st_dev == os.fstat(root_fd).st_dev, 'STAGE_CROSS_DEVICE')
++        self.state = _HR_RUNS.setdefault(value['run_id'], {'reads': 0, 'snapshots': 0, 'members': 0, 'records': 0, 'next': {}, 'cache': {}})
++        self.aliases = {}
++        self.fragment = {'encoding': 'happyranch-freezer-fragment@1', **value, 'events': []}
++
++    def charge(self, size, snapshots=False):
++        key, cap = ('snapshots', 2 * 1024**3) if snapshots else ('reads', 8 * 1024**3)
++        self.state[key] += size
++        _hr_need(self.state[key] <= cap, 'CUMULATIVE_BYTE_CAP')
++
++    def event(self, kind, payload):
++        self.state['members'] += 1
++        _hr_need(self.state['members'] <= 16384, 'CUMULATIVE_MEMBER_CAP')
++        self.fragment['events'].append({'ordinal': len(self.fragment['events']), 'kind': kind, 'payload': payload})
++        _hr_need(len(_hr_encode(self.fragment)) <= 8 * 1024**2, 'FRAGMENT_CAP')
++        return payload
++
++    def resolve(self, path):
++        original = pathlib.Path(path)
++        roots = [p for p in self.roots if original.is_relative_to(p)]
++        _hr_need(roots, 'SOURCE_OUTSIDE_ROOTS')
++        root = max(roots, key=lambda p: len(p.parts))
++        pending, done, aliases, seen = list(original.relative_to(root).parts), [], [], set()
++        while pending:
++            part = pending.pop(0)
++            if part in ('', '.'):
++                continue
++            if part == '..':
++                _hr_need(done, 'LINK_ESCAPE')
++                done.pop()
++                continue
++            current = root.joinpath(*done, part)
++            with _hr_fd(current.parent, True) as fd:
++                info = os.stat(part, dir_fd=fd, follow_symlinks=False)
++                if _hr_stat.S_ISLNK(info.st_mode):
++                    target = os.readlink(part, dir_fd=fd)
++                    _hr_need(_hr_identity(info) == _hr_identity(os.stat(part, dir_fd=fd, follow_symlinks=False)), 'LINK_UNSTABLE')
++                    _hr_need(info.st_uid in (0, os.getuid()) and not os.path.isabs(target)
++                             and 0 < len(target.encode()) <= 1024, 'LINK_TARGET_INVALID')
++                    _hr_need(str(current) not in seen and len(aliases) < 16, 'LINK_CYCLE_OR_HOPS')
++                    seen.add(str(current))
++                    aliases.append({'relative': current.relative_to(root).as_posix(), 'target': target, 'identity': _hr_identity(info)})
++                    pending = target.split('/') + pending
++                else:
++                    _hr_need(_hr_stat.S_ISDIR(info.st_mode) if pending else _hr_stat.S_ISREG(info.st_mode), 'LINK_TERMINAL_KIND')
++                    done.append(part)
++        return root.joinpath(*done), aliases, root
++
++    def subject(self, path, retain=True, cap=512 * 1024**2):
++        original_path = pathlib.Path(path)
++        path, aliases, alias_root = self.resolve(path)
++        if aliases:
++            self.event('source_alias', {'root': str(alias_root), 'original': original_path.relative_to(alias_root).as_posix(),
++                                       'terminal': path.relative_to(alias_root).as_posix(), 'aliases': aliases})
++        choices = [p for p in self.roots if path.is_relative_to(p)]
++        _hr_need(choices, 'SOURCE_OUTSIDE_ROOTS')
++        root = max(choices, key=lambda p: len(p.parts))
++        _hr_name(path.relative_to(root).as_posix())
++        with _hr_fd(path) as src, _hr_fd(root, True) as root_fd:
++            info = os.fstat(src)
++            _hr_need(info.st_dev == os.fstat(root_fd).st_dev, 'SOURCE_CROSS_DEVICE')
++            _hr_need(info.st_size <= cap, 'SUBJECT_CAP')
++            self.charge(info.st_size + 1)
++            digest = hashlib.sha256()
++            snap = None
++            out = None
++            if retain:
++                key = str(self.stage)
++                ordinal = self.state['next'].get(key, 0)
++                self.state['next'][key] = ordinal + 1
++                snap = self.stage / f'{ordinal}.bin'
++                self.charge(info.st_size, True)
++                out = os.open(snap, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
++            try:
++                count = 0
++                while True:
++                    data = os.read(src, min(65536, cap - count + 1))
++                    if not data:
++                        break
++                    count += len(data)
++                    _hr_need(count <= cap, 'SUBJECT_CAP')
++                    digest.update(data)
++                    if out is not None:
++                        view = memoryview(data)
++                        while view:
++                            n = os.write(out, view)
++                            _hr_need(n > 0, 'SNAPSHOT_WRITE')
++                            view = view[n:]
++                _hr_need(count == info.st_size, 'SUBJECT_SHORT_OR_GROWING')
++                if out is not None:
++                    os.fsync(out)
++            finally:
++                if out is not None:
++                    os.close(out)
++            result = {'root': str(root), 'relative': path.relative_to(root).as_posix(),
++                      'identity': _hr_identity(info), 'size': count, 'sha256': digest.hexdigest(),
++                      'snapshot': str(snap) if snap else None}
++        if aliases:
++            self.aliases[str(path)] = (original_path, aliases)
++        return result
++
++    def stable(self, subject):
++        path = str(pathlib.Path(subject['root']) / subject['relative'])
++        if path in self.aliases:
++            original, old = self.aliases[path]
++            resolved, current, _ = self.resolve(original)
++            _hr_need(str(resolved) == path and current == old, 'CONSUMED_ALIAS_CHANGED')
++        now = self.subject(pathlib.Path(subject['root']) / subject['relative'], False)
++        _hr_need(all(now[k] == subject[k] for k in ('root', 'relative', 'identity', 'size', 'sha256')), 'CONSUMPTION_UNSTABLE')
++
++    def rows(self, toc, stage):
++        rows = []
++        for i, (name, src, kind) in enumerate(toc):
++            _hr_need(kind in ('PYMODULE', 'PYMODULE-1', 'PYMODULE-2', 'PYSOURCE', 'PYSOURCE-1', 'PYSOURCE-2',
++                              'EXTENSION', 'BINARY', 'DATA', 'ZIPFILE', 'PYZ', 'EXECUTABLE', 'SYMLINK', 'OPTION'), 'UNSUPPORTED_KIND')
++            _hr_need(isinstance(name, str) and 0 < len(name.encode()) <= 1024, 'NAME_INVALID')
++            if kind != 'OPTION':
++                _hr_name(os.path.normpath(name))
++            literal = str(src) if kind == 'SYMLINK' else name if kind == 'OPTION' else None
++            if kind == 'SYMLINK':
++                _hr_need(not os.path.isabs(literal) and len(literal.encode()) <= 1024, 'LINK_TARGET_INVALID')
++            structural = src in (None, '-') and kind.startswith('PYMODULE')
++            subject = None if literal is not None or structural else self.subject(src, cap=(512 * 1024**2 if kind in ('PYZ','EXECUTABLE') or name == 'base_library.zip' else 256 * 1024**2 if kind in ('BINARY','EXTENSION') else 16 * 1024**2))
++            rows.append({'id': f"{self.value['lane']}:{stage}:{i}", 'destination': name, 'source': src,
++                         'kind': kind, 'literal': literal, 'subject': subject})
++            self.state['members'] += 1
++            _hr_need(self.state['members'] <= 16384, 'CUMULATIVE_MEMBER_CAP')
++        return rows
++
++    def admit(self, raw, stage):
++        selected, names = [], set()
++        for row in raw:
++            key = os.path.normpath(row['destination'])
++            if row['kind'] == 'OPTION' or key not in names:
++                selected.append((row['destination'], row['source'], row['kind']))
++                names.add(key)
++        self.normalize(raw, selected, stage)
++
++    def normalize(self, raw, normalized, stage):
++        groups = {}
++        for row in raw:
++            if row['kind'] == 'OPTION':
++                continue
++            key = os.path.normpath(row['destination'])
++            old = groups.setdefault(key, [])
++            if old:
++                a, b = old[0], row
++                _hr_need(a['kind'] == b['kind'] and a['literal'] == b['literal']
++                         and ((a['subject'] is None and b['subject'] is None)
++                              or (a['subject'] is not None and b['subject'] is not None
++                                  and (a['subject']['size'], a['subject']['sha256']) == (b['subject']['size'], b['subject']['sha256']))),
++                         stage + '_CONTRIBUTOR_CONFLICT')
++            old.append(row)
++        edges = []
++        options = [r for r in raw if r['kind'] == 'OPTION']
++        option_index = 0
++        for i, (name, src, kind) in enumerate(normalized):
++            if kind == 'OPTION':
++                _hr_need(option_index < len(options) and name == options[option_index]['destination'], stage + '_NORMALIZATION_LOSS')
++                ids = [options[option_index]['id']]
++                option_index += 1
++            else:
++                members = groups.pop(os.path.normpath(name), [])
++                _hr_need(members and members[0]['kind'] == kind, stage + '_NORMALIZATION_LOSS')
++                ids = [r['id'] for r in members]
++            edges.append({'normalized': i, 'contributors': ids})
++        _hr_need(not groups and option_index == len(options), stage + '_NORMALIZATION_LOSS')
++        return edges
++
++    def options(self, site, declared_strip, declared_upx, effective_strip, effective_upx, **settings):
++        from PyInstaller.config import CONF
++        availability = CONF['upx_available']
++        force = os.environ.get('PYINSTALLER_FORCE_UPX')
++        _hr_need(all(type(v) is bool for v in (availability, declared_strip, declared_upx, effective_strip, effective_upx)), 'OPTION_TYPE')
++        _hr_need(force is None or (isinstance(force, str) and len(force.encode()) <= 128), 'OPTION_FORCE')
++        _hr_need(effective_strip == declared_strip and effective_upx == (availability and declared_upx), 'OPTION_INCONSISTENT')
++        _hr_need(not effective_strip and not effective_upx, 'UNSUPPORTED_EFFECTIVE_OPTION:' + site)
++        return self.event('options', {'site': site, 'declared_strip': declared_strip, 'declared_upx': declared_upx,
++                                     'availability': availability, 'force': force, 'effective_strip': effective_strip,
++                                     'effective_upx': effective_upx, **settings})
++
++    def finish(self):
++        raw = _hr_encode(self.fragment)
++        self.state['records'] += len(raw)
++        _hr_need(self.state['records'] <= 32 * 1024**2, 'AGGREGATE_RECORD_CAP')
++        _hr_need(len(raw) <= 8 * 1024**2, 'FRAGMENT_CAP')
++        with _hr_fd(self.stage, True) as fd:
++            out = os.open('fragment.json', os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600, dir_fd=fd)
++            try:
++                view = memoryview(raw)
++                while view:
++                    n = os.write(out, view[:65536])
++                    _hr_need(n > 0, 'FRAGMENT_WRITE')
++                    view = view[n:]
++                os.fsync(out)
++            finally:
++                os.close(out)
++        return self.fragment
++
++
++
+ def process_collected_binary(
+     src_name,
+     dest_name,
+@@ -113,7 +454,8 @@
+     target_arch=None,
+     codesign_identity=None,
+     entitlements_file=None,
+-    strict_arch_validation=False
++    strict_arch_validation=False,
++    custody=None
+ ):
+     """
+     Process the collected binary using strip or UPX (or both), and apply any platform-specific processing. On macOS,
+@@ -123,12 +465,46 @@
+     In addition to given arguments, this function also uses CONF['cachedir'] and CONF['upx_dir'].
+     """
+     from PyInstaller.config import CONF
++
++    # HappyRanch custody revision 1: admission precedes every early return/cache.
++    witness = _HRCustody(custody) if custody is not None else None
++    if witness:
++        _hr_need(type(strict_arch_validation) is bool, 'OPTION_TYPE')
++        option = witness.options('process_entry', use_strip, use_upx, use_strip, use_upx,
++                                 destination=dest_name, target_arch=target_arch,
++                                 strict_arch_validation=strict_arch_validation,
++                                 signing_sha256=hashlib.sha256(codesign_identity.encode()).hexdigest() if codesign_identity else None,
++                                 entitlements=witness.subject(entitlements_file, cap=256 * 1024) if entitlements_file else None)
++        original = witness.subject(src_name, cap=256 * 1024**2)
++    outcome = 'completed'
++
++    def custody_return(path, cache, prior=None):
++        if not witness:
++            return path
++        witness.options('process_return', use_strip, use_upx, use_strip, use_upx)
++        witness.stable(original)
++        returned = witness.subject(path, cap=256 * 1024**2)
++        if cache == 'cache_hit':
++            _hr_need(prior is not None and _hr_option_identity(prior['options']) == _hr_option_identity(option)
++                     and (prior['input']['sha256'], prior['input']['size']) == (original['sha256'], original['size'])
++                     and (prior['returned']['sha256'], prior['returned']['size']) == (returned['sha256'], returned['size']),
++                     'CACHE_PREDECESSOR_MISMATCH')
++            actual_outcome = prior['outcome']
++        else:
++            actual_outcome = outcome
++        operation = witness.event('native_return', {'input': original, 'returned': returned, 'options': option,
++                                  'cache': cache, 'outcome': actual_outcome, 'predecessor': prior,
++                                  'path': path, 'destination': dest_name})
++        if cache != 'cache_hit':
++            witness.state['cache'][path] = operation
++        witness.finish()
++        return {'path': path, 'operation': operation}
+ 
+     # We need to use cache in the following scenarios:
+     #  * extra binary processing due to use of `strip` or `upx`
+     #  * building on macOS, where we need to rewrite library paths in binaries' headers and (re-)sign the binaries.
+     if not use_strip and not use_upx and not is_darwin:
+-        return src_name
++        return custody_return(src_name, 'unchanged')
+ 
+     # Match against provided UPX exclude patterns.
+     upx_exclude = upx_exclude or []
+@@ -169,7 +545,7 @@
+ 
+     # Exit early if no processing is required after above rules are applied.
+     if not use_strip and not use_upx and not is_darwin:
+-        return src_name
++        return custody_return(src_name, 'unchanged')
+ 
+     # Prepare cache directory path. Cache is tied to python major/minor version, but also to various processing options.
+     pyver = f'py{sys.version_info[0]}{sys.version_info[1]}'
+@@ -218,7 +594,7 @@
+     if cached_id in cache_index:
+         # If digest matches to the cached digest, return the cached file...
+         if src_digest == cache_index[cached_id]:
+-            return cached_name
++            return custody_return(cached_name, 'cache_hit', witness.state['cache'].get(cached_name) if witness else None)
+ 
+         # ... otherwise remove it.
+         os.remove(cached_name)
+@@ -327,6 +703,7 @@
+             osxutils.set_dylib_dependency_paths(cached_name, target_rpath)
+             osxutils.sign_binary(cached_name, codesign_identity, entitlements_file)
+         except osxutils.InvalidBinaryError:
++            outcome = 'non_macho_passthrough'
+             # Raised by osxutils.binary_to_target_arch when the given file is not a valid macOS binary (for example,
+             # a linux .so file; see issue #6327). The error prevents any further processing, so just ignore it.
+             pass
+@@ -342,6 +719,7 @@
+             #    the actual python code is running on M1 in native arm64 mode.
+             if strict_arch_validation:
+                 raise
++            outcome = 'optional_arch_passthrough'
+             logger.debug("File %s failed optional architecture validation - collecting as-is!", src_name)
+         except Exception as e:
+             raise SystemError(f"Failed to process binary {cached_name!r}!") from e
+@@ -350,7 +728,7 @@
+     cache_index[cached_id] = src_digest
+     misc.save_py_data_struct(cache_index_file, cache_index)
+ 
+-    return cached_name
++    return custody_return(cached_name, 'created')
+ 
+ 
+ def _compute_file_digest(filename):
