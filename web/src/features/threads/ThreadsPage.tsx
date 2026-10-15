@@ -736,7 +736,10 @@ export function ThreadsPage(): JSX.Element {
     const source = lastFounderMsg
       ? `from ${threadId} by ${lastFounderMsg.speaker}\n\n${lastFounderMsg.body_markdown!}`
       : `from ${threadId}`;
-    const quoted = source.split(/\r\n|\r|\n/).map(line => line ? `> ${line}` : '>').join('\n');
+    const quoted = source
+      .split(/\r\n|\r|\n/)
+      .map(line => line ? `> ${line}` : '>')
+      .join('\n');
     setNewPrefill({
       subject: `Fwd: ${activeThread.data.subject}`,
       body: `${quoted}\n\n`,
