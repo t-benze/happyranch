@@ -2787,7 +2787,15 @@ both the resume event and new identity follow blocking and precede the resumed
 start, which precedes the final result. Identity preparation may occur on either
 side of the resume audit. Job completion can precede the blocked callback, but
 must precede resume. Audit-ID and timestamp order must both agree with these
-causal boundaries.
+causal boundaries. Before timestamp selection, the reader establishes the audit
+interval from the unique original identity through the unique resumed start and,
+separately, the task-result interval from the unique original-SID blocked result
+through the selected final result. Every intervening same-task row is checked;
+misdated rows before the original identity or after the final result cannot
+disappear. Missing or unparseable timestamps fail closed. Timestamp-overlapping
+evidence outside the ID intervals still participates in ambiguity checks.
+IDs from different tables are never compared as one clock. Legitimate earlier
+history and later callbacks outside both intervals remain outside this chain.
 
 Only ordinary `block_submit` and `job_terminal` resume triggers are supported.
 Every waited job needs its actual matching owned terminal record; unavailable

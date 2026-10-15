@@ -1268,12 +1268,10 @@ def _validate_job_continuation(data: dict, job: dict, submitted: dict, finished:
     category = "acceptance_job_continuation"
     end = aware_utc(qa_result["created_at"])
     beginning = aware_utc(original["timestamp"])
-    own = [row for row in data["audit_log"] if row["task_id"] == qa_task["id"]
-           and beginning <= aware_utc(row["timestamp"]) <= end]
-    identities = sorted([row for row in own if row["action"] == "memory_runtime_identity"], key=lambda row: row["id"])
-    if len(identities) != 2 or identities[0] != original:
-        raise AcceptanceUnavailable(category)
-    current = identities[1]
+    own = [row for row in data["audit_log"] if row["task_id"] == qa_task["id"]]
+    current = _one([row for row in own if row["action"] == "memory_runtime_identity"
+                    and row["payload"].get("session_id") == qa_result["session_id"]], category)
+    identities = [original, current]
     sids = [row["payload"].get("session_id") for row in identities]
     if (any(not isinstance(sid, str) or not sid for sid in sids) or sids[0] == sids[1]
             or submitted["payload"].get("submit_session_id") != sids[0]
@@ -1302,14 +1300,39 @@ def _validate_job_continuation(data: dict, job: dict, submitted: dict, finished:
                         <= aware_utc(start["timestamp"]) <= end)):
             raise AcceptanceUnavailable(category)
         starts.append(start)
+
+    def chain_rows(rows: list[dict], first_id: int, last_id: int, time_key: str) -> list[dict]:
+        # IDs are comparable only within this one table. Establish the interval
+        # before consulting timestamps, so misdated intervening rows cannot hide.
+        selected = []
+        for row in rows:
+            in_ids = first_id <= row["id"] <= last_id
+            try:
+                timestamp = aware_utc(row.get(time_key))
+            except (TypeError, ValueError) as exc:
+                raise AcceptanceUnavailable(category) from exc
+            in_time = beginning <= timestamp <= end
+            if in_ids and not in_time:
+                raise AcceptanceUnavailable(category)
+            # Keep time-overlapping evidence too, including contradictory events
+            # after the current start. Earlier history/later callbacks outside
+            # both intervals do not belong to this continuation.
+            if in_ids or in_time:
+                selected.append(row)
+        return selected
+
+    own = chain_rows(own, original["id"], starts[1]["id"], "timestamp")
+    if sorted([row for row in own if row["action"] == "memory_runtime_identity"],
+              key=lambda row: row["id"]) != identities:
+        raise AcceptanceUnavailable(category)
     if (sorted([row for row in own if row["action"] == "session_start"], key=lambda row: row["id"]) != starts
             or starts[0]["id"] >= submitted["id"]
             or not (aware_utc(starts[0]["timestamp"]) <= aware_utc(job["created_at"])
                     <= aware_utc(submitted["timestamp"]))):
         raise AcceptanceUnavailable(category)
-    results = [row for row in data["task_results"] if row["task_id"] == qa_task["id"]
-               and beginning <= aware_utc(row["created_at"]) <= end]
+    results = [row for row in data["task_results"] if row["task_id"] == qa_task["id"]]
     blocked = _one([row for row in results if row["session_id"] == sids[0]], category)
+    results = chain_rows(results, blocked["id"], qa_result["id"], "created_at")
     if (len(results) != 2 or qa_result not in results or blocked["id"] >= qa_result["id"]
             or blocked["agent"] != qa_result["agent"] or blocked["status"] != "blocked"
             or blocked["decision_json"] is not None):
