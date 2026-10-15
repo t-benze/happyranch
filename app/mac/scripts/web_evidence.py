@@ -564,7 +564,7 @@ def snapshot(s,context,preparation,index,raw):
 
 def blob(s,row):
     keys(row,{'path','size','sha256','descriptor_sha256'});digest_shape(row['descriptor_sha256']);js_size(row['size']);digest_shape(row['sha256'])
-    need(re.fullmatch(r'css/[0-9]{6}\.bin',row['path']),'BLOB_PATH')
+    need(re.fullmatch(r'css/[0-9]{6}\.bin',row['path']) and 1<=int(row['path'][4:10])<=MAX_ROWS,'BLOB_PATH')
     token,raw=s.intern_subject(s.paths.evidence_dir,row['path']);descriptor=s.subjects[int(token['subject_id'][1:])-1]['descriptor']
     need(sha(canonical(descriptor))==row['descriptor_sha256'],'SUBJECT_DESCRIPTOR_MISMATCH',row['path'])
     need(descriptor['size']==row['size'] and descriptor['sha256']==row['sha256'],'BLOB_MISMATCH',row['path'])
@@ -1171,7 +1171,8 @@ def main():
         mapping=parse(sys.stdin.buffer.read(8*MiB+1),8*MiB);rows,token=retain_web_notices(s,a.context,a.preparation,a.build,a.dist,a.asset_app,mapping['components']);result={'rows':rows,'token':token}
     elif a.stage=='verify':result=verify_web(s,a.context,a.preparation,a.build,a.dist,a.notices,a.asset_app,parse(sys.stdin.buffer.read(8*MiB+1),8*MiB) if a.notices else None)
     else:result=s.write('failure',{'original_exit':a.original_exit,'stage':os.environ.get('STAGE','web')})
-    sys.stdout.buffer.write(canonical(result)+b'\n')
+    sys.stdout.buffer.write(canonical(result,32*MiB if a.stage=='read-input' else CAP)+b'\n')
+    sys.stdout.buffer.flush()
 
 if __name__=='__main__':
     try:main()

@@ -22,7 +22,7 @@ const NAME_FIELDS = new Set(['path','preliminary_path','sourcemap_path','chunk_i
 type Measure = { bytes: number; nodes: number; names: number };
 
 // Validate/count before emission or retention; no stringify-to-discover overflow.
-function measure(value: any, cap: number, maxNodes: number, metadata = false): Measure {
+function measure(value: any, cap: number, maxNodes: number, metadata = false, rootField = ''): Measure {
   const total = { bytes: 0, nodes: 0, names: 0 };
   const add = (n: number) => { total.bytes += n; if (total.bytes > cap) throw new Error('WEB_BUILD_RECORD_CAP'); };
   const stringBytes = (value: string): number => {
@@ -64,7 +64,7 @@ function measure(value: any, cap: number, maxNodes: number, metadata = false): M
     }
     throw new Error('WEB_JSON_SCALAR');
   };
-  visit(value, 0, ''); return total;
+  visit(value, 0, rootField); return total;
 }
 
 export function boundedJson(value: any, cap = CAP, maxNodes = 500000): Buffer {
@@ -93,6 +93,7 @@ const closed = (value: any, keys: string[]) => value && Object.getPrototypeOf(va
 const HEX = /^[a-f0-9]{64}$/;
 const CAP = 16 * 1024 ** 2;
 const digest = (raw: Buffer | string): Bytes => {
+  if (Buffer.byteLength(raw) > CAP) throw new Error('WEB_BODY_CAP');
   const bytes = typeof raw === 'string' ? Buffer.from(raw) : raw;
   if (bytes.byteLength > CAP) throw new Error('WEB_BODY_CAP');
   return { size: bytes.byteLength, sha256: createHash('sha256').update(bytes).digest('hex') };
@@ -134,7 +135,7 @@ export class PackagingCustody {
   readonly completionLeaf: string;
   private readonly binding: string;
   private helperCalls = 0;
-  private metadata = { bytes: 4096, nodes: 256, names: 0 };
+  private metadata = measure({ resource_profile: 'web-private-plain@2', complete: true, profile: null, observations: [], css_operations: [], modules: [], final_bundle: [], counts: { observations: 0, operations: 0, processed_bytes: 0 } }, BUILD_INPUT, BUILD_NODES, true);
   private callMemberships = 0;
 
   constructor() {
@@ -154,9 +155,9 @@ export class PackagingCustody {
         !closed(caller.roots, ['repo','exported_source','dist','app','output','evidence_dir','iconset'])) throw new Error('WEB_CALLER_INVALID');
     // Admit exact original caller syntax without duplicate-key collapse. The
     // wrapper supplies canonical bytes; descriptor integers never enter JS.
-    if (!canonicalLine(caller).subarray(0, -1).equals(Buffer.from(this.caller))) throw new Error('WEB_CALLER_CANONICAL_REQUIRED');
     const strings = [caller.run_id, caller.venue, caller.originals, caller.toolchains_sha256, ...Object.values(caller.candidate), ...Object.values(caller.roots)];
     if (strings.some(v => typeof v !== 'string') || [caller.asset_context_sha256, caller.asset_source_sha256].some(v => v !== null && typeof v !== 'string')) throw new Error('WEB_CALLER_INVALID');
+    if (!canonicalLine(caller).subarray(0, -1).equals(Buffer.from(this.caller))) throw new Error('WEB_CALLER_CANONICAL_REQUIRED');
     this.binding = createHash('sha256').update(canonicalLine(caller).subarray(0, -1)).digest('hex');
     if (!path.isAbsolute(this.python) || !path.isAbsolute(this.helper) || this.completionLeaf !== 'web-completion.jsonl' || !/^[a-f0-9]{64}$/.test(this.context) || !/^[a-f0-9]{64}$/.test(this.preparation)) throw new Error('WEB_BINDING_INVALID');
     if (process.env.I18N_BROWSER_EVIDENCE || process.env.I18N_W2A_EVIDENCE || process.env.NODE_OPTIONS || process.env.NODE_PATH || process.env.ESBUILD_BINARY_PATH) throw new Error('WEB_PROFILE_ENV_UNSUPPORTED');
@@ -192,12 +193,23 @@ export class PackagingCustody {
     return reply;
   }
 
-  private retain(before: any, after: any, insertion = false): void {
+  private reserve(delta: Measure): void {
+    for (const key of ['bytes','nodes','names'] as const) this.metadata[key] += delta[key];
+    if (this.metadata.bytes > BUILD_INPUT || this.metadata.nodes > BUILD_NODES || this.metadata.names > 4 * 1024 ** 2) throw new Error('WEB_METADATA_CAP');
+  }
+
+  private retain(before: any, after: any, comma = false): void {
     const old = before === undefined ? { bytes: 0, nodes: 0, names: 0 } : measure(before, BUILD_INPUT, BUILD_NODES, true);
     const next = measure(after, BUILD_INPUT, BUILD_NODES, true);
-    for (const key of ['bytes','nodes','names'] as const) this.metadata[key] += next[key] - old[key];
-    if (insertion) this.metadata.bytes++;
-    if (this.metadata.bytes > BUILD_INPUT || this.metadata.nodes > BUILD_NODES || this.metadata.names > 4 * 1024 ** 2) throw new Error('WEB_METADATA_CAP');
+    this.reserve({ bytes: next.bytes - old.bytes + (comma ? 1 : 0), nodes: next.nodes - old.nodes, names: next.names - old.names });
+  }
+
+  private append(row: Row, field: string, value: any): void {
+    const list = row[field];
+    if (list.length >= MAX_OBSERVATIONS) throw new Error('WEB_METADATA_LIST_CAP');
+    const delta = measure(value, BUILD_INPUT, BUILD_NODES, true, field);
+    this.reserve({ ...delta, bytes: delta.bytes + (list.length ? 1 : 0) });
+    list.push(value);
   }
 
   private update(row: Row, changes: Row): void {
@@ -209,8 +221,9 @@ export class PackagingCustody {
   }
 
   private charge(raw: Buffer | string): void {
-    this.processed += Buffer.byteLength(raw);
+    const before = this.processed; this.processed += Buffer.byteLength(raw);
     if (this.processed > BODY_WORK) throw new Error('WEB_AGGREGATE_BODY_CAP');
+    this.retain(before, this.processed);
   }
 
   snapshot(value: string | Buffer): BlobRef {
@@ -222,7 +235,8 @@ export class PackagingCustody {
   private next(kind: string, data: Row): Row {
     if (this.observations.length >= MAX_OBSERVATIONS) throw new Error('WEB_OBSERVATION_CAP:' + JSON.stringify(this.observations.reduce((counts, row) => { const key = row.kind === 'hook_call' ? row.hook : row.kind; counts[key] = (counts[key] ?? 0) + 1; return counts; }, {} as Record<string, number>)));
     const row = { schema: 'web-observation@1', kind, id: `o${this.observations.length + 1}`, ...data };
-    this.retain(undefined, row, true); this.observations.push(row);
+    this.retain(this.observations.length, this.observations.length + 1);
+    this.retain(undefined, row, this.observations.length > 0); this.observations.push(row);
     return row;
   }
 
@@ -258,7 +272,8 @@ export class PackagingCustody {
     if (stage === 'compile') data.imports = data.imports.map((row: Row) => ({ ...row, content: this.snapshot(row.content) }));
     if (stage === 'css_chunk') data.styles = data.styles.map((row: Row) => ({ ...row, css: row.css === null ? null : this.snapshot(row.css) }));
     const operation = { schema: 'css-operation@1', id: `c${this.operations.length + 1}`, parent_outer_call: parent.id, stage, data: clean(data), status: 'returned', error: null };
-    this.retain(undefined, operation, true); this.operations.push(operation);
+    this.retain(this.operations.length, this.operations.length + 1);
+    this.retain(undefined, operation, this.operations.length > 0); this.operations.push(operation);
   }
 
   private entries(bundle: Row): Row[] {
@@ -286,11 +301,11 @@ export class PackagingCustody {
           this.observe(() => {
             const call = this.scope.getStore();
             if (!call || !this.pending.has(call)) throw new Error('WEB_CALL_PARENT_INVALID');
-            if (property === 'addWatchFile') { this.update(call, { watch_ids: [...call.watch_ids, args[0]] }); return; }
+            if (property === 'addWatchFile') { this.append(call, 'watch_ids', args[0]); return; }
             const emission = property === 'emitFile' ? args[0] : { type: 'asset', source: args[1] };
             const source = emission.source === undefined ? null : this.capture(emission.source);
             const row = this.next('plugin_emission', { call_id: call.id, action: property === 'emitFile' ? 'emit' : 'set_source', reference_id: property === 'emitFile' ? result : args[0], emitted_type: emission.type, declared_file_name: emission.fileName ?? null, names: emission.names ?? (emission.name ? [emission.name] : []), original_names: emission.originalFileNames ?? (emission.originalFileName ? [emission.originalFileName] : []), source, resolved_file_name: null });
-            this.update(call, { emission_ids: [...call.emission_ids, row.id] });
+            this.append(call, 'emission_ids', row.id);
           });
           return result;
         };
@@ -322,11 +337,15 @@ export class PackagingCustody {
         const id = hook === 'moduleParsed' ? args[0].id : hook === 'transform' ? args[1] : hook === 'load' ? args[0] : null;
         if (id) {
           if (!self.modules.has(id) && self.modules.size >= MAX_MODULES) throw new Error('WEB_MODULE_CAP');
-          const previous = self.modules.get(id);
-          const module = previous ?? { id, code: null, calls: [], source: id.startsWith('/') ? id.split('?')[0] : null };
           if (++self.callMemberships > MAX_OBSERVATIONS) throw new Error('WEB_CALL_MEMBERSHIP_CAP');
-          const updated = { ...module, calls: [...module.calls, row.id], code: hook === 'moduleParsed' ? row.input : module.code };
-          self.retain(previous, updated, !previous); self.modules.set(id, updated);
+          const previous = self.modules.get(id);
+          if (previous) {
+            self.append(previous, 'calls', row.id);
+            if (hook === 'moduleParsed') self.update(previous, { code: row.input });
+          } else {
+            const module = { id, code: hook === 'moduleParsed' ? row.input : null, calls: [row.id], source: id.startsWith('/') ? id.split('?')[0] : null };
+            self.retain(undefined, module, self.modules.size > 0); self.modules.set(id, module);
+          }
         }
       });
       const settle = (value: any, failed = false) => self.observe(() => {
@@ -375,7 +394,7 @@ export class PackagingCustody {
           config_dependencies: config.configFileDependencies,
           plugins: all.map((p, i) => ({ ordinal: i, name: p.name, hooks: HOOKS.filter(h => p[h]).map(h => ({ name: h, order: order(p[h]) ?? null, sequential: typeof p[h] === 'object' ? p[h].sequential ?? false : false })) })),
         };
-        self.retain(undefined, self.profile);
+        self.retain(null, self.profile);
         return { ...options, plugins: all.map((p, ordinal) => {
           if (p === observer) return p;
           const descriptors = Object.getOwnPropertyDescriptors(p);
@@ -386,7 +405,7 @@ export class PackagingCustody {
       buildEnd(error) { if (error) self.originalFailed = true; },
       writeBundle: { order: 'post', sequential: true, handler(_options, bundle) {
         if (!self.writeSeen) { self.writeSeen = true; self.core('write_input', self.entries(bundle)); }
-        const final = self.entries(bundle); self.retain(undefined, final); self.finalBundle = final;
+        const final = self.entries(bundle); self.retain([], final); self.finalBundle = final;
         for (const row of self.observations) if (row.kind === 'plugin_emission') self.update(row, { resolved_file_name: this.getFileName(row.reference_id) });
       } },
       closeBundle: { order: 'post', sequential: true, handler() {
@@ -396,6 +415,8 @@ export class PackagingCustody {
         if (self.sticky) throw self.sticky;
         if (self.pending.size || self.completion || !self.writeSeen) throw new Error('WEB_CALL_INCOMPLETE');
         const payload = { resource_profile: 'web-private-plain@2', complete: true, profile: self.profile, observations: self.observations, css_operations: self.operations, modules: [...self.modules.values()], final_bundle: self.finalBundle, counts: { observations: self.observations.length, operations: self.operations.length, processed_bytes: self.processed } };
+        const measured = measure(payload, BUILD_INPUT, BUILD_NODES, true);
+        if (Object.keys(measured).some(key => measured[key as keyof Measure] !== self.metadata[key as keyof Measure])) throw new Error('WEB_METADATA_ACCOUNTING_MISMATCH');
         const encoded = boundedJson(payload, BUILD_INPUT, BUILD_NODES);
         const token = self.request('publish-build', encoded);
         self.request('complete-build', token);
