@@ -1437,7 +1437,46 @@ export interface IdentityView {
   canonical_definition_revision: string | null;
   naming_status: 'ready' | 'unavailable';
 }
-export interface IdentityList { identities: IdentityView[] }
+export type NamingDiagnostic =
+  | 'identity_name_unavailable'
+  | 'naming_absent_chosen_missing'
+  | 'naming_absent_default_corrupt'
+  | 'naming_caller_transaction'
+  | 'naming_canonical_unavailable'
+  | 'naming_capture_changed'
+  | 'naming_capture_directory'
+  | 'naming_capture_symlink'
+  | 'naming_claim_corrupt'
+  | 'naming_current_claim_missing'
+  | 'naming_database_unavailable'
+  | 'naming_definition_bound'
+  | 'naming_duplicate_or_founder_id'
+  | 'naming_file_bound_or_type'
+  | 'naming_file_total_bound'
+  | 'naming_foreign_key_corrupt'
+  | 'naming_founder_missing'
+  | 'naming_live_id_missing'
+  | 'naming_lookup_unavailable'
+  | 'naming_not_initialized'
+  | 'naming_not_installed'
+  | 'naming_owner_corrupt'
+  | 'naming_preflight_unavailable'
+  | 'naming_projection_mismatch'
+  | 'naming_release_reference_unavailable'
+  | 'naming_row_bound'
+  | 'naming_scan_deadline'
+  | 'naming_schema_layout_mismatch'
+  | 'naming_schema_marker_mismatch'
+  | 'naming_schema_object_bound'
+  | 'naming_team_malformed'
+  | 'naming_team_membership_mismatch'
+  | 'naming_team_memory_disk_mismatch'
+  | 'naming_whole_database_mismatch';
+export interface IdentityList {
+  identities: IdentityView[];
+  /** Captured category only; absent on older servers means unknown, never ready. */
+  naming_diagnostic?: NamingDiagnostic | null;
+}
 export interface RenameBody { addressable_name: string; expected_name_revision: number }
 export interface ResolveBody {
   addresses: string[];

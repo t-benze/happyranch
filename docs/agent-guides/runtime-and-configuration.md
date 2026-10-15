@@ -101,6 +101,17 @@ frontend verification leg. See the [current naming contract](../superpowers/spec
 
 ## Naming v1 core, API and routing source
 
+`GET /api/v1/orgs/{slug}/identities` and `happyranch identities list --json`
+expose additive `naming_diagnostic`: null for ready rows, otherwise a finite
+captured naming category. Unknown, malformed or missing captured codes fall back
+to `naming_database_unavailable` when any row is unavailable, including a fresh
+metadata-read failure with a stale null diagnostic. The response never exposes
+raw exception text, paths or SQL. Older servers may omit the field: absence is
+UNKNOWN, never readiness. Canonical roster, definition revisions and existing
+read/auth errors retain their behavior; GET never reconciles or installs names.
+This category is an observation, not proof of a serving source SHA or root cause.
+Source publication does not establish restored naming or authorize live recovery.
+
 Schema2 multi-org attachment installs naming only after baseline admission; no
 flat-schema1 conversion or history-only ID mining is added. Naming failure is
 volatile readiness with an actionable category. Original strict team/attachment
