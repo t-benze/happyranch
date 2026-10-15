@@ -220,6 +220,8 @@
     "POST /api/v1/orgs/{slug}/workflows/reviews/stages": "agent-only current-reviewer mutation",
     "POST /api/v1/orgs/{slug}/workflows/submissions/handoffs": "agent-only current-source mutation",
     "POST /api/v1/orgs/{slug}/workflows/revisions/{revision_operation_id}/submissions": "agent-only current-revision-author mutation",
-    "POST /api/v1/orgs/{slug}/tasks/{task_id}/reconcile-failed-continuation": "agent-only exact THR299 ordinary TASK10725 manager operation; no browser write grant"
+    "POST /api/v1/orgs/{slug}/tasks/{task_id}/reconcile-failed-continuation": "agent-only exact THR299 ordinary TASK10725 manager operation; no browser write grant",
+    "POST /api/v1/orgs/{slug}/workflows/coding/capabilities": "Founder-only CLI setup mutation; no browser or remote grant",
+    "GET /api/v1/orgs/{slug}/workflows/coding/capabilities/{setup_key}": "Founder-only CLI setup metadata; no browser or remote grant"
   }
 }

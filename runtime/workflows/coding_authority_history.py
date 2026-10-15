@@ -1,13 +1,15 @@
-"""Unmounted SELECT-only K2a2b1 native setup issuance history.
+"""SELECT-only native setup issuance history and K2b complete cold closure.
 
 Caller must first admit the complete native schema and own a coherent SQLite
 read transaction, connection and lock for the whole call (raw native values,
 no custom converters). This reader neither begins nor ends that transaction.
 It establishes retained row/command/admission/publication and setup containment
 facts only. It never authenticates a live human, grants current access, proves
-task/session/result ancestry or admits populated J. No current pointer, cache,
-roster, file, object or network is read. Later relational/current-use owners
-must establish those separate facts before any producer can be mounted.
+task/session/result ancestry. The historical public reader selects no current
+pointer. K2b's complete storage composition additionally validates the latest
+pointer without treating it as current authority. No cache, roster, file,
+object or network is read. Each producer supplies its own complete current-use
+consumers; future-stage readers do not precede human setup production.
 """
 from __future__ import annotations
 
@@ -250,6 +252,38 @@ def _capture_admission(conn: sqlite3.Connection, expected: dict,
     # profiles and full mirror. Today's cache/roster/mirror are not witnesses.
 
 
+def _setup_configuration(scope: dict, snapshot: dict) -> None:
+    """Exact published manager/repository/store configuration, no live I/O.
+
+    Used at original issuance and independently at current use. This proves
+    configured eligibility only, never adoption, task or executor permission.
+    """
+    agents = {agent['name']: agent for agent in snapshot['agents'] if agent['status'] == 'active'}
+    selector = scope['manager_selector']
+    manager = agents.get(selector['principal'])
+    teams = [team for team in snapshot['teams'] if team['name'] == selector['team']]
+    if (manager is None or manager['role'] != 'manager' or manager['team'] != selector['team']
+            or not manager['executor'] or len(teams) != 1):
+        raise CodingAuthorityHistoryError(_REFUSAL)
+    lead = teams[0]['manager']
+    if lead != (selector['principal'] if snapshot['schema_version'] == 1 else
+                dict(kind='agent', principal=selector['principal'])):
+        raise CodingAuthorityHistoryError(_REFUSAL)
+    repositories = []
+    for key, origin in manager['repos'].items():
+        identity = 'workflow-repository:' + _digest(_canonical(
+            [snapshot['org_slug'], key, _digest(origin.encode('utf8'))]))
+        if identity == scope['repository_id']:
+            repositories.append((key, origin))
+    if len(repositories) != 1:
+        raise CodingAuthorityHistoryError(_REFUSAL)
+    key, origin = repositories[0]
+    for owner_id in scope['scope']['store_owners']:
+        owner = agents.get(owner_id)
+        if owner is None or owner['repos'].get(key) != origin or not owner['executor']:
+            raise CodingAuthorityHistoryError(_REFUSAL)
+
+
 def _inventory(conn: sqlite3.Connection, org_slug: str,
                budget: _Budget) -> list[tuple[HistoricalSetupIssuance, dict, dict]]:
     prefix = f'org/{org_slug}/coding-setup/'
@@ -418,6 +452,69 @@ def read_setup_issuance_history(conn: sqlite3.Connection, *, expected_org_slug: 
                and re.fullmatch(r'[a-z][a-z0-9-]{0,62}', expected_org_slug) is not None)
         _token(authorization_id)
         return _history(conn, expected_org_slug, authorization_id)
+    except (sqlite3.Error, CodingSavedRecordError, ValueError, TypeError,
+            KeyError, UnicodeError, RecursionError, OverflowError):
+        raise CodingAuthorityHistoryError(_REFUSAL) from None
+
+
+@dataclass(frozen=True)
+class SetupStorage:
+    """Complete cold setup closure, without any claim of current authority."""
+
+    issuances: tuple[HistoricalSetupIssuance, ...]
+    pointers: tuple[tuple[str, str], ...]
+
+
+def read_setup_storage(conn: sqlite3.Connection, *, expected_org_slug: str) -> SetupStorage:
+    """Validate every setup prefix and its exact latest native pointer.
+
+    Caller owns the coherent transaction and independently recognized complete
+    J schema. No schema reader is called here, avoiding recursive admission.
+    Revocation/current configuration never changes historical validity.
+    """
+    try:
+        _check(type(conn) is sqlite3.Connection and conn.in_transaction)
+        _check(type(expected_org_slug) is str
+               and re.fullmatch(r'[a-z][a-z0-9-]{0,62}', expected_org_slug) is not None)
+        reader = _SetupHistoryReader(conn, expected_org_slug, _Budget())
+        reader._load()
+        admissions: set[str] = set()
+        for entries in reader.namespaces.values():
+            reader.history(entries[-1][0].authorization_id)
+            for _, record, _ in entries:
+                if record['mode'] == 'issue':
+                    _setup_configuration(record['setup'], json.loads(base64.b64decode(
+                        record['admission']['capture']['snapshot_bytes_base64'], validate=True)))
+                identity = record['admission']['record']['id']
+                _check(identity not in admissions)
+                admissions.add(identity)
+        prefix = f'org/{expected_org_slug}/coding-setup/'
+        pointers = []
+        for row in _rows(conn,
+            "SELECT CASE WHEN typeof(namespace)='text' AND length(CAST(namespace AS BLOB))<=1048576 THEN namespace ELSE NULL END,"
+            "CASE WHEN typeof(authorization_revision_id)='text' AND length(CAST(authorization_revision_id AS BLOB))<=1048576 THEN authorization_revision_id ELSE NULL END,"
+            'typeof(namespace),typeof(authorization_revision_id) '
+            'FROM workflow_active_authorizations WHERE substr(namespace,1,?)=? '
+            'ORDER BY namespace LIMIT ?',
+            (len(prefix), prefix, _ROW_LIMIT + 1), _ROW_LIMIT, reader.budget):
+            namespace, identity = reader.budget.row(row, ('text', 'text'), counted=True)
+            _check(namespace in reader.namespaces
+                   and identity == reader.namespaces[namespace][-1][0].authorization_id)
+            pointers.append((namespace, identity))
+        _check(len(pointers) == len(reader.namespaces)
+               and len({namespace for namespace, _ in pointers}) == len(pointers))
+        for identity in reader.identities:
+            aliases = list(_rows(conn,
+                "SELECT CASE WHEN typeof(namespace)='text' AND length(CAST(namespace AS BLOB))<=1048576 THEN namespace ELSE NULL END,"
+                "CASE WHEN typeof(authorization_revision_id)='text' AND length(CAST(authorization_revision_id AS BLOB))<=1048576 THEN authorization_revision_id ELSE NULL END,"
+                'typeof(namespace),typeof(authorization_revision_id) FROM workflow_active_authorizations '
+                'WHERE authorization_revision_id=? LIMIT 2', (identity,), 1, reader.budget))
+            if aliases:
+                alias = reader.budget.row(aliases[0], ('text', 'text'), counted=True)
+                _check(alias in pointers)
+            _check(conn.execute('SELECT 1 FROM workflow_binding_snapshots '
+                                'WHERE authorization_revision_id=? LIMIT 1', (identity,)).fetchone() is None)
+        return SetupStorage(tuple(reader.identities.values()), tuple(pointers))
     except (sqlite3.Error, CodingSavedRecordError, ValueError, TypeError,
             KeyError, UnicodeError, RecursionError, OverflowError):
         raise CodingAuthorityHistoryError(_REFUSAL) from None

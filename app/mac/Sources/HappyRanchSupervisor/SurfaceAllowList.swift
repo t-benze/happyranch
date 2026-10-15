@@ -101,6 +101,9 @@ public struct SurfaceAllowList: Sendable {
             // Org-portability (CLI-only / founder-only — no browser consumer)
             ("GET", "/portability-preflight"),
             ("POST", "/reconcile-portability"),
+            // Founder coding setup is CLI-only; no remote/browser grant.
+            ("POST", "/workflows/coding/capabilities"),
+            ("GET", "/workflows/coding/capabilities/*"),
             // Original-current author staging is a native-sensitive mutation.
             ("POST", "/workflows/submissions/handoffs"),
             // Current agent reviewer staging is not a remote human surface.
@@ -247,6 +250,18 @@ public struct SurfaceAllowList: Sendable {
     ///   - rawPath: The original raw path from the request.
     /// - Returns: `true` if the request is allowed, `false` if it is denied.
     public func isAllowed(method: String, path: String, rawPath: String) -> Bool {
+        if method == "POST", deniedMethods.contains("POST /workflows/coding/capabilities"),
+           [rawPath, path].contains(where: { Self.stageDenialCandidate($0) == "/workflows/coding/capabilities" }) {
+            return false
+        }
+        if method == "GET", deniedMethods.contains("GET /workflows/coding/capabilities/*"),
+           [rawPath, path].contains(where: {
+               let parts = Self.stageDenialCandidate($0).split(separator: "/", omittingEmptySubsequences: false)
+               return parts.count == 5 && parts[0].isEmpty && parts[1] == "workflows"
+                   && parts[2] == "coding" && parts[3] == "capabilities" && !parts[4].isEmpty
+           }) {
+            return false
+        }
         if method == "POST", deniedMethods.contains("POST /workflows/reviews/stages"),
            [rawPath, path].contains(where: { Self.stageDenialCandidate($0) == "/workflows/reviews/stages" }) {
             return false

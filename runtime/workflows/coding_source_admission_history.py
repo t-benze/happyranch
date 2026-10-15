@@ -196,7 +196,8 @@ def read_source_admission_history(conn: sqlite3.Connection, *, expected_org_slug
     timestamp observations. C1=C2 ALL27, full J run_started/source-baseline and
     replay/native writers/heartbeat/current policy/actual invocation/Pause/
     move/host/terminal/recovery/cutover remain separate prerequisite readers
-    BEFORE EVERY producer. This API does not consume direct mapping history.
+    with each corresponding source producer. The human setup producer requires
+    its own complete closure only. This API does not consume direct mapping history.
     """
     try:
         return _read(conn, expected_org_slug, authorization_id)

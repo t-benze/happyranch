@@ -1,7 +1,8 @@
-"""Exact additive J definitions and K2a1's closed empty-coding boundary.
+"""Exact additive J definitions and closed per-family coding admission.
 
-Populated coding readers belong to K2a2, before any producer. This module
-neither installs a schema nor resolves repositories or current authority.
+K2b admits only complete Founder setup histories on independently recognized J.
+Each later producer must ship its own complete readers. No schema installation,
+repository resolution or current authority is provided by this module.
 """
 from __future__ import annotations
 
@@ -232,11 +233,11 @@ def _refuse_coding_metadata(raw: object, *, location: str) -> None:
         # a reserved value even when the outer object subsequently truncates.
         def pairs(items: list[tuple[str, object]]) -> dict:
             if any(_coding_scalar(key, value) or _coding_value(value) for key, value in items):
-                raise ValueError(f'workflow_coding_data_unsupported: {location}; K2a2 reader required')
+                raise ValueError(f'workflow_coding_data_unsupported: {location}; complete family reader required')
             return dict(items)
         value = json.loads(raw, object_pairs_hook=pairs)
         if _coding_value(value):
-            raise ValueError(f'workflow_coding_data_unsupported: {location}; K2a2 reader required')
+            raise ValueError(f'workflow_coding_data_unsupported: {location}; complete family reader required')
     except (UnicodeError, json.JSONDecodeError):
         # Mirror JSON's supported UTF8/16/32 input encodings even when the
         # envelope truncates. A malformed byte envelope cannot lose its family
@@ -249,23 +250,42 @@ def _refuse_coding_metadata(raw: object, *, location: str) -> None:
         raise ValueError(f'workflow_coding_boundary_scan_bound: {location}') from exc
 
 
-def validate_empty_coding_data(conn: sqlite3.Connection, *, layout: str) -> None:
-    """Refuse populated/reserved data before central AND recovery early returns.
+def validate_coding_data(conn: sqlite3.Connection, *, layout: str,
+                         expected_org_slug: str | None = None) -> None:
+    # Own a coherent snapshot only when the caller has none. Central callers
+    # have already recognized the complete schema; no recursive schema read.
+    owned = not conn.in_transaction
+    if owned:
+        conn.execute('BEGIN')
+    try:
+        _validate_coding_data(conn, layout=layout, expected_org_slug=expected_org_slug)
+    finally:
+        if owned:
+            conn.rollback()
 
-    Central callers already matched the complete independent schema. Recovery
-    also calls this on generic/no-workflow or partial schemas, then requires full
-    schema validation if ANY coding-family object exists, even empty. Missing workflow
-    tables do not skip native task/result/audit scans. No install or task effects.
-    Document content, briefs, findings and summaries are not discriminators.
+
+def _validate_coding_data(conn: sqlite3.Connection, *, layout: str,
+                          expected_org_slug: str | None) -> None:
+    """Positive setup-family closure; refuse every unsupported coding family.
+
+    No ID skip-list or trusted flag: each supported native row is compared in
+    full, with native storage types, against the complete independently parsed
+    history/admission/journal/pointer closure. All other cells retain the shared
+    unknown/malformed/duplicate/incomplete discriminator. Recovery must match
+    the full schema first, before either legacy return. No task/schema effects.
     """
     tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_schema WHERE type='table'")}
+    storage = None
+    if layout == 'J' and expected_org_slug is not None:
+        from runtime.workflows.coding_authority_history import read_setup_storage
+        storage = read_setup_storage(conn, expected_org_slug=expected_org_slug)
     for table in CODING_TABLES:
         if table not in tables:
             if layout == 'J':
                 raise ValueError(f'workflow_coding_data_unsupported: missing {table}')
             continue
         if conn.execute(f'SELECT 1 FROM {table} LIMIT 1').fetchone() is not None:
-            raise ValueError(f'workflow_coding_data_unsupported: {table}; K2a2 reader required')
+            raise ValueError(f'workflow_coding_data_unsupported: {table}; complete family reader required')
     for table in sorted(tables):
         if not (table.startswith('workflow_') or table in ('tasks', 'task_results', 'audit_log')):
             continue
@@ -277,10 +297,35 @@ def validate_empty_coding_data(conn: sqlite3.Connection, *, layout: str) -> None
                       if (column.endswith(('_bytes', '_json')) or column == 'payload')
                       and column not in ('submission_bytes', 'candidate_bytes')]
         selected_columns = scalar + structured
+        native_setup = table in ('workflow_authorization_revisions', 'workflow_active_authorizations')
+        if native_setup:
+            selected_columns = columns
         if not selected_columns:
             continue
         selected = ','.join('"' + column.replace('"', '""') + '"' for column in selected_columns)
         for row in conn.execute(f'SELECT {selected} FROM "{quoted}"'):
+            data = dict(zip(selected_columns, row, strict=True))
+            if native_setup and storage is not None:
+                # A supported family dispatch is an exact whole-row equality,
+                # never an exemption based solely on namespace, ID or digest.
+                if table == 'workflow_authorization_revisions':
+                    for entry in storage.issuances:
+                        expected = dict(id=entry.authorization_id, namespace=entry.namespace,
+                            revision=entry.revision, authority_bytes=entry.authority_bytes,
+                            authority_digest=entry.authority_digest,
+                            source_pin='coding-capability-issuer@1', created_at=entry.created_at)
+                        if (data.keys() == expected.keys() and all(type(data[key]) is type(value)
+                                and data[key] == value for key, value in expected.items())):
+                            break
+                    else:
+                        entry = None
+                    if entry is not None:
+                        continue
+                elif (type(data.get('namespace')) is str
+                        and type(data.get('authorization_revision_id')) is str
+                        and set(data) == {'namespace', 'authorization_revision_id'}
+                        and (data['namespace'], data['authorization_revision_id']) in storage.pointers):
+                    continue
             for column, raw in zip(selected_columns, row, strict=True):
                 if column in scalar:
                     if _coding_scalar(column, raw):

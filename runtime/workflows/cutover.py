@@ -251,6 +251,9 @@ class WorkflowCutoverStore:
         return blockers
 
     def _drain_blockers(self, conn: sqlite3.Connection) -> list[dict]:
+        # The central J reader validates complete immutable setup histories and
+        # pointers, including metadata paths. Setup has no task/host tail to
+        # drain; every not-yet-implemented coding work family still refuses.
         blockers = self._draft_readiness_blockers(conn) + self._integrity_blockers(conn)
         outboxes = [dict(row) for row in conn.execute("SELECT * FROM workflow_dispatch_outbox ORDER BY id")]
         by_operation = {o["operation_id"]: o for o in outboxes}

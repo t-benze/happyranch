@@ -5,6 +5,23 @@ import Foundation
 @Suite("SurfaceAllowList deny gate")
 struct SurfaceAllowListTests {
 
+    @Test("Founder setup is denied for raw and normalized candidates independently")
+    func codingSetupDenial() {
+        let policy = SurfaceAllowList.default
+        let selected = "/workflows/coding/capabilities/" + String(repeating: "a", count: 64)
+        for (method, family) in [("POST", "/workflows/coding/capabilities"), ("GET", selected)] {
+            for target in [family, "/api/v1/orgs/alpha" + family,
+                           "/api/v1/orgs/alpha" + family + "/?x=1",
+                           "/%61pi/v1/orgs/alpha" + family.replacingOccurrences(of: "/coding/", with: "/%63oding/")] {
+                #expect(!policy.isAllowed(method: method, path: target, rawPath: "/tasks"))
+                #expect(!policy.isAllowed(method: method, path: "/tasks", rawPath: target))
+            }
+        }
+        #expect(policy.isAllowed(method: "GET", path: "/workflows/release-templates/coding/1",
+                                 rawPath: "/api/v1/orgs/alpha/workflows/release-templates/coding/1"))
+        #expect(policy.isAllowed(method: "POST", path: "/tasks", rawPath: "/tasks?next=" + selected))
+    }
+
     @Test("review stage denies raw and normalized aliases independently before forwarding")
     func deniesCurrentReviewerStageAliases() {
         let policy = SurfaceAllowList.default
@@ -483,6 +500,8 @@ struct SurfaceAllowListTests {
     /// EXCLUDED_PATHS.  Tested with concrete values for template placeholders.
     private static let excludedRoutes: [(method: String, path: String)] = [
         ("POST", "/workflows/revisions/revision-1/submissions"),
+        ("POST", "/workflows/coding/capabilities"),
+        ("GET", "/workflows/coding/capabilities/" + String(repeating: "a", count: 64)),
         // Task agent callbacks
         ("POST", "/tasks/TASK-123/completion"),
         ("POST", "/tasks/TASK-123/progress"),
