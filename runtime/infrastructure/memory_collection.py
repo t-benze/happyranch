@@ -851,7 +851,7 @@ def loaded_identity(org: Any) -> dict:
                       Database._retry_escalation_edge, Database._retry_dispatch_edge,
                       parse_acceptance, normalize_own_reference, _identity_schema, _closed, _strict_json, _identifier, _sha256, _reference,
                       collection_record_projection, collection_control_head, collection_logical_key, equivalent_collection_control, _decoded_tables,
-                      _one, _decision, _exact_role_result, _approved_probe_plan, _validate_job, _resolve_probe_slots,
+                      _one, _decision, _exact_role_result, _approved_probe_plan, _validate_job_continuation, _validate_job, _resolve_probe_slots,
                       _validate_probe_operations, _census_from_view, validate_acceptance_evidence, _view_projection,
                       _referenced_probe_jobs, _local_job_outputs, _registered_cohort, validate_epoch_candidate, prepare_acceptance, reconcile_acceptance, acquire_collection_report,
                       _collection_pages, _http_collection_capture, acquire_http_collection_report,
@@ -1256,6 +1256,116 @@ HEALTH_DEFINITION_SHA256 = hashlib.sha256(
 ).hexdigest()
 
 
+def _validate_job_continuation(data: dict, job: dict, submitted: dict, finished: dict,
+                               original: dict, qa_result: dict, qa_task: dict) -> None:
+    """Authenticate one ordinary owned-job wait, never retry/recovery ancestry.
+
+    The resume audit has no SID. Its unique blocked result/event and the two
+    contiguous real invocation/start tuples supply the causal join instead.
+    Identity preparation can precede or follow the resume audit; launch cannot.
+    """
+    from runtime.infrastructure.memory_telemetry_report import aware_utc
+    category = "acceptance_job_continuation"
+    end = aware_utc(qa_result["created_at"])
+    beginning = aware_utc(original["timestamp"])
+    own = [row for row in data["audit_log"] if row["task_id"] == qa_task["id"]
+           and beginning <= aware_utc(row["timestamp"]) <= end]
+    identities = sorted([row for row in own if row["action"] == "memory_runtime_identity"], key=lambda row: row["id"])
+    if len(identities) != 2 or identities[0] != original:
+        raise AcceptanceUnavailable(category)
+    current = identities[1]
+    sids = [row["payload"].get("session_id") for row in identities]
+    if (any(not isinstance(sid, str) or not sid for sid in sids) or sids[0] == sids[1]
+            or submitted["payload"].get("submit_session_id") != sids[0]
+            or qa_result["session_id"] != sids[1]):
+        raise AcceptanceUnavailable(category)
+    starts = []
+    for identity, sid in zip(identities, sids):
+        # Global tuple uniqueness catches duplicate/conflicting evidence outside
+        # the selected time window too. Same-task foreign actors are not ignored.
+        _one([row for row in data["audit_log"] if row["task_id"] == qa_task["id"]
+              and row["action"] == "memory_runtime_identity" and row["payload"].get("session_id") == sid], category)
+        start = _one([row for row in data["audit_log"] if row["task_id"] == qa_task["id"]
+                      and row["action"] == "session_start" and row["payload"].get("session_id") == sid], category)
+        facts = identity["payload"]
+        if (identity["agent"] != qa_result["agent"] or start["agent"] != qa_result["agent"]
+                or facts.get("task_id") != qa_task["id"] or facts.get("agent") != qa_result["agent"]
+                or facts.get("population") != "child" or facts.get("parent_known") is not True
+                or facts.get("parent_task_id") != qa_task["parent_task_id"]
+                or facts.get("task_type") != "subtask" or qa_task["task_type"] != "subtask"
+                or facts.get("invocation_purpose") != "worker_execution"
+                or any(facts.get(key) != current["payload"].get(key)
+                       or start["payload"].get(key) != facts.get(key)
+                       for key in ("executor", "model", "invocation_purpose"))
+                or identity["id"] >= start["id"]
+                or not (aware_utc(qa_task["created_at"]) <= aware_utc(identity["timestamp"])
+                        <= aware_utc(start["timestamp"]) <= end)):
+            raise AcceptanceUnavailable(category)
+        starts.append(start)
+    if (sorted([row for row in own if row["action"] == "session_start"], key=lambda row: row["id"]) != starts
+            or starts[0]["id"] >= submitted["id"]
+            or not (aware_utc(starts[0]["timestamp"]) <= aware_utc(job["created_at"])
+                    <= aware_utc(submitted["timestamp"]))):
+        raise AcceptanceUnavailable(category)
+    results = [row for row in data["task_results"] if row["task_id"] == qa_task["id"]
+               and beginning <= aware_utc(row["created_at"]) <= end]
+    blocked = _one([row for row in results if row["session_id"] == sids[0]], category)
+    if (len(results) != 2 or qa_result not in results or blocked["id"] >= qa_result["id"]
+            or blocked["agent"] != qa_result["agent"] or blocked["status"] != "blocked"
+            or blocked["decision_json"] is not None):
+        raise AcceptanceUnavailable(category)
+    waiting = blocked.get("waiting_on_job_ids")
+    waiting = _strict_json(waiting) if isinstance(waiting, str) else waiting
+    if (not isinstance(waiting, list) or not waiting or len(waiting) > MAX_CENSUS_READ_ROWS
+            or any(not isinstance(jid, str) for jid in waiting)
+            or len(set(waiting)) != len(waiting) or job["id"] not in waiting):
+        raise AcceptanceUnavailable(category)
+    for jid in waiting:
+        _identifier(jid, "JOB")
+    reported_wait = waiting
+    waiting = sorted(waiting)
+    lifecycle = [row for row in own if row["action"] in {
+        "completion_report", "task_blocked_on_jobs", "task_resumed_from_jobs"}]
+    callback = _one([row for row in lifecycle if row["action"] == "completion_report"], category)
+    block = _one([row for row in lifecycle if row["action"] == "task_blocked_on_jobs"], category)
+    resume = _one([row for row in lifecycle if row["action"] == "task_resumed_from_jobs"], category)
+    report, resumed = callback["payload"], resume["payload"]
+    if (callback["agent"] != qa_result["agent"] or report.get("task_id") != qa_task["id"]
+            or report.get("agent") != qa_result["agent"] or report.get("status") != "blocked"
+            or report.get("output_summary") != blocked["output_summary"]
+            or report.get("waiting_on_job_ids") != reported_wait
+            or block["agent"] != qa_result["agent"] or block["payload"].get("agent") != qa_result["agent"]
+            or block["payload"].get("blocking_job_ids") != waiting
+            or resume["agent"] != "orchestrator" or resumed.get("blocking_job_ids") != waiting
+            or resumed.get("trigger") not in {"block_submit", "job_terminal"}
+            or (resumed.get("trigger") == "block_submit" and resumed.get("triggering_job_id") is not None)
+            or (resumed.get("trigger") == "job_terminal" and resumed.get("triggering_job_id") not in waiting)
+            or not isinstance(resumed.get("job_outcomes"), dict) or set(resumed["job_outcomes"]) != set(waiting)
+            or not (submitted["id"] < callback["id"] < block["id"] < resume["id"] < starts[1]["id"])
+            or not (block["id"] < current["id"] and finished["id"] < current["id"]
+                    and finished["id"] < resume["id"])
+            or not (aware_utc(submitted["timestamp"]) <= aware_utc(blocked["created_at"])
+                    <= aware_utc(callback["timestamp"]) <= aware_utc(block["timestamp"])
+                    <= aware_utc(current["timestamp"]))
+            or not (aware_utc(block["timestamp"]) <= aware_utc(resume["timestamp"])
+                    <= aware_utc(starts[1]["timestamp"]))
+            or aware_utc(finished["timestamp"]) > aware_utc(current["timestamp"])
+            or aware_utc(finished["timestamp"]) > aware_utc(resume["timestamp"])):
+        raise AcceptanceUnavailable(category)
+    jobs_by_id: dict[str, list[dict]] = {}
+    for row in data["jobs"]:
+        jobs_by_id.setdefault(row["id"], []).append(row)
+    for jid in waiting:
+        owned = _one(jobs_by_id.get(jid, []), category)
+        if (owned["task_id"] != qa_task["id"] or owned["agent_name"] != qa_result["agent"]
+                or owned["status"] not in {"completed", "failed", "rejected"}
+                or resumed["job_outcomes"][jid] != owned["status"]
+                or not (aware_utc(owned["created_at"])
+                        <= aware_utc(owned["reviewed_at"] if owned["status"] == "rejected" else owned["finished_at"])
+                        <= aware_utc(resume["timestamp"]))):
+            raise AcceptanceUnavailable(category)
+
+
 def _validate_job(data: dict, receipt: dict, qa_result: dict, qa_task: dict, plan: dict, output: dict) -> tuple[dict, dict]:
     from runtime.infrastructure.memory_telemetry_report import aware_utc
     job = _one([row for row in data["jobs"] if row["id"] == receipt["job_id"]], "acceptance_job_missing")
@@ -1280,11 +1390,15 @@ def _validate_job(data: dict, receipt: dict, qa_result: dict, qa_task: dict, pla
     if not sessions:
         raise AcceptanceUnavailable("acceptance_job_session")
     latest_session = max(sessions, key=lambda row: row["id"])
-    if (latest_session["payload"].get("session_id") != qa_result["session_id"]
-            or any(row["action"] == "memory_runtime_identity" and row["task_id"] == qa_task["id"]
-                   and row["agent"] == qa_result["agent"] and row["payload"].get("session_id") != qa_result["session_id"]
+    if ("submit_session_id" in submitted["payload"]
+            and submitted["payload"]["submit_session_id"] != latest_session["payload"].get("session_id")):
+        raise AcceptanceUnavailable("acceptance_job_session")
+    if latest_session["payload"].get("session_id") != qa_result["session_id"]:
+        _validate_job_continuation(data, job, submitted, finished, latest_session, qa_result, qa_task)
+    elif any(row["action"] == "memory_runtime_identity" and row["task_id"] == qa_task["id"]
+                   and (row["agent"] != qa_result["agent"] or row["payload"].get("session_id") != qa_result["session_id"])
                    and aware_utc(submitted["timestamp"]) <= aware_utc(row["timestamp"]) <= aware_utc(qa_result["created_at"])
-                   for row in data["audit_log"])):
+                   for row in data["audit_log"]):
         raise AcceptanceUnavailable("acceptance_job_session")
     if any(row["task_id"] != qa_task["id"] for row in (submitted, started, finished)) or submitted["agent"] != qa_result["agent"]:
         raise AcceptanceUnavailable("acceptance_job_owner")
