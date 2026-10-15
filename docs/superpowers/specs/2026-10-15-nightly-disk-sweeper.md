@@ -63,7 +63,12 @@ Every admission, including permission repair and the one Git retry, requires:
   literal workspace. A task-like directory name alone proves no ownership.
 * Complete native jobs-table inspection, no pending/queued/running job anywhere
   in that structural root's task scope. Unknown job ownership/lineage/status
-  fails closed; missing evidence is not an empty job set. Applies to both phases.
+  fails closed; missing evidence is not an empty job set. Every observed job
+  owner must have complete structural lineage, including jobs with supported
+  terminal status completed/failed/rejected. Native TEXT storage supplies no
+  ownership FK. Valid terminal jobs remain acceptable, and known unrelated
+  job roots (including active jobs) do not block progress. Applies to both phases
+  and refreshed Git repair/retry gates; stored rows are never repaired.
 * Fresh Linux `/proc` inspection of all visible **same-effective-UID** process
   leaders and every thread, with bracketed identity and thread/PID census. It
   reads cwd/root/exe, all fd links and TMPDIR/TMP/TEMP; temp aliases resolve
@@ -189,3 +194,65 @@ and any missing cases must be reported, not laundered into PASS. No protected
 mutation proof or historical/real cleanup runs here. General integration remains
 SKIPPED24342, Python units RETIRED, Product E2E daily-only. Independent full code
 review and independently executed scoped QA remain required after publication.
+
+
+### Focused recovery fixtures and isolated boundaries
+
+`python scripts/verify_disk_sweeper.py --cases 9 10` exercises real scratch and
+registered Git roots for the nine completed/failed/rejected x missing-owner/
+self-cycle/empty-parent combinations from QA TASK11530, additional malformed
+owner/parent and conflicting synthetic projections, valid terminal and unrelated
+job controls, and the preserved unknown-status/active controls. Refusal compares
+bytes/modes/registration and forbids mutation calls. A controlled real Git
+failure after one actual tracked-file unlink introduces each of the nine lineage
+combinations before refreshed gates; no permission repair or second removal is
+allowed, surviving contents/registration stay exact and prior partial deletion
+remains attribution_unknown with zero invented removal bytes. Native constraints
+exclude the extra NULL-owner/duplicate-task projection cases; these explicitly
+exercise malformed/inconsistent reader input, not claims about native storage.
+
+The driver now invokes actual executable boundary fixtures, not `unshare true`:
+
+```bash
+# Run as the ordinary unprivileged user, from this exact source worktree.
+# Each command has a 40s child lifetime and returns 77 if isolation is unavailable.
+PYTHONDONTWRITEBYTECODE=1 python scripts/verify_disk_sweeper.py --isolation-case mount
+PYTHONDONTWRITEBYTECODE=1 python scripts/verify_disk_sweeper.py --isolation-case root
+# Also part of --cases 3 6 and the full driver; unavailable => PARTIAL, exit77.
+```
+
+Only `scripts/_verify_disk_sweeper_isolation.py` runs as namespace-mapped UID0,
+inside a newly created unprivileged user/mount/PID namespace with private
+propagation and private procfs. The whole driver refuses UID0. The venue needs
+Linux util-linux `unshare`, unprivileged single-user uid/gid mapping, permission
+to create mount/PID namespaces and mount private procfs/tmpfs/binds (CAP_SYS_ADMIN
+in that new user namespace), and chroot there (CAP_SYS_CHROOT in that namespace).
+It requires neither host root nor host capability changes. Never use sudo,
+provision privileges, alter host mount propagation, mount existing data, or switch
+executors/jobs after a sandbox refusal. Manager owns separately reviewed venue
+resolution. Capability refusal is UNAVAILABLE; assertion errors/timeouts are FAIL.
+
+Mount fixtures create only fresh disposable source/target paths. A nested tmpfs
+bind proves a different st_dev; an ordinary bind proves identical st_dev plus a
+real mountinfo boundary. Shipping on-sweeps must retain both phases specifically
+with filesystem_boundary, zero mutation/attribution, identical external sentinel
+bytes/modes and Git registrations. Late same-inode nested self-binds enter the
+actual shipping contained mutator after final scratch admission and after a real
+Git failure plus refreshed repair admission, proving the mutation-time mountinfo
+refusal too. That interrupted attempt remains partial/unknown with no invented
+bytes. Mount IDs are recorded at creation and checked before exact reverse-order
+nonforce unmount. Cleanup never walks a still-mounted bind.
+
+Root fixtures launch a live same-effective-UID child, chroot it into each candidate
+and deliberately leave cwd outside; exe, all fds and temp environment are checked
+outside too. The shipping process reader must actually read that child's root
+and return exactly process_use; unknown/unreadable refusal fails the assertion.
+The child is killed/reaped before fixture cleanup. Namespace PID1 and the outer
+bounded process-group wrapper constrain child lifetime, including timeout. No
+host-wide process absence or race-proof ownership is claimed.
+
+These fixtures are authored executable sources; their availability and actual
+results must accompany each handoff. QA11530's EPERM mount/chroot attempts and
+lineage defect, and TASK11525's alias defect, remain historical evidence. No
+source approval/static success replaces fresh independent behavioral QA, and
+unavailable positive mount/root evidence stays open until actually executed.

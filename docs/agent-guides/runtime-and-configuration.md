@@ -785,8 +785,9 @@ unreached scope retain; the owned worker process group is stopped on deadline or
 shutdown. `output/` and durable scratch manifest/lock siblings stay excluded.
 
 Terminal actual task AND structural root, fresh complete jobs/process evidence,
-recursive mtime+ctime age of at least one hour and no-follow/same-filesystem
-containment apply to both phases. Git additionally requires owned registration,
+complete structural lineage for every observed job owner even when its status is
+completed/failed/rejected, recursive mtime+ctime age of at least one hour, and
+no-follow/same-filesystem containment apply to both phases. Git additionally requires owned registration,
 clean/nonignored-untracked status and HEAD reachability through retained local
 branches/remotes; branches remain, ignored contents are disposable. Git removal
 is nonforce, with at most one fully refreshed contained repair/retry. Dry run
@@ -803,8 +804,12 @@ mount/process/ownership evidence refuses.
 
 See the [full current contract](../superpowers/specs/2026-10-15-nightly-disk-sweeper.md)
 for evidence semantics, limitations, finite disposable verification and staged
-operational acceptance. Source publication does not activate deletion. Existing
-seven agent sessions remain until seven actual approved on-night observations
+operational acceptance. The focused standalone driver supports `--cases 9 10`
+for job lineage/retry controls and `--isolation-case mount` / `--isolation-case root`
+for real disposable namespace boundaries. Run as the ordinary user; only its
+private helper is mapped root. Missing capabilities return77/UNAVAILABLE, never
+PASS; no privileged fallback or new automated check is authorized. Source
+publication does not activate deletion. Existing seven agent sessions remain until seven actual approved on-night observations
 and a separately approved cutover; no automatic manual-script fallback.
 
 ## Org Config: Workspace Cleanup

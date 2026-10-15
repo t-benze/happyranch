@@ -9,10 +9,12 @@ No pytest or tests/ imports. Never run against existing orgs or cleanup data.
 """
 from __future__ import annotations
 
+import argparse
 import asyncio
 import json
 import os
 import shutil
+import signal
 import sqlite3
 import subprocess
 import sys
@@ -120,7 +122,7 @@ def case(number,purpose,fn):
     start=time.monotonic()
     try:
         detail=fn()
-        disposition='PARTIAL' if number==6 and isinstance(detail,dict) and detail.get('mount_case','').startswith('UNAVAILABLE') else 'PASS'
+        disposition='PARTIAL' if isinstance(detail,dict) and any(isinstance(v,dict) and v.get('result')=='UNAVAILABLE' for v in detail.values()) else 'PASS'
         RESULTS.append(dict(case=number,purpose=purpose,result=disposition,seconds=round(time.monotonic()-start,3),observations=detail))
     except Exception as exc:
         RESULTS.append(dict(case=number,purpose=purpose,result='FAIL',error=f'{type(exc).__name__}: {exc}'))
@@ -199,7 +201,7 @@ def c3():
             finally: proc.terminate();proc.wait()
         assert all(any(x.endswith('/'+kind) for x in reads) for kind in ('cwd','root','exe'))
         assert any('/fd/' in x for x in reads)
-        return 'Real cwd, fd and executable users retained; actual proc root/cwd/exe/fd read trace inspected. No positive chroot fixture.'
+        return dict(ordinary_processes='Real cwd, fd and executable users retained; actual proc read trace inspected.',root_case=isolated_boundary('root'))
 
 
 def c4():
@@ -253,9 +255,7 @@ def c6():
         q.unlink();p=f.scratch('TASK-3');parent=p.parent;relocated=parent.with_name('held-tmp');parent.rename(relocated);parent.symlink_to(relocated,target_is_directory=True)
         r=f.sweep();assert r['outcome']=='incomplete' and (relocated/'TASK-3').exists(),r
         parent.unlink();relocated.rename(parent)
-        # Mount namespace availability is observed, never faked via helper stubs.
-        probe=subprocess.run(['unshare','-Urnm','true'],capture_output=True,text=True)
-        return dict(external_sentinel='bytes/mode unchanged; symlink candidate and ancestor retained',mount_case='AVAILABLE but not executed' if probe.returncode==0 else 'UNAVAILABLE: '+probe.stderr.strip())
+        return dict(external_sentinel='bytes/mode unchanged; symlink candidate and ancestor retained',mount_case=isolated_boundary('mount'))
 
 
 def c7():
@@ -322,10 +322,13 @@ def refuse_mutations():
     assert calls==[],calls
 
 
-def job_refusal(f,status,reason):
+_DEFAULT_JOB_OWNER = object()
+
+
+def job_refusal(f,status,reason,job_owner=_DEFAULT_JOB_OWNER):
     p=f.scratch('TASK-1');repo,q=f.worktree('TASK-2')
     (p/'nested').chmod(0o555);q.chmod(0o555)
-    f.db.executemany('INSERT INTO jobs VALUES(?,?)',[('TASK-1',status),('TASK-2',status)]);f.db.commit()
+    f.db.executemany('INSERT INTO jobs VALUES(?,?)',[(job_owner,status)] if job_owner is not _DEFAULT_JOB_OWNER else [('TASK-1',status),('TASK-2',status)]);f.db.commit()
     before=candidate_contents(p,q);registered=f.git(repo,'worktree','list','--porcelain')
     with refuse_mutations():r=f.sweep()
     retained(r,p,reason);retained(r,q,reason)
@@ -333,6 +336,39 @@ def job_refusal(f,status,reason):
     assert registered==f.git(repo,'worktree','list','--porcelain')
     assert all(phase['removed_attributable_bytes']==0 for phase in r['phases'].values()),r
     return dict(status=repr(status),scratch=row(r,p)['reason'],worktree=row(r,q)['reason'],unchanged=True,mutation_calls=0)
+
+
+LINEAGE_KINDS = ('missing', 'cycle', 'empty_parent', 'missing_parent', 'blob_parent', 'empty_owner', 'blob_owner', 'null_owner', 'conflicting')
+
+
+def broken_job_owner(f,kind):
+    if kind=='missing': return 'TASK-90'
+    if kind=='empty_owner': return ''
+    if kind=='blob_owner': return b'TASK-90'
+    if kind=='null_owner': return None  # Fixture also tests fail-closed malformed projection.
+    if kind=='conflicting':
+        # Native PRIMARY KEY excludes duplicates; model a conflicting reader
+        # projection explicitly, without claiming native duplicate storage.
+        f.db.execute('ALTER TABLE tasks RENAME TO saved_tasks')
+        f.db.execute('CREATE TABLE tasks AS SELECT * FROM saved_tasks')
+        f.db.execute("INSERT INTO tasks VALUES('TASK-90',NULL,'completed','maker')")
+        f.db.execute("INSERT INTO tasks VALUES('TASK-90','TASK-91','completed','maker')")
+        f.db.commit()
+        return 'TASK-90'
+    parent={'cycle':'TASK-90','empty_parent':'','missing_parent':'TASK-999','blob_parent':b'TASK-91'}[kind]
+    f.task('TASK-90',parent=parent)
+    return 'TASK-90'
+
+
+def lineage_refusals():
+    observations=[]
+    for kind in LINEAGE_KINDS:
+        for status in ('completed','failed','rejected','running'):
+            with fixture() as f:
+                owner=broken_job_owner(f,kind)
+                item=job_refusal(f,status,'lineage',job_owner=owner)
+                item['lineage']=kind;observations.append(item)
+    return observations
 
 
 def c9():
@@ -354,7 +390,7 @@ def c9():
     unknown=[]
     for status in UNKNOWN_JOB_STATES:
         with fixture() as f:unknown.append(job_refusal(f,status,'unknown_job_status'))
-    return dict(evidence='Missing manifest/jobs, actual unreadable child directory, controlled proc syscall denial all retain. Proc denial injection is not actual OS-denial proof.',unknown_jobs=unknown)
+    return dict(evidence='Missing manifest/jobs, actual unreadable child directory, controlled proc syscall denial all retain. Proc denial injection is not actual OS-denial proof.',unknown_jobs=unknown,unknown_lineage=lineage_refusals())
 
 
 def c10():
@@ -373,6 +409,18 @@ def c10():
             assert 'task/TASK-2' in f.git(repo,'branch','--list')
             assert all(phase['removed_attributable_bytes']>0 for phase in r['phases'].values()),r
             terminal.append(dict(status=status,scratch='removed',worktree='removed',branch_retained=True))
+    unrelated=[]
+    for status in ('pending','queued','running','completed','failed','rejected'):
+        with fixture() as f:
+            p=f.scratch('TASK-1');repo,q=f.worktree('TASK-2')
+            f.task('TASK-90');f.task('TASK-91',parent='TASK-90')
+            f.db.execute('INSERT INTO jobs VALUES(?,?)',('TASK-91',status));f.db.commit()
+            r=f.sweep()
+            assert row(r,p)['state']==row(r,q)['state']=='removed',r
+            assert not p.exists() and not q.exists()
+            assert str(q) not in f.git(repo,'worktree','list','--porcelain')
+            assert 'task/TASK-2' in f.git(repo,'branch','--list')
+            unrelated.append(dict(status=status,both_removed=True,branch_retained=True))
     with fixture() as f:
         p=f.scratch('TASK-1');repo,q=f.worktree('TASK-2')
         for status in ('pending','queued','running'):
@@ -422,7 +470,47 @@ def c10():
             assert r['outcome']=='error' and r['phases']['worktree']['attribution_unknown'],r
             assert r['phases']['worktree']['removed_attributable_bytes']==0,r
             retries.append(dict(status=status,state=item['state'],reason=item['reason'],remove_calls=1,repair_calls=0,unchanged=True))
-    return dict(active_jobs=active,native_terminal_controls=terminal,active_retry='Original newly queued job after real Git failure still refuses chmod/retry.',unknown_retries=retries)
+    return dict(active_jobs=active,native_terminal_controls=terminal,active_retry='Original newly queued job after real Git failure still refuses chmod/retry.',unknown_retries=retries,unrelated_valid_jobs=unrelated,lineage_retries=lineage_retry_refusals())
+
+
+def lineage_retry_refusals():
+    observations=[]
+    for kind in ('missing','cycle','empty_parent'):
+        for status in ('completed','failed','rejected'):
+            with fixture() as f:
+                repo,q=f.worktree('TASK-1')
+                before=candidate_contents(q);registered=f.git(repo,'worktree','list','--porcelain')
+                real=ds.git;removes=[];mutations=[]
+                def change(repo,deadline,*args):
+                    if args[:2]==('worktree','remove'):
+                        removes.append(args);assert len(removes)==1,'second remove'
+                        # Real first unlink remains historical partial deletion;
+                        # an actual failing Git command defines the retry seam.
+                        (q/'source').unlink()
+                        try:return real(repo,deadline,'--THR307-controlled-invalid-option')
+                        except fs.Retain:
+                            f.db.execute('INSERT INTO jobs VALUES(?,?)',(broken_job_owner(f,kind),status));f.db.commit()
+                            raise
+                    if args[:2]==('worktree','prune'):
+                        mutations.append('prune');raise AssertionError('prune')
+                    return real(repo,deadline,*args)
+                def forbidden(*a,**kw):
+                    mutations.append('repair');raise AssertionError('repair after lineage change')
+                with patch.object(ds,'git',change),patch.object(os,'chmod',forbidden),patch.object(os,'fchmod',forbidden):r=f.sweep()
+                item=row(r,q)
+                assert item['state']=='partial_or_unknown' and 'lineage' in item['reason'],r
+                assert item['first_remove_error'].startswith('git_failed:') and not item.get('retry_count')
+                assert len(removes)==1 and mutations==[]
+                assert not (q/'source').exists()
+                after=candidate_contents(q)
+                # Only the already observed unlink and directory timestamps
+                # changed; all surviving content/modes remain exact.
+                assert after=={k:v for k,v in before.items() if k!=str(q/'source')}
+                assert registered==f.git(repo,'worktree','list','--porcelain')
+                assert r['outcome']=='error' and r['phases']['worktree']['attribution_unknown']
+                assert r['phases']['worktree']['removed_attributable_bytes']==0
+                observations.append(dict(lineage=kind,status=status,partial_unlink=True,remove_calls=1,repair_calls=0,reason=item['reason'],survivors_unchanged=True,registration_unchanged=True))
+    return observations
 
 
 def c11():
@@ -565,15 +653,60 @@ def config_checks():
         assert ds.next_night(now)>now
 
 
+def isolated_boundary(kind):
+    """Run the actual bounded fixture, never a capability-only true probe.
+
+    This one executor attempts unprivileged disposable isolation. EPERM is
+    reported without sudo, another executor, a job or provisioning fallback.
+    """
+    if not sys.platform.startswith('linux') or not shutil.which('unshare'):
+        return dict(result='UNAVAILABLE',reason='Linux util-linux unshare required')
+    namespaces={name:os.readlink('/proc/self/ns/'+name) for name in ('mnt','pid')}
+    helper=Path(__file__).with_name('_verify_disk_sweeper_isolation.py')
+    command=['unshare','--user','--map-root-user','--mount','--pid','--fork','--kill-child=KILL','--mount-proc','--propagation','private',sys.executable,str(helper),kind,namespaces['mnt'],namespaces['pid']]
+    proc=subprocess.Popen(command,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,start_new_session=True)
+    try:
+        stdout,stderr=proc.communicate(timeout=40)
+    except subprocess.TimeoutExpired:
+        try: os.killpg(proc.pid,signal.SIGKILL)
+        except ProcessLookupError: pass
+        proc.communicate(timeout=5)
+        raise AssertionError('isolated fixture timeout; namespace killed; fixture cleanup unknown')
+    finally:
+        assert all(os.readlink('/proc/self/ns/'+name)==ident for name,ident in namespaces.items()),'caller namespace changed'
+    if proc.returncode:
+        if proc.returncode==1 and 'unshare:' in stderr and 'Operation not permitted' in stderr:
+            return dict(result='UNAVAILABLE',command=command,exit=proc.returncode,reason=stderr.strip())
+        raise AssertionError(f'isolated {kind} fixture exit {proc.returncode}: {stderr} {stdout}')
+    result=json.loads(stdout)
+    assert result['result'] in ('PASS','UNAVAILABLE'),result
+    return dict(result,command=command,exit=proc.returncode)
+
+
 if __name__=='__main__':
+    parser=argparse.ArgumentParser(description=__doc__)
+    selection=parser.add_mutually_exclusive_group()
+    selection.add_argument('--cases',type=int,nargs='+',choices=range(1,15))
+    selection.add_argument('--isolation-case',choices=('mount','root'),help='only the private executable namespace fixture; exit77 if unavailable')
+    args=parser.parse_args()
+    # The private helper alone is mapped root; the driver retains its ordinary
+    # permission assumptions. Never run the whole driver as host/mapped root.
+    if os.geteuid()==0: parser.error('run this driver as an unprivileged user')
     status=0
     try:
-        config_checks()
-        purposes=('Terminal owned root and attribution','Nonterminal and invalid lineage','Real process cwd/root/exe/fd','Real TMPDIR/TMP/TEMP and alias','Readonly handling and bounded Git retry','Link/ancestor containment and mount availability','Dirty/untracked and ignored Git contents','Nonmutating function and public CLI dry run','Missing/denied evidence','Jobs both phases and fresh retry change','Nested recent writes','Partial removal, deadline, shutdown and event loop','Detached commit retained refs','Same-night progress after refusals and exhaustion')
-        for number,(fn,purpose) in enumerate(zip((c1,c2,c3,c4,c5,c6,c7,c8,c9,c10,c11,c12,c13,c14),purposes),1):case(number,purpose,fn)
+        if args.isolation_case:
+            detail=isolated_boundary(args.isolation_case)
+            RESULTS.append(dict(case=args.isolation_case,result=detail['result'],observations=detail))
+            status=77 if detail['result']=='UNAVAILABLE' else 0
+        else:
+            config_checks()
+            purposes=('Terminal owned root and attribution','Nonterminal and invalid lineage','Real process cwd/root/exe/fd','Real TMPDIR/TMP/TEMP and alias','Readonly handling and bounded Git retry','Link/ancestor and actual mounted boundaries','Dirty/untracked and ignored Git contents','Nonmutating function and public CLI dry run','Missing/denied evidence and all job lineage','Jobs both phases and fresh retry change','Nested recent writes','Partial removal, deadline, shutdown and event loop','Detached commit retained refs','Same-night progress after refusals and exhaustion')
+            for number,(fn,purpose) in enumerate(zip((c1,c2,c3,c4,c5,c6,c7,c8,c9,c10,c11,c12,c13,c14),purposes),1):
+                if args.cases is None or number in args.cases:case(number,purpose,fn)
+            if any(item['result']=='PARTIAL' for item in RESULTS): status=77
     except Exception:
         import traceback
         traceback.print_exc();status=1
     finally:
-        print(json.dumps({'environment':dict(python=sys.version,platform=sys.platform,uid=os.geteuid(),wall_clock='synthetic now +7200s for old ctime; actual monotonic budget'), 'cases':RESULTS,'missing':'Actual mounted filesystem-boundary and positive chroot-root fixtures require suitable isolation; no protected mutation or historical proof executed.'},indent=2))
+        print(json.dumps({'environment':dict(python=sys.version,platform=sys.platform,uid=os.geteuid(),wall_clock='synthetic now +7200s for old ctime; actual monotonic budget'), 'cases':RESULTS,'limits':'UNAVAILABLE/PARTIAL are missing executable evidence, not PASS. No protected mutation or historical proof executed.'},indent=2))
     raise SystemExit(status)

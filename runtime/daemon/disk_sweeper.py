@@ -112,6 +112,8 @@ class Evidence:
                 seen = set()
                 while True:
                     check(self.deadline)
+                    if not isinstance(owner, str) or not owner:
+                        raise Retain('unknown_malformed_job_or_task_lineage')
                     if owner in seen or owner not in tasks:
                         raise Retain('unknown_missing_or_cyclic_lineage')
                     seen.add(owner)
@@ -143,8 +145,11 @@ class Evidence:
             # A task/root scope includes all structurally related job owners.
             for row in conn.execute('SELECT task_id,status FROM jobs'):
                 check(self.deadline)
+                # Terminal status does not establish ownership: native TEXT has
+                # no task FK. Validate every owner's lineage before scope use.
+                job_root = ancestry(row['task_id'])
                 if row['status'] in ('pending', 'queued', 'running'):
-                    if ancestry(row['task_id']) == root:
+                    if job_root == root:
                         raise Retain('active_job:' + row['status'])
                 # Only native JobStatus terminal values are safe; TEXT storage
                 # cannot rule out unsupported aliases or malformed values.
