@@ -49,7 +49,7 @@ function measure(value: any, cap: number, maxNodes: number, metadata = false, ro
     if (typeof item === 'string') {
       const size = Buffer.byteLength(item);
       if (metadata && size > 4096) throw new Error('WEB_METADATA_STRING_CAP');
-      if (metadata && NAME_FIELDS.has(field)) { total.names += size; if (total.names > 4 * 1024 ** 2) throw new Error('WEB_AGGREGATE_NAME_CAP'); }
+      if (metadata && NAME_FIELDS.has(field)) { total.names += size; if (total.names > 8 * 1024 ** 2) throw new Error('WEB_AGGREGATE_NAME_CAP'); }
       add(stringBytes(item)); return;
     }
     if (typeof item === 'boolean') { add(item ? 4 : 5); return; }
@@ -195,7 +195,7 @@ export class PackagingCustody {
 
   private reserve(delta: Measure): void {
     for (const key of ['bytes','nodes','names'] as const) this.metadata[key] += delta[key];
-    if (this.metadata.bytes > BUILD_INPUT || this.metadata.nodes > BUILD_NODES || this.metadata.names > 4 * 1024 ** 2) throw this.limit('WEB_METADATA_CAP');
+    if (this.metadata.bytes > BUILD_INPUT || this.metadata.nodes > BUILD_NODES || this.metadata.names > 8 * 1024 ** 2) throw this.limit('WEB_METADATA_CAP');
   }
 
   private retain(before: any, after: any, comma = false): void {

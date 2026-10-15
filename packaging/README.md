@@ -424,7 +424,9 @@ observations: 262144 rows; 32768 each for modules, subjects, CSS operations,
 snapshots, selected content and candidates; 262144 call/association memberships;
 4096 outputs, 256 plugins, 1024 owners and 32 notices per owner. Input JSON is
 96 MiB, the complete envelope 112 MiB with at most 16 MiB added, build lexical
-nodes 12582912/depth32. Other record byte/node caps stay unchanged. Every body
+nodes 12582912/depth32. Aggregate UTF8 name occurrences are limited to 8 MiB,
+including repeated names; each metadata string remains limited to 4096 bytes.
+Other record byte/node caps stay unchanged. Every body
 capture, including repeated equal bytes, contributes to the independently
 recomputed 1024 MiB producer-work limit; this is separate from filesystem I/O.
 Bounded canonical emission avoids only a redundant producer self-parse; complete,

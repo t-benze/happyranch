@@ -935,7 +935,7 @@ def metadata_limits(payload):
         if isinstance(value,str):
             raw=value.encode('utf-8','strict');need(len(raw)<=4096,'METADATA_STRING_CAP')
             if field in fields:
-                names+=len(raw);need(names<=4*MiB,'AGGREGATE_NAME_CAP')
+                names+=len(raw);need(names<=8*MiB,'AGGREGATE_NAME_CAP')
         elif isinstance(value,dict):
             for key,child in value.items():visit(child,key,depth+1)
         elif isinstance(value,list):

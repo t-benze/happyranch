@@ -281,6 +281,8 @@ available=false and approved_url=null remain unchanged.
 Generated web evidence uses the fixed `web-private-plain@2` profile documented
 in packaging/README.md: lossless262144 observations, other named domains32768,
 96 MiB input /112 MiB envelope (+16 MiB),12582912 build nodes/depth32,
+8 MiB aggregate UTF8 name occurrences (including repeats), unchanged4096-byte
+individual metadata strings,
 1024 MiB represented body work, unchanged512 MiB guarded regular reads and
 web-only192 MiB aggregate JSON per command. Native asset lanes retain one
 persistent512/32 MiB submeter through the whole command; reentry and nested
