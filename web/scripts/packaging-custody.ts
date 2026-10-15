@@ -166,7 +166,7 @@ export class PackagingCustody {
   }
 
   request(stage: string, value?: unknown, index?: number): any {
-    if (++this.helperCalls > MAX_HELPERS) throw new Error('WEB_HELPER_COUNT_CAP');
+    if (++this.helperCalls > MAX_HELPERS) throw this.limit('WEB_HELPER_COUNT_CAP');
     const limit = stage === 'publish-build' ? BUILD_INPUT : stage === 'snapshot' ? CAP : 4096;
     const input = Buffer.isBuffer(value) ? value : value === undefined ? undefined : boundedJson(value, limit, stage === 'publish-build' ? BUILD_NODES : 500000);
     if (input && input.length > limit) throw new Error('WEB_PIPE_CAP');
@@ -195,7 +195,7 @@ export class PackagingCustody {
 
   private reserve(delta: Measure): void {
     for (const key of ['bytes','nodes','names'] as const) this.metadata[key] += delta[key];
-    if (this.metadata.bytes > BUILD_INPUT || this.metadata.nodes > BUILD_NODES || this.metadata.names > 4 * 1024 ** 2) throw new Error('WEB_METADATA_CAP');
+    if (this.metadata.bytes > BUILD_INPUT || this.metadata.nodes > BUILD_NODES || this.metadata.names > 4 * 1024 ** 2) throw this.limit('WEB_METADATA_CAP');
   }
 
   private retain(before: any, after: any, comma = false): void {
@@ -206,7 +206,7 @@ export class PackagingCustody {
 
   private append(row: Row, field: string, value: any): void {
     const list = row[field];
-    if (list.length >= MAX_OBSERVATIONS) throw new Error('WEB_METADATA_LIST_CAP');
+    if (list.length >= MAX_OBSERVATIONS) throw this.limit('WEB_METADATA_LIST_CAP');
     const delta = measure(value, BUILD_INPUT, BUILD_NODES, true, field);
     this.reserve({ ...delta, bytes: delta.bytes + (list.length ? 1 : 0) });
     list.push(value);
@@ -222,27 +222,36 @@ export class PackagingCustody {
 
   private charge(raw: Buffer | string): void {
     const before = this.processed; this.processed += Buffer.byteLength(raw);
-    if (this.processed > BODY_WORK) throw new Error('WEB_AGGREGATE_BODY_CAP');
+    if (this.processed > BODY_WORK) throw this.limit('WEB_AGGREGATE_BODY_CAP');
     this.retain(before, this.processed);
   }
 
   snapshot(value: string | Buffer): BlobRef {
     this.capture(value);
-    if (++this.blobOrdinal > MAX_BLOBS) throw new Error('WEB_BLOB_CAP');
+    if (++this.blobOrdinal > MAX_BLOBS) throw this.limit('WEB_BLOB_CAP');
     return this.request('snapshot', Buffer.isBuffer(value) ? value : Buffer.from(value), this.blobOrdinal);
   }
 
   private next(kind: string, data: Row): Row {
-    if (this.observations.length >= MAX_OBSERVATIONS) throw new Error('WEB_OBSERVATION_CAP:' + JSON.stringify(this.observations.reduce((counts, row) => { const key = row.kind === 'hook_call' ? row.hook : row.kind; counts[key] = (counts[key] ?? 0) + 1; return counts; }, {} as Record<string, number>)));
+    if (this.observations.length >= MAX_OBSERVATIONS) throw this.limit('WEB_OBSERVATION_CAP');
     const row = { schema: 'web-observation@1', kind, id: `o${this.observations.length + 1}`, ...data };
     this.retain(this.observations.length, this.observations.length + 1);
     this.retain(undefined, row, this.observations.length > 0); this.observations.push(row);
     return row;
   }
 
+  private limit(code: string): Error {
+    const kinds: Record<string, number> = {};
+    for (const row of this.observations) { const key = row.kind === 'hook_call' ? row.hook : row.kind; kinds[key] = (kinds[key] ?? 0) + 1; }
+    return new Error(code + ':' + JSON.stringify({ observations: this.observations.length, operations: this.operations.length, modules: this.modules.size, blobs: this.blobOrdinal, processed_bytes: this.processed, metadata: this.metadata, helper_calls: this.helperCalls, call_memberships: this.callMemberships, kinds }));
+  }
+
   private observe(action: () => void): void {
     if (this.sticky) return;
-    try { action(); } catch (error) { this.sticky = error; }
+    try { action(); } catch (error) {
+      this.sticky = error;
+      if (error instanceof Error && /^WEB_(?:BUILD_RECORD|JSON_COMPLEXITY|AGGREGATE_NAME|METADATA_STRING|METADATA_LIST)_CAP$/.test(error.message)) error.message = this.limit(error.message).message;
+    }
   }
 
   /** Fixed private sink, called by the original patched CSS operations. */
@@ -260,7 +269,7 @@ export class PackagingCustody {
     if (this.sticky) throw this.sticky;
     const parent = this.scope.getStore();
     if (!parent || !this.pending.has(parent)) throw new Error('WEB_CSS_CALL_PARENT');
-    if (this.operations.length >= MAX_OPERATIONS) throw new Error('WEB_CSS_OPERATION_CAP');
+    if (this.operations.length >= MAX_OPERATIONS) throw this.limit('WEB_CSS_OPERATION_CAP');
     const blobFields: Record<string, string[]> = {
       compile: ['input'], content_scan: ['inputs', 'returned'], candidate_build: ['candidates', 'output'], optimize: ['input', 'output'],
       vite_css: ['input', 'output'], style_store: ['css'], css_chunk: ['css', 'js'], css_url: ['input', 'output'],
@@ -336,8 +345,8 @@ export class PackagingCustody {
         self.pending.add(row);
         const id = hook === 'moduleParsed' ? args[0].id : hook === 'transform' ? args[1] : hook === 'load' ? args[0] : null;
         if (id) {
-          if (!self.modules.has(id) && self.modules.size >= MAX_MODULES) throw new Error('WEB_MODULE_CAP');
-          if (++self.callMemberships > MAX_OBSERVATIONS) throw new Error('WEB_CALL_MEMBERSHIP_CAP');
+          if (!self.modules.has(id) && self.modules.size >= MAX_MODULES) throw self.limit('WEB_MODULE_CAP');
+          if (++self.callMemberships > MAX_OBSERVATIONS) throw self.limit('WEB_CALL_MEMBERSHIP_CAP');
           const previous = self.modules.get(id);
           if (previous) {
             self.append(previous, 'calls', row.id);
