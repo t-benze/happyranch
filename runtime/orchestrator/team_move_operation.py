@@ -382,8 +382,9 @@ class TeamMoveOperation:
             row = self._transition(row, Phase.RESET)
         if row["phase"] == "reset":
             for index, agent in enumerate(AGENTS):
-                actual = self.move.threads.reset_operation_agent(row["operation_id"], agent)
                 saved = progress.agents[index].reset
+                actual = (self._read_reset(row, agent) if saved is not None
+                    else self.move.threads.reset_operation_agent(row["operation_id"], agent))
                 if saved is not None and saved != actual:
                     raise TeamMoveError("team_move_saved_reset_mismatch")
                 if saved is None:
