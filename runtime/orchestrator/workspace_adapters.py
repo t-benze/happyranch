@@ -724,7 +724,11 @@ def _materialize_unified_canonical(
     from runtime.skills.resolver import EligibilityResolver
     from runtime.skills.exposure import resolve_exposed_skills
 
-    store = CanonicalSkillStore(settings=settings)
+    from runtime.orchestrator.task_pause import task_preparation_effects
+    # Store initialization has its own native mkdir effects. A successful
+    # initialization does not make a later read-only source refusal uncertain.
+    with task_preparation_effects():
+        store = CanonicalSkillStore(settings=settings)
     materializer = SymlinkMaterializer(store)
     src_root = _resolve_skills_src(settings)
     skills_subdir = ".claude/skills" if provider == "claude" else ".agents/skills"
@@ -745,75 +749,78 @@ def _materialize_unified_canonical(
         workspace=workspace, provider=provider,
     )
 
-    # ── Build unified expected_specs ────────────────────────────
-    expected_specs: list[dict] = []
+    # The mandatory-source preflight above is affirmative pre-effect
+    # validation. Package construction/publication below can be partial.
+    with task_preparation_effects():
+        # ── Build unified expected_specs ────────────────────────────
+        expected_specs: list[dict] = []
 
-    # 1. System-contract skills (union across all ordinary contexts)
-    for contract_id in sorted(contracts_by_id):
-        contract = contracts_by_id[contract_id]
-        src_dir = src_root / contract.id
-        content_hash = _compute_dir_hash(src_dir)
-        store.build_from_source(
-            contract.id, "system", content_hash, src_dir,
-            verify_source_hash=content_hash,
-        )
-        # Org context is carried via session/task metadata, not
-        # literal {ORG_SLUG} substitution in canonical bytes.
-        expected_specs.append({
-            "slug": contract.id,
-            "version": "system",
-            "content_hash": content_hash,
-        })
+        # 1. System-contract skills (union across all ordinary contexts)
+        for contract_id in sorted(contracts_by_id):
+            contract = contracts_by_id[contract_id]
+            src_dir = src_root / contract.id
+            content_hash = _compute_dir_hash(src_dir)
+            store.build_from_source(
+                contract.id, "system", content_hash, src_dir,
+                verify_source_hash=content_hash,
+            )
+            # Org context is carried via session/task metadata, not
+            # literal {ORG_SLUG} substitution in canonical bytes.
+            expected_specs.append({
+                "slug": contract.id,
+                "version": "system",
+                "content_hash": content_hash,
+            })
 
-    # 2. Release-managed catalog skills
-    if skills_root.is_dir():
-        exposed = select_release_skills(skills_root, settings, slug=slug,
-            team=team, agent_name=agent_name, org_root=org_root)
-        if exposed:
-            for es in exposed:
-                skill_id_slug = es.skill.slug
-                if es.skill.source == "user_authored" and org_root is not None:
-                    src_dir = org_root / "skills" / skill_id_slug
-                else:
-                    src_dir = skills_root / skill_id_slug
-                if not src_dir.is_dir():
-                    continue
+        # 2. Release-managed catalog skills
+        if skills_root.is_dir():
+            exposed = select_release_skills(skills_root, settings, slug=slug,
+                team=team, agent_name=agent_name, org_root=org_root)
+            if exposed:
+                for es in exposed:
+                    skill_id_slug = es.skill.slug
+                    if es.skill.source == "user_authored" and org_root is not None:
+                        src_dir = org_root / "skills" / skill_id_slug
+                    else:
+                        src_dir = skills_root / skill_id_slug
+                    if not src_dir.is_dir():
+                        continue
 
-                content_hash = _compute_dir_hash(src_dir)
-                store.build_from_source(
-                    skill_id_slug, es.skill.version or "0", content_hash, src_dir,
-                    verify_source_hash=content_hash,
-                )
-                expected_specs.append({
-                    "slug": skill_id_slug,
-                    "version": es.skill.version or "0",
-                    "content_hash": content_hash,
-                })
-
-                if db is not None:
-                    db.insert_skill_validation_event(
-                        skill_id=es.skill.id,
-                        slug=skill_id_slug,
-                        agent=agent_name,
-                        source="materialization",
-                        severity="info",
-                        ok=True,
-                        version=es.skill.version,
+                    content_hash = _compute_dir_hash(src_dir)
+                    store.build_from_source(
+                        skill_id_slug, es.skill.version or "0", content_hash, src_dir,
+                        verify_source_hash=content_hash,
                     )
+                    expected_specs.append({
+                        "slug": skill_id_slug,
+                        "version": es.skill.version or "0",
+                        "content_hash": content_hash,
+                    })
 
-    # 3. B2 custom skills
-    if db is not None and org_root is not None:
-        custom_specs = _build_custom_skill_canonical_specs(
-            store=store, org_root=org_root, db=db, slug=slug,
-            agent_name=agent_name, team=team, task_id=task_id,
-            session_id=session_id, session_context=context,
+                    if db is not None:
+                        db.insert_skill_validation_event(
+                            skill_id=es.skill.id,
+                            slug=skill_id_slug,
+                            agent=agent_name,
+                            source="materialization",
+                            severity="info",
+                            ok=True,
+                            version=es.skill.version,
+                        )
+
+        # 3. B2 custom skills
+        if db is not None and org_root is not None:
+            custom_specs = _build_custom_skill_canonical_specs(
+                store=store, org_root=org_root, db=db, slug=slug,
+                agent_name=agent_name, team=team, task_id=task_id,
+                session_id=session_id, session_context=context,
+            )
+            expected_specs.extend(custom_specs)
+
+        return _publish_canonical_specs(
+            materializer=materializer, expected_specs=expected_specs,
+            workspace=workspace, slug=slug, org_root=org_root, db=db,
         )
-        expected_specs.extend(custom_specs)
-
-    return _publish_canonical_specs(
-        materializer=materializer, expected_specs=expected_specs,
-        workspace=workspace, slug=slug, org_root=org_root, db=db,
-    )
 
 
 def select_custom_skill_rows(db, *, slug, agent_name, team):

@@ -166,7 +166,7 @@ failed saves retain local ownership and original plus persistence errors.
 Restart treats unclosed task `prepared` entries as unknown, including terminal
 rows and prepared recovery/retry owners; absence of first launch is no proof of
 preparation cleanup. Unknown deferred entries cannot authorize a fresh launch.
-Native pre-effect artifact validation, repo-scan and missing launch-seam refusals
+Native pre-effect source/artifact validation, repo-scan and missing launch-seam refusals
 retain their no-effect disposition. Existing retry/recovery IDs, frozen budgets,
 INTEGER callbacks and authority-v2 are preserved. No new field/journal, history
 backfill, compensation or clearance writer is introduced. Behavior UNEXECUTED.

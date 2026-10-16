@@ -942,20 +942,19 @@ class Orchestrator:
         #   refresh_session_skills (wholesale when enabled)
         #   ensure_system_contracts_materialized (inject + verify)
         #   inject_managed_skills (managed-catalog + lifecycle)
-        with task_preparation_effects():
-            expected_specs = materialize_workspace_skills(
-                workspace, self._settings,
-                slug=self._slug,
-                context="task",
-                provider=provider,
-                agent_name=agent_name,
-                team=team,
-                skills_root=skills_root,
-                org_root=org_root,
-                db=self.db,
-                task_id=task_id,
-                session_id=session_id,
-            )
+        expected_specs = materialize_workspace_skills(
+            workspace, self._settings,
+            slug=self._slug,
+            context="task",
+            provider=provider,
+            agent_name=agent_name,
+            team=team,
+            skills_root=skills_root,
+            org_root=org_root,
+            db=self.db,
+            task_id=task_id,
+            session_id=session_id,
+        )
 
         # ── Pre-launch integrity validation ─────────────────────────
         # Validate workspace skill links and canonical package integrity
