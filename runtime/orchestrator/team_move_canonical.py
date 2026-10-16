@@ -1,6 +1,7 @@
 """Private exact canonical planner/replacer for the approved consultant move.
 
-No service admission, DB mutation, materialization, reset or live invocation.
+No service admission, materialization, reset or live invocation.
+Staging evidence commits only through the existing operation audit owner.
 All three complete candidate images validate before any replacement.
 """
 from __future__ import annotations
