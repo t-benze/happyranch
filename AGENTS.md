@@ -1174,8 +1174,18 @@ retry and retry-resume diagnostics. Natural and excluded intervals both own
 SID-less ends; excluded sessions never enter natural metrics. Any credited read or
 search after retirement closes eligibility; valid earlier history remains.
 Missing/ambiguous evidence yields unknown/null hard-zero fields, and absent kinds
-report no observed population. D-only temporal diagnostics do not repair A's
-unresolved attribution of another live task's SID to the actual caller.
+report no observed population. Memory get/search credit trusts the supplied live
+SID matching live org/agent context; deliberately supplying another same-agent
+task's live SID credits that selected session. This is a known observational
+trust limit, not authentication or hostile-caller proof; D establishes no actual
+caller identity. Founder THR-091 seq401 declined `caller_task_id` and accepted A
+on completed JOB-4624's other resume/retry/overlap/ended/absent/lifecycle/cleanup
+results without rerun, making explicit foreign-live-SID rejection non-gating.
+Original JOB-4624 exit1/raw FAIL and TASK-11402 QA REVISE remain historical and
+unchanged. Ended/absent selectors remain uncredited and POST-retirement credit
+remains hard-zero; earlier legitimate active reads remain valid. Restart, merge
+and this documentation accept neither B, C nor an epoch; original admission,
+current full health, immutable epoch and frozen observation rules remain.
 An operational accepted epoch and its independent within48h health duty are
 separate from source tests, review, CI and deployment. See the memory sections in
 `features-and-invariants.md`, `web-and-cli.md` and the current corrective spec.

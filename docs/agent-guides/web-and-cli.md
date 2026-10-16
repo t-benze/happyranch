@@ -1452,7 +1452,23 @@ validation. Audit IDs order retirement even at tied timestamps. Any credited
 read or search after end, terminal or a later natural same-task start closes
 eligibility while valid earlier credits remain. Missing/ambiguous evidence yields
 unknown/null hard-zero fields; absent kinds say `no_observed_population`, never
-PASS. D-only reporting cannot repair A's unresolved live-foreign SID attribution.
+PASS. Per-kind pull-through remains diagnostic only, without new thresholds.
+Memory get/search credit trusts the supplied live SID matching the live
+org/agent context and derives the task from that context. Deliberately supplying
+another same-agent task's live SID credits that selected session. This known
+observational trust limit is not authentication or hostile-caller proof; D
+does not establish actual caller identity.
+
+Founder THR-091 seq401 declined `caller_task_id`, imposed no new API requirement
+and made explicit foreign-live-SID rejection non-gating. A is scoped accepted
+on completed JOB-4624's resume, retry, overlap, ended, absent, lifecycle-join
+and cleanup results without rerun. The original JOB-4624 exit1/raw FAIL and
+TASK-11402 QA REVISE remain unchanged historical evidence under the prior
+criterion. Ended/absent selectors must still remain uncredited and
+POST-retirement read/search credit must remain zero; earlier legitimate active
+reads remain valid. Restart, source merge and this documentation do not accept
+B, C or an epoch, or change original admission/current full health, immutable
+epoch and frozen observation requirements.
 
 Structural returned-data corruption produces the full empty-metrics error object
 (null first event, days0, empty aggregate/by_agent/by_role/read_counts, explicit
