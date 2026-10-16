@@ -1754,6 +1754,97 @@ The supported single daemon per org owns task_pause_controls installation/comple
 
 Unclaimed completion recovery retains the actual original return and SIDs while held, with no running deadline. Its 120-second deadline is pinned atomically with the accepted real admission/claim, binding and launch journal. Preclaim/admission waiting spends nothing; claimed recovery retains its expiry across Resume, duplicates, retry and restart, including committed no-launch failure. Unresolved original host/tree evidence is separately retained under the original session/owner/generation before recovery conversion. It remains an unknown drain blocker after callbacks, terminal lifecycle, restart or quiescent recovery, without owning a new producer. Known-quiescent originals add no unknown blocker, and deferred unclaimed recovery alone is not execution.
 
+## Managed Linux enrollment input
+
+The sidecar normalizes surrounding enrollment-file whitespace before the actual tsnet AuthKey input, refuses blank input, and preserves interior bytes and existing custody/one-use safeguards. Owned read/normalized buffers are cleared on every returned path; the adapter releases its key reference after initialization, including failure. See [the maintained Linux package guide](../operations/managed-remote-access-linux-package.md) for the pinned Headscale logging limitation and bounded category-only capture. THR228seq390 keeps all unit execution suspended for PR800; authored Go regressions are UNEXECUTED, and retired Python units must not return. The seq409 unpublished candidate integrates current-main lint/static-only local-CI selection; use permitted source syntax/format/static checks and normal hooks.
+
+PR800's THR228seq396 local diagnostic correction adds finite connector, listener
+and direct-Start configuration categories to both receipt consumers; the Linux
+package guide records exact phases and limits. Main pre-validation retains its
+original exit-2 plain configuration message. That diagnostic delta alone changed no startup, retry or credential
+acceptance behavior; the seq402 connector contract below is separately authorized. Authored retained cases and behavioral/proof results
+remain UNEXECUTED under the THR228 hold. Merged PR1025's current-main all/hooks
+are lint/static only under THR291seq69; the seq409 candidate integrates that selection and retains only the specifically
+authorized single Managed N3 job beside static checks. No daily execution is proved.
+
+**Bounded connector acceptance (THR-228 seq402/421).** `Sidecar.Start` anchors one 75-second acceptance deadline at entry; caller cancellation or an earlier caller deadline wins. The engine receives this enclosing context, so its private 80-second readiness ceiling cannot renew or escape the total. Connector probing uses at most 10 seconds and the remaining total, at most one second per dial, cancellable 200-millisecond spacing and no attempt-count cutoff; retries use the available phase deadline and remaining total. Immediate success has no retry delay. Only `errors.Is` connection-refused identity or an actual per-attempt deadline with deadline-error identity retries while the caller, phase and total remain live; arbitrary timeout text or a generic `net.Error` does not qualify. Cancellation, enclosing expiry, late success, nil successful connection and any probe close failure refuse. Every returned nonnil probe, including connection-plus-error, closes exactly once before a retry decision. Credential reading/redemption and engine startup occur once, with consumption commit in its original position before connector work. Listener failure, a late listener return or a Stop that wins admission closes the returned listener before engine teardown and cannot establish READY. Accepted serving retains the caller lifetime after the temporary startup context ends; main rechecks caller cancellation/deadline before READY publication.
+
+These are acceptance deadlines, not a hard wall-clock limit on contextless initialization, `Listen`, close or cleanup. Rendered units omit `TimeoutStartSec` and retain `TimeoutStopSec=10`; the actual runner effective start timeout, systemd version and per-attempt credential staging were not captured. The connector supervisor's separate 80-second timer remains unchanged. The one-shot connector-race hypothesis remains unmeasured; marker/inventory/unknown diagnostics prove neither a unique attempt, completed durable commit nor sole historical cause. Credential custody, staged-input refusal, retirement/reload and historical receipts remain unchanged. Retained cases are authored source only: behavior, red/green, mutation, repetition and executable QA remain UNEXECUTED/SUSPENDED; general integration is SKIPPED THR243seq42 and former Python units remain RETIRED.
+
+**Bounded N3 system-manager preflight (THR-228 seq409).** Before the execution ledger or product work, one owned `systemctl is-system-running --wait` query has a 120-second absolute observation deadline, including complete stdout, exit and final validation. Pinned upstream systemd v255 waits while initializing/starting, returns running with status 0 and degraded with status 1; only those exact LF-terminated byte/status pairs qualify. No decoding or whitespace/NUL normalization can admit malformed output. At most 32 bytes plus one overflow sentinel are held in memory; stderr is discarded. Timeout, unavailable/query failure, unknown, malformed/unexpected or contradictory output and nonready states refuse. Timeout/refusal/cancellation kills an unfinished query and reserves at most one additional second to confirm reaping; an unconfirmed reap refuses. Catchable shell HUP/INT/TERM before the child wait completes forwards TERM to the owned preflight and confirms cleanup; after a completed wait the handler exits synchronously, including the final flag-decision/trap-removal window. Both paths preserve exit 129/130/143 and fixed cancellation evidence (best effort if writing fails); traps are removed before subsequent harness work. Before the later cleanup trap exists, `system-manager-preflight.txt` in the existing always-uploaded diagnostics retains only fixed finite state/reason tokens and the observed numeric query status (or `not_observed`), alongside the unchanged bootstrap subject. Shell cancellation additionally retains fixed `shell_reason=cancelled` and its original numeric signal exit, including cancellation after the query has already completed. Failure retains exit 1 and the original fixed system-manager-unavailable message; no raw query bytes or stderr are persisted. This fits inside the existing 20-minute hosted job and adds no system-manager repair or privilege/provisioning. The prior run38180885346/attempt1 failed without state evidence; early boot remains a hypothesis. Readiness, timeout/cancellation, red/green, mutation and repetition behavior remain unexecuted/suspended; this document is no executable proof.
+
+**SYSTEMD staged credential compatibility and mode capture (THR-228 seq428).**
+The connector selects SYSTEMD from nonempty `CREDENTIALS_DIRECTORY`, then
+configured `credentials_directory`, then the ordinary File provider. Generated
+`LoadCredential=daemon.token` and the unchanged `credential-capability`
+ExecStartPre own exact staged-directory, component-symlink, regular-file and
+service-observable read-only checks. SYSTEMD `read_bearer` now refuses every
+owner/group/other write bit (`mode & 0o222`), admitting read-only staging such
+as `0400` and systemd ACL-mask `0440`. Its missing/unreadable/empty/non-file and
+final-symlink refusals remain; this provider has no UID check. The ordinary
+File provider retains `0077` refusal. Sidecar staged input retains its narrower
+`0022` mask, which does **not** reject owner writes; its ordinary input retains
+exact `0600` and current ownership. No sidecar policy change follows.
+
+Pinned [systemd v255 write_credential](https://github.com/systemd/systemd/blob/v255/src/core/exec-credential.c#L150-L199)
+removes writes and adds service-user read ACL permission; ownership fallback
+requires the documented read-only remount capability. This supports ACL-mask
+compatibility, not blanket privacy for arbitrary `0440` files or the historical
+failure diagnosis. The previous run has no staged-mode or internal-gate evidence.
+
+The two failure-only snapshots add `connector.credential_mode`, containing only
+fixed location `systemd-daemon-token`, namespace `connector-service-root`,
+four-digit numeric octal mode, microsecond observation time and a closed loss.
+The existing original-MainPID worker uses metadata only through
+`/proc/PID/root/run/credentials/happyranch-connector.service/daemon.token`, never
+opens/reads the token. Root/mount view, file metadata and original process
+identity are checked for ordinary drift. Both complete process samples must
+agree apart from observation times; the enclosing boot/invocation/MainPID and
+process-start binding applies. No raw ACL, UID or path is serialized. Missing
+root/staging view is `unavailable_namespace`; missing final location is
+`unavailable_location`, not proof of credential absence from the running
+service. `unsafe_type`, query/launch/parse error, timeout, truncation and
+attribution loss keep mode/time null. Mode alone establishes neither service
+readability nor the last evaluated credential gate. All five internal gates
+remain null/`unavailable_internal`, and original listener attribution remains.
+
+Historically, metadata shared the two-second process samples and 11-second section,
+13-second command, one-second kill grace and 4096-byte output reservation;
+there is no new section, budget, process connector, readiness API, privilege or
+sandbox grant. Late/lost capture preserves the initiating exit and all cleanup
+attempts. [Finite four-answer cases](../operations/managed-remote-access-staged-credential-cases.md)
+are SOURCE ONLY: behavior/red-green/mutation/repetition/executable QA remain
+UNEXECUTED/SUSPENDED, Python units RETIRED, general integration SKIPPED243seq42.
+Seq428 allocation was consumed by run38259906794/attempt1 at590768ff,
+which failed. Its published credential/mode source remains unchanged in this
+harness-only seq435 correction; it supplied no actual staged-mode acceptance.
+Fresh independent exact-candidate gates preceded the seq435 publication at
+`112f90ec`; its automatic run `38347173460` attempt1 FAILED and consumed1/1.
+All earlier allocations remain spent. The historical seq444 local-only preparation
+has no publication or run allocation; its split capture contract is below.
+
+**Original connector observation (THR-228 seq421, historical capture contract).** Before the seq444 split described below, the two failure-only snapshots reserved a separate 13-second command allowance plus one-second kill grace for `connector`, after the existing sidecar-first channels and before teardown. The historical helper admitted four observations under one 11-second section: named unit properties (one second), original process tree (two seconds), repeated unit properties (one second), repeated process tree (two seconds), each with at most one second for owned group termination/reaping. Reads and iterations are capped: 4096-byte unit output, 128 threads per process, at most eight descendants/four levels, 512 descriptors per process, 262144-byte TCP table per process, 2048-byte process projection and 4096-byte retained section. Boot, invocation, MainPID, process start ticks, parent relations and exact unit cgroup bind the existing Go supervisor and its actual descendants, including the onefile launcher's Python worker. Repeated process, child and socket sets must agree. Only a matching owned socket inode in LISTEN at the harness-configured literal `127.0.0.1:18443` yields `listening=true`, its actual `listener_pid` and `bound_port=18443`; a complete stable scan without it yields false/null. This is sampled process-attributed listening evidence, not atomic readiness or a hard bound on kernel filesystem stalls. Missing MainPID is `failed` for a failed unit, otherwise `absent`; unavailable child/process, query/launch/parse failure, attribution loss, timeout and truncation remain explicit, with null listening and binding. Unknown StatusText is reduced to `unclassified`; raw logs, tokens, identities, argv, paths, requests, trust state and credentials are never retained. Systemd's fixed aggregate `composite healthy`, stopping and exited statuses are observations, not gate-level cause. All five original-instance readiness gates are `ok=null/loss=unavailable_internal`: the existing private child health pipe publishes only aggregate states. The separate `diagnose` CLI constructs a new supervisor, readiness evaluation and adapter; it is never called or labeled original process state. No new inspection API, listener or initialization is added. Evidence failure neither admits readiness nor changes the initiating exit or remaining cleanup attempts. Collector cases are source specifications with executable coverage unavailable after Python-unit retirement; no behavioral PASS follows.
+
+**Single N3 publication selection (THR-228 seq435, consumed).** The published PR800 candidate at `112f90ec93177a22f85332f84d8d223cbb14cf28` integrates current-main lint-only `Source Boundary Lint` and `Web Lint (Node 24)` plus the existing Managed N3 package/harness/evidence job. N3 selects only a `pull_request` `synchronize` for PR800 on same-repository `task/TASK-6475` targeting main, with payload `before=590768ff22e41dd7e519011589b784d4bea7ee3d`, changed `after` equal to the event head, and `run_attempt=1`. Checkout and proof subject use that `after` SHA. Other PRs, opening/reopening, subsequent updates, main pushes, manual runs and reruns cannot renew this allocation. Current-main hooks/local `all` remain lint/static only; no general build/test lane is restored. Product E2E remains daily-only 19:00 UTC from default branch. Fresh independent full review and same-head SOURCE/STATIC QA preceded that publication. Its single automatic N3 run `38347173460` attempt1 FAILED; seq435 is consumed1/1. Seq402, seq409, seq421 and seq428 also remain exhausted (1/1 each), with all historical failures preserved. Historical seq444 preparation under sole root TASK11161 is LOCAL UNPUBLISHED only, with no publication or run allocation. The historical selection guard is preserved, not renewed.
+
+**Historical single N3 allocation (THR-228 seq455, consumed).** TASK11205 published `86ec1dca0262186500457069e1e6740c8ed084b1` after full independent TASK11213 APPROVE and same-head SOURCE/STATIC TASK11217 QA PASS. Automatic run `38412983176` attempt1 FAILED waiting for connector READY; Source Boundary Lint and Web Lint passed. Seq455 is1/1 consumed. All three initial start jobs were done; later both services were inactive/status0. The retained supervisor invocation records `sidecar_unhealthy`, first local `context_cancelled`, then shutdown consequences, with `original_invocation=null` and `window_only` attribution. It does not establish the original activation, global initiating cause or absence of other defects. `virtual_stop_binding_unconfirmed` and `virtual_removal_unconfirmed` are missing proof, not demonstrated residue. Full lifecycle/final cleanup remain unproved; original artifacts, failures and predicates are preserved.
+
+**Historical single N3 allocation (THR-228 seq464/471, consumed).** Completed TASK11354 published `b3df7794c84866f1e3e5ccfee6a8804bfee0001f` after independent full APPROVE and same-head SOURCE/STATIC QA. Automatic run `38518279270` attempt1 FAILED at the staged credential provenance query after initial READY; seq464 is consumed1/1. The exact OS error was not captured. Snapshot health establishes initial startup only, not sustained lifetime or full acceptance. `virtual_removal_unconfirmed` is missing proof, not demonstrated residue. Seq402/409/421/428/435/455 and every older allocation remain consumed; all failed runs, reviews and receipts remain historical at their actual sources. The managed-target correction below remains in the candidate; no allocation is transferred or renewed by a follow-on task.
+
+**Historical first N3 candidate (THR-228 seq498; sole root TASK11641).** Seq491 is historical and consumed1/1: COMPLETED11547 published a750114baf651b5d7688baf6e03e0b4c92138b77; run38689824548 attempt1 FAILED after initial READY and both staged credential checks. Its missing-marker assertion discarded start status and inferred success from a non-inactive state. Exact assertion-time state is unknown; later SubState is unknown/parse_loss, not established auto-restart. Neither product correctness nor sustained startup acceptance follows. Original failures/reviews/jobs/cleanup gaps remain preserved.
+
+**Current final LOCAL N3 candidate (THR228seq498; sole root TASK11641).** Slot1 run38775630461 attempt1 FAILED at fe76f1d18d2c584e4fb36a3e3e7ec4fa5f7b9248 after seven startup records with unavailable stopped baseline; exact query/parser rejection and GC cause remain unknown. Slot2 run38782221731 attempt1 FAILED at9219f4c6e168b5529f59503e34c498bf23c9fe9f: held live/stopped baseline predicates passed, but subsequent preparatory offline-peer acquisition refused before marker removal/start. Exact peer query/process/parser/state cause is UNKNOWN; delayed propagation was not observed. Initial READY is not sustained/lifecycle acceptance; cleanup unconfirmed is missing proof, not demonstrated residue. Seq498 is2/3 consumed,1 remaining. Both allocation boundaries pin only the final ordinary synchronize from before=9219f4c6e168b5529f59503e34c498bf23c9fe9f to distinct canonical after=actual head, attempt1, with unchanged PR800/same-repo/task6475/main and package/proof binding. This candidate stays LOCAL before fresh full independent review, same-head SOURCE/STATIC QA and root evaluation/reconciliation; children have no publication/execution authority. Root alone owns publication/observation/actual-result reporting and stops on success, product defect, necessary out-of-harness work/uncertain protected scope or unconditionally after the third run. No fourth update/post-third repair, general policy or daily-E2E change. Historical failures/jobs/reviews/source remain preserved. All local assessments are SOURCE/STATIC ONLY; behavior/test-authoring proof remains unestablished, units/behavior/red-green/repetition UNEXECUTED/SUSPENDED, Python units RETIRED and integration/actual callback SKIPPED24342. Normal hooks remain required.
+
+**Private pre-attempt offline acquisition.** Pinned Tailscale1.102.3 Online is a control-plane connection observation; Headscale0.25.1 disconnect/status-update/notification is separate from local systemctl stop completion. Only a structurally valid SAME enrolled peer still Online=true may settle BEFORE marker removal/start: at most four observations,0.5s between valid online observations, accepted only within12s and before40s from original holder launch. Each observation revalidates the full original stopped tuple (including result, invocation, nonzero READY, main-execution history, main/control PIDs, restart count and inactive-exit history), boot and same held client/owner/object. Missing/duplicate/nonboolean/malformed/query/timeout/process/identity/history/reference errors immediately refuse, including after an earlier valid online read; later success cannot erase failure. Offline must actually be observed within the bounds; exhaustion refuses. Query status and fixed parser/predicate categories are retained without raw peer JSON/keys/tokens. Holder lifetime120s/outer125s/+1s stays unchanged; ordered optional prepare-1..4 fence pairs never reacquire or reset history. The original negative-attempt interval, failed-job/start-status/history/readiness/process/admission vetoes and independent teardown remain unchanged. No post-start settling/online forgiveness follows; subsequent lifecycle/restart/installer proof remains missing.
+
+**Private retained-history acquisition.** Before the live tuple, the existing harness helper opens one persistent system-bus connection and calls RefUnit for the existing sidecar. It never reconnects/reacquires. Original manager unique owner, exact unit object and same-client Refs membership are checked on that connection; boot/run-bound ordered acknowledgements fence BOTH sides of every existing and bounded preparatory state read through the final stopped-history fence. A disconnected one-shot client, lost/duplicate own reference, changed owner/boot, malformed command, query failure or expiry refuses. RefUnit prevents normal GC while held; it does not waive missing InvocationID, zero/changed ActiveEnter, history resets, main execution, restart counts or same-attempt failed-job proof. Unit query statuses and a fixed parser-refused category are retained without raw property/error dumps. The holder has a120s absolute lifetime,2s bus-call timeout and125s outer timeout/+1s kill grace; each shell acknowledgement is bounded8s. Ordinary return releases/unrefs/closes/reaps before marker restore/reset, preserving any initiating nonzero status. Cancellation cleanup independently closes/reaps it and continues all existing teardown attempts; timeout/OS connection closure releases a failed holder. It installs no unit/helper/dependency and changes no shipping credentials, restart policy, sandbox or public contract. This acquisition is source-supported by the actual runner image's systemd255.4-1ubuntu8.17 source; actual candidate behavior remains unexecuted.
+
+**Same-attempt missing-consumed-state oracle (THR228seq498).** The shell retains safe bounded metadata in missing-consumed-state.log. It captures a known nonzero live ActiveEnter baseline and enrolled identity, then stopped-unit/process/offline baseline before moving the marker. Under unchanged shipping Restart=on-failure it retains the actual bounded start status and pre-stop state, independently stops the target AND both services, and fences history before any marker restore/reset/new start. Acceptance requires status1, one trusted PID1/UID0 failed sidecar start job in the same boot/monotonic interval, a new stable invocation, unchanged nonzero ActiveEnter, zero main-execution timestamp/PID and current main/control PIDs, and NRestarts=0 through final stop/peer observation. A pending auto-restart may satisfy these combined predicates; state alone never proves refusal. systemd255 resets ExecMain history on EVERY start, while stop retains NRestarts until next start; an enqueued retry or changed/lost baseline therefore refuses. This detects brief READY via retained active-entry history and pre-READY process/admission via the single-start main-execution proof, rather than post-stop absence. Boot/invocation drift, unloaded/reset/lost history, query error/timeout, malformed/duplicate/unknown data or ambiguous transition refuses with no completed assertion. The existing enrolled peer must be affirmatively offline under the same live observer/identity; offline alone proves no historical admission. Unconfirmed peer propagation remains missing evidence. Marker restoration occurs only after stopped proof, and credential-free restart remains a distinct required stage. The finite sweep also corrects both ordering-barrier queries: a target-name-only match could be the opposite existing job; the bounded query now requires exactly one target job of the requested start/stop type in waiting state, with malformed/changed queues refusing. No product/unit/credential policy, public observation contract, evidence schema or independent teardown change follows. Static review establishes no runtime correctness.
+
+**Post-READY staged inspection (THR-228 seq491).** `check_staged_credential` resolves only the existing fixed connector `daemon.token` and sidecar `enrollment.key` paths with `sudo readlink -f --`, so root-private directory traversal does not depend on runner access. Acquisition must succeed and the canonical result must equal the fixed path; regular-file, non-symlink and C-locale owner/group/mode/type metadata predicates remain. Separate `sudo -u happyranch` readability and file/directory nonwritability assertions still decide service capability: root inspection supplies no service-access proof and reads no token contents. The finite later-stage audit found no additional attributable inspection privilege mismatch: `test_false`/`absent` already invoke sudo (including their `-u happyranch` form), barriers use `sudo test`, journal/peer private-socket queries are privileged, installer traversal/digests use `sudo find`/`sudo sha256sum`, and unit metadata uses the system bus. Explicit-stop/watchdog/restart/ordering/shutdown/installer assertions, same-instance Stop/current-peer/real-dial proof, failed-query refusal, original exit and all teardown attempts remain unchanged. These are source findings, not executed lifecycle acceptance.
+
+**Managed-target correction (THR-228 seq464 approving463).** `render_composite_units` omits `StopWhenUnneeded=yes` from `happyranch-managed.target`: a standalone explicit target start must remain active without another active unit requiring or wanting it. Target `Requires` and `After`, both service `PartOf` links and sidecar `BindsTo` remain unchanged; explicitly stopping the target still propagates to both services. No restart, identity, notification, credential, security or cleanup contract changes. The systemd255 documented mechanism and consultant259 throwaway reproduction support this correction, but neither proves the sole historical cause or excludes another defect. Sustained READY, actual reached lifecycle stages and authentic cleanup require the root manager's allocated hosted N3 evidence; source/static inspection alone supplies none of those results.
+
 
 ## THR299 compatible reconciliation installation
 
@@ -1823,6 +1914,190 @@ not native execution evidence. Mounted UI is a separate serial unit. Python unit
 remain retired, integration SKIPPED24342, broad behavior/proof UNEXECUTED and
 FOUNDER-WAIVED139429/430; lint/static evidence is not behavioral acceptance.
 
+**Harness absent-unit correction (THR-228 seq435; sole root TASK11067).**
+Both post-negative-leg `reset-failed` requests and the missing-credential stop
+request are best effort, including valid unloaded units. They are never absence
+proof. Successful state queries, numeric MainPID, staged-path checks and expected
+peer inventory remain independent assertions before progression. Negative state
+checks accept only successful exact inactive/failed output; positive waits still
+require active. Genuine failed, empty or malformed queries refuse. Privileged
+false-test results are encoded inside the command so a sudo failure cannot
+become absence; diagnostic presence maps privilege failure to unknown/query_error.
+Substitution producers are checked before PID/empty-path comparisons. Conditional
+setup propagates every failure explicitly; shipping and final cleanup record
+mutation failures and attempt all remaining actions, preserving original exit
+and once-only EXIT/INT/TERM teardown. Source restore, refusal, one-use lifecycle,
+SYSTEMD0222/File0077, sidecar policy, sandbox and capture budgets remain unchanged.
+Successful full process/listener inventories replace negative kill/TCP errors in
+cleanup. Negative virtual `nc` attempts remain inconclusive; the SAME manager's
+TASK11067 step3 correction requires independent phase-bound Stop completion or
+the strict initial NEVER-STARTED conjunction below before removal admission.
+Filesystem probe limitations and unexecuted cleanup/lifecycle proofs remain gaps.
+The [finite cases](../operations/managed-remote-access-staged-credential-cases.md)
+are source specifications only. Seq428 run38259906794 at590768ff failed after
+the expected negative ledger, without a positive-start/mode/listener result;
+reset-abort attribution is supported by retained logs/source, while historical
+sole-cause and credential-fix causality remain inference. Seq428 is consumed1/1.
+Seq435 publication at `112f90ec` and FAILED run `38347173460` attempt1
+consumed1/1; all earlier allocations remain spent. Historical seq444 preparation
+grants no publication, build or product run.
+
+
+**Receipt and assertion acquisition correction (TASK11084/11090/11099, SAME TASK11067).**
+Stop receipt acquisition checks the complete journal/decoder pipeline before
+admitting a closed result; a successful no-match still fails the required pair.
+SAME TASK11067 step4 corrects R4 using existing JSON journal output: each original
+MESSAGE and distinct cursor is decoded from strict UTF8, LF-terminated records
+before Bash receives only `complete`. Missing/invalid types, binary arrays,
+LF/NUL/control MESSAGE content, duplicate JSON fields/cursors/completions,
+extra completion-like messages, invalid instance context and truncated frames
+refuse. Well-formed printable unrelated MESSAGE records are explicitly allowed;
+they cannot supply a receipt. A nonzero journal or decoder status refuses even
+with valid-looking output. No raw journal is retained. Before/after rollback digests, staged readlink
+and metadata, payload/source custody, PID1 and package provenance are acquired
+with explicit status checks before comparison or reporting. Matching or partial
+stdout from a nonzero producer refuses. Capture counters, file reads and cap
+pipeline statuses are checked even when the capture function is called under a
+conditional or cleanup with errexit suppressed; failures retain existing closed
+loss values, unknown/empty projections, section budgets and remaining teardown.
+These are source corrections with executable proof UNEXECUTED/SUSPENDED.
+TASK11084's FAILED partial return is preserved. SAME TASK11067 step3 resolves
+R3 with the existing successful Stop completion observations. Before each known
+instance's stop, the harness binds exact active PID, nonzero InvocationID and
+start-monotonic context, rechecks the tuple and pins boot plus a pre-stop wall
+cutoff. Checked journal/decoder acquisition selects that unit/PID/boot/
+invocation since the cutoff and requires two distinct original canonical
+completion records, with no extra, duplicate or malformed completion records. MainPID0 excludes a running
+replacement. This applies to final cleanup, later shipping cleanup, health loss,
+Stop barrier, readiness loss and shutdown; shutdown uses one shared acquisition.
+The Stop-barrier check precedes queueing the next start and releasing its latch.
+Readiness timestamps/order and connector/watchdog checks remain mandatory.
+
+Sidecar.Stop calls listener-first shutdown, joins work and returns stopErr;
+stopTwice emits each receipt only after nil Stop. Thus the receipt supports local
+listener teardown as a SOURCE inference. It is not a typed remote connection-
+refused result or network-health proof. Every real peer attempt with a target is
+retained, actual reachability vetoes removal, and failed nc alone cannot pass.
+Known phases require nonmissing target plus successful current peer process-start
+identity and local status/node identity checks; query/parse/liveness/receipt
+failure refuses. No raw journal/status or new evidence fields are retained.
+Step4 also corrects R5 before the first negative-start process/admission records:
+process start ticks must match the established live peer before and after the
+consumed status; that SAME status must have Running backend, current Self
+hostname/node/IP shape and a present Peer field. Pinned Tailscale v1.102.3 emits
+null for a nil Peer map and {} for an empty map; either is accepted only within
+otherwise valid current status. Every nonempty map entry must be an object with
+a nonempty printable UTF8 HostName; all entries are validated before absence.
+Missing/malformed inventory or hostname, stale identity, duplicate JSON fields,
+invalid encoding or any failed producer/parser refuses. A separate good status
+cannot bless malformed consumed data. The expected credential diagnostic, both
+resets, staging/absence checks, completed-stop capture, source restoration,
+denial then positive-start order and saved status/all cleanup remain required.
+
+The first reset_shipping_unit precedes every managed start, and package install
+only writes payload/units. Every start attempt, including a failed/background
+start, permanently revokes NEVER-STARTED before calling systemd. Initial shipping
+cleanup requires independent successful exact unit/PID absence, full owned-unit
+inventory, process census, owned/credential/transaction/staging path absence,
+host-listener absence and valid Headscale inventory without the owned sidecar.
+Together in the isolated fixture, no start plus no owned running process/unit,
+state or registered sidecar excludes an owned virtual listener. Missing address
+contributes no evidence; this branch emits no peer observation. Later no-address
+cleanup refuses. Initial absence is not reusable after a failed start.
+
+Final cleanup retains the peer until the checked teardown, real probe and current
+peer-process/node identity conjunction finishes. Missing prerequisites (including
+failure before any successful start) refuse the virtual and aggregate cleanup
+claims without inventing a Stop receipt; every later cleanup attempt and original
+nonzero exit remain. Barrier refusal still releases both latches in teardown.
+The historical seq444 LOCAL UNPUBLISHED candidate requires fresh FULL independent
+review and same-head SOURCE/STATIC QA for local source preparation. The seq435
+publication at `112f90ec` and FAILED run `38347173460` attempt1 consumed1/1;
+all earlier allocations remain spent, with no new publication or run allocation. No
+behavioral/red-green/mutation/repetition/test-authoring PASS is claimed.
+SYSTEMD0222/File0077, production sidecar/supervisor/lifecycle, sandbox, CI guards,
+original failure and all cleanup attempts remain unchanged. No whole-harness
+acceptance or original staged-mode/installer/restart/N6 proof follows.
+
+
+**Prepared local diagnostics (THR-228 seq444; historical root TASK11161).**
+This contract describes the LOCAL UNPUBLISHED successor to published PR800
+`112f90ec`, not evidence produced by FAILED run `38347173460` attempt1.
+Seq435 is consumed1/1 and every earlier allocation remains spent. Fresh full
+independent SOURCE/STATIC review then same-head scoped QA are required; neither
+publishes this candidate nor grants another run. No push/new PR, workflow
+change/trigger/rerun, N3/build/live experiment, merge or deployment is authorized.
+Product E2E remains daily-only19UTC and normal hooks/all remain lint/static only.
+
+The Go supervisor emits only the fixed finite grammar
+`connector_supervisor phase=... reason=... generation=... sequence=...`.
+`context` marks invocation start; `observation` marks aggregate pre-READY sidecar
+state or pipe EOF; `first` records the first supervisor-observed local stop/exit
+decision once; `consequence` records later distinct admission, notification,
+TERM, scanner and stop/exit decisions. Each phase/reason is deduplicated within
+the supervisor. The generation is supervisor-generated and sequence is the last
+accepted value, never rejected input; setup before generation uses unavailable/0.
+Finite reasons distinguish startup/freshness expiry, cancellation, child exit,
+frame/protocol/generation/sequence/state rejection, readiness regression, sidecar
+unknown/absent/unhealthy, notify failure and admission refusal. These labels do
+not identify a Python gate, an OS signal or a proven global root cause. Health
+protocol, Wait ownership, terminal/stopping latches, notification order, absolute
+deadlines, readiness refresh, admission-before-TERM and return values are unchanged.
+The five original Python gates remain unavailable after exit; a fresh `diagnose`
+is a new evaluation, never the failing process's retained state.
+
+The existing connector14s/4096B reservation is split without expansion: journal
+command4s plus1s kill grace/2048B first, then live command8s plus1s kill grace/2048B.
+The live internal section is6s instead of historical11s; incomplete samples refuse.
+The existing sidecar text/state/jobs/receipt ordering stays first. Journal capture
+owns3s for read/parse/exit plus1s group reap,64KiB raw plus one overflow detector,
+8192B per frame,256 frames and at most6 retained events. Closed fixed labels are
+filtered before retained caps; raw prose/errors/payloads/credentials are excluded.
+
+Journal labels can remain available after the original process exits. Capture
+uses the original positive-start window and boot, not just current MainPID or
+InvocationID. Each event requires exact unit/boot, nonzero invocation, positive
+bounded PID, unique cursor and trusted journal realtime/monotonic timestamps
+within that window; generation/PID/sequence/monotonic drift refuses attribution.
+Events keep separate invocations. Without an independently retained original pin,
+`original_invocation` remains null and attribution is `window_only`; a surviving
+restart cannot substitute for the original. Empty, unattempted, launch/query
+failure, timeout, parse/attribution loss, truncation and unconfirmed reap are
+explicit. Earlier accepted events survive partial loss with `tail_complete=false`;
+outer interruption can lose worker partial output and records timeout separately.
+No projection guarantees complete history or retrospective causal attribution.
+
+The actual section ledger remains82s scheduled allowance/32256B accounted section
+bytes before and after the split: sidecar text6s/4096B, state8s/1024B, jobs8s/8192B,
+receipts8s/8192B, connector14s/4096B, Headscale17s/4096B, connector/target
+properties16s/2048B and presence5s/512B. Historical45s/24064B fields omitted
+existing sections and remain compatibility metadata with
+`legacy_aggregate_metadata=true` and `aggregate_cap_enforced=false`. Neither ledger
+is an aggregate hard wall-clock or serialized-output cap: setup/kernel/output
+latency and JSON wrappers lie outside section accounting. No larger bound is
+installed. Independent capture/write/launch/query failure preserves the originating
+exit and remaining once-only cleanup attempts, without changing admission.
+
+Final cleanup now distinguishes `virtual_stop_binding_unconfirmed` from
+`virtual_removal_unconfirmed`; only the final legacy refusal label splits.
+Removal still requires the active same-instance pre-Stop binding, two successful
+canonical same-instance Stop receipts, MainPID0, current valid peer/target and an
+unsuccessful real virtual dial. Positive reachability vetoes removal. Missing
+address/binding/receipts or a dead process/negative dial alone proves neither
+removal nor residue. The historical run retained no final virtual-removal or
+aggregate cleanup receipt, so cleanup remains INCOMPLETE/UNCONFIRMED. Its old
+`virtual_listener_residue` label does not establish that a listener survived.
+
+See the [current operations contract](../operations/managed-remote-access-linux-package.md)
+and [91 finite source cases](../operations/managed-remote-access-staged-credential-cases.md)
+for matching producer/consumer, capture and cleanup details. Historical seq421/435
+receipts and workflow guards remain at their actual scope. Behavior/unit/assertion/
+red-green/mutation/repetition/executable-QA proof remains UNEXECUTED/SUSPENDED,
+nonblocking for source preparation; general/actual callback integration is SKIPPED
+THR243seq42, and Python units are RETIRED. Static evidence supplies no behavioral
+acceptance or supported historical cause. Original gate transitions, durable
+last-transition records and a doctor command remain PROPOSAL ONLY; no private
+protocol, durable observation state or new command is implemented here.
 
 ## Disabled coding release catalog — K0
 

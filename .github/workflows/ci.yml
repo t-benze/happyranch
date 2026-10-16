@@ -48,3 +48,103 @@ jobs:
         run: npm run lint
       - name: Typecheck
         run: npm run typecheck
+
+  managed-n3-real-systemd:
+    name: Managed N3 Real systemd (Ubuntu 24.04)
+    # THR228seq498 final candidate: exactly ONE PR800 synchronization from the
+    # published head, attempt 1. Later updates, reopen/main/manual/rerun events
+    # cannot renew this allocation. before/after belong to synchronize payloads.
+    if: >-
+      ${{ github.event_name == 'pull_request' &&
+          github.event.action == 'synchronize' &&
+          github.event.number == 800 &&
+          github.repository == 't-benze/happyranch' &&
+          github.event.pull_request.head.repo.full_name == github.repository &&
+          github.event.pull_request.head.ref == 'task/TASK-6475' &&
+          github.event.pull_request.base.ref == 'main' &&
+          github.event.before == '9219f4c6e168b5529f59503e34c498bf23c9fe9f' &&
+          github.event.after != '' &&
+          github.event.after != github.event.before &&
+          github.event.after == github.event.pull_request.head.sha &&
+          github.run_attempt == '1' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      # Repeat the refusal at the step boundary as well as job selection:
+      # rerunning an old selected job must never reach package build/execution.
+      - name: Validate single-update allocation before any build
+        env:
+          N3_EVENT_NAME: ${{ github.event_name }}
+        run: |
+          python3 - <<'PYGUARD'
+          import json
+          import os
+          import re
+          from pathlib import Path
+          event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text())
+          pr = event.get("pull_request", {})
+          head = pr.get("head", {})
+          base = pr.get("base", {})
+          after = event.get("after")
+          allowed = (
+              os.environ.get("N3_EVENT_NAME") == "pull_request"
+              and os.environ.get("GITHUB_RUN_ATTEMPT") == "1"
+              and os.environ.get("GITHUB_REPOSITORY") == "t-benze/happyranch"
+              and event.get("action") == "synchronize"
+              and type(event.get("number")) is int and event["number"] == 800
+              and head.get("ref") == "task/TASK-6475"
+              and head.get("repo", {}).get("full_name") == "t-benze/happyranch"
+              and base.get("ref") == "main"
+              and event.get("before") == "9219f4c6e168b5529f59503e34c498bf23c9fe9f"
+              and isinstance(after, str) and re.fullmatch(r"[0-9a-f]{40}", after) is not None
+              and after != event["before"] and after == head.get("sha")
+          )
+          if not allowed:
+              raise SystemExit("Managed N3 allocation refused")
+          PYGUARD
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ github.event.after }}
+      - name: Install uv
+        uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
+        with:
+          enable-cache: true
+          python-version: "3.14"
+      - name: Sync build dependencies
+        run: uv sync --frozen --group build
+      - name: Build actual package
+        run: |
+          set -euo pipefail
+          package_tmp="$(mktemp -d)"
+          echo "PACKAGE_TMP=$package_tmp" >> "$GITHUB_ENV"
+          # Retained unit command: (cd app/linux/tsnet-sidecar && go test ./...)
+          echo "SKIPPED - Go units SUSPENDED under THR-291 / THR-228 seq355; not a unit-test PASS."
+          (cd app/linux/tsnet-sidecar && GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -buildvcs=false -o "$package_tmp/happyranch-tsnet-sidecar" ./cmd/happyranch-tsnet-sidecar)
+          uv build --wheel --out-dir "$package_tmp"
+          wheel="$(find "$package_tmp" -maxdepth 1 -name 'happyranch-*.whl' -print -quit)"
+          uv run python app/linux/package/build_connector.py --wheel "$wheel" --output "$package_tmp/happyranch-connector"
+          uv run python app/linux/package/build_package.py --sidecar "$package_tmp/happyranch-tsnet-sidecar" --connector "$package_tmp/happyranch-connector" --wheel "$wheel" --version ci --output "$package_tmp/happyranch-linux-amd64.tar"
+      - name: Exercise actual packaged composite against pinned Headscale and peer
+        env:
+          PACKAGE_TAR: ${{ env.PACKAGE_TMP }}/happyranch-linux-amd64.tar
+          PROOF_SUBJECT_SHA: ${{ github.event.after }}
+          N3_DIAGNOSTICS_DIR: ${{ runner.temp }}/managed-n3-evidence
+        run: app/linux/package/real_systemd_n3.sh
+      - name: Validate successful Managed N3 execution artifact
+        if: success()
+        run: python app/linux/package/n3_evidence.py validate "${{ runner.temp }}/managed-n3-evidence/execution-evidence.json" --expected-subject "${{ github.event.after }}"
+      - name: Upload Managed N3 execution evidence and diagnostics
+        if: always()
+        uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
+        with:
+          name: managed-n3-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/managed-n3-evidence
+          if-no-files-found: error
+
+      - name: Remove owned package scratch
+        if: always()
+        run: |
+          if [[ -n "${PACKAGE_TMP:-}" && -d "$PACKAGE_TMP" ]]; then
+            rm -rf -- "$PACKAGE_TMP"
+          fi
