@@ -16,6 +16,14 @@ No history deletion, automatic recovery, apply or execution authority follows.
 
 An online team-move hold reserves affected agents and source/target membership. The native cleanup trigger defers before work allocation, without advancing an occurrence; real cleanup tasks and unknown process/workspace tails block the move. Never delete another owner’s workspace, clear uncertainty or fabricate settlement to free a hold. Existing cleanup authority and all preservation gates remain. Apply is unavailable; behavior remains UNEXECUTED.
 
+THR307's independent daemon disk sweeper defaults to dry_run and has its own
+terminal-task/root, fresh jobs/process, recursive-age and containment contract.
+It never grants an agent cleanup authority, replaces this skill's legacy gates,
+or disables the seven nightly agent sessions. Outputs and sibling task-scratch
+manifests/locks stay durable and excluded. Put regenerable fixture/cache trees
+in runtime task-tmp; retain only concise evidence in output. Do not run historical
+cleanup, activate on-mode, or use a manual fallback on this note's authority.
+
 The one shared workspace-cleanup skill for every agent, including no-repo
 agents. It is invoked two ways, and both use exactly this contract:
 
@@ -713,3 +721,29 @@ cleanup requires no-follow lstat ENOENT; surviving entries, inspection errors an
 prior uncertainty stay unknown. Cleanup causes are retained; existing unknown
 history is never cleared. These are source accounting rules, not behavioral
 verification or new execution/activation authority.
+
+
+Current-main C3 composition preserves automatic job admission: omitted/false
+review_required executes through native owner checks; true refuses before allocation,
+legacy true pending is inert, and /run remains a tombstone. Authenticated later
+prerequisite loss rechecks move/causal ownership in the native Pause transaction
+before its failed-before-launch CAS, audit/journal COMMIT and genuine wake. Only
+that exact completed no-launch refusal may settle; partial scratch/environment,
+output or process effects and earlier uncertainty remain in producer history.
+Naming keeps INSTALL-only N-SAC-1 structural admission and actual install-diagnostic
+provenance alongside SAME native disposition, rollback and reconciliation rules;
+no removed whole-release naming fingerprint is restored.
+
+The scheduled daemon disk worker reserves a global native writer per admitted
+org before spawn, through supervision/reap/report. Held/unowned orgs defer with
+bounded codes in the existing summary/audit; other admitted orgs continue. On-mode
+child admission and prune re-read the actual parent's active global writer ID
+through strict append-only history and validate the optional move layout/hold.
+An installed layout with missing/unknown ownership refuses before mutation; absent
+layout preserves native behavior. Missing/incomplete effect closure, interruption
+and partial mutation retain unknown writer evidence; a clean later provider result
+cannot erase it. The common1800-second window includes reservation admission.
+Off/default dry_run, metadata/process/age/containment safeguards and manual dry-run
+remain; no cleanup/activation authority follows. These source changes have no
+behavioral/migration/recovery proof; integration INCLUDING callback SKIPPED24342,
+Python units RETIRED. APPLY_AVAILABLE=false, no COMPLETE writer; D/E/F remain root-owned.

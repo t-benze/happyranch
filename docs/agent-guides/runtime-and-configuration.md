@@ -6,11 +6,12 @@ The optional team_move_operations table is explicit org-owned storage, never
 generic Database/runtime-audit bootstrap or startup installation in B. Exact
 owned layout/all-record validation and complete independent release references
 include its presence without modifying naming/pause/workflow/v2 history.
-All three whole-release consumers (workflow validation, legacy authority evidence
-and naming installation/reconciliation) select validated optional presence.
-Naming captures workflow/naming/pause/move layouts in one coherent read view,
-builds independent references outside the short SQL transaction, then compares
-the entire database again within that transaction. Absence remains supported;
+Workflow release validation and legacy authority evidence retain complete
+independent whole-release references with validated optional presence. Naming
+installation uses N-SAC-1 structural admission inside its existing transaction:
+selected/actual DB association, task/audit dependency shapes, naming interaction
+closure and unchanged complete workflow/Pause/move/naming validators. It builds
+no whole-release reference. Non-install reconciliation retains its prior behavior. Absence remains supported;
 malformed presence refuses without installation, stripping or history repair.
 C1 binds the coordinator at Orchestrator construction and reads durable holds
 in actual allocation/claim transactions without installing schema. Absent layout
@@ -140,10 +141,31 @@ frontend verification leg. See the [current naming contract](../superpowers/spec
 
 ## Naming v1 core, API and routing source
 
+`GET /api/v1/orgs/{slug}/identities` and `happyranch identities list --json`
+expose additive `naming_diagnostic`: null for ready rows, otherwise a finite
+captured naming category. Unknown, malformed or missing captured codes fall back
+to `naming_database_unavailable` when any row is unavailable, including a fresh
+metadata-read failure with a stale null diagnostic. The response never exposes
+raw exception text, paths or SQL. Older servers may omit the field: absence is
+UNKNOWN, never readiness. Canonical roster, definition revisions and existing
+read/auth errors retain their behavior; GET never reconciles or installs names.
+This category is an observation, not proof of a serving source SHA or root cause.
+Source publication does not establish restored naming or authorize live recovery.
+
+A failed actual install attempt retains one bounded category in memory. Later
+non-install refreshes that only observe absent naming report that last attempt's
+cause; without that provenance they report `naming_not_installed`, never a guessed
+stale cause. A different current failure takes precedence while observed. A new
+install attempt supersedes the retained cause; any successful refresh clears it.
+This diagnostic retention changes no readiness, admission or installation decision
+and adds no retry, persistent history or read-time writer.
+
 Schema2 multi-org attachment installs naming only after baseline admission; no
 flat-schema1 conversion or history-only ID mining is added. Naming failure is
 volatile readiness with an actionable category. Original strict team/attachment
-and complete workflow/reference guards remain. Every naming-installed F/E/G needs
+and complete workflow validators remain; global workflow/legacy reference
+guards are unchanged. Installer-only admission is naming structural compatibility,
+never a global authority grant. Every naming-installed F/E/G needs
 a compatible naming reader; existing explicit workflow commands preserve exact
 naming row identities/revisions and reject malformed naming without repair.
 One daemon controls each organization; no naming cross-process lease is added.
@@ -812,6 +834,53 @@ before any `ZoneInfo()` call. (Pre-TASK-976 an omitted value defaulted to the
 literal `UTC`; orgs relying on that implicit default now schedule on
 machine-local time — host-local night, as intended.)
 
+
+## Independent nightly disk sweep (THR307)
+
+The new `disk_sweep: {mode: "dry_run"}` org block defaults to dry run; only quoted
+`"off"`, `"dry_run"`, `"on"` are accepted. This is independent of `workspace_cleanup`
+and its unchanged legacy scheduler/reclamation flag. Machine-local03:00 (not org
+timezone), next future occurrence only, sequential org order and one1800s monotonic
+batch budget. No cursor/rotation or candidate count cap. Unknown eligibility and
+unreached scope retain; the owned worker process group is stopped on deadline or
+shutdown. `output/` and durable scratch manifest/lock siblings stay excluded.
+
+Terminal actual task AND structural root, fresh complete jobs/process evidence,
+complete structural lineage for every observed job owner even when its status is
+completed/failed/rejected, recursive mtime+ctime age of at least one hour, and
+no-follow/same-filesystem containment apply to both phases. Git additionally requires owned registration,
+clean/nonignored-untracked status and HEAD reachability through retained local
+branches/remotes; branches remain, ignored contents are disposable. Git removal
+is nonforce, with at most one fully refreshed contained repair/retry. Dry run
+never chmods/removes/prunes. Before trusting Git exit0, a complete no-follow
+linked-admin census reconciles entries, metadata pointers and worktree backlinks
+with Git output and literal task roots. Missing/unreadable/aliased/conflicting
+metadata retains that entire repository as a literal unknown scope with null
+candidate count; independent scopes continue within the same deadline. Identities
+are refreshed before Git removal, repair, retry and prune; earlier partial effects
+stay unknown rather than becoming zero-effect success. A genuinely absent admin
+with primary-only inventory and no task roots remains valid. Partial discovery
+and uncertain Git-prune scope prohibit prune.
+
+Manual dry run: `python -m runtime.daemon.disk_sweeper --dry-run --runtime-root
+/absolute/runtime` (one command). JSON is in `<daemon_home>/disk-sweep/`; existing
+org audit action is `disk_sweep_summary`. Allocation is inode-deduped and successful
+removal-attributed; retained/partial/unreached bytes and physical freed space stay
+unknown, whole-disk percent is context only. Below20% is flagged in audit/JSON;
+no new notification interface. Linux same-effective-UID all-thread process
+observations are snapshots, not host-wide absence or a writer fence. Missing
+mount/process/ownership evidence refuses.
+
+See the [full current contract](../superpowers/specs/2026-10-15-nightly-disk-sweeper.md)
+for evidence semantics, limitations, finite disposable verification and staged
+operational acceptance. The focused standalone driver supports `--cases 9 10`
+for job lineage/retry controls and `--isolation-case mount` / `--isolation-case root`
+for real disposable namespace boundaries. Run as the ordinary user; only its
+private helper is mapped root. Missing capabilities return77/UNAVAILABLE, never
+PASS; no privileged fallback or new automated check is authorized. Source
+publication does not activate deletion. Existing seven agent sessions remain until seven actual approved on-night observations
+and a separately approved cutover; no automatic manual-script fallback.
+
 ## Org Config: Workspace Cleanup
 
 `workspace_cleanup.enabled` is a boolean scheduler switch that defaults to
@@ -1295,7 +1364,8 @@ The former default `not integration` selection was deleted, including its
 unmarked component, contract and system acceptance cases. Git history preserves
 that source; do not restore it as a hidden unit or renamed E2E suite.
 `scripts/local_ci.sh python` refuses with exit 2. `all` runs source boundary and
-Web lint/static checks on Node 24 and reports units RETIRED and daily E2E PENDING.
+Web lint/static checks on Node 24 and reports units RETIRED. Its literal daily
+PENDING message means corrected behavior is unproved; historical schedules failed.
 There is no default Python selection: pytest requires explicit existing canonical
 platform file selectors, or the isolated parent with `-m integration`.
 
@@ -1317,10 +1387,13 @@ behavioral regressions can be detected only later when their coverage executes.
 
 Fresh Product E2E runs **schedule only**, `0 19 * * *` (19:00 UTC / 03:00
 Asia/Shanghai), on default-branch immutable `github.sha`. Baseline Python
-3.12/3.13/3.14 and existing TERM3.12/INT3.14 launcher diagnostics feed
+3.12/3.14 and existing TERM3.12/INT3.14 launcher diagnostics feed
 `Daily Product E2E Health`. It is never a merge check. No local E2E alias,
 manual/PR/push/release dispatch, auto-retry or extra schedule is supported.
-First scheduled execution is **PENDING**; prior first-slice receipts remain
+Scheduled historical runs38482572306 and38644465643 were observed and failed
+at their own immutable sources. Corrected behavior remains **PENDING** until
+the existing daily default-source lane executes the repair; historical3.13
+failures and all-six-cell evidence remain unchanged. Prior first-slice receipts remain
 historical evidence at their own source, not daily/final-head verification.
 Engineering_manager owns daily failure/missing-evidence triage through existing
 tasks/threads; no new notifications or guaranteed response SLA is implied.
@@ -1982,3 +2055,29 @@ nonforce push and manager guarded merge remain. Python units RETIRED; integratio
 INCLUDING callback SKIPPED24342; SQL/parser/product/security/protected/executable
 proof UNEXECUTED/FOUNDER-WAIVED139429/430. Root retains K2a2–K6, real-agent/two-org/
 override/backup-copy operational acceptance. No live action or trial renewal.
+
+
+Current-main C3 composition preserves automatic job admission: omitted/false
+review_required executes through native owner checks; true refuses before allocation,
+legacy true pending is inert, and /run remains a tombstone. Authenticated later
+prerequisite loss rechecks move/causal ownership in the native Pause transaction
+before its failed-before-launch CAS, audit/journal COMMIT and genuine wake. Only
+that exact completed no-launch refusal may settle; partial scratch/environment,
+output or process effects and earlier uncertainty remain in producer history.
+Naming keeps INSTALL-only N-SAC-1 structural admission and actual install-diagnostic
+provenance alongside SAME native disposition, rollback and reconciliation rules;
+no removed whole-release naming fingerprint is restored.
+
+The scheduled daemon disk worker reserves a global native writer per admitted
+org before spawn, through supervision/reap/report. Held/unowned orgs defer with
+bounded codes in the existing summary/audit; other admitted orgs continue. On-mode
+child admission and prune re-read the actual parent's active global writer ID
+through strict append-only history and validate the optional move layout/hold.
+An installed layout with missing/unknown ownership refuses before mutation; absent
+layout preserves native behavior. Missing/incomplete effect closure, interruption
+and partial mutation retain unknown writer evidence; a clean later provider result
+cannot erase it. The common1800-second window includes reservation admission.
+Off/default dry_run, metadata/process/age/containment safeguards and manual dry-run
+remain; no cleanup/activation authority follows. These source changes have no
+behavioral/migration/recovery proof; integration INCLUDING callback SKIPPED24342,
+Python units RETIRED. APPLY_AVAILABLE=false, no COMPLETE writer; D/E/F remain root-owned.

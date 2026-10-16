@@ -1,5 +1,56 @@
 # Jobs — Design Spec
 
+## Automatic job admission — THR309seq1
+
+Obtain any required content authorization in an existing thread BEFORE job
+submission. From a genuine active ordinary task/session, omit deprecated
+`review_required` or set it false; rationale is optional context. Parsed true
+refuses422 `review_required_removed` after the existing identity/purpose/title
+checks and before allocation. New CLI true exits2 before HTTP; never silently
+flip/retry. Old clients may need an upgrade or optional rationale for false
+mode. New clients cannot change old-server policy; deployment is separate.
+
+Accepted jobs use existing automatic admission, limits and Pause/owner checks.
+HTTP201/CLI exit0 is admission, never successful script execution. False
+nonpersistent defaults300s; persistent defaults unbounded; explicit1..86400s
+wins. Natural nonzero remains completed/nonzero and is an unsuccessful operation.
+Inspect actual reason/exit/output and retain all partial/unknown-launch evidence.
+
+Manual `POST /jobs/{id}/run` is a nonexecuting410 `job_manual_run_removed`
+compatibility tombstone after existing auth/model/unknown/hold/nonpending checks.
+`jobs run` and `scripts run` exit2 locally. Both Web detail surfaces expose
+reject for pending and stop for running, with output/history intact. Historical
+review fields and true pending rows remain unchanged and never auto-launch on
+startup or Resume. `pending_review_jobs` remains the actual pending+true legacy
+disposition backlog. Inspect and explicitly reject one ID with a reason when
+appropriate; no bulk disposal, migration or automatic resubmission.
+
+Shared side-effect-free cwd/interpreter preflight runs before insertion. A real
+later prerequisite loss can settle only the authenticated false pending,
+never-started, proven-no-launch owner under the existing locks/lease/provenance:
+failed/spawn_failed, NULL exit/start, actual finish, bounded diagnostic and genuine
+submitting-agent failure audit, no start audit. Journal settlement commits with
+the row/audit; the existing all-terminal wake runs after commit. Hold/owner/session
+refusal, lost CAS and possible launch are never converted into this failure.
+Errors identify a committed failed job_id/status. Reserved-launch failures keep
+their actual running-to-failed semantics. No runner limits, terminal predicate,
+root Pause algorithm, schema/auth/permission/credential or general notifier change.
+
+Wait on actual owned nonterminal IDs through status=blocked/waiting_on_job_ids,
+then authenticate the receipt on resume. A job already terminal needs inspection,
+not a new wait; reject is a nonexecution disposition, never script success.
+Completion-recovery sessions cannot submit; a thread invocation token is not a
+task session. Job admission grants no content authorization or lasting permission.
+
+The earlier approval-specific design below is retained as historical context:
+its true-mode queue, manual-run producer, notification promise, embedded skill
+draft and retired test commands are superseded by the current contract above.
+Historical SQL/receipts and unrelated remote-job addenda keep their meanings.
+For current operational instructions use the release-owned bundled jobs skill.
+OpenAPI generation uses `uv run python scripts/generate_openapi_snapshot.py
+--check` (or reviewed `--write`), never retired Python units.
+
+
 > Test-policy amendment (THR-291 seq40): Python unit source and gates cited below
 > are retired. Product invariants and acceptance obligations remain unchanged;
 > replacement E2E coverage is PENDING. See [the coverage gap record](../../python-test-reset.md).
@@ -120,7 +171,7 @@ clarification neither implements nor withdraws it. The current examples and
 cap-specific guidance below reflect the implemented limitation; unrelated
 historical design sections retain their original scope.
 
-## 1. Goal
+## Historical design — original goal
 
 Today's `scripts` module exists to solve one problem — an agent hits a permission wall, founder runs the command, agent unblocks via revisit. It can't address a second problem that turns out to be just as common: **agents block on shell calls that don't return** (dev servers, watchers, polling loops, long builds). The current bash tool synchronously blocks until the command exits or the session times out — at which point the task is marked terminal FAILED and the agent has made no progress.
 

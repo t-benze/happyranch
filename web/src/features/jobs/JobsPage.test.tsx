@@ -2,8 +2,10 @@ import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 import { describe, expect, test } from 'vitest';
+import { Route, Routes } from 'react-router-dom';
+import { JobDetailPane } from './JobDetailPane';
 import { AppRoutes } from '@/routes';
-import { renderWithProviders } from '@/test/render';
+import { renderWithProviders, savedLocaleAdapter } from '@/test/render';
 import { server } from '@/test/server';
 import type { JobRecord, TaskRecord } from '@/lib/api/types';
 
@@ -56,8 +58,9 @@ function makeJob(overrides: Partial<JobRecord>): JobRecord {
   return { ...JOB, ...overrides };
 }
 
-// A spread across all five JobStatus values; exactly one pending.
+// All five statuses plus automatic deferred pending; only one legacy disposition.
 const LIST_JOBS: JobRecord[] = [
+  makeJob({ id: 'JOB-DEFERRED', status: 'pending', review_required: false, title: 'Paused automatic job' }),
   makeJob({
     id: 'JOB-0005',
     status: 'pending',
@@ -127,8 +130,8 @@ describe('JobsPage — approval-queue list', () => {
       ).toBeInTheDocument(),
     );
 
-    // Amber callout total = pending count (exactly one pending in the fixture).
-    expect(screen.getByText(/1 job needs you/)).toBeInTheDocument();
+    // Legacy disposition count excludes the other, automatic deferred pending row.
+    expect(screen.getByText(/1 legacy pending job needs disposition/)).toBeInTheDocument();
 
     // Outcome pills render for running / terminal statuses.
     expect(screen.getByText('running')).toBeInTheDocument();
@@ -141,16 +144,16 @@ describe('JobsPage — approval-queue list', () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     stubJobsList([
       makeJob({ id: 'JOB-OK', status: 'completed', exit_code: 0, script_text: 'ok-cmd' }),
-      makeJob({ id: 'JOB-BAD', status: 'failed', exit_code: 1, script_text: 'bad-cmd' }),
+      makeJob({ id: 'JOB-BAD', status: 'completed', exit_code: 7, script_text: 'bad-cmd' }),
     ]);
     mountAt(`/orgs/${SLUG}/jobs`);
 
     // exit 0 → positive tone → green tinted FILL (not a bare outline).
     const ok = await screen.findByText('exit 0');
     expect(ok).toHaveClass('bg-tier-green-tint');
-    // non-zero exit → danger tone → red tinted fill, and the row shows the
+    // Natural completed/nonzero → danger tone → red tinted fill, and the row shows the
     // real exit code (THR-099 Batch 2: outcome chips converge on semanticTone).
-    const bad = await screen.findByText('exit 1');
+    const bad = await screen.findByText('exit 7');
     expect(bad).toHaveClass('bg-tier-red-tint');
   });
 
@@ -162,10 +165,10 @@ describe('JobsPage — approval-queue list', () => {
     // The fixture spreads one job across each of the five lifecycle states, so
     // every status renders as a labelled section (an <section aria-label> →
     // implicit ARIA "region" landmark), in founder-blocking-first order. The
-    // pending group carries the design's "Awaiting your approval" label.
-    const pending = await screen.findByRole('region', { name: 'Awaiting your approval' });
+    // pending group carries the design's "Pending" label.
+    const pending = await screen.findByRole('region', { name: 'Pending' });
     // The header carries the group count (exactly one pending in the fixture).
-    expect(within(pending).getByText('1')).toBeInTheDocument();
+    expect(within(pending).getByText('2')).toBeInTheDocument();
     expect(screen.getByRole('region', { name: 'Running' })).toBeInTheDocument();
     expect(screen.getByRole('region', { name: 'Completed' })).toBeInTheDocument();
     expect(screen.getByRole('region', { name: 'Failed' })).toBeInTheDocument();
@@ -182,7 +185,7 @@ describe('JobsPage — approval-queue list', () => {
     mountAt(`/orgs/${SLUG}/jobs`);
 
     // Pending (founder-blocking) group header → amber archiving dot.
-    const pending = await screen.findByRole('region', { name: 'Awaiting your approval' });
+    const pending = await screen.findByRole('region', { name: 'Pending' });
     expect(pending.querySelector('.bg-status-archiving')).not.toBeNull();
     // Running group → blue info dot; Failed group → red abandoned dot.
     expect(
@@ -217,7 +220,7 @@ describe('JobsPage — approval-queue list', () => {
     mountAt(`/orgs/${SLUG}/jobs`);
 
     await waitFor(() =>
-      expect(screen.getByText(/Queue clear · nothing waiting on you/)).toBeInTheDocument(),
+      expect(screen.getByText(/No legacy pending jobs needing disposition/)).toBeInTheDocument(),
     );
   });
 
@@ -243,7 +246,7 @@ function stubJobDetail(job: JobRecord = JOB, tasks: TaskRecord[] = []) {
     http.get(`/api/v1/orgs/${SLUG}/jobs/${job.id}`, () =>
       HttpResponse.json(job),
     ),
-    // "If approved" cascade: tasks blocked on this job
+    // "Waiting on this job" cascade: tasks blocked on this job
     http.get(`/api/v1/orgs/${SLUG}/tasks`, ({ request }) => {
       const url = new URL(request.url);
       if (url.searchParams.get('blocked_on_job_id') === job.id) {
@@ -374,70 +377,21 @@ describe('JobDetailPage — read path', () => {
     expect(within(rail).getByText('bash')).toBeInTheDocument();
   });
 
-  test('shows gated notice for review_required pending job', async () => {
+  test.each([true, false])('pending review_required=%s has reject only and never calls run', async (reviewRequired) => {
     sessionStorage.setItem('happyranch.token', 'tok');
-    stubJobDetail(JOB);
-    mountAt(`/orgs/${SLUG}/jobs/JOB-0001`);
-
-    await waitFor(() => {
-      expect(screen.getByText(/This action is gated/)).toBeInTheDocument();
-    });
-    // Direction-A: controls are hoisted to the top-right header — a "Reject"
-    // secondary action and a single "Approve & run" primary action (the founder
-    // /run IS the approve+run; there is no separate approve step).
-    expect(screen.getByRole('button', { name: 'Approve & run' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Reject' })).toBeInTheDocument();
-  });
-
-  test('gated job shows BOTH the Reject and Approve & run header buttons', async () => {
-    sessionStorage.setItem('happyranch.token', 'tok');
-    stubJobDetail(JOB);
-    mountAt(`/orgs/${SLUG}/jobs/JOB-0001`);
-
-    await waitFor(() => {
-      expect(screen.getByText(/This action is gated/)).toBeInTheDocument();
-    });
-    // Header must show BOTH actions
-    expect(screen.getByRole('button', { name: 'Approve & run' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Reject' })).toBeInTheDocument();
-  });
-
-  test('gated "Approve & run" opens the single confirm and fires exactly ONE run mutation', async () => {
-    sessionStorage.setItem('happyranch.token', 'tok');
-    stubJobDetail(JOB);
-    // Count the founder /run calls — the single confirm must fire exactly one,
-    // and the founder /run IS the approve+run (no separate approve endpoint).
+    stubJobDetail({ ...JOB, review_required: reviewRequired });
     let runCalls = 0;
-    server.use(
-      http.post(`/api/v1/orgs/${SLUG}/jobs/JOB-0001/run`, () => {
-        runCalls += 1;
-        return HttpResponse.json({ id: 'JOB-0001', status: 'running', started_at: '2026-05-23T12:01:00Z', cwd_resolved: '/x', timeout_seconds: 300, events_url: '' });
-      }),
-    );
-
-    const user = userEvent.setup();
+    server.use(http.post(`/api/v1/orgs/${SLUG}/jobs/JOB-0001/run`, () => {
+      runCalls += 1;
+      return HttpResponse.json({ detail: { code: 'job_manual_run_removed' } }, { status: 410 });
+    }));
     mountAt(`/orgs/${SLUG}/jobs/JOB-0001`);
-
-    await waitFor(() => {
-      expect(screen.getByRole('button', { name: 'Approve & run' })).toBeInTheDocument();
-    });
-
-    // ONE button → ONE popup confirm (no intermediate two-step card).
-    await user.click(screen.getByRole('button', { name: 'Approve & run' }));
-
-    const dialog = await screen.findByRole('dialog');
-    // The popup shows the VERBATIM command and is titled for the gated approve+run.
-    expect(within(dialog).getByText('docker image prune -af')).toBeInTheDocument();
-    expect(within(dialog).getByText(/Approve & run JOB-0001/)).toBeInTheDocument();
-
-    // Confirm inside the popup → exactly one /run call (no double-submit).
-    await user.click(within(dialog).getByRole('button', { name: 'Approve & run' }));
-
-    await waitFor(() => {
-      expect(runCalls).toBe(1);
-    });
-    // Give any erroneous second submission a chance to land, then re-assert.
-    expect(runCalls).toBe(1);
+    expect(await screen.findByRole('button', { name: 'Reject' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Run|Approve|run/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    if (reviewRequired) expect(screen.getByText('Legacy pending job — will not run.')).toBeInTheDocument();
+    expect(screen.getByText('docker image prune -af')).toBeInTheDocument();
+    expect(runCalls).toBe(0);
   });
 
   test('gated chip Reject opens RejectJobDialog', async () => {
@@ -491,7 +445,7 @@ describe('JobDetailPage — read path', () => {
     mountAt(`/orgs/${SLUG}/jobs/JOB-0001`);
 
     await waitFor(() => {
-      expect(screen.getByText(/If approved/)).toBeInTheDocument();
+      expect(screen.getByText(/Waiting on this job/)).toBeInTheDocument();
       expect(screen.getByText(/TASK-0099/)).toBeInTheDocument();
       expect(screen.getByText(/Deploy the hotfix/)).toBeInTheDocument();
     });
@@ -616,44 +570,6 @@ describe('JobDetailPage — reject dialog', () => {
   });
 });
 
-describe('JobDetailPage — run dialog', () => {
-  test('non-gated "Run" opens the single confirm directly (no two-step)', async () => {
-    sessionStorage.setItem('happyranch.token', 'tok');
-    const nonGated: JobRecord = { ...JOB, review_required: false };
-    stubJobDetail(nonGated);
-
-    let runCalls = 0;
-    server.use(
-      http.post(`/api/v1/orgs/${SLUG}/jobs/JOB-0001/run`, async () => {
-        runCalls += 1;
-        return HttpResponse.json({ id: 'JOB-0001', status: 'running', started_at: '2026-05-23T12:01:00Z', cwd_resolved: '/x', timeout_seconds: 300, events_url: '' });
-      }),
-    );
-
-    const user = userEvent.setup();
-    mountAt(`/orgs/${SLUG}/jobs/JOB-0001`);
-
-    await waitFor(() => {
-      expect(screen.getByRole('button', { name: 'Run' })).toBeInTheDocument();
-    });
-
-    // ONE button → the popup confirm opens directly (no intermediate two-step).
-    await user.click(screen.getByRole('button', { name: 'Run' }));
-
-    const dialog = await screen.findByRole('dialog');
-    // Non-gated popup shows the verbatim command and the plain "Run" title.
-    expect(within(dialog).getByText('docker image prune -af')).toBeInTheDocument();
-    expect(within(dialog).getByText(/Run JOB-0001/)).toBeInTheDocument();
-
-    // Confirm inside the popup → exactly one /run call (no double-submit).
-    await user.click(within(dialog).getByRole('button', { name: 'Run' }));
-    await waitFor(() => {
-      expect(runCalls).toBe(1);
-    });
-    expect(runCalls).toBe(1);
-  });
-});
-
 describe('JobDetailPage — stop (running job)', () => {
   test('renders Stop button for running job and POSTs to /stop', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
@@ -742,7 +658,21 @@ describe('JobDetailPage — output', () => {
       expect(screen.getByText('Duration')).toBeInTheDocument();
       expect(screen.getByText('5.0s')).toBeInTheDocument();
       expect(screen.getByText('Reviewed by')).toBeInTheDocument();
-      expect(screen.getByText('founder')).toBeInTheDocument();
+      // Page content only: the shell account row shows the canonical founder fallback.
+      expect(within(screen.getByRole('main')).getByText('founder')).toBeInTheDocument();
     });
+  });
+});
+
+
+describe('JobDetailPane — no manual launch', () => {
+  test.each([['en', true], ['en', false], ['zh-CN', true], ['zh-CN', false]] as const)('%s pending review_required=%s retains reject without run', async (locale, reviewRequired) => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    stubJobDetail({ ...JOB, review_required: reviewRequired });
+    renderWithProviders(<Routes><Route path="/orgs/:slug/jobs/:job_id" element={<JobDetailPane jobId={JOB.id} />} /></Routes>,
+      { route: `/orgs/${SLUG}/jobs/${JOB.id}`, i18n: { adapter: savedLocaleAdapter(locale) } });
+    expect(await screen.findByRole('button', { name: locale === 'en' ? 'Reject' : '拒绝' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Run|Approve|run/ })).not.toBeInTheDocument();
+    expect(screen.getByText('docker image prune -af')).toBeInTheDocument();
   });
 });

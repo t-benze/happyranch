@@ -379,6 +379,23 @@ remain `census_not_reconciled`. Bounded exhaustive read validation rejects
 moving captures and unresolved authoritative task/parent/type facts without
 changing ordinary launch/refusal behavior. These source facts confer no
 installed/epoch/collection authority.
+
+The seq428 closed failed-before-exposure census class requires complete bounded
+actual task/result/audit evidence, one ordered authenticated tuple and a strict
+raised/false/false/INTEGER0/null/null terminal with supported failed lifecycle
+and exhaustive no-exposure/no-callback/no-credit evidence. It retains the failed
+ordinal in all counts/digests/seals while excluding it from shown/natural-session
+denominators. Missing/pending/contradictory evidence and all-failure populations
+remain insufficient; no execution or measurement authority follows.
+
+The existing task invocation-exception catch logs only task/agent/reserved runtime
+SID (or explicit unavailable), exception class and at most eight bounded frame
+locations, with truncation stated. External filenames are hidden; exception
+messages, source lines, prompts, credentials and frame locals are not added to
+this diagnostic. Existing failure notes, failure/terminal/parent-wake/thread
+behavior and control-exception propagation remain unchanged. Diagnostic/logging
+failure cannot replace those effects. This supplies future metadata, not a cause
+or repair for the original unknown launch exception and not measurement acceptance.
 The seal-action `/audit` source view fingerprints declared actually loaded
 Python functions at their import origins and compares them to bounded compiled
 source without execution. It records the actual interpreter, registered
@@ -1022,10 +1039,12 @@ supported lasting-grant channel, and it changes through the team-manager-gated
 `manage-agent` update path (see `runtime/skills/bundled/manage-agent/SKILL.md`):
 a worker cannot re-grant itself, the target must belong to the manager's team,
 `expected_revision` must be a fresh 64-hex revision, and a manager changing its
-own rules (or another manager's) needs a founder escalation. A one-off blocked
-operation instead uses one reviewed bounded **job**
-(`runtime/skills/bundled/jobs/SKILL.md`), which authorizes only that command and
-never expands ongoing permissions.
+own rules (or another manager's) needs a founder escalation. For a one-off blocked operation, obtain exact authorization in an existing
+thread BEFORE submitting an automatic **job** from a genuine ordinary task
+session (`runtime/skills/bundled/jobs/SKILL.md`). Omit/set false for review_required;
+true refuses422 before allocation. Admission never grants authorization over
+contents or expands ongoing permissions. Missing credentials and product policy
+refusals retain their existing resolution; no enforcement change follows.
 
 An `allow_rules` update does **not** produce the same live effect on every
 executor:
@@ -1248,3 +1267,29 @@ runner exception, or unclassifiable outcome. Resume accepts only a unique,
 closed-schema terminal row exactly bound to the current manifest identity and
 argv; stale, malformed, duplicate, or conflicting rows fail before any runner
 starts.
+
+
+Current-main C3 composition preserves automatic job admission: omitted/false
+review_required executes through native owner checks; true refuses before allocation,
+legacy true pending is inert, and /run remains a tombstone. Authenticated later
+prerequisite loss rechecks move/causal ownership in the native Pause transaction
+before its failed-before-launch CAS, audit/journal COMMIT and genuine wake. Only
+that exact completed no-launch refusal may settle; partial scratch/environment,
+output or process effects and earlier uncertainty remain in producer history.
+Naming keeps INSTALL-only N-SAC-1 structural admission and actual install-diagnostic
+provenance alongside SAME native disposition, rollback and reconciliation rules;
+no removed whole-release naming fingerprint is restored.
+
+The scheduled daemon disk worker reserves a global native writer per admitted
+org before spawn, through supervision/reap/report. Held/unowned orgs defer with
+bounded codes in the existing summary/audit; other admitted orgs continue. On-mode
+child admission and prune re-read the actual parent's active global writer ID
+through strict append-only history and validate the optional move layout/hold.
+An installed layout with missing/unknown ownership refuses before mutation; absent
+layout preserves native behavior. Missing/incomplete effect closure, interruption
+and partial mutation retain unknown writer evidence; a clean later provider result
+cannot erase it. The common1800-second window includes reservation admission.
+Off/default dry_run, metadata/process/age/containment safeguards and manual dry-run
+remain; no cleanup/activation authority follows. These source changes have no
+behavioral/migration/recovery proof; integration INCLUDING callback SKIPPED24342,
+Python units RETIRED. APPLY_AVAILABLE=false, no COMPLETE writer; D/E/F remain root-owned.

@@ -4259,8 +4259,8 @@ class JobRecord(BaseModel):
     # this triggers SIGKILL with reason="output_cap". 50 MiB default matches
     # the column default in the jobs table schema.
     max_output_bytes: int | None = 52428800
-    # Founder-review gate. True → row inserted as `pending`, awaits explicit
-    # /run. False (default) → auto-run inline at /submit.
+    # Historical input/receipt field. New parsed true refuses before allocation.
+    # Omitted/false enters automatic admission; legacy true pending never runs.
     review_required:  bool = False
     # Long-running flag. True → no default runtime cap (unbounded unless an
     # explicit max_runtime_seconds is provided), killed only by /stop or the

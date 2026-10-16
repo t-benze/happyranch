@@ -525,8 +525,20 @@ former names report current names without forwarding. Founder transport stays
 naming ID operations preserve original owner checks. Human Name · ID output is
 explicitly current enrichment, not a historical snapshot or JSON/history rewrite.
 
+
+New-message body admission excludes email/word interiors, escaped tokens and
+supported inline/fenced code; ASCII quoted prose remains eligible; explicit blockquote lines are literal. Literal-only
+bodies perform no body naming lookup. Genuine body aliases fail closed on service
+failure, including empty explicit recipients and per-token unavailability. Known
+actual canonical IDs retain owner checks; ID-shaped aliases supply no evidence.
+Observed Former refusal precedes later chunk failures. en/zh-CN service wording
+asks for retry or a known intended-recipient ID, with no body rewrite, automatic
+retry/send or locale-triggered effect. Historical messages/delivery and release
+measurement keep their original interpretation. The exact finite scanner contract
+is in the current identity-names core spec (THR293seq174).
+
 All associated CLI upload paths preflight former body/recipient tokens; final
-forwarded text is checked using the unchanged quoted/email-interior grammar.
+forwarded text is checked using the same explicit-prose scanner as new message admission.
 Unknown text remains intact. A read preflight is no reservation and uploads are
 independent; server action admission can refuse after an intervening rename.
 Current task/full/resumed/fallback/dream/wake/schedule context refreshes labels
@@ -543,6 +555,12 @@ required. See the [current naming contract](../superpowers/specs/2026-10-09-iden
 
 ## Naming v1 core, API and routing source
 
+Naming install alone uses N-SAC-1 transaction-time structural admission over the
+selected org DB, actual task/audit dependencies, closed naming interactions and
+unchanged complete workflow/Pause/move validators. Global workflow/legacy
+references retain their strict contract; naming readiness grants no authority.
+Reads and ordinary non-install refreshes never invoke admission or install names.
+
 The internal naming registry retains chosen/current/former ownership permanently,
 while default-only rejected reservations release. Absent-owner revision metadata
 survives, preventing ABA; exact same-ID reenrollment restores chosen spelling.
@@ -558,6 +576,14 @@ claims yield only a typed diagnostic/current name; eligible=false prevents
 forwarding. Founder remains human and cannot be a task owner or agent participant.
 Reads never install/reconcile and preserve baseline canonical-ID availability
 with explicit null label/revision metadata on naming-only failure. The routing parser retains ordinary unknown @text behavior.
+
+The bounded naming diagnostic retains the last actual failed install category
+when a later non-install refresh only observes absent naming. Absence without
+that provenance remains `naming_not_installed`; stale diagnostics are not installer
+evidence. A different current failure takes precedence while observed. A new
+install attempt supersedes the cause, and a successful refresh clears it. This
+volatile diagnostic changes no readiness/admission/write decision or public
+response vocabulary and adds no retry or read-time reconciliation.
 
 
 Current routing source resolves names/IDs case-insensitively with the unchanged
@@ -998,7 +1024,7 @@ limits. Other authoring, revise, slice and total-step rules stay unchanged.
 - **Founder-facing executor-switch.** `happyranch set-executor` switches an existing agent's executor end-to-end in the org `.md` frontmatter and executor bootstrap (THR-095: agent.yaml is no longer synced). A real executor change clears the old executor-specific `model`; an idempotent request preserves it. The shared canonical instruction pair (`AGENTS.md` + `CLAUDE.md -> AGENTS.md`) and `.claude/skills` are preserved across a switch; only the executor-only `.claude/settings.json` is stale and WARNs by default; cleanup requires an explicit `--clean` flag. CLI-only — no web surface. Commit cf4c9e0; impl `cli/commands/agents.py`, `runtime/daemon/routes/agents.py`.
 - **Per-agent memory.** Each agent keeps durable `MEM-NNN` learnings plus task recall. Specs `docs/superpowers/specs/2026-04-18-agent-memory-design.md` (superseded), `docs/superpowers/specs/2026-05-13-per-agent-learnings-structural-upgrade-design.md`; impl `runtime/infrastructure/learnings_store.py`. See [Per-Agent Learnings](#per-agent-learnings) below for traps.
 - **Retired System Assistant.** Feature routes/CLI/settings/dock are removed. Legacy files, links and historical records remain inert.
-- **Jobs.** Background subprocesses run by the daemon, with two policy flags (`review_required`, `persistent`) and founder-review gating. Spec `docs/superpowers/specs/2026-05-26-jobs-design.md` (current); skill `runtime/skills/bundled/jobs/SKILL.md`; impl `runtime/daemon/routes/jobs.py`, `runtime/daemon/jobs_runner.py`. (Jobs absorbed the earlier "agent script requests" feature, `docs/superpowers/specs/2026-05-23-agent-script-requests-design.md`, now superseded.) See [Jobs](#jobs) below for traps.
+- **Jobs.** Background subprocesses run by the daemon, with automatic admission and independent persistence; content authorization precedes submission in a thread. Spec `docs/superpowers/specs/2026-05-26-jobs-design.md` (current); skill `runtime/skills/bundled/jobs/SKILL.md`; impl `runtime/daemon/routes/jobs.py`, `runtime/daemon/jobs_runner.py`. (Jobs absorbed the earlier "agent script requests" feature, `docs/superpowers/specs/2026-05-23-agent-script-requests-design.md`, now superseded.) See [Jobs](#jobs) below for traps.
 - **Task blocked by job.** A task can self-block on one or more jobs via `tasks.blocked_on_job_ids`; it auto-resumes when all are terminal. Spec `docs/superpowers/specs/2026-05-28-task-blocked-by-job-design.md`. See [Task Blocked By Job](#task-blocked-by-job) below for traps.
 - **PR CI wait / guarded merge.** PR-producing engineering tasks use the jobs + `blocked_on_job_ids` path to wait for GitHub CI outside the agent session. Two CLI entrypoints (`python -m runtime.daemon.pr_ci_waiter` and `python -m runtime.daemon.pr_ci_merge`) wired to real `gh` provide the polling and guarded-merge mechanisms. The poll job (submitted through the existing jobs path with `review_required=false`) polls checks for a pinned PR head SHA, handles no-checks-yet settling, detects stale heads and timeouts, and prints a structured verdict JSON. The poll job performs NO merge. On resume, the task owner triggers `guarded_merge` as a short daemon-run step; it re-enforces all guards (review APPROVE + QA PASS + CI PASS + unchanged SHA + mergeable CLEAN) before merge. No new daemon route, no new task state, and no raw `gh pr merge` permission broadening. Current contract: `docs/agent-guides/orchestrator-contracts.md` (including the **Merge-evidence contract** — the canonical vocabulary `APPROVE | REQUEST_CHANGES | BLOCK | PASS | REVISE | FAIL` and the structured-vs-prose extraction rules: a NON-NULL structured `verdict` is primary; serialized `null`, the durable recall producer's representation of legacy/no-structured rows, uses the strict annotated-prose fallback); implementation: `runtime/daemon/pr_ci_waiter.py`, `runtime/daemon/pr_ci_merge.py`.
 
@@ -1130,16 +1156,40 @@ their diagnostic integrity is `census_not_reconciled`, never a validation or
 health claim. Exhaustive zero-write read validation rejects missing/duplicate/
 corrupt phases and seals, missing starts or expected impressions at zero reads,
 unresolved population/parent/type facts, unknown/pending preparation and zero
-population. It compares opening/closing semantic observer facts (including
+population, subject only to the closed failed-before-exposure class below.
+It compares opening/closing semantic observer facts (including
 errors, pending writer/preparation state and seal progress), excluding sample
-timestamps. Audit history is acquired in primary-key pages of at most 256 rows,
-with no shared Database lock across pages or decoding, and a 100,000-row total
-work limit including unrelated/prior-boot history. Same-connection write counts
+timestamps. Audit, task and result history is acquired in primary-key pages
+of at most 256 rows, with no shared Database lock across pages or decoding,
+and a 100,000-row bound per table including unrelated/prior-boot history.
+Same-connection write counts
 and other-connection data versions bracket acquisition. Movement, read failure
 or work exhaustion returns unavailable; no partial history is validated and no
 retry-until-quiet loop or reader write is performed. A restart allocates a new
 observer boot and never reconstructs old completeness. Constructor/attachment
 failure preserves ordinary org startup with explicit unavailable observation.
+
+Founder THR-091 seq428 permits one closed failed-before-exposure class. Exactly
+one ordered authenticated intent -> identity -> raised terminal must agree on
+org/org-root/boot/ordinal/task/agent/runtime SID, actual parent/type/population
+and supported failed-task lifecycle. The terminal requires Boolean false
+`expectation_known` and `binding_known`, INTEGER zero `launched_callbacks`
+(excluding Boolean/float/string zero), and explicitly null `success` and
+`returncode`. Missing fields, unknown facts, duplicates or contradictions refuse.
+Complete bounded audit/task/result acquisition must prove absence of expectation,
+binding, session_start, impression, launch, result callback and credited
+get/search for that exact tuple. No filtered stream or empty default supplies
+absence proof. Independent attempted/persisted counts/digests, all ordinals and
+full seal history remain mandatory, with stable semantic bookends and no error,
+pending writer or preparation. Observer acquisition pages all three tables in
+at most 256-row SELECTs with a 100,000-row bound per table and revision bookends.
+The failed ordinal remains explicitly classified in internal census results and
+all full counts/digests/seals; it creates no shown/natural-session denominator,
+expectation, binding, start, callback or credit. All-failure/zero qualifying
+populations remain insufficient; ordinary exposed and lawful in-flight checks
+remain. Other retry/resume/SID evidence stays separate. This classification
+supplies no B/C/health/epoch acceptance, temporal POST-retirement zero, source/
+boot/cohort authority, threshold change, reset or history rewrite.
 
 The seal-action audit GET now supplies an optional closed current-serving
 observation from the actual OrgState, with explicit unavailable/unknown fields,
@@ -1172,6 +1222,16 @@ replaces QA; fresh reset requires exact predecessor and fresh independent QA.
 Withdrawal remains possible after stale or unhealthy proof. Damaged, lost,
 ambiguous, partial or moving evidence closes collection with no latest fallback.
 Readers never write, reseal, repair, invalidate or start epochs.
+
+Canonical CLI task sweeps and HTTP list/detail/two-capture comparisons share one
+semantic task projection. It excludes only valid rendering timestamps at
+`pause.observed_at`, `pause.blockers[*].observed_at` and `child_wait.observed_at`.
+Malformed timestamps/structures, unknown fields and every other `observed_at`
+remain evidence. Raw acquired records remain intact. Task lifecycle/owner/SID/
+lineage/content, pause/wait states, result/job bytes, roles and all serving
+counts/digests/seals/errors/generations remain compared. Real serving movement
+(including generation53->54, seal312201->312222 and terminal6->7) refuses;
+timestamp equality cannot retroactively qualify an earlier moving capture.
 
 Backend and canonical CLI JSON/text share the report core. G1 acquisition
 exhausts original tasks/results/jobs/audit evidence with stable bookends and
@@ -1603,6 +1663,19 @@ Traps:
 
 ## Jobs
 
+Authorize contents in a thread BEFORE ordinary task/session submission.
+Omitted/false review_required enters automatic admission, rationale optional;
+true refuses422 before allocation (new CLI exit2), never flip/retry. /run is a
+nonexecuting410 tombstone; both CLI aliases exit2 and both Web details omit Run.
+Legacy true pending rows stay unchanged, never launch on startup/Resume, and
+remain visible as accurate disposition backlog with individual reasoned Reject.
+Initial cwd/interpreter preflight allocates nothing; genuine authenticated false
+never-launched prerequisite loss alone commits failed/spawn_failed, NULL
+start/exit, actual finish/diagnostic/agent audit and journal before the existing
+wake. Holds/owners/session refusals, possible launch, race winners, limits and
+running CAS stay intact. Admission is not script success; completed/nonzero is
+unsuccessful. [Current contract](../superpowers/specs/2026-05-26-jobs-design.md).
+
 Per-org jobs use a SQLite table and files at `<runtime>/orgs/<slug>/jobs/JOB-NNN.{out,err,script}`. Spec: `docs/superpowers/specs/2026-05-26-jobs-design.md`.
 
 Implementation: `runtime/daemon/routes/jobs.py`, `runtime/daemon/jobs_runner.py`, `runtime/infrastructure/database.py`, and `runtime/infrastructure/audit_logger.py`.
@@ -1613,7 +1686,7 @@ Traps:
 
 - Agent identity derives from auth context, never payload `agent`.
 - Submit auth path: `(task_id + session_id)`.
-- `review_required` and `persistent` are honor-system on submit.
+- Parsed true review_required refuses422; only omitted/false enters automatic admission. Persistence remains independent.
 - Auto-resume on terminal supersedes founder revisit for blocked-on-job tasks.
 - Graceful daemon teardown stops task-queue admission before signalling jobs.
   A job actually signalled there persists `failed/daemon_shutdown` with its
@@ -1644,7 +1717,7 @@ Traps:
 - "No checks" is not pass. Use required contexts when branch protection provides them, otherwise require explicit expected checks and a bounded settle window.
 - GitHub `mergeable` / `mergeStateStatus` is not CI green. It is one guard in addition to CI pass.
 - Do not use `gh pr merge --auto` as proof of safety while required checks are absent on `main`.
-- Merge completion is allowed only through the guarded helper or founder-reviewed job, not broad worker `gh pr merge` allow-rules.
+- Merge completion is allowed only through the guarded helper or an explicitly thread-authorized manager job, not broad worker `gh pr merge` allow-rules.
 - The poll job entrypoint is `python -m runtime.daemon.pr_ci_waiter --repo ... --pr N --head-sha <sha> --expected-check ...`; the merge entrypoint is `python -m runtime.daemon.pr_ci_merge --org ... --repo ... --pr N --head-sha <sha> --merge-method ... --ci-verdict ... --review-task-id ... --qa-task-id ...`. Both print structured JSON to stdout and exit with mapped codes.
 
 ## Reply-delivery compact retry captions
@@ -1698,7 +1771,7 @@ running/queued/succeeded or parent resumed/completed. Backend/protected proof
 remains unexecuted; synthetic frontend observations establish only that boundary.
 
 
-Task Pause is a separate root control with generation-checked, idempotent toggles. New Pending-root Pause is409; terminal lifecycle wins. Pausing means committed work or unavailable drain evidence remains; Paused requires complete absence of blockers. A callback, PID0 placeholder, persisted PID or passthrough CLEAN receipt cannot prove tree quiescence. Committed work can settle while held, but future steps/retries/job approvals and founder origin Continue/supersede/revisit/dispatch(resolves) are gated. Only a captured ordinary-purpose actually running session (including a normal v2-admitted manager session) retains its unreviewed auto-job exception. Cancel, job reject/stop and genuine result settlement remain available. Another accepted manager successor root remains unheld. Overview is bounded/read-only and never safe-to-restart. [Current contract](../superpowers/specs/2026-10-10-root-task-pause-resume.md).
+Task Pause is a separate root control with generation-checked, idempotent toggles. New Pending-root Pause is409; terminal lifecycle wins. Pausing means committed work or unavailable drain evidence remains; Paused requires complete absence of blockers. A callback, PID0 placeholder, persisted PID or passthrough CLEAN receipt cannot prove tree quiescence. Committed work can settle while held, but future steps/retries/automatic job admission and founder origin Continue/supersede/revisit/dispatch(resolves) are gated. Only a captured ordinary-purpose actually running session (including a normal v2-admitted manager session) retains its unreviewed auto-job exception. Cancel, job reject/stop and genuine result settlement remain available. Another accepted manager successor root remains unheld. Overview is bounded/read-only and never safe-to-restart. [Current contract](../superpowers/specs/2026-10-10-root-task-pause-resume.md).
 
 Unclaimed completion recovery retains the actual original return and SIDs while held, with no running deadline. Its 120-second deadline is pinned atomically with the accepted real admission/claim, binding and launch journal. Preclaim/admission waiting spends nothing; claimed recovery retains its expiry across Resume, duplicates, retry and restart, including committed no-launch failure. Unresolved original host/tree evidence is separately retained under the original session/owner/generation before recovery conversion. It remains an unknown drain blocker after callbacks, terminal lifecycle, restart or quiescent recovery, without owning a new producer. Known-quiescent originals add no unknown blocker, and deferred unclaimed recovery alone is not execution.
 
@@ -1718,7 +1791,12 @@ cannot rename. A displayed human label provides no authentication proof.
 Provider-aware naming hooks share one org-scoped identity list/query. Successful
 rename/readback refreshes identity metadata, preserving canonical IDs, settings
 and unrelated drafts. Current labels display Name · ID (ID alone when equal or
-unavailable); historical IDs, links, keys, owner/filter/recipient values and
+unavailable). Bounded Founder exception (THR293seq236): the Sidebar account row
+and thread list/detail/message-author/participant-rail sites show the Founder's
+ready current name alone with matching avatar initials, else the canonical
+`founder` ID (unnamed, loading, unavailable, error or another org still loading);
+agents and every other label keep Name · ID. Historical IDs, links, keys,
+owner/filter/recipient values and
 stored message text remain canonical/literal. Metadata follows existing focus/
 reconnect behavior and bounded 30-second polling; availability is never a global
 gate for established ID operations. Editor drafts are scoped by org/kind/ID and
@@ -1734,8 +1812,9 @@ source; the existing task agent filter is the relevant selector. Prospective
 invite resolve omits `thread_id` because that optional scope means existing
 participants; the actual invite endpoint retains final action eligibility.
 Recognized former body/recipient tokens stop UI-managed associated attachment
-uploads when caught by separate preflight. Unknown body @text remains literal,
-including the existing quoted/email token parser behavior. This read is not a
+uploads when caught by separate preflight. Body intentions follow the THR310 caller policy below,
+with ASCII quotes eligible, explicit blockquote lines literal and email/code/escaped tokens excluded. This read
+is not a
 reservation: final server admission may reject after an intervening rename, and
 already-completed uploads are not claimed rolled back. New en/zh-CN text uses
 existing controls/tokens. The naming browser adapter captures 390×844/1440×900
@@ -2342,3 +2421,75 @@ nonforce push and manager guarded merge remain. Python units RETIRED; integratio
 INCLUDING callback SKIPPED24342; SQL/parser/product/security/protected/executable
 proof UNEXECUTED/FOUNDER-WAIVED139429/430. Root retains K2a2–K6, real-agent/two-org/
 override/backup-copy operational acceptance. No live action or trial renewal.
+
+## Literal text and recipient intentions (THR310 seq3/13)
+
+All Founder-authenticated writes, including an unbound agent-launched CLI, reject
+unknown/nonparticipant body intentions with422 and eligible current-name/ID guidance.
+Genuine Former anywhere in To/body retains409 before body422; unknown explicit To
+retains404 and unresolved aliases retain503 under naming failure. Preserve native
+structural/auth/binding/lifecycle/file errors. To alone selects participants (plus
+a genuine agent composer). BODY suggestions are eligible selected prospective
+agents in a new thread, current participants in an existing one; Founder is human,
+never an agent participant or BODY suggestion. Manual `@founder` remains valid.
+
+Validated agent writers retain compatibility; CLI stderr describes ignored tokens
+and canonical narrowed targets or conditional fallback: recipients minus speaker
+outside an exchange, frozen cohort intersect recipients minus speaker inside one,
+possibly empty. Prior catch-up is independent; pending_replies proves neither
+audience nor storage/launches. Direct agent API/internal authors receive no warning
+channel (accepted limitation). Complete valid JSON-only bindings count for CLI
+warning/upload attribution; partial/invalid bindings retain native refusal. No
+response warning field/header/auth change or preflight reservation is introduced.
+Founder-only suppresses new selection while preserving obligations/prior catch-up;
+Founder+unknown differs, and self-only/quote-only use ordinary conditional fallback.
+
+Only start, finite whitespace, or `(` `[` `{` ASCII single/double quote opens an
+unescaped ASCII token. Explicit physical lines with0–3 ASCII spaces then `>` are
+literal; unprefixed lazy continuation and four-space indentation are outside this
+quote rule. Top-level unclosed fences mask to EOF; quoted ticks/fences cannot own
+later notes. The precise finite whitespace/code grammar and examples are in the
+identity-names core spec's THR310 section; this is not a full Markdown parser.
+Nonblank authored bodies remain exact through storage, including controls,
+indentation, CRLF/bare CR and trailing whitespace. The existing strip emptiness
+predicate and attachment-only null outcomes remain; subjects/history are unchanged.
+
+Forwarders quote every physical source line/header/blank/marker. Generated source
+separators may become LF; notes remain verbatim, including CLI note-file newlines.
+CLI's fully serialized quoted excerpt is at most4096 UTF8 bytes, metadata/prefixes/
+newlines/marker included; separator and note excluded. Reserve the quoted marker
+and retain the longest valid source prefix. Web retains its last-message selection
+and size policy. Raw occurrence ranges keep duplicates; admission spellings dedup.
+Insertion replaces only the prefix through caret, preserving suffix/spaces/focus.
+Thread-body rendering styles only proven exact raw intervals, noninteractively;
+ambiguous transformations stay plain, code/Mermaid stay undecorated, task/KB defaults
+and historical delivery stay unchanged. No render-time naming or recipient inference.
+Shared data is protocol/thread-mention-corpus.json (51 lexical +13 write-path rows).
+Public-unexposed mentions_json, authentic debt/outage and genuine task/dream/callback
+proof require actual evidence and cannot be inferred from static/mock checks.
+
+
+Current-main C3 composition preserves automatic job admission: omitted/false
+review_required executes through native owner checks; true refuses before allocation,
+legacy true pending is inert, and /run remains a tombstone. Authenticated later
+prerequisite loss rechecks move/causal ownership in the native Pause transaction
+before its failed-before-launch CAS, audit/journal COMMIT and genuine wake. Only
+that exact completed no-launch refusal may settle; partial scratch/environment,
+output or process effects and earlier uncertainty remain in producer history.
+Naming keeps INSTALL-only N-SAC-1 structural admission and actual install-diagnostic
+provenance alongside SAME native disposition, rollback and reconciliation rules;
+no removed whole-release naming fingerprint is restored.
+
+The scheduled daemon disk worker reserves a global native writer per admitted
+org before spawn, through supervision/reap/report. Held/unowned orgs defer with
+bounded codes in the existing summary/audit; other admitted orgs continue. On-mode
+child admission and prune re-read the actual parent's active global writer ID
+through strict append-only history and validate the optional move layout/hold.
+An installed layout with missing/unknown ownership refuses before mutation; absent
+layout preserves native behavior. Missing/incomplete effect closure, interruption
+and partial mutation retain unknown writer evidence; a clean later provider result
+cannot erase it. The common1800-second window includes reservation admission.
+Off/default dry_run, metadata/process/age/containment safeguards and manual dry-run
+remain; no cleanup/activation authority follows. These source changes have no
+behavioral/migration/recovery proof; integration INCLUDING callback SKIPPED24342,
+Python units RETIRED. APPLY_AVAILABLE=false, no COMPLETE writer; D/E/F remain root-owned.

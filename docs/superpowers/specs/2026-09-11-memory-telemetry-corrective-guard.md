@@ -117,16 +117,42 @@ their diagnostic integrity is `census_not_reconciled`, never a validation or
 health claim. Exhaustive zero-write read validation rejects missing/duplicate/
 corrupt phases and seals, missing starts or expected impressions at zero reads,
 unresolved population/parent/type facts, unknown/pending preparation and zero
-population. It compares opening/closing semantic observer facts (including
+population, subject only to the closed failed-before-exposure class below.
+It compares opening/closing semantic observer facts (including
 errors, pending writer/preparation state and seal progress), excluding sample
-timestamps. Audit history is acquired in primary-key pages of at most 256 rows,
-with no shared Database lock across pages or decoding, and a 100,000-row total
-work limit including unrelated/prior-boot history. Same-connection write counts
+timestamps. Audit, task and result history is acquired in primary-key pages
+of at most 256 rows, with no shared Database lock across pages or decoding,
+and a 100,000-row bound per table including unrelated/prior-boot history.
+Same-connection write counts
 and other-connection data versions bracket acquisition. Movement, read failure
 or work exhaustion returns unavailable; no partial history is validated and no
 retry-until-quiet loop or reader write is performed. A restart allocates a new
 observer boot and never reconstructs old completeness. Constructor/attachment
 failure preserves ordinary org startup with explicit unavailable observation.
+
+Founder THR-091 seq428 permits one closed failed-before-exposure class. Exactly
+one ordered authenticated intent -> identity -> raised terminal must agree on
+org/org-root/boot/ordinal/task/agent/runtime SID, actual parent/type/population
+and supported failed-task lifecycle. The terminal requires Boolean false
+`expectation_known` and `binding_known`, INTEGER zero `launched_callbacks`
+(excluding Boolean/float/string zero), and explicitly null `success` and
+`returncode`. Missing fields, unknown facts, duplicates or contradictions refuse.
+Complete bounded audit/task/result acquisition must prove absence of expectation,
+binding, session_start, impression, launch, result callback and credited
+get/search for that exact tuple. No filtered stream or empty default supplies
+absence proof. Independent attempted/persisted counts/digests, all ordinals and
+full seal history remain mandatory, with stable semantic bookends and no error,
+pending writer or preparation. Observer acquisition pages all three tables in
+at most 256-row SELECTs with a 100,000-row bound per table and revision bookends.
+The failed ordinal remains explicitly classified in internal census results and
+all full counts/digests/seals; it creates no shown/natural-session denominator,
+expectation, binding, start, callback or credit. All-failure/zero qualifying
+populations remain insufficient; ordinary exposed and lawful in-flight checks
+remain. Other retry/resume/SID evidence stays separate. This classification
+supplies no B/C/health/epoch acceptance, temporal POST-retirement zero, source/
+boot/cohort authority, threshold change, reset or history rewrite. The health
+definition digest binds this closed seq428 clause; existing receipts and epoch
+bytes remain immutable and cannot qualify a changed installed source.
 
 This census and its seals are not collection health, installed acceptance or
 epoch authority. The seal-action serving source view is described here. G1
@@ -135,6 +161,25 @@ installed canary/deferred executor/population coverage and full reporting remain
 unimplemented here. Existing backend and canonical CLI guards remain
 `insufficient_instrumentation` with `thresholds_met=false`; no collection/epoch
 transition, deployment, tuning or 48-hour clock starts from this source unit.
+
+Canonical CLI task sweeps and HTTP list/detail/two-capture comparisons share one
+semantic task projection. It excludes only valid rendering timestamps at
+`pause.observed_at`, `pause.blockers[*].observed_at` and `child_wait.observed_at`.
+Malformed timestamps/structures, unknown fields and every other `observed_at`
+remain evidence. Raw acquired records remain intact. Task lifecycle/owner/SID/
+lineage/content, pause/wait states, result/job bytes, roles and all serving
+counts/digests/seals/errors/generations remain compared. Real serving movement
+(including generation53->54, seal312201->312222 and terminal6->7) refuses;
+timestamp equality cannot retroactively qualify an earlier moving capture.
+
+The existing task invocation-exception catch logs only task/agent/reserved runtime
+SID (or explicit unavailable), exception class and at most eight bounded frame
+locations, with truncation stated. External filenames are hidden; exception
+messages, source lines, prompts, credentials and frame locals are not added to
+this diagnostic. Existing failure notes, failure/terminal/parent-wake/thread
+behavior and control-exception propagation remain unchanged. Diagnostic/logging
+failure cannot replace those effects. This supplies future metadata, not a cause
+or repair for the original unknown launch exception and not measurement acceptance.
 
 ## Current-serving source observation (TASK-9734 / TASK-9559)
 

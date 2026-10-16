@@ -62,7 +62,7 @@ Running/claimed work blocks the later operation. Pending native rows survive a h
 
 The host recognizes a separate private C3 final-commit protocol, preserving C1/C2 protocols and immutable retry copies. A held request stays outside FIFO. The final gate composes native identity/evidence validation with the host terminal leaf and durable possible-launch COMMIT. Executor-pool ownership reaches BOTH actual builtin/custom Popen paths, passthrough and direct429 through an explicit ContextVar; real on_started and terminal observations remain distinct. Missing/direct/passthrough receipts are not process-tree quiescence. An earlier uncertain attempt survives later clean results. No synthetic callback, failure, cancellation, slot consumption or old-prompt replay substitutes for deferral.
 
-Job creation and approval/run checks use the real task/session/job owner, including Pause submission provenance and full causal task closure. Actual local subprocess launch rechecks and commits its reservation after scratch preparation, before asynchronous creation. Native job terminal/settlement remains able to record real results; direct exit alone keeps tree cleanup unproven. An already approved safe no-launch deferral retains its exact native runner closure and is redelivered by the existing timer, without another approval, changed request or replacement identity. Lost ownership after process loss requires D reconciliation, never blind approval/relaunch. The job-resume bridge retains actual trigger/job metadata through C1 generation-aware task admission.
+Job creation and automatic admission checks use the real task/session/job owner, including Pause submission provenance and full causal task closure. Actual local subprocess launch rechecks and commits its reservation after scratch preparation, before asynchronous creation. Native job terminal/settlement remains able to record real results; direct exit alone keeps tree cleanup unproven. An already admitted safe no-launch deferral retains its exact native runner closure and is redelivered by the existing timer, without changed request or replacement identity. Lost ownership after process loss requires D reconciliation, never blind approval/relaunch. The job-resume bridge retains actual trigger/job metadata through C1 generation-aware task admission.
 
 C3 census scans all native rows and audit histories without presentation limits, joining complete task lineage/chain/fanout/workflow closure, job waits/resume callbacks, actual active session bindings, remote attempts and causal workspaces, pending source enrollments, profile/publication operations and native writer tails. Terminal rows, missing trackers and a remote terminal digest do not prove quiescence. Leased/recreate_pending/uncertain workspaces, missing ownership, unresolved remote cleanup and opaque bindings report bounded code/ID/remedy records. Remote persistence remains staged; C3 adds no network/remote execution engine, cancellation or settlement writer. D must compose C1/C2/host and these observations under its own final decision; this census does not release a hold or exempt/steal its publisher journal. Pending enrollment filesystem capture precedes the DB interval and a writer epoch change requires recollection.
 
@@ -311,3 +311,29 @@ Reuse TASK11307 section8's finite scenario/expected-observation map: exact eligi
 NO new unit/integration cases/parameters/fixtures, retired Python run/import/collection/restoration, ad hoc Product E2E, protected mutation/process-kill/replay/restoration experiments, Jenkins, live synthetic task/DB operation/provider reset/roster move or reinstated four-control premerge gate. General integration SKIPPED THR243seq42. All unobserved behavior/migration/recovery scenarios remain UNEXECUTED. Source/static QA PASS is not behavioral PASS. Independent full final-head reviewer, honest scoped QA, normal hooks/nonforce publication and manager guarded merge remain; each push renews required gates. PR/main automation remains ONLY Source Boundary Lint and Web Lint(Node24), with standalone source-only dependency lint preserved.
 
 Root source completion owes current-main composition, exact PR/head/checks and inventory, availability and evidence debt plus supported activation/preview/apply/readback handoff. Separately authorized release owner loads source; loaded SHA is UNKNOWN until actually attested. Founder-controlled apply and narrow actual roster/context/reset/authority readback plus ordinary consultant thread turns require separate exact authorization. Preserve holds/receipts on failure and fix the concrete source defect through normal review. Existing consultants stay in Consultant until that actual admitted operation. Historical PR1022/1052 offline evidence remains history, not online readiness or a tool to execute here.
+
+
+Current-main C3 composition preserves automatic job admission: omitted/false
+review_required executes through native owner checks; true refuses before allocation,
+legacy true pending is inert, and /run remains a tombstone. Authenticated later
+prerequisite loss rechecks move/causal ownership in the native Pause transaction
+before its failed-before-launch CAS, audit/journal COMMIT and genuine wake. Only
+that exact completed no-launch refusal may settle; partial scratch/environment,
+output or process effects and earlier uncertainty remain in producer history.
+Naming keeps INSTALL-only N-SAC-1 structural admission and actual install-diagnostic
+provenance alongside SAME native disposition, rollback and reconciliation rules;
+no removed whole-release naming fingerprint is restored.
+
+The scheduled daemon disk worker reserves a global native writer per admitted
+org before spawn, through supervision/reap/report. Held/unowned orgs defer with
+bounded codes in the existing summary/audit; other admitted orgs continue. On-mode
+child admission and prune re-read the actual parent's active global writer ID
+through strict append-only history and validate the optional move layout/hold.
+An installed layout with missing/unknown ownership refuses before mutation; absent
+layout preserves native behavior. Missing/incomplete effect closure, interruption
+and partial mutation retain unknown writer evidence; a clean later provider result
+cannot erase it. The common1800-second window includes reservation admission.
+Off/default dry_run, metadata/process/age/containment safeguards and manual dry-run
+remain; no cleanup/activation authority follows. These source changes have no
+behavioral/migration/recovery proof; integration INCLUDING callback SKIPPED24342,
+Python units RETIRED. APPLY_AVAILABLE=false, no COMPLETE writer; D/E/F remain root-owned.

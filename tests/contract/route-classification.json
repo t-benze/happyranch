@@ -55,7 +55,6 @@
     "POST /api/v1/orgs/{slug}/threads/{thread_id}/rename",
     "GET /api/v1/orgs/{slug}/jobs/",
     "GET /api/v1/orgs/{slug}/jobs/{job_id}",
-    "POST /api/v1/orgs/{slug}/jobs/{job_id}/run",
     "POST /api/v1/orgs/{slug}/jobs/{job_id}/reject",
     "GET /api/v1/orgs/{slug}/jobs/{job_id}/output",
     "GET /api/v1/orgs/{slug}/jobs/{job_id}/events",
@@ -220,6 +219,7 @@
     "POST /api/v1/orgs/{slug}/workflows/reviews/stages": "agent-only current-reviewer mutation",
     "POST /api/v1/orgs/{slug}/workflows/submissions/handoffs": "agent-only current-source mutation",
     "POST /api/v1/orgs/{slug}/workflows/revisions/{revision_operation_id}/submissions": "agent-only current-revision-author mutation",
-    "POST /api/v1/orgs/{slug}/tasks/{task_id}/reconcile-failed-continuation": "agent-only exact THR299 ordinary TASK10725 manager operation; no browser write grant"
+    "POST /api/v1/orgs/{slug}/tasks/{task_id}/reconcile-failed-continuation": "agent-only exact THR299 ordinary TASK10725 manager operation; no browser write grant",
+    "POST /api/v1/orgs/{slug}/jobs/{job_id}/run": "Nonexecuting 410 compatibility tombstone; no browser manual-run producer"
   }
 }

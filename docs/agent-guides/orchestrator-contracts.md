@@ -1,5 +1,22 @@
 # Orchestrator Contracts
 
+## Jobs — automatic admission (THR309seq1)
+
+Content authorization belongs in an existing thread BEFORE ordinary task/session
+job submission. Use omitted/false review_required with optional rationale; true
+refuses422 before allocation (CLI exit2), never flip/retry. No new approval token,
+permission, credential or content grant exists. Manual /run is nonexecuting410;
+legacy true pending never launches on Resume/startup and remains individual
+reasoned-reject disposition backlog. Admission is not script success. Real
+nonterminal owned IDs use status=blocked/waiting_on_job_ids and actual receipt
+inspection on resume; existing all-terminal predicate and wake stay unchanged.
+Preflight before insertion avoids allocation for missing cwd/interpreter.
+Only authenticated false pending never-launched prerequisite loss commits
+failed/spawn_failed with NULL start/exit, actual finish/diagnostic/agent audit
+and journal settlement before that bridge. Hold/owner/session refusal, uncertain
+launch and race winners remain unchanged, as do the running-only terminal CAS,
+limits, genuine callback/final-action and durable job rules. [Current jobs contract](../superpowers/specs/2026-05-26-jobs-design.md).
+
 ## Approved online team move — C1–C3 native admission source (THR296seq135)
 
 C1 binds one org-owned coordinator to task preparation and final launch, retaining
@@ -405,6 +422,12 @@ See the [current naming contract](../superpowers/specs/2026-10-09-identity-names
 
 ## Naming v1 core, API and routing source
 
+Naming install alone uses N-SAC-1 transaction-time structural admission over the
+selected org DB, actual task/audit dependencies, closed naming interactions and
+unchanged complete workflow/Pause/move validators. Global workflow/legacy
+references retain their strict contract; naming readiness grants no authority.
+Reads and ordinary non-install refreshes never invoke admission or install names.
+
 Org identity names use the same outer coroutine gate as supported roster and
 consumer writes, with profile-before-publication ordering preserved. The thread
 RLock is distinct and cannot serialize yielding coroutine writers. Naming helpers
@@ -617,6 +640,48 @@ replacement binding cannot receive a cached done disposition.
 `README.md` is for end users. `CLAUDE.md` is for repo-wide agent instructions. Implementation and behavior tests own runtime rules. These guides explain them; `docs/superpowers/specs/` retains design history.
 
 When starting a feature, read the relevant design doc first and follow existing patterns in `runtime/orchestrator/`.
+
+
+## Independent nightly disk sweep (THR307)
+
+The new `disk_sweep: {mode: "dry_run"}` org block defaults to dry run; only quoted
+`"off"`, `"dry_run"`, `"on"` are accepted. This is independent of `workspace_cleanup`
+and its unchanged legacy scheduler/reclamation flag. Machine-local03:00 (not org
+timezone), next future occurrence only, sequential org order and one1800s monotonic
+batch budget. No cursor/rotation or candidate count cap. Unknown eligibility and
+unreached scope retain; the owned worker process group is stopped on deadline or
+shutdown. `output/` and durable scratch manifest/lock siblings stay excluded.
+
+Terminal actual task AND structural root, fresh complete jobs/process evidence,
+recursive mtime+ctime age of at least one hour and no-follow/same-filesystem
+containment apply to both phases. Git additionally requires owned registration,
+clean/nonignored-untracked status and HEAD reachability through retained local
+branches/remotes; branches remain, ignored contents are disposable. Git removal
+is nonforce, with at most one fully refreshed contained repair/retry. Dry run
+never chmods/removes/prunes. Before trusting Git exit0, a complete no-follow
+linked-admin census reconciles entries, metadata pointers and worktree backlinks
+with Git output and literal task roots. Missing/unreadable/aliased/conflicting
+metadata retains that entire repository as a literal unknown scope with null
+candidate count; independent scopes continue within the same deadline. Identities
+are refreshed before Git removal, repair, retry and prune; earlier partial effects
+stay unknown rather than becoming zero-effect success. A genuinely absent admin
+with primary-only inventory and no task roots remains valid. Partial discovery
+and uncertain Git-prune scope prohibit prune.
+
+Manual dry run: `python -m runtime.daemon.disk_sweeper --dry-run --runtime-root
+/absolute/runtime` (one command). JSON is in `<daemon_home>/disk-sweep/`; existing
+org audit action is `disk_sweep_summary`. Allocation is inode-deduped and successful
+removal-attributed; retained/partial/unreached bytes and physical freed space stay
+unknown, whole-disk percent is context only. Below20% is flagged in audit/JSON;
+no new notification interface. Linux same-effective-UID all-thread process
+observations are snapshots, not host-wide absence or a writer fence. Missing
+mount/process/ownership evidence refuses.
+
+See the [full current contract](../superpowers/specs/2026-10-15-nightly-disk-sweeper.md)
+for evidence semantics, limitations, finite disposable verification and staged
+operational acceptance. Source publication does not activate deletion. Existing
+seven agent sessions remain until seven actual approved on-night observations
+and a separately approved cutover; no automatic manual-script fallback.
 
 ## Workspace Cleanup Configuration
 
@@ -2811,6 +2876,42 @@ equivalent replay authenticates the original committed boundary and preserves
 its ID/time. Invalidations remain append-only; reset requires fresh QA and exact
 predecessor. The exact closed projection is in the corrective memory spec.
 
+G1 owned-job admission preserves the original submitting invocation. A completed
+independent QA result may retain that SID, or use exactly one ordinary same-task,
+same-agent job-result continuation. The latter requires the existing submission
+audit's original SID corroborated by unique original identity/start records, the
+actual original blocked result and its complete job wait, matching completion
+and blocked audits, and one orchestrator resume with the same wait and actual
+terminal owned-job outcomes. The referenced probe job must still be completed
+exit0 with its original command, ownership and complete stdout/stderr evidence.
+The two contiguous ordinary child/worker identity/start tuples must match actual
+parent/type/provider/model facts; the current completed QA result independently
+passes the existing admitted-role check. The blocked callback follows submission;
+both the resume event and new identity follow blocking and precede the resumed
+start, which precedes the final result. Identity preparation may occur on either
+side of the resume audit. Job completion can precede the blocked callback, but
+must precede resume. Audit-ID and timestamp order must both agree with these
+causal boundaries. Before timestamp selection, the reader establishes the audit
+interval from the unique original identity through the unique resumed start and,
+separately, the task-result interval from the unique original-SID blocked result
+through the selected final result. Every intervening same-task row is checked;
+misdated rows before the original identity or after the final result cannot
+disappear. Missing or unparseable timestamps fail closed. Timestamp-overlapping
+evidence outside the ID intervals still participates in ambiguity checks.
+IDs from different tables are never compared as one clock. Legitimate earlier
+history and later callbacks outside both intervals remain outside this chain.
+
+Only ordinary `block_submit` and `job_terminal` resume triggers are supported.
+Every waited job needs its actual matching owned terminal record; unavailable
+records, missing original submission SID, mismatched waits, duplicate/conflicting
+evidence, intervening invocations/starts/results, recovery-purpose launches and
+retry/startup-recovery paths refuse. A supplied SID, same-agent/task label or
+absence of contradictory rows cannot replace these positive joins. This read-side
+correction changes no writers, storage, public envelope, job/session lifecycle,
+independence, probe plan, current installed health, final-commit freshness,
+original-epoch continuity or atomic publication rules. Source verification and
+merge establish no installed C acceptance or collection start.
+
 
 ### S2 initial draft consumers
 
@@ -3700,3 +3801,29 @@ nonforce push and manager guarded merge remain. Python units RETIRED; integratio
 INCLUDING callback SKIPPED24342; SQL/parser/product/security/protected/executable
 proof UNEXECUTED/FOUNDER-WAIVED139429/430. Root retains K2a2–K6, real-agent/two-org/
 override/backup-copy operational acceptance. No live action or trial renewal.
+
+
+Current-main C3 composition preserves automatic job admission: omitted/false
+review_required executes through native owner checks; true refuses before allocation,
+legacy true pending is inert, and /run remains a tombstone. Authenticated later
+prerequisite loss rechecks move/causal ownership in the native Pause transaction
+before its failed-before-launch CAS, audit/journal COMMIT and genuine wake. Only
+that exact completed no-launch refusal may settle; partial scratch/environment,
+output or process effects and earlier uncertainty remain in producer history.
+Naming keeps INSTALL-only N-SAC-1 structural admission and actual install-diagnostic
+provenance alongside SAME native disposition, rollback and reconciliation rules;
+no removed whole-release naming fingerprint is restored.
+
+The scheduled daemon disk worker reserves a global native writer per admitted
+org before spawn, through supervision/reap/report. Held/unowned orgs defer with
+bounded codes in the existing summary/audit; other admitted orgs continue. On-mode
+child admission and prune re-read the actual parent's active global writer ID
+through strict append-only history and validate the optional move layout/hold.
+An installed layout with missing/unknown ownership refuses before mutation; absent
+layout preserves native behavior. Missing/incomplete effect closure, interruption
+and partial mutation retain unknown writer evidence; a clean later provider result
+cannot erase it. The common1800-second window includes reservation admission.
+Off/default dry_run, metadata/process/age/containment safeguards and manual dry-run
+remain; no cleanup/activation authority follows. These source changes have no
+behavioral/migration/recovery proof; integration INCLUDING callback SKIPPED24342,
+Python units RETIRED. APPLY_AVAILABLE=false, no COMPLETE writer; D/E/F remain root-owned.

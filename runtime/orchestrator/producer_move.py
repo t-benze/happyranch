@@ -45,6 +45,7 @@ class NativeWriterDisposition:
     the original validation's no-effect evidence. No HTTP status is classified.
     """
     def __init__(self):
+        self.writer_id = None
         self.no_effect_error = None
         self.uncertain = False
 
@@ -117,6 +118,7 @@ def native_writer(db, *, publisher, agents=(), teams=(), durable=True, settlemen
             admission.check_uncommitted(agents=agents, teams=teams, global_write=unknown_membership or not (agents or teams))
         if durable:
             admission.write_writer(state)
+            disposition.writer_id = key
         admission.writer_epoch += 1
         admission.writers[key] = dict(owner_id=key, publisher=publisher, agents=tuple(agents), teams=tuple(teams))
     primary = None

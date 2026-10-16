@@ -1495,8 +1495,10 @@ def _non_stop_command_warning_section() -> list[str]:
         "continues, and you check on it with `happyranch jobs tail|wait|stop` when",
         "ready. See the **jobs** skill (available",
         "to you under your workspace's skills directory) for the form fields, the",
-        "two policy flags (`review_required`, `persistent`), and how to self-block",
-        "when founder review is required.\n",
+        "persistence flag and genuine job-result waits. Obtain required content",
+        "authorization in a thread BEFORE submission from an ordinary task session.",
+        "Omit review_required or set false; true is refused before allocation.",
+        "Admission is not script success; inspect the actual terminal receipt.\n",
         "If you're uncertain whether a command will return, submit it as a job",
         "with `persistent: true` — cheaper to be wrong than to lose a session.\n",
     ]

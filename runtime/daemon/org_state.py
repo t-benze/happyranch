@@ -78,6 +78,7 @@ class OrgState:
     memory_collection_unavailable: str | None = field(init=False, default=None)
     naming_readiness: str = field(init=False, default="unavailable")
     naming_diagnostic: str | None = field(init=False, default="naming_not_initialized")
+    naming_install_diagnostic: str | None = field(init=False, default=None)
     sessions: SessionTracker = field(default_factory=SessionTracker)
     db_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     kb_lock: asyncio.Lock = field(default_factory=asyncio.Lock)

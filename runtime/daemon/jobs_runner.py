@@ -345,23 +345,25 @@ async def run_job(
 
     started = datetime.now(timezone.utc)
     scratch_token = None
+    from runtime.orchestrator.producer_move import producer_preparation_effects
     if task_id is not None and workspace_root is not None:
-        scratch = prepare_task_scratch(
-            workspace=Path(workspace_root), task_id=task_id,
-            producer_kind="job", producer_id=job_id or "anonymous",
-        )
-        scratch_token = activate_task_scratch(scratch)
+        with producer_preparation_effects(move_owner):
+            scratch = prepare_task_scratch(
+                workspace=Path(workspace_root), task_id=task_id,
+                producer_kind="job", producer_id=job_id or "anonymous",
+            )
+            scratch_token = activate_task_scratch(scratch)
     try:
-        child_env = _sanitize_child_env(dict(os.environ))
-        if scratch_token is not None:
-            # A daemon launched by an agent inherits that parent session's
-            # containment markers.  This job owns a new, task-bound contract;
-            # discard only the superseded sidecar markers before the shared
-            # validator installs the job's canonical values.  TMPDIR/TMP/TEMP
-            # remain intact so unexpected steering is still rejected.
-            child_env.pop("HAPPYRANCH_TASK_TMP_ROOT", None)
-            child_env.pop("HAPPYRANCH_TASK_SCRATCH_MANIFEST", None)
-        child_env = apply_task_scratch_environment(child_env)
+        with producer_preparation_effects(move_owner):
+            child_env = _sanitize_child_env(dict(os.environ))
+            if scratch_token is not None:
+                # A daemon launched by an agent inherits that parent session's
+                # containment markers. This job owns a new, task-bound contract;
+                # discard only superseded markers before shared validation.
+                # TMPDIR/TMP/TEMP retain unexpected-steering refusal.
+                child_env.pop("HAPPYRANCH_TASK_TMP_ROOT", None)
+                child_env.pop("HAPPYRANCH_TASK_SCRATCH_MANIFEST", None)
+            child_env = apply_task_scratch_environment(child_env)
         if move_owner is not None:
             move_owner.executor = interpreter
             move_owner.before_fifo()

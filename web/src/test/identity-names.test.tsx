@@ -17,7 +17,9 @@ import { ThreadsPage } from '@/features/threads/ThreadsPage';
 import { TasksPage } from '@/features/tasks/TasksPage';
 import { SkillDetailPage } from '@/features/skills/SkillDetailPage';
 import type { IdentityView, RenameBody, ResolveBody } from '@/lib/api/types';
+import corpus from '../../../protocol/thread-mention-corpus.json';
 import { translate } from '@/lib/i18n';
+import { Sidebar } from '@/design-system/layouts/AppShell/Sidebar';
 
 // Node fetch requires its own AbortSignal realm; keep real query cancellation.
 beforeAll(() => vi.stubGlobal('AbortController', transferableAbortController().constructor));
@@ -128,6 +130,92 @@ async function enterName(editor: HTMLElement, value: string) {
 }
 
 describe('naming v1 shipping UI — mocked HTTP', () => {
+  test.each(['ready', 'unavailable', 'read-error'] as const)('new-thread body hints exclude Founder with %s identity display; To keeps its human option', async (display) => {
+    const f = fixture();
+    if (display === 'unavailable') {
+      for (const identity of f.records.alpha) {
+        identity.addressable_name = null;
+        identity.naming_status = 'unavailable';
+      }
+    }
+    if (display === 'read-error') {
+      server.use(http.get('/api/v1/orgs/alpha/identities', () =>
+        HttpResponse.json({ detail: { code: 'naming_unavailable' } }, { status: 503 })));
+    }
+    mount('/orgs/alpha/threads');
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole('button', { name: /New thread/i }));
+    const dialog = screen.getByRole('dialog');
+    const body = within(dialog).getByLabelText(t('threads.newThread.bodyLabel')) as HTMLTextAreaElement;
+    const recipient = within(dialog).getByLabelText(t('threads.newThread.recipientsLabel'));
+    const optionName = display === 'ready' ? 'Alpha · agent_a core' : 'agent_a core';
+    const inserted = display === 'ready' ? '@Alpha ' : '@agent_a ';
+
+    await user.type(body, '@');
+    expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
+    await user.type(recipient, 'agent_a');
+    await user.click(body);
+    await screen.findByRole('option', { name: optionName });
+    expect(screen.getAllByRole('option')).toHaveLength(1);
+    expect(screen.queryByRole('option', { name: /Human/ })).not.toBeInTheDocument();
+    for (const prefix of ['Bo', 'Boss', 'fo', 'founder']) {
+      await user.clear(body); await user.type(body, `@${prefix}`);
+      expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
+    }
+    // Current labels and canonical IDs select the same eligible agent while
+    // preserving the suffix, focus and caret at the actual mounted body seam.
+    for (const prefix of display === 'ready' ? ['Al', 'agent_a'] : ['agent_a']) {
+      await user.clear(body); await user.type(body, `@${prefix} tail`);
+      act(() => { body.setSelectionRange(prefix.length + 1, prefix.length + 1); });
+      fireEvent.click(body);
+      await user.click(await screen.findByRole('option', { name: optionName }));
+      await waitFor(() => expect(body).toHaveValue(`${inserted} tail`));
+      expect(body).toHaveFocus();
+      expect(body.selectionStart).toBe(inserted.length);
+      expect(body.selectionEnd).toBe(inserted.length);
+    }
+    await user.clear(body);
+    await user.clear(recipient);
+    await user.type(recipient, display === 'ready' ? 'Bo' : 'fo');
+    await user.click(await screen.findByRole('option', { name: display === 'ready' ? 'Boss · founder Human' : 'founder Human' }));
+    expect(recipient).toHaveValue('founder, ');
+    expect(f.resolves).toEqual([]);
+    expect(f.effects).toEqual([]);
+  });
+
+  test.each(['Boss', 'founder', 'unavailable-founder'] as const)('new-thread manual genuine %s retains body preflight and human recipient transport', async (addressCase) => {
+    const f = fixture();
+    const address = addressCase === 'unavailable-founder' ? 'founder' : addressCase;
+    const failedReads: ResolveBody[] = [];
+    if (addressCase === 'unavailable-founder') {
+      for (const identity of f.records.alpha) {
+        identity.addressable_name = null;
+        identity.naming_status = 'unavailable';
+      }
+      server.use(http.post('/api/v1/orgs/alpha/identities/resolve', async ({ request }) => {
+        failedReads.push(await request.json() as ResolveBody);
+        return HttpResponse.json({ detail: { code: 'naming_unavailable' } }, { status: 503 });
+      }));
+    }
+    mount('/orgs/alpha/threads');
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole('button', { name: /New thread/i }));
+    const dialog = screen.getByRole('dialog');
+    const literal = `Please ask @${address}`;
+    await user.type(within(dialog).getByLabelText(t('threads.newThread.subjectLabel')), 'Manual human');
+    await user.type(within(dialog).getByLabelText(t('threads.newThread.recipientsLabel')), 'founder');
+    await user.type(within(dialog).getByLabelText(t('threads.newThread.bodyLabel')), literal);
+    await user.click(within(dialog).getByLabelText(t('threads.newThread.subjectLabel')));
+    expect(f.effects).toEqual([]);
+    await user.click(within(dialog).getByRole('button', { name: t('threads.newThread.send') }));
+    await waitFor(() => expect(f.effects).toHaveLength(1));
+    expect(f.effects[0]).toMatchObject({ kind: 'compose', slug: 'alpha', body: { recipients: ['@founder'], body_markdown: literal } });
+    const reads = addressCase === 'unavailable-founder' ? failedReads : f.resolves.map(r => r.body);
+    expect(reads).toContainEqual({ context: 'lookup', addresses: ['founder', address] });
+    expect(reads).toContainEqual({ context: 'thread_recipient', addresses: ['founder'] });
+    expect(f.effects.some(e => e.kind === 'upload')).toBe(false);
+  });
+
   test.each(['founder', 'Boss'])('thread-detail hints exclude human %s while human recipients remain available', async (founderName) => {
     const f = fixture();
     f.records.alpha.find((i) => i.kind === 'founder')!.addressable_name = founderName;
@@ -207,6 +295,38 @@ describe('naming v1 shipping UI — mocked HTTP', () => {
     expect(f.resolves).toContainEqual({ slug: 'alpha', body: { context: 'lookup', addresses: [address] } });
     await waitFor(() => expect(composer).toHaveValue(''));
     expect(composer).toHaveFocus();
+  });
+
+  test.each(['503','per-token'] as const)('follow-up %s alias failure keeps draft/file and zero uploads; known outsider refuses while eligible ID stays reachable', async (failure) => {
+    const f=fixture(); const resolves: string[][]=[];
+    server.use(http.post('/api/v1/orgs/alpha/identities/resolve',async ({request})=>{
+      const body=await request.json() as ResolveBody; resolves.push(body.addresses);
+      return failure==='503' ? HttpResponse.json({detail:{code:'naming_unavailable'}},{status:503})
+        : HttpResponse.json({resolutions:body.addresses.map(address=>({address,status:'naming_unavailable',identity:null,eligible:false}))});
+    }), http.post('/api/v1/orgs/alpha/threads/THR-MOCK/send',async ({request})=>{
+      f.effects.push({kind:'send',slug:'alpha',body:await request.json()});
+      return HttpResponse.json({seq:1,thread_id:'THR-MOCK'});
+    }));
+    mount('/orgs/alpha/threads/THR-MOCK'); const user=userEvent.setup();
+    const composer=await screen.findByRole('textbox',{name:t('threads.page.composer.textareaAria')});
+    await user.type(composer,'email@OldAlpha `@OldAlpha` plus @Alpha');
+    await user.upload(screen.getByLabelText(t('threads.page.composer.attach')),new File(['proof'],'proof.txt',{type:'text/plain'}));
+    await user.click(screen.getByRole('button',{name:t('threads.page.composer.send')}));
+    await screen.findByText(/Naming service is unavailable/);
+    expect(f.effects).toEqual([]); expect(resolves).toEqual([['Alpha']]);
+    expect(composer).toHaveValue('email@OldAlpha `@OldAlpha` plus @Alpha');
+    expect(screen.getByText('proof.txt')).toBeInTheDocument();
+    await user.click(screen.getByRole('button',{name:t('threads.page.composer.removeAttachment')}));
+    await user.clear(composer); await user.type(composer,'@agent_b');
+    expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
+    await user.keyboard('{Enter}');
+    await screen.findByText(/not an eligible participant/);
+    expect(f.effects).toHaveLength(0);
+    expect(composer).toHaveValue('@agent_b');
+    await user.clear(composer); await user.type(composer,'@agent_a');
+    await user.click(screen.getByRole('button',{name:t('threads.page.composer.send')}));
+    await waitFor(()=>expect(f.effects).toHaveLength(1));
+    expect(f.effects[0]).toMatchObject({kind:'send',body:{body_markdown:'@agent_a'}});
   });
 
   test.each(['managed', 'user_authored'] as const)('scenario 9 frontend consumer: %s skill rows keep canonical identity and node through label refresh', async (type) => {
@@ -297,13 +417,13 @@ describe('naming v1 shipping UI — mocked HTTP', () => {
     expect(JSON.stringify(f.records.alpha)).toBe(before);
   });
 
-  test('scenario 5: former token inside quoted/email body stops associated upload and compose; draft and file remain', async () => {
+  test('scenario 5: genuine Former after a literal quoted line stops associated upload and compose; draft and file remain', async () => {
     const f = fixture(); mount('/orgs/alpha/threads'); const user = userEvent.setup();
     await user.click(await screen.findByRole('button', { name: /New thread/i }));
     const dialog = screen.getByRole('dialog');
     await user.type(within(dialog).getByLabelText(t('threads.newThread.subjectLabel')), 'Literal');
     await user.type(within(dialog).getByLabelText(t('threads.newThread.recipientsLabel')), 'agent_a');
-    const body = '> quoted: mail@OldAlpha and @Alpha';
+    const body = '> quoted: mail@OldAlpha, `@OldAlpha` and @OldAlpha\n@OldAlpha @Alpha';
     await user.type(within(dialog).getByLabelText(t('threads.newThread.bodyLabel')), body);
     await user.upload(within(dialog).getByLabelText(t('threads.newThread.attachFiles')), new File(['proof'], 'proof.txt', { type: 'text/plain' }));
     await user.click(within(dialog).getByRole('button', { name: t('threads.newThread.send') }));
@@ -390,7 +510,7 @@ describe('naming v1 shipping UI — mocked HTTP', () => {
     f.change('alpha', 'agent_a', 'Renamed');
     await act(async () => { await client.invalidateQueries({ queryKey: ['identities', 'alpha'] }); });
     expect(recipient).toHaveValue('agent_a, ');
-    const literal = 'Keep literal @unrecognized';
+    const literal = corpus.cases.find(row=>row.id==='L01')!.input;
     await user.type(within(dialog).getByLabelText(t('threads.newThread.bodyLabel')), literal);
     await user.click(within(dialog).getByRole('button', { name: t('threads.newThread.send') }));
     await waitFor(() => expect(f.effects.filter((e) => e.kind === 'compose')).toHaveLength(1));
@@ -409,5 +529,150 @@ describe('naming v1 shipping UI — mocked HTTP', () => {
     fireEvent.click(screen.getByRole('link', { name: 'Mock org alpha' }));
     await waitFor(() => expect(within(editor).getByLabelText(t('identity.name'))).toHaveValue('KeepDraft'));
     expect(f.puts).toHaveLength(1); expect(f.puts[0].slug).toBe('alpha');
+  });
+});
+
+/** THR-293 seq236: bounded Founder presentation in the shipping Sidebar and thread sites. */
+function founderThread() {
+  const at = '2026-10-15T00:00:00Z';
+  const row = { thread_id: 'THR-F', subject: 'Founder naming', status: 'open', started_at: at, archived_at: null, forwarded_from_id: null, forwarded_from_kind: null, turn_cap: 500, turns_used: 2, summary: null, transcript_path: null, composed_from_dream_id: null, last_speaker: 'founder', pinned: false, pinned_at: null, last_activity_at: at, participants: ['founder', 'agent_a'] };
+  const message = (seq: number, speaker: string, body: string) => ({ seq, speaker, kind: 'message', body_markdown: body, decline_reason: null, system_payload: null, created_at: at, responder_status: [] });
+  const messages = [{ ...message(1, 'founder', 'Founder body'), responder_status: [{ agent_name: 'agent_a', status: 'replied' }] }, message(2, 'agent_a', 'Agent body')];
+  server.use(
+    http.get('/api/v1/orgs/:slug/threads', () => HttpResponse.json({ threads: [row], totals: { open: 1, archived: 0, all: 1, dream_origin: 0 }, has_more: false, next_cursor: null, sampled_at: at })),
+    http.get('/api/v1/orgs/:slug/threads/THR-F', () => HttpResponse.json({ ...row, reply_delivery: [], messages })),
+    http.get('/api/v1/orgs/:slug/threads/THR-F/messages', () => HttpResponse.json({ messages, next_before: null })),
+    http.get('/api/v1/orgs/:slug/threads/THR-F/tasks', () => HttpResponse.json({ tasks: [] })),
+    http.get('/api/v1/orgs/:slug/threads/THR-F/tail', () => HttpResponse.text('', { headers: { 'content-type': 'text/event-stream' } })),
+  );
+  return { messages };
+}
+function mountShell(route: string) {
+  sessionStorage.setItem('happyranch.token', 'mock-token');
+  const client = makeQueryClient();
+  const shell = (page: JSX.Element) => <OrgProvider><Sidebar />{page}</OrgProvider>;
+  render(<MemoryRouter initialEntries={[route]}><I18nProvider mode="full" adapter={savedLocaleAdapter('en')}><AppProvider client={client}>
+    <Routes>
+      <Route path="/orgs/:slug/threads/:thread_id?" element={shell(<ThreadsPage />)} />
+      <Route path="/orgs/:slug/settings/*" element={shell(<SettingsPage />)} />
+    </Routes>
+    <Link to="/orgs/beta/threads/THR-F">Mock org beta thread</Link><Link to="/orgs/alpha/threads/THR-F">Mock org alpha thread</Link><Link to="/orgs/alpha/threads">Mock org alpha list</Link>
+  </AppProvider></I18nProvider></MemoryRouter>);
+  return client;
+}
+const accountRow = (name: string) => screen.findByLabelText(`Account: ${name}, Founder`);
+function founderSites() {
+  const transcript = screen.getByText('Founder body').closest('article')!;
+  const rail = screen.getByRole('complementary', { name: t('threads.page.rail.aria') });
+  return { transcript, rail, founderRow: within(rail).getAllByRole('listitem')[0] };
+}
+
+describe('Founder presentation (THR-293 seq236) — shipping Sidebar + threads, mocked HTTP', () => {
+  test('case 1/2/7: saved custom Founder name drives Sidebar, initials and thread sites; agents keep Name · ID', async () => {
+    const f = fixture(); founderThread();
+    mountShell('/orgs/alpha/threads/THR-F');
+    const account = await accountRow('Boss');
+    expect(within(account).getByText('Boss')).toBeInTheDocument();
+    expect(within(account).getByText('BO')).toBeInTheDocument();
+    expect(within(account).queryByText('You')).not.toBeInTheDocument();
+    expect(within(account).queryByText('YT')).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText('Founder body')).toBeInTheDocument());
+    const { transcript, rail, founderRow } = founderSites();
+    await waitFor(() => expect(within(transcript).getByTitle(/^Boss · founder — /)).toHaveTextContent(/^Boss$/));
+    // Message author, avatar initials and participant rail: the current name alone —
+    // no canonical ID and no redundant Founder role label (en "founder" / zh 创始人).
+    const avatar = transcript.parentElement!.parentElement!.firstElementChild!;
+    expect(avatar).toHaveTextContent(/^BO$/);
+    expect(founderRow).toHaveTextContent(/^Boss$/);
+    // The agent rail row keeps Name · ID plus its responder status label.
+    const agentRow = within(rail).getAllByRole('listitem')[1];
+    expect(within(agentRow).getByText('Alpha · agent_a')).toBeInTheDocument();
+    expect(within(agentRow).getByText(t('threads.page.responder.replied'))).toBeInTheDocument();
+    // No visible "Boss · founder" anywhere; the agent keeps its current Name · ID.
+    expect(screen.queryAllByText('Boss · founder')).toHaveLength(0);
+    expect(within(rail).getByText('Alpha · agent_a')).toBeInTheDocument();
+    const agentArticle = screen.getByText('Agent body').closest('article')!;
+    expect(within(agentArticle).getByText('Alpha · agent_a')).toBeInTheDocument();
+    // Thread list: participants and last speaker show the Founder name only.
+    fireEvent.click(screen.getByRole('link', { name: 'Mock org alpha list' }));
+    const list = await screen.findByRole('link', { name: /Founder naming/ });
+    expect(within(list).queryByText(/Boss · founder/)).not.toBeInTheDocument();
+    expect(within(list).getAllByText('Boss').length).toBeGreaterThan(0);
+    expect(within(list).getByText('Alpha · agent_a')).toBeInTheDocument();
+    // Canonical identity data untouched.
+    expect(f.records.alpha.find((i) => i.kind === 'founder')).toMatchObject({ canonical_id: 'founder', addressable_name: 'Boss' });
+  });
+
+  test('case 3: ready default Founder name renders the canonical founder label and FO initials', async () => {
+    const f = fixture(); founderThread();
+    f.records.alpha.find((i) => i.kind === 'founder')!.addressable_name = 'founder';
+    mountShell('/orgs/alpha/threads/THR-F');
+    const account = await accountRow('founder');
+    expect(within(account).getByText('FO')).toBeInTheDocument();
+    expect(within(account).getByText('Founder')).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText('Founder body')).toBeInTheDocument());
+    const { transcript, founderRow } = founderSites();
+    await waitFor(() => expect(within(transcript).getByTitle(/^founder — /)).toHaveTextContent(/^founder$/));
+    expect(within(founderRow).getByText('founder', { selector: 'span.break-words' })).toBeInTheDocument();
+    expect(founderRow).toHaveTextContent(/^founder$/);
+  });
+
+  test('case 4: metadata failure after a ready cache falls back to the canonical ID with no stale custom name', async () => {
+    fixture(); founderThread();
+    const client = mountShell('/orgs/alpha/threads/THR-F');
+    await accountRow('Boss');
+    server.use(http.get('/api/v1/orgs/:slug/identities', () => HttpResponse.json({ detail: { code: 'naming_unavailable' } }, { status: 503 })));
+    await act(async () => { await client.refetchQueries({ queryKey: ['identities', 'alpha'] }); });
+    const account = await accountRow('founder');
+    expect(within(account).getByText('FO')).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText('Founder body')).toBeInTheDocument());
+    const { transcript } = founderSites();
+    expect(within(transcript).getByTitle(/^founder — /)).toHaveTextContent(/^founder$/);
+    expect(founderSites().founderRow).toHaveTextContent(/^founder$/);
+    expect(screen.queryAllByText(/Boss/)).toHaveLength(0);
+    // Established ID UI still works: the agent row keeps its canonical ID.
+    expect(screen.getAllByText('agent_a').length).toBeGreaterThan(0);
+  });
+
+  test('case 5: Founder editor save/readback refreshes Sidebar name and initials without reload; IDs unchanged', async () => {
+    const f = fixture(); founderThread();
+    mountShell('/orgs/alpha/settings/organization');
+    await accountRow('Boss');
+    const editor = await screen.findByRole('region', { name: t('identity.founderHeading') });
+    await waitFor(() => expect(within(editor).getByLabelText(t('identity.name'))).toBeEnabled());
+    await enterName(editor, 'Benze'); fireEvent.click(within(editor).getByRole('button', { name: t('identity.save') }));
+    await waitFor(() => expect(within(editor).getByRole('status')).toHaveTextContent('Saved'));
+    const account = await accountRow('Benze');
+    expect(within(account).getByText('BE')).toBeInTheDocument();
+    expect(f.puts).toEqual([{ slug: 'alpha', id: 'founder', body: { addressable_name: 'Benze', expected_name_revision: 1 } }]);
+    // Same mounted tree: navigate to the thread, the new name is current there too.
+    fireEvent.click(screen.getByRole('link', { name: 'Mock org alpha thread' }));
+    await waitFor(() => expect(screen.getByText('Founder body')).toBeInTheDocument());
+    const { transcript } = founderSites();
+    await waitFor(() => expect(within(transcript).getByTitle(/^Benze · founder — /)).toHaveTextContent(/^Benze$/));
+    expect(f.records.alpha.find((i) => i.kind === 'founder')!.canonical_id).toBe('founder');
+  });
+
+  test('case 6: org switch never leaks the previous org Founder name, including while loading', async () => {
+    fixture(); founderThread();
+    let releaseBeta!: () => void; const betaGate = new Promise<void>((r) => { releaseBeta = r; });
+    const records = { alpha: 'Boss', beta: 'BetaBoss' } as const;
+    server.use(http.get('/api/v1/orgs/:slug/identities', async ({ params }) => {
+      const slug = String(params.slug) as keyof typeof records;
+      if (slug === 'beta') await betaGate;
+      return HttpResponse.json({ identities: [{ canonical_id: 'founder', kind: 'founder', lifecycle: 'founder', addressable_name: records[slug], name_revision: 1, canonical_definition_revision: null, naming_status: 'ready' }] });
+    }));
+    mountShell('/orgs/alpha/threads/THR-F');
+    await accountRow('Boss');
+    fireEvent.click(screen.getByRole('link', { name: 'Mock org beta thread' }));
+    // Beta identities still loading: canonical fallback, never alpha's Boss.
+    await accountRow('founder');
+    expect(screen.queryByLabelText('Account: Boss, Founder')).not.toBeInTheDocument();
+    releaseBeta();
+    const beta = await accountRow('BetaBoss');
+    expect(within(beta).getByText('BE')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('link', { name: 'Mock org alpha thread' }));
+    await accountRow('Boss');
+    expect(screen.queryByLabelText('Account: BetaBoss, Founder')).not.toBeInTheDocument();
   });
 });

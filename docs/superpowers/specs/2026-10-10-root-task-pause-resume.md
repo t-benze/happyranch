@@ -97,7 +97,13 @@ fresh exact SID/task/agent validation. Prepared, committed-but-not-running,
 retry-waiting, recovery and workflow owners have no exception. Otherwise job
 submission can remain Pending; every real run entry checks the hold before
 review stamps, files, running CAS, launch or success audit. After Resume, an unreviewed Pending job may run after its original session ends only when the original server submission audit and immutable job digest authenticate its provenance and the task/agent remain eligible. Stored session strings alone grant no entitlement. Existing runners
-and genuine callbacks/results continue settling. Reject/stop and Cancel remain
+and genuine callbacks/results continue settling. THR309seq1 retires manual /run
+with410 (local CLI aliases exit2); legacy true pending rows never run, including
+on Resume. New true submissions refuse422 before allocation. Initial preflight
+allocates no job; only a genuine authenticated false never-launched prerequisite
+loss can commit failed/spawn_failed plus audit/journal settlement before the
+existing wake bridge. Hold/owner/session refusals and possible launches remain
+unchanged. Reject/stop and Cancel remain
 available. Pending rows, deferred work and worktrees are preserved.
 
 Founder Continue/supersede/revisit, shared resolution and thread dispatch(resolves)
@@ -246,7 +252,7 @@ by every assertion. The old failed final SQL snapshot remains missing.
 Corrected restart/drain behavior and wrong/missing/duplicate identity or wrong
 audit owner/payload/order rejection remain UNEXECUTED; source/static acceptance
 is distinct from behavior. Existing accepted case groups4/5/6 are reused.
-Only the existing 19:00 UTC default-branch 3.12/3.13/3.14 schedule may execute
+Only the existing 19:00 UTC default-branch 3.12/3.14 schedule may execute
 it, within unchanged 600/720/900-second limits. Protected assertion mutation,
 RED/restoration/GREEN and repetitions remain UNEXECUTED/unauthorized. All eight
 restart windows, authentic held-queued workflow history and P07/G4 interleavings

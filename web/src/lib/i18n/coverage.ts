@@ -223,12 +223,11 @@ export const COVERAGE_MANIFEST: readonly NamespaceCoverage[] = [
   {
     namespace: 'jobs',
     surfaceOwners: {
-      RunJobDialog: 'src/features/jobs/RunJobDialog.tsx',
       RejectJobDialog: 'src/features/jobs/RejectJobDialog.tsx',
     },
     routeTokens: ['jobs', 'jobs/:job_id'],
     status: 'translated',
-    surfaces: ['JobsPage', 'JobDetailPage', 'RunJobDialog', 'RejectJobDialog'],
+    surfaces: ['JobsPage', 'JobDetailPage', 'RejectJobDialog'],
   },
   {
     namespace: 'health',

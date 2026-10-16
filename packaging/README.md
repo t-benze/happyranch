@@ -87,9 +87,84 @@ offline originals and exact pinned identities in `packaging/notice-data/`.
 Installed originals take precedence. The CPython fallback requires matching
 effective toolchain and three stdlib hashes in both Analysis lanes; the ten
 Radix fallbacks require pinned metadata and every actual emitted source hash.
-Unsafe paths, corrupt inputs and conflicts refuse retention. Scroll-bar 2.3.8
-remains missing, all six unresolved labels remain, and strict license verification
-still blocks ZIP/release finalization with `closure_complete=false`.
+Unsafe paths, corrupt inputs and conflicts refuse retention. The web dependency
+now installs a local derivative of upstream scroll-bar source
+`8ca9ba5ea52de03308fe8ced94f7b159a44d28ff` (upstream version 2.3.7), including
+its byte-preserved original MIT LICENSE. This replaces the registry 2.3.8 input;
+it does not establish notice provenance for that former publication. See
+[`web/vendor/react-remove-scroll-bar/README.md`](../web/vendor/react-remove-scroll-bar/README.md)
+for source authentication, locked-tool compilation, reproducible tarball and
+installed-byte checks. The ordinary node_modules package remains within this
+collector's existing third-party attribution boundary. The checked-in tarball
+and all preparation inputs survive the release wrapper's git archive export;
+ordinary npm ci requires no local package lifecycle build.
+
+All six unresolved labels remain, and strict license verification still blocks
+ZIP/release finalization with `closure_complete=false`. Scoped non-native
+package/browser checks do not establish final emitted closure, legal
+applicability, actual native custody or Mac acceptance.
+
+The Mac wrapper's private `asset_evidence.py` adds local asset observations,
+without a new dependency, Vite change or rights policy. A complete bounded
+Git/export census includes hidden/unreferenced public files, fonts and OFLs.
+Public `index.html`/`assets` reservations and exact/case/NFC/prefix collisions
+refuse. Every ordinary dist file is measured; unknown generated/other assets
+remain `UNRESOLVED`. The actual app web tree must equal dist except every
+existing basename `*.map` removal, each recorded explicitly. No historical
+18/119-file count substitutes for a census.
+
+At the existing notices stage, all three original font/copy relations and both
+retention targets are validated before either notice is written. Three distinct
+font component rows reference two exact original OFLs retained under
+`Contents/Resources/licenses/assets/`. Both Newsreader owners share one notice
+and are withheld together on a shared conflict. Safe identical existing notices
+keep their inode/mtime; conflicts and incomplete stage files cannot be resumed.
+No synthetic text or root Apache reassignment is allowed.
+
+Seven direct PNG originals produce exactly ten iconset copies. Only the actual
+Darwin/arm64 operation runs iconutil, once, at the selected absolute executable;
+its output goes into newly reserved private `scratch/icon-output`, then an
+exclusive app byte copy. Bounded real streams, argv/cwd, pre/post subjects,
+process exit/signal/timing and quiescence are retained. Timeout/overflow
+terminates and reaps the owned process without retry; failure preserves the
+original tool exit separately from inspection errors and retains partial files.
+Catchable HUP/INT/TERM is deferred through launch/handle registration and cleanup;
+the first failure is retained. Setup precedes launch where possible, and each
+owned pipe/selector is closed independently after bounded termination/reaping.
+An unknown exit or failed cleanup never supplies a quiescent success.
+The tool's own file API is not O_EXCL: private single-writer custody is required.
+There is no hostile same-UID or executed-image attestation guarantee.
+
+Fixed local diagnostics are `assets-{context,source,dist,app,icon,notices}.json`
+and `iconutil.{stdout,stderr}`. Each successful stage returns its bounded token
+directly to the wrapper; the context precedes source, dist and app, with icon
+and notices referencing earlier bindings. Expectations are never recovered from
+the candidate records. Standalone readers require independently retained caller
+arguments/tokens and the original subjects. Missing native evidence refuses the
+full reader; there is no partial-success reader. The unchanged mapping reader
+still requires literal Boolean True and preserves all failed components. It
+does **not** implement the future exact-six-result/sentinel identity contract.
+
+Both producer and independent reader use descriptor-relative no-follow,
+nonblocking, regular/single-link and stable-identity reads with complete stable
+membership walks. Selected roots must have safe physical ancestry and owned
+private output parents. Limits apply together: files16MiB; notices/manifest and
+icon/notices records256KiB; owner128B; preflight16KiB; context64KiB;
+toolchains/each stream1MiB; source/dist/app records8MiB each. Trees permit4096
+entries including directories, depth16 and4MiB names. JSON is closed with
+unique keys, depth16/100,000 nodes; per-invocation reads total512MiB and local
+JSON32MiB. Process waits are60s with bounded termination/drain; tokens4KiB.
+Overflow refuses, never a truncated completeness claim. No whole-mapping cap is
+introduced. Failure bundles retain their existing allowlist/caps; new records
+and original subjects remain local, and a summary upload cannot replace them.
+
+Source delivery and portable fixtures do not establish actual PYNOTICES
+append/False/sentinel/error/token behavior, wrapper-to-licenses integration,
+full independent reader or native operation custody. Those remain native-only
+UNEXECUTED/NOT_REACHED, alongside Mac14/WKWebView/install and future all-six
+finalizer cases. Native execution is not a prerequisite for this bounded source
+review; the parent retains actual changed-source/input/custodian disposition.
+All six closures remain UNEXECUTED/UNMET, including ASSET_ATTRIBUTION.
 
 Failure diagnostics include
 `web-attribution.json`: first 100 rejected records, string fields capped at 512
@@ -151,8 +226,20 @@ bash app/mac/scripts/verify-release.sh native --app "/owned/HappyRanch.app" \
   --link-map "/owned/run/diagnostics/swift-link.map"
 bash app/mac/scripts/verify-release.sh catalog --app "/owned/HappyRanch.app" \
   --list-json "/owned/list.json" --validate-json "/owned/validate.json"
-bash app/mac/scripts/verify-release.sh licenses --app "/owned/HappyRanch.app" \
-  --mapping "/owned/license-mapping.json"
+# All values below are independently retained invocation arguments/tokens,
+# not discovered from the candidate. Each option occurs exactly once.
+bash app/mac/scripts/verify-release.sh licenses \
+  --source "$REPO" --exported-source "$OUTPUT/scratch/source" \
+  --dist "$OUTPUT/scratch/source/web/dist" --app "$OUTPUT/scratch/HappyRanch.app" \
+  --output-dir "$OUTPUT" --evidence-dir "$OUTPUT/diagnostics" \
+  --iconset "$OUTPUT/scratch/AppIcon.iconset" --mapping "$OUTPUT/diagnostics/license-mapping.json" \
+  --source-sha "$SOURCE_SHA" --source-tree "$SOURCE_TREE" --version "$VERSION" --build "$BUILD" \
+  --arch arm64 --run-id "$RUN_ID" --asset-context-sha256 "$CONTEXT" \
+  --toolchains-sha256 "$TOOLCHAINS" --iconutil-path "$ICONUTIL_PATH" --iconutil-sha256 "$ICONUTIL" \
+  --asset-source-sha256 "$SOURCE_TOKEN" --asset-dist-sha256 "$DIST_TOKEN" \
+  --asset-app-sha256 "$APP_TOKEN" --asset-icon-sha256 "$ICON_TOKEN" --asset-notices-sha256 "$NOTICES_TOKEN" \
+  --freezer-context-sha256 "$FREEZER_CONTEXT" --freezer-inputs-sha256 "$FREEZER_INPUTS" \
+  --freezer-output-sha256 "$FREEZER_OUTPUT" --freezer-copy-sha256 "$FREEZER_COPY"
 ```
 
 Resource expectations are the accepted 29-member source baseline, with regular
@@ -209,3 +296,68 @@ remain distinct. Q1–Q13 remain UNEXECUTED/deferred. General integration is
 SKIPPED THR243seq42; Python units are RETIRED. Automated merge checks remain
 lint/static only THR291seq69, with normal hooks, independent review/QA and
 manager guarded merge. No self-review, QA verdict or release acceptance follows.
+
+## Freezer operation custody
+
+The full app wrapper opts into the private `freezer_evidence.py` contract. Before
+the ordinary frozen sync it verifies the exact committed Darwin input described
+in [vendor provenance](vendor/pyinstaller-6.21.0/README.md), captures source and
+asset/toolchain bindings and reserves an exclusive response directory. Other
+platforms keep registry PyInstaller 6.21.0. The shared `build_daemon.sh` command
+is unchanged. Standalone freezer work has no app-custody token.
+
+The spec retains each Analysis/PYZ/EXE generation before later lanes can replace
+it. PYZ bootstrap selections and redirects, EXE raw inputs, both dependency
+lists and every shared Analysis occurrence survive normalization. Equal copies
+can share a physical destination while preserving distinct contributor edges;
+bytes/kind conflicts, missing edges and physical aliases refuse. Ordered options
+remain ordered. Generated equal bytes can refer to different retained generations;
+a changed live generation cannot silently replace the retained source bytes.
+
+The two patched upstream members observe native return/cache/outcome/copy and
+bootloader/copy/PKG-append/final-EXE operations at their actual consuming sites.
+Only effective strip=False/UPX=False is supported for custody. Pinned CONF UPX
+availability is a literal Boolean, with the bounded force environment string
+recorded separately. Constructors, pre-guts/assemble and processing entry/return
+recheck admission. Cache hits need the genuine same-run compatible predecessor;
+non-Mach-O and optional-architecture passthrough remain distinct outcomes.
+Unopted upstream callers retain their existing return types and semantics.
+
+Caller-held digests bind context → inputs → output → app-copy. Early fragments
+have null ledger references. Records and snapshots are exclusive, failures
+persist where writable, and a partial attempt cannot return a success token.
+The wrapper surrounds its existing cp-R with complete two-sided censuses; only
+the existing tracked-skills chmod policy may change modes. At `licenses`, the
+independent reader requires all caller tokens, reopens originals and generations,
+and independently parses bounded PKG/PYZ/base-ZIP membership. Code payloads stay
+opaque; the finite marshal decoder accepts only TOC data forms, never code.
+
+Freezer limits are additional to unchanged asset-helper limits: container512MiB,
+native256MiB, ordinary source16MiB, notice/manifest256KiB; decoded member16MiB
+(native256MiB), container expansion512MiB and ratio1000. Aggregate reads8GiB,
+snapshots2GiB, records32MiB, logical members/operations16,384, tree8,192/depth24,
+names8MiB, alias hops16. Each success record is at most8MiB, context64KiB,
+response4KiB; the reused JSON parser's stricter depth16/100,000-node fence also
+applies. Overflow refuses; these caps have not been calibrated by a native run.
+Container snapshots are hashed in chunks on held stable descriptors; archive
+parsing uses bounded ranges and expansion, without executing or extracting code.
+Both application and upstream snapshot writers open the ordinal leaf relative to
+freshly admitted destination descriptors, retaining ancestry checks until after
+streaming, fsync and close. ZIP metadata admission precedes ZipFile allocation:
+fixed EOCD/central/local headers, actual entry counts and cumulative names are
+bounded first. The small pinned base-library format supports single-disk stored
+or deflated entries; ZIP64, split archives, data descriptors and archive comments
+refuse. Central extras/comments and local extras share an 8MiB per-archive cap;
+extra fields must be structurally complete. Existing payload CRC, expansion,
+duplicate, local-range and complete-coverage checks remain independent. Logical
+member/name budgets are charged once in admission, cumulatively across archives.
+The Darwin input is custody revision 2; historical revision 1 receipts describe
+only their original input and head.
+
+Technical matches cannot complete PYTHON_NATIVE or BOOTLOADER_EXCEPTION_MAPPING.
+Compilation associations remain `declared_compile_origin`/`origin_unobserved`;
+installer custody and terms applicability remain unresolved. All six sentinels,
+literal closure False and ordinary failed rows remain. Portable source/parser
+checks are distinct from actual Darwin configure/target/transform/cache/EXE/copy
+and full wrapper/licenses integration, which remain N-only UNEXECUTED. No build
+allocation, signing, release, public distribution or deployment follows.
