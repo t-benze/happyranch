@@ -32,7 +32,7 @@ class MovePreview:
     after_contexts: tuple
     blockers: tuple[dict, ...]
     writer_epoch: int
-    database_changes: int
+    database_changes: tuple[int, int]
 
 
 class TeamMoveOperation:
@@ -138,6 +138,8 @@ class TeamMoveOperation:
         """Pure selection/readback only; never invokes a mutating adapter."""
         if type(drain_threads) is not bool:
             raise TeamMoveError("team_move_drain_consent")
+        with self.org.db._lock:
+            initial = (self.move.producers.writer_epoch, self._database_observation())
         with canonical_roster(self.org.root):
             images = capture_images(self.org.root)
             before, after, workspaces = [], [], []
@@ -158,6 +160,9 @@ class TeamMoveOperation:
                 drain_threads=drain_threads, expected=expected, files=images, workspaces=tuple(workspaces))
             target = self._target_snapshot(request)
         blockers, epoch, changes = self.census(request)
+        with self.org.db._lock:
+            if initial != (epoch, changes) or initial != (self.move.producers.writer_epoch, self._database_observation()):
+                raise TeamMoveError("team_move_preview_inputs_changed")
         return MovePreview(request, target, tuple(before), tuple(after), blockers, epoch, changes)
 
     def census(self, request, *, owned_publication=None):
@@ -232,7 +237,7 @@ class TeamMoveOperation:
                     for tail in db._conn.execute("SELECT o.* FROM workflow_dispatch_outbox o JOIN workflow_dispatch_operations d ON d.id=o.operation_id WHERE d.instance_id=?", (row["id"],)):
                         if tail["state"] not in {"completed", "cancelled"}:
                             add("workflow_outbox", tail["id"])
-            epoch, changes = self.move.producers.writer_epoch, db._conn.total_changes
+            epoch, changes = self.move.producers.writer_epoch, self._database_observation()
         return tuple(blockers), epoch, changes
 
     def reserve(self, *, operation_key: str, request_bytes: bytes, admission: FounderAdmission):
@@ -240,12 +245,27 @@ class TeamMoveOperation:
         request = _decode(MoveRequest, request_bytes)
         if request.org_slug != self.org.slug or admission.org_slug != self.org.slug:
             raise TeamMoveError("team_move_service_org_mismatch")
-        with self.move.gate:
+        existing = self.store.read(operation_key=operation_key)
+        if existing is not None:
+            if existing["request_bytes"] != request_bytes:
+                raise TeamMoveError("team_move_changed_body")
+            return existing
+        fresh = self.preview(drain_threads=request.drain_threads)
+        if _bytes(fresh.request) != request_bytes:
+            raise TeamMoveError("team_move_stale_preview")
+        with self.move.gate, self.org.db._lock:
+            if (self.move.producers.writer_epoch != fresh.writer_epoch
+                    or self._database_observation() != fresh.database_changes):
+                raise TeamMoveError("team_move_reservation_inputs_changed")
             row = self.store.reserve(operation_key=operation_key, request_bytes=request_bytes, admission=admission)
-            with self.org.db._lock:
-                if row["phase"] == "waiting":
-                    self.move.threads.capture_running_uncommitted(row["operation_id"])
+            if row["phase"] == "waiting":
+                self.move.threads.capture_running_uncommitted(row["operation_id"])
             return row
+
+    def _database_observation(self):
+        """Local writes plus SQLite's actual other-connection change counter."""
+        return (self.org.db._conn.total_changes,
+            self.org.db._conn.execute("PRAGMA data_version").fetchone()[0])
 
     def _row(self, key):
         row = self.store.read(operation_key=key)
@@ -297,7 +317,7 @@ class TeamMoveOperation:
                         self._owner_started(row, owner)
                         with self.move.gate, self.org.db._lock:
                             if (self.move.producers.writer_epoch != fresh.writer_epoch
-                                    or self.org.db._conn.total_changes != fresh.database_changes + 1):
+                                    or self._database_observation() != (fresh.database_changes[0] + 1, fresh.database_changes[1])):
                                 raise TeamMoveError("team_move_census_changed")
                             decision = ForwardDecision(request_digest=row["request_digest"], revalidated_inputs_digest=_digest(_bytes(request.expected)),
                                 census_digest=_digest(canonical(fresh.blockers)), writer_invocation_id=owner, decided_at=_now())
@@ -456,7 +476,7 @@ class TeamMoveOperation:
             state_revision=row["state_revision"] + 1, committed=True, progress_digest=_digest(row["progress_bytes"]),
             current_inputs_digest=evidence, settled_census_digest=_digest(canonical(blockers)), publication=progress.publication)
         with self.move.gate, _transaction(self.org.db):
-            if self.org.db._conn.total_changes != changes or self.move.producers.writer_epoch != epoch:
+            if self._database_observation() != changes or self.move.producers.writer_epoch != epoch:
                 raise TeamMoveError("team_move_completion_capture_changed")
             return self.store._complete_uncommitted(row, receipt)
 
