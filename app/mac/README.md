@@ -299,6 +299,9 @@ bounded calls never replenish it. Every repeated parse/read counts. Default
 asset/freezer limits and shared census semantics stay unchanged. Portable
 measurements are separate from actual Mac execution and release acceptance.
 
+Both build serialization and every independent stored-build read enforce the
+same input/envelope addition limits; a stored registry cannot bypass the 16 MiB
+addition bound through complete, accept, seal or fresh verify.
 
 The actual single Tailwind compile now has a helper-owned loader lifecycle in
 `web-css-loads/`: unique invocation and original transform-call binding, input

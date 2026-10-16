@@ -444,6 +444,10 @@ recomputed 1024 MiB producer-work limit; this is separate from filesystem I/O.
 Bounded canonical emission avoids only a redundant producer self-parse; complete,
 accept, seal and fresh verify independently parse/reopen their actual inputs.
 
+The writer and every reopened build reader apply the same bounded canonical
+input-size and actual envelope-minus-input addition check. An over-limit stored
+registry is refused before relation validation, including during fresh verify.
+
 Each web command owns one fixed 512 MiB regular / 192 MiB JSON budget and ONE
 persistent 512/32 MiB asset submeter. Successive/nested native asset lanes share
 that submeter; nested bounded calls keep the active view. Attempted charges stay

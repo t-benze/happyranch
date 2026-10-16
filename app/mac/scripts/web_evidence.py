@@ -217,15 +217,18 @@ class Session:
     def write(self,kind,payload,upstream=None):
         value=self.envelope(kind,payload,upstream or {})
         raw=canonical(value,KINDS[kind]-1,node_cap=BUILD_NODES if kind=='build' else 500000)+b'\n'
-        if kind=='build':
-            base={k:v for k,v in payload.items() if k not in ('subjects','source_tool_associations')}
-            original=canonical(base,BUILD_INPUT,node_cap=BUILD_NODES,size_only=True)
-            need(len(raw)-original<=BUILD_ADDITION,'BUILD_ADDITION_CAP')
+        if kind=='build':self.check_build_size(raw,payload)
         # Structural construction plus bounded emission replaces only the
         # producer self-parse. Independent consumers still parse every load.
         with A['root_for'](self.paths.evidence_dir) as root:
             row=A['create_once'](root,'web-'+kind+'.json',raw,A['ReadDomain'](KINDS[kind],True))
         return {'schema':'web-'+kind+'-token@1','record_sha256':row['sha256'],'context_binding_sha256':self.binding_sha}
+
+    def check_build_size(self,raw,payload):
+        need(type(payload) is dict,'CLOSED_SCHEMA','build payload')
+        base={k:v for k,v in payload.items() if k not in ('subjects','source_tool_associations')}
+        original=canonical(base,BUILD_INPUT,node_cap=BUILD_NODES,size_only=True)
+        need(len(raw)-original<=BUILD_ADDITION,'BUILD_ADDITION_CAP')
 
     def load(self,kind,expected):
         digest_shape(expected)
@@ -235,6 +238,7 @@ class Session:
         need(row['sha256']==expected,'RECORD_DIGEST_MISMATCH',kind)
         value=parse(raw,KINDS[kind],build=kind=='build',charged=True);keys(value,self.envelope(kind,None,{}))
         need({k:v for k,v in value.items() if k not in ('payload','upstream')}=={k:v for k,v in self.envelope(kind,None,{}).items() if k not in ('payload','upstream')},'CALLER_BINDING_MISMATCH',kind)
+        if kind=='build':self.check_build_size(raw,value['payload'])
         return value
 
     def raw(self,root,name,cap=CAP):
