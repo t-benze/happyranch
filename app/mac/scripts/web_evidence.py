@@ -583,7 +583,7 @@ def validate_css(s,operations,plan,observations):
             keys(d,{'module','input','options','imports','features','root','sources'})
             need(d['module'] not in states,'CSS_STATE_CHAIN_INVALID')
             need(d['root'] is None and d['sources']==[],'CSS_UNSUPPORTED_SOURCE_DIRECTIVE')
-            need(d['options']=={'polyfills':0,'sourcemap':False,'base':str(Path(d['module'].split('?')[0]).parent),'from':d['module']},'CSS_COMPILE_OPTIONS')
+            need(d['options']=={'polyfills':3,'sourcemap':False,'base':str(Path(d['module'].split('?')[0]).parent),'from':d['module']},'CSS_COMPILE_OPTIONS')
             b(d['input']);states[d['module']]={'phase':'compile','features':d['features'],'candidates':[],'entries':[],'output':None}
             for imp in d['imports']:
                 keys(imp,{'id','base','relative','content','raw_sha256','decoded_sha256'})

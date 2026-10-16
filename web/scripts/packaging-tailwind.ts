@@ -55,7 +55,8 @@ export function packagingTailwind(custody: PackagingCustody): Plugin {
       const base = path.dirname(id.split('?')[0]);
       const imports: Record<string, unknown>[] = [];
       const compiler = await compile(input, {
-        base, from: id, polyfills: 0,
+        // Match the ordinary Tailwind plugin's AtProperty | ColorMix defaults.
+        base, from: id, polyfills: 3,
         loadModule(module, moduleBase) { throw new Error(`WEB_CSS_MODULE_UNSUPPORTED:${module}:${moduleBase}`); },
         async loadStylesheet(module, moduleBase) {
           const response = custody.request('read-input', { site: 'stylesheet', id: module, base: moduleBase }) as CssRead;
@@ -66,7 +67,7 @@ export function packagingTailwind(custody: PackagingCustody): Plugin {
         },
       });
       if (compiler.root !== null || compiler.sources.length) throw new Error('WEB_CSS_UNSUPPORTED_SOURCE_DIRECTIVE');
-      custody.record('compile', { module: id, input, options: { base, from: id, polyfills: 0, sourcemap: false }, imports, features: compiler.features, root: compiler.root, sources: compiler.sources });
+      custody.record('compile', { module: id, input, options: { base, from: id, polyfills: 3, sourcemap: false }, imports, features: compiler.features, root: compiler.root, sources: compiler.sources });
       const candidates = new Set<string>();
       const utilities = !!(compiler.features & 16 /* pinned Tailwind4.3.0 Features.Utilities */);
       if (utilities) {

@@ -278,6 +278,8 @@ All six actual closures remain UNEXECUTED/UNMET; literal False, six sentinels an
 ordinary failed rows still prevent archive acceptance. Release=null,
 available=false and approved_url=null remain unchanged.
 
+Packaging compilation preserves the ordinary Tailwind `AtProperty` and
+`ColorMix` polyfills, with the same recorded option checked by both readers.
 Generated web evidence uses the fixed `web-private-plain@2` profile documented
 in packaging/README.md: lossless262144 observations, other named domains32768,
 96 MiB input /112 MiB envelope (+16 MiB),12582912 build nodes/depth32,

@@ -419,6 +419,10 @@ portable/component/browser observations establish only their measured local
 scope. They establish neither legal applicability nor actual Darwin/native
 custody, any of the six full closures, or release availability.
 
+Packaging compilation retains the ordinary Tailwind plugin's `AtProperty` and
+`ColorMix` polyfills (the pinned compiler's combined value `3`); both independent
+readers require that recorded option.
+
 The private `web-private-plain@2` resource profile retains all null and non-null
 observations: 262144 rows; 32768 each for modules, subjects, CSS operations,
 snapshots, selected content and candidates; 262144 call/association memberships;
