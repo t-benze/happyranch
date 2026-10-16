@@ -291,7 +291,8 @@ STAGE=web
 cd "$SOURCE/web"
 npm ci
 # Direct caller identity, never recovered from a candidate receipt. Preparation
-# happens after ordinary postinstall and before tsc/Vite consumes esbuild.
+# happens after ordinary postinstall and before tsc/Vite/config consumes tools.
+# Preparation also excludes native loader alternatives and resolution shadows.
 WEB_CALLER="$(python3 - "$SOURCE_SHA" "$SOURCE_TREE" "$VERSION" "$BUILD" "$ARCH" "$REPO_ROOT" "$SOURCE" "$APP" "$OUTPUT" "$ICONSET" "$RUN_ID" "$ASSET_CONTEXT" "$ASSET_SOURCE" "$ASSET_TOOLCHAINS" "$WEB_TOOL_ORIGINALS" <<'PYWEB'
 import json, sys
 from pathlib import Path
@@ -679,7 +680,7 @@ paths = asset['Paths'](Path(sys.argv[5]), source, source / 'web/dist', app, outp
 font_rows, font_token = asset['retain_font_notices'](candidate, paths, sys.argv[6], sys.argv[12], sys.argv[13])
 components.extend(font_rows)
 web_custody = __import__('runpy').run_path(sys.argv[14])
-@web_custody['A']['bounded']
+@web_custody['web_bounded']
 def append_generated():
     session = web_custody['Session'](web_custody['parse'](sys.argv[15].encode(), 256*1024))
     return web_custody['retain_web_notices'](session, sys.argv[16], sys.argv[17], sys.argv[18], sys.argv[19], sys.argv[13], components)

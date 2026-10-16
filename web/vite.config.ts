@@ -1,7 +1,6 @@
 /// <reference types="vitest" />
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
-import tailwindcss from '@tailwindcss/vite';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -160,32 +159,33 @@ function i18nEvidenceInstrumentation() {
   };
 }
 
-const custody = packagingCustody();
-
-export default defineConfig({
-  plugins: [i18nEvidenceInstrumentation(), react(), custody ? packagingTailwind(custody) : tailwindcss(), ...(custody?.plugins() ?? [])],
-  ...(custody ? { css: { postcss: { plugins: [] }, devSourcemap: false } } : {}),
-  resolve: {
-    alias: { '@': path.resolve(__dirname, 'src') },
-  },
-  server: {
-    port: 5173,
-    strictPort: true,
-    proxy: {
-      '/api': {
-        target: `http://127.0.0.1:${resolveDaemonPort()}`,
-        changeOrigin: false,
+export default defineConfig(async () => {
+  const custody = packagingCustody();
+  return {
+    plugins: [i18nEvidenceInstrumentation(), react(), custody ? packagingTailwind(custody) : (await import('@tailwindcss/vite')).default(), ...(custody?.plugins() ?? [])],
+    ...(custody ? { css: { postcss: { plugins: [] }, devSourcemap: false } } : {}),
+    resolve: {
+      alias: { '@': path.resolve(__dirname, 'src') },
+    },
+    server: {
+      port: 5173,
+      strictPort: true,
+      proxy: {
+        '/api': {
+          target: `http://127.0.0.1:${resolveDaemonPort()}`,
+          changeOrigin: false,
+        },
       },
     },
-  },
-  build: {
-    outDir: 'dist',
-    sourcemap: true,
-  },
-  test: {
-    globals: true,
-    environment: 'jsdom',
-    setupFiles: ['./vitest.setup.ts'],
-    css: false,
-  },
+    build: {
+      outDir: 'dist',
+      sourcemap: true,
+    },
+    test: {
+      globals: true,
+      environment: 'jsdom',
+      setupFiles: ['./vitest.setup.ts'],
+      css: false,
+    },
+  };
 });

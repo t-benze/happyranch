@@ -489,3 +489,19 @@ Each CSS emission consumes its original emission observation once and matches
 its resolved output filename, including when separate emissions have equal bytes.
 This is local custody under the reviewed helper/producer model, not authenticated
 compiler execution or resistance to invisible same-UID forgery/restore.
+
+The packaging preparation checks the authenticated oxide, Rollup and lightningcss
+loaders before Vite or static config imports execute. It refuses earlier local
+and universal bindings, WASI/local fallbacks, nested package shadows and tool
+overrides, and probes Node 24 platform, architecture and importer resolutions
+without loading native modules. Preparation and context retain selected members,
+locked originals and excluded paths. Both publication and a fresh reopened reader
+revalidate that relation and the actual build process's resolved paths and loaded
+CJS native cache members. Linux/glibc/x64 observations remain portable evidence;
+Darwin/arm64 execution remains separately required. These local custody checks
+provide no same-UID race or authenticated-execution guarantee.
+
+The embedded notice collector enters the existing 192 MiB JSON web budget before
+parsing the caller and constructing its Session. Nested native asset work retains
+the persistent 32 MiB asset submeter; neither budget is reset or enlarged. Notice
+tokens leave the wrapper only after the complete mapping is successfully written.

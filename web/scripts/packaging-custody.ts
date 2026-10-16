@@ -3,6 +3,7 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
+import { createRequire } from 'node:module';
 import type { Plugin, ResolvedConfig } from 'vite';
 
 type Bytes = { size: number; sha256: string };
@@ -18,7 +19,7 @@ const MAX_HELPERS = 65536;
 const BUILD_INPUT = 96 * 1024 ** 2;
 const BUILD_NODES = 12582912;
 const BODY_WORK = 1024 * 1024 ** 2;
-const NAME_FIELDS = new Set(['path','preliminary_path','sourcemap_path','chunk_id','document_id','reference_id','declared_file_name','resolved_file_name','names','original_names','watch_ids','module_ids','id','source','module','file','base','from','relative','relative_path','filename','cssAssetName','originalFileName','source_site','config_dependencies','input','root','dir','outDir','assetsDir','name']);
+const NAME_FIELDS = new Set(['importer','selected','execPath','loaded','request','path','preliminary_path','sourcemap_path','chunk_id','document_id','reference_id','declared_file_name','resolved_file_name','names','original_names','watch_ids','module_ids','id','source','module','file','base','from','relative','relative_path','filename','cssAssetName','originalFileName','source_site','config_dependencies','input','root','dir','outDir','assetsDir','name']);
 type Measure = { bytes: number; nodes: number; names: number };
 
 // Validate/count before emission or retention; no stringify-to-discover overflow.
@@ -123,6 +124,7 @@ export class PackagingCustody {
   private processed = 0;
   private sticky: unknown = null;
   private profile: Row | null = null;
+  private readonly toolSelection: Row;
   private config: ResolvedConfig | null = null;
   private finalBundle: Row[] = [];
   private completion = false;
@@ -166,7 +168,16 @@ export class PackagingCustody {
     if (!path.isAbsolute(this.python) || !path.isAbsolute(this.helper) || this.completionLeaf !== 'web-completion.jsonl' || !/^[a-f0-9]{64}$/.test(this.context) || !/^[a-f0-9]{64}$/.test(this.preparation)) throw new Error('WEB_BINDING_INVALID');
     if (process.env.I18N_BROWSER_EVIDENCE || process.env.I18N_W2A_EVIDENCE || process.env.NODE_OPTIONS || process.env.NODE_PATH || process.env.ESBUILD_BINARY_PATH) throw new Error('WEB_PROFILE_ENV_UNSUPPORTED');
     // Python authenticates the caller/context and supplies a descriptor-free projection.
-    this.request('read-input', { site: 'content', id: '', base: '' });
+    const admitted = this.request('read-input', { site: 'content', id: '', base: '' }).selection;
+    // Static config imports have already loaded these CJS native modules.
+    // Preparation admitted their routes before Vite/config evaluation. Observe
+    // the real build process here; no binary is loaded by this observer.
+    const edges = admitted.edges.map((edge: Row) => ({ ...edge, selected: createRequire(edge.importer).resolve(edge.request) }));
+    const nativePaths = edges.slice(0, 3).map((edge: Row) => edge.selected);
+    const cache = createRequire(path.join(caller.roots.exported_source, 'web/vite.config.ts')).cache;
+    const loaded = nativePaths.filter((selected: string) => cache[selected]?.loaded === true);
+    this.toolSelection = { platform: process.platform, arch: process.arch, execPath: process.execPath, node: process.versions.node, glibc: (process.report.getReport() as any).header.glibcVersionRuntime ?? null, edges, loaded };
+    if (process.platform !== admitted.platform || process.arch !== admitted.arch || loaded.length !== 3 || edges.some((edge: Row, i: number) => edge.selected !== admitted.edges[i].selected)) throw new Error('WEB_TOOL_NODE_SELECTION');
   }
 
   request(stage: string, value?: unknown, index?: number): any {
@@ -467,6 +478,7 @@ export class PackagingCustody {
         for (const [key, invalid] of Object.entries(unsupported)) if (invalid) throw new Error(`WEB_PROFILE_UNSUPPORTED:${key}`);
         if (all.length > 256) throw new Error('WEB_PLUGIN_CAP');
         self.profile = {
+          tool_selection: self.toolSelection,
           command: config.command, mode: config.mode, isProduction: config.isProduction, isWorker: config.isWorker, root: config.root, base: config.base, appType: config.appType,
           input: options.input, output: { dir: config.build.outDir, format: 'es', addons: [] },
           build: clean(Object.fromEntries(['outDir','assetsDir','assetsInlineLimit','cssCodeSplit','sourcemap','minify','cssMinify','target','cssTarget','write','copyPublicDir','lib','ssr','watch','modulePreload','commonjsOptions'].map(k => [k, (config.build as any)[k]]))),

@@ -375,7 +375,7 @@ class Session:
 
     def verify_esbuild_preparation(self,expected):
         record=self.load('esbuild-preparation',expected);payload=record['payload']
-        keys(payload,{'route','member','mode','pre_state','subjects','post_tokens','action'})
+        keys(payload,{'selection','node','route','member','mode','pre_state','subjects','post_tokens','action'})
         route=payload['route'];keys(route,{'importer_lock_key','esbuild_lock_key','platform_lock_key','selected_relative','alias_relative'})
         need(route['importer_lock_key']=='node_modules/vite' and route['esbuild_lock_key']=='node_modules/esbuild' and route['alias_relative']=='web/node_modules/esbuild/bin/esbuild','ESBUILD_ROUTE')
         platform_name='@esbuild/darwin-arm64' if self.binding['venue']=='native' else '@esbuild/linux-x64'
@@ -385,18 +385,174 @@ class Session:
         need((same and a['nlink']==p['nlink']==2 and payload['action']=='dealias_known_optimized_alias') or (not same and a['nlink']==p['nlink']==1 and payload['action']=='already_independent'),'ESBUILD_ALIAS_LAYOUT_INVALID')
         for descriptor in (a,p):
             need(descriptor['sha256']==payload['member']['sha256'] and descriptor['size']==payload['member']['size'] and stat.S_IMODE(descriptor['mode'])==0o755,'ESBUILD_MEMBER_MISMATCH')
-        self.import_subjects(payload['subjects'])
+        self.import_subjects(payload['subjects'][:2])
         for token in payload['post_tokens'].values():self.resolve_subject_token(token)
-        need(len(payload['subjects'])==2 and payload['subjects'][0]['descriptor']['relative']==route['selected_relative'] and payload['subjects'][1]['descriptor']['relative']==route['alias_relative'],'ESBUILD_SUBJECTS')
-        a,p=[r['descriptor'] for r in payload['subjects']]
+        need(len(payload['subjects'])>=2 and payload['subjects'][0]['descriptor']['relative']==route['selected_relative'] and payload['subjects'][1]['descriptor']['relative']==route['alias_relative'],'ESBUILD_SUBJECTS')
+        a,p=[r['descriptor'] for r in payload['subjects'][:2]]
         need((a['dev'],a['ino'])!=(p['dev'],p['ino']) and all(stat.S_IMODE(x['mode'])==0o755 and x['sha256']==payload['member']['sha256'] and x['size']==payload['member']['size'] for x in (a,p)),'ESBUILD_ALIAS_LAYOUT_INVALID')
+        need(native_selection(self)==payload['selection'],'TOOL_SELECTION_CHANGED')
+        need(self.subjects==payload['subjects'],'TOOL_SELECTION_SUBJECTS')
+        check_selection_observation(payload['selection'],payload['node'],loaded=False)
         return payload
+
+
+# Closed profiles derived from the retained, original-authenticated loaders.
+# The hashes deliberately refuse a changed loader rather than interpreting an
+# unreviewed resolver. No native module is loaded by the preparation probe.
+NATIVE_LOADERS = {
+    '@tailwindcss/oxide': ('index.js','d6e520baf1db574827bd2ea2f1d7585eea4d4c0934a55e01febea5ffd6e3f218'),
+    'rollup': ('dist/native.js','93c3da450b25ba485bb3de20dded405aa9c105951e8d31964eeb49633c2b16ea'),
+    'lightningcss': ('node/index.js','8b7f10ff14d65a382bd7041a747df4a0d4b7c4e22b2842bcaca2588cd86bb045'),
+}
+TOOL_OVERRIDES = ('NODE_OPTIONS','NODE_PATH','ESBUILD_BINARY_PATH','TAILWIND_OXIDE_PATH','NAPI_RS_NATIVE_LIBRARY_PATH','NAPI_RS_FORCE_WASI','NAPI_RS_ENFORCE_VERSION_CHECK','LIGHTNINGCSS_FORCE_WASM')
+
+
+def selection_environment() -> None:
+    for key in TOOL_OVERRIDES:
+        need(not os.environ.get(key),'TOOL_OVERRIDE',key)
+
+
+def native_selection(s: Session) -> dict:
+    """Guarded filesystem admission, also run by each reopened reader.
+
+    This establishes a local selected-input relation, not same-UID race safety
+    or proof that arbitrary native code executed. Native loading is separately
+    observed from the real build process's CJS cache.
+    """
+    selection_environment()
+    native=s.binding['venue']=='native'
+    platform_name,arch=('darwin','arm64') if native else ('linux','x64')
+    suffix='darwin-arm64' if native else 'linux-x64-gnu'
+    root=s.paths.exported_source;lock=s.lock()['packages'];routes=[];edges=[]
+    def absent(name: str) -> None:
+        with A['root_for'](root) as handle:
+            need(is_absent(handle,name),'TOOL_ROUTE_ALTERNATIVE',name)
+    def edge(importer: str,request: str,expected: str) -> None:
+        # Every earlier Node package-search directory within the export must
+        # be absent. The Node probe additionally refuses ancestor resolution.
+        directory=Path(importer).parent
+        while directory!=Path('.'):
+            if directory.name!='node_modules':
+                candidate=str(directory/'node_modules'/request)
+                if candidate!='web/node_modules/'+request:absent(candidate)
+            directory=directory.parent
+        edges.append({'importer':str(root/importer),'request':request,'selected':str(root/expected)})
+    for package,(member,digest) in NATIVE_LOADERS.items():
+        importer='web/node_modules/'+package+'/'+member
+        loader,raw=s.intern_subject(root,importer,TOOL)
+        need(loader['content']['sha256']==digest,'TOOL_LOADER_MISMATCH',importer)
+        if package=='@tailwindcss/oxide':
+            start=raw.index(b"} else if (process.platform === 'darwin') {") if native else raw.index(b"} else if (process.platform === 'linux') {")
+            block=raw[start:raw.index(b"} else if (process.platform === 'freebsd') {",start)] if native else raw[start:]
+            selected_package='@tailwindcss/oxide-'+suffix
+            selected_name='tailwindcss-oxide.'+suffix+'.node'
+            # Derive the ordered native candidates from this authenticated
+            # branch; retain their order, including both universal choices.
+            if native:
+                # Universal attempts precede the architecture branch. The x64
+                # branch is not an earlier arm64 candidate.
+                universal=block[:block.index(b"if (process.arch === 'x64')")]
+                arm64=block[block.index(b"} else if (process.arch === 'arm64') {"):]
+                block=universal+arm64
+            requests=re.findall(rb"(?:return|=) require\('([^']+)'\)",block)
+            chosen=requests.index(selected_package.encode())
+            earlier=[x.decode() for x in requests[:chosen] if not x.endswith(b'/package.json')]
+            if not native:
+                # The musl branch is not selected by the admitted glibc Node.
+                earlier=['./'+selected_name]
+            excluded=earlier+['./tailwindcss-oxide.wasi.cjs','@tailwindcss/oxide-wasm32-wasi']
+        elif package=='rollup':
+            need(b'const localName = `./rollup.${packageBase}.node`;' in raw and b'existsSync(path.join(__dirname, localName)) ? localName : `@rollup/rollup-${packageBase}`' in raw,'TOOL_LOADER_ROUTE')
+            selected_package='@rollup/rollup-'+suffix;selected_name='rollup.'+suffix+'.node';excluded=['./'+selected_name]
+        else:
+            need(b"require(`lightningcss-${parts.join('-')}`)" in raw and b"require(`../lightningcss.${parts.join('-')}.node`)" in raw,'TOOL_LOADER_ROUTE')
+            selected_package='lightningcss-'+suffix;selected_name='lightningcss.'+suffix+'.node';excluded=['../'+selected_name]
+        excluded_paths=[]
+        # Node also searches ancestors beyond the exported source. Observe
+        # those paths with the same no-follow directory guards, without walking
+        # any package tree or trusting a universal package's entry metadata.
+        for request in (r for r in excluded if not r.startswith('.')):
+            ancestors=list(root.parents);need(len(ancestors)<=128,'TOOL_IMPORT_DEPTH')
+            for ancestor in ancestors:
+                candidate=ancestor/'node_modules'/request
+                try:
+                    with A['root_for'](candidate.parent,owned=False) as handle:
+                        need(is_absent(handle,candidate.name),'TOOL_ROUTE_ALTERNATIVE',candidate)
+                except FileNotFoundError:
+                    pass
+                excluded_paths.append(str(candidate))
+        for request in excluded:
+            if request.startswith('.'):
+                name=os.path.normpath(str(Path(importer).parent/request));absent(name);excluded_paths.append(name)
+            else:
+                # Include all real Node lookup directories, including scoped
+                # package and loader directories; no recursive unbounded walk.
+                directory=Path(importer).parent
+                while directory!=Path('.'):
+                    if directory.name!='node_modules':
+                        name=str(directory/'node_modules'/request);absent(name);excluded_paths.append(name)
+                    directory=directory.parent
+        selected='web/node_modules/'+selected_package+'/'+selected_name
+        token,_=s.intern_subject(root,selected,TOOL)
+        _,metadata=s.intern_subject(root,'web/node_modules/'+selected_package+'/package.json')
+        metadata=parse(metadata);entry=lock['node_modules/'+selected_package]
+        need(metadata['name']==selected_package and metadata['version']==entry['version'] and metadata['main']==('./' if package=='rollup' else '')+selected_name,'TOOL_PLATFORM_MEMBER',selected_package)
+        original=None
+        if native:
+            archive_token,archive_raw=s.intern_subject(s.originals,selected_package.replace('/','_')+'.tgz')
+            need(entry['integrity']=='sha512-'+base64.b64encode(hashlib.sha512(archive_raw).digest()).decode(),'TOOL_PLATFORM_ORIGINAL')
+            with tarfile.open(fileobj=io.BytesIO(archive_raw),mode='r:gz') as archive:
+                item=archive.getmember('package/'+selected_name)
+                need(item.isfile() and item.size<=TOOL,'TOOL_PLATFORM_MEMBER')
+                body=archive.extractfile(item).read(TOOL+1);A['_budget'].get().charge(len(body))
+            need(token['content']=={'size':len(body),'sha256':sha(body)},'TOOL_SELECTED_MEMBER_MISMATCH',selected)
+            original={'archive':archive_token,'member':'package/'+selected_name,'content':token['content']}
+        edge(importer,selected_package,selected)
+        routes.append({'package':package,'importer':importer,'loader':loader,'platform_package':selected_package,'lock_integrity':entry['integrity'],'selected':selected,'member':token,'original':original,'excluded':excluded_paths})
+    # Match real upstream consumers, not only nominated platform packages.
+    for importer,request,expected in [
+        ('web/scripts/packaging-tailwind.ts','tailwindcss','web/node_modules/tailwindcss/dist/lib.js'),
+        ('web/scripts/packaging-tailwind.ts','@tailwindcss/oxide','web/node_modules/@tailwindcss/oxide/index.js'),
+        ('web/scripts/packaging-tailwind.ts','@tailwindcss/node','web/node_modules/@tailwindcss/node/dist/index.js'),
+        ('web/node_modules/@tailwindcss/node/dist/index.mjs','lightningcss','web/node_modules/lightningcss/node/index.js'),
+        ('web/node_modules/vite/dist/node/chunks/dep-BK3b2jBa.js','rollup','web/node_modules/rollup/dist/rollup.js'),
+    ]:
+        s.intern_subject(root,importer,TOOL);s.intern_subject(root,expected,TOOL);edge(importer,request,expected)
+    return {'platform':platform_name,'arch':arch,'routes':routes,'edges':edges,'venue':s.binding['venue']}
+
+
+def selection_projection(plan: dict) -> dict:
+    return {k:plan[k] for k in ('platform','arch','edges')}
+
+
+def check_selection_observation(plan: dict,observation: dict,*,loaded: bool) -> None:
+    keys(observation,{'platform','arch','edges','execPath','node','glibc','loaded'})
+    need({k:observation[k] for k in ('platform','arch','edges')}==selection_projection(plan),'TOOL_NODE_SELECTION')
+    need(type(observation['node']) is str and observation['node'].split('.')[0]=='24' and isinstance(observation['execPath'],str) and Path(observation['execPath']).is_absolute(),'TOOL_NODE_RUNTIME')
+    need(plan['platform']!='linux' or bool(observation['glibc']),'TOOL_LIBC')
+    # Loaded paths are supplied by the actual Node build process, never by the
+    # non-loading preflight. Exactly one admitted native member per loader.
+    expected=[edge['selected'] for edge in plan['edges'][:3]] if loaded else []
+    need(observation['loaded']==expected,'TOOL_NATIVE_CACHE')
+
+
+def probe_selection(s: Session,plan: dict) -> dict:
+    script="""const {createRequire}=require('node:module');
+const p=JSON.parse(process.argv[1]);
+const edges=p.edges.map(e=>({...e,selected:createRequire(e.importer).resolve(e.request)}));
+console.log(JSON.stringify({platform:process.platform,arch:process.arch,execPath:process.execPath,node:process.versions.node,glibc:process.report.getReport().header.glibcVersionRuntime??null,edges,loaded:[]}));"""
+    result=A['process_capture'](['node','-e',script,canonical(selection_projection(plan),16384).decode()],s.paths.exported_source,16384,16384)
+    A['_budget'].get().charge(len(result['stdout'])+len(result['stderr']))
+    need(result['process']['exit']==0 and result['process']['quiescent'] and not result['process']['timed_out'] and not result['process']['overflow'],'TOOL_NODE_PROBE')
+    observation=parse(result['stdout'],16384);check_selection_observation(plan,observation,loaded=False)
+    return observation
 
 
 def prepare_esbuild_alias(session):
     s=session
-    for key in ('NODE_OPTIONS','NODE_PATH','ESBUILD_BINARY_PATH','TAILWIND_OXIDE_PATH','NAPI_RS_NATIVE_LIBRARY_PATH','NAPI_RS_FORCE_WASI','LIGHTNINGCSS_FORCE_WASM'):
-        need(not os.environ.get(key),'TOOL_OVERRIDE',key)
+    selection_environment()
+    selection=native_selection(s)
+    node=probe_selection(s,selection)
     platform_name='@esbuild/darwin-arm64' if s.binding['venue']=='native' else '@esbuild/linux-x64'
     need(s.binding['venue']=='native' or (sys.platform=='linux' and __import__('platform').machine()=='x86_64'),'PORTABLE_PLATFORM')
     base='web/node_modules/'
@@ -481,7 +637,8 @@ def prepare_esbuild_alias(session):
     for key,name in [('selected',selected),('alias',alias)]:
         post[key],_=s.intern_subject(s.paths.exported_source,name,TOOL)
         need(post[key]['content']=={k:expected[k] for k in ('size','sha256')},'ESBUILD_POST_MISMATCH')
-    return s.write('esbuild-preparation',{'route':route,'member':expected,'mode':0o755,'pre_state':pre,'subjects':s.subjects,'post_tokens':post,'action':action})
+    selection=native_selection(s)
+    return s.write('esbuild-preparation',{'selection':selection,'node':node,'route':route,'member':expected,'mode':0o755,'pre_state':pre,'subjects':s.subjects,'post_tokens':post,'action':action})
 
 
 def begin_web(s,preparation,completion_leaf=COMPLETION_LEAF):
@@ -489,7 +646,7 @@ def begin_web(s,preparation,completion_leaf=COMPLETION_LEAF):
     with A['root_for'](s.paths.evidence_dir) as root:
         need(is_absent(root,COMPLETION_LEAF) and is_absent(root,'web-failure.json'),'COMPLETION_TARGET_EXISTS')
     s.write('attempt',{'binding_sha256':s.binding_sha,'completion_leaf':completion_leaf})
-    s.verify_esbuild_preparation(preparation)
+    prepared=s.verify_esbuild_preparation(preparation)
     originals=s.check_originals();tools=s.check_installed(originals)
     source=[]
     for name in ['web/vite.config.ts','web/tsconfig.json','web/scripts/packaging-custody.ts','web/scripts/packaging-tailwind.ts','app/mac/scripts/web_evidence.py','web/vendor/vite/css-relation.patch','web/vendor/vite/UPSTREAM.json']:
@@ -505,17 +662,18 @@ def begin_web(s,preparation,completion_leaf=COMPLETION_LEAF):
     s.intern_subject(s.paths.exported_source,'web/node_modules/highlight.js/styles/github-dark-dimmed.css')
     context_subjects=list(s.subjects)
     plan=s.prepare_css_inputs();plan_token=s.write('css-inputs',{'plan':plan,'subjects':s.subjects},{'preparation':preparation})
-    token=s.write('context',{'binding_sha256':s.binding_sha,'completion_leaf':completion_leaf,'preparation':preparation,'css_inputs':plan_token['record_sha256'],'sources':source,'tools':tools,'originals':originals,'subjects':context_subjects},{'preparation':preparation,'asset_source':s.binding['asset_source_sha256']})
+    token=s.write('context',{'selection':prepared['selection'],'node':prepared['node'],'binding_sha256':s.binding_sha,'completion_leaf':completion_leaf,'preparation':preparation,'css_inputs':plan_token['record_sha256'],'sources':source,'tools':tools,'originals':originals,'subjects':context_subjects},{'preparation':preparation,'asset_source':s.binding['asset_source_sha256']})
     return token
 
 
 def load_context(s,context,preparation):
     s.subjects=[];s.subject_index={}
-    s.verify_esbuild_preparation(preparation)
+    prepared=s.verify_esbuild_preparation(preparation)
     # Registry is inherited once, with identical prefix IDs.
     s.subjects=[];s.subject_index={}
     record=s.load('context',context);p=record['payload']
-    keys(p,{'binding_sha256','completion_leaf','preparation','css_inputs','sources','tools','originals','subjects'})
+    keys(p,{'selection','node','binding_sha256','completion_leaf','preparation','css_inputs','sources','tools','originals','subjects'})
+    need(p['selection']==prepared['selection'] and p['node']==prepared['node'],'TOOL_SELECTION_CHANGED')
     need(p['binding_sha256']==s.binding_sha and p['completion_leaf']==COMPLETION_LEAF and p['preparation']==preparation,'CALLER_BINDING_MISMATCH')
     s.import_subjects(p['subjects'])
     plan=s.load('css-inputs',p['css_inputs'])['payload']
@@ -710,7 +868,7 @@ def css_read(s,context,preparation,request,index=None):
         entries=[]
         for row in plan['entries']:
             raw=s.resolve_subject_token(row['source_token']);entries.append({**row,'content':decode(raw)})
-        return {'schema':'web-css-content@1','entries':entries}
+        return {'schema':'web-css-content@1','entries':entries,'selection':selection_projection(p['selection'])}
     name=request['id'];base=request['base']
     if site=='stylesheet':
         if name=='tailwindcss':relative='web/node_modules/tailwindcss/index.css'
@@ -939,7 +1097,9 @@ def validate_build(s,payload,context,preparation,*,stored_required=False):
     keys(payload,{'resource_profile','complete','profile','observations','css_operations','modules','final_bundle','counts'})
     need(payload['resource_profile']==RESOURCE_PROFILE,'RESOURCE_PROFILE')
     need(payload['complete'] is True,'CALL_INCOMPLETE');profile=payload['profile']
-    keys(profile,{'command','mode','isProduction','isWorker','root','base','appType','input','output','build','css','esbuild','define','env','config_dependencies','plugins'})
+    keys(profile,{'command','mode','isProduction','isWorker','root','base','appType','input','output','build','css','esbuild','define','env','config_dependencies','plugins','tool_selection'})
+    check_selection_observation(p['selection'],profile['tool_selection'],loaded=True)
+    need(all(profile['tool_selection'][key]==p['node'][key] for key in ('execPath','node','glibc')),'TOOL_NODE_RUNTIME')
     need(profile['command']=='build' and profile['mode']=='production' and profile['isProduction'] is True and profile['isWorker'] is False and profile['root']==str(s.paths.exported_source/'web') and profile['base']=='/' and profile['appType']=='spa','PROFILE_UNSUPPORTED')
     need(profile['build']['sourcemap'] is True and profile['build']['cssCodeSplit'] is True and profile['build']['cssMinify'] is True and profile['build']['minify']=='esbuild' and profile['build']['ssr'] is False and profile['build']['watch'] is None and profile['build']['lib'] is False,'PROFILE_UNSUPPORTED')
     need(profile['css']['devSourcemap'] is False and profile['css']['postcss']=={'plugins':[]},'PROFILE_UNSUPPORTED')
@@ -1146,7 +1306,7 @@ def metadata_limits(payload, *, initial_names=0):
     # Occurrences of logical names, including repeated names, never a set of paths.
     names=initial_names
     need(names<=8*MiB,'AGGREGATE_NAME_CAP')
-    fields={'path','preliminary_path','sourcemap_path','chunk_id','document_id','reference_id',
+    fields={'importer','selected','execPath','loaded','request','path','preliminary_path','sourcemap_path','chunk_id','document_id','reference_id',
             'declared_file_name','resolved_file_name','names','original_names','watch_ids',
             'module_ids','id','source','module','file','base','from','relative','relative_path',
             'filename','cssAssetName','originalFileName','source_site','config_dependencies',
