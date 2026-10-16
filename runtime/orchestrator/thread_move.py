@@ -231,10 +231,13 @@ class ThreadPreparation:
 
     def failed_cleanup(self) -> None:
         with self.admission.db._lock:
+            # Retain uncertainty BEFORE persistence: interruption of that write
+            # must not let a caught preparation error finish as a clean owner.
+            # The writer's rollback also restores this already-unknown state.
+            self.state = self.state.model_copy(update={"failed_cleanup": True})
             try:
                 self.admission.write(self, failed_cleanup=True)
             except Exception:
-                self.state = self.state.model_copy(update={"failed_cleanup": True})
                 logger.exception("Thread cleanup attribution persistence failed; retaining unknown owner")
 
     def finish(self, *, deferred: bool, failed: bool) -> None:
