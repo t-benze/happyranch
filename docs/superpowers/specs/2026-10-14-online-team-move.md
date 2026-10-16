@@ -294,7 +294,7 @@ The root inventory must include every transitive caller/retry/fallback/callback/
 
 D must discover/validate the operation through DB/schema ownership before normal OrgState membership validation, compatibility writers, authority cold publication and task/thread/dream/wake/schedule/job recovery/admission. Exact forward-committed partial before/after state is reconstructed/repaired through the restricted owned recovery path before ordinary attachment. Corruption/unknown layout/owner/process evidence leaves that org diagnostic-only; other orgs may attach. Coherent roster plus incomplete contexts attaches only with durable affected holds installed. Source rollback never undoes resets/publication or clears a hold.
 
-All supported runtime attach/switch/launcher downgrade entrypoints must refuse an incompatible reader before execution when an unresolved move requires `online-team-move@1`. This guard is NOT implemented by B's capability data. Empty additive schema is structurally recognized only by compatible layout readers; prefeature binaries do not learn hold semantics from a table. An updated in-process guard cannot control an already-running old daemon. Direct unchecked old-interpreter invocation is unsupported recovery. Apply stays unavailable until the root delivers the real guard and C1-D closure.
+All supported runtime attach/switch/launcher downgrade entrypoints must refuse an incompatible reader before execution when an unresolved move requires the corrected `online-team-move@2` reader (which also reads @1 records). This guard is NOT implemented by B's capability data. Empty additive schema is structurally recognized only by compatible layout readers; prefeature binaries do not learn hold semantics from a table. An updated in-process guard cannot control an already-running old daemon. Direct unchecked old-interpreter invocation is unsupported recovery. Apply stays unavailable until the root delivers the real guard and C1-D closure.
 
 ## Future public contract (unavailable in B)
 
@@ -398,11 +398,44 @@ handle validates the existing schema and exact images without bootstrap/migratio
 normal attachment or producer admission. Diagnostic orgs also fence global profile
 reconciliation/writers so their dependencies cannot disappear from the closure.
 Runtime registration/switch refuses to detach a hold. Updated shell and native Mac
-launchers pass `--reader-guarded-start`: supported older argparse readers reject
-this protocol before startup. Updated launchers require a matching reader; direct
+launchers pass `--reader-guarded-start=online-team-move@2`: supported older argparse readers reject
+this protocol before startup, including the earlier D Boolean-flag reader.
+Updated launchers require a matching reader; direct
 old interpreters, already-running old daemons and obsolete launchers remain outside
 this cooperative guard. Source rollback cannot undo a durable decision. No actual
 activation/restart/downgrade experiment is authorized or performed.
+
+D correction: the existing operation audit owner records a closed version1
+staging protocol with the RESET-to-CANONICAL transition, then an exact
+operation/path/stage intent BEFORE exclusive allocation, acquired file and parent
+identities BEFORE writing, and append-only terminal disposition AFTER file/parent
+fsync. Recovery reconciles only those exact artifacts. A present path without
+acquired identity stays actionable repair_required; it is never adopted, globbed
+or deleted. Failed cleanup stays durable through owner-finished and recovery.
+COMPLETE requires all stages disposed, exact replaced-inode coverage and fresh
+absence readback. ONE-table SQL, old Progress serializers, historical audits and
+saved terminal receipts remain unchanged. Legacy canonical-stage operations
+without this protocol remain readable but held for missing ownership evidence;
+no scan, inferred cleanup or historical rewrite can upgrade that evidence.
+
+All per-org acquisition, strict resolution, filesystem and SQLite-open/read/close
+observations normalize to bounded native diagnostics, preserving errno/SQLite
+classification and original exception causes. Only genuine first-observed DB
+absence is fresh. Raced disappearance or unknown observation remains diagnostic;
+startup and runtime-switch callers retain earlier diagnostics through subsequent
+reads and state adoption. Previously unavailable diagnostic/recovery owners
+require an existing DB. Compatible readers leave only the affected org unattached;
+incompatible readers and source-runtime detach fail closed.
+
+The one batch interval (including empty dependencies) captures AgentDefs, complete
+profile/dependency closure, candidate, current inputs and census outside durable
+mutation leases. Short segments revalidate actual operation revision, native
+roster journal/pointer, dependency mirror, writer epoch and both local-write and
+SQLite data_version observations. Only bounded exact-image mutation runs within
+the canonical/profile leases. Publication capture and final discovery run after
+the leases release. The final DB-only leaf revalidates the original capture from
+BEFORE discovery as well as the completed census, closing intervening-writer gaps.
+These are source predicates; no crash, cleanup, race or recovery proof was run.
 
 Acceptance is SOURCE/POLICY/STATIC ONLY on the SAME thirteen four-answer
 observations. Every absent behavior/migration/recovery/native callback/permission/

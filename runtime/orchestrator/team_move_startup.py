@@ -6,10 +6,9 @@ as permission to release a durable decision. Other orgs can attach normally.
 """
 from __future__ import annotations
 
-from runtime.infrastructure.team_move_store import TeamMoveError, inspect_team_move_database
-from runtime.orchestrator._paths import OrgPaths
+from runtime.infrastructure.team_move_store import TeamMoveError, inspect_team_move_org
 
-READER_CAPABILITIES = frozenset({"online-team-move@1"})
+READER_CAPABILITIES = frozenset({"online-team-move@1", "online-team-move@2"})
 
 
 class TeamMoveStartupHold(TeamMoveError):
@@ -25,7 +24,9 @@ class TeamMoveStartupHold(TeamMoveError):
 
 def before_org_attachment(root, slug):
     """Called before naming preflight, Database(), schema or roster writers."""
-    row = inspect_team_move_database(OrgPaths(root).db_path, org_slug=slug)
+    directory, row = inspect_team_move_org(root, org_slug=slug)
+    if not directory:
+        raise TeamMoveError("team_move_startup_org_directory_required")
     if row is not None:
         # Restricted recovery may reconstruct ONLY a fully authenticated owned
         # prefix. This automatic path has no process/owner proof, so performs
@@ -35,26 +36,23 @@ def before_org_attachment(root, slug):
 
 def require_runtime_reader(runtime, capabilities=READER_CAPABILITIES):
     """Inspect every org, including ones ordinary roster discovery would skip."""
+    diagnostics = {}
     orgs = runtime.orgs_dir
     if not orgs.exists():
-        return
+        return diagnostics
     for entry in sorted(orgs.iterdir()):
         if entry.name in {"_pending", "_archive"}:
             continue
-        if entry.is_symlink():
-            if "online-team-move@1" in capabilities:
-                continue  # Per-org diagnostic owner refuses the redirect.
-            raise TeamMoveError("team_move_runtime_org_redirected")
-        if not entry.is_dir():
-            continue
         try:
-            row = inspect_team_move_database(OrgPaths(entry).db_path, org_slug=entry.name)
-        except TeamMoveError:
-            if "online-team-move@1" in capabilities:
-                continue  # Per-org diagnostic discovery below owns refusal.
+            _directory, row = inspect_team_move_org(entry, org_slug=entry.name)
+        except TeamMoveError as exc:
+            if "online-team-move@2" in capabilities:
+                diagnostics[entry.name] = str(exc)
+                continue  # Diagnostic owner retains unavailable org, never absent.
             raise
-        if row is not None and "online-team-move@1" not in capabilities:
+        if row is not None and "online-team-move@2" not in capabilities:
             raise TeamMoveError("team_move_incompatible_reader")
+    return diagnostics
 
 
 def refuse_runtime_detach(runtime):
@@ -62,9 +60,9 @@ def refuse_runtime_detach(runtime):
     if runtime is None or not runtime.orgs_dir.exists():
         return
     for entry in sorted(runtime.orgs_dir.iterdir()):
-        if entry.name in {"_pending", "_archive"} or not entry.is_dir():
+        if entry.name in {"_pending", "_archive"}:
             continue
-        row = inspect_team_move_database(OrgPaths(entry).db_path, org_slug=entry.name)
+        _directory, row = inspect_team_move_org(entry, org_slug=entry.name)
         if row is not None:
             raise TeamMoveError("team_move_runtime_detach_held")
 
@@ -75,10 +73,12 @@ def diagnostic_move_orgs(runtime):
     if not runtime.orgs_dir.exists():
         return result
     for entry in sorted(runtime.orgs_dir.iterdir()):
-        if entry.name in {"_pending", "_archive"} or not entry.is_dir():
+        if entry.name in {"_pending", "_archive"}:
             continue
         try:
-            before_org_attachment(entry, entry.name)
+            directory, row = inspect_team_move_org(entry, org_slug=entry.name)
+            if directory and row is not None:
+                raise TeamMoveStartupHold(row)
         except TeamMoveError as exc:
             result[entry.name] = str(exc)
     return result

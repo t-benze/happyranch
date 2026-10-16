@@ -2884,7 +2884,7 @@ composer, draft, attachments and selection; neither action submits a message.
 
 D supplies internal preview/operation/recovery owners; no public team-move
 apply/recover route or CLI is available. E/F retain that integration and acceptance.
-Updated shell and Mac bundled/dev launchers pass `--reader-guarded-start`; older
+Updated shell and Mac bundled/dev launchers pass `--reader-guarded-start=online-team-move@2`; older
 supported argparse readers reject that protocol before startup. Runtime switch
 and registration preserve unresolved holds instead of detaching their org. Early
 schema-owner discovery keeps an unresolved/unknown org diagnostic-only before
@@ -2894,5 +2894,11 @@ this cooperative guard. Source rollback cannot undo durable decisions. No restar
 activation, preview against the live roster or live move was executed. SAME13
 behavior/migration/recovery/launcher outcomes remain UNEXECUTED; integration
 INCLUDING callback SKIPPED24342 and Python units RETIRED. See the current D section
-of the approved online-team-move spec; source/static acceptance is not behavioral
+of the approved online-team-move spec. The @2 protocol covers durable operation
+staging ownership and per-org acquisition containment. Earlier diagnostics survive
+register/switch/state adoption; failed open or raced loss never establishes fresh
+absence. Discovery/publication capture runs outside durable mutation leases, with
+native capture revalidation in the final DB leaf. Unknown staging cleanup stays
+held through recovery and owner-finished. Old records remain readable; legacy
+canonical-stage ownership gaps remain held. Source/static acceptance is not behavioral
 acceptance or a feature-completion claim.

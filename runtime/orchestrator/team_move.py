@@ -413,7 +413,7 @@ class TeamMoveCoordinator:
             "capability_version": CAPABILITY_VERSION,
             "apply_available": APPLY_AVAILABLE,
             "not_integrated": NOT_INTEGRATED,
-            "required_reader": "online-team-move@1" if row is not None else None,
+            "required_reader": "online-team-move@2" if row is not None else None,
             "unresolved_phase": Phase(row["phase"]).value if row is not None else None,
             "startup_requirements": STARTUP_REQUIREMENTS,
             "completion_requirements": COMPLETION_REQUIREMENTS,

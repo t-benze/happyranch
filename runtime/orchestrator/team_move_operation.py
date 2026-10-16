@@ -20,7 +20,7 @@ from runtime.orchestrator import prompt_loader
 from runtime.orchestrator._paths import OrgPaths
 from runtime.orchestrator.agent_def import parse_agent_text
 from runtime.orchestrator.canonical_roster import canonical_roster
-from runtime.orchestrator.team_move_canonical import AGENTS, capture_images, check_parents, read_regular, replace_owned, validate_candidate, _identity
+from runtime.orchestrator.team_move_canonical import AGENTS, capture_images, check_parents, read_regular, replace_owned, validate_candidate, verify_staging, _identity
 from runtime.orchestrator.team_move_context import canonical, materialize_context, plan_context, verify_context
 
 
@@ -306,13 +306,14 @@ class TeamMoveOperation:
         result = None
         async with self.profiles.consumer_batch_writer(org=self.org, operation_id=row["operation_id"]) as batch:
             try:
-                with batch.segment():
-                    fresh = self.preview(drain_threads=request.drain_threads)
-                    if _bytes(fresh.request) != row["request_bytes"]:
-                        result = self._abandon(row, "team_move_stale_preview")
-                    elif fresh.blockers:
-                        result = self._abandon(row, "team_move_agents_busy")
-                    else:
+                fresh = self.preview(drain_threads=request.drain_threads)
+                if _bytes(fresh.request) != row["request_bytes"]:
+                    result = self._abandon(row, "team_move_stale_preview")
+                elif fresh.blockers:
+                    result = self._abandon(row, "team_move_agents_busy")
+                else:
+                    capture = batch.capture()
+                    with batch.segment(capture):
                         owner = "move_" + uuid.uuid4().hex
                         self._owner_started(row, owner)
                         with self.move.gate, self.org.db._lock:
@@ -391,13 +392,15 @@ class TeamMoveOperation:
         elif row["phase"] in {"context", "publish"}:
             self._verify_stable_inputs(request)
         if row["phase"] == "commit_decided":
-            with batch.segment():
-                target = self._target_snapshot(request)
-                journal = authority.begin_move_publication(row["operation_id"])
-                identity = PublicationIdentity(writer_invocation_id=journal["publisher_invocation"], journal_id=journal["id"],
-                    namespace=authority.namespace, generation=journal["generation"], digest=_digest(target))
-                progress = progress.model_copy(update={"publication": identity})
-                row = self._transition(row, Phase.FENCED, progress=progress)
+            # Native publication capture/recovery owns no profile lease.
+            capture = batch.capture()
+            target = self._target_snapshot(request)
+            batch.revalidate(capture)
+            journal = authority.begin_move_publication(row["operation_id"])
+            identity = PublicationIdentity(writer_invocation_id=journal["publisher_invocation"], journal_id=journal["id"],
+                namespace=authority.namespace, generation=journal["generation"], digest=_digest(target))
+            progress = progress.model_copy(update={"publication": identity})
+            row = self._transition(row, Phase.FENCED, progress=progress)
         if row["phase"] == "fenced":
             row = self._transition(row, Phase.RESET)
         if row["phase"] == "reset":
@@ -415,14 +418,20 @@ class TeamMoveOperation:
             row = self._transition(row, Phase.CANONICAL)
         if row["phase"] == "canonical":
             self._after_plans(request)
-            with batch.segment():
-                def observed_after(path):
-                    nonlocal row, progress
-                    if path not in progress.canonical_after:
-                        progress = progress.model_copy(update={"canonical_after": tuple(sorted((*progress.canonical_after, path)))})
-                        row = self._transition(row, Phase.CANONICAL, progress=progress)
-                with authority.move_mutation(row["operation_id"], progress.publication):
-                    replace_owned(self.org.root, request.files, self.org.teams, observed_after=observed_after)
+            with canonical_roster(self.org.root):
+                capture = batch.capture()
+                candidate = validate_candidate(self.org.root, request.files)
+                batch.revalidate(capture)
+                with batch.segment(capture):
+                    def observed_after(path):
+                        nonlocal row, progress
+                        if path not in progress.canonical_after:
+                            progress = progress.model_copy(update={"canonical_after": tuple(sorted((*progress.canonical_after, path)))})
+                            row = self._transition(row, Phase.CANONICAL, progress=progress)
+                        return row
+                    with authority.move_mutation(row["operation_id"], progress.publication):
+                        replace_owned(self.org.root, request.files, self.org.teams, candidate=candidate,
+                            row=row, store=self.store, observed_after=observed_after)
             self._verify_stable_inputs(request)
             row = self._transition(row, Phase.CONTEXT)
         if row["phase"] == "context":
@@ -439,15 +448,16 @@ class TeamMoveOperation:
                     row = self._transition(row, Phase.CONTEXT, progress=progress)
             row = self._transition(row, Phase.PUBLISH)
         if row["phase"] == "publish":
-            with batch.segment():
-                authority.publish_move(row["operation_id"], progress.publication)
-                return self._complete(row, request, progress)
+            authority.publish_move(row["operation_id"], progress.publication)
+            return self._complete(row, request, progress, batch)
         raise TeamMoveError("team_move_forward_phase_unknown")
 
-    def _complete(self, row, request, progress):
+    def _complete(self, row, request, progress, batch):
         """Actual native readback, followed by a short DB-only receipt/release CAS."""
         from runtime.orchestrator.org_validation import validate_team_membership
         with canonical_roster(self.org.root):
+            capture = batch.capture()
+            staging = verify_staging(self.org.root, row, self.store, request.files)
             validate_team_membership(OrgPaths(self.org.root), self.org.teams)
             for image in request.files:
                 raw, identity = read_regular(check_parents(self.org.root, image.path))
@@ -471,11 +481,13 @@ class TeamMoveOperation:
             if blockers:
                 raise TeamMoveError("team_move_completion_owners_unsettled")
             evidence = _digest(canonical({"authority": _digest(current), "contexts": [p.manifest() for p in plans],
+                "staging": [f.model_dump(mode="json") for f in staging],
                 "profiles": self.org.workflow_authority._profile_projection(), "resets": [a.reset.model_dump() for a in progress.agents]}))
         receipt = CompletedReceipt(version=1, operation_id=row["operation_id"], request_digest=row["request_digest"], phase="complete",
             state_revision=row["state_revision"] + 1, committed=True, progress_digest=_digest(row["progress_bytes"]),
             current_inputs_digest=evidence, settled_census_digest=_digest(canonical(blockers)), publication=progress.publication)
         with self.move.gate, _transaction(self.org.db):
+            batch.revalidate(capture)
             if self._database_observation() != changes or self.move.producers.writer_epoch != epoch:
                 raise TeamMoveError("team_move_completion_capture_changed")
             return self.store._complete_uncommitted(row, receipt)

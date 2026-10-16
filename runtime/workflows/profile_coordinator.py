@@ -422,12 +422,24 @@ class ProfileCoordinator:
                 members.append(slug)
         return tuple(members)
 
-    def _assert_no_active_operation(self, profile_name: str) -> None:
+    def _assert_no_active_operation(self, profile_name: str, *, move_org=None) -> None:
         diagnostics = getattr(self, "_move_diagnostic_orgs", {})
         admitted = _move_batch_owner.get()
         for slug, root in tuple(diagnostics.items()):
             from runtime.infrastructure.team_move_store import inspect_team_move_database
-            row = inspect_team_move_database(OrgPaths(root).db_path, org_slug=slug)
+            if move_org is None:
+                row = inspect_team_move_database(OrgPaths(root).db_path, org_slug=slug, require_existing=True)
+            else:
+                # D's short segment cannot perform diagnostic filesystem/DB
+                # acquisition while holding profile leases. Only its actual
+                # already-open native org owner can be inspected here. Other
+                # diagnostic roots remain held for their ordinary owner.
+                if slug != move_org.slug or root != move_org.root:
+                    raise ProfileCoordinatorError("profile_team_move_diagnostic_org_held")
+                with move_org.db._lock:
+                    row = move_org.db._team_move_coordinator.active_uncommitted()
+                if row is None or admitted != (slug, row["operation_id"]):
+                    raise ProfileCoordinatorError("profile_team_move_diagnostic_org_held")
             if row is None:
                 diagnostics.pop(slug, None)  # Validated durable release, never TTL.
             elif admitted is None or admitted != (slug, row["operation_id"]):
@@ -1500,38 +1512,64 @@ class ProfileCoordinator:
             # D owns the immutable decision and exact SAME publication journal.
 
 
+@dataclass(frozen=True)
+class _MoveBatchCapture:
+    operation_revision: int
+    roster_revision: tuple
+    dependency_mirror: tuple
+    database_changes: tuple[int, int]
+    writer_epoch: int
+
+
 class _MoveBatchInterval:
     def __init__(self, profiles, org, operation_id, definitions, names):
         self.profiles, self.org, self.operation_id = profiles, org, operation_id
         self.definitions, self.names = definitions, names
 
+    def _observation(self):
+        """Only native DB/revision/epoch facts; safe in a short DB-only leaf."""
+        db = self.org.db
+        move = db._team_move_coordinator
+        with db._lock:
+            row = move.active_uncommitted()
+            if row is None or row["operation_id"] != self.operation_id:
+                raise ProfileCoordinatorError("profile_move_owner_required")
+            return _MoveBatchCapture(row["state_revision"], self.profiles._roster_revision(self.org)[:2],
+                self.profiles._dependency_mirror_snapshot(self.org),
+                (db._conn.total_changes, db._conn.execute("PRAGMA data_version").fetchone()[0]),
+                move.producers.writer_epoch)
+
+    def capture(self):
+        """Complete native discovery before any profile/publication lease."""
+        before = self._observation()
+        current = tuple(prompt_loader.load_agent(OrgPaths(self.org.root), d.name) for d in self.definitions)
+        if any(actual is None or (actual.executor, actual.model, actual.reasoning_effort, actual.allow_rules, actual.repos)
+                != (original.executor, original.model, original.reasoning_effort, original.allow_rules, original.repos)
+                for original, actual in zip(self.definitions, current)):
+            raise ProfileCoordinatorError("profile_move_consumer_changed")
+        projection = self.org.workflow_authority._profile_projection()
+        from runtime.workflows.authority import _agent_projection
+        definitions = [_agent_projection(d, status="active") for d in prompt_loader.list_agents(OrgPaths(self.org.root))]
+        self.profiles.validate_requirements(definitions, projection)
+        if not self.profiles._closure_coherent(self.org):
+            raise ProfileCoordinatorError("profile_dependency_incoherent")
+        self.revalidate(before)
+        return before
+
+    def revalidate(self, capture):
+        if self._observation() != capture:
+            raise ProfileCoordinatorError("profile_move_capture_changed")
+
     @contextmanager
-    def segment(self):
-        """Profile -> publisher ordering, outside move gate/DB leaves."""
-        row = self.org.db._team_move_coordinator.store.read()
-        if row is None or row["operation_id"] != self.operation_id:
-            raise ProfileCoordinatorError("profile_move_owner_required")
+    def segment(self, capture):
+        """Only synchronous mutation; no discovery/census/publication capture."""
         token = _move_batch_owner.set((self.org.slug, self.operation_id))
         try:
-            with self.profiles.dependency_writer(self.names):
+            with self.profiles._profile_leases(self.names, wait=True):
+                for name in self.names:
+                    self.profiles._assert_no_active_operation(name, move_org=self.org)
                 with self.org.workflow_authority._publisher_lock:
-                    row = self.org.db._team_move_coordinator.store.read()
-                    if row is None or row["operation_id"] != self.operation_id:
-                        raise ProfileCoordinatorError("profile_move_owner_required")
-                    current = tuple(prompt_loader.load_agent(OrgPaths(self.org.root), d.name) for d in self.definitions)
-                    if any(actual is None or (actual.executor, actual.model, actual.reasoning_effort, actual.allow_rules, actual.repos)
-                            != (before.executor, before.model, before.reasoning_effort, before.allow_rules, before.repos)
-                            for before, actual in zip(self.definitions, current)):
-                        raise ProfileCoordinatorError("profile_move_consumer_changed")
-                    # Native requirements check ALL consumers, including empty rows.
-                    projection = self.org.workflow_authority._profile_projection()
-                    from runtime.workflows.authority import _agent_projection
-                    definitions = [_agent_projection(d, status="active") for d in prompt_loader.list_agents(OrgPaths(self.org.root))]
-                    self.profiles.validate_requirements(definitions, projection)
-                    # Complete candidate membership is validated by the canonical
-                    # owner before repair; a partial on-disk roster is not published.
-                    if not self.profiles._closure_coherent(self.org):
-                        raise ProfileCoordinatorError("profile_dependency_incoherent")
+                    self.revalidate(capture)
                     yield
         finally:
             _move_batch_owner.reset(token)

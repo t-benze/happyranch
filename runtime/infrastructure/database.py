@@ -391,8 +391,12 @@ class Database(
         recovery context uses this handle; it is not attached to any producer.
         """
         from urllib.parse import quote
-        from runtime.infrastructure.team_move_store import inspect_team_move_database, TeamMoveError
-        row = inspect_team_move_database(db_path, org_slug=org_slug)
+        from runtime.infrastructure.team_move_store import inspect_team_move_database, TeamMoveError, _inspection_error
+        try:
+            original_identity = db_path.lstat()
+            row = inspect_team_move_database(db_path, org_slug=org_slug, require_existing=True)
+        except (OSError, sqlite3.Error) as exc:
+            raise _inspection_error("team_move_recovery_database_unavailable", exc) from exc
         if row is None:
             raise TeamMoveError("team_move_recovery_operation_required")
         owner = cls.__new__(cls)
@@ -403,8 +407,10 @@ class Database(
         owner._v2_refusal_failed_owners = {}
         owner._v2_permission_surface_reader = None
         owner._v2_process_boot_id = None
-        owner._conn = sqlite3.connect("file:" + quote(str(db_path), safe="/") + "?mode=rw", uri=True, check_same_thread=False)
+        owner._conn = None
+        primary = None
         try:
+            owner._conn = sqlite3.connect("file:" + quote(str(db_path), safe="/") + "?mode=rw", uri=True, check_same_thread=False)
             owner._conn.row_factory = sqlite3.Row
             owner._conn.execute("PRAGMA foreign_keys=ON")
             from runtime.infrastructure.workflow_schema import validate_workflow_schema
@@ -412,10 +418,23 @@ class Database(
             with owner._lock:
                 validate_workflow_schema(owner._conn, expected_org_slug=org_slug)
                 validate_team_move_schema(owner._conn, org_slug=org_slug)
+            fresh = inspect_team_move_database(db_path, org_slug=org_slug, require_existing=True)
+            acquired_identity = db_path.lstat()
+            if fresh != row or (original_identity.st_dev, original_identity.st_ino) != (acquired_identity.st_dev, acquired_identity.st_ino):
+                raise TeamMoveError("team_move_recovery_acquisition_changed")
             return owner
-        except BaseException:
-            owner._conn.close()
+        except (OSError, sqlite3.Error) as exc:
+            primary = exc
+            raise _inspection_error("team_move_recovery_database_unavailable", exc) from exc
+        except BaseException as exc:
+            primary = exc
             raise
+        finally:
+            if primary is not None and owner._conn is not None:
+                try:
+                    owner._conn.close()
+                except sqlite3.Error as cleanup:
+                    primary.add_note("restricted move acquisition close failed: " + type(cleanup).__name__)
 
     def __init__(self, db_path: Path) -> None:
         self.db_path = db_path

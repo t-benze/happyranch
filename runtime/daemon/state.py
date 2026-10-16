@@ -84,10 +84,12 @@ class DaemonState:
             )
 
     @classmethod
-    def from_runtime(cls, runtime: RuntimeDir, settings: Settings) -> "DaemonState":
+    def from_runtime(cls, runtime: RuntimeDir, settings: Settings, *, move_diagnostics=None) -> "DaemonState":
         from runtime.orchestrator.team_move_startup import require_runtime_reader
-        require_runtime_reader(runtime)
+        diagnostics = dict(move_diagnostics or {})
+        diagnostics.update(require_runtime_reader(runtime))
         state = cls(runtime=runtime, settings=settings)
+        state.broken_orgs.update(diagnostics)
         from runtime.orchestrator.team_move_startup import diagnostic_move_orgs
         state.broken_orgs.update(diagnostic_move_orgs(runtime))
         # __post_init__ constructs metrics_store at runtime.root/metrics.db
@@ -249,6 +251,9 @@ class DaemonState:
             # action (init / unload+reload) and must fail loudly so the
             # founder sees the reason at the HTTP layer.
             try:
+                if "team_move_" in self.broken_orgs.get(slug, ""):
+                    from runtime.infrastructure.team_move_store import inspect_team_move_org
+                    inspect_team_move_org(root, org_slug=slug, require_database=True)
                 org = OrgState.load(slug=slug, root=root, settings=self.settings)
             except ValueError as exc:
                 if "team_move_" in str(exc):

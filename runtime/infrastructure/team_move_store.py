@@ -209,6 +209,29 @@ class RecoveryIdentity(Closed):
     previous_owner_quiescence_digest: Digest
 
 
+class StagingFact(Closed):
+    """Append-only evidence in the existing operation audit owner, no new DDL."""
+    version: Literal[1]
+    request_digest: Digest
+    stage_id: Identifier
+    owner_id: Identifier
+    path: CanonicalPath
+    parent: PathIdentity
+    identity: PathIdentity | None
+    state: Literal["intent", "acquired", "disposed"]
+    disposition: Literal["absent", "unlinked", "replaced"] | None
+
+    @model_validator(mode="after")
+    def check_state(self):
+        if (type(self.version) is not int
+                or (self.state == "intent" and self.identity is not None)
+                or (self.state == "acquired" and self.identity is None)
+                or ((self.state == "disposed") != (self.disposition is not None))
+                or (self.identity is None and self.disposition not in {None, "absent"})):
+            raise TeamMoveError("team_move_staging_fact_invalid")
+        return self
+
+
 class Progress(Closed):
     agents: tuple[AgentProgress, AgentProgress]
     canonical_after: tuple[CanonicalPath, ...] = ()
@@ -487,6 +510,8 @@ def validate_team_move_schema(conn: sqlite3.Connection, *, org_slug: str | None 
             record = dict(zip(columns, row))
             _validate_row(record, org_slug)
             total += _validate_audit_history(conn, record, budget=MAX_SCAN_BYTES - total)
+            _stages, size = _staging_history(conn, record, budget=MAX_SCAN_BYTES - total)
+            total += size
             if time.monotonic() > deadline:
                 raise TeamMoveError("team_move_scan_deadline")
         return True
@@ -580,6 +605,80 @@ def _validate_audit_history(conn: sqlite3.Connection, row: dict, *, budget: int)
     return total
 
 
+def _staging_history(conn, row, *, budget=MAX_SCAN_BYTES):
+    """Strict old/new reader: no staging rows is valid historical data.
+
+    New completion additionally requires exact terminal staging coverage. Old
+    progress/receipts/audit payloads keep their original bytes and interpretation.
+    """
+    owners = set()
+    if row["decision_bytes"] is not None:
+        owners.add(_decode(ForwardDecision, row["decision_bytes"]).writer_invocation_id)
+        owners.update(r.owner_id for r in _decode(Progress, row["progress_bytes"]).recovery)
+    stages, total = {}, 0
+    protocol = conn.execute("SELECT id,agent,payload FROM audit_log WHERE task_id=? AND action='team_move_staging_protocol' ORDER BY id LIMIT 2",
+        ("config:team-move:" + row["operation_id"],)).fetchall()
+    if len(protocol) > 1:
+        raise TeamMoveError("team_move_staging_protocol_ambiguous")
+    if protocol:
+        raw = protocol[0]["payload"]
+        if type(raw) is not str or len(raw.encode()) > 16384:
+            raise TeamMoveError("team_move_staging_history_bound")
+        payload = json.loads(raw, object_pairs_hook=_unique_object)
+        if (protocol[0]["agent"] != "founder" or not isinstance(payload, dict)
+                or set(payload) != {"version", "request_digest", "owner_id", "state_revision"}
+                or type(payload["version"]) is not int or payload["version"] != 1
+                or payload["request_digest"] != row["request_digest"] or payload["owner_id"] not in owners):
+            raise TeamMoveError("team_move_staging_protocol_unknown")
+        previous = conn.execute("SELECT payload FROM audit_log WHERE task_id=? AND action='team_move_transition' AND id<? ORDER BY id DESC LIMIT 1",
+            ("config:team-move:" + row["operation_id"], protocol[0]["id"])).fetchone()
+        prior = None if previous is None else json.loads(previous["payload"], object_pairs_hook=_unique_object)
+        if (type(payload["state_revision"]) is not int or prior is None
+                or prior["phase"] != "canonical" or prior["state_revision"] != payload["state_revision"]):
+            raise TeamMoveError("team_move_staging_protocol_transition_unknown")
+        total += len(raw.encode())
+        if total > budget:
+            raise TeamMoveError("team_move_staging_history_bound")
+    rows = conn.execute("SELECT id,agent,payload FROM audit_log WHERE task_id=? AND action='team_move_staging' ORDER BY id LIMIT ?",
+        ("config:team-move:" + row["operation_id"], 577))
+    for index, audit in enumerate(rows):
+        if not protocol or audit["id"] <= protocol[0]["id"]:
+            raise TeamMoveError("team_move_staging_protocol_missing")
+        raw = audit["payload"]
+        if type(raw) is not str or len(raw.encode()) > 16384:
+            raise TeamMoveError("team_move_staging_history_bound")
+        total += len(raw.encode())
+        if index >= 576 or total > budget:
+            raise TeamMoveError("team_move_staging_history_bound")
+        value = json.loads(raw, object_pairs_hook=_unique_object)
+        fact = _decode(StagingFact, json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode())
+        if audit["agent"] != "founder" or fact.request_digest != row["request_digest"] or fact.owner_id not in owners:
+            raise TeamMoveError("team_move_staging_owner_unknown")
+        prior = stages.get(fact.stage_id)
+        if prior is None:
+            if fact.state != "intent":
+                raise TeamMoveError("team_move_staging_intent_missing")
+        elif (prior.state == "disposed" or fact.state == "intent"
+                or (prior.state == "acquired" and fact.state != "disposed")
+                or (prior.state == "intent" and fact.state == "disposed" and (fact.disposition != "absent" or fact.identity is not None))
+                or any(getattr(prior, k) != getattr(fact, k) for k in ("version", "request_digest", "stage_id", "owner_id", "path", "parent"))
+                or (prior.identity is not None and fact.identity != prior.identity)):
+            raise TeamMoveError("team_move_staging_history_rewrite")
+        image = next(i for i in _decode(MoveRequest, row["request_bytes"]).files if i.path == fact.path)
+        if fact.identity is not None and (fact.identity.mode != image.identity.mode
+                or fact.identity.device != image.identity.device or fact.identity.device != fact.parent.device):
+            raise TeamMoveError("team_move_staging_identity_mismatch")
+        stages[fact.stage_id] = fact
+    if protocol:
+        progress = _decode(Progress, row["progress_bytes"])
+        replaced = {f.path for f in stages.values() if f.disposition == "replaced"}
+        if not set(progress.canonical_after) <= replaced:
+            raise TeamMoveError("team_move_staging_progress_unproven")
+        if row["phase"] == "complete" and (any(f.state != "disposed" for f in stages.values()) or len(replaced) != 3):
+            raise TeamMoveError("team_move_staging_cleanup_unproven")
+    return stages, total
+
+
 @contextmanager
 def _transaction(db: Any) -> Iterator[sqlite3.Connection]:
     """Existing connection owner: short DB-only unit with total rollback."""
@@ -659,6 +758,29 @@ class TeamMoveStore:
             else:
                 row = conn.execute("SELECT * FROM team_move_operations WHERE operation_key=?", (operation_key,)).fetchone()
             return dict(row) if row is not None else None
+
+    def staging(self, row):
+        with self.db.coherent_read_view() as conn:
+            self._require(conn)
+            if conn.execute("SELECT 1 FROM audit_log WHERE task_id=? AND action='team_move_staging_protocol'",
+                    ("config:team-move:" + row["operation_id"],)).fetchone() is None:
+                raise TeamMoveError("team_move_legacy_staging_ownership_unknown")
+            if self._row(conn, row["operation_id"]) != row:
+                raise TeamMoveError("team_move_stale_staging_owner")
+            return tuple(_staging_history(conn, row)[0].values())
+
+    def record_staging(self, row, fact: StagingFact):
+        with _transaction(self.db) as conn:
+            self._require(conn)
+            if self._row(conn, row["operation_id"]) != row or row["phase"] != "canonical":
+                raise TeamMoveError("team_move_stale_staging_owner")
+            progress = _decode(Progress, row["progress_bytes"])
+            owner = progress.recovery[-1].owner_id if progress.recovery else _decode(ForwardDecision, row["decision_bytes"]).writer_invocation_id
+            if fact.state == "intent" and fact.owner_id != owner:
+                raise TeamMoveError("team_move_staging_owner_unknown")
+            self.db.insert_audit_log_uncommitted(task_id="config:team-move:" + row["operation_id"], agent="founder",
+                action="team_move_staging", payload=fact.model_dump(mode="json"))
+            _staging_history(conn, row)
 
     def _audit(self, row: dict, action: str) -> None:
         self.db.insert_audit_log_uncommitted(
@@ -759,6 +881,10 @@ class TeamMoveStore:
             if changed.rowcount != 1:
                 raise TeamMoveError("team_move_stale_revision")
             self._audit(updated, "team_move_transition")
+            if current is Phase.RESET and phase is Phase.CANONICAL:
+                owner = next_progress.recovery[-1].owner_id if next_progress.recovery else _decode(ForwardDecision, next_decision).writer_invocation_id
+                self.db.insert_audit_log_uncommitted(task_id="config:team-move:" + operation_id, agent="founder",
+                    action="team_move_staging_protocol", payload={"version": 1, "request_digest": row["request_digest"], "owner_id": owner, "state_revision": updated["state_revision"]})
             return updated
 
 
@@ -774,6 +900,10 @@ class TeamMoveStore:
         current = self._row(self.db._conn, row["operation_id"])
         if current != row or current["phase"] != "publish" or receipt.state_revision != current["state_revision"] + 1:
             raise TeamMoveError("team_move_stale_completion")
+        stages = _staging_history(self.db._conn, current)[0].values()
+        if (any(f.state != "disposed" for f in stages)
+                or {f.path for f in stages if f.disposition == "replaced"} != {f.path for f in _decode(MoveRequest, current["request_bytes"]).files}):
+            raise TeamMoveError("team_move_staging_cleanup_unproven")
         raw = _bytes(receipt)
         updated = dict(current, phase="complete", state_revision=receipt.state_revision,
             active_slot=None, receipt_bytes=raw, receipt_digest=_digest(raw), updated_at=_now())
@@ -788,7 +918,7 @@ class TeamMoveStore:
         return updated
 
 
-def inspect_team_move_database(path, *, org_slug: str):
+def inspect_team_move_database(path, *, org_slug: str, require_existing=False):
     """Schema owner's coherent read BEFORE Database compatibility writers.
 
     Reads complete optional layout/history, never installs/upgrades or repairs.
@@ -800,22 +930,75 @@ def inspect_team_move_database(path, *, org_slug: str):
     from pathlib import Path
     from urllib.parse import quote
     path = Path(path)
+    conn = None
+    primary = None
     try:
-        info = path.lstat()
-    except FileNotFoundError:
-        return None
-    if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != os.getuid()
-            or path.resolve(strict=True) != path):
-        raise TeamMoveError("team_move_startup_database_identity_unknown")
-    conn = sqlite3.connect("file:" + quote(str(path), safe="/") + "?mode=ro", uri=True)
-    conn.row_factory = sqlite3.Row
-    try:
-        conn.execute("BEGIN")
-        if not validate_team_move_schema(conn, org_slug=org_slug):
+        # Only the first observation may establish genuine initial absence.
+        try:
+            info = path.lstat()
+        except FileNotFoundError as exc:
+            if require_existing:
+                raise TeamMoveError("team_move_startup_previously_unavailable_database_missing") from exc
             return None
-        row = conn.execute("SELECT * FROM team_move_operations WHERE active_slot=1").fetchone()
+        if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != os.getuid()
+                or path.resolve(strict=True) != path):
+            raise TeamMoveError("team_move_startup_database_identity_unknown")
+        conn = sqlite3.connect("file:" + quote(str(path), safe="/") + "?mode=ro", uri=True)
+        conn.row_factory = sqlite3.Row
+        after = path.lstat()
+        if (info.st_dev, info.st_ino) != (after.st_dev, after.st_ino):
+            raise TeamMoveError("team_move_startup_database_identity_changed")
+        conn.execute("BEGIN")
+        present = validate_team_move_schema(conn, org_slug=org_slug)
+        row = conn.execute("SELECT * FROM team_move_operations WHERE active_slot=1").fetchone() if present else None
+        # Raced loss/redirect is unknown even for an absent optional layout.
+        after = path.lstat()
+        if path.resolve(strict=True) != path or (info.st_dev, info.st_ino) != (after.st_dev, after.st_ino):
+            raise TeamMoveError("team_move_startup_database_identity_changed")
         return None if row is None else dict(row)
-    except sqlite3.DatabaseError as exc:
-        raise TeamMoveError("team_move_startup_database_unavailable") from exc
+    except (OSError, sqlite3.Error) as exc:
+        primary = exc
+        raise _inspection_error("team_move_startup_database_unavailable", exc) from exc
+    except BaseException as exc:
+        primary = exc
+        raise
     finally:
-        conn.close()
+        if conn is not None:
+            try:
+                conn.close()
+            except sqlite3.Error as cleanup:
+                if primary is None:
+                    raise TeamMoveError("team_move_startup_database_close_failed") from cleanup
+                primary.add_note("team move inspection close failed: " + type(cleanup).__name__)
+
+
+def inspect_team_move_org(root, *, org_slug, require_database=False):
+    """Normalize per-entry acquisition too; Path.is_dir hides unknown errors."""
+    import os
+    import stat
+    from pathlib import Path
+    root = Path(root)
+    try:
+        info = root.lstat()
+        if stat.S_ISLNK(info.st_mode) or root.resolve(strict=True) != root or info.st_uid != os.getuid():
+            raise TeamMoveError("team_move_startup_org_identity_unknown")
+        if not stat.S_ISDIR(info.st_mode):
+            return False, None
+        from runtime.orchestrator._paths import OrgPaths
+        row = inspect_team_move_database(OrgPaths(root).db_path, org_slug=org_slug, require_existing=require_database)
+        if root.lstat() != info:
+            raise TeamMoveError("team_move_startup_org_identity_changed")
+        return True, row
+    except OSError as exc:
+        raise _inspection_error("team_move_startup_org_unavailable", exc) from exc
+
+
+def _inspection_error(code, error):
+    """Bounded diagnostic retains native errno/SQLite classification and cause."""
+    if isinstance(error, OSError) and type(error.errno) is int:
+        code += "_errno_" + str(abs(error.errno))
+    elif isinstance(error, sqlite3.Error):
+        name = getattr(error, "sqlite_errorname", None)
+        if isinstance(name, str) and re.fullmatch(r"[A-Z_0-9]{1,80}", name):
+            code += "_" + name
+    return TeamMoveError(code)

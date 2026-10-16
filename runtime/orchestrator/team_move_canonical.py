@@ -9,12 +9,12 @@ import base64
 import os
 import re
 import stat
-import tempfile
+import uuid
 from pathlib import Path
 
 import yaml
 
-from runtime.infrastructure.team_move_store import FileImage, PathIdentity, TeamMoveError, _digest
+from runtime.infrastructure.team_move_store import FileImage, PathIdentity, StagingFact, TeamMoveError, _digest
 from runtime.orchestrator._paths import OrgPaths
 from runtime.orchestrator.agent_def import parse_agent_text
 from runtime.orchestrator.canonical_roster import canonical_roster
@@ -215,16 +215,95 @@ def capture_images(root: Path) -> tuple[FileImage, ...]:
         return result
 
 
-def replace_owned(root: Path, images: tuple[FileImage, ...], shared: TeamsRegistry, *, observed_after=None) -> tuple[str, ...]:
-    """Exact forward-only prefix repair; never restore a before-image.
+def _stage_path(root, operation_id, fact):
+    target = check_parents(root, fact.path)
+    # Exact operation-bound name was durably reserved BEFORE O_EXCL allocation.
+    return target.with_name(".team-move-" + _digest(operation_id.encode()) + "-" + _digest(fact.stage_id.encode()))
 
-    No gate/DB transaction/await spans this file window. Each target is either
-    its original inode+bytes or owned after bytes with the captured mode/owner.
-    Unknown paths remain untouched. Parent directories never follow symlinks.
+
+def _sync_parent(target, expected):
+    fd = os.open(target.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0))
+    try:
+        if _identity(os.fstat(fd)) != expected or _identity(target.parent.lstat()) != expected:
+            raise TeamMoveError("team_move_staging_parent_changed")
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def _stage_observation(root, operation_id, fact):
+    path = _stage_path(root, operation_id, fact)
+    if _identity(path.parent.lstat()) != fact.parent:
+        raise TeamMoveError("team_move_staging_parent_changed")
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return path, None
+    if (fact.identity is None or not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
+            or _identity(info) != fact.identity):
+        # Allocation-to-record interruption, collision or substituted inode:
+        # intent is a cleanup obligation, never proof of an acquired file.
+        raise TeamMoveError("team_move_staging_identity_unknown_" + fact.stage_id)
+    return path, info
+
+
+def reconcile_staging(root, row, store):
+    """Only exact acquired artifacts; owner-finished never establishes cleanup."""
+    images = _recorded_images(row)
+    for fact in store.staging(row):
+        path, info = _stage_observation(root, row["operation_id"], fact)
+        if fact.state == "disposed":
+            if info is not None:
+                raise TeamMoveError("team_move_disposed_staging_reappeared_" + fact.stage_id)
+            continue
+        target = check_parents(root, fact.path)
+        disposition = "absent"
+        if info is not None:
+            os.unlink(path)
+            disposition = "unlinked"
+        elif fact.identity is not None:
+            raw, actual = read_regular(target)
+            image = next(i for i in images if i.path == fact.path)
+            if actual == fact.identity and _digest(raw) == image.after_digest:
+                with target.open("rb") as stream:
+                    os.fsync(stream.fileno())
+                disposition = "replaced"
+        _sync_parent(target, fact.parent)
+        store.record_staging(row, fact.model_copy(update={"state": "disposed", "disposition": disposition}))
+
+
+def _recorded_images(row):
+    from runtime.infrastructure.team_move_store import MoveRequest, _decode
+    return _decode(MoveRequest, row["request_bytes"]).files
+
+
+def verify_staging(root, row, store, images):
+    """Read-only terminal disposition and canonical inode coverage at release."""
+    facts = store.staging(row)
+    for fact in facts:
+        _path, info = _stage_observation(root, row["operation_id"], fact)
+        if fact.state != "disposed" or info is not None:
+            raise TeamMoveError("team_move_staging_cleanup_unproven_" + fact.stage_id)
+    for image in images:
+        raw, identity = read_regular(check_parents(root, image.path))
+        if (_digest(raw) != image.after_digest
+                or not any(f.path == image.path and f.disposition == "replaced" and f.identity == identity for f in facts)):
+            # Historical records remain readable, but unrecorded random staging
+            # from an older writer cannot be called clean by this new owner.
+            raise TeamMoveError("team_move_legacy_staging_ownership_unknown")
+    return facts
+
+
+def replace_owned(root: Path, images: tuple[FileImage, ...], shared: TeamsRegistry, *, candidate,
+                  row, store, observed_after) -> tuple[str, ...]:
+    """Short exact-image mutation; complete candidate discovery is pre-captured.
+
+    Caller revalidates the native roster/profile revision before entering its
+    mutation leases. No all-agent discovery or snapshot capture occurs here.
     """
+    from runtime.infrastructure.team_move_store import ForwardDecision, Progress, _decode
     with canonical_roster(root):
-        candidate = validate_candidate(root, images)
-        # Classify ALL images before the first effect.
+        reconcile_staging(root, row, store)
         states = []
         for image in images:
             target = check_parents(root, image.path)
@@ -232,6 +311,9 @@ def replace_owned(root: Path, images: tuple[FileImage, ...], shared: TeamsRegist
             if identity.mode != image.identity.mode or identity.device != image.identity.device:
                 raise TeamMoveError("team_move_canonical_identity_unknown")
             if current == base64.b64decode(image.after_base64):
+                facts = store.staging(row)
+                if not any(f.path == image.path and f.disposition == "replaced" and f.identity == identity for f in facts):
+                    raise TeamMoveError("team_move_legacy_staging_ownership_unknown")
                 state = "after"
             elif current == base64.b64decode(image.before_base64) and identity == image.identity:
                 state = "before"
@@ -243,16 +325,27 @@ def replace_owned(root: Path, images: tuple[FileImage, ...], shared: TeamsRegist
                 current, identity = read_regular(target)
                 if identity != image.identity or _digest(current) != image.before_digest:
                     raise TeamMoveError("team_move_canonical_changed")
-                fd, staged = tempfile.mkstemp(prefix=".team-move-", dir=target.parent)
+                progress = _decode(Progress, row["progress_bytes"])
+                owner = progress.recovery[-1].owner_id if progress.recovery else _decode(ForwardDecision, row["decision_bytes"]).writer_invocation_id
+                fact = StagingFact(version=1, request_digest=row["request_digest"], stage_id=uuid.uuid4().hex,
+                    owner_id=owner, path=image.path, parent=_identity(target.parent.lstat()), identity=None, state="intent", disposition=None)
+                store.record_staging(row, fact)
+                staged = _stage_path(root, row["operation_id"], fact)
+                fd = None
                 primary = None
                 try:
+                    fd = os.open(staged, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+                    os.fchmod(fd, image.identity.mode)
+                    fact = fact.model_copy(update={"state": "acquired", "identity": _identity(os.fstat(fd))})
+                    store.record_staging(row, fact)  # Must commit before writing or replacing.
+                    _sync_parent(target, fact.parent)
                     stream = os.fdopen(fd, "wb")
-                    fd = None  # stream owns the descriptor, including fchmod failure.
+                    fd = None
                     with stream:
-                        os.fchmod(stream.fileno(), image.identity.mode)
                         stream.write(base64.b64decode(image.after_base64))
                         stream.flush()
                         os.fsync(stream.fileno())
+                    _stage_observation(root, row["operation_id"], fact)
                     os.replace(staged, target)
                 except BaseException as exc:
                     primary = exc
@@ -261,28 +354,18 @@ def replace_owned(root: Path, images: tuple[FileImage, ...], shared: TeamsRegist
                     try:
                         if fd is not None:
                             os.close(fd)
-                        if os.path.lexists(staged):
-                            os.unlink(staged)  # Only this invocation's acquired file.
+                        reconcile_staging(root, row, store)
                     except BaseException as cleanup:
                         if primary is None:
                             raise
-                        primary.add_note("owned canonical staging cleanup failed: " + type(cleanup).__name__)
-            # Repeat flush after an interrupted rename, including exact after.
+                        primary.add_note("canonical staging unresolved; retain operation hold: " + str(cleanup))
             with target.open("rb") as stream:
                 os.fsync(stream.fileno())
-            parent_fd = os.open(target.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
-            try:
-                os.fsync(parent_fd)
-            finally:
-                os.close(parent_fd)
+            _sync_parent(target, _identity(target.parent.lstat()))
             observed, observed_identity = read_regular(check_parents(root, image.path))
             if _digest(observed) != image.after_digest or observed_identity.mode != image.identity.mode:
                 raise TeamMoveError("team_move_canonical_readback")
-            if observed_after is not None:
-                observed_after(image.path)  # D's native per-file progress CAS.
-        for image in images:
-            raw, identity = read_regular(check_parents(root, image.path))
-            if _digest(raw) != image.after_digest or identity.mode != image.identity.mode:
-                raise TeamMoveError("team_move_canonical_readback")
+            row = observed_after(image.path)
+        verify_staging(root, row, store, images)
         shared.adopt_canonical(candidate)
         return PATHS
