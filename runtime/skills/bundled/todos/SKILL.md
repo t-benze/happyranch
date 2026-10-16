@@ -3,6 +3,44 @@ name: todos
 description: Use when you need to create a scheduled Todo for yourself from explicit founder or operator instruction. Never infer or proactively schedule future work. Scheduling is self-only and available to every valid in-org agent.
 ---
 
+
+## Public team-move E handoff (THR296seq135)
+
+Founder-controlled `teams move capability/preview/apply/show/recover` now has
+public service/CLI source. APPLY_AVAILABLE=False and whole-history acceptance
+gate apply AND recovery; skills/agents gain no execution or ambient-bearer
+self-admission authority. Manage-agent retains team/role; transfers use the
+separate admitted founder operation. Preview uses only the pure native planner,
+not materializers/resets/reservations. Exact normalized client bytes/key are
+privately fsynced before POST, including exact saved-file reuse/apply reads;
+a complete prior failed-save file requires fresh descriptor/byte validation,
+file fsync/close and containing-directory fsync/close. Partial/changed bytes
+refuse without overwrite/new key; same-UID limitations remain. Preserve key on
+transport loss and use same-key
+show, never automatic second apply. HTTP202/CLI3 is in-flight, saved COMPLETE
+readback/release alone permits apply200/CLI0; refusal/repair is1, parser2.
+Show is read-only; recover explicitly binds SAME ID/revision and native prior
+owner/process proof/CAS. Durable daemon tasks survive client disconnect; shutdown
+reaps them before DB close without clearing holds. Diagnostic-org read/recovery
+uses strict native owners, closes before positive normal attachment and clears
+only after successful native map insertion. Native dedup redelivery follows.
+Show/recover diagnostics distinguish strict saved bounded code/owner IDs and
+original/latest recovery/publisher identities from current native census and
+publisher owner observations. Diagnostic-only reads require no ordinary attachment
+or preview; unavailable ownership stays unknown. Async failure/secondary close
+or attachment facts are safe process-local observations, never durable evidence.
+Resolve named dependencies before explicit SAME operation/target/revision recovery;
+no automatic retry or TTL takeover. Both show GET forms declare202/CLI3 in-flight.
+D staging/history/leases, C1-C3 uncertainty/EMPTY budgets and actual callbacks
+remain. Earlier unavailable-E statements below describe historical checkpoints.
+Current contract: docs/superpowers/specs/2026-10-14-online-team-move.md and
+engineering-owned docs/runbooks/online-team-move.md. E disabled source, F reviewed
+enablement, separately authorized release loading and exact Founder live
+operation are distinct. Shared bearer does not prove human presence. Behavior
+UNEXECUTED, integration INCLUDING callback SKIPPED24342, units RETIRED; no new
+cases/campaign, live operation, deployment or cleanup authority follows.
+
+
 ## D private operation and startup holds (THR296seq135)
 
 The corrected reader is online-team-move@2 (also reads old @1 records); supported
@@ -29,11 +67,12 @@ outside leases. Matching attachment revalidates its actual already-open DB owner
 in the short segment; only successful attachment clears its diagnostic. Other
 roots, failed attachment, current holds and malformed history stay held. D's
 own-operation/native-identity exception also checks EMPTY dependencies. Public
-recovery/reattachment remains E/F-owned and unavailable; no new command is granted.
+recovery/reattachment is source-wired by E, still gated pending F; no skill authority is granted.
 
 
 D supplies private canonical/context/reset/profile/publication/recovery source.
-Public apply/recover and CLI remain unavailable until E/F independent acceptance;
+E now supplies public API/CLI source; apply/recover execution remains disabled
+until F independent acceptance;
 no skill or agent may invoke the private owner or use ambient bearer credentials
 to self-admit a move. Manage-agent still cannot transfer teams. New startup
 schema-owner discovery precedes compatibility writers and partial membership;

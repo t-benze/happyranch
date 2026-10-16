@@ -6,7 +6,7 @@ Founder THR-296 seq135 (2026-10-14T05:17:20Z), “@engineering_manager start the
 
 Slice B implements the private durable store, closed request/state/progress/receipt contract, optional layout validation and independent whole-release schema reference selection. C1 binds the org-owned coordinator to actual task allocation, preparation and final Pause/host commitment; its projection remains diagnostic. The installer is explicit and org-only; production startup never calls it. Its only external caller in B constructs disposable release-reference databases. Existing installed optional layouts are validated without installation or row rewriting. Generic Database/runtime-audit remain extension-free.
 
-There is no public apply/preview/show/recover route or CLI command, background operation, operational completion writer or available-feature claim. C1 task, C2 thread and C3 remaining native producer/writer admission exclusion are active in source whenever a valid durable hold exists. `APPLY_AVAILABLE=False`; General store transitions refuse `COMPLETE`; D supplies its private native readback/receipt leaf. Public apply remains unavailable until E/F acceptance. Source/static acceptance is separate from behavior, activation and live-operation acceptance. A table alone cannot make a prefeature reader recognize a hold.
+E now wires founder preview/apply/show/recover routes/CLI and bounded daemon ownership; the current public E section below supersedes earlier checkpoint absence statements. There is no enabled apply or available-feature claim. C1 task, C2 thread and C3 remaining native producer/writer admission exclusion are active in source whenever a valid durable hold exists. `APPLY_AVAILABLE=False`; General store transitions refuse `COMPLETE`; D supplies its private native readback/receipt leaf. Public apply remains unavailable until E/F acceptance. Source/static acceptance is separate from behavior, activation and live-operation acceptance. A table alone cannot make a prefeature reader recognize a hold.
 
 | Serial unit | Required closure; source status |
 |---|---|
@@ -14,7 +14,7 @@ There is no public apply/preview/show/recover route or CLI command, background o
 | C2 | Thread preparation/final claim/launch, all purposes, durable deferred obligations/attempts, probe admission, census and captured running-turn drain seams: integrated in source; behavior UNEXECUTED. Full operation startup and containment recovery remain D. |
 | C3 | Dream/wake/schedule/job preparation/final launch, held native recovery/redelivery, complete causal job/remote/workspace census and roster/enrollment/profile/skill/name/policy/cleanup writer reservations: integrated in source; behavior UNEXECUTED. No remote launch engine is added. |
 | D | Private native preview, canonical files/cache, audited resets, context/skills, one profile batch/publication owner, bounded recovery, early diagnostic startup and launcher protocol: integrated in source by D; behavior UNEXECUTED, E/F remain gated. |
-| E | Founder-controlled API/client/CLI and supported runbook: NOT INTEGRATED; depends on D and complete admission closure. |
+| E | Founder-controlled API/client/CLI, private request custody, diagnostic recovery/lifetime wiring and supported runbook: integrated in source, APPLY_AVAILABLE=False; behavior UNEXECUTED. |
 | F | Root whole-diff/inventory review, independent scoped QA, guarded merge and supported activation/live handoff: outstanding. |
 
 ## C1 task and host contract
@@ -296,7 +296,7 @@ D must discover/validate the operation through DB/schema ownership before normal
 
 All supported runtime attach/switch/launcher downgrade entrypoints must refuse an incompatible reader before execution when an unresolved move requires the corrected `online-team-move@2` reader (which also reads @1 records). This guard is NOT implemented by B's capability data. Empty additive schema is structurally recognized only by compatible layout readers; prefeature binaries do not learn hold semantics from a table. An updated in-process guard cannot control an already-running old daemon. Direct unchecked old-interpreter invocation is unsupported recovery. Apply stays unavailable until the root delivers the real guard and C1-D closure.
 
-## Future public contract (unavailable in B)
+## Original public contract (historical B checkpoint; current E below)
 
 Initial delivery is CLI/API, no new frontend flow. Proposed founder-controlled `teams move preview/apply/show/recover` maps to `/api/v1/orgs/{slug}/team-moves` preview, apply, selected GET and bounded recovery. Narrow cancel can abandon only unchanged precommit waiting. Request is closed/extra-forbidden: resolve human inputs to permanent IDs before digest, freeze key/body locally before POST and print the key. Preview ID/digest is not authority/reservation; transport loss queries/replays the same key/body, never a blind new apply. No force/actor/role/permission/raw-path override or agent-binding fields. Reuse actual `_require_human` founder bearer without session/invocation/manager fallback. Shared bearer remains identity-less; headers/environment cannot prove human presence. No auth redesign or ambient-agent-bearer apply authority.
 
@@ -343,12 +343,11 @@ Python units RETIRED. APPLY_AVAILABLE=false, no COMPLETE writer; D/E/F remain ro
 
 D now supplies the private native operation core in `team_move_operation.py`,
 with pure canonical/context planning, one two-consumer profile interval and one
-operation-owned publication fence. It is not mounted as an apply/recovery API or
-CLI: `APPLY_AVAILABLE=False`. E must derive founder attribution at the actual
-existing admitted human boundary; a provenance model, agent bearer or caller
-success flag grants no authority. F and independent whole-history acceptance
-remain outstanding. Earlier B/C checkpoint statements about absent D describe
-those units only and are superseded by this section's current source disposition.
+operation-owned publication fence. E now mounts the founder service/CLI under
+the existing admitted human boundary, with `APPLY_AVAILABLE=False`. A provenance
+model, agent bearer or caller success flag grants no authority. F and independent
+whole-history acceptance remain outstanding. Earlier B/C/D checkpoint absence
+statements describe those units; the public E section below is current.
 
 The planner uses native AgentDef/TeamsRegistry validation and instruction/skill
 selectors, without materializing, creating an ArtifactStore root, building a
@@ -447,7 +446,7 @@ shared-map insertion permit the existing post-attachment diagnostic removal.
 Failed attachment and other diagnostic roots stay held. D's matching own-operation
 exception likewise uses its opened native owner plus actual ContextVar identity,
 including EMPTY dependencies; neither exception performs filesystem discovery.
-Public recovery/reattachment service delivery remains E/F-owned and unavailable.
+Public recovery/reattachment is wired by E and remains source-gated pending F.
 
 The one batch interval (including empty dependencies) captures AgentDefs, complete
 profile/dependency closure, candidate, current inputs and census outside durable
@@ -464,3 +463,76 @@ observations. Every absent behavior/migration/recovery/native callback/permissio
 process-loss/launcher/live-move result remains UNEXECUTED; general integration
 INCLUDING callback SKIPPED THR243seq42; Python units RETIRED. No new cases,
 parameters, fixtures, replacement campaign or execution allocation follows.
+
+## Public online team-move E source — THR296seq135 / TASK11345
+
+The founder service and `happyranch teams move capability/preview/apply/show/recover`
+are wired in source. `APPLY_AVAILABLE=False` and
+`whole_history_integration_acceptance` still gate every new apply and explicit
+recovery execution; no request/environment/private bypass exists. Preview and
+saved-state reads are available to the existing bearer + `_require_human`
+boundary, whose shared identity-less secret does not prove human presence.
+Agents must not self-authorize with ambient credentials. Manage-agent retains
+team/role and cannot transfer agents.
+
+Preview resolves native current names/IDs, rejects former/unknown names, uses
+only D's pure native planner and returns exact founder-only diff/digests,
+context/permission/skill deltas, complete blockers/owners, drain candidates and
+org-wide publication impact. It reserves nothing. Internal canonical images
+stay private; never copy these admitted diffs to shared artifacts/logs.
+Only already-running captured threads can drain (at most30s); pending tasks,
+paused roots/children/jobs/workflows/remote/cleanup uncertainty remain blockers.
+`can_drain_threads` identifies candidate turns, not clearance of hard blockers.
+
+The client saves its exact normalized envelope and stable key privately before
+POST. Fresh saves, identical-save reuse and apply reads all establish the same
+positive custody boundary: pinned no-follow private directory/file descriptors,
+exact canonical bytes and stable inode/type/mode/ownership, file fsync/successful
+close, then bottom-up containing-directory fsync/successful close. Existing
+complete bytes after a failed save proceed only after this boundary succeeds;
+partial/changed bytes remain preserved and refuse without overwrite/new key.
+The CLI prints the key and retains it on uncertainty. Same-UID races remain a
+cooperative-storage limitation, not an OS isolation guarantee.
+Apply transport loss performs one same-key GET, never a second POST/new key.
+HTTP202/CLI3 means accepted/in-flight; only saved COMPLETE/readback/release yields
+apply HTTP200/CLI0. Refusal/repair is CLI1; local argument validation is2.
+Show never advances/writes. Explicit recover uses the same ID/expected revision,
+native previous-owner/process-identity proof and CAS, with no TTL takeover.
+New-key already-satisfied verification requires a prior genuine COMPLETE plus
+full current native context/role/authority/census verification; no alias row,
+reset, publication or invented receipt is written.
+
+The daemon owns/reaps bounded tasks across client disconnect and before shutdown
+DB close; timeout/cancellation never erases committed holds. Diagnostic-only orgs
+have strict read-only saved-state access outside OrgDep and use D's restricted
+native recovery owner. Close that context before positive ordinary attachment;
+only successful native discovery/revalidation/map insertion clears diagnostics,
+then real deduplicating owners redeliver.
+Saved `diagnostic` retains the strict code/at-most64 safe owner IDs and original
+history; it is a bounded refusal record, never a complete current census.
+`saved_owners` derives original and latest recovery owner and original publisher
+from strict decision/progress. `current_observation` separately reads native
+blocker kind/ID/owner/remedy and current publisher/recovery/file-phase owners;
+unknown facts stay null/unavailable, with no idle certificate. Diagnostic-only
+orgs use a read-only restricted native context, without attachment or mutating
+preview. Missing trackers remain unknown. `service_diagnostic` carries safe
+asynchronous failure facts and secondary close/reattachment codes, explicitly
+process-local/non-durable; restart loss never erases saved IDs/diagnostics.
+Prior-owner proof/CAS still governs recovery. Native census refusal saves bounded
+IDs only through the existing strict repair transition after that proof; show
+never writes. Resolve the named native dependencies before explicit SAME-key,
+SAME-target recovery at the newly observed revision, without retry/takeover.
+Both GET by-key and GET by-ID declare202 while the daemon-owned task runs; private
+no-store/Location and CLI3 remain, with200 reserved for saved completed readback.
+
+Org unload/runtime switch refuse active
+owners/holds. D staging/history/inode/ENOENT cleanup, all-eight-site outside-lease
+discovery, C1-C3 sticky uncertainty/EMPTY budgets, INTEGER callbacks/v2 and native
+permissions remain intact. No new table/column, auth, permission or hook changes.
+
+Follow [the online runbook](../../runbooks/online-team-move.md) for the engineering-owned
+F acceptance/enablement, separately authorized release loading and exact live
+Founder operation/readback handoff. Source delivery is not activation or behavior.
+SAME13 four answers remain; all absent HTTP/CLI/migration/recovery/race/cleanup/
+startup/launcher/downgrade/callback/live observations UNEXECUTED; integration
+INCLUDING callback SKIPPED24342, Python units RETIRED. No new cases or campaign.

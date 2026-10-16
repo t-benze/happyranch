@@ -165,6 +165,35 @@ class TeamMoveOperation:
                 raise TeamMoveError("team_move_preview_inputs_changed")
         return MovePreview(request, target, tuple(before), tuple(after), blockers, epoch, changes)
 
+    def observe_recovery(self, row):
+        """Diagnostic reads only; no preview, takeover proof or state transition."""
+        from runtime.orchestrator.team_move_public import blocker_view, saved_owners
+        owners = saved_owners(row)
+        result = {"source": "current_native_read", "state_revision": row["state_revision"],
+            "owners": owners, "blockers": None, "census_available": False,
+            "owner_settlement": "not_observed", "publication_available": False, "unavailable_code": None}
+        authority = self.org.workflow_authority
+        try:
+            with self.org.db.coherent_read_view() as conn:
+                active = authority._active_journal(conn, authority.namespace)
+                pointer = authority._pointer(conn, authority.namespace)
+                journal_id = active["id"] if active is not None else pointer[1]
+                journal = authority._journal(conn, journal_id) if journal_id is not None else None
+                owners["current_publication"] = None if journal is None else {
+                    "journal_id": journal["id"], "writer_invocation_id": journal["publisher_invocation"],
+                    "recovery_owner_id": journal["recovery_owner"], "file_phase_owner_id": journal["file_phase_owner"],
+                    "state": journal["state"], "generation": journal["generation"]}
+                result["publication_available"] = True
+            request = _decode(MoveRequest, row["request_bytes"])
+            progress = _decode(Progress, row["progress_bytes"])
+            blockers, _epoch, _changes = self.census(request, owned_publication=progress.publication)
+            result.update(blockers=[blocker_view(b) for b in blockers], census_available=True)
+        except Exception as exc:
+            result["unavailable_code"] = self._diagnostic(exc).code
+            if hasattr(exc, "blockers"):
+                result["blockers"] = [blocker_view(b) for b in exc.blockers]
+        return result
+
     def census(self, request, *, owned_publication=None):
         """Compose actual C1/C2/C3/native host/workflow facts, without caps.
 
@@ -174,11 +203,18 @@ class TeamMoveOperation:
         """
         blockers = list(self.move.producers.census(request))
         if owned_publication is not None:
-            with self.org.db._lock:
-                journal = self.org.workflow_authority._journal(self.org.db._conn, owned_publication.journal_id)
-                if (journal["publisher_invocation"], journal["generation"]) != (
-                        owned_publication.writer_invocation_id, owned_publication.generation):
-                    raise TeamMoveError("team_move_publication_owner_changed")
+            try:
+                with self.org.db._lock:
+                    journal = self.org.workflow_authority._journal(self.org.db._conn, owned_publication.journal_id)
+                    if (journal["publisher_invocation"], journal["generation"]) != (
+                            owned_publication.writer_invocation_id, owned_publication.generation):
+                        blockers.append({"kind": "publication_owner_changed", "owner_id": journal["publisher_invocation"],
+                            "journal_id": journal["id"], "remedy": "Resolve original/current publisher through its native owner; retain hold, never adopt its journal"})
+                        raise TeamMoveError("team_move_publication_owner_changed")
+            except Exception as exc:
+                exc.blockers = blockers
+                exc.owner_ids = (owned_publication.writer_invocation_id, owned_publication.journal_id)
+                raise
             blockers = [b for b in blockers if not (b["kind"] == "publication_writer" and b["owner_id"] == owned_publication.journal_id)]
         db = self.org.db
         def add(kind, owner):
@@ -267,6 +303,48 @@ class TeamMoveOperation:
         return (self.org.db._conn.total_changes,
             self.org.db._conn.execute("PRAGMA data_version").fetchone()[0])
 
+    def verify_already_satisfied(self, row):
+        """No writes: roster equality alone cannot admit a new-key no-op.
+
+        Reuse only a genuinely saved COMPLETE, its exact target/context and SAME
+        current ready publication. A changed release/input requires engineering
+        reconciliation rather than a fresh reset or inferred completion.
+        """
+        from runtime.orchestrator.org_validation import validate_team_membership
+        if row["phase"] != "complete" or self.store.read() is not None:
+            raise TeamMoveError("team_move_satisfied_evidence_required")
+        request = _decode(MoveRequest, row["request_bytes"])
+        progress = _decode(Progress, row["progress_bytes"])
+        with self.org.db._lock:
+            initial = (self.move.producers.writer_epoch, self._database_observation())
+        with canonical_roster(self.org.root):
+            validate_team_membership(OrgPaths(self.org.root), self.org.teams)
+            for image in request.files:
+                raw, identity = read_regular(check_parents(self.org.root, image.path))
+                if _digest(raw) != image.after_digest or identity.mode != image.identity.mode:
+                    raise TeamMoveError("team_move_satisfied_canonical_changed")
+            self._verify_stable_inputs(request)
+            for index, plan in enumerate(self._after_plans(request)):
+                if verify_context(self.org, plan) != progress.agents[index].context:
+                    raise TeamMoveError("team_move_satisfied_context_changed")
+            ready = self.org.workflow_authority.verify_admission_ready()
+            current = self.org.workflow_authority.capture_snapshot()
+            with self.org.db._lock:
+                pointer = self.org.workflow_authority._pointer(self.org.db._conn, ready.namespace)
+            publication = progress.publication
+            if (current != ready.snapshot_bytes or
+                    (ready.namespace, ready.generation, ready.snapshot_digest, pointer[1]) !=
+                    (publication.namespace, publication.generation, publication.digest, publication.journal_id)):
+                raise TeamMoveError("team_move_satisfied_authority_changed")
+            blockers, epoch, changes = self.census(request, owned_publication=publication)
+            if blockers or initial != (epoch, changes):
+                raise TeamMoveError("team_move_satisfied_native_owners_unsettled")
+        with self.move.gate, self.org.db._lock:
+            if (initial != (self.move.producers.writer_epoch, self._database_observation())
+                    or self.store.read() is not None or self.store.read(operation_key=row["operation_key"]) != row):
+                raise TeamMoveError("team_move_satisfied_inputs_changed")
+        return row
+
     def _row(self, key):
         row = self.store.read(operation_key=key)
         if row is None:
@@ -352,6 +430,8 @@ class TeamMoveOperation:
             progress = _decode(Progress, current["progress_bytes"])
             actual = progress.recovery[-1].owner_id if progress.recovery else decision.writer_invocation_id
             if actual == owner:
+                primary.owner_ids = (*getattr(primary, "owner_ids", ()), owner, decision.writer_invocation_id,
+                    *((progress.publication.writer_invocation_id, progress.publication.journal_id) if progress.publication else ()))
                 self._transition(current, Phase.REPAIR_REQUIRED, diagnostic=self._diagnostic(primary))
         except BaseException as failure:
             primary.add_note("team move repair persistence failed; durable hold retained: " + type(failure).__name__)
@@ -364,7 +444,13 @@ class TeamMoveOperation:
             code = "team_move_io_errno_" + str(abs(error.errno))
         if not isinstance(code, str) or re.fullmatch(r"[A-Za-z0-9_-]{1,256}", code) is None:
             code = "team_move_native_" + type(error).__name__[:160]
-        return Diagnostic(code=code)
+        # Closed legacy diagnostic contract: bounded safe IDs only. Full native
+        # kind/remedy observations travel separately and are never proof.
+        owners = []
+        for value in (*getattr(error, "owner_ids", ()), *(b.get("owner_id") for b in getattr(error, "blockers", ()))):
+            if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9_-]{1,256}", value) and value not in owners:
+                owners.append(value)
+        return Diagnostic(code=code, owner_ids=tuple(owners[:64]))
 
     def _after_plans(self, request):
         plans, before_plans = [], []
@@ -558,13 +644,31 @@ class TeamMoveOperation:
         progress = _decode(Progress, row["progress_bytes"])
         decision = _decode(ForwardDecision, row["decision_bytes"])
         previous = progress.recovery[-1].owner_id if progress.recovery else decision.writer_invocation_id
-        proof = self._previous_owner_gone(row, previous)
+        try:
+            proof = self._previous_owner_gone(row, previous)
+        except BaseException as exc:
+            # No claim/transition before genuine prior-owner settlement proof.
+            exc.owner_ids = (*getattr(exc, "owner_ids", ()), decision.writer_invocation_id, previous)
+            raise
         if row["phase"] != "repair_required":
-            row = self._transition(row, Phase.REPAIR_REQUIRED, diagnostic=Diagnostic(code="team_move_interrupted_owner"))
+            row = self._transition(row, Phase.REPAIR_REQUIRED,
+                diagnostic=Diagnostic(code="team_move_interrupted_owner", owner_ids=tuple(dict.fromkeys((decision.writer_invocation_id, previous)))))
         request = _decode(MoveRequest, row["request_bytes"])
-        blockers, _epoch, _changes = self.census(request, owned_publication=progress.publication)
-        if blockers:
-            raise TeamMoveError("team_move_recovery_native_owners_unsettled")
+        try:
+            blockers, _epoch, _changes = self.census(request, owned_publication=progress.publication)
+            if blockers:
+                error = TeamMoveError("team_move_recovery_native_owners_unsettled")
+                error.blockers = blockers
+                raise error
+        except BaseException as exc:
+            exc.owner_ids = (*getattr(exc, "owner_ids", ()), decision.writer_invocation_id, previous)
+            # Existing strict Diagnostic + native CAS/history only. These are
+            # saved refusal IDs, not a complete census or a takeover grant.
+            try:
+                self._transition(row, Phase.REPAIR_REQUIRED, diagnostic=self._diagnostic(exc))
+            except BaseException:
+                exc.add_note("Recovery refusal diagnostic save failed; original hold retained")
+            raise
         owner = "move_" + uuid.uuid4().hex
         recovery = RecoveryIdentity(previous_owner_id=previous, owner_id=owner, claim_id=uuid.uuid4().hex, previous_owner_quiescence_digest=_digest(canonical(proof)))
         primary = None

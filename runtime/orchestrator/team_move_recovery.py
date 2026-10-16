@@ -41,14 +41,14 @@ class RestrictedMoveContext:
             raise _inspection_error("team_move_recovery_database_close_failed", exc) from exc
 
 
-def open_recovery_context(*, root, slug, settings, profiles, host_supervisor, sessions):
+def open_recovery_context(*, root, slug, settings, profiles, host_supervisor, sessions, diagnostic_only=False, operation_key=None):
     """Use actual current host/tracker owners, never caller quiescence flags."""
-    if host_supervisor is None or sessions is None:
+    if not diagnostic_only and (host_supervisor is None or sessions is None):
         raise TeamMoveError("team_move_recovery_native_host_tracker_required")
-    db = Database._open_team_move_recovery(OrgPaths(root).db_path, org_slug=slug)
+    db = Database._open_team_move_recovery(OrgPaths(root).db_path, org_slug=slug, require_active=not diagnostic_only)
     try:
         store = TeamMoveStore(db, slug)
-        row = store.read()
+        row = store.read(operation_key=operation_key) if diagnostic_only else store.read()
         if row is None:
             raise TeamMoveError("team_move_recovery_operation_required")
         request = _decode(MoveRequest, row["request_bytes"])
@@ -81,5 +81,7 @@ def open_recovery_context(*, root, slug, settings, profiles, host_supervisor, se
         try:
             db.close()
         except BaseException as cleanup:
+            primary.team_move_secondary_codes = (*getattr(primary, "team_move_secondary_codes", ()),
+                TeamMoveOperation._diagnostic(cleanup).code)
             primary.add_note("restricted move context close failed: " + type(cleanup).__name__)
         raise
