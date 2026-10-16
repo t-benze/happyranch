@@ -312,10 +312,10 @@ class TeamMoveOperation:
                 elif fresh.blockers:
                     result = self._abandon(row, "team_move_agents_busy")
                 else:
+                    owner = "move_" + uuid.uuid4().hex
+                    self._owner_started(row, owner)  # Native process discovery precedes leases.
                     capture = batch.capture()
                     with batch.segment(capture):
-                        owner = "move_" + uuid.uuid4().hex
-                        self._owner_started(row, owner)
                         with self.move.gate, self.org.db._lock:
                             if (self.move.producers.writer_epoch != fresh.writer_epoch
                                     or self._database_observation() != (fresh.database_changes[0] + 1, fresh.database_changes[1])):
