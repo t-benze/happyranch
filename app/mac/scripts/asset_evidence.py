@@ -166,18 +166,112 @@ STREAM = ReadDomain(MiB)
 _budget = contextvars.ContextVar('asset_read_budget', default=None)
 
 
-@dataclass
 class Budget:
-    regular: int = 0
-    json: int = 0
-    trees: int = 0
+    """One command's fixed-profile attempted work; byte views are read-only."""
+    def __init__(self, profile='asset-v1'):
+        need(profile in ('asset-v1', 'web-evidence-v1'), 'BUDGET_PROFILE_INVALID')
+        self.profile = profile
+        self._regular = self._json = self.trees = 0
+        self._failure = None
+        self._asset = Budget() if profile == 'web-evidence-v1' else None
+        self._tee = AssetBudgetView(self) if self._asset is not None else None
+
+    @property
+    def regular(self):
+        return self._regular
+
+    @property
+    def json(self):
+        return self._json
+
+    def _charge(self, regular, json_count, asset=False):
+        need(type(regular) is int and regular >= 0 and
+             type(json_count) is int and json_count >= 0, 'BUDGET_INCREMENT_INVALID')
+        self._regular += regular
+        self._json += json_count
+        lane = self._asset if asset else None
+        if lane is not None:
+            lane._regular += regular
+            lane._json += json_count
+        try:
+            if self._failure is not None:
+                raise self._failure
+            need(self.regular <= 512 * MiB, 'AGGREGATE_READ_CAP_EXCEEDED', self.profile)
+            if lane is not None:
+                need(lane.regular <= 512 * MiB, 'AGGREGATE_READ_CAP_EXCEEDED', 'asset-v1')
+            need(self.json <= (192 if self.profile == 'web-evidence-v1' else 32) * MiB,
+                 'AGGREGATE_JSON_CAP_EXCEEDED', self.profile)
+            if lane is not None:
+                need(lane.json <= 32 * MiB, 'AGGREGATE_JSON_CAP_EXCEEDED', 'asset-v1')
+        except AssetError as exc:
+            self._failure = exc
+            raise
 
     def charge(self, count, *, json_bytes=False):
-        self.regular += count
-        if json_bytes:
-            self.json += count
-        need(self.regular <= 512 * MiB, 'AGGREGATE_READ_CAP_EXCEEDED')
-        need(self.json <= 32 * MiB, 'AGGREGATE_JSON_CAP_EXCEEDED')
+        self._charge(count, count if json_bytes else 0)
+
+    def charge_json(self, count):
+        self._charge(0, count)
+
+    @contextlib.contextmanager
+    def asset_lane(self):
+        view = self._tee if self._tee is not None else self
+        token = _budget.set(view)
+        try:
+            yield view
+        finally:
+            _budget.reset(token)
+
+
+class AssetBudgetView:
+    """Persistent tee: diagnostics and census use the same enclosing command."""
+    def __init__(self, root):
+        self.root = root
+
+    @property
+    def profile(self):
+        return self.root.profile
+
+    @property
+    def regular(self):
+        return self.root.regular
+
+    @property
+    def json(self):
+        return self.root.json
+
+    @property
+    def trees(self):
+        return self.root.trees
+
+    @trees.setter
+    def trees(self, value):
+        self.root.trees = value
+
+    def charge(self, count, *, json_bytes=False):
+        self.root._charge(count, count if json_bytes else 0, True)
+
+    def charge_json(self, count):
+        self.root._charge(0, count, True)
+
+    def asset_lane(self):
+        return self.root.asset_lane()
+
+
+@contextlib.contextmanager
+def budget_scope(profile):
+    need(profile in ('asset-v1', 'web-evidence-v1'), 'BUDGET_PROFILE_INVALID')
+    current = _budget.get()
+    if current is not None:
+        need(current.profile == profile, 'BUDGET_PROFILE_CONFLICT')
+        yield current
+        return
+    meter = Budget(profile)
+    token = _budget.set(meter)
+    try:
+        yield meter
+    finally:
+        _budget.reset(token)
 
 
 def bounded(function):
@@ -185,11 +279,8 @@ def bounded(function):
     def call(*args, **kwargs):
         if _budget.get() is not None:
             return function(*args, **kwargs)
-        token = _budget.set(Budget())
-        try:
+        with budget_scope('asset-v1'):
             return function(*args, **kwargs)
-        finally:
-            _budget.reset(token)
     return call
 
 
@@ -637,9 +728,7 @@ def parse_json(raw):
 @bounded
 def read_closed_json(root, name, byte_limit, shape):
     row, raw = read_bytes(root, name, ReadDomain(byte_limit, True))
-    _budget.get().charge(0, json_bytes=False)
-    _budget.get().json += len(raw)
-    need(_budget.get().json <= 32 * MiB, 'AGGREGATE_JSON_CAP_EXCEEDED')
+    _budget.get().charge_json(len(raw))
     value = parse_json(raw)
     shape(value)
     return frozen(value), frozen(row)
