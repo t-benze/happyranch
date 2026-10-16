@@ -395,7 +395,9 @@ Private public-hook envelopes, HTML/core snapshots and original patched CSS
 operations retain actual argument/result associations through genuine emission,
 final bundle and write. CSS chunk, URL and minifier chains follow their recorded
 enclosing render call across interleaved emission-queue waits. Unavailable core
-internal references stay null. Python
+internal references stay null. Each asset-cache store consumes a pending read
+under the same enclosing hook; interleaved reads retain their separate parents.
+Cache hits require a stored URL, and incomplete read/store histories refuse. Python
 publish/read stages validate caller-held context/preparation/build/dist/app
 bindings, original bytes and finite relation graphs. Exact stat integers never
 round-trip through JavaScript. The final observer passes the actual successful

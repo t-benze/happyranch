@@ -670,12 +670,18 @@ def validate_css(s,operations,plan,observations):
             need(len(match)==1,'CSS_EMISSION_RELATION_MISSING');emits.append(d)
         elif stage=='css_asset_read':
             keys(d,{'id','file','content'});absolute=Path(d['file']);need(absolute.is_relative_to(s.paths.exported_source/'web'),'CSS_ASSET_ROOT')
-            descriptor,raw=s.raw(s.paths.exported_source,absolute.relative_to(s.paths.exported_source).as_posix());need(raw==blob(s,d['content']),'CSS_URL_RELATION_INVALID');assets[d['id']]=None
+            descriptor,raw=s.raw(s.paths.exported_source,absolute.relative_to(s.paths.exported_source).as_posix());need(raw==blob(s,d['content']),'CSS_URL_RELATION_INVALID')
+            asset=assets.setdefault(d['id'],{'pending':[],'url':None})
+            asset['pending'].append(parent)
         elif stage=='css_asset_store':
-            keys(d,{'id','url'});need(d['id'] in assets,'CSS_URL_RELATION_INVALID');assets[d['id']]=d['url']
+            keys(d,{'id','url'});asset=assets.get(d['id'])
+            need(asset is not None and parent in asset['pending'] and type(d['url']) is str,'CSS_URL_RELATION_INVALID')
+            asset['pending'].remove(parent);asset['url']=d['url']
         elif stage=='css_asset_hit':
-            keys(d,{'id','url'});need(assets.get(d['id'])==d['url'],'CSS_URL_RELATION_INVALID')
+            keys(d,{'id','url'});asset=assets.get(d['id'])
+            need(asset is not None and asset['url'] is not None and asset['url']==d['url'],'CSS_URL_RELATION_INVALID')
         else:need(False,'CSS_STAGE_INVALID',stage)
+    need(all(not asset['pending'] for asset in assets.values()),'CSS_URL_RELATION_INVALID')
     need(states and all(st['phase']=='stored' for st in states.values()) and emits,'CSS_COMPLETE_RELATION_MISSING')
     return {'modules':list(states),'emissions':[x['referenceId'] for x in emits]}
 

@@ -255,6 +255,9 @@ web tests/stories and needs actual matched baseline/candidate CSS/UI evidence.
 Plain split ES CSS with esbuild minification is the admitted profile; unsupported
 imports/modules/source directives/URL forms refuse instead of silently extending
 it. The prepared P/A binary paths are both revalidated throughout custody.
+Both web readers require each asset-cache store to consume a read under the
+same enclosing hook, preserving interleaved read parents. Hits require a stored
+URL; incomplete read/store histories refuse.
 
 The final observer uses the fixed `web-completion.jsonl` leaf, never an extra
 inherited FD. Python completes only the actual publish token after independent
