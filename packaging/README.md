@@ -495,7 +495,13 @@ loaders before Vite or static config imports execute. It refuses earlier local
 and universal bindings, WASI/local fallbacks, nested package shadows and tool
 overrides, and probes Node 24 platform, architecture and importer resolutions
 without loading native modules. Preparation and context retain selected members,
-locked originals and excluded paths. Both publication and a fresh reopened reader
+locked originals, actual ancestor/global package lookup locations and the complete
+excluded file relation: exact stems plus `.js`, `.json` and `.node` candidates,
+even for requests already ending in `.node`. Existing excluded directories refuse
+without reading their package entry metadata. Rollup's exact `existsSync` branch
+retains its loader-specific reachability. Non-loading Node probes corroborate
+excluded-request nonresolution; errors other than `MODULE_NOT_FOUND` refuse.
+Both publication and a fresh reopened reader
 revalidate that relation and the actual build process's resolved paths and loaded
 CJS native cache members. Linux/glibc/x64 observations remain portable evidence;
 Darwin/arm64 execution remains separately required. These local custody checks

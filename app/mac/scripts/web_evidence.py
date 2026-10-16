@@ -412,6 +412,34 @@ def selection_environment() -> None:
         need(not os.environ.get(key),'TOOL_OVERRIDE',key)
 
 
+TOOL_IMPORTS = (
+    ('web/scripts/packaging-tailwind.ts','tailwindcss','web/node_modules/tailwindcss/dist/lib.js'),
+    ('web/scripts/packaging-tailwind.ts','@tailwindcss/oxide','web/node_modules/@tailwindcss/oxide/index.js'),
+    ('web/scripts/packaging-tailwind.ts','@tailwindcss/node','web/node_modules/@tailwindcss/node/dist/index.js'),
+    ('web/node_modules/@tailwindcss/node/dist/index.mjs','lightningcss','web/node_modules/lightningcss/node/index.js'),
+    ('web/node_modules/vite/dist/node/chunks/dep-BK3b2jBa.js','rollup','web/node_modules/rollup/dist/rollup.js'),
+)
+
+
+def selection_lookups(s: Session,importers: list[str]) -> list[dict]:
+    # resolve.paths performs no module evaluation or package-metadata read.
+    # Use the actual pinned runtime's ancestor AND global lookup locations.
+    script="""const {createRequire}=require('node:module');
+if(process.versions.node.split('.')[0]!=='24')throw Error('Node24 required');
+console.log(JSON.stringify(JSON.parse(process.argv[1]).map(importer=>({importer,paths:createRequire(importer).resolve.paths('hr-selection-probe')}))));"""
+    result=A['process_capture'](['node','-e',script,canonical(importers,16384).decode()],s.paths.exported_source,16384,16384)
+    A['_budget'].get().charge(len(result['stdout'])+len(result['stderr']))
+    need(result['process']['exit']==0 and result['process']['quiescent'] and not result['process']['timed_out'] and not result['process']['overflow'],'TOOL_NODE_LOOKUPS')
+    rows=parse(result['stdout'],16384)
+    need(type(rows) is list and len(rows)==len(importers),'TOOL_NODE_LOOKUPS')
+    for importer,row in zip(importers,rows):
+        keys(row,{'importer','paths'})
+        need(row['importer']==importer and type(row['paths']) is list and 0<len(row['paths'])<=128,'TOOL_NODE_LOOKUPS')
+        for name in row['paths']:
+            need(type(name) is str and Path(name).is_absolute() and os.path.normpath(name)==name and len(name.encode())<=4096,'TOOL_NODE_LOOKUPS')
+    return rows
+
+
 def native_selection(s: Session) -> dict:
     """Guarded filesystem admission, also run by each reopened reader.
 
@@ -423,19 +451,36 @@ def native_selection(s: Session) -> dict:
     native=s.binding['venue']=='native'
     platform_name,arch=('darwin','arm64') if native else ('linux','x64')
     suffix='darwin-arm64' if native else 'linux-x64-gnu'
-    root=s.paths.exported_source;lock=s.lock()['packages'];routes=[];edges=[]
+    root=s.paths.exported_source;lock=s.lock()['packages'];routes=[];edges=[];unresolved=[];edge_excluded=[]
+    importers=list(dict.fromkeys(['web/node_modules/'+package+'/'+member for package,(member,_) in NATIVE_LOADERS.items()]+[row[0] for row in TOOL_IMPORTS]))
+    lookups=selection_lookups(s,[str(root/name) for name in importers])
+    searches={row['importer']:row['paths'] for row in lookups}
     def absent(name: str) -> None:
-        with A['root_for'](root) as handle:
-            need(is_absent(handle,name),'TOOL_ROUTE_ALTERNATIVE',name)
+        candidate=Path(name)
+        if candidate.is_relative_to(root):
+            with A['root_for'](root) as handle:
+                need(is_absent(handle,str(candidate.relative_to(root))),'TOOL_ROUTE_ALTERNATIVE',name)
+        else:
+            try:
+                with A['root_for'](candidate.parent,owned=False) as handle:
+                    need(is_absent(handle,candidate.name),'TOOL_ROUTE_ALTERNATIVE',name)
+            except FileNotFoundError:
+                pass
+    def exclude(stem: Path,paths: list[str],*,literal: bool=True,extensions: bool=True) -> None:
+        # Node LOAD_AS_FILE appends extensions even to a .node/.cjs request.
+        # Any existing literal stem (including a directory) refuses: never
+        # interpret arbitrary alternative package.json/main/index contents.
+        for suffix in ([''] if literal else [])+(['.js','.json','.node'] if extensions else []):
+            name=str(stem)+suffix;absent(name);paths.append(name)
     def edge(importer: str,request: str,expected: str) -> None:
-        # Every earlier Node package-search directory within the export must
-        # be absent. The Node probe additionally refuses ancestor resolution.
-        directory=Path(importer).parent
-        while directory!=Path('.'):
-            if directory.name!='node_modules':
-                candidate=str(directory/'node_modules'/request)
-                if candidate!='web/node_modules/'+request:absent(candidate)
-            directory=directory.parent
+        # Earlier stems can be files OR directories. At the nominated package
+        # stem, exclude sibling file routes but retain the authenticated dir.
+        target=root/'web/node_modules'/request
+        for directory in searches[str(root/importer)]:
+            stem=Path(directory)/request
+            exclude(stem,edge_excluded,literal=stem!=target)
+            if stem==target:break
+        else:need(False,'TOOL_NODE_LOOKUPS',request)
         edges.append({'importer':str(root/importer),'request':request,'selected':str(root/expected)})
     for package,(member,digest) in NATIVE_LOADERS.items():
         importer='web/node_modules/'+package+'/'+member
@@ -468,30 +513,16 @@ def native_selection(s: Session) -> dict:
             need(b"require(`lightningcss-${parts.join('-')}`)" in raw and b"require(`../lightningcss.${parts.join('-')}.node`)" in raw,'TOOL_LOADER_ROUTE')
             selected_package='lightningcss-'+suffix;selected_name='lightningcss.'+suffix+'.node';excluded=['../'+selected_name]
         excluded_paths=[]
-        # Node also searches ancestors beyond the exported source. Observe
-        # those paths with the same no-follow directory guards, without walking
-        # any package tree or trusting a universal package's entry metadata.
-        for request in (r for r in excluded if not r.startswith('.')):
-            ancestors=list(root.parents);need(len(ancestors)<=128,'TOOL_IMPORT_DEPTH')
-            for ancestor in ancestors:
-                candidate=ancestor/'node_modules'/request
-                try:
-                    with A['root_for'](candidate.parent,owned=False) as handle:
-                        need(is_absent(handle,candidate.name),'TOOL_ROUTE_ALTERNATIVE',candidate)
-                except FileNotFoundError:
-                    pass
-                excluded_paths.append(str(candidate))
         for request in excluded:
             if request.startswith('.'):
-                name=os.path.normpath(str(Path(importer).parent/request));absent(name);excluded_paths.append(name)
+                stem=Path(os.path.normpath(str((root/importer).parent/request)))
+                # Rollup requires the local request ONLY if existsSync on its
+                # exact stem succeeds. Sibling extensions alone are unreachable.
+                exclude(stem,excluded_paths,extensions=package!='rollup')
             else:
-                # Include all real Node lookup directories, including scoped
-                # package and loader directories; no recursive unbounded walk.
-                directory=Path(importer).parent
-                while directory!=Path('.'):
-                    if directory.name!='node_modules':
-                        name=str(directory/'node_modules'/request);absent(name);excluded_paths.append(name)
-                    directory=directory.parent
+                for directory in searches[str(root/importer)]:
+                    exclude(Path(directory)/request,excluded_paths)
+            if package!='rollup':unresolved.append({'importer':str(root/importer),'request':request})
         selected='web/node_modules/'+selected_package+'/'+selected_name
         token,_=s.intern_subject(root,selected,TOOL)
         _,metadata=s.intern_subject(root,'web/node_modules/'+selected_package+'/package.json')
@@ -510,24 +541,18 @@ def native_selection(s: Session) -> dict:
         edge(importer,selected_package,selected)
         routes.append({'package':package,'importer':importer,'loader':loader,'platform_package':selected_package,'lock_integrity':entry['integrity'],'selected':selected,'member':token,'original':original,'excluded':excluded_paths})
     # Match real upstream consumers, not only nominated platform packages.
-    for importer,request,expected in [
-        ('web/scripts/packaging-tailwind.ts','tailwindcss','web/node_modules/tailwindcss/dist/lib.js'),
-        ('web/scripts/packaging-tailwind.ts','@tailwindcss/oxide','web/node_modules/@tailwindcss/oxide/index.js'),
-        ('web/scripts/packaging-tailwind.ts','@tailwindcss/node','web/node_modules/@tailwindcss/node/dist/index.js'),
-        ('web/node_modules/@tailwindcss/node/dist/index.mjs','lightningcss','web/node_modules/lightningcss/node/index.js'),
-        ('web/node_modules/vite/dist/node/chunks/dep-BK3b2jBa.js','rollup','web/node_modules/rollup/dist/rollup.js'),
-    ]:
+    for importer,request,expected in TOOL_IMPORTS:
         s.intern_subject(root,importer,TOOL);s.intern_subject(root,expected,TOOL);edge(importer,request,expected)
-    return {'platform':platform_name,'arch':arch,'routes':routes,'edges':edges,'venue':s.binding['venue']}
+    return {'platform':platform_name,'arch':arch,'routes':routes,'edges':edges,'venue':s.binding['venue'],'lookups':lookups,'edge_excluded':edge_excluded,'unresolved':unresolved}
 
 
 def selection_projection(plan: dict) -> dict:
-    return {k:plan[k] for k in ('platform','arch','edges')}
+    return {**{k:plan[k] for k in ('platform','arch','edges','unresolved')},'lookup_sha256':sha(canonical(plan['lookups'],16384))}
 
 
 def check_selection_observation(plan: dict,observation: dict,*,loaded: bool) -> None:
-    keys(observation,{'platform','arch','edges','execPath','node','glibc','loaded'})
-    need({k:observation[k] for k in ('platform','arch','edges')}==selection_projection(plan),'TOOL_NODE_SELECTION')
+    keys(observation,{'platform','arch','edges','unresolved','lookup_sha256','execPath','node','glibc','loaded'})
+    need({k:observation[k] for k in ('platform','arch','edges','unresolved','lookup_sha256')}==selection_projection(plan),'TOOL_NODE_SELECTION')
     need(type(observation['node']) is str and observation['node'].split('.')[0]=='24' and isinstance(observation['execPath'],str) and Path(observation['execPath']).is_absolute(),'TOOL_NODE_RUNTIME')
     need(plan['platform']!='linux' or bool(observation['glibc']),'TOOL_LIBC')
     # Loaded paths are supplied by the actual Node build process, never by the
@@ -538,9 +563,13 @@ def check_selection_observation(plan: dict,observation: dict,*,loaded: bool) -> 
 
 def probe_selection(s: Session,plan: dict) -> dict:
     script="""const {createRequire}=require('node:module');
+const {createHash}=require('node:crypto');
 const p=JSON.parse(process.argv[1]);
 const edges=p.edges.map(e=>({...e,selected:createRequire(e.importer).resolve(e.request)}));
-console.log(JSON.stringify({platform:process.platform,arch:process.arch,execPath:process.execPath,node:process.versions.node,glibc:process.report.getReport().header.glibcVersionRuntime??null,edges,loaded:[]}));"""
+const unresolved=p.unresolved.map(e=>{try{createRequire(e.importer).resolve(e.request);}catch(error){if(error.code==='MODULE_NOT_FOUND')return e;throw error;}throw Error('Unexpected excluded resolution');});
+const lookups=[...new Set(edges.map(e=>e.importer))].map(importer=>({importer,paths:createRequire(importer).resolve.paths('hr-selection-probe')}));
+const lookup_sha256=createHash('sha256').update(JSON.stringify(lookups)).digest('hex');
+console.log(JSON.stringify({platform:process.platform,arch:process.arch,execPath:process.execPath,node:process.versions.node,glibc:process.report.getReport().header.glibcVersionRuntime??null,edges,unresolved,lookup_sha256,loaded:[]}));"""
     result=A['process_capture'](['node','-e',script,canonical(selection_projection(plan),16384).decode()],s.paths.exported_source,16384,16384)
     A['_budget'].get().charge(len(result['stdout'])+len(result['stderr']))
     need(result['process']['exit']==0 and result['process']['quiescent'] and not result['process']['timed_out'] and not result['process']['overflow'],'TOOL_NODE_PROBE')

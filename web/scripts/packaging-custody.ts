@@ -173,11 +173,18 @@ export class PackagingCustody {
     // Preparation admitted their routes before Vite/config evaluation. Observe
     // the real build process here; no binary is loaded by this observer.
     const edges = admitted.edges.map((edge: Row) => ({ ...edge, selected: createRequire(edge.importer).resolve(edge.request) }));
+    const unresolved = admitted.unresolved.map((edge: Row) => {
+      try { createRequire(edge.importer).resolve(edge.request); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code === 'MODULE_NOT_FOUND') return edge; throw error; }
+      throw new Error('WEB_TOOL_ROUTE_ALTERNATIVE');
+    });
+    const lookups = [...new Set<string>(edges.map((edge: Row) => edge.importer))].map(importer => ({ importer, paths: createRequire(importer).resolve.paths('hr-selection-probe') }));
+    const lookup_sha256 = createHash('sha256').update(JSON.stringify(lookups)).digest('hex');
     const nativePaths = edges.slice(0, 3).map((edge: Row) => edge.selected);
     const cache = createRequire(path.join(caller.roots.exported_source, 'web/vite.config.ts')).cache;
     const loaded = nativePaths.filter((selected: string) => cache[selected]?.loaded === true);
-    this.toolSelection = { platform: process.platform, arch: process.arch, execPath: process.execPath, node: process.versions.node, glibc: (process.report.getReport() as any).header.glibcVersionRuntime ?? null, edges, loaded };
-    if (process.platform !== admitted.platform || process.arch !== admitted.arch || loaded.length !== 3 || edges.some((edge: Row, i: number) => edge.selected !== admitted.edges[i].selected)) throw new Error('WEB_TOOL_NODE_SELECTION');
+    this.toolSelection = { platform: process.platform, arch: process.arch, execPath: process.execPath, node: process.versions.node, glibc: (process.report.getReport() as any).header.glibcVersionRuntime ?? null, edges, unresolved, lookup_sha256, loaded };
+    if (process.platform !== admitted.platform || process.arch !== admitted.arch || loaded.length !== 3 || lookup_sha256 !== admitted.lookup_sha256 || edges.some((edge: Row, i: number) => edge.selected !== admitted.edges[i].selected)) throw new Error('WEB_TOOL_NODE_SELECTION');
   }
 
   request(stage: string, value?: unknown, index?: number): any {
