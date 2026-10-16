@@ -2046,8 +2046,18 @@ def remove_adapter_entry(
         if coordinator is not None
         else nullcontext()
     )
-    with span:
-        return _remove_adapter_entry(adapter_id, body)
+    try:
+        with span:
+            return _remove_adapter_entry(adapter_id, body)
+    except Exception as exc:
+        from runtime.workflows.profile_coordinator import ProfileCoordinatorError
+
+        if isinstance(exc, ProfileCoordinatorError):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={"code": exc.code},
+            ) from None
+        raise
 
 
 def _remove_adapter_entry(

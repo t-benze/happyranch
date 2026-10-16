@@ -2879,3 +2879,41 @@ breakpoint. The transcript has bounded scrolling; all properties and participant
 controls remain reachable in the detail scroll area. At desktop widths the
 properties retain their fixed rail. Resize and locale changes preserve the mounted
 composer, draft, attachments and selection; neither action submits a message.
+
+## Private team-move D source and launcher protocol
+
+D supplies internal preview/operation/recovery owners; no public team-move
+apply/recover route or CLI is available. E/F retain that integration and acceptance.
+Updated shell and Mac bundled/dev launchers pass `--reader-guarded-start=online-team-move@2`; older
+supported argparse readers reject that protocol before startup. Runtime switch
+and registration preserve unresolved holds instead of detaching their org. Early
+schema-owner discovery keeps an unresolved/unknown org diagnostic-only before
+compatibility writers or producer recovery; unrelated orgs can attach. Direct old
+interpreters, obsolete launchers and already-running old daemons remain outside
+this cooperative guard. Source rollback cannot undo durable decisions. No restart,
+activation, preview against the live roster or live move was executed. SAME13
+behavior/migration/recovery/launcher outcomes remain UNEXECUTED; integration
+INCLUDING callback SKIPPED24342 and Python units RETIRED. See the current D section
+of the approved online-team-move spec. The @2 protocol covers durable operation
+staging ownership and per-org acquisition containment. Earlier diagnostics survive
+register/switch/state adoption. Restricted recovery retains the original error
+when close also fails; standalone close failures stay classified and held.
+
+Global/rebind/claim/retry/synchronization profile writers retain diagnostic roots
+and refuse without diagnostic filesystem/DB acquisition while leased, even with
+EMPTY dependencies.
+Adapter removal reports the retained EMPTY-dependency diagnostic refusal as
+HTTP409 with `detail.code`; its bounded `ProfileCoordinatorError` translation
+preserves unrelated exceptions and native removal/audit/compensation.
+Native startup/attachment performs positive inspection
+outside leases. Matching attachment revalidates its actual already-open DB owner
+in the short segment; only successful attachment clears its diagnostic. Other
+roots, failed attachment, current holds and malformed history stay held. D's
+own-operation/native-identity exception also checks EMPTY dependencies. Public
+recovery/reattachment remains E/F-owned and unavailable; no new command is granted.
+Failed open or raced loss never establishes fresh
+absence. Discovery/publication capture runs outside durable mutation leases, with
+native capture revalidation in the final DB leaf. Unknown staging cleanup stays
+held through recovery and owner-finished. Old records remain readable; legacy
+canonical-stage ownership gaps remain held. Source/static acceptance is not behavioral
+acceptance or a feature-completion claim.

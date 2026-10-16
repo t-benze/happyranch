@@ -3,6 +3,54 @@ name: manage-agent
 description: Enroll, update, or terminate an agent. Write a JSON file and call happyranch manage-agent --from-file to keep the invocation single-line. Enrollment requires founder approval.
 ---
 
+## D private operation and startup holds (THR296seq135)
+
+The corrected reader is online-team-move@2 (also reads old @1 records); supported
+launchers pass --reader-guarded-start=online-team-move@2 and reject earlier D
+readers. Per-org open/identity/SQLite errors remain diagnostic-only and survive
+startup/switch readback. Restricted recovery preserves the original error on
+close failure; standalone close failures retain native classification and holds.
+Recovery reconciles only pre-recorded operation staging
+intent/acquired identity/terminal disposition in existing audits. Unknown acquired
+identity or cleanup stays held even after owner-finished; no glob deletion or
+legacy evidence adoption is allowed. Native discovery and publication capture
+run outside durable profile/publication mutation leases, with revision/epoch/CAS
+revalidation before mutation and at final release. This grants no skill execution,
+cleanup, activation, live operation or behavioral-proof authority.
+
+Global/rebind/claim/retry/synchronization profile writers retain diagnostic roots
+and refuse without diagnostic filesystem/DB acquisition while leased, even with
+EMPTY dependencies.
+Adapter removal reports the retained EMPTY-dependency diagnostic refusal as
+HTTP409 with `detail.code`; its bounded `ProfileCoordinatorError` translation
+preserves unrelated exceptions and native removal/audit/compensation.
+Native startup/attachment performs positive inspection
+outside leases. Matching attachment revalidates its actual already-open DB owner
+in the short segment; only successful attachment clears its diagnostic. Other
+roots, failed attachment, current holds and malformed history stay held. D's
+own-operation/native-identity exception also checks EMPTY dependencies. Public
+recovery/reattachment remains E/F-owned and unavailable; no new command is granted.
+
+
+D supplies private canonical/context/reset/profile/publication/recovery source.
+Public apply/recover and CLI remain unavailable until E/F independent acceptance;
+no skill or agent may invoke the private owner or use ambient bearer credentials
+to self-admit a move. Manage-agent still cannot transfer teams. New startup
+schema-owner discovery precedes compatibility writers and partial membership;
+unknown/unresolved state keeps that org diagnostic-only and its durable holds.
+Only admitted bounded same-operation recovery can reconcile exact owned images
+and native owner evidence; no timeout, missing tracker or source rollback releases
+it. Updated launchers require the guarded reader protocol; old running daemons
+and arbitrary direct old interpreters remain outside that protection. Source
+and static checks do not prove behavior. No activation/restart/live move, new
+tests/campaign, callback fabrication or cleanup authority follows. Earlier C3
+checkpoint text below records that slice only; current D disposition is in
+`docs/superpowers/specs/2026-10-14-online-team-move.md`. SAME13 observations stay;
+behavior/recovery UNEXECUTED, integration INCLUDING callback SKIPPED24342,
+Python units RETIRED. Native permission/execution enforcement is unchanged.
+
+
+
 ## Current names and permanent automation IDs
 
 Fresh prompts may show current Name · ID for this turn. Use the permanent ID

@@ -1,6 +1,6 @@
 """Org-owned task/thread preparation and launch exclusion; apply remains unavailable.
 
-D still owns whole-operation decision, release and recovery.
+Private D decision, release and recovery live in team_move_operation; E/F stay gated.
 No optional schema is installed here; absent-layout ordinary tasks remain valid.
 """
 from __future__ import annotations
@@ -17,7 +17,7 @@ _task_tail: ContextVar[list | None] = ContextVar("team_move_task_tail", default=
 
 CAPABILITY_VERSION = 1
 APPLY_AVAILABLE = False
-NOT_INTEGRATED = ("canonical_context_publication_recovery", "startup_launcher_downgrade")
+NOT_INTEGRATED = ("founder_public_service_cli", "whole_history_integration_acceptance")
 
 # Required D completion readback; labels are a contract, never Boolean proofs.
 COMPLETION_REQUIREMENTS = (
@@ -407,13 +407,13 @@ class TeamMoveCoordinator:
         )
 
     def startup_contract(self) -> dict:
-        """Data only, not an implemented attach/downgrade admission guard."""
+        """Diagnostic projection; actual early guards live in team_move_startup."""
         row = self.store.read()
         return {
             "capability_version": CAPABILITY_VERSION,
             "apply_available": APPLY_AVAILABLE,
             "not_integrated": NOT_INTEGRATED,
-            "required_reader": "online-team-move@1" if row is not None else None,
+            "required_reader": "online-team-move@2" if row is not None else None,
             "unresolved_phase": Phase(row["phase"]).value if row is not None else None,
             "startup_requirements": STARTUP_REQUIREMENTS,
             "completion_requirements": COMPLETION_REQUIREMENTS,

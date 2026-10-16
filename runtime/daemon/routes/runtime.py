@@ -18,9 +18,13 @@ class RuntimePath(BaseModel):
     path: str
 
 
-def _swap(state: DaemonState, runtime: RuntimeDir) -> None:
+def _swap(state: DaemonState, runtime: RuntimeDir, *, move_diagnostics=None) -> None:
     """Replace the daemon's active runtime atomically."""
-    new_state = DaemonState.from_runtime(runtime, state.settings)
+    from runtime.orchestrator.team_move_startup import require_runtime_reader, refuse_runtime_detach
+    refuse_runtime_detach(state.runtime, diagnostics=state.broken_orgs)
+    diagnostics = dict(move_diagnostics or {})
+    diagnostics.update(require_runtime_reader(runtime))
+    new_state = DaemonState.from_runtime(runtime, state.settings, move_diagnostics=diagnostics)
     # Move the worker queue and lock instances into the new state so an
     # in-flight worker pool keeps consuming. Note: this swap happens only
     # when the queue is empty (use endpoint enforces it).
@@ -28,6 +32,8 @@ def _swap(state: DaemonState, runtime: RuntimeDir) -> None:
     new_state.orgs_lock = state.orgs_lock
     state.runtime = new_state.runtime
     state.orgs = new_state.orgs
+    state.broken_orgs = new_state.broken_orgs
+    state.profile_coordinator = new_state.profile_coordinator
     # Close the old metrics store and adopt the new runtime's store so
     # persisted snapshots always target the ACTIVE runtime's metrics.db.
     if state.metrics_store is not None:
@@ -53,11 +59,13 @@ async def register_runtime(body: RuntimePath, request: Request) -> dict:
     from runtime.daemon.app import ensure_workers_started
 
     daemon: DaemonState = request.app.state.daemon
+    from runtime.orchestrator.team_move_startup import refuse_runtime_detach
+    refuse_runtime_detach(daemon.runtime, diagnostics=daemon.broken_orgs)
     path = Path(body.path).expanduser()
     if not path.exists():
         path.mkdir(parents=True, exist_ok=True)
     runtime = RuntimeDir.init(path)
-    reg.register(path)
+    diagnostics = reg.register(path)
 
     # If we're swapping the active runtime out, refuse when any org still has
     # in-flight work — same guard as `/runtime/use`. Re-registering the same
@@ -82,9 +90,9 @@ async def register_runtime(body: RuntimePath, request: Request) -> dict:
             for org in list(daemon.orgs.values()):
                 org.close()
             daemon.orgs.clear()
-            _swap(daemon, runtime)
+            _swap(daemon, runtime, move_diagnostics=diagnostics)
         else:
-            _swap(daemon, runtime)
+            _swap(daemon, runtime, move_diagnostics=diagnostics)
     ensure_workers_started(daemon)
     return {"runtime": str(path.resolve())}
 
@@ -94,8 +102,11 @@ async def use_runtime(body: RuntimePath, request: Request) -> dict:
     from runtime.daemon.app import ensure_workers_started
 
     daemon: DaemonState = request.app.state.daemon
+    from runtime.orchestrator.team_move_startup import refuse_runtime_detach, require_runtime_reader
+    refuse_runtime_detach(daemon.runtime, diagnostics=daemon.broken_orgs)
     path = Path(body.path).expanduser().resolve()
     runtime = RuntimeDir.load(path)
+    diagnostics = require_runtime_reader(runtime)
 
     async with daemon.orgs_lock:
         for org in daemon.orgs.values():
@@ -109,10 +120,10 @@ async def use_runtime(body: RuntimePath, request: Request) -> dict:
                         "task_ids": in_flight,
                     },
                 )
-        reg.activate(path)
+        diagnostics.update(reg.activate(path))
         for org in list(daemon.orgs.values()):
             org.close()
         daemon.orgs.clear()
-        _swap(daemon, runtime)
+        _swap(daemon, runtime, move_diagnostics=diagnostics)
     ensure_workers_started(daemon)
     return {"runtime": str(path)}
