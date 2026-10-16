@@ -90,6 +90,24 @@ launch-seam refusals before effects retain their native no-effect disposition;
 returned failure alone never proves compensation. No new schema/journal/backfill
 or generic producer identity is introduced. All behavior remains UNEXECUTED.
 
+Ordinary tasks carry their SAME native TaskInvocation/task/agent/runtime SID
+through materialization, integrity (including retries), package omissions,
+repository refresh, attachment writes/cleanup, task scratch and builtin/custom
+cache/workspace setup. Safe deferred ownership becomes durably `prepared` before
+preparation resumes; this never clears existing uncertainty.
+Preparation failure sets the existing local reservation cleanup flag BEFORE the
+fallible strict Pause save/COMMIT, then retains `execution_unknown`/`unknown` in
+the admitted journal. Terminal/callback/quiescent later attempts and safe unrelated
+worktree cleanup cannot clear it. Settlement persists that fact before release;
+failed saves retain local ownership and original plus persistence errors.
+Restart treats unclosed task `prepared` entries as unknown, including terminal
+rows and prepared recovery/retry owners; absence of first launch is no proof of
+preparation cleanup. Unknown deferred entries cannot authorize a fresh launch.
+Native pre-effect artifact validation, repo-scan and missing launch-seam refusals
+retain their no-effect disposition. Existing retry/recovery IDs, frozen budgets,
+INTEGER callbacks and authority-v2 are preserved. No new field/journal, history
+backfill, compensation or clearance writer is introduced. Behavior UNEXECUTED.
+
 ## D private operation and startup holds (THR296seq135)
 
 The corrected reader is online-team-move@3 (also reads old @1/@2 records); supported

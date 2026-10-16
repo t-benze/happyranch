@@ -892,6 +892,7 @@ def _build_custom_skill_canonical_specs(
     )
 
     for row in rows:
+        package_effects = False
         try:
             artifact_key = row["content_artifact_key"]
             if not artifact_key:
@@ -903,6 +904,10 @@ def _build_custom_skill_canonical_specs(
                     "Artifact hash mismatch: expected "
                     f"{row['content_hash'][:16]}..., got {actual_hash[:16]}..."
                 )
+            # Artifact-key/read/hash refusals above are affirmative pre-effect
+            # failures for the task owner. Temporary/package construction below
+            # can leave effects even when this helper later omits the spec.
+            package_effects = True
             with tempfile.TemporaryDirectory() as temporary_dir:
                 source_dir = Path(temporary_dir)
                 (source_dir / "SKILL.md").write_bytes(content)
@@ -943,13 +948,19 @@ def _build_custom_skill_canonical_specs(
                 conn.commit()
         except Exception as exc:
             # The native builder can leave canonical/package effects before
-            # returning an omitted custom spec. Retain the actual C3 owner even
+            # returning an omitted custom spec. Retain the actual native owner even
             # when this failure is caught and the outer materializer returns.
             from runtime.orchestrator.producer_move import current_producer_preparation
             from runtime.orchestrator.thread_move import current_thread_preparation
-            preparation = current_thread_preparation() or current_producer_preparation()
+            from runtime.orchestrator.task_pause import current_invocation
+            preparation = (current_thread_preparation() or current_producer_preparation()
+                           or (current_invocation() if package_effects else None))
             if preparation is not None:
-                preparation.failed_cleanup()
+                try:
+                    preparation.failed_cleanup()
+                except BaseException as evidence:
+                    exc.add_note(f"custom package preparation evidence failed: {evidence!r}")
+                    raise exc from evidence
             if recordable:
                 service.record_materialization(
                     conn, skill_id=row["id"], agent_name=agent_name,
@@ -1799,7 +1810,8 @@ def refresh_workspace_repos(workspace: Path) -> dict[str, bool]:
         return {}
     from runtime.orchestrator.producer_move import current_producer_preparation
     from runtime.orchestrator.thread_move import current_thread_preparation
-    preparation = current_thread_preparation() or current_producer_preparation()
+    from runtime.orchestrator.task_pause import current_invocation
+    preparation = current_thread_preparation() or current_producer_preparation() or current_invocation()
     results: dict[str, bool] = {}
     for name in repo_names:
         repo_dir = workspace / "repos" / name
@@ -1810,13 +1822,20 @@ def refresh_workspace_repos(workspace: Path) -> dict[str, bool]:
                 capture_output=True,
                 timeout=30,
             )
-            results[name] = result.returncode == 0
-            if result.returncode != 0 and preparation is not None:
-                preparation.failed_cleanup()
-        except (subprocess.TimeoutExpired, subprocess.SubprocessError, OSError) as exc:
+        except BaseException as exc:
+            if preparation is not None:
+                try:
+                    preparation.failed_cleanup()
+                except BaseException as evidence:
+                    exc.add_note(f"repository preparation evidence failed: {evidence!r}")
+                    raise exc from evidence
+            if not isinstance(exc, (subprocess.TimeoutExpired, subprocess.SubprocessError, OSError)):
+                raise
             logger.info("repo refresh: git pull skipped for %s: %s", repo_dir, exc)
             results[name] = False
-            if preparation is not None:
+        else:
+            results[name] = result.returncode == 0
+            if result.returncode != 0 and preparation is not None:
                 preparation.failed_cleanup()
     return results
 

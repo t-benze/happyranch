@@ -37,8 +37,13 @@ def bind_thread_preparation(owner: ThreadPreparation) -> Iterator[None]:
 
 @contextmanager
 def thread_preparation_effects() -> Iterator[None]:
-    """Carry the actual thread owner into shared native filesystem helpers."""
-    owner = current_thread_preparation()
+    """Carry the actual thread or task owner into native filesystem helpers.
+
+    Keep this existing facade for cache/direct/legacy executor callers; a task
+    keeps its own Pause journal and reservation, never a thread/producer alias.
+    """
+    from runtime.orchestrator.task_pause import current_invocation
+    owner = current_thread_preparation() or current_invocation()
     if owner is None:
         yield
     else:
