@@ -20,6 +20,9 @@ class RuntimePath(BaseModel):
 
 def _swap(state: DaemonState, runtime: RuntimeDir) -> None:
     """Replace the daemon's active runtime atomically."""
+    from runtime.orchestrator.team_move_startup import require_runtime_reader, refuse_runtime_detach
+    refuse_runtime_detach(state.runtime)
+    require_runtime_reader(runtime)
     new_state = DaemonState.from_runtime(runtime, state.settings)
     # Move the worker queue and lock instances into the new state so an
     # in-flight worker pool keeps consuming. Note: this swap happens only
@@ -53,6 +56,8 @@ async def register_runtime(body: RuntimePath, request: Request) -> dict:
     from runtime.daemon.app import ensure_workers_started
 
     daemon: DaemonState = request.app.state.daemon
+    from runtime.orchestrator.team_move_startup import refuse_runtime_detach
+    refuse_runtime_detach(daemon.runtime)
     path = Path(body.path).expanduser()
     if not path.exists():
         path.mkdir(parents=True, exist_ok=True)
@@ -94,8 +99,11 @@ async def use_runtime(body: RuntimePath, request: Request) -> dict:
     from runtime.daemon.app import ensure_workers_started
 
     daemon: DaemonState = request.app.state.daemon
+    from runtime.orchestrator.team_move_startup import refuse_runtime_detach, require_runtime_reader
+    refuse_runtime_detach(daemon.runtime)
     path = Path(body.path).expanduser().resolve()
     runtime = RuntimeDir.load(path)
+    require_runtime_reader(runtime)
 
     async with daemon.orgs_lock:
         for org in daemon.orgs.values():

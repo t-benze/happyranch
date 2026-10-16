@@ -1,8 +1,8 @@
-"""Inert org-owned online move journal (THR296 seq135, slice B).
+"""Org-owned online move journal (THR296 seq135, B plus private D readback).
 
-No runtime caller installs or reserves this extension in B. The trusted service
-must supply founder admission and native owner evidence; models confer no
-identity authority. D must integrate readback validation before COMPLETE writes.
+No startup installer or public apply. E must supply actual founder admission;
+models confer no identity authority. General transitions still refuse COMPLETE;
+only D's private native readback transaction can commit the terminal receipt.
 """
 from __future__ import annotations
 
@@ -25,6 +25,7 @@ MAX_ROWS = 65536
 MAX_SCAN_BYTES = 32 * 1024 * 1024
 MAX_REVISION = 2**63 - 1
 Identifier = Annotated[str, Field(min_length=1, max_length=256, pattern=r"^[A-Za-z0-9_-]+$")]
+Namespace = Annotated[str, Field(min_length=1, max_length=256, pattern=r"^(?:[A-Za-z0-9_-]+|org/[A-Za-z0-9_-]+)$")]
 Digest = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
 Positive = Annotated[int, Field(ge=1, le=MAX_REVISION)]
 Agent = Literal["consultant_codex", "consultant_head"]
@@ -104,7 +105,7 @@ class ExpectedInputs(Closed):
     policy_digest: Digest
     skill_selection_digest: Digest
     permission_digest: Digest
-    authority_namespace: Identifier
+    authority_namespace: Namespace
     authority_generation: Positive
     authority_digest: Digest
     agent_revisions: tuple[Digest, Digest]
@@ -196,7 +197,7 @@ class AgentProgress(Closed):
 class PublicationIdentity(Closed):
     writer_invocation_id: Identifier
     journal_id: Identifier
-    namespace: Identifier
+    namespace: Namespace
     generation: Positive
     digest: Digest
 
@@ -236,6 +237,20 @@ class TerminalReceipt(Closed):
     state_revision: Positive
     committed: Literal[False]
     diagnostic: Diagnostic
+
+
+class CompletedReceipt(Closed):
+    """Saved facts produced only by D's native completion readback owner."""
+    version: Literal[1]
+    operation_id: Identifier
+    request_digest: Digest
+    phase: Literal["complete"]
+    state_revision: Positive
+    committed: Literal[True]
+    progress_digest: Digest
+    current_inputs_digest: Digest
+    settled_census_digest: Digest
+    publication: PublicationIdentity
 
 
 TEAM_MOVE_SCHEMA_SQL = """CREATE TABLE team_move_operations (
@@ -378,23 +393,22 @@ def _validate_row(row: dict, org_slug: str | None) -> None:
     elif row["diagnostic_digest"] is not None:
         raise TeamMoveError("team_move_diagnostic_digest")
     if phase in TERMINAL:
-        # B cannot authenticate COMPLETE evidence. A future D reader must
-        # explicitly extend this contract together with its native validator.
-        if phase is Phase.COMPLETE:
-            raise TeamMoveError("team_move_completion_reader_unavailable")
-        receipt = _decode(TerminalReceipt, row["receipt_bytes"])
+        receipt = _decode(CompletedReceipt if phase is Phase.COMPLETE else TerminalReceipt, row["receipt_bytes"])
         if (type(receipt.version) is not int or receipt.operation_id != row["operation_id"] or receipt.request_digest != row["request_digest"]
                 or receipt.state_revision != row["state_revision"] or receipt.phase != phase
                 or _digest(row["receipt_bytes"]) != row["receipt_digest"]
-                or _bytes(receipt.diagnostic) != row["diagnostic_bytes"]):
+                or (phase is not Phase.COMPLETE and _bytes(receipt.diagnostic) != row["diagnostic_bytes"])):
             raise TeamMoveError("team_move_receipt_mismatch")
+        if phase is Phase.COMPLETE and (receipt.progress_digest != _digest(row["progress_bytes"])
+                or receipt.publication != progress.publication):
+            raise TeamMoveError("team_move_completion_evidence_mismatch")
     elif row["receipt_bytes"] is not None or row["receipt_digest"] is not None:
         raise TeamMoveError("team_move_nonterminal_receipt")
     _validate_stage(phase, progress, row["resume_phase"])
 
 
 def _validate_stage(phase: Phase, progress: Progress, resume: str | None) -> None:
-    effective = Phase(resume) if phase is Phase.REPAIR_REQUIRED else phase
+    effective = Phase(resume) if phase is Phase.REPAIR_REQUIRED else (Phase.PUBLISH if phase is Phase.COMPLETE else phase)
     if progress.publication is None and effective in FORWARD_PHASES[1:]:
         raise TeamMoveError("team_move_missing_publication_identity")
     if effective in FORWARD_PHASES[3:] and any(a.reset is None for a in progress.agents):
@@ -420,8 +434,12 @@ def _transition_resume_phase(current: Phase, phase: Phase, resume: str | None) -
     Unchanged replay returns before this function in the writer; it is never
     another audit transition. Recovery ownership/progress is validated separately.
     """
-    if current in TERMINAL or phase is Phase.COMPLETE:
-        raise TeamMoveError("team_move_completion_unavailable" if phase is Phase.COMPLETE else "team_move_terminal")
+    if current in TERMINAL:
+        raise TeamMoveError("team_move_terminal")
+    if phase is Phase.COMPLETE:
+        if current is not Phase.PUBLISH:
+            raise TeamMoveError("team_move_illegal_transition")
+        return None
     if current is Phase.WAITING:
         if phase not in {Phase.COMMIT_DECIDED, Phase.REFUSED, Phase.ABANDONED}:
             raise TeamMoveError("team_move_illegal_transition")
@@ -527,14 +545,12 @@ def _validate_audit_history(conn: sqlite3.Connection, row: dict, *, budget: int)
         ) for value in (payload["progress_digest"], payload["decision_digest"],
                         payload["diagnostic_digest"], payload["receipt_digest"])):
             raise TeamMoveError("team_move_audit_digest")
-        if phase is Phase.COMPLETE:
-            raise TeamMoveError("team_move_completion_reader_unavailable")
         precommit = phase in {Phase.WAITING, Phase.REFUSED, Phase.ABANDONED}
         if (payload["progress_digest"] is None
                 or (precommit and payload["progress_digest"] != empty_progress_digest)
                 or ((payload["decision_digest"] is None) != precommit)
                 or ((payload["receipt_digest"] is not None) != (phase in TERMINAL))
-                or (phase in TERMINAL | {Phase.REPAIR_REQUIRED} and payload["diagnostic_digest"] is None)
+                or (phase in {Phase.REFUSED, Phase.ABANDONED, Phase.REPAIR_REQUIRED} and payload["diagnostic_digest"] is None)
                 or (revision == 1 and payload["diagnostic_digest"] is not None)):
             raise TeamMoveError("team_move_audit_lifecycle")
         if last is not None:
@@ -744,3 +760,62 @@ class TeamMoveStore:
                 raise TeamMoveError("team_move_stale_revision")
             self._audit(updated, "team_move_transition")
             return updated
+
+
+    def _complete_uncommitted(self, row: dict, receipt: CompletedReceipt) -> dict:
+        """Private leaf of D's native readback transaction; no public transition.
+
+        D owns the gate/DB transaction and revalidates its native captures before
+        entering this leaf. A caller success Boolean is never accepted here.
+        """
+        if not self.db._lock._is_owned() or not self.db._conn.in_transaction:
+            raise TeamMoveError("team_move_completion_transaction_owner")
+        self._require(self.db._conn)
+        current = self._row(self.db._conn, row["operation_id"])
+        if current != row or current["phase"] != "publish" or receipt.state_revision != current["state_revision"] + 1:
+            raise TeamMoveError("team_move_stale_completion")
+        raw = _bytes(receipt)
+        updated = dict(current, phase="complete", state_revision=receipt.state_revision,
+            active_slot=None, receipt_bytes=raw, receipt_digest=_digest(raw), updated_at=_now())
+        _validate_row(updated, self.org_slug)
+        changed = self.db._conn.execute(
+            "UPDATE team_move_operations SET phase='complete',state_revision=?,active_slot=NULL,receipt_bytes=?,receipt_digest=?,updated_at=? WHERE operation_id=? AND state_revision=? AND phase='publish'",
+            (updated["state_revision"], raw, updated["receipt_digest"], updated["updated_at"], updated["operation_id"], row["state_revision"]),
+        ).rowcount
+        if changed != 1:
+            raise TeamMoveError("team_move_stale_completion")
+        self._audit(updated, "team_move_transition")
+        return updated
+
+
+def inspect_team_move_database(path, *, org_slug: str):
+    """Schema owner's coherent read BEFORE Database compatibility writers.
+
+    Reads complete optional layout/history, never installs/upgrades or repairs.
+    A missing org DB preserves fresh/absent-layout startup. Unknown redirects,
+    SQLite/layout/state errors refuse; no roster inference grants compatibility.
+    """
+    import os
+    import stat
+    from pathlib import Path
+    from urllib.parse import quote
+    path = Path(path)
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return None
+    if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != os.getuid()
+            or path.resolve(strict=True) != path):
+        raise TeamMoveError("team_move_startup_database_identity_unknown")
+    conn = sqlite3.connect("file:" + quote(str(path), safe="/") + "?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    try:
+        conn.execute("BEGIN")
+        if not validate_team_move_schema(conn, org_slug=org_slug):
+            return None
+        row = conn.execute("SELECT * FROM team_move_operations WHERE active_slot=1").fetchone()
+        return None if row is None else dict(row)
+    except sqlite3.DatabaseError as exc:
+        raise TeamMoveError("team_move_startup_database_unavailable") from exc
+    finally:
+        conn.close()

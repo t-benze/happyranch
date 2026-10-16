@@ -268,6 +268,8 @@ class OrgState:
     @classmethod
     def load(cls, *, slug: str, root: Path, settings: Settings) -> "OrgState":
         paths = OrgPaths(root=root)
+        from runtime.orchestrator.team_move_startup import before_org_attachment
+        before_org_attachment(root, slug)
         from runtime.identities.schema import preflight
         naming_preflight = preflight(paths.db_path, org_slug=slug)
         db = Database(paths.db_path)

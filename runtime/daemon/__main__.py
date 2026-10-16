@@ -788,6 +788,8 @@ def _build_parser() -> argparse.ArgumentParser:
             "and requires a fresh explicit invocation for retry."
         ),
     )
+    parser.add_argument("--reader-guarded-start", action="store_true",
+        help="Supported launcher reader-capability protocol; incompatible older parsers refuse before startup.")
     return parser
 
 

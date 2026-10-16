@@ -85,7 +85,11 @@ class DaemonState:
 
     @classmethod
     def from_runtime(cls, runtime: RuntimeDir, settings: Settings) -> "DaemonState":
+        from runtime.orchestrator.team_move_startup import require_runtime_reader
+        require_runtime_reader(runtime)
         state = cls(runtime=runtime, settings=settings)
+        from runtime.orchestrator.team_move_startup import diagnostic_move_orgs
+        state.broken_orgs.update(diagnostic_move_orgs(runtime))
         # __post_init__ constructs metrics_store at runtime.root/metrics.db
 
         # THR-207 task-producer wiring: construct the daemon-wide supervisor
@@ -157,6 +161,8 @@ class DaemonState:
                     )
 
         for slug, root in runtime.iter_org_roots():
+            if slug in state.broken_orgs:
+                continue
             try:
                 org = OrgState.load(slug=slug, root=root, settings=settings)
             except (OrgConsistencyError, ValueError) as exc:
@@ -206,6 +212,13 @@ class DaemonState:
             # writers reach their daemon-owned machine coordinator through
             # the already-injected OrgState.
             org._profile_coordinator = state.profile_coordinator
+        # Diagnostic move orgs remain outside runnable orgs. Global profile
+        # writers must not omit their held dependency closure merely because
+        # ordinary attachment correctly refused the partial roster.
+        state.profile_coordinator._move_diagnostic_orgs = {
+            slug: runtime.orgs_dir / slug for slug, reason in state.broken_orgs.items()
+            if "team_move_" in reason
+        }
         state.profile_coordinator.reconcile_startup()
         return state
 
@@ -235,7 +248,16 @@ class DaemonState:
             # OrgConsistencyError propagates — add_org is an explicit
             # action (init / unload+reload) and must fail loudly so the
             # founder sees the reason at the HTTP layer.
-            org = OrgState.load(slug=slug, root=root, settings=self.settings)
+            try:
+                org = OrgState.load(slug=slug, root=root, settings=self.settings)
+            except ValueError as exc:
+                if "team_move_" in str(exc):
+                    self.broken_orgs[slug] = str(exc)
+                    if self.profile_coordinator is not None:
+                        diagnostics = getattr(self.profile_coordinator, "_move_diagnostic_orgs", {})
+                        diagnostics[slug] = root
+                        self.profile_coordinator._move_diagnostic_orgs = diagnostics
+                raise
             # U2A: a dynamically attached org must cross the same coordinated
             # selector-initialization boundary as daemon startup before it is
             # wired or made runnable. Every launch reader is deliberately
@@ -279,6 +301,8 @@ class DaemonState:
                 org.close()
                 raise
             self.broken_orgs.pop(slug, None)
+            if self.profile_coordinator is not None:
+                getattr(self.profile_coordinator, "_move_diagnostic_orgs", {}).pop(slug, None)
             # Wire the thread queue + main loop so run_step workers can
             # cross the async boundary via run_coroutine_threadsafe when
             # posting task-followup invocations.

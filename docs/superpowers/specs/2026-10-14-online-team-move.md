@@ -6,14 +6,14 @@ Founder THR-296 seq135 (2026-10-14T05:17:20Z), “@engineering_manager start the
 
 Slice B implements the private durable store, closed request/state/progress/receipt contract, optional layout validation and independent whole-release schema reference selection. C1 binds the org-owned coordinator to actual task allocation, preparation and final Pause/host commitment; its projection remains diagnostic. The installer is explicit and org-only; production startup never calls it. Its only external caller in B constructs disposable release-reference databases. Existing installed optional layouts are validated without installation or row rewriting. Generic Database/runtime-audit remain extension-free.
 
-There is no public apply/preview/show/recover route or CLI command, background operation, operational completion writer or available-feature claim. C1 task, C2 thread and C3 remaining native producer/writer admission exclusion are active in source whenever a valid durable hold exists. `APPLY_AVAILABLE=False`; `COMPLETE` writes and its unsupported read contract fail closed until D supplies the actual native evidence validator. Source/static acceptance is separate from behavior, activation and live-operation acceptance. A table alone cannot make a prefeature reader recognize a hold.
+There is no public apply/preview/show/recover route or CLI command, background operation, operational completion writer or available-feature claim. C1 task, C2 thread and C3 remaining native producer/writer admission exclusion are active in source whenever a valid durable hold exists. `APPLY_AVAILABLE=False`; General store transitions refuse `COMPLETE`; D supplies its private native readback/receipt leaf. Public apply remains unavailable until E/F acceptance. Source/static acceptance is separate from behavior, activation and live-operation acceptance. A table alone cannot make a prefeature reader recognize a hold.
 
 | Serial unit | Required closure; source status |
 |---|---|
 | C1 | Task allocation/claim and preparation, causal task closure, workflow producers/final-launch, Pause/tracker/host retry ownership: integrated in source; behavioral evidence UNEXECUTED. Installed-layout legacy unowned producers refuse before claim/preparation. |
 | C2 | Thread preparation/final claim/launch, all purposes, durable deferred obligations/attempts, probe admission, census and captured running-turn drain seams: integrated in source; behavior UNEXECUTED. Full operation startup and containment recovery remain D. |
 | C3 | Dream/wake/schedule/job preparation/final launch, held native recovery/redelivery, complete causal job/remote/workspace census and roster/enrollment/profile/skill/name/policy/cleanup writer reservations: integrated in source; behavior UNEXECUTED. No remote launch engine is added. |
-| D | Pure native preview, canonical files/cache, two audited resets, context/skills, batch profile publisher, bounded recovery, early startup and supported runtime/launcher downgrade refusal: NOT INTEGRATED. |
+| D | Private native preview, canonical files/cache, audited resets, context/skills, one profile batch/publication owner, bounded recovery, early diagnostic startup and launcher protocol: integrated in source by D; behavior UNEXECUTED, E/F remain gated. |
 | E | Founder-controlled API/client/CLI and supported runbook: NOT INTEGRATED; depends on D and complete admission closure. |
 | F | Root whole-diff/inventory review, independent scoped QA, guarded merge and supported activation/live handoff: outstanding. |
 
@@ -337,3 +337,75 @@ Off/default dry_run, metadata/process/age/containment safeguards and manual dry-
 remain; no cleanup/activation authority follows. These source changes have no
 behavioral/migration/recovery proof; integration INCLUDING callback SKIPPED24342,
 Python units RETIRED. APPLY_AVAILABLE=false, no COMPLETE writer; D/E/F remain root-owned.
+
+
+## Private D operation source — THR296seq135 / TASK11345
+
+D now supplies the private native operation core in `team_move_operation.py`,
+with pure canonical/context planning, one two-consumer profile interval and one
+operation-owned publication fence. It is not mounted as an apply/recovery API or
+CLI: `APPLY_AVAILABLE=False`. E must derive founder attribution at the actual
+existing admitted human boundary; a provenance model, agent bearer or caller
+success flag grants no authority. F and independent whole-history acceptance
+remain outstanding. Earlier B/C checkpoint statements about absent D describe
+those units only and are superseded by this section's current source disposition.
+
+The planner uses native AgentDef/TeamsRegistry validation and instruction/skill
+selectors, without materializing, creating an ArtifactStore root, building a
+package or emitting an event. It pins the three exact before/after images,
+original file/workspace identities and modes, current names, complete selected
+policy records, profiles/dependencies and generated permission/context/skill
+manifests. It preserves unspecified YAML bytes and omitted Engineering routing;
+only the approved two workers, exact head charter and empty Consultant retirement
+are changed. Unsupported topology/metadata, explicit grants or new selected skill
+packages refuse. Native permission algorithms and Codex enforcement stay intact.
+
+WAITING reserves before capturing only actual running thread attempts. The final
+census joins C1 task/Pause/workflow, C2 thread and C3 producer/writer/remote owners
+with actual host ownership/residue, outside short gate/DB leaves. Native writer
+epoch and DB change observations renew at the decision/release leaf. Hard pending
+work or unknown cleanup remains blocking; no timeout, missing tracker, expired
+lease or later cleanup clears sticky uncertainty. Profile leases precede the
+publisher lock; no gate/DB transaction spans filesystem work or await. One native
+batch handles both unchanged executor consumers, including empty dependencies.
+
+The immutable decision binds one publisher invocation. Native fence discovery
+recovers uncertain saves by that exact invocation, never another journal or an
+old ready pointer. Audited per-agent resets derive founder attribution only from
+the stored admitted service provenance and recognize the exact scoped audit plus
+cleared post-state. A zero-row step invents no audit. Complete candidate validation
+precedes every replacement; each exact owned before/after image is read back,
+file/parent-fsynced and CAS-recorded. Canonical readers capture coherently or defer
+through the short window; the shared TeamsRegistry object is updated in place.
+Original workspaces use native instruction/settings, all-context skill package/link
+and integrity owners without cloning, refresh, memory recreation or deletion.
+Partial/omitted native effects hold repair; no unrelated shared-store rollback.
+
+Private COMPLETE requires actual canonical/context/reset/selection/profile readback,
+settled causal/process/writer facts, and the SAME journal `cache_installed` with
+matching ready pointer/file/cache/digest and current inputs. The DB-only leaf saves
+the original receipt and releases atomically. General store transitions still
+refuse caller-controlled COMPLETE. Terminal replay returns saved state without
+reset/materialization/publication. Explicit recovery requires the same target,
+CAS and native original-owner finish or actual process-identity loss; no TTL or
+supplied quiescence Boolean authorizes takeover. Held obligations redeliver through
+existing deduplicating producers; armed schedules retain normal missed-slot rules.
+
+Schema-owner discovery precedes Database compatibility writers, membership,
+naming/cold publication and producer recovery. Without complete native proof,
+affected orgs stay diagnostic-only; unrelated orgs may attach. A restricted recovery
+handle validates the existing schema and exact images without bootstrap/migrations,
+normal attachment or producer admission. Diagnostic orgs also fence global profile
+reconciliation/writers so their dependencies cannot disappear from the closure.
+Runtime registration/switch refuses to detach a hold. Updated shell and native Mac
+launchers pass `--reader-guarded-start`: supported older argparse readers reject
+this protocol before startup. Updated launchers require a matching reader; direct
+old interpreters, already-running old daemons and obsolete launchers remain outside
+this cooperative guard. Source rollback cannot undo a durable decision. No actual
+activation/restart/downgrade experiment is authorized or performed.
+
+Acceptance is SOURCE/POLICY/STATIC ONLY on the SAME thirteen four-answer
+observations. Every absent behavior/migration/recovery/native callback/permission/
+process-loss/launcher/live-move result remains UNEXECUTED; general integration
+INCLUDING callback SKIPPED THR243seq42; Python units RETIRED. No new cases,
+parameters, fixtures, replacement campaign or execution allocation follows.

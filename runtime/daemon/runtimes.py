@@ -48,6 +48,10 @@ def register(path: Path) -> None:
     resolved = Path(path).resolve()
     RuntimeDir.load(resolved)  # raises if marker missing
     state = load()
+    from runtime.orchestrator.team_move_startup import require_runtime_reader, refuse_runtime_detach
+    if state.active is not None and state.active != resolved:
+        refuse_runtime_detach(RuntimeDir.load(state.active))
+    require_runtime_reader(RuntimeDir.load(resolved))
     if resolved not in state.registered:
         state.registered.append(resolved)
     state.active = resolved
@@ -61,6 +65,10 @@ def activate(path: Path) -> None:
     """
     resolved = Path(path).resolve()
     state = load()
+    from runtime.orchestrator.team_move_startup import require_runtime_reader, refuse_runtime_detach
+    if state.active is not None and state.active != resolved:
+        refuse_runtime_detach(RuntimeDir.load(state.active))
+    require_runtime_reader(RuntimeDir.load(resolved))
     if resolved not in state.registered:
         raise ValueError(f"{resolved} is not in the registry; call register() first")
     state.active = resolved

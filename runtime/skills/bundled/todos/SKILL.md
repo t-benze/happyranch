@@ -3,6 +3,27 @@ name: todos
 description: Use when you need to create a scheduled Todo for yourself from explicit founder or operator instruction. Never infer or proactively schedule future work. Scheduling is self-only and available to every valid in-org agent.
 ---
 
+## D private operation and startup holds (THR296seq135)
+
+D supplies private canonical/context/reset/profile/publication/recovery source.
+Public apply/recover and CLI remain unavailable until E/F independent acceptance;
+no skill or agent may invoke the private owner or use ambient bearer credentials
+to self-admit a move. Manage-agent still cannot transfer teams. New startup
+schema-owner discovery precedes compatibility writers and partial membership;
+unknown/unresolved state keeps that org diagnostic-only and its durable holds.
+Only admitted bounded same-operation recovery can reconcile exact owned images
+and native owner evidence; no timeout, missing tracker or source rollback releases
+it. Updated launchers require the guarded reader protocol; old running daemons
+and arbitrary direct old interpreters remain outside that protection. Source
+and static checks do not prove behavior. No activation/restart/live move, new
+tests/campaign, callback fabrication or cleanup authority follows. Earlier C3
+checkpoint text below records that slice only; current D disposition is in
+`docs/superpowers/specs/2026-10-14-online-team-move.md`. SAME13 observations stay;
+behavior/recovery UNEXECUTED, integration INCLUDING callback SKIPPED24342,
+Python units RETIRED. Native permission/execution enforcement is unchanged.
+
+
+
 ## Current names and permanent automation IDs
 
 Fresh prompts may show current Name · ID for this turn. Use the permanent ID

@@ -382,6 +382,41 @@ class Database(
     AuthorityV2AttemptsMixin,
     AuthorityV2ContinuationMixin,
 ):
+    @classmethod
+    def _open_team_move_recovery(cls, db_path: Path, *, org_slug: str):
+        """Restricted D owner: open an EXISTING validated org, no migrations.
+
+        Never invokes __init__, schema bootstrap, compatibility writers, WAL
+        selection, legacy repair or enrollment migration. Only the private move
+        recovery context uses this handle; it is not attached to any producer.
+        """
+        from urllib.parse import quote
+        from runtime.infrastructure.team_move_store import inspect_team_move_database, TeamMoveError
+        row = inspect_team_move_database(db_path, org_slug=org_slug)
+        if row is None:
+            raise TeamMoveError("team_move_recovery_operation_required")
+        owner = cls.__new__(cls)
+        owner.db_path = db_path
+        owner._lock = threading.RLock()
+        owner._lock_warn_threshold_seconds = 1.0
+        owner._v2_live_attempt_owners = {}
+        owner._v2_refusal_failed_owners = {}
+        owner._v2_permission_surface_reader = None
+        owner._v2_process_boot_id = None
+        owner._conn = sqlite3.connect("file:" + quote(str(db_path), safe="/") + "?mode=rw", uri=True, check_same_thread=False)
+        try:
+            owner._conn.row_factory = sqlite3.Row
+            owner._conn.execute("PRAGMA foreign_keys=ON")
+            from runtime.infrastructure.workflow_schema import validate_workflow_schema
+            from runtime.infrastructure.team_move_store import validate_team_move_schema
+            with owner._lock:
+                validate_workflow_schema(owner._conn, expected_org_slug=org_slug)
+                validate_team_move_schema(owner._conn, org_slug=org_slug)
+            return owner
+        except BaseException:
+            owner._conn.close()
+            raise
+
     def __init__(self, db_path: Path) -> None:
         self.db_path = db_path
         db_path.parent.mkdir(parents=True, exist_ok=True)

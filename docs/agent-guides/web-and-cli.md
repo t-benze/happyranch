@@ -2879,3 +2879,20 @@ breakpoint. The transcript has bounded scrolling; all properties and participant
 controls remain reachable in the detail scroll area. At desktop widths the
 properties retain their fixed rail. Resize and locale changes preserve the mounted
 composer, draft, attachments and selection; neither action submits a message.
+
+## Private team-move D source and launcher protocol
+
+D supplies internal preview/operation/recovery owners; no public team-move
+apply/recover route or CLI is available. E/F retain that integration and acceptance.
+Updated shell and Mac bundled/dev launchers pass `--reader-guarded-start`; older
+supported argparse readers reject that protocol before startup. Runtime switch
+and registration preserve unresolved holds instead of detaching their org. Early
+schema-owner discovery keeps an unresolved/unknown org diagnostic-only before
+compatibility writers or producer recovery; unrelated orgs can attach. Direct old
+interpreters, obsolete launchers and already-running old daemons remain outside
+this cooperative guard. Source rollback cannot undo durable decisions. No restart,
+activation, preview against the live roster or live move was executed. SAME13
+behavior/migration/recovery/launcher outcomes remain UNEXECUTED; integration
+INCLUDING callback SKIPPED24342 and Python units RETIRED. See the current D section
+of the approved online-team-move spec; source/static acceptance is not behavioral
+acceptance or a feature-completion claim.

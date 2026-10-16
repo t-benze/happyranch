@@ -8,6 +8,8 @@ from pathlib import Path
 
 import yaml
 
+from runtime.orchestrator.canonical_roster import canonical_roster
+
 
 @dataclass(frozen=True)
 class TeamManager:
@@ -58,14 +60,32 @@ class TeamsRegistry:
     def load(cls, root: Path) -> "TeamsRegistry":
         """Load from <root>/org/teams.yaml. ``root`` is an org root (or, in
         legacy single-org runtimes, the runtime root)."""
-        path = root / "org" / "teams.yaml"
-        if not path.exists():
-            return cls({}, root=root)
-        raw = yaml.safe_load(path.read_text()) or {}
+        with canonical_roster(root):
+            path = root / "org" / "teams.yaml"
+            if not path.exists():
+                return cls({}, root=root)
+            return cls.from_bytes(path.read_bytes(), root=root)
+
+    @classmethod
+    def from_bytes(cls, contents: bytes, *, root: Path | None = None) -> "TeamsRegistry":
+        """Pure parser shared by ordinary loading and complete move candidates."""
+        raw = yaml.safe_load(contents.decode("utf-8")) or {}
         if not isinstance(raw, dict):
             raise ValueError("teams.yaml must be a mapping")
         layout = raw.get("teams") or {}
         return cls._from_layout(layout, root, metadata={key: value for key, value in raw.items() if key != "teams"})
+
+    def adopt_canonical(self, candidate: "TeamsRegistry") -> None:
+        """Publish a validated complete registry without replacing shared owners.
+
+        The replacement owner holds canonical_roster throughout files and cache;
+        supported coherent captures cannot observe this intermediate assignment.
+        """
+        if self._root != candidate._root:
+            raise ValueError("team registry root changed")
+        with canonical_roster(self._root):
+            self._teams = dict(candidate._teams)
+            self._metadata = dict(candidate._metadata)
 
     @classmethod
     def _from_layout(cls, layout: dict[str, dict[str, object]], root: Path | None = None, *, metadata: dict | None = None) -> "TeamsRegistry":

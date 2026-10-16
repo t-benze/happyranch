@@ -3,6 +3,27 @@ name: workspace-cleanup
 description: Shared daily/manual own-workspace cleanup contract — bounded, Git-aware, non-force reclamation of registered non-primary task worktrees and their dependency caches, with an exact same-user process observation and authoritative terminal/history/peer joins.
 ---
 
+## D private operation and startup holds (THR296seq135)
+
+D supplies private canonical/context/reset/profile/publication/recovery source.
+Public apply/recover and CLI remain unavailable until E/F independent acceptance;
+no skill or agent may invoke the private owner or use ambient bearer credentials
+to self-admit a move. Manage-agent still cannot transfer teams. New startup
+schema-owner discovery precedes compatibility writers and partial membership;
+unknown/unresolved state keeps that org diagnostic-only and its durable holds.
+Only admitted bounded same-operation recovery can reconcile exact owned images
+and native owner evidence; no timeout, missing tracker or source rollback releases
+it. Updated launchers require the guarded reader protocol; old running daemons
+and arbitrary direct old interpreters remain outside that protection. Source
+and static checks do not prove behavior. No activation/restart/live move, new
+tests/campaign, callback fabrication or cleanup authority follows. Earlier C3
+checkpoint text below records that slice only; current D disposition is in
+`docs/superpowers/specs/2026-10-14-online-team-move.md`. SAME13 observations stay;
+behavior/recovery UNEXECUTED, integration INCLUDING callback SKIPPED24342,
+Python units RETIRED. Native permission/execution enforcement is unchanged.
+
+
+
 # workspace-cleanup
 
 Native C3 preparation failure or ordinary process return never proves file,

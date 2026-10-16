@@ -648,7 +648,7 @@ class SessionsMixin:
                 )
             self._conn.commit()
             return rows
-        except Exception:
+        except BaseException:
             self._conn.rollback()
             raise
 

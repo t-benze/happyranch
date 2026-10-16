@@ -27,6 +27,9 @@ import uuid
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import ExitStack, asynccontextmanager, contextmanager
 from dataclasses import asdict, dataclass
+from contextvars import ContextVar
+
+_move_batch_owner = ContextVar("profile_move_batch_owner", default=None)
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -420,6 +423,15 @@ class ProfileCoordinator:
         return tuple(members)
 
     def _assert_no_active_operation(self, profile_name: str) -> None:
+        diagnostics = getattr(self, "_move_diagnostic_orgs", {})
+        admitted = _move_batch_owner.get()
+        for slug, root in tuple(diagnostics.items()):
+            from runtime.infrastructure.team_move_store import inspect_team_move_database
+            row = inspect_team_move_database(OrgPaths(root).db_path, org_slug=slug)
+            if row is None:
+                diagnostics.pop(slug, None)  # Validated durable release, never TTL.
+            elif admitted is None or admitted != (slug, row["operation_id"]):
+                raise ProfileCoordinatorError("profile_team_move_diagnostic_org_held")
         for org in self.orgs.values():
             with org.db._lock:
                 row = org.db._conn.execute(
@@ -1443,6 +1455,9 @@ class ProfileCoordinator:
 
     def reconcile_startup(self) -> None:
         """Recover interrupted work, then publish current exact dependencies."""
+        if getattr(self, "_move_diagnostic_orgs", None):
+            logger.warning("profile startup reconciliation deferred: diagnostic team-move org remains held")
+            return
         for invocation, names in sorted(self._discover_operation_groups().items()):
             self._recover_group(invocation, sorted(names))
         changed = self.synchronize_all_dependencies(publish=False)
@@ -1455,3 +1470,68 @@ class ProfileCoordinator:
                 # either completed it or intentionally left the org fenced.
                 continue
             self._publish_dependency_change(org)
+
+    @asynccontextmanager
+    async def consumer_batch_writer(self, *, org, operation_id):
+        """ONE D-owned interval for the exact two unchanged executor consumers.
+
+        The operation row itself is the durable native writer: emitting a C3
+        writer whose failed tail becomes immutable unknown would prevent the
+        forward-recovery operation from reconciling its OWN known partial work.
+        No other native writer's history is adopted/cleared. The ordinary C3 hold
+        still refuses every conflicting writer. Empty dependency sets are real.
+        """
+        from runtime.infrastructure.team_move_store import MoveRequest, _decode
+        move = org.db._team_move_coordinator
+        row = move.store.read()
+        if row is None or row["operation_id"] != operation_id:
+            raise ProfileCoordinatorError("profile_move_owner_required")
+        request = _decode(MoveRequest, row["request_bytes"])
+        import base64
+        from runtime.orchestrator.agent_def import parse_agent_text
+        definitions = tuple(parse_agent_text(base64.b64decode(image.before_base64).decode().replace("\r\n", "\n"),
+            expected_name=agent) for agent, image in zip(request.affected_agents, request.files[:2]))
+        names = tuple(sorted({name for definition in definitions if (name := _dependency_profile(definition.executor)) is not None}))
+        org.workflow_authority._profile_coordinator = self
+        async with org.workflow_authority._async_writer_lock:
+            interval = _MoveBatchInterval(self, org, operation_id, definitions, names)
+            yield interval
+            # Deliberately no automatic compensation or publication on exit.
+            # D owns the immutable decision and exact SAME publication journal.
+
+
+class _MoveBatchInterval:
+    def __init__(self, profiles, org, operation_id, definitions, names):
+        self.profiles, self.org, self.operation_id = profiles, org, operation_id
+        self.definitions, self.names = definitions, names
+
+    @contextmanager
+    def segment(self):
+        """Profile -> publisher ordering, outside move gate/DB leaves."""
+        row = self.org.db._team_move_coordinator.store.read()
+        if row is None or row["operation_id"] != self.operation_id:
+            raise ProfileCoordinatorError("profile_move_owner_required")
+        token = _move_batch_owner.set((self.org.slug, self.operation_id))
+        try:
+            with self.profiles.dependency_writer(self.names):
+                with self.org.workflow_authority._publisher_lock:
+                    row = self.org.db._team_move_coordinator.store.read()
+                    if row is None or row["operation_id"] != self.operation_id:
+                        raise ProfileCoordinatorError("profile_move_owner_required")
+                    current = tuple(prompt_loader.load_agent(OrgPaths(self.org.root), d.name) for d in self.definitions)
+                    if any(actual is None or (actual.executor, actual.model, actual.reasoning_effort, actual.allow_rules, actual.repos)
+                            != (before.executor, before.model, before.reasoning_effort, before.allow_rules, before.repos)
+                            for before, actual in zip(self.definitions, current)):
+                        raise ProfileCoordinatorError("profile_move_consumer_changed")
+                    # Native requirements check ALL consumers, including empty rows.
+                    projection = self.org.workflow_authority._profile_projection()
+                    from runtime.workflows.authority import _agent_projection
+                    definitions = [_agent_projection(d, status="active") for d in prompt_loader.list_agents(OrgPaths(self.org.root))]
+                    self.profiles.validate_requirements(definitions, projection)
+                    # Complete candidate membership is validated by the canonical
+                    # owner before repair; a partial on-disk roster is not published.
+                    if not self.profiles._closure_coherent(self.org):
+                        raise ProfileCoordinatorError("profile_dependency_incoherent")
+                    yield
+        finally:
+            _move_batch_owner.reset(token)
