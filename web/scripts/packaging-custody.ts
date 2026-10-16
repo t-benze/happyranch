@@ -403,7 +403,7 @@ export class PackagingCustody {
   private failOriginal(): void {
     if (this.originalFailed) return;
     this.originalFailed = true;
-    if (this.compiles.size && !this.completion) {
+    if (!this.completion) {
       // Diagnostic only; a secondary receipt failure never replaces the tool error.
       try { this.request('fail'); } catch (error) { this.sticky ??= error; }
     }
