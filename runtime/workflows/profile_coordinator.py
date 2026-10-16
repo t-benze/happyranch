@@ -281,7 +281,7 @@ class ProfileCoordinator:
     def dependency_writer(self, profile_names: Sequence[str]) -> Iterator[None]:
         """Serialize a supported consumer rebind before its org writer gate."""
         with self._profile_leases(profile_names, wait=True) as names:
-            for name in names:
+            for name in names or (None,):
                 self._assert_no_active_operation(name)
             yield
 
@@ -422,28 +422,34 @@ class ProfileCoordinator:
                 members.append(slug)
         return tuple(members)
 
-    def _assert_no_active_operation(self, profile_name: str, *, move_org=None) -> None:
+    def _assert_no_active_operation(
+        self, profile_name: str | None, *, move_org=None, attaching_org=None,
+    ) -> None:
+        """Check native DB owners only; diagnostic discovery owns no leases.
+
+        Ordinary writers retain diagnostic holds until successful native org
+        attachment. Its already-open DB is revalidated here before mutation;
+        only add_org removes the diagnostic after joining the shared org map.
+        A None profile still checks diagnostics for EMPTY dependency sets.
+        """
         diagnostics = getattr(self, "_move_diagnostic_orgs", {})
         admitted = _move_batch_owner.get()
         for slug, root in tuple(diagnostics.items()):
-            from runtime.infrastructure.team_move_store import inspect_team_move_database
-            if move_org is None:
-                row = inspect_team_move_database(OrgPaths(root).db_path, org_slug=slug, require_existing=True)
-            else:
-                # D's short segment cannot perform diagnostic filesystem/DB
-                # acquisition while holding profile leases. Only its actual
-                # already-open native org owner can be inspected here. Other
-                # diagnostic roots remain held for their ordinary owner.
-                if slug != move_org.slug or root != move_org.root:
-                    raise ProfileCoordinatorError("profile_team_move_diagnostic_org_held")
-                with move_org.db._lock:
-                    row = move_org.db._team_move_coordinator.active_uncommitted()
+            owner = move_org if move_org is not None else attaching_org
+            if owner is None or slug != owner.slug or root != owner.root:
+                raise ProfileCoordinatorError("profile_team_move_diagnostic_org_held")
+            # Discovery/strict path resolution/open/close already belong to the
+            # outside-lease startup/attachment owner. Never reacquire a DB or
+            # erase a diagnostic based on absence observed by a profile writer.
+            with owner.db._lock:
+                row = owner.db._team_move_coordinator.active_uncommitted()
+            if move_org is not None:
                 if row is None or admitted != (slug, row["operation_id"]):
                     raise ProfileCoordinatorError("profile_team_move_diagnostic_org_held")
-            if row is None:
-                diagnostics.pop(slug, None)  # Validated durable release, never TTL.
-            elif admitted is None or admitted != (slug, row["operation_id"]):
+            elif row is not None:
                 raise ProfileCoordinatorError("profile_team_move_diagnostic_org_held")
+        if profile_name is None:
+            return
         for org in self.orgs.values():
             with org.db._lock:
                 row = org.db._conn.execute(
@@ -849,11 +855,11 @@ class ProfileCoordinator:
         if operation_kind not in {"register", "rebind", "remove"}:
             raise ProfileCoordinatorError("profile_operation_kind_invalid")
         with self._profile_leases(profile_names, wait=False) as names:
+            for name in names or (None,):
+                self._assert_no_active_operation(name)
             if not names:
                 yield
                 return
-            for name in names:
-                self._assert_no_active_operation(name)
             with self._operation_with_leases_held(
                 names,
                 operation_kind=operation_kind,
@@ -881,11 +887,11 @@ class ProfileCoordinator:
         if operation_kind not in {"register", "rebind", "remove"}:
             raise ProfileCoordinatorError("profile_operation_kind_invalid")
         with self._profile_leases(profile_names, wait=True) as names:
+            for name in names or (None,):
+                self._assert_no_active_operation(name)
             if not names:
                 yield True
                 return
-            for name in names:
-                self._assert_no_active_operation(name)
             if terminal_check():
                 yield False
                 return
@@ -1124,7 +1130,7 @@ class ProfileCoordinator:
     def _synchronize_captured(self, captured, *, publish):
         profile_names = sorted({name for _, _, capture in captured for name in capture.profile_names})
         with self._profile_leases(profile_names, wait=True) as names:
-            for name in names:
+            for name in names or (None,):
                 self._assert_no_active_operation(name)
             changed = set()
             for slug, org, capture in captured:
@@ -1163,8 +1169,8 @@ class ProfileCoordinator:
         capture = self._capture_org_dependencies(org, attachment=True)
         desired, revision, snapshot = capture.desired, capture.revision, capture.snapshot
         with self._profile_leases(capture.profile_names, wait=True) as names:
-            for name in names:
-                self._assert_no_active_operation(name)
+            for name in names or (None,):
+                self._assert_no_active_operation(name, attaching_org=org)
             with org.workflow_authority._publisher_lock:
                 owner = f"profile-dependency-validation:{uuid.uuid4().hex}"
                 org.workflow_authority._acquire_lease(owner)
@@ -1566,7 +1572,7 @@ class _MoveBatchInterval:
         token = _move_batch_owner.set((self.org.slug, self.operation_id))
         try:
             with self.profiles._profile_leases(self.names, wait=True):
-                for name in self.names:
+                for name in self.names or (None,):
                     self.profiles._assert_no_active_operation(name, move_org=self.org)
                 with self.org.workflow_authority._publisher_lock:
                     self.revalidate(capture)

@@ -18,6 +18,15 @@ run outside durable profile/publication mutation leases, with revision/epoch/CAS
 revalidation before mutation and at final release. This grants no skill execution,
 cleanup, activation, live operation or behavioral-proof authority.
 
+Global/rebind/claim/retry/synchronization profile writers retain diagnostic roots
+and refuse without diagnostic filesystem/DB acquisition while leased, even with
+EMPTY dependencies. Native startup/attachment performs positive inspection
+outside leases. Matching attachment revalidates its actual already-open DB owner
+in the short segment; only successful attachment clears its diagnostic. Other
+roots, failed attachment, current holds and malformed history stay held. D's
+own-operation/native-identity exception also checks EMPTY dependencies. Public
+recovery/reattachment remains E/F-owned and unavailable; no new command is granted.
+
 
 D supplies private canonical/context/reset/profile/publication/recovery source.
 Public apply/recover and CLI remain unavailable until E/F independent acceptance;

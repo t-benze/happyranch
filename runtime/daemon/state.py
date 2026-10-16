@@ -307,6 +307,10 @@ class DaemonState:
                 raise
             self.broken_orgs.pop(slug, None)
             if self.profile_coordinator is not None:
+                # The outside-lease load positively inspected this existing DB;
+                # dynamic attachment revalidated its actual native move owner
+                # under profile leases before synchronization/map insertion.
+                # Failed attachment never reaches this diagnostic clearing.
                 getattr(self.profile_coordinator, "_move_diagnostic_orgs", {}).pop(slug, None)
             # Wire the thread queue + main loop so run_step workers can
             # cross the async boundary via run_coroutine_threadsafe when

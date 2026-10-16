@@ -107,6 +107,21 @@ incompatible readers and source-runtime detach fail closed.
 Restricted recovery preserves the original error if handle close also fails;
 standalone close failures retain native classification and never prove release.
 
+The shared profile checker performs no diagnostic path/DB acquisition under a
+profile lease. Ordinary global, rebind, claim/retry and synchronization writers
+refuse `profile_team_move_diagnostic_org_held` without clearing the retained root;
+EMPTY dependency sets still check diagnostics before yielding or mutating.
+Positive reinspection belongs to native startup/attachment outside leases.
+`add_org` requires the existing DB for a previously unavailable org and loads it
+through strict schema/history and canonical readers. Its matching attachment
+segment revalidates the actual already-open DB owner under the profile lease;
+a current hold or invalid history refuses. Only successful synchronization and
+shared-map insertion permit the existing post-attachment diagnostic removal.
+Failed attachment and other diagnostic roots stay held. D's matching own-operation
+exception likewise uses its opened native owner plus actual ContextVar identity,
+including EMPTY dependencies; neither exception performs filesystem discovery.
+Public recovery/reattachment service delivery remains E/F-owned and unavailable.
+
 The one batch interval (including empty dependencies) captures AgentDefs, complete
 profile/dependency closure, candidate, current inputs and census outside durable
 mutation leases. Short segments revalidate actual operation revision, native
