@@ -21,7 +21,7 @@ class RuntimePath(BaseModel):
 def _swap(state: DaemonState, runtime: RuntimeDir, *, move_diagnostics=None) -> None:
     """Replace the daemon's active runtime atomically."""
     from runtime.orchestrator.team_move_startup import require_runtime_reader, refuse_runtime_detach
-    refuse_runtime_detach(state.runtime)
+    refuse_runtime_detach(state.runtime, diagnostics=state.broken_orgs)
     diagnostics = dict(move_diagnostics or {})
     diagnostics.update(require_runtime_reader(runtime))
     new_state = DaemonState.from_runtime(runtime, state.settings, move_diagnostics=diagnostics)
@@ -60,7 +60,7 @@ async def register_runtime(body: RuntimePath, request: Request) -> dict:
 
     daemon: DaemonState = request.app.state.daemon
     from runtime.orchestrator.team_move_startup import refuse_runtime_detach
-    refuse_runtime_detach(daemon.runtime)
+    refuse_runtime_detach(daemon.runtime, diagnostics=daemon.broken_orgs)
     path = Path(body.path).expanduser()
     if not path.exists():
         path.mkdir(parents=True, exist_ok=True)
@@ -103,7 +103,7 @@ async def use_runtime(body: RuntimePath, request: Request) -> dict:
 
     daemon: DaemonState = request.app.state.daemon
     from runtime.orchestrator.team_move_startup import refuse_runtime_detach, require_runtime_reader
-    refuse_runtime_detach(daemon.runtime)
+    refuse_runtime_detach(daemon.runtime, diagnostics=daemon.broken_orgs)
     path = Path(body.path).expanduser().resolve()
     runtime = RuntimeDir.load(path)
     diagnostics = require_runtime_reader(runtime)

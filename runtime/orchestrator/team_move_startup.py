@@ -55,9 +55,19 @@ def require_runtime_reader(runtime, capabilities=READER_CAPABILITIES):
     return diagnostics
 
 
-def refuse_runtime_detach(runtime):
+def refuse_runtime_detach(runtime, *, diagnostics=None):
     """Switch/activation cannot orphan a durable hold in an inactive runtime."""
-    if runtime is None or not runtime.orgs_dir.exists():
+    if runtime is None:
+        return
+    # A previously unavailable org cannot disappear from the detach census.
+    # Require a positive current observation even if enumeration now omits it.
+    for slug, reason in (diagnostics or {}).items():
+        if "team_move_" not in reason:
+            continue
+        directory, row = inspect_team_move_org(runtime.orgs_dir / slug, org_slug=slug, require_database=True)
+        if not directory or row is not None:
+            raise TeamMoveError("team_move_runtime_detach_held")
+    if not runtime.orgs_dir.exists():
         return
     for entry in sorted(runtime.orgs_dir.iterdir()):
         if entry.name in {"_pending", "_archive"}:
