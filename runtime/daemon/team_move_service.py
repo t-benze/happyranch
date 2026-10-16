@@ -19,7 +19,7 @@ from runtime.orchestrator._paths import OrgPaths
 from runtime.orchestrator import team_move
 from runtime.orchestrator.team_move_operation import TeamMoveOperation
 from runtime.orchestrator.team_move_public import (
-    blocker_view, operation_view, preview_view, public_request, selection_ids,
+    blocker_view, error_view, operation_view, preview_view, public_request, selection_ids,
 )
 
 
@@ -91,7 +91,7 @@ class TeamMoveService:
         return {"version": team_move.CAPABILITY_VERSION, "apply_available": team_move.APPLY_AVAILABLE and not reasons,
             "source_apply_enabled": team_move.APPLY_AVAILABLE, "incomplete_reasons": reasons,
             "schema_installed": installed, "org_attached": slug in self.state.orgs,
-            "active_operation": operation_view(row, running=self.running(slug, row["operation_key"])) if row else None,
+            "active_operation": self.show(slug, operation_key=row["operation_key"]) if row else None,
             "required_reader": "online-team-move@2", "human_boundary": "shared_bearer_no_human_presence_proof"}
 
     def preview(self, slug, selection):
@@ -112,7 +112,40 @@ class TeamMoveService:
         if row is None:
             raise TeamMoveError("team_move_unknown_operation")
         return operation_view(row, running=self.running(slug, row["operation_key"]),
-            error_code=self.errors.get((slug, row["operation_key"])))
+            error=self.errors.get((slug, row["operation_key"])), current_observation=self.observe(slug, row))
+
+    def observe(self, slug, row):
+        """Read native diagnostics without attachment, preview or recovery writes.
+
+        A missing process-local tracker remains missing, so the native census
+        reports unknown ownership. Saved identities/diagnostics remain separate.
+        """
+        restricted = None
+        result = {"source": "current_native_read", "state_revision": row["state_revision"],
+            "census_available": False, "publication_available": False, "blockers": None,
+            "owner_settlement": "not_observed", "unavailable_code": None}
+        try:
+            org = self.state.orgs.get(slug)
+            if org is None:
+                from runtime.orchestrator.team_move_recovery import open_recovery_context
+                restricted, operation = open_recovery_context(root=self.diagnostic_root(slug), slug=slug,
+                    settings=self.state.settings, profiles=self.state.profile_coordinator,
+                    host_supervisor=self.state.host_supervisor, sessions=self.diagnostic_sessions.get(slug),
+                    diagnostic_only=True, operation_key=row["operation_key"])
+            else:
+                operation = TeamMoveOperation(org, self.state.profile_coordinator)
+            result = operation.observe_recovery(row)
+        except Exception as exc:
+            result["unavailable_code"] = TeamMoveOperation._diagnostic(exc).code
+        finally:
+            if restricted is not None:
+                try:
+                    restricted.close()
+                except Exception as exc:
+                    # Keep useful observations and the primary refusal. A close
+                    # failure is another diagnostic, never successful absence.
+                    result["close_error"] = TeamMoveOperation._diagnostic(exc).code
+        return result
 
     def require_enabled(self):
         if self.closing:
@@ -215,9 +248,9 @@ class TeamMoveService:
         if not task.cancelled():
             error = task.exception()
             if error is not None:
-                self.errors[key] = TeamMoveOperation._diagnostic(error).code
+                self.errors[key] = error_view(error)
         else:
-            self.errors[key] = "team_move_owner_interrupted"
+            self.errors.setdefault(key, error_view(TeamMoveError("team_move_owner_interrupted")))
         if self.tasks.get(key) is task:
             self.tasks.pop(key, None)
 
@@ -231,8 +264,13 @@ class TeamMoveService:
                 org = self.state.orgs.get(slug)
                 if org is None:
                     if row["active_slot"] is None:
-                        attached = await self.state.add_org(slug)
-                        await TeamMoveOperation(attached, self.state.profile_coordinator).redeliver()
+                        try:
+                            attached = await self.state.add_org(slug)
+                            await TeamMoveOperation(attached, self.state.profile_coordinator).redeliver()
+                        except Exception as exc:
+                            error = TeamMoveError("team_move_reattachment_or_redelivery_failed")
+                            error.team_move_secondary_codes = (TeamMoveOperation._diagnostic(exc).code,)
+                            raise error from exc
                         return
                     from runtime.daemon.sessions import SessionTracker
                     from runtime.orchestrator.team_move_recovery import open_recovery_context
@@ -257,13 +295,27 @@ class TeamMoveService:
                     # cannot deliver. Never treat that exception as rollback.
                 if restricted is not None:
                     result = operation.store.read(operation_key=row["operation_key"])
-                    restricted.close()
-                    restricted = None
+                    closing = restricted
+                    restricted = None  # One close attempt; do not replace its failure.
+                    closing.close()
                     if result["active_slot"] is None:
-                        attached = await self.state.add_org(slug)
-                        await TeamMoveOperation(attached, self.state.profile_coordinator).redeliver()
+                        try:
+                            attached = await self.state.add_org(slug)
+                            await TeamMoveOperation(attached, self.state.profile_coordinator).redeliver()
+                        except Exception as exc:
+                            error = TeamMoveError("team_move_reattachment_or_redelivery_failed")
+                            error.team_move_secondary_codes = (TeamMoveOperation._diagnostic(exc).code,)
+                            raise error from exc
         except BaseException as exc:
             primary = exc
+            try:
+                with self.store(slug) as store:
+                    saved = store.read(operation_key=row["operation_key"])
+                if saved is not None:
+                    exc.team_move_observation = self.observe(slug, saved)
+            except Exception as observation_error:
+                exc.team_move_secondary_codes = (*getattr(exc, "team_move_secondary_codes", ()),
+                    TeamMoveOperation._diagnostic(observation_error).code)
             raise
         finally:
             if restricted is not None:
@@ -272,7 +324,13 @@ class TeamMoveService:
                 except BaseException as exc:
                     if primary is None:
                         raise
+                    primary.team_move_secondary_codes = (*getattr(primary, "team_move_secondary_codes", ()),
+                        TeamMoveOperation._diagnostic(exc).code)
                     primary.add_note("restricted team move context close failed; keep diagnostic org held")
+            if primary is not None:
+                # Task.cancelled() hides its exception from the done callback;
+                # retain its safe primary/secondary facts before reaping.
+                self.errors[(slug, row["operation_key"])] = error_view(primary)
 
     def assert_no_owner(self, slug=None):
         if any(slug is None or s == slug for s, _ in self.tasks):

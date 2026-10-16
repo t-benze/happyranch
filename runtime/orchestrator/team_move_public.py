@@ -13,7 +13,7 @@ from typing import Annotated, Literal
 from pydantic import Field, model_validator
 
 from runtime.infrastructure.team_move_store import (
-    Closed, Digest, ExpectedInputs, Identifier, MoveRequest, Positive,
+    Closed, Digest, ExpectedInputs, ForwardDecision, Identifier, MoveRequest, Positive, Progress,
     TeamMoveError, _bytes, _decode, _digest,
 )
 from runtime.orchestrator.team_move_canonical import AGENTS, NEW_CHARTER
@@ -97,8 +97,8 @@ def blocker_view(blocker):
     fact = blocker.get("fact", {})
     return {"kind": blocker["kind"], "owner_id": str(blocker["owner_id"]),
         "agent_id": blocker.get("agent_id", fact.get("agent_id")),
-        "thread_id": fact.get("thread_id"),
-        "next_action": blocker.get("remedy", "Resolve the actual native owner, then preview again")}
+        "thread_id": blocker.get("thread_id", fact.get("thread_id")), "journal_id": blocker.get("journal_id"),
+        "next_action": blocker.get("remedy", blocker.get("next_action", "Resolve the actual native owner; retain hold and show the SAME operation"))}
 
 
 def preview_view(operation, preview, capability):
@@ -137,19 +137,51 @@ def preview_view(operation, preview, capability):
         "missing_evidence": "Online behavior, recovery, races, cleanup, launcher and live operation UNEXECUTED"}
 
 
-def operation_view(row, *, running=False, error_code=None):
-    """Saved state and original receipt only; never raw canonical/provenance blobs."""
+def saved_owners(row):
+    """Strict durable identities; absence stays unknown, never a live claim."""
+    decision = _decode(ForwardDecision, row["decision_bytes"]) if row["decision_bytes"] is not None else None
+    progress = _decode(Progress, row["progress_bytes"])
+    latest = progress.recovery[-1] if progress.recovery else None
+    publication = progress.publication
+    return {"original_recovery_owner_id": decision.writer_invocation_id if decision else None,
+        "saved_current_recovery_owner_id": latest.owner_id if latest else decision.writer_invocation_id if decision else None,
+        "previous_recovery_owner_id": latest.previous_owner_id if latest else None,
+        "original_publication": None if publication is None else {
+            "journal_id": publication.journal_id, "writer_invocation_id": publication.writer_invocation_id,
+            "generation": publication.generation}, "current_publication": None}
+
+
+def error_view(error):
+    """Safe native refusal facts; exception prose/proof/credentials stay private."""
+    from runtime.orchestrator.team_move_operation import TeamMoveOperation
+    diagnostic = TeamMoveOperation._diagnostic(error)
+    remedy = ("Resolve the saved previous owner through genuine owner-finished/process identity evidence; retain hold, no TTL takeover"
+        if diagnostic.code.startswith("team_move_recovery_owner_") or diagnostic.code == "team_move_recovery_process_unknown"
+        else "Resolve named native owners; retain hold and SAME key/target; explicitly recover observed revision")
+    return {"source": "process_local_failure_observation", "durable": False,
+        "code": diagnostic.code, "owner_ids": list(diagnostic.owner_ids),
+        "blockers": [blocker_view(b) for b in getattr(error, "blockers", ())],
+        "secondary_codes": list(getattr(error, "team_move_secondary_codes", ())),
+        "native_observation_at_failure": getattr(error, "team_move_observation", None),
+        "next_action": remedy}
+
+
+def operation_view(row, *, running=False, error=None, current_observation=None):
+    """Keep saved diagnostics distinct from current reads and ephemeral failure."""
     phase = row["phase"]
     terminal = phase in {"complete", "refused", "abandoned"}
     diagnostic = json.loads(row["diagnostic_bytes"]) if row["diagnostic_bytes"] is not None else None
+    error_code = error["code"] if error else None
     return {"version": 1, "operation_id": row["operation_id"], "operation_key": row["operation_key"],
         "request_digest": _digest(_bytes(public_request(_decode(MoveRequest, row["request_bytes"])))),
         "private_request_digest": row["request_digest"],
         "phase": phase, "state_revision": row["state_revision"],
         "committed": row["decision_bytes"] is not None, "held": row["active_slot"] == 1,
         "running": running, "recovery_required": bool(error_code) or (not terminal and not running),
-        "diagnostic": diagnostic, "service_error": error_code,
+        "diagnostic": diagnostic, "saved_diagnostic_scope": "bounded_code_and_up_to_64_owner_ids_not_current_census",
+        "saved_owners": saved_owners(row), "current_observation": current_observation,
+        "service_error": error_code, "service_diagnostic": error,
         "receipt": json.loads(row["receipt_bytes"]) if row["receipt_bytes"] is not None else None,
         "receipt_digest": row["receipt_digest"],
-        "next_action": "recover_same_operation_with_expected_revision" if error_code else "readback" if phase == "complete" else (
-            "resolve_blockers_and_preview" if terminal else "show" if running else "recover_same_operation_with_expected_revision")}
+        "next_action": "resolve_named_owners_then_recover_same_operation_with_expected_revision" if error_code else "readback" if phase == "complete" else (
+            "resolve_blockers_and_preview" if terminal else "show" if running else "resolve_named_owners_then_recover_same_operation_with_expected_revision")}

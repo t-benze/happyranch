@@ -20,8 +20,15 @@ Only already-running captured threads can drain (at most30s); pending tasks,
 paused roots/children/jobs/workflows/remote/cleanup uncertainty remain blockers.
 `can_drain_threads` identifies candidate turns, not clearance of hard blockers.
 
-The client saves its exact normalized envelope and stable key privately with
-file/directory fsync before POST, prints the key, and retains it on uncertainty.
+The client saves its exact normalized envelope and stable key privately before
+POST. Fresh saves, identical-save reuse and apply reads all establish the same
+positive custody boundary: pinned no-follow private directory/file descriptors,
+exact canonical bytes and stable inode/type/mode/ownership, file fsync/successful
+close, then bottom-up containing-directory fsync/successful close. Existing
+complete bytes after a failed save proceed only after this boundary succeeds;
+partial/changed bytes remain preserved and refuse without overwrite/new key.
+The CLI prints the key and retains it on uncertainty. Same-UID races remain a
+cooperative-storage limitation, not an OS isolation guarantee.
 Apply transport loss performs one same-key GET, never a second POST/new key.
 HTTP202/CLI3 means accepted/in-flight; only saved COMPLETE/readback/release yields
 apply HTTP200/CLI0. Refusal/repair is CLI1; local argument validation is2.
@@ -36,7 +43,25 @@ DB close; timeout/cancellation never erases committed holds. Diagnostic-only org
 have strict read-only saved-state access outside OrgDep and use D's restricted
 native recovery owner. Close that context before positive ordinary attachment;
 only successful native discovery/revalidation/map insertion clears diagnostics,
-then real deduplicating owners redeliver. Org unload/runtime switch refuse active
+then real deduplicating owners redeliver.
+Saved `diagnostic` retains the strict code/at-most64 safe owner IDs and original
+history; it is a bounded refusal record, never a complete current census.
+`saved_owners` derives original and latest recovery owner and original publisher
+from strict decision/progress. `current_observation` separately reads native
+blocker kind/ID/owner/remedy and current publisher/recovery/file-phase owners;
+unknown facts stay null/unavailable, with no idle certificate. Diagnostic-only
+orgs use a read-only restricted native context, without attachment or mutating
+preview. Missing trackers remain unknown. `service_diagnostic` carries safe
+asynchronous failure facts and secondary close/reattachment codes, explicitly
+process-local/non-durable; restart loss never erases saved IDs/diagnostics.
+Prior-owner proof/CAS still governs recovery. Native census refusal saves bounded
+IDs only through the existing strict repair transition after that proof; show
+never writes. Resolve the named native dependencies before explicit SAME-key,
+SAME-target recovery at the newly observed revision, without retry/takeover.
+Both GET by-key and GET by-ID declare202 while the daemon-owned task runs; private
+no-store/Location and CLI3 remain, with200 reserved for saved completed readback.
+
+Org unload/runtime switch refuse active
 owners/holds. D staging/history/inode/ENOENT cleanup, all-eight-site outside-lease
 discovery, C1-C3 sticky uncertainty/EMPTY budgets, INTEGER callbacks/v2 and native
 permissions remain intact. No new table/column, auth, permission or hook changes.

@@ -149,7 +149,7 @@ def register(sub) -> None:
     for name in ("capability", "preview", "apply", "show", "recover"):
         operation = operations.add_parser(name, help={"capability": "Read loaded capability and incomplete reasons",
             "preview": "Read exact native diff; save private normalized request/key without reserving",
-            "apply": "Explicitly POST saved exact key/body (disabled until reviewed F enablement)",
+            "apply": "Validate/fsync saved exact key/body before explicit POST (gated until reviewed F enablement)",
             "show": "Read saved operation/receipt without progress or writes",
             "recover": "Explicit bounded progress of SAME operation/revision (gated)"}[name])
         operation.add_argument("--org", required=True, type=_identifier)

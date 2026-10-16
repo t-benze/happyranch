@@ -13,7 +13,7 @@ from runtime.infrastructure.team_move_store import (
     FounderAdmission, MAX_BYTES, _now, _unique_object,
 )
 from runtime.orchestrator.team_move_operation import TeamMoveOperation
-from runtime.orchestrator.team_move_public import ApplyMove, MoveSelection, RecoverMove
+from runtime.orchestrator.team_move_public import ApplyMove, MoveSelection, RecoverMove, error_view
 
 router = APIRouter(dependencies=[require_token(), Depends(_require_human)], responses={
     401: {"description": "Existing bearer refused"}, 403: {"description": "Founder authority required"},
@@ -83,8 +83,11 @@ def invoke(owner, slug, callback, *, operation_key=None, operation_id=None):
         if observation is None and code in {"team_move_apply_disabled", "team_move_agents_busy", "team_move_stale_preview"}:
             detail.update(committed=False, recovery_required=False,
                 next_action="resolve_named_blockers_or_release_dependency_then_preview")
+        detail["diagnostic"] = error_view(exc)
         if hasattr(exc, "blockers"):
-            detail["blockers"] = exc.blockers
+            # apply already carries the public projection; recovery carries
+            # native facts. Both are reduced to the same explicit safe fields.
+            detail["blockers"] = detail["diagnostic"]["blockers"]
         if code == "former_name":
             detail.update(current_name=exc.current_name, canonical_id=exc.canonical_id)
         return JSONResponse({"detail": detail}, status_code=status, headers=PRIVATE)
@@ -128,13 +131,13 @@ async def apply(slug: str, request: Request):
     return invoke(owner, slug, submit, operation_key=body.operation_key)
 
 
-@router.get("/team-moves/by-key/{operation_key}")
+@router.get("/team-moves/by-key/{operation_key}", responses={202: {"description": "Accepted/in-flight; not success"}})
 def show_key(slug: str, operation_key: str, request: Request):
     owner = service(request)
     return invoke(owner, slug, lambda: owner.show(slug, operation_key=operation_key), operation_key=operation_key)
 
 
-@router.get("/team-moves/{operation_id}")
+@router.get("/team-moves/{operation_id}", responses={202: {"description": "Accepted/in-flight; not success"}})
 def show(slug: str, operation_id: str, request: Request):
     owner = service(request)
     return invoke(owner, slug, lambda: owner.show(slug, operation_id=operation_id), operation_id=operation_id)

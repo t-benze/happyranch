@@ -12,7 +12,11 @@ gate apply AND recovery; skills/agents gain no execution or ambient-bearer
 self-admission authority. Manage-agent retains team/role; transfers use the
 separate admitted founder operation. Preview uses only the pure native planner,
 not materializers/resets/reservations. Exact normalized client bytes/key are
-privately fsynced before POST; preserve key on transport loss and use same-key
+privately fsynced before POST, including exact saved-file reuse/apply reads;
+a complete prior failed-save file requires fresh descriptor/byte validation,
+file fsync/close and containing-directory fsync/close. Partial/changed bytes
+refuse without overwrite/new key; same-UID limitations remain. Preserve key on
+transport loss and use same-key
 show, never automatic second apply. HTTP202/CLI3 is in-flight, saved COMPLETE
 readback/release alone permits apply200/CLI0; refusal/repair is1, parser2.
 Show is read-only; recover explicitly binds SAME ID/revision and native prior
@@ -20,6 +24,13 @@ owner/process proof/CAS. Durable daemon tasks survive client disconnect; shutdow
 reaps them before DB close without clearing holds. Diagnostic-org read/recovery
 uses strict native owners, closes before positive normal attachment and clears
 only after successful native map insertion. Native dedup redelivery follows.
+Show/recover diagnostics distinguish strict saved bounded code/owner IDs and
+original/latest recovery/publisher identities from current native census and
+publisher owner observations. Diagnostic-only reads require no ordinary attachment
+or preview; unavailable ownership stays unknown. Async failure/secondary close
+or attachment facts are safe process-local observations, never durable evidence.
+Resolve named dependencies before explicit SAME operation/target/revision recovery;
+no automatic retry or TTL takeover. Both show GET forms declare202/CLI3 in-flight.
 D staging/history/leases, C1-C3 uncertainty/EMPTY budgets and actual callbacks
 remain. Earlier unavailable-E statements below describe historical checkpoints.
 Current contract: docs/superpowers/specs/2026-10-14-online-team-move.md and

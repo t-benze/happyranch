@@ -114,11 +114,20 @@ saves the returned normalized apply envelope under the SAME key in
 files0600, no-follow/exclusive, with file/directory fsync. The saved apply envelope
 contains no canonical images or arbitrary paths. This client bookkeeping is
 separate from server preview purity and is not an OS barrier against same-UID
-tampering. Failed/partial local writes stay preserved and refuse adoption.
+tampering. Every fresh save, identical-save reuse and apply read pins no-follow
+directory descriptors from the client home, validates private ownership/type/mode
+and stable entry/file identity, checks exact canonical bytes, fsyncs and closes
+the exact file, then fsyncs the containing directories bottom-up and closes them.
+Directory reuse repeats persistence as well as creation, including an earlier
+failed mkdir/fsync/close. All persistence/close errors refuse before transport.
+Partial, noncanonical or changed bytes remain preserved and refuse without
+overwrite or a replacement key. A complete file from an earlier failed save may
+proceed only after this positive boundary succeeds again; existence/JSON alone
+never establishes custody. This protocol does not automatically resend anything.
 
 Founder reviews the displayed exact diff and `request_digest`, then explicitly
-runs apply with that key/digest. The CLI rereads/validates the exact saved bytes
-before connecting; it never asks Founder to hand-edit files. `--drain-threads`
+runs apply with that key/digest. The CLI rereads/validates and establishes the
+file/parent durability boundary for the exact saved bytes before connecting; it never asks Founder to hand-edit files. `--drain-threads`
 belongs to the preview consent and cannot be changed on apply. Same-key identical
 normalized body returns original state/receipt without another reset,
 materialization or publication; changed body refuses409. Stale preview refuses
@@ -138,7 +147,9 @@ HTTP202 plus Location and CLI exit3 mean accepted/in-flight. Do not promise
 duration or call it success. Only a saved genuine COMPLETE receipt/readback and
 released active slot permit apply HTTP200/CLI exit0. Refusal/repair/disabled is
 exit1, local argument/custody validation2. Show may return202 for a live owner or
-409 for refusal/repair/interrupted ownership, with the exact saved state, key,
+409 for refusal/repair/interrupted ownership. Both GET by-key and GET by-ID
+declare202 in served OpenAPI and the existing inventory, with private no-store
+headers and Location. Responses retain the exact saved state, key,
 ID, revision and next action. It performs no advancement or writes. There is no
 indefinite polling. HTTP failure status and structured `detail` remain visible.
 
@@ -159,6 +170,34 @@ automatic retry, journal adoption or second unchecked apply occurs. If an owner
 is still live, show reports that state. Unknown staging/acquisition/cleanup or
 old-history gaps retain actionable repair_required, exact owner IDs and holds.
 Do not glob/delete stage files or rewrite history/receipts to obtain release.
+
+Read `saved_owners` for original and latest claimed recovery IDs, the previous
+claim owner and original publisher journal/writer. These are strict saved
+identities, not a current liveness assertion. `diagnostic` preserves the existing
+closed code and up-to64 safe owner IDs at the saved revision. This bounded list
+is not a complete blocker inventory. Recovery census refusal records useful IDs
+through that existing strict CAS/history path only after actual prior-owner
+settlement proof; a refusal before proof cannot claim takeover or rewrite history.
+
+`current_observation` separately reports native blocker kind/owner ID, agent/thread
+IDs where known and the native remedy, plus current publication journal/writer,
+recovery/file-phase owners and generation/state. It reads the actual native
+owners without ordinary attachment or preview. A diagnostic-only org uses a
+read-only restricted context; absent trackers produce unknown owner blockers.
+Unavailable census/publication facts are null with a safe code, never empty/idle.
+A close error is secondary to the retained observations. Resolve the named task,
+thread, job, process, profile or publisher through its own supported owner before
+explicit recovery of the SAME operation/key/target at the fresh observed revision.
+No TTL takeover, automatic retry or adoption of a competing journal follows.
+
+`service_diagnostic` preserves safe asynchronous refusal blockers, owner IDs,
+failure-time native observation and secondary close/reattachment codes. It is
+explicitly process-local and non-durable; it may disappear on restart. The strict
+saved diagnostic and immutable decision/progress identities remain readable
+independently. Historical saved facts never masquerade as current observations.
+Raw exceptions, canonical/proof bytes, process start-identity proof and invocation
+credentials stay private. Reattachment failures keep the saved receipt and
+refusal state instead of retrying/resetting/publishing the move.
 
 An org held outside normal OrgDep remains reachable through the same admitted
 capability/show/recover service. Saved show opens a strict read-only existing
