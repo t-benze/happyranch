@@ -924,6 +924,8 @@ startup and runtime-switch callers retain earlier diagnostics through subsequent
 reads and state adoption. Previously unavailable diagnostic/recovery owners
 require an existing DB. Compatible readers leave only the affected org unattached;
 incompatible readers and source-runtime detach fail closed.
+Restricted recovery preserves the original error if handle close also fails;
+standalone close failures retain native classification and never prove release.
 
 The one batch interval (including empty dependencies) captures AgentDefs, complete
 profile/dependency closure, candidate, current inputs and census outside durable

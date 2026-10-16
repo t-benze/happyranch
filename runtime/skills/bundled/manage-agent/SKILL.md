@@ -8,7 +8,9 @@ description: Enroll, update, or terminate an agent. Write a JSON file and call h
 The corrected reader is online-team-move@2 (also reads old @1 records); supported
 launchers pass --reader-guarded-start=online-team-move@2 and reject earlier D
 readers. Per-org open/identity/SQLite errors remain diagnostic-only and survive
-startup/switch readback. Recovery reconciles only pre-recorded operation staging
+startup/switch readback. Restricted recovery preserves the original error on
+close failure; standalone close failures retain native classification and holds.
+Recovery reconciles only pre-recorded operation staging
 intent/acquired identity/terminal disposition in existing audits. Unknown acquired
 identity or cleanup stays held even after owner-finished; no glob deletion or
 legacy evidence adoption is allowed. Native discovery and publication capture

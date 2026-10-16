@@ -968,7 +968,7 @@ def inspect_team_move_database(path, *, org_slug: str, require_existing=False):
                 conn.close()
             except sqlite3.Error as cleanup:
                 if primary is None:
-                    raise TeamMoveError("team_move_startup_database_close_failed") from cleanup
+                    raise _inspection_error("team_move_startup_database_close_failed", cleanup) from cleanup
                 primary.add_note("team move inspection close failed: " + type(cleanup).__name__)
 
 

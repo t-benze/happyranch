@@ -2896,7 +2896,9 @@ behavior/migration/recovery/launcher outcomes remain UNEXECUTED; integration
 INCLUDING callback SKIPPED24342 and Python units RETIRED. See the current D section
 of the approved online-team-move spec. The @2 protocol covers durable operation
 staging ownership and per-org acquisition containment. Earlier diagnostics survive
-register/switch/state adoption; failed open or raced loss never establishes fresh
+register/switch/state adoption. Restricted recovery retains the original error
+when close also fails; standalone close failures stay classified and held.
+Failed open or raced loss never establishes fresh
 absence. Discovery/publication capture runs outside durable mutation leases, with
 native capture revalidation in the final DB leaf. Unknown staging cleanup stays
 held through recovery and owner-finished. Old records remain readable; legacy

@@ -7,12 +7,13 @@ this owner and close it before ordinary reattachment after durable completion.
 from __future__ import annotations
 
 import base64
+import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
 
 from runtime.infrastructure.database import Database
-from runtime.infrastructure.team_move_store import MoveRequest, TeamMoveError, TeamMoveStore, _decode, _digest
+from runtime.infrastructure.team_move_store import MoveRequest, TeamMoveError, TeamMoveStore, _decode, _digest, _inspection_error
 from runtime.orchestrator._paths import OrgPaths
 from runtime.orchestrator.team_move import TeamMoveCoordinator
 from runtime.orchestrator.team_move_canonical import check_parents, read_regular, validate_candidate
@@ -34,7 +35,10 @@ class RestrictedMoveContext:
     naming_readiness: str = "unavailable"
 
     def close(self):
-        self.db.close()
+        try:
+            self.db.close()
+        except (OSError, sqlite3.Error) as exc:
+            raise _inspection_error("team_move_recovery_database_close_failed", exc) from exc
 
 
 def open_recovery_context(*, root, slug, settings, profiles, host_supervisor, sessions):
@@ -73,6 +77,9 @@ def open_recovery_context(*, root, slug, settings, profiles, host_supervisor, se
             if validate_names(db._conn, org_slug=slug):
                 org.naming_readiness = "ready"
         return org, TeamMoveOperation(org, profiles)
-    except BaseException:
-        db.close()
+    except BaseException as primary:
+        try:
+            db.close()
+        except BaseException as cleanup:
+            primary.add_note("restricted move context close failed: " + type(cleanup).__name__)
         raise
