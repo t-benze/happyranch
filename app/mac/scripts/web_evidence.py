@@ -520,9 +520,186 @@ def load_context(s,context,preparation):
     return p
 
 
-def css_read(s,context,preparation,request):
+# Helper-owned lifecycle receipts, separate from mutable CSS operations.
+LOAD_DIR = 'web-css-loads'
+LOAD_SEAL = LOAD_DIR+'/seal.json'
+LOAD_EVENT = 256*1024
+LOAD_BYTES = 8*MiB
+
+
+def mutable_web(s: Session) -> None:
+    with A['root_for'](s.paths.evidence_dir) as root:
+        need(is_absent(root,'web-failure.json'),'FAILED_BUILD')
+        need(is_absent(root,LOAD_SEAL) and is_absent(root,'web-build.json') and is_absent(root,COMPLETION_LEAF),'CSS_LOADS_SEALED')
+
+
+def load_inventory(root: object, *, create: bool=False) -> tuple[list[str],bool]:
+    # Stop while iterating, before materializing an unbounded directory listing.
+    names=[];sealed=False
+    try:
+        with A['parent_at'](root,LOAD_DIR+'/.inventory',create=create) as (parent,_):
+            with os.scandir(parent) as entries:
+                for entry in entries:
+                    if entry.name=='seal.json':
+                        need(not sealed,'CSS_LOAD_INVENTORY');sealed=True;continue
+                    need(len(names)<MAX_ROWS,'CSS_LOAD_EVENT_CAP')
+                    need(re.fullmatch(r'[0-9]{6}\.json',entry.name),'CSS_LOAD_INVENTORY',entry.name)
+                    names.append(entry.name)
+            names.sort()
+            need(names==[f'{i:06d}.json' for i in range(1,len(names)+1)],'CSS_LOAD_SEQUENCE')
+    except FileNotFoundError:
+        need(not create,'CSS_LOAD_INVENTORY')
+    return names,sealed
+
+
+def load_event_token(descriptor: dict,index: int) -> dict:
+    return {'schema':'web-css-load-token@1','index':index,'sha256':descriptor['sha256']}
+
+
+def read_load_events(s: Session,root: object,context: str,preparation: str,names: list[str]) -> tuple[list, list, int, int]:
+    events=[];inventory=[];total=0;name_bytes=0
+    for index,leaf in enumerate(names,1):
+        descriptor,raw=A['read_bytes'](root,LOAD_DIR+'/'+leaf,A['ReadDomain'](LOAD_EVENT,True))
+        total+=len(raw);need(total<=LOAD_BYTES,'CSS_LOAD_BYTES_CAP')
+        event=parse(raw,LOAD_EVENT)
+        keys(event,s.envelope('css-load',None,{}))
+        expected=s.envelope('css-load',None,{'context':context,'preparation':preparation})
+        need({k:v for k,v in event.items() if k!='payload'}=={k:v for k,v in expected.items() if k!='payload'},'CSS_LOAD_BINDING')
+        payload=event['payload'];keys(payload,{'kind','index','invocation','parent_outer_call','data','transport'})
+        need(type(payload['index']) is int and payload['index']==index,'CSS_LOAD_SEQUENCE')
+        need(isinstance(payload['invocation'],str) and re.fullmatch(r'k[1-9][0-9]{0,4}',payload['invocation']) and isinstance(payload['parent_outer_call'],str) and re.fullmatch(r'o[1-9][0-9]{0,5}',payload['parent_outer_call']),'CSS_COMPILE_LIFECYCLE')
+        name_bytes=metadata_limits(event,initial_names=name_bytes)
+        events.append((payload,load_event_token(descriptor,index)))
+        inventory.append(descriptor)
+    return events,inventory,total,name_bytes
+
+
+def load_lifecycles(events: list, *, complete: bool=False) -> dict:
+    compiles={};parents=set()
+    for event,token in events:
+        need(isinstance(event['invocation'],str) and re.fullmatch(r'k[1-9][0-9]{0,4}',event['invocation']) and isinstance(event['parent_outer_call'],str) and re.fullmatch(r'o[1-9][0-9]{0,5}',event['parent_outer_call']),'CSS_COMPILE_LIFECYCLE')
+        invocation=event['invocation'];parent=event['parent_outer_call'];d=event['data'];kind=event['kind']
+        keys(event['transport'],{'request_bytes','reply_bytes'})
+        js_size(event['transport']['request_bytes'],4096);js_size(event['transport']['reply_bytes'],32*MiB if kind=='stylesheet_read' else 4096)
+        if kind=='compile_begin':
+            keys(d,{'module','input','options'})
+            need(invocation=='k'+str(len(compiles)+1) and invocation not in compiles and parent not in parents,'CSS_COMPILE_LIFECYCLE')
+            need(type(d['module']) is str and type(d['input']) is dict,'CSS_COMPILE_LIFECYCLE')
+            keys(d['input'],{'size','sha256'});js_size(d['input']['size']);digest_shape(d['input']['sha256'])
+            need(d['options']=={'base':str(Path(d['module'].split('?')[0]).parent),'from':d['module'],'polyfills':3,'sourcemap':False},'CSS_COMPILE_OPTIONS')
+            parents.add(parent);compiles[invocation]={'begin':d,'parent':parent,'reads':[],'tokens':[],'ended':False}
+        else:
+            state=compiles.get(invocation)
+            need(state and state['parent']==parent and not state['ended'],'CSS_COMPILE_LIFECYCLE')
+            if kind=='stylesheet_read':
+                keys(d,{'ordinal','id','base','relative','descriptor','raw_sha256','decoded_sha256','decoded_size'})
+                need(type(d['ordinal']) is int and d['ordinal']==len(state['reads'])+1,'CSS_LOAD_ORDINAL')
+                need(type(d['id']) is str and type(d['base']) is str,'CSS_COMPILE_LIFECYCLE')
+                path_name(d['relative']);A['subject_shape'](d['descriptor']);digest_shape(d['raw_sha256']);digest_shape(d['decoded_sha256']);js_size(d['decoded_size'])
+                need(d['descriptor']['relative']==d['relative'] and d['descriptor']['sha256']==d['raw_sha256'],'CSS_COMPILE_INPUT_MISSING')
+                state['reads'].append(d);state['tokens'].append(token)
+            elif kind=='compile_end':
+                keys(d,{'input','read_tokens'})
+                need(d['input']==state['begin']['input'] and d['read_tokens']==state['tokens'],'CSS_COMPILE_INPUT_MISSING')
+                state['ended']=True
+            else:need(False,'CSS_LOAD_KIND')
+    if complete:need(all(state['ended'] for state in compiles.values()),'CSS_COMPILE_LIFECYCLE')
+    return compiles
+
+
+def append_load_event(s: Session,context: str,preparation: str,index: int,kind: str,invocation: str,parent: str,data: dict,request: dict,reply: dict | None=None) -> dict:
+    mutable_web(s)
+    with A['root_for'](s.paths.evidence_dir) as root:
+        names,sealed=load_inventory(root,create=True)
+        need(not sealed and type(index) is int and index==len(names)+1 and index<=MAX_ROWS,'CSS_LOAD_SEQUENCE')
+        events,_,total,name_bytes=read_load_events(s,root,context,preparation,names)
+        placeholder={'schema':'web-css-load-token@1','index':index,'sha256':'0'*64}
+        response=placeholder if reply is None else {**reply,'read_token':placeholder}
+        transport={'request_bytes':getattr(s,'request_bytes',len(canonical(request,4096))),'reply_bytes':len(canonical(response,32*MiB if kind=='stylesheet_read' else 4096))+1}
+        need(transport['request_bytes']==len(canonical(request,4096)),'CSS_LOAD_TRANSPORT')
+        payload={'kind':kind,'index':index,'invocation':invocation,'parent_outer_call':parent,'data':data,'transport':transport}
+        value=s.envelope('css-load',payload,{'context':context,'preparation':preparation})
+        metadata_limits(value,initial_names=name_bytes)
+        raw=canonical(value,LOAD_EVENT-1)+b'\n'
+        need(total+len(raw)<=LOAD_BYTES,'CSS_LOAD_BYTES_CAP')
+        provisional={'schema':'web-css-load-token@1','index':index,'sha256':sha(raw)}
+        # Validate the prospective transition before any exclusive write.
+        load_lifecycles([*events,(payload,provisional)])
+        A['_budget'].get().charge(len(raw),json_bytes=True)
+        descriptor=A['create_once'](root,LOAD_DIR+'/'+f'{index:06d}.json',raw,A['ReadDomain'](LOAD_EVENT,True))
+        after,after_sealed=load_inventory(root)
+        need(after==[*names,f'{index:06d}.json'] and not after_sealed,'CSS_LOAD_SEQUENCE')
+    return load_event_token(descriptor,index)
+
+
+def compile_event(s: Session,context: str,preparation: str,index: int,kind: str,request: dict) -> dict:
+    load_context(s,context,preparation)
+    if kind=='compile_begin':
+        keys(request,{'invocation','parent_outer_call','module','input','options'})
+        data={k:request[k] for k in ('module','input','options')}
+    else:
+        keys(request,{'invocation','parent_outer_call','read_tokens'})
+        with A['root_for'](s.paths.evidence_dir) as root:
+            names,_=load_inventory(root)
+            events,_,_,_=read_load_events(s,root,context,preparation,names)
+        state=load_lifecycles(events).get(request['invocation'])
+        need(state and not state['ended'] and state['parent']==request['parent_outer_call'],'CSS_COMPILE_LIFECYCLE')
+        data={'input':state['begin']['input'],'read_tokens':request['read_tokens']}
+    return append_load_event(s,context,preparation,index,kind,request['invocation'],request['parent_outer_call'],data,request)
+
+
+def seal_loads(s: Session,context: str,preparation: str) -> None:
+    # The complete directory, never a producer list, supplies the expected set.
+    with A['root_for'](s.paths.evidence_dir) as root:
+        need(is_absent(root,'web-failure.json'),'FAILED_BUILD')
+        sealed=not is_absent(root,LOAD_SEAL)
+    if sealed:
+        # Inspect retained seal corruption honestly, but never republish it.
+        checked_loads(s,context,preparation)
+        need(False,'CSS_LOADS_SEALED')
+    mutable_web(s)
+    s.load('context',context)
+    with A['root_for'](s.paths.evidence_dir) as root:
+        names,sealed=load_inventory(root,create=True);need(not sealed,'CSS_LOADS_SEALED')
+        events,inventory,total,name_bytes=read_load_events(s,root,context,preparation,names)
+        load_lifecycles(events,complete=True)
+        payload={'inventory':inventory,'event_bytes':total}
+        value=s.envelope('css-load-seal',payload,{'context':context,'preparation':preparation})
+        metadata_limits(value,initial_names=name_bytes)
+        raw=canonical(value,LOAD_BYTES-1,node_cap=BUILD_NODES)+b'\n'
+        A['_budget'].get().charge(len(raw),json_bytes=True)
+        A['create_once'](root,LOAD_SEAL,raw,A['ReadDomain'](LOAD_BYTES,True))
+
+
+def checked_loads(s: Session,context: str,preparation: str) -> dict:
+    with A['root_for'](s.paths.evidence_dir) as root:
+        need(is_absent(root,'web-failure.json'),'FAILED_BUILD')
+        names,sealed=load_inventory(root);need(sealed,'CSS_LOAD_SEAL_MISSING')
+        _,raw=A['read_bytes'](root,LOAD_SEAL,A['ReadDomain'](LOAD_BYTES,True))
+        seal=parse(raw,LOAD_BYTES,build=True);keys(seal,s.envelope('css-load-seal',None,{}))
+        expected=s.envelope('css-load-seal',None,{'context':context,'preparation':preparation})
+        need({k:v for k,v in seal.items() if k!='payload'}=={k:v for k,v in expected.items() if k!='payload'},'CSS_LOAD_BINDING')
+        keys(seal['payload'],{'inventory','event_bytes'})
+        events,inventory,total,name_bytes=read_load_events(s,root,context,preparation,names)
+        need(seal['payload']=={'inventory':inventory,'event_bytes':total},'CSS_LOAD_INVENTORY')
+        # Verify the terminal file through the ordinary descriptor guard as well.
+        s.load_names=metadata_limits(seal,initial_names=name_bytes)
+        s.load_transport=sum(event['transport']['request_bytes']+event['transport']['reply_bytes'] for event,_ in events)
+        js_size(s.load_transport,BODY_WORK)
+        compiles=load_lifecycles(events,complete=True)
+        for state in compiles.values():
+            for read in state['reads']:
+                descriptor,body=s.raw(s.paths.exported_source,read['relative'])
+                decoded=decode(body).encode()
+                need(descriptor==read['descriptor'] and sha(body)==read['raw_sha256'] and sha(decoded)==read['decoded_sha256'] and len(decoded)==read['decoded_size'],'CSS_COMPILE_INPUT_MISSING')
+    return compiles
+
+
+def css_read(s,context,preparation,request,index=None):
+    mutable_web(s)
     p=load_context(s,context,preparation)
-    keys(request,{'site','id','base'})
+    site=request['site']
+    keys(request,{'site','id','base','invocation','parent_outer_call','ordinal'} if site=='stylesheet' else {'site','id','base'})
     site=request['site'];need(site in ('content','stylesheet','source'),'READ_SITE')
     if site=='content':
         plan=s.load('css-inputs',p['css_inputs'])['payload']['plan']
@@ -547,10 +724,16 @@ def css_read(s,context,preparation,request):
     token,raw=s.intern_subject(s.paths.exported_source,relative)
     # Extra imported subjects are sealed by actual path/token in build, with
     # independent readers obtaining descriptors directly; never JS numbers.
-    return {'schema':'web-css-read@1','path':str(s.paths.exported_source/relative),'relative':relative,'base':str((s.paths.exported_source/relative).parent),'content':decode(raw),'content_sha256':sha(decode(raw).encode()),'raw_sha256':sha(raw),'token':token}
+    result={'schema':'web-css-read@1','path':str(s.paths.exported_source/relative),'relative':relative,'base':str((s.paths.exported_source/relative).parent),'content':decode(raw),'content_sha256':sha(decode(raw).encode()),'raw_sha256':sha(raw),'token':token}
+    if site=='stylesheet':
+        descriptor=s.subjects[int(token['subject_id'][1:])-1]['descriptor']
+        data={'ordinal':request['ordinal'],'id':name,'base':base,'relative':relative,'descriptor':descriptor,'raw_sha256':sha(raw),'decoded_sha256':result['content_sha256'],'decoded_size':len(result['content'].encode())}
+        result['read_token']=append_load_event(s,context,preparation,index,'stylesheet_read',request['invocation'],request['parent_outer_call'],data,request,result)
+    return result
 
 
 def snapshot(s,context,preparation,index,raw):
+    mutable_web(s)
     # Direct context token authenticates this write, without rereading every
     # registry subject for each intermediate. Final publisher reopens all.
     context_record=s.load('context',context)
@@ -571,8 +754,11 @@ def blob(s,row):
     return raw
 
 
-def validate_css(s,operations,plan,observations):
+def validate_css(s,operations,plan,observations,loads):
     need(len(operations)<=MAX_ROWS,'OPERATION_CAP');states={};styles={};assets={};finalized={};minifies={};emits=[];chunks={};urls={}
+    declared=[op.get('data',{}).get('invocation') for op in operations if op.get('stage')=='compile']
+    need(all(isinstance(key,str) for key in declared) and len(set(declared))==len(declared) and set(declared)==set(loads),'CSS_COMPILE_INPUT_MISSING')
+    consumed=set()
     def b(row):return decode(blob(s,row))
     for ordinal,op in enumerate(operations,1):
         keys(op,{'schema','id','parent_outer_call','stage','data','status','error'})
@@ -580,13 +766,20 @@ def validate_css(s,operations,plan,observations):
         parent=op['parent_outer_call'];need(parent in observations and observations[parent]['kind']=='hook_call','CSS_CALL_PARENT')
         stage=op['stage'];d=op['data']
         if stage=='compile':
-            keys(d,{'module','input','options','imports','features','root','sources'})
+            keys(d,{'module','input','options','invocation','imports','features','root','sources'})
             need(d['module'] not in states,'CSS_STATE_CHAIN_INVALID')
             need(d['root'] is None and d['sources']==[],'CSS_UNSUPPORTED_SOURCE_DIRECTIVE')
             need(d['options']=={'polyfills':3,'sourcemap':False,'base':str(Path(d['module'].split('?')[0]).parent),'from':d['module']},'CSS_COMPILE_OPTIONS')
+            state=loads.get(d['invocation'])
+            need(state and d['invocation'] not in consumed and state['ended'] and state['parent']==parent,'CSS_COMPILE_INPUT_MISSING')
+            raw_input=blob(s,d['input'])
+            need(state['begin']=={'module':d['module'],'input':{'size':len(raw_input),'sha256':sha(raw_input)},'options':d['options']},'CSS_COMPILE_INPUT_MISSING')
+            need(type(d['imports']) is list and [r.get('read_token') for r in d['imports']]==state['tokens'],'CSS_COMPILE_INPUT_MISSING')
+            consumed.add(d['invocation'])
             b(d['input']);states[d['module']]={'phase':'compile','features':d['features'],'candidates':[],'entries':[],'output':None}
-            for imp in d['imports']:
-                keys(imp,{'id','base','relative','content','raw_sha256','decoded_sha256'})
+            for imp,read in zip(d['imports'],state['reads']):
+                keys(imp,{'id','base','relative','content','raw_sha256','decoded_sha256','read_token'})
+                need(all(imp[k]==read[k] for k in ('id','base','relative','raw_sha256','decoded_sha256')),'CSS_COMPILE_INPUT_MISSING')
                 descriptor,raw=s.raw(s.paths.exported_source,imp['relative']);need(descriptor['sha256']==imp['raw_sha256'] and sha(decode(raw).encode())==imp['decoded_sha256'] and b(imp['content'])==decode(raw),'CSS_COMPILE_INPUT_MISSING')
                 validate_import_urls(decode(raw))
         elif stage=='content_scan':
@@ -683,6 +876,7 @@ def validate_css(s,operations,plan,observations):
             keys(d,{'id','url'});asset=assets.get(d['id'])
             need(asset is not None and asset['url'] is not None and asset['url']==d['url'],'CSS_URL_RELATION_INVALID')
         else:need(False,'CSS_STAGE_INVALID',stage)
+    need(consumed==set(loads),'CSS_COMPILE_INPUT_MISSING')
     need(not any(minifies.values()),'CSS_MINIFY_INPUT_MISMATCH')
     need(all(not asset['pending'] for asset in assets.values()),'CSS_URL_RELATION_INVALID')
     need(states and all(st['phase']=='stored' for st in states.values()) and emits,'CSS_COMPLETE_RELATION_MISSING')
@@ -735,6 +929,7 @@ def validate_build(s,payload,context,preparation,*,stored_required=False):
     need(not stored_required or set(stored)=={'subjects','source_tool_associations'},'BUILD_REGISTRY_MISSING')
     payload={k:v for k,v in payload.items() if k not in stored}
     p=load_context(s,context,preparation)
+    loads=checked_loads(s,context,preparation)
     keys(payload,{'resource_profile','complete','profile','observations','css_operations','modules','final_bundle','counts'})
     need(payload['resource_profile']==RESOURCE_PROFILE,'RESOURCE_PROFILE')
     need(payload['complete'] is True,'CALL_INCOMPLETE');profile=payload['profile']
@@ -759,7 +954,9 @@ def validate_build(s,payload,context,preparation,*,stored_required=False):
     for ordinal,item in enumerate(profile['plugins']):
         keys(item,{'ordinal','name','hooks'});need(type(item['ordinal']) is int and item['ordinal']==ordinal,'PLUGIN_ORDINAL')
         if item['name']=='vite:react-babel':need(not item['hooks'],'REACT_BABEL_PROFILE')
-    keys(payload['counts'],{'observations','operations','processed_bytes'})
+    keys(payload['counts'],{'observations','operations','processed_bytes','transport_bytes'})
+    js_size(payload['counts']['transport_bytes'],BODY_WORK)
+    need(payload['counts']['transport_bytes']==s.load_transport,'CSS_LOAD_TRANSPORT')
     js_size(payload['counts']['processed_bytes'],BODY_WORK)
     need(type(payload['counts']['observations']) is int and payload['counts']['observations']==len(payload['observations']) and type(payload['counts']['operations']) is int and payload['counts']['operations']==len(payload['css_operations']),'COUNTS_MISMATCH')
     observations=payload['observations'];need(type(observations) is list and len(observations)<=MAX_OBSERVATIONS,'OBSERVATION_CAP')
@@ -821,7 +1018,7 @@ def validate_build(s,payload,context,preparation,*,stored_required=False):
     plan_record=s.load('css-inputs',p['css_inputs']);plan=plan_record['payload']['plan']
     # Derive complete list and actual bytes independently on every reader.
     expected=s.prepare_css_inputs();need(plan==expected,'CSS_INPUT_SET_MISMATCH')
-    result=validate_css(s,payload['css_operations'],plan,ids)
+    result=validate_css(s,payload['css_operations'],plan,ids,loads)
     for operation in payload['css_operations']:
         if operation['stage']=='compile':
             parent=ids[operation['parent_outer_call']];data=operation['data'];raw=blob(s,data['input'])
@@ -862,6 +1059,8 @@ def validate_build(s,payload,context,preparation,*,stored_required=False):
                 if profile['plugins'][call['plugin_ordinal']]['name']=='happyranch:packaging-custody':
                     need(not observed_final,'MODULE_FINAL_CHAIN',module['id']);observed_final=True
         need(observed_final and current==module['code'],'MODULE_FINAL_CHAIN',module['id'])
+    for state in loads.values():
+        need(any(module['id']==state['begin']['module'] and state['parent'] in module['calls'] for module in payload['modules']),'CSS_COMPILE_INPUT_MISSING')
     shipped={name for row in write if row['type']=='chunk' for name in row['module_ids']}
     need(shipped<={row['id'] for row in payload['modules']},'GENERATED_RELATION_MISSING')
     html=[o for o in observations if o['kind']=='html_snapshot' and o['stage']=='pre']
@@ -875,7 +1074,7 @@ def validate_build(s,payload,context,preparation,*,stored_required=False):
         need(set(stored)=={'subjects','source_tool_associations'} and stored['subjects']==s.subjects and stored['source_tool_associations']==associations,'SOURCE_ASSOCIATION_MISMATCH')
     need(sum(len(r['outer_ids']) for r in associations)<=MAX_OBSERVATIONS,'ASSOCIATION_MEMBERSHIP_CAP')
     need(producer_work(payload)==payload['counts']['processed_bytes'],'BODY_WORK_MISMATCH')
-    metadata_limits(payload)
+    metadata_limits(payload,initial_names=s.load_names)
     s.associations=associations
     return result
 
@@ -906,7 +1105,7 @@ def source_associations(s,context,payload):
 
 
 def producer_work(payload):
-    total=0;seen=set()
+    total=js_size(payload['counts']['transport_bytes'],BODY_WORK);seen=set()
     def digests(value):
         nonlocal total
         if isinstance(value,dict):
@@ -930,12 +1129,17 @@ def producer_work(payload):
         elif isinstance(value,list):
             for child in value:snapshots(child)
     snapshots(payload['css_operations'])
+    for operation in payload['css_operations']:
+        if operation['stage']=='compile':
+            total+=operation['data']['input']['size']
+            need(total<=BODY_WORK,'AGGREGATE_BODY_CAP')
     return total
 
 
-def metadata_limits(payload):
+def metadata_limits(payload, *, initial_names=0):
     # Occurrences of logical names, including repeated names, never a set of paths.
-    names=0
+    names=initial_names
+    need(names<=8*MiB,'AGGREGATE_NAME_CAP')
     fields={'path','preliminary_path','sourcemap_path','chunk_id','document_id','reference_id',
             'declared_file_name','resolved_file_name','names','original_names','watch_ids',
             'module_ids','id','source','module','file','base','from','relative','relative_path',
@@ -954,6 +1158,7 @@ def metadata_limits(payload):
             need(len(value)<=MAX_OBSERVATIONS,'METADATA_LIST_CAP')
             for child in value:visit(child,field,depth+1)
     visit(payload)
+    return names
 
 
 def build_token(s,value):
@@ -1043,6 +1248,7 @@ def accept_build(s,context,preparation,leaf=COMPLETION_LEAF):
 
 
 def publish_build(s,context,preparation,payload):
+    seal_loads(s,context,preparation)
     result=validate_build(s,payload,context,preparation)
     return s.write('build',{**payload,'subjects':s.subjects,'source_tool_associations':s.associations},{'context':context,'preparation':preparation,'css_relation':result})
 
@@ -1183,15 +1389,30 @@ def verify_arguments(args):
 
 @web_bounded
 def main():
-    p=argparse.ArgumentParser(allow_abbrev=False);p.add_argument('stage',choices=['prepare','begin','read-input','snapshot','publish-build','complete-build','accept-build','seal-dist','notices','verify','fail','token-field'])
+    p=argparse.ArgumentParser(allow_abbrev=False);p.add_argument('stage',choices=['prepare','begin','compile-begin','compile-end','read-input','snapshot','publish-build','complete-build','accept-build','seal-dist','notices','verify','fail','token-field'])
     p.add_argument('--caller');p.add_argument('--context');p.add_argument('--preparation');p.add_argument('--build');p.add_argument('--dist');p.add_argument('--notices');p.add_argument('--asset-dist');p.add_argument('--asset-app');p.add_argument('--index',type=int);p.add_argument('--token');p.add_argument('--field');p.add_argument('--original-exit',type=int);p.add_argument('--completion-leaf',default=COMPLETION_LEAF)
     a=p.parse_args()
     if a.stage=='token-field':
         token=parse(a.token.encode(),4096);value=token[a.field];print(json.dumps(value,separators=(',',':')) if isinstance(value,(dict,list)) else value);return
     s=Session(parse(a.caller.encode(),256*1024))
+    try:
+        return dispatch(s,a)
+    except (OSError,ValueError,KeyError,tarfile.TarError) as primary:
+        if a.stage in ('compile-begin','compile-end','read-input','snapshot','publish-build'):
+            try:s.write('failure',{'original_exit':1,'stage':a.stage})
+            except (OSError,ValueError,KeyError,tarfile.TarError) as secondary:primary.add_note('secondary failure receipt: '+str(secondary)[:4096])
+        raise
+
+
+def dispatch(s: Session,a: argparse.Namespace) -> None:
+    def request() -> dict:
+        raw=sys.stdin.buffer.read(4097);s.request_bytes=len(raw)
+        return parse(raw,4096)
     if a.stage=='prepare':result=prepare_esbuild_alias(s)
     elif a.stage=='begin':result=begin_web(s,a.preparation,a.completion_leaf)
-    elif a.stage=='read-input':result=css_read(s,a.context,a.preparation,parse(sys.stdin.buffer.read(4097),4096))
+    elif a.stage in ('compile-begin','compile-end'):
+        result=compile_event(s,a.context,a.preparation,a.index,a.stage.replace('-','_'),request())
+    elif a.stage=='read-input':result=css_read(s,a.context,a.preparation,request(),a.index)
     elif a.stage=='snapshot':result=snapshot(s,a.context,a.preparation,a.index,sys.stdin.buffer.read(CAP+1))
     elif a.stage=='publish-build':result=publish_build(s,a.context,a.preparation,parse(sys.stdin.buffer.read(BUILD_INPUT+1),BUILD_INPUT,build=True))
     elif a.stage=='complete-build':

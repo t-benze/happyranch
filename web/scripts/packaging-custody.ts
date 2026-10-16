@@ -8,7 +8,7 @@ import type { Plugin, ResolvedConfig } from 'vite';
 type Bytes = { size: number; sha256: string };
 type BlobRef = Bytes & { path: string; descriptor_sha256: string };
 type Row = Record<string, any>;
-export type CssRead = { schema: string; path: string; relative: string; base: string; content: string; content_sha256: string; raw_sha256: string; token: Row };
+export type CssRead = { schema: string; path: string; relative: string; base: string; content: string; content_sha256: string; raw_sha256: string; token: Row; read_token: Row };
 const HOOKS = ['load', 'transform', 'moduleParsed', 'resolveId', 'renderStart', 'renderChunk', 'generateBundle', 'writeBundle', 'buildEnd', 'closeBundle', 'banner', 'footer', 'intro', 'outro'] as const;
 const MAX_OBSERVATIONS = 262144;
 const MAX_MODULES = 32768;
@@ -135,7 +135,11 @@ export class PackagingCustody {
   readonly completionLeaf: string;
   private readonly binding: string;
   private helperCalls = 0;
-  private metadata = measure({ resource_profile: 'web-private-plain@2', complete: true, profile: null, observations: [], css_operations: [], modules: [], final_bundle: [], counts: { observations: 0, operations: 0, processed_bytes: 0 } }, BUILD_INPUT, BUILD_NODES, true);
+  private loadOrdinal = 0;
+  private compileOrdinal = 0;
+  private transportBytes = 0;
+  private readonly compiles = new Map<string, { parent: Row; reads: Row[]; ended: boolean }>();
+  private metadata = measure({ resource_profile: 'web-private-plain@2', complete: true, profile: null, observations: [], css_operations: [], modules: [], final_bundle: [], counts: { observations: 0, operations: 0, processed_bytes: 0, transport_bytes: 0 } }, BUILD_INPUT, BUILD_NODES, true);
   private callMemberships = 0;
 
   constructor() {
@@ -166,6 +170,10 @@ export class PackagingCustody {
   }
 
   request(stage: string, value?: unknown, index?: number): any {
+    if (stage !== 'fail') {
+      if (this.sticky) throw this.sticky;
+      if (this.originalFailed || this.completion) throw new Error('WEB_FAILED_BUILD');
+    }
     if (++this.helperCalls > MAX_HELPERS) throw this.limit('WEB_HELPER_COUNT_CAP');
     const limit = stage === 'publish-build' ? BUILD_INPUT : stage === 'snapshot' ? CAP : 4096;
     const input = Buffer.isBuffer(value) ? value : value === undefined ? undefined : boundedJson(value, limit, stage === 'publish-build' ? BUILD_NODES : 500000);
@@ -174,8 +182,8 @@ export class PackagingCustody {
     if (index !== undefined) args.push('--index', String(index));
     const capture = stage === 'read-input' ? 32 * 1024 ** 2 : 256 * 1024;
     const result = spawnSync(this.python, args, { input, maxBuffer: capture, stdio: ['pipe', 'pipe', 'pipe'] });
-    if (result.error) throw result.error;
-    if (result.status !== 0) throw new Error(`WEB_HELPER_${stage}:${result.status}:${result.stderr.toString('utf8')}`);
+    if (result.error) { this.sticky ??= result.error; throw result.error; }
+    if (result.status !== 0) { const error = new Error(`WEB_HELPER_${stage}:${result.status}:${result.stderr.toString('utf8')}`); this.sticky ??= error; throw error; }
     if (result.stderr.length > 256 * 1024) throw new Error('WEB_HELPER_STDERR_CAP');
     if (stage === 'complete-build') {
       if (result.stdout.length > 4096) throw new Error('WEB_COMPLETION_ACK_CAP');
@@ -185,12 +193,56 @@ export class PackagingCustody {
       return;
     }
     if (result.stdout.length > (stage === 'read-input' ? 32 * 1024 ** 2 : 4096)) throw new Error('WEB_HELPER_REPLY_CAP');
+    if (stage === 'compile-begin' || stage === 'compile-end' || (stage === 'read-input' && (value as Row)?.site === 'stylesheet')) {
+      if (result.stderr.length) throw new Error('WEB_CSS_LOAD_TRANSPORT');
+      const bytes = (input?.length ?? 0) + result.stdout.length + result.stderr.length;
+      this.retain(this.transportBytes, this.transportBytes + bytes); this.transportBytes += bytes;
+      const before = this.processed; this.processed += bytes;
+      if (this.processed > BODY_WORK) throw this.limit('WEB_AGGREGATE_BODY_CAP');
+      this.retain(before, this.processed);
+    }
     const raw = new TextDecoder('utf-8', { fatal: true }).decode(result.stdout);
     const reply = JSON.parse(raw);
     if (stage === 'publish-build') {
       if (!closed(reply, ['schema','record_sha256','context_binding_sha256']) || reply.schema !== 'web-build-token@1' || typeof reply.record_sha256 !== 'string' || !HEX.test(reply.record_sha256) || reply.context_binding_sha256 !== this.binding || !result.stdout.equals(canonicalLine(reply))) throw new Error('WEB_PUBLISH_TOKEN_INVALID');
     }
     return reply;
+  }
+
+  private compileState(invocation: string): { parent: Row; reads: Row[]; ended: boolean } {
+    const state = this.compiles.get(invocation);
+    if (!state || state.ended || state.parent !== this.scope.getStore() || !this.pending.has(state.parent)) throw new Error('WEB_CSS_COMPILE_LIFECYCLE');
+    return state;
+  }
+
+  private event(stage: string, data: Row): any {
+    if (this.loadOrdinal >= 32768) throw this.limit('WEB_CSS_LOAD_EVENT_CAP');
+    const response = this.request(stage, data, ++this.loadOrdinal);
+    const token = stage === 'read-input' ? response.read_token : response;
+    if (!closed(token, ['schema', 'index', 'sha256']) || token.schema !== 'web-css-load-token@1' || token.index !== this.loadOrdinal || typeof token.sha256 !== 'string' || !HEX.test(token.sha256)) throw new Error('WEB_CSS_LOAD_TOKEN_INVALID');
+    return response;
+  }
+
+  beginCompile(module: string, input: string, options: Row): string {
+    const parent = this.scope.getStore();
+    if (!parent || !this.pending.has(parent) || parent.hook !== 'transform' || this.compileOrdinal >= 32768) throw new Error('WEB_CSS_CALL_PARENT');
+    const invocation = `k${++this.compileOrdinal}`;
+    this.event('compile-begin', { invocation, parent_outer_call: parent.id, module, input: this.capture(input), options });
+    this.compiles.set(invocation, { parent, reads: [], ended: false });
+    return invocation;
+  }
+
+  readStylesheet(invocation: string, id: string, base: string): CssRead {
+    const state = this.compileState(invocation);
+    const response = this.event('read-input', { site: 'stylesheet', id, base, invocation, parent_outer_call: state.parent.id, ordinal: state.reads.length + 1 }) as CssRead;
+    state.reads.push(response.read_token);
+    return response;
+  }
+
+  endCompile(invocation: string): void {
+    const state = this.compileState(invocation);
+    this.event('compile-end', { invocation, parent_outer_call: state.parent.id, read_tokens: state.reads });
+    state.ended = true;
   }
 
   private reserve(delta: Measure): void {
@@ -250,13 +302,18 @@ export class PackagingCustody {
     if (this.sticky) return;
     try { action(); } catch (error) {
       this.sticky = error;
+      try { this.request('fail'); } catch { /* Preserve the first observation error. */ }
       if (error instanceof Error && /^WEB_(?:BUILD_RECORD|JSON_COMPLEXITY|AGGREGATE_NAME|METADATA_STRING|METADATA_LIST)_CAP$/.test(error.message)) error.message = this.limit(error.message).message;
     }
   }
 
   /** Fixed private sink, called by the original patched CSS operations. */
   record(stage: string, supplied: Row): void {
-    if (stage === 'capture_error') { this.sticky ??= new Error('WEB_' + supplied.reason); return; }
+    if (stage === 'capture_error') {
+      this.sticky ??= new Error('WEB_' + supplied.reason);
+      try { this.request('fail'); } catch { /* Preserve the first capture error. */ }
+      return;
+    }
     if (stage === 'admit') {
       const id = supplied.id as string;
       if (!/\.css(?:\?transform-only)?$/.test(id) || /\.module\.css(?:\?|$)/.test(id) || /@import\s+(?:url\()?\s*["'](?:\.|\/[^/])/.test(supplied.raw)) throw new Error(`WEB_CSS_PROFILE_UNSUPPORTED:${id}`);
@@ -278,6 +335,10 @@ export class PackagingCustody {
     if (!(stage in blobFields)) throw new Error(`WEB_CSS_STAGE_INVALID:${stage}`);
     const data = { ...supplied };
     for (const field of blobFields[stage]) data[field] = this.snapshot(data[field]);
+    if (stage === 'compile') {
+      const state = this.compiles.get(data.invocation);
+      if (!state || !state.ended || state.parent !== parent || data.imports.length !== state.reads.length || data.imports.some((row: Row, i: number) => boundedJson(row.read_token).compare(boundedJson(state.reads[i])) !== 0)) throw new Error('WEB_CSS_COMPILE_INPUT_MISSING');
+    }
     if (stage === 'compile') data.imports = data.imports.map((row: Row) => ({ ...row, content: this.snapshot(row.content) }));
     if (stage === 'css_chunk') data.styles = data.styles.map((row: Row) => ({ ...row, css: row.css === null ? null : this.snapshot(row.css) }));
     const operation = { schema: 'css-operation@1', id: `c${this.operations.length + 1}`, parent_outer_call: parent.id, stage, data: clean(data), status: 'returned', error: null };
@@ -339,6 +400,15 @@ export class PackagingCustody {
     }
   }
 
+  private failOriginal(): void {
+    if (this.originalFailed) return;
+    this.originalFailed = true;
+    if (this.compiles.size && !this.completion) {
+      // Diagnostic only; a secondary receipt failure never replaces the tool error.
+      try { this.request('fail'); } catch (error) { this.sticky ??= error; }
+    }
+  }
+
   private wrap(plugin: any, ordinal: number, hook: string): any {
     const descriptor = plugin[hook];
     const original = typeof descriptor === 'function' ? descriptor : descriptor.handler;
@@ -370,10 +440,10 @@ export class PackagingCustody {
         const result: any = row ? self.scope.run(row, () => Reflect.apply(original, self.facade(this), args)) : Reflect.apply(original, this, args);
         if (result && typeof result.then === 'function') {
           // Observe settlement, return the exact original promise/thenable.
-          result.then((value: any) => settle(value), () => { self.originalFailed = true; settle(null, true); });
+          result.then((value: any) => settle(value), () => { self.failOriginal(); settle(null, true); });
         } else settle(result);
         return result;
-      } catch (error) { self.originalFailed = true; settle(null, true); throw error; }
+      } catch (error) { self.failOriginal(); settle(null, true); throw error; }
     };
     if (typeof descriptor === 'function') return handler;
     return Object.create(Object.getPrototypeOf(descriptor), { ...Object.getOwnPropertyDescriptors(descriptor), handler: { ...Object.getOwnPropertyDescriptor(descriptor, 'handler'), value: handler } });
@@ -423,7 +493,7 @@ export class PackagingCustody {
           self.retainModule(info.id, row);
         });
       },
-      buildEnd(error) { if (error) self.originalFailed = true; },
+      buildEnd(error) { if (error) self.failOriginal(); },
       writeBundle: { order: 'post', sequential: true, handler(_options, bundle) {
         if (!self.writeSeen) { self.writeSeen = true; self.core('write_input', self.entries(bundle)); }
         const final = self.entries(bundle); self.retain([], final); self.finalBundle = final;
@@ -434,8 +504,8 @@ export class PackagingCustody {
         // The native caller's finish path records failure, never a completion.
         if (self.originalFailed) return;
         if (self.sticky) throw self.sticky;
-        if (self.pending.size || self.completion || !self.writeSeen) throw new Error('WEB_CALL_INCOMPLETE');
-        const payload = { resource_profile: 'web-private-plain@2', complete: true, profile: self.profile, observations: self.observations, css_operations: self.operations, modules: [...self.modules.values()], final_bundle: self.finalBundle, counts: { observations: self.observations.length, operations: self.operations.length, processed_bytes: self.processed } };
+        if ([...self.compiles.values()].some(state => !state.ended) || self.pending.size || self.completion || !self.writeSeen) throw new Error('WEB_CALL_INCOMPLETE');
+        const payload = { resource_profile: 'web-private-plain@2', complete: true, profile: self.profile, observations: self.observations, css_operations: self.operations, modules: [...self.modules.values()], final_bundle: self.finalBundle, counts: { observations: self.observations.length, operations: self.operations.length, processed_bytes: self.processed, transport_bytes: self.transportBytes } };
         const measured = measure(payload, BUILD_INPUT, BUILD_NODES, true);
         if (Object.keys(measured).some(key => measured[key as keyof Measure] !== self.metadata[key as keyof Measure])) throw new Error('WEB_METADATA_ACCOUNTING_MISMATCH');
         const encoded = boundedJson(payload, BUILD_INPUT, BUILD_NODES);

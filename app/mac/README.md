@@ -298,3 +298,30 @@ persistent512/32 MiB submeter through the whole command; reentry and nested
 bounded calls never replenish it. Every repeated parse/read counts. Default
 asset/freezer limits and shared census semantics stay unchanged. Portable
 measurements are separate from actual Mac execution and release acceptance.
+
+
+The actual single Tailwind compile now has a helper-owned loader lifecycle in
+`web-css-loads/`: unique invocation and original transform-call binding, input
+size/hash/options, ordered per-compile stylesheet ordinals and opaque read
+receipts written before callback return, then a successful end from that same
+awaited call. Repeats retain distinct tokens; zero-import compiles still have
+begin/end. Interleaved invocations keep their own sequence. The helper derives
+the complete directory inventory and exclusively creates `seal.json` before
+validating mutable operations. Publisher and separate fresh full verifier both
+reopen that inventory, every event and its original source descriptor, and
+require a complete bijection with compile operations and ordered imports.
+Partial imports, equal-byte subject substitutions, owner/order swaps, duplicate
+imports and whole missing compiles refuse. Unknown leaves, gaps, open compiles,
+extra reads and post-seal writes refuse; failed prefixes are diagnostic only.
+
+Additional sublimits are 32768 lifecycle/read files total, 256 KiB per event,
+8 MiB aggregate event JSON and 8 MiB terminal seal. Bounded enumeration stops
+before excess entries are retained. All existing read/JSON/build/name/body and
+transport caps still apply; event writes/readbacks, parsing and producer
+transport are charged. These limits supply no measured-fit or host-RSS claim.
+The selected optimizer profile passes no map and refuses an unexpected non-null
+returned map before handing code to Vite; both readers require null optimizer
+input/result maps. Vite's later CSS map is a separate relation. Map-bearing P
+graphs are unsupported-profile negatives, not production-positive evidence.
+This is local custody under the reviewed helper/producer model, not authenticated
+compiler execution or resistance to invisible same-UID forgery/restore.

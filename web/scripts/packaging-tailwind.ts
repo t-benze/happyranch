@@ -54,20 +54,23 @@ export function packagingTailwind(custody: PackagingCustody): Plugin {
       seen.add(id);
       const base = path.dirname(id.split('?')[0]);
       const imports: Record<string, unknown>[] = [];
+      const options = { base, from: id, polyfills: 3, sourcemap: false };
+      const invocation = custody.beginCompile(id, input, options);
       const compiler = await compile(input, {
         // Match the ordinary Tailwind plugin's AtProperty | ColorMix defaults.
         base, from: id, polyfills: 3,
         loadModule(module, moduleBase) { throw new Error(`WEB_CSS_MODULE_UNSUPPORTED:${module}:${moduleBase}`); },
         async loadStylesheet(module, moduleBase) {
-          const response = custody.request('read-input', { site: 'stylesheet', id: module, base: moduleBase }) as CssRead;
+          const response = custody.readStylesheet(invocation, module, moduleBase) as CssRead;
           importedUrls(response.content);
           if (imports.length >= 32768) throw new Error('WEB_CSS_IMPORT_CAP');
-          imports.push({ id: module, base: moduleBase, relative: response.relative, content: response.content, raw_sha256: response.raw_sha256, decoded_sha256: response.content_sha256 });
+          imports.push({ id: module, base: moduleBase, relative: response.relative, content: response.content, raw_sha256: response.raw_sha256, decoded_sha256: response.content_sha256, read_token: response.read_token });
           return { path: response.path, base: response.base, content: response.content };
         },
       });
+      custody.endCompile(invocation);
       if (compiler.root !== null || compiler.sources.length) throw new Error('WEB_CSS_UNSUPPORTED_SOURCE_DIRECTIVE');
-      custody.record('compile', { module: id, input, options: { base, from: id, polyfills: 3, sourcemap: false }, imports, features: compiler.features, root: compiler.root, sources: compiler.sources });
+      custody.record('compile', { module: id, input, options, invocation, imports, features: compiler.features, root: compiler.root, sources: compiler.sources });
       const candidates = new Set<string>();
       const utilities = !!(compiler.features & 16 /* pinned Tailwind4.3.0 Features.Utilities */);
       if (utilities) {
@@ -84,8 +87,9 @@ export function packagingTailwind(custody: PackagingCustody): Plugin {
       const ordered = [...candidates];
       const built = compiler.build(ordered);
       custody.record('candidate_build', { module: id, candidates: boundedJson(ordered).toString('utf8'), output: built, utilities });
-      const options = { file: id, minify: true, map: undefined };
-      const result = optimize(built, options);
+      const optimizerOptions = { file: id, minify: true, map: undefined };
+      const result = optimize(built, optimizerOptions);
+      if (result.map !== null && result.map !== undefined) throw new Error('WEB_CSS_OPTIMIZE_RELATION_INVALID');
       custody.record('optimize', { module: id, input: built, options: { file: id, minify: true, map: null }, output: result.code, map: result.map ?? null });
       return { code: result.code, map: null };
     },
