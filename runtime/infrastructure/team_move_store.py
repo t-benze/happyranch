@@ -1,6 +1,6 @@
 """Org-owned online move journal (THR296 seq135, B plus private D readback).
 
-No startup installer or public apply. E must supply actual founder admission;
+Native org attachment owns release preparation; generic DB never installs. E supplies actual founder admission;
 models confer no identity authority. General transitions still refuse COMPLETE;
 only D's private native readback transaction can commit the terminal receipt.
 """
@@ -696,7 +696,7 @@ def _transaction(db: Any) -> Iterator[sqlite3.Connection]:
 
 
 def install_team_move_schema(db: Any, *, org_slug: str) -> None:
-    """Explicit org owner only; NOT called by startup/generic DB in slice B.
+    """Native org release owner only; never generic DB or diagnostic recovery.
 
     The release-reference builder also uses this literal on disposable org
     references. No migration of existing columns or relation repair is allowed.
@@ -708,7 +708,10 @@ def install_team_move_schema(db: Any, *, org_slug: str) -> None:
         # discriminator. Generic Database/runtime-audit lack it and refuse.
         from runtime.infrastructure.workflow_schema import validate_workflow_schema
         validate_workflow_schema(conn, expected_org_slug=org_slug)
-        if not validate_team_move_schema(conn, org_slug=org_slug):
+        installed = validate_team_move_schema(conn, org_slug=org_slug)
+        if installed and conn.execute("SELECT 1 FROM team_move_operations WHERE active_slot=1").fetchone():
+            raise TeamMoveError("team_move_startup_recovery_required")
+        if not installed:
             conn.execute(TEAM_MOVE_SCHEMA_SQL)
         validate_team_move_schema(conn, org_slug=org_slug)
 
@@ -931,7 +934,7 @@ class TeamMoveStore:
         return updated
 
 
-def inspect_team_move_database(path, *, org_slug: str, require_existing=False):
+def inspect_team_move_database(path, *, org_slug: str, require_existing=False, reader_capabilities=None):
     """Schema owner's coherent read BEFORE Database compatibility writers.
 
     Reads complete optional layout/history, never installs/upgrades or repairs.
@@ -963,6 +966,10 @@ def inspect_team_move_database(path, *, org_slug: str, require_existing=False):
             raise TeamMoveError("team_move_startup_database_identity_changed")
         conn.execute("BEGIN")
         present = validate_team_move_schema(conn, org_slug=org_slug)
+        # Empty installed layouts need a compatible reader too. An old-reader
+        # check cannot infer absence from the lack of an active operation.
+        if present and reader_capabilities is not None and "online-team-move@3" not in reader_capabilities:
+            raise TeamMoveError("team_move_incompatible_reader")
         row = conn.execute("SELECT * FROM team_move_operations WHERE active_slot=1").fetchone() if present else None
         # Raced loss/redirect is unknown even for an absent optional layout.
         after = path.lstat()
@@ -985,7 +992,7 @@ def inspect_team_move_database(path, *, org_slug: str, require_existing=False):
                 primary.add_note("team move inspection close failed: " + type(cleanup).__name__)
 
 
-def inspect_team_move_org(root, *, org_slug, require_database=False):
+def inspect_team_move_org(root, *, org_slug, require_database=False, reader_capabilities=None):
     """Normalize per-entry acquisition too; Path.is_dir hides unknown errors."""
     import os
     import stat
@@ -998,7 +1005,8 @@ def inspect_team_move_org(root, *, org_slug, require_database=False):
         if not stat.S_ISDIR(info.st_mode):
             return False, None
         from runtime.orchestrator._paths import OrgPaths
-        row = inspect_team_move_database(OrgPaths(root).db_path, org_slug=org_slug, require_existing=require_database)
+        row = inspect_team_move_database(OrgPaths(root).db_path, org_slug=org_slug,
+            require_existing=require_database, reader_capabilities=reader_capabilities)
         if root.lstat() != info:
             raise TeamMoveError("team_move_startup_org_identity_changed")
         return True, row

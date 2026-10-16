@@ -277,6 +277,12 @@ class OrgState:
             install_or_recover(db, expected_org_slug=slug)
             with db._lock:
                 layout = validate_workflow_schema(db._conn, expected_org_slug=slug)
+            # Native org release preparation, after strict early move discovery
+            # and complete workflow validation, before any roster/publication or
+            # producer attachment. Generic Database and diagnostic recovery never
+            # install this extension. An existing hold/unknown layout refuses.
+            from runtime.infrastructure.team_move_store import install_team_move_schema
+            install_team_move_schema(db, org_slug=slug)
             if layout == "F":
                 logger.warning("org %r: %s", slug, draft_migration_guidance(
                     org_slug=slug, runtime_root=str(root.parent.parent),

@@ -1,13 +1,44 @@
 # Web And CLI
 
-## Public online team-move E source — THR296seq135 / TASK11345
+## Integrated online team-move F candidate — THR296seq135 / TASK11345
 
-The founder service and `happyranch teams move capability/preview/apply/show/recover`
-are wired in source. `APPLY_AVAILABLE=False` and
-`whole_history_integration_acceptance` still gate every new apply and explicit
-recovery execution; no request/environment/private bypass exists. Preview and
-saved-state reads are available to the existing bearer + `_require_human`
+The integrated F candidate supplies founder-controlled service/CLI source with
+`APPLY_AVAILABLE=True` and empty `NOT_INTEGRATED`. This candidate still needs
+independent whole-feature review, same-final-head SOURCE/POLICY/STATIC QA and
+manager guarded merge. Unmerged source is not accepted or activated capability.
+The actual daemon service independently checks schema, native org/coordinator,
+profile, host/tracker, naming and current authority before advertising apply.
+Explicit recovery uses the SAME native owner gates while allowing a diagnostic
+org/fenced publisher; `recover_available` and `recovery_incomplete_reasons` are
+separate from apply readiness. Neither projection certifies quiescence. Unknowns
+refuse with actionable reasons; no flag/private bypass/acceptance marker exists.
+Preview and saved-state reads retain the existing bearer + `_require_human`
 boundary, whose shared identity-less secret does not prove human presence.
+
+F native release preparation runs through `OrgState.load`: strict read-only move
+discovery precedes naming preflight, generic compatibility writes, roster
+validation, publication and producer admission. After complete native workflow
+validation, the DB-owned `install_team_move_schema` transaction validates exact
+existing layout/history/org identity, refuses held/unknown state, installs only
+the literal ONE table if absent, and validates before COMMIT. Repeated compatible
+attachment is idempotent. Generic Database/runtime-audit, capability/preview/show
+and restricted diagnostic recovery never install or repair it. Source delivery
+does not call it on production: separately authorized compatible release loading
+through the supported launcher performs native preparation; Founder assembles
+no files, SQL or offline manifest. Missing schema/owners are engineering release
+dependencies. Even an empty installed table requires reader@3. An absent optional
+layout remains compatible with generic/older readers; source rollback cannot
+undo durable state or grant a downgrade.
+
+F also freezes C2 thread retry initialization explicitly, including EMPTY
+budgets. New initial/fallback/nudge phase initialization is distinct from a
+frozen zero budget; deferral/reentry cannot replenish it. Old missing facts keep
+their original history interpretation but refuse ambiguous new retry/reentry
+with `team_move_thread_retry_initialization_unknown`; no history is backfilled.
+Updated shell/Mac launchers require `online-team-move@3` (reads old @1/@2), so
+earlier supported parsers refuse before startup. Already-running old daemons,
+obsolete launchers and unchecked old interpreters remain outside that guard.
+All behavioral/installation/recovery/launcher observations remain UNEXECUTED.
 Agents must not self-authorize with ambient credentials. Manage-agent retains
 team/role and cannot transfer agents.
 
@@ -2957,8 +2988,8 @@ composer, draft, attachments and selection; neither action submits a message.
 ## Private team-move D source and launcher protocol
 
 D supplies internal preview/operation/recovery owners. E now mounts the founder
-service/CLI; apply and recover execution remain disabled pending F acceptance.
-Updated shell and Mac bundled/dev launchers pass `--reader-guarded-start=online-team-move@2`; older
+service/CLI; F proposes source enablement with actual native readiness gates.
+Updated shell and Mac bundled/dev launchers pass `--reader-guarded-start=online-team-move@3`; older
 supported argparse readers reject that protocol before startup. Runtime switch
 and registration preserve unresolved holds instead of detaching their org. Early
 schema-owner discovery keeps an unresolved/unknown org diagnostic-only before
@@ -2968,7 +2999,7 @@ this cooperative guard. Source rollback cannot undo durable decisions. No restar
 activation, preview against the live roster or live move was executed. SAME13
 behavior/migration/recovery/launcher outcomes remain UNEXECUTED; integration
 INCLUDING callback SKIPPED24342 and Python units RETIRED. See the current D section
-of the approved online-team-move spec. The @2 protocol covers durable operation
+of the approved online-team-move spec. The earlier D @2 protocol covered durable operation
 staging ownership and per-org acquisition containment. Earlier diagnostics survive
 register/switch/state adoption. Restricted recovery retains the original error
 when close also fails; standalone close failures stay classified and held.
@@ -2984,7 +3015,7 @@ outside leases. Matching attachment revalidates its actual already-open DB owner
 in the short segment; only successful attachment clears its diagnostic. Other
 roots, failed attachment, current holds and malformed history stay held. D's
 own-operation/native-identity exception also checks EMPTY dependencies. Public
-recovery/reattachment is wired by E, still source-gated pending F acceptance.
+recovery/reattachment is wired by E and uses F's actual native readiness gates.
 Failed open or raced loss never establishes fresh
 absence. Discovery/publication capture runs outside durable mutation leases, with
 native capture revalidation in the final DB leaf. Unknown staging cleanup stays

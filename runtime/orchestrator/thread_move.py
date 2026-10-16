@@ -68,14 +68,18 @@ class ThreadPreparation:
 
     def start_phase(self, phase: str) -> None:
         with self.admission.db._lock:
-            self.admission.write(self, phase=phase, ordinal=0, schedule=())
+            if self.state.retry_initialized is None:
+                raise DeferredTeamMove("team_move_thread_retry_initialization_unknown")
+            self.admission.write(self, phase=phase, ordinal=0, schedule=(), retry_initialized=False)
         self.before_fifo()
 
     def retry_schedule(self, boundary: str, schedule: tuple[float, ...]) -> tuple[int, tuple[float, ...]]:
         with self.admission.move.gate, self.admission.db._lock:
             self.admission.revalidate_uncommitted(self)
-            if not self.state.schedule:
-                self.admission.write(self, boundary=boundary, schedule=tuple(float(x) for x in schedule))
+            if self.state.retry_initialized is None:
+                raise DeferredTeamMove("team_move_thread_retry_initialization_unknown")
+            if self.state.retry_initialized is False:
+                self.admission.write(self, retry_initialized=True, boundary=boundary, schedule=tuple(float(x) for x in schedule))
             elif self.state.boundary != boundary:
                 raise DeferredTeamMove("team_move_thread_retry_owner_mismatch")
             return self.state.ordinal, self.state.schedule
@@ -84,7 +88,7 @@ class ThreadPreparation:
         # Persist original retry budget BEFORE sleeping/reacquiring; no gate in
         # the host terminal leaf. Each unknown attempt stays in the audit.
         with self.admission.db._lock:
-            if ordinal > len(self.state.schedule):
+            if self.state.retry_initialized is not True or not self.state.ordinal < ordinal <= len(self.state.schedule):
                 raise DeferredTeamMove("team_move_thread_retry_budget")
             self.admission.write(self, ordinal=ordinal)
 
@@ -96,6 +100,8 @@ class ThreadPreparation:
                     return False
                 if self.attempt_open:
                     raise DeferredTeamMove("team_move_thread_attempt_unsettled")
+                if self.state.retry_initialized is not True:
+                    raise DeferredTeamMove("team_move_thread_retry_initialization_unknown")
                 self.admission.db._conn.execute("BEGIN IMMEDIATE")
                 previous = self.state
                 try:
@@ -255,6 +261,8 @@ class ThreadMoveAdmission:
                 raise DeferredTeamMove("team_move_thread_owner_live")
             state = self.store.read_uncommitted(inv)
             if state is not None:
+                if state.retry_initialized is None:
+                    raise DeferredTeamMove("team_move_thread_retry_initialization_unknown")
                 if state.unknown or not (state.deferred and state.producer_settled):
                     raise DeferredTeamMove("team_move_thread_owner_unsettled")
             elif inv.started_at is not None:
@@ -262,7 +270,7 @@ class ThreadMoveAdmission:
             else:
                 state = ThreadLifecycle(org_slug=self.move.store.org_slug,
                     invocation_id=inv.id, thread_id=inv.thread_id, agent_id=inv.agent_name,
-                    session_id=f"sess-{uuid.uuid4().hex}", preparation_id=uuid.uuid4().hex)
+                    session_id=f"sess-{uuid.uuid4().hex}", preparation_id=uuid.uuid4().hex, retry_initialized=False)
             owner = ThreadPreparation(self, inv, state)
             self.write(owner, deferred=False, producer_settled=False)
             self.live[inv.id] = owner
@@ -434,7 +442,9 @@ class ThreadMoveAdmission:
                 state = self.store.read_uncommitted(inv)
                 owner = self.live.get(inv.id)
                 code = None
-                if state and (state.unknown or not state.producer_settled):
+                if state and state.retry_initialized is None and inv.status is ThreadInvocationStatus.PENDING:
+                    code = "thread_retry_initialization_unknown"
+                elif state and (state.unknown or not state.producer_settled):
                     code = "thread_cleanup_unknown" if state.unknown else ("thread_running" if owner and owner.attempt_open and owner.state.attempts[-1].launched else "thread_preparation_or_lost_owner")
                 elif inv.status is ThreadInvocationStatus.PENDING:
                     code = "thread_pending_obligation" if inv.started_at is None or (state and state.deferred) else "thread_legacy_owner_unknown"
@@ -525,7 +535,7 @@ class ThreadMoveAdmission:
                     continue
                 state = self.store.read_uncommitted(inv)
                 if state is not None:
-                    if state.unknown or not (state.deferred and state.producer_settled):
+                    if state.retry_initialized is None or state.unknown or not (state.deferred and state.producer_settled):
                         continue
                 elif inv.started_at is not None:
                     continue

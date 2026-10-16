@@ -76,7 +76,7 @@ def invoke(owner, slug, callback, *, operation_key=None, operation_id=None):
             except Exception:
                 pass  # Unknown is not uncommitted or successful absence.
         status = 404 if code in {"unknown_org", "team_move_unknown_operation"} else (
-            503 if code in {"team_move_apply_disabled", "team_move_native_profiles_unavailable", "team_move_schema_absent"} else 409)
+            503 if code in {"team_move_apply_disabled", "team_move_capability_unavailable", "team_move_native_profiles_unavailable", "team_move_schema_absent"} else 409)
         detail = {"code": code, "committed": observation["committed"] if observation else None,
             "recovery_required": observation["recovery_required"] if observation else True,
             "operation": observation, "next_action": "read_capability_and_show_same_key"}
@@ -84,6 +84,8 @@ def invoke(owner, slug, callback, *, operation_key=None, operation_id=None):
             detail.update(committed=False, recovery_required=False,
                 next_action="resolve_named_blockers_or_release_dependency_then_preview")
         detail["diagnostic"] = error_view(exc)
+        if hasattr(exc, "incomplete_reasons"):
+            detail["incomplete_reasons"] = exc.incomplete_reasons
         if hasattr(exc, "blockers"):
             # apply already carries the public projection; recovery carries
             # native facts. Both are reduced to the same explicit safe fields.

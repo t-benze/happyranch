@@ -4,12 +4,13 @@ description: Shared daily/manual own-workspace cleanup contract — bounded, Git
 ---
 
 
-## Public team-move E handoff (THR296seq135)
+## Integrated team-move F candidate handoff (THR296seq135)
 
 Founder-controlled `teams move capability/preview/apply/show/recover` now has
-public service/CLI source. APPLY_AVAILABLE=False and whole-history acceptance
-gate apply AND recovery; skills/agents gain no execution or ambient-bearer
-self-admission authority. Manage-agent retains team/role; transfers use the
+public service/CLI source. F proposes APPLY_AVAILABLE=True with actual native
+apply AND recovery readiness gates; whole-feature independent acceptance and
+manager guarded merge remain required. Skills/agents gain no execution or
+ambient-bearer self-admission authority. Manage-agent retains team/role; transfers use the
 separate admitted founder operation. Preview uses only the pure native planner,
 not materializers/resets/reservations. Exact normalized client bytes/key are
 privately fsynced before POST, including exact saved-file reuse/apply reads;
@@ -34,17 +35,43 @@ no automatic retry or TTL takeover. Both show GET forms declare202/CLI3 in-fligh
 D staging/history/leases, C1-C3 uncertainty/EMPTY budgets and actual callbacks
 remain. Earlier unavailable-E statements below describe historical checkpoints.
 Current contract: docs/superpowers/specs/2026-10-14-online-team-move.md and
-engineering-owned docs/runbooks/online-team-move.md. E disabled source, F reviewed
-enablement, separately authorized release loading and exact Founder live
-operation are distinct. Shared bearer does not prove human presence. Behavior
+engineering-owned docs/runbooks/online-team-move.md. F candidate source,
+independent acceptance/merge, separately authorized release loading and exact
+Founder live operation are distinct. Shared bearer does not prove human presence. Behavior
 UNEXECUTED, integration INCLUDING callback SKIPPED24342, units RETIRED; no new
 cases/campaign, live operation, deployment or cleanup authority follows.
 
 
+F native release preparation runs through `OrgState.load`: strict read-only move
+discovery precedes naming preflight, generic compatibility writes, roster
+validation, publication and producer admission. After complete native workflow
+validation, the DB-owned `install_team_move_schema` transaction validates exact
+existing layout/history/org identity, refuses held/unknown state, installs only
+the literal ONE table if absent, and validates before COMMIT. Repeated compatible
+attachment is idempotent. Generic Database/runtime-audit, capability/preview/show
+and restricted diagnostic recovery never install or repair it. Source delivery
+does not call it on production: separately authorized compatible release loading
+through the supported launcher performs native preparation; Founder assembles
+no files, SQL or offline manifest. Missing schema/owners are engineering release
+dependencies. Even an empty installed table requires reader@3. An absent optional
+layout remains compatible with generic/older readers; source rollback cannot
+undo durable state or grant a downgrade.
+
+F also freezes C2 thread retry initialization explicitly, including EMPTY
+budgets. New initial/fallback/nudge phase initialization is distinct from a
+frozen zero budget; deferral/reentry cannot replenish it. Old missing facts keep
+their original history interpretation but refuse ambiguous new retry/reentry
+with `team_move_thread_retry_initialization_unknown`; no history is backfilled.
+Updated shell/Mac launchers require `online-team-move@3` (reads old @1/@2), so
+earlier supported parsers refuse before startup. Already-running old daemons,
+obsolete launchers and unchecked old interpreters remain outside that guard.
+All behavioral/installation/recovery/launcher observations remain UNEXECUTED.
+
+
 ## D private operation and startup holds (THR296seq135)
 
-The corrected reader is online-team-move@2 (also reads old @1 records); supported
-launchers pass --reader-guarded-start=online-team-move@2 and reject earlier D
+The corrected reader is online-team-move@3 (also reads old @1/@2 records); supported
+launchers pass --reader-guarded-start=online-team-move@3 and reject earlier D
 readers. Per-org open/identity/SQLite errors remain diagnostic-only and survive
 startup/switch readback. Restricted recovery preserves the original error on
 close failure; standalone close failures retain native classification and holds.
@@ -67,12 +94,12 @@ outside leases. Matching attachment revalidates its actual already-open DB owner
 in the short segment; only successful attachment clears its diagnostic. Other
 roots, failed attachment, current holds and malformed history stay held. D's
 own-operation/native-identity exception also checks EMPTY dependencies. Public
-recovery/reattachment is source-wired by E, still gated pending F; no skill authority is granted.
+recovery/reattachment is source-wired by E and gated on actual native owners by F; no skill authority is granted.
 
 
 D supplies private canonical/context/reset/profile/publication/recovery source.
-E now supplies public API/CLI source; apply/recover execution remains disabled
-until F independent acceptance;
+E supplies public API/CLI source; F proposes reviewed source enablement with
+separate actual apply/recovery readiness gates;
 no skill or agent may invoke the private owner or use ambient bearer credentials
 to self-admit a move. Manage-agent still cannot transfer teams. New startup
 schema-owner discovery precedes compatibility writers and partial membership;
@@ -833,4 +860,5 @@ cannot erase it. The common1800-second window includes reservation admission.
 Off/default dry_run, metadata/process/age/containment safeguards and manual dry-run
 remain; no cleanup/activation authority follows. These source changes have no
 behavioral/migration/recovery proof; integration INCLUDING callback SKIPPED24342,
-Python units RETIRED. APPLY_AVAILABLE=false, no COMPLETE writer; D/E/F remain root-owned.
+Python units RETIRED. That C3 checkpoint had no COMPLETE writer; current D/E/F
+source and independent gates are described above. No live capability follows.

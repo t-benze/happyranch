@@ -8,29 +8,44 @@ is historical/deferred and supplies no online readiness or execution evidence.
 
 ## Source, release and operation gates
 
-E supplies all four public operations and capability/key reads.
-`APPLY_AVAILABLE=False` and `NOT_INTEGRATED=("whole_history_integration_acceptance",)`
-in the native coordinator keep new apply and recovery execution disabled.
-Preview and show do not enable them. No environment variable, request field,
-private constructor option, alternate endpoint or agent permission changes this.
-
-Engineering must finish root-owned F: full integrated immutable history/diff and
-producer/writer/lifetime inventory review, independent FULL reviewer APPROVE,
-same-head expressly SOURCE/POLICY/STATIC QA PASS, actual lint/static checks and
-manager guarded merge, then the final reviewed source enablement change. The
-already-approved F scope needs no repeated roster/schema/admission approval.
-This is source acceptance, not behavioral or whole-feature acceptance.
+F proposes final source enablement (`APPLY_AVAILABLE=True`, empty
+`NOT_INTEGRATED`) together with native schema preparation and actual daemon
+readiness checks. This unmerged candidate is not accepted or activated capability.
+Independent FULL review of the ENTIRE composed feature, same-final-head expressly
+SOURCE/POLICY/STATIC QA, lint/static checks and manager guarded merge must assess
+this enablement in the same PR. Prior slice verdicts do not accept F. Source/static
+acceptance supplies no behavioral acceptance. No runtime flag, environment opt-in,
+private bypass, request field or fabricated acceptance marker enables it.
 
 A separately authorized release/host owner loads the reviewed release through
 the supported guarded launcher. Loading/restart is not performed by this task.
-Engineering owns optional-table preparation using the existing org-only
-`install_team_move_schema` owner under that release operation's exact authority;
-startup, capability and preview never install it. `team_move_schema_absent` is
-an engineering activation dependency, not an instruction for Founder to edit
-files or call private helpers. Do not enable/advertise apply before this
-dependency and F's final integrated release handoff are resolved. ONE optional
-table, complete old/new schema/data/history references and generic Database /
-runtime-audit exclusions remain; no general migration command is introduced.
+Engineering owns optional-table preparation through normal `OrgState.load` under
+that release operation's exact authority. Strict read-only move discovery runs
+BEFORE naming preflight, generic compatibility writes, partial-roster validation,
+publication and producer admission. After complete native workflow validation,
+the existing DB-owned `install_team_move_schema` transaction validates org identity
+and exact existing layout/history, refuses held/unknown state, installs the ONE
+literal table only when absent and validates before COMMIT. Repeat compatible
+attachment is idempotent. This does not upgrade reserved workflow layouts.
+Generic Database/runtime-audit construction, capability/preview/show and restricted
+diagnostic recovery never install or repair it. An unresolved operation remains
+diagnostic-only before normal attachment. `team_move_schema_absent` is an
+engineering loading/preparation dependency; Founder runs no private helper,
+manual SQL, file assembly or offline manifest. Complete independent old/new
+release references and absence compatibility remain; even an empty installed
+table requires compatible reader@3. There is no general migration command.
+
+For a separately authorized source release on the shell installation, the release
+owner selects the reviewed compatible checkout using the existing release process
+and uses its supported `scripts/daemon.sh start`; it passes
+`--reader-guarded-start=online-team-move@3`. `scripts/daemon.sh status` observes that
+launcher. Start does not replace an already-running daemon: any required stop/load
+belongs to the separately authorized external host owner. The native Mac app's
+bundled and development launchers pass the same protocol. Runtime selection uses
+the existing `happyranch use /absolute/registered/runtime` boundary, which checks
+source and destination holds; it is not a schema-repair workaround. No such
+command was run here. Engineering then reads the loaded public capability below;
+installed Git identity or a healthy launcher alone is not loaded-SHA attestation.
 
 The exact live preview/apply/readback and ordinary consultant thread observations
 need their own explicit operation authorization. Source approval alone grants
@@ -53,11 +68,29 @@ happyranch teams move recover --org happyranch OPERATION_ID --expected-revision 
 ```
 
 Each level has standard `--help`. Capability reports version1, source enablement,
-effective availability, every incomplete reason, optional schema/attachment state,
-current active operation and required reader `online-team-move@2`. E reports
-disabled even for an idle roster. An old daemon's404 is unsupported capability,
+effective `apply_available`, `recover_available`, their distinct incomplete-reason
+lists, optional schema/attachment state, current active operation and required
+reader `online-team-move@3`. Apply needs the actual matching DB/coordinator/roster,
+profile coordinator, live host admission, actual tracker binding, ready naming and
+matching current authority snapshot. A held operation or running service owner
+prevents new apply. Recovery retains schema/native owner prerequisites while
+allowing diagnostic-only attachment and fenced publication; native previous-owner
+proof/CAS still decides whether any recovery may proceed. Same-operation running
+recovery remains a show/202 response. These observations reserve nothing and
+certify no idle roster. An old daemon's404 is unsupported capability,
 not a busy operation or success. Read capability again after authorized loading;
 do not fall back to the offline utility or a private apply helper.
+
+Missing schema, profiles, host/tracker or matching coordinator belongs to the
+engineering release/attachment owner. `diagnostic_org_requires_recovery` directs
+the admitted operator to show and explicit SAME-operation recovery, never normal
+attachment of partial files. `team_move_authority_not_ready` preserves a bounded
+native `authority_unavailable_code`; resolve that publisher through its own owner.
+`team_move_names_unavailable` requires native naming readiness, not a name rewrite.
+Stopping/busy owners must finish their real lifecycle. Admission refuses503 with
+`team_move_capability_unavailable` and actual `incomplete_reasons`; no unknown is
+treated as availability. Move-specific task/thread/job/cleanup blockers still
+come from the complete preview/final census, independently of capability.
 
 Native naming resolves each human argument to an active permanent ID before
 normalization/digest. Current ASCII names and permanent IDs are accepted; former
@@ -223,7 +256,12 @@ file/digest; COMPLETE/release and actual obligation delivery. Ordinary subsequen
 Founder-addressed consultant turns observe fresh worker context without protected
 denial attempts. Preserve private memory. Each absent observation stays missing.
 
-Updated shell and native Mac launchers require corrected reader@2 (reads old@1).
+Updated shell and native Mac launchers require reader@3 (reads old@1/@2).
+It covers explicit C2 retry initialization, including an EMPTY budget. Old missing
+facts remain readable without backfill; ambiguous pending retry/reentry refuses
+`team_move_thread_retry_initialization_unknown` and remains a native blocker.
+Engineering resolves that retained owner through its existing process; never
+delete audits, replace a token/SID or retry with a fresh budget to clear it.
 Empty optional layouts still need compatible code. Already-running old daemons,
 obsolete launchers and unchecked old interpreters are outside the cooperative
 guard. No public undo or old-reader downgrade is safe for a durable decision.
@@ -271,4 +309,5 @@ RETIRED. No new cases/parameters/fixtures/replacement campaign/behavioral verifi
 ad hoc E2E, protected mutation/kill/replay/restoration, production feature DB
 operation, live preview/move/reset, deployment/restart/shutdown or Jenkins ran.
 Static success never supplies behavioral/test-authoring PASS or feature-complete
-acceptance. Root owns F, final enablement, activation and whole-feature closure.
+acceptance. Root owns independent F acceptance/merge and the separate activation,
+exact Founder operation/readback and ordinary worker observation handoffs.

@@ -4,20 +4,28 @@ Founder THR-296 seq135 (2026-10-14T05:17:20Z), “@engineering_manager start the
 
 ## Source status and serial ownership
 
-Slice B implements the private durable store, closed request/state/progress/receipt contract, optional layout validation and independent whole-release schema reference selection. C1 binds the org-owned coordinator to actual task allocation, preparation and final Pause/host commitment; its projection remains diagnostic. The installer is explicit and org-only; production startup never calls it. Its only external caller in B constructs disposable release-reference databases. Existing installed optional layouts are validated without installation or row rewriting. Generic Database/runtime-audit remain extension-free.
+This F candidate composes the merged B/C1/C2/C3/D/E feature with native org
+schema preparation, actual runtime readiness and the EMPTY thread retry fix.
+Source enablement is proposed in this PR; independent whole-feature review,
+same-final-head SOURCE/POLICY/STATIC QA and manager guarded merge remain required.
+No prior slice verdict accepts F. Loading and the exact live operation remain
+separately authorized. No installer or feature operation runs on production here.
 
-E now wires founder preview/apply/show/recover routes/CLI and bounded daemon ownership; the current public E section below supersedes earlier checkpoint absence statements. There is no enabled apply or available-feature claim. C1 task, C2 thread and C3 remaining native producer/writer admission exclusion are active in source whenever a valid durable hold exists. `APPLY_AVAILABLE=False`; General store transitions refuse `COMPLETE`; D supplies its private native readback/receipt leaf. Public apply remains unavailable until E/F acceptance. Source/static acceptance is separate from behavior, activation and live-operation acceptance. A table alone cannot make a prefeature reader recognize a hold.
+| Unit | Current composed source |
+| --- | --- |
+| B | ONE optional org table, strict old/new layout/history and independent complete release references. |
+| C1 | Causal task/workflow allocation/preparation/Pause/host admission and retained uncertainty. |
+| C2 | All thread purposes/claims/probes/exchange/drain/redelivery; F freezes EMPTY budgets with old-history readers. |
+| C3 | Dream/wake/schedule/job/remote census, sweeper and native writer admission/deferral. |
+| D | Canonical/context/reset/profile/publication, native COMPLETE readback/release, diagnostic recovery and launcher guards. |
+| E | Founder API/client/CLI, positive exact-file/parent custody, safe diagnostics and GET202 parity. |
+| F | Native schema preparation and proposed source enablement; independent integrated review/QA/merge pending. |
 
-| Serial unit | Required closure; source status |
-|---|---|
-| C1 | Task allocation/claim and preparation, causal task closure, workflow producers/final-launch, Pause/tracker/host retry ownership: integrated in source; behavioral evidence UNEXECUTED. Installed-layout legacy unowned producers refuse before claim/preparation. |
-| C2 | Thread preparation/final claim/launch, all purposes, durable deferred obligations/attempts, probe admission, census and captured running-turn drain seams: integrated in source; behavior UNEXECUTED. Full operation startup and containment recovery remain D. |
-| C3 | Dream/wake/schedule/job preparation/final launch, held native recovery/redelivery, complete causal job/remote/workspace census and roster/enrollment/profile/skill/name/policy/cleanup writer reservations: integrated in source; behavior UNEXECUTED. No remote launch engine is added. |
-| D | Private native preview, canonical files/cache, audited resets, context/skills, one profile batch/publication owner, bounded recovery, early diagnostic startup and launcher protocol: integrated in source by D; behavior UNEXECUTED, E/F remain gated. |
-| E | Founder-controlled API/client/CLI, private request custody, diagnostic recovery/lifetime wiring and supported runbook: integrated in source, APPLY_AVAILABLE=False; behavior UNEXECUTED. |
-| F | Root whole-diff/inventory review, independent scoped QA, guarded merge and supported activation/live handoff: outstanding. |
+All product behavior remains UNEXECUTED. Historical C1–C3 absence/disabled
+statements below are attributed source checkpoints; this summary and the
+integrated F contract supersede their later-unit status claims.
 
-## C1 task and host contract
+## Historical C1 task/host checkpoint (current F lifecycle above)
 
 One coordinator belongs to the org DB owner, bound by Orchestrator to the server TeamsRegistry. Allocation and claims validate optional installed state in their actual transaction; absence preserves ordinary operation and malformed/unknown presence refuses. No production installer or move writer is added. Closure includes assigned/default manager, preserved task team, parents/descendants/revisits, declared chain/fanout agents and immutable workflow bindings. Allocation cannot cross a held closure, including a cross-team child that could wake the old manager. Existing pending/paused/job-blocked/recovery/workflow work is retained as a blocker; no task, result or attribution is cancelled/relabelled.
 
@@ -54,7 +62,7 @@ The task-specific deferred notification seam retains tagged metadata and can red
 
 C1/C2 review/QA uses the plan section8 SOURCE/POLICY/STATIC acceptance. Race, hold/deferral/redelivery, callback/quiescence, recovery/startup and compatibility behavior remains UNEXECUTED; integration SKIPPED THR243seq42. No new unit/integration cases or fixtures, retired units, ad hoc E2E, protected experiments, synthetic/live tasks, DB installation/migration, move or activation is authorized by this source slice.
 
-## C3 remaining producer and writer contract
+## Historical C3 producer/writer checkpoint (current F lifecycle above)
 
 `ProducerMoveAdmission`, owned by the same org coordinator, resolves dream/wake/schedule/job rows to permanent agent, org, source, occurrence and owning SID before AgentDef/prompt/model/skill/context preparation. Native schedulers reserve affected preparation before routine reads and refuse before minting due work or consuming missed-slot/expiry bookkeeping. Schedule claim and missed rules share the short gate and original DB lock; dream/wake inserts and claims independently recheck under their actual DB owner. No gate spans filesystem work, await, throttle sleep, provider execution or publication-lock acquisition. Unknown installed/unowned layouts refuse; absent layouts remain supported without installation.
 
@@ -122,7 +130,7 @@ These corrections remain SOURCE/POLICY/STATIC only: behavior UNEXECUTED,
 integration INCLUDING callback SKIPPED24342, units RETIRED. APPLY_AVAILABLE=false;
 D/E/F and actual recovery/old-reader/activation acceptance remain root-owned.
 
-## C2 thread admission and deferred obligations
+## Historical C2 admission checkpoint (current F correction above)
 
 C2 integrates actual REPLY, BOOTSTRAP and TASK_FOLLOWUP producers. One org-owned
 thread admission owner resolves permanent identity from the persisted INTEGER
@@ -253,7 +261,9 @@ The sole intentional resume change is `agent_session_id=NULL`, `last_resumed_seq
 
 The row also stores existing-boundary admitted-founder provenance (principal, org, `_require_human`, admission identity/time), constrained phase/revision, one nullable UNIQUE `active_slot` equal to1 while unresolved, immutable forward decision, per-agent reset/context evidence, per-file after progress, exact owned publisher invocation/journal/namespace/generation/digest, recovery ownership/quiescence evidence, bounded code/ID diagnostics and terminal refusal/abandonment receipt bytes/digest. These internal types confer no identity authority. E must derive admission from the actual existing founder boundary, never a caller-supplied actor or ambient agent credentials.
 
-Installation uses the existing DB connection/RLock ownership, a short `BEGIN IMMEDIATE`, complete org workflow discriminator validation, one literal CREATE and exact layout/record validation before commit. No existing column/table/meaning changes, generic bootstrap addition or separate event relation. No automatic installation on reopen/startup/enable. SQL object/index/column/FK inventory compares the complete owned surface with a constructed literal reference; unexpected objects/partial layouts/versions and malformed records fail closed. Full history scans refuse overflow rather than declaring a capped census complete. Whole workflow release references include exactly optional naming/pause/move layouts; no broad whitelist or SQL-object stripping. F/E/G/H/I and v2 schemas/data/history remain unchanged.
+Installation uses the existing DB connection/RLock ownership, a short `BEGIN IMMEDIATE`, complete org workflow discriminator validation, one literal CREATE and exact layout/record validation before commit. No existing column/table/meaning changes, generic bootstrap addition or separate event relation. Final F preparation installs on compatible native org attachment only after
+early strict discovery and workflow validation, under separate release-loading
+authority. Generic construction/read/restricted recovery never installs. SQL object/index/column/FK inventory compares the complete owned surface with a constructed literal reference; unexpected objects/partial layouts/versions and malformed records fail closed. Full history scans refuse overflow rather than declaring a capped census complete. Whole workflow release references include exactly optional naming/pause/move layouts; no broad whitelist or SQL-object stripping. F/E/G/H/I and v2 schemas/data/history remain unchanged.
 
 Reservation, state/progress and existing `audit_log` writes commit together under the DB owner; exceptions, including interruption, roll back. Audit scope is `config:team-move:<operation_id>` with explicit admitted founder provenance. Reuse `insert_audit_log_uncommitted`; the committing audit method cannot be used inside this unit. Same key/exact body returns saved state/receipt without revision/audit/reset/publication churn. Changed body refuses; another unresolved reservation refuses. CAS refuses stale revision, skipped/backward transitions and immutable decision/progress rewrite. An unchanged state replay accepts the current or immediately preceding revision, adding no work. Unknown future completion layouts fail closed.
 
@@ -294,7 +304,7 @@ The root inventory must include every transitive caller/retry/fallback/callback/
 
 D must discover/validate the operation through DB/schema ownership before normal OrgState membership validation, compatibility writers, authority cold publication and task/thread/dream/wake/schedule/job recovery/admission. Exact forward-committed partial before/after state is reconstructed/repaired through the restricted owned recovery path before ordinary attachment. Corruption/unknown layout/owner/process evidence leaves that org diagnostic-only; other orgs may attach. Coherent roster plus incomplete contexts attaches only with durable affected holds installed. Source rollback never undoes resets/publication or clears a hold.
 
-All supported runtime attach/switch/launcher downgrade entrypoints must refuse an incompatible reader before execution when an unresolved move requires the corrected `online-team-move@2` reader (which also reads @1 records). This guard is NOT implemented by B's capability data. Empty additive schema is structurally recognized only by compatible layout readers; prefeature binaries do not learn hold semantics from a table. An updated in-process guard cannot control an already-running old daemon. Direct unchecked old-interpreter invocation is unsupported recovery. Apply stays unavailable until the root delivers the real guard and C1-D closure.
+All supported runtime attach/switch/launcher downgrade entrypoints must refuse an incompatible reader before execution when an unresolved move requires the corrected `online-team-move@3` reader (which also reads @1 records). This guard is NOT implemented by B's capability data. Empty additive schema is structurally recognized only by compatible layout readers; prefeature binaries do not learn hold semantics from a table. An updated in-process guard cannot control an already-running old daemon. Direct unchecked old-interpreter invocation is unsupported recovery. Apply stays unavailable until the root delivers the real guard and C1-D closure.
 
 ## Original public contract (historical B checkpoint; current E below)
 
@@ -336,7 +346,8 @@ cannot erase it. The common1800-second window includes reservation admission.
 Off/default dry_run, metadata/process/age/containment safeguards and manual dry-run
 remain; no cleanup/activation authority follows. These source changes have no
 behavioral/migration/recovery proof; integration INCLUDING callback SKIPPED24342,
-Python units RETIRED. APPLY_AVAILABLE=false, no COMPLETE writer; D/E/F remain root-owned.
+Python units RETIRED. That C3 checkpoint had no COMPLETE writer; current D/E/F
+source and independent gates are described above. No live capability follows.
 
 
 ## Private D operation source — THR296seq135 / TASK11345
@@ -344,10 +355,10 @@ Python units RETIRED. APPLY_AVAILABLE=false, no COMPLETE writer; D/E/F remain ro
 D now supplies the private native operation core in `team_move_operation.py`,
 with pure canonical/context planning, one two-consumer profile interval and one
 operation-owned publication fence. E now mounts the founder service/CLI under
-the existing admitted human boundary, with `APPLY_AVAILABLE=False`. A provenance
-model, agent bearer or caller success flag grants no authority. F and independent
-whole-history acceptance remain outstanding. Earlier B/C/D checkpoint absence
-statements describe those units; the public E section below is current.
+the existing admitted human boundary. F proposes source enablement subject to
+actual native readiness; independent whole-feature acceptance remains required.
+A provenance model, agent bearer or caller success flag grants no authority.
+Earlier B/C/D checkpoint absence statements describe those historical units.
 
 The planner uses native AgentDef/TeamsRegistry validation and instruction/skill
 selectors, without materializing, creating an ArtifactStore root, building a
@@ -397,7 +408,7 @@ handle validates the existing schema and exact images without bootstrap/migratio
 normal attachment or producer admission. Diagnostic orgs also fence global profile
 reconciliation/writers so their dependencies cannot disappear from the closure.
 Runtime registration/switch refuses to detach a hold. Updated shell and native Mac
-launchers pass `--reader-guarded-start=online-team-move@2`: supported older argparse readers reject
+launchers pass `--reader-guarded-start=online-team-move@3`: supported older argparse readers reject
 this protocol before startup, including the earlier D Boolean-flag reader.
 Updated launchers require a matching reader; direct
 old interpreters, already-running old daemons and obsolete launchers remain outside
@@ -446,7 +457,7 @@ shared-map insertion permit the existing post-attachment diagnostic removal.
 Failed attachment and other diagnostic roots stay held. D's matching own-operation
 exception likewise uses its opened native owner plus actual ContextVar identity,
 including EMPTY dependencies; neither exception performs filesystem discovery.
-Public recovery/reattachment is wired by E and remains source-gated pending F.
+Public recovery/reattachment is wired by E; F gates it on actual native owners.
 
 The one batch interval (including empty dependencies) captures AgentDefs, complete
 profile/dependency closure, candidate, current inputs and census outside durable
@@ -464,14 +475,45 @@ process-loss/launcher/live-move result remains UNEXECUTED; general integration
 INCLUDING callback SKIPPED THR243seq42; Python units RETIRED. No new cases,
 parameters, fixtures, replacement campaign or execution allocation follows.
 
-## Public online team-move E source — THR296seq135 / TASK11345
+## Integrated online team-move F candidate — THR296seq135 / TASK11345
 
-The founder service and `happyranch teams move capability/preview/apply/show/recover`
-are wired in source. `APPLY_AVAILABLE=False` and
-`whole_history_integration_acceptance` still gate every new apply and explicit
-recovery execution; no request/environment/private bypass exists. Preview and
-saved-state reads are available to the existing bearer + `_require_human`
+The integrated F candidate supplies founder-controlled service/CLI source with
+`APPLY_AVAILABLE=True` and empty `NOT_INTEGRATED`. This candidate still needs
+independent whole-feature review, same-final-head SOURCE/POLICY/STATIC QA and
+manager guarded merge. Unmerged source is not accepted or activated capability.
+The actual daemon service independently checks schema, native org/coordinator,
+profile, host/tracker, naming and current authority before advertising apply.
+Explicit recovery uses the SAME native owner gates while allowing a diagnostic
+org/fenced publisher; `recover_available` and `recovery_incomplete_reasons` are
+separate from apply readiness. Neither projection certifies quiescence. Unknowns
+refuse with actionable reasons; no flag/private bypass/acceptance marker exists.
+Preview and saved-state reads retain the existing bearer + `_require_human`
 boundary, whose shared identity-less secret does not prove human presence.
+
+F native release preparation runs through `OrgState.load`: strict read-only move
+discovery precedes naming preflight, generic compatibility writes, roster
+validation, publication and producer admission. After complete native workflow
+validation, the DB-owned `install_team_move_schema` transaction validates exact
+existing layout/history/org identity, refuses held/unknown state, installs only
+the literal ONE table if absent, and validates before COMMIT. Repeated compatible
+attachment is idempotent. Generic Database/runtime-audit, capability/preview/show
+and restricted diagnostic recovery never install or repair it. Source delivery
+does not call it on production: separately authorized compatible release loading
+through the supported launcher performs native preparation; Founder assembles
+no files, SQL or offline manifest. Missing schema/owners are engineering release
+dependencies. Even an empty installed table requires reader@3. An absent optional
+layout remains compatible with generic/older readers; source rollback cannot
+undo durable state or grant a downgrade.
+
+F also freezes C2 thread retry initialization explicitly, including EMPTY
+budgets. New initial/fallback/nudge phase initialization is distinct from a
+frozen zero budget; deferral/reentry cannot replenish it. Old missing facts keep
+their original history interpretation but refuse ambiguous new retry/reentry
+with `team_move_thread_retry_initialization_unknown`; no history is backfilled.
+Updated shell/Mac launchers require `online-team-move@3` (reads old @1/@2), so
+earlier supported parsers refuse before startup. Already-running old daemons,
+obsolete launchers and unchecked old interpreters remain outside that guard.
+All behavioral/installation/recovery/launcher observations remain UNEXECUTED.
 Agents must not self-authorize with ambient credentials. Manage-agent retains
 team/role and cannot transfer agents.
 

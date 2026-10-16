@@ -1,6 +1,7 @@
-"""Org-owned task/thread preparation and launch exclusion; apply remains unavailable.
+"""Org-owned preparation and launch exclusion for the integrated move source.
 
-Private D decision, release and recovery live in team_move_operation; E/F stay gated.
+Private decision, release and recovery live in team_move_operation. The daemon
+service checks actual native prerequisites before advertising or executing work.
 No optional schema is installed here; absent-layout ordinary tasks remain valid.
 """
 from __future__ import annotations
@@ -9,15 +10,15 @@ import json
 import threading
 from contextvars import ContextVar
 from dataclasses import dataclass
-from typing import Any, Callable, Literal
+from typing import Any, Callable
 
 from runtime.infrastructure.team_move_store import MoveRequest, Phase, TeamMoveError, TeamMoveStore, validate_team_move_schema, _decode
 
 _task_tail: ContextVar[list | None] = ContextVar("team_move_task_tail", default=None)
 
 CAPABILITY_VERSION = 1
-APPLY_AVAILABLE = False
-NOT_INTEGRATED = ("whole_history_integration_acceptance",)
+APPLY_AVAILABLE = True
+NOT_INTEGRATED: tuple[str, ...] = ()
 
 # Required D completion readback; labels are a contract, never Boolean proofs.
 COMPLETION_REQUIREMENTS = (
@@ -57,7 +58,9 @@ class AdmissionProjection:
     state_revision: int | None
     phase: str | None
     committed: bool
-    apply_available: Literal[False] = False
+    # Diagnostic admission facts are not runtime readiness. Only the service
+    # projects apply/recovery availability from its actual native owners.
+    source_apply_enabled: bool = APPLY_AVAILABLE
 
 
 class DeferredTeamMove(Exception):
@@ -409,11 +412,13 @@ class TeamMoveCoordinator:
     def startup_contract(self) -> dict:
         """Diagnostic projection; actual early guards live in team_move_startup."""
         row = self.store.read()
+        with self.store.db.coherent_read_view() as conn:
+            installed = validate_team_move_schema(conn, org_slug=self.store.org_slug)
         return {
             "capability_version": CAPABILITY_VERSION,
-            "apply_available": APPLY_AVAILABLE,
+            "source_apply_enabled": APPLY_AVAILABLE,
             "not_integrated": NOT_INTEGRATED,
-            "required_reader": "online-team-move@2" if row is not None else None,
+            "required_reader": "online-team-move@3" if installed else None,
             "unresolved_phase": Phase(row["phase"]).value if row is not None else None,
             "startup_requirements": STARTUP_REQUIREMENTS,
             "completion_requirements": COMPLETION_REQUIREMENTS,
