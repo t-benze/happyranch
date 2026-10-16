@@ -94,6 +94,11 @@ The shared profile checker performs no diagnostic path/DB acquisition under a
 profile lease. Ordinary global, rebind, claim/retry and synchronization writers
 refuse `profile_team_move_diagnostic_org_held` without clearing the retained root;
 EMPTY dependency sets still check diagnostics before yielding or mutating.
+Adapter removal translates only `ProfileCoordinatorError` from its coordinator
+span to HTTP409 with `detail.code`, including the retained
+`profile_team_move_diagnostic_org_held` refusal for EMPTY dependencies. Unrelated
+exceptions keep their existing handling; removal, audit and compensation stay
+with the native adapter-store owner.
 Positive reinspection belongs to native startup/attachment outside leases.
 `add_org` requires the existing DB for a previously unavailable org and loads it
 through strict schema/history and canonical readers. Its matching attachment

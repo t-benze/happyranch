@@ -2901,7 +2901,11 @@ when close also fails; standalone close failures stay classified and held.
 
 Global/rebind/claim/retry/synchronization profile writers retain diagnostic roots
 and refuse without diagnostic filesystem/DB acquisition while leased, even with
-EMPTY dependencies. Native startup/attachment performs positive inspection
+EMPTY dependencies.
+Adapter removal reports the retained EMPTY-dependency diagnostic refusal as
+HTTP409 with `detail.code`; its bounded `ProfileCoordinatorError` translation
+preserves unrelated exceptions and native removal/audit/compensation.
+Native startup/attachment performs positive inspection
 outside leases. Matching attachment revalidates its actual already-open DB owner
 in the short segment; only successful attachment clears its diagnostic. Other
 roots, failed attachment, current holds and malformed history stay held. D's
