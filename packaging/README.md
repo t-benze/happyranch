@@ -481,5 +481,7 @@ The selected optimizer profile passes no map and refuses an unexpected non-null
 returned map before handing code to Vite; both readers require null optimizer
 input/result maps. Vite's later CSS map is a separate relation. Map-bearing P
 graphs are unsupported-profile negatives, not production-positive evidence.
+Each CSS emission consumes its original emission observation once and matches
+its resolved output filename, including when separate emissions have equal bytes.
 This is local custody under the reviewed helper/producer model, not authenticated
 compiler execution or resistance to invisible same-UID forgery/restore.

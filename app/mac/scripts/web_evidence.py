@@ -758,7 +758,7 @@ def validate_css(s,operations,plan,observations,loads):
     need(len(operations)<=MAX_ROWS,'OPERATION_CAP');states={};styles={};assets={};finalized={};minifies={};emits=[];chunks={};urls={}
     declared=[op.get('data',{}).get('invocation') for op in operations if op.get('stage')=='compile']
     need(all(isinstance(key,str) for key in declared) and len(set(declared))==len(declared) and set(declared)==set(loads),'CSS_COMPILE_INPUT_MISSING')
-    consumed=set()
+    consumed=set();emission_consumed=set()
     def b(row):return decode(blob(s,row))
     for ordinal,op in enumerate(operations,1):
         keys(op,{'schema','id','parent_outer_call','stage','data','status','error'})
@@ -862,7 +862,9 @@ def validate_css(s,operations,plan,observations,loads):
             keys(d,{'source','referenceId','filename','cssAssetName','originalFileName'})
             need(b(d['source'])==finalized.get(parent),'CSS_EMISSION_RELATION_MISSING')
             match=[o for o in observations.values() if o['kind']=='plugin_emission' and o['call_id']==parent and o['reference_id']==d['referenceId'] and o['source']=={'size':len(b(d['source']).encode()),'sha256':sha(b(d['source']).encode())}]
-            need(len(match)==1,'CSS_EMISSION_RELATION_MISSING');emits.append(d)
+            need(len(match)==1,'CSS_EMISSION_RELATION_MISSING')
+            need(match[0]['id'] not in emission_consumed and d['filename']==match[0]['resolved_file_name'],'CSS_EMISSION_RELATION_MISSING')
+            emission_consumed.add(match[0]['id']);emits.append(d)
         elif stage=='css_asset_read':
             keys(d,{'id','file','content'});absolute=Path(d['file']);need(absolute.is_relative_to(s.paths.exported_source/'web'),'CSS_ASSET_ROOT')
             descriptor,raw=s.raw(s.paths.exported_source,absolute.relative_to(s.paths.exported_source).as_posix());need(raw==blob(s,d['content']),'CSS_URL_RELATION_INVALID')
