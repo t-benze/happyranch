@@ -1126,7 +1126,8 @@ def _run_command(
                             failure_category="pre_launch",
                         )
             from runtime.orchestrator.thread_move import current_thread_preparation
-            thread_owner = current_thread_preparation()
+            from runtime.orchestrator.producer_move import current_producer_preparation
+            thread_owner = current_thread_preparation() or current_producer_preparation()
             if thread_owner is not None:
                 thread_owner.before_selflaunch()
             try:
@@ -1207,7 +1208,8 @@ def _run_command(
             if invocation is not None:
                 invocation.direct_terminal()
             from runtime.orchestrator.thread_move import current_thread_preparation
-            thread_owner = current_thread_preparation()
+            from runtime.orchestrator.producer_move import current_producer_preparation
+            thread_owner = current_thread_preparation() or current_producer_preparation()
             if thread_owner is not None:
                 thread_owner.direct_terminal()
         full_stdout = stdout or ""
@@ -2362,7 +2364,8 @@ class CustomAdapterExecutor:
                     input_json = adapter_input.model_dump_json()
 
                 from runtime.orchestrator.thread_move import current_thread_preparation
-                thread_owner = current_thread_preparation()
+                from runtime.orchestrator.producer_move import current_producer_preparation
+                thread_owner = current_thread_preparation() or current_producer_preparation()
                 if thread_owner is not None:
                     thread_owner.before_selflaunch()
                 try:
@@ -2424,7 +2427,8 @@ class CustomAdapterExecutor:
                 if invocation is not None:
                     invocation.direct_terminal()
                 from runtime.orchestrator.thread_move import current_thread_preparation
-                thread_owner = current_thread_preparation()
+                from runtime.orchestrator.producer_move import current_producer_preparation
+                thread_owner = current_thread_preparation() or current_producer_preparation()
                 if thread_owner is not None:
                     thread_owner.direct_terminal()
             full_stdout = stdout or ""

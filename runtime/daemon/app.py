@@ -166,8 +166,8 @@ async def _lifespan(app: FastAPI):
             from runtime.identities.registry import refresh_names
             # The compatibility batch/profile reconciliation has released its
             # leases; startup has not exposed any route writers yet.
-            with org.workflow_authority.writer_interval(publisher="identity_names_compatibility"):
-                refresh_names(org)
+            with org.workflow_authority.writer_interval(publisher="identity_names_compatibility") as interval:
+                refresh_names(org, writer=interval.native_disposition)
         # THR-106: one-shot skill-id rename hr:review -> hr:reflection in the
         # persisted org/config.yaml skills eligibility section (allow + deny,
         # org/team/agent scope). Sentinel-gated (.hr_review_renamed).

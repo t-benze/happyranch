@@ -1381,7 +1381,7 @@ class HostSessionSupervisor:
 
         grace = self._policy.cleanup_grace_seconds if grace_seconds is None else grace_seconds
         task_invocation = final_prelaunch_validator if hasattr(final_prelaunch_validator, "_task_pause_commit") else None
-        thread_invocation = final_prelaunch_validator if hasattr(final_prelaunch_validator, "_thread_move_commit") else None
+        thread_invocation = final_prelaunch_validator if (hasattr(final_prelaunch_validator, "_thread_move_commit") or hasattr(final_prelaunch_validator, "_producer_move_commit")) else None
         attempt = 0
         retry_limit = self._max_retry_attempts
         retry_schedule = tuple(self._backoff_seconds[i] if i < len(self._backoff_seconds) else 0.0 for i in range(retry_limit))
@@ -1584,6 +1584,8 @@ class HostSessionSupervisor:
         task_commit = getattr(final_prelaunch_validator, "_task_pause_commit", None)
         if task_commit is None:
             task_commit = getattr(final_prelaunch_validator, "_thread_move_commit", None)
+        if task_commit is None:
+            task_commit = getattr(final_prelaunch_validator, "_producer_move_commit", None)
         if task_commit is not None:
             from runtime.orchestrator.task_pause import DeferredRootPause
             try:
@@ -1638,7 +1640,7 @@ class HostSessionSupervisor:
             self._finish_and_reconcile(ctx)
             return self._outcome(request, ctx, attempt)
         if request.on_started is not None and (
-                not hasattr(final_prelaunch_validator, "_thread_move_commit") or running.process is not None):
+                not (hasattr(final_prelaunch_validator, "_thread_move_commit") or hasattr(final_prelaunch_validator, "_producer_move_commit")) or running.process is not None):
             request.on_started(running.root_pid)
 
         # ── sampling ──────────────────────────────────────────────
@@ -1650,7 +1652,7 @@ class HostSessionSupervisor:
             result = launch_body(running)
         except Exception as exc:  # launch body never replaces terminal state
             from runtime.orchestrator.team_move import DeferredTeamMove
-            if hasattr(final_prelaunch_validator, "_thread_move_commit") and isinstance(exc, DeferredTeamMove):
+            if (hasattr(final_prelaunch_validator, "_thread_move_commit") or hasattr(final_prelaunch_validator, "_producer_move_commit")) and isinstance(exc, DeferredTeamMove):
                 deferred_thread_admission = exc
                 ctx.freeze_terminal(TerminalReason.CANCELLED)
             else:

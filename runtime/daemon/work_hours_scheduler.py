@@ -7,6 +7,10 @@ and FastAPI lifespan wiring are added in leg B and call the functions here.
 """
 from __future__ import annotations
 
+from runtime.orchestrator.producer_move import native_writer, native_claim, owner_for
+from runtime.orchestrator.team_move import DeferredTeamMove
+
+
 import asyncio
 import logging
 import time
@@ -227,6 +231,10 @@ def decide_wake(
 
 def _available_agents(org) -> list[str]:
     """Candidate agents: approved agent files with an existing workspace."""
+    registry = getattr(org if 'org' in locals() else org_state, 'teams', None)
+    if registry is not None:
+        root = (org if 'org' in locals() else org_state).root
+        return [agent for agent in registry.all_agents() if (root / 'workspaces' / agent).exists()]
     paths = OrgPaths(root=org.root)
     agents = []
     for agent in prompt_loader.list_agents(paths):
@@ -265,6 +273,12 @@ def schedule_due_wakes(*, org, now: datetime, startup: bool = False) -> int:
     the steady-state loop won't re-pick the slot today).
     """
     # THR-095 F2: resolve working_hours from DB (override) → dataclass defaults.
+    admission = owner_for(org.db)
+    if admission is not None:
+        try:
+            admission.redeliver_after_release(org)
+        except DeferredTeamMove:
+            pass
     cfg = resolve_org_setting_working_hours(org.db, code_default=WorkingHoursConfig())
     if not cfg.enabled:
         return 0
@@ -272,60 +286,74 @@ def schedule_due_wakes(*, org, now: datetime, startup: bool = False) -> int:
     selected = select_work_hours_agents(_available_agents(org), cfg, known_teams)
     count = 0
     for agent in selected:
-        schedule = cfg.resolve_for(agent, _agent_team(org, agent))
-        due = current_due_slot(schedule, now)
-        if due is None:
-            continue
-        # Routine-presence is the outermost precondition: an agent with no
-        # routines never accrues a work_hours row (not even a skipped one).
-        parsed = _agent_routines(org, agent)
-        if not parsed.has_wake:
-            continue
-        local_date, slot, scheduled_for = due
-        existing = org.db.work_hours.get_for_agent_date_slot(agent, local_date, slot)
-        decision = decide_wake(
-            now=now, schedule=schedule, existing_for_slot=existing, startup=startup,
-        )
-        if not decision.should_schedule:
-            if decision.record_skipped:
+        admission = owner_for(org.db)
+        key = ('wake', agent)
+        effective_startup = startup or bool(admission and key in admission.startup_deferred)
+        held = False
+        try:
+            with native_writer(org.db, publisher='wake_scheduler', agents=(agent,), durable=False):
+                schedule = cfg.resolve_for(agent, _agent_team(org, agent))
+                due = current_due_slot(schedule, now)
+                if due is None:
+                    continue
+                # Routine-presence is the outermost precondition: an agent with no
+                # routines never accrues a work_hours row (not even a skipped one).
+                parsed = _agent_routines(org, agent)
+                if not parsed.has_wake:
+                    continue
+                local_date, slot, scheduled_for = due
+                existing = org.db.work_hours.get_for_agent_date_slot(agent, local_date, slot)
+                decision = decide_wake(
+                    now=now, schedule=schedule, existing_for_slot=existing, startup=effective_startup,
+                )
+                if not decision.should_schedule:
+                    if decision.record_skipped:
+                        org.db.work_hours.insert(WorkHourRecord(
+                            id=org.db.work_hours.next_id(),
+                            agent_name=agent,
+                            local_date=local_date,
+                            slot=slot,
+                            mode=schedule.mode,
+                            scheduled_for=scheduled_for,
+                            status=WorkHourStatus.SKIPPED,
+                            routine_count=len(parsed.routines),
+                            dropped_count=parsed.dropped,
+                        ))
+                    continue
+
+                work_hour_id = org.db.work_hours.next_id()
                 org.db.work_hours.insert(WorkHourRecord(
-                    id=org.db.work_hours.next_id(),
+                    id=work_hour_id,
                     agent_name=agent,
                     local_date=local_date,
                     slot=slot,
                     mode=schedule.mode,
                     scheduled_for=scheduled_for,
-                    status=WorkHourStatus.SKIPPED,
+                    status=WorkHourStatus.PENDING,
                     routine_count=len(parsed.routines),
                     dropped_count=parsed.dropped,
                 ))
+                AuditLogger(org.db).log_work_hour_scheduled(
+                    work_hour_id, agent, local_date=local_date, slot=slot, mode=schedule.mode,
+                    dropped=parsed.dropped,
+                )
+                try:
+                    loop = asyncio.get_running_loop()
+                    loop.create_task(_enqueue(org, work_hour_id))
+                except RuntimeError:
+                    # No running loop (sync callers/tests): enqueue directly. The queue
+                    # is unbounded so put_nowait never raises (LRN-005: never
+                    # asyncio.run() from a no-loop context — it nukes the global loop).
+                    org.wake_queue.put_nowait(WakeJob(org_slug=org.slug, work_hour_id=work_hour_id))
+                count += 1
+        except DeferredTeamMove:
+            held = True
+            if admission is not None and effective_startup:
+                admission.startup_deferred.add(key)
             continue
-
-        work_hour_id = org.db.work_hours.next_id()
-        org.db.work_hours.insert(WorkHourRecord(
-            id=work_hour_id,
-            agent_name=agent,
-            local_date=local_date,
-            slot=slot,
-            mode=schedule.mode,
-            scheduled_for=scheduled_for,
-            status=WorkHourStatus.PENDING,
-            routine_count=len(parsed.routines),
-            dropped_count=parsed.dropped,
-        ))
-        AuditLogger(org.db).log_work_hour_scheduled(
-            work_hour_id, agent, local_date=local_date, slot=slot, mode=schedule.mode,
-            dropped=parsed.dropped,
-        )
-        try:
-            loop = asyncio.get_running_loop()
-            loop.create_task(_enqueue(org, work_hour_id))
-        except RuntimeError:
-            # No running loop (sync callers/tests): enqueue directly. The queue
-            # is unbounded so put_nowait never raises (LRN-005: never
-            # asyncio.run() from a no-loop context — it nukes the global loop).
-            org.wake_queue.put_nowait(WakeJob(org_slug=org.slug, work_hour_id=work_hour_id))
-        count += 1
+        finally:
+            if admission is not None and not held:
+                admission.startup_deferred.discard(key)
     return count
 
 

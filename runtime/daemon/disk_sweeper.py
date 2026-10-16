@@ -26,7 +26,7 @@ import sys
 import time
 from collections import Counter
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from contextlib import ExitStack, closing, contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -229,8 +229,27 @@ def read_json(path: Path, deadline: float, limit: int = 65536):
 
 class Evidence:
     """Read-only native task/job/audit records. Never opens Database/schema."""
-    def __init__(self, org: Path, deadline: float):
+    def __init__(self, org: Path, deadline: float, *, writer_id: str | None = None, writing: bool = False):
         self.org, self.deadline = org, deadline
+        self.writer_id, self.writing = writer_id, writing
+
+    def _move_writer(self, conn: sqlite3.Connection) -> None:
+        if not self.writing:
+            return
+        from types import SimpleNamespace
+        from runtime.infrastructure.team_move_store import validate_team_move_schema
+        from runtime.infrastructure.producer_admission import NativeWriterStore
+        # No Database initializer or schema installation in this child. An
+        # installed layout requires the actual parent's still-active global
+        # reservation, not a flag or process-local coordinator in this worker.
+        if not validate_team_move_schema(conn, org_slug=self.org.name):
+            return
+        writer = NativeWriterStore(SimpleNamespace(_conn=conn), self.org.name).history_uncommitted().get(self.writer_id)
+        if (writer is None or writer.publisher != 'disk_sweep' or writer.state != 'active'
+                or writer.agents or writer.teams):
+            raise Retain('team_move_cleanup_owner_unavailable')
+        if conn.execute('SELECT 1 FROM team_move_operations WHERE active_slot=1').fetchone():
+            raise Retain('team_move_native_held')
 
     def ownership(self, path: Path, workspace: Path, task_id: str) -> None:
         check(self.deadline)
@@ -240,6 +259,7 @@ class Evidence:
         conn.set_progress_handler(lambda: int(time.monotonic() >= self.deadline), 1000)
         try:
             conn.execute('BEGIN')
+            self._move_writer(conn)
             tasks = {}
             for row in conn.execute('SELECT id,parent_task_id,status,assigned_agent FROM tasks'):
                 check(self.deadline)
@@ -499,7 +519,7 @@ def _summarize_org(result: dict) -> None:
     }
 
 
-def sweep_org(org: Path, deadline: float, *, mode: str, checkpoint=lambda: None, now: float | None = None, result: dict | None = None, measurement_seen: set | None = None, removal_seen: set | None = None) -> dict:
+def sweep_org(org: Path, deadline: float, *, mode: str, checkpoint=lambda: None, now: float | None = None, result: dict | None = None, measurement_seen: set | None = None, removal_seen: set | None = None, writer_id: str | None = None) -> dict:
     result = result if result is not None else {}
     result.update(org=org.name, mode=mode, outcome='incomplete', discovery='unknown', candidates=[], unreached=None,
                   phases={p: dict(measured_allocated_bytes=0, removed_attributable_bytes=0, attribution_unknown=False) for p in ('scratch', 'worktree')})
@@ -510,7 +530,7 @@ def sweep_org(org: Path, deadline: float, *, mode: str, checkpoint=lambda: None,
         _summarize_org(result)
         checkpoint()
 
-    evidence = Evidence(org, deadline)
+    evidence = Evidence(org, deadline, writer_id=writer_id, writing=mode == 'on')
     measured_inodes = measurement_seen if measurement_seen is not None else set()
     removed_inodes = removal_seen if removal_seen is not None else set()
     uncertain_repos = set()
@@ -625,6 +645,14 @@ def sweep_org(org: Path, deadline: float, *, mode: str, checkpoint=lambda: None,
                 if set(rows) != {repo}:
                     result.setdefault('prune_retained', []).append(repo)
                     continue
+                # Prune also writes agent repository metadata; primary-only
+                # registration does not waive native move writer ownership.
+                with closing(sqlite3.connect((org / 'happyranch.db').as_uri() + '?mode=ro', uri=True, timeout=.1)) as conn:
+                    conn.row_factory = sqlite3.Row
+                    conn.set_progress_handler(lambda: int(time.monotonic() >= deadline), 1000)
+                    conn.execute('BEGIN')
+                    evidence._move_writer(conn)
+                    check(deadline)
                 git(Path(repo), deadline, 'worktree', 'prune', '--expire=now')
     except Expired as exc:
         result.update(outcome='incomplete', error=str(exc))
@@ -638,7 +666,7 @@ def sweep_org(org: Path, deadline: float, *, mode: str, checkpoint=lambda: None,
     return result
 
 
-def sweep(roots: list[str], deadline: float, summary: Path, *, dry_run: bool, scheduled_date: str | None, revision: str, started_monotonic: float | None = None, runtime_root: Path | None = None) -> dict:
+def sweep(roots: list[str], deadline: float, summary: Path, *, dry_run: bool, scheduled_date: str | None, revision: str, started_monotonic: float | None = None, runtime_root: Path | None = None, native_writers: dict[str, str] | None = None) -> dict:
     from runtime.orchestrator.org_config import load_org_config
     from runtime.orchestrator._paths import OrgPaths
     report = dict(format='disk-sweep@1', revision=revision, scheduled_date=scheduled_date,
@@ -676,7 +704,8 @@ def sweep(roots: list[str], deadline: float, summary: Path, *, dry_run: bool, sc
                 item['config_sha256'] = hashlib.sha256(config_path.read_bytes() if config_path.exists() else b'').hexdigest()
                 item['configured_mode'] = cfg.disk_sweep_mode
                 mode = 'off' if cfg.disk_sweep_mode == 'off' else 'dry_run' if dry_run else cfg.disk_sweep_mode
-                sweep_org(Path(root), deadline, mode=mode, checkpoint=checkpoint, result=item, measurement_seen=measurement_seen, removal_seen=removal_seen)
+                sweep_org(Path(root), deadline, mode=mode, checkpoint=checkpoint, result=item, measurement_seen=measurement_seen, removal_seen=removal_seen,
+                          writer_id=(native_writers or {}).get(root))
             except Expired:
                 raise
             except Exception as exc:
@@ -696,7 +725,7 @@ def sweep(roots: list[str], deadline: float, summary: Path, *, dry_run: bool, sc
     return report
 
 
-async def run_worker(roots: list[str], summary: Path, *, dry_run: bool, scheduled_date: str | None = None, budget: float = BUDGET_SECONDS, runtime_root: Path | None = None) -> dict:
+async def run_worker(roots: list[str], summary: Path, *, dry_run: bool, scheduled_date: str | None = None, budget: float = BUDGET_SECONDS, runtime_root: Path | None = None, native_writers: dict[str, str] | None = None) -> dict:
     """Supervise entire process group, including Git, until stopped/reaped.
 
     SIGKILL at the shared deadline (no deletion grace/window extension).
@@ -710,6 +739,8 @@ async def run_worker(roots: list[str], summary: Path, *, dry_run: bool, schedule
     argv = [sys.executable, '-m', 'runtime.daemon.disk_sweeper', '--worker', '--summary', str(summary), '--deadline', str(deadline), '--started-monotonic', str(started_monotonic), '--revision', revision]
     for root in roots:
         argv += ['--org-root', root]
+    for root, writer_id in sorted((native_writers or {}).items()):
+        argv += ['--native-writer', root, writer_id]
     if runtime_root is not None:
         argv += ['--runtime-root', str(runtime_root)]
     if dry_run:
@@ -775,6 +806,49 @@ async def run_worker(roots: list[str], summary: Path, *, dry_run: bool, schedule
     return report
 
 
+async def _run_scheduled_worker(state, summary: Path, date: str) -> dict:
+    from runtime.orchestrator.producer_move import native_writer
+    from runtime.orchestrator.team_move import DeferredTeamMove
+    deadline = time.monotonic() + BUDGET_SECONDS
+    # Reservations span filesystem/process work; their short gate/transaction
+    # does not. Retain active evidence on process loss; D reads the same history.
+    with ExitStack() as stack:
+        roots, writers, dispositions, deferred = [], {}, {}, {}
+        for slug, org in sorted(state.orgs.items()):
+            check(deadline)
+            try:
+                disposition = stack.enter_context(native_writer(org.db, publisher='disk_sweep'))
+            except DeferredTeamMove as exc:
+                deferred[slug] = exc.code
+                continue
+            root = str(org.root)
+            roots.append(root)
+            dispositions[slug] = disposition
+            if disposition.writer_id is not None:
+                writers[root] = disposition.writer_id
+        # Any unexpected unwind, missing report or interrupted worker remains
+        # unknown. Only affirmative complete native closure below may settle.
+        for disposition in dispositions.values():
+            disposition.uncertain = True
+        check(deadline)
+        report = await run_worker(roots, summary, dry_run=False, scheduled_date=date,
+                                  native_writers=writers, budget=deadline - time.monotonic())
+        for slug, disposition in dispositions.items():
+            items = [item for item in report.get('orgs', []) if item.get('org') == slug]
+            if (len(items) == 1
+                    and (items[0].get('mode') in ('dry_run', 'off')
+                         or items[0].get('outcome') == 'complete')
+                    and not report.get('interruption')
+                    and report.get('worker_group_stop')
+                    and not any(c.get('state') in ('mutation_in_flight', 'partial_or_unknown')
+                                for c in items[0].get('candidates', []))):
+                disposition.uncertain = False
+        if deferred:
+            report.update(outcome='incomplete', move_deferred_orgs=deferred)
+            await asyncio.to_thread(atomic_json, summary, report)
+        return report
+
+
 def _revision() -> str:
     # Build/source identity without running Git on the event loop. Hash the
     # actual executing modules, works in installed wheels too (no .git needed).
@@ -816,11 +890,10 @@ async def disk_sweeper_loop(state) -> None:
         try:
             if not await asyncio.to_thread(reserve):
                 continue
-            roots = [str(org.root) for _, org in sorted(state.orgs.items())]
             summary = data / f'{date}.json'
             cancelled = None
             try:
-                report = await run_worker(roots, summary, dry_run=False, scheduled_date=date)
+                report = await _run_scheduled_worker(state, summary, date)
             except asyncio.CancelledError as exc:
                 report = getattr(exc, 'disk_sweep_report', None)
                 if report is None:
@@ -853,6 +926,7 @@ def _audit_payload(report: dict, item: dict | None, summary: Path) -> dict:
         'budget_seconds': report.get('budget_seconds'), 'outcome': report.get('outcome'),
         'org': item, 'unreached_orgs': report.get('unreached_orgs'),
         'interruption': report.get('interruption'),
+        'move_deferred_orgs': report.get('move_deferred_orgs'),
         'low_disk_below_20_percent': report.get('low_disk_below_20_percent'),
     }
 
@@ -892,11 +966,13 @@ def main() -> int:
     parser.add_argument('--revision', help=argparse.SUPPRESS)
     parser.add_argument('--started-monotonic', type=float, help=argparse.SUPPRESS)
     parser.add_argument('--scheduled-date', help=argparse.SUPPRESS)
+    parser.add_argument('--native-writer', nargs=2, action='append', default=[], help=argparse.SUPPRESS)
     args = parser.parse_args()
     if args.worker:
         if args.summary is None or args.deadline is None:
             parser.error('worker requires deadline and summary')
-        report = sweep(args.org_root, args.deadline, args.summary, dry_run=args.dry_run, scheduled_date=args.scheduled_date, revision=args.revision, started_monotonic=args.started_monotonic, runtime_root=args.runtime_root)
+        report = sweep(args.org_root, args.deadline, args.summary, dry_run=args.dry_run, scheduled_date=args.scheduled_date, revision=args.revision, started_monotonic=args.started_monotonic, runtime_root=args.runtime_root,
+                       native_writers=dict(args.native_writer))
     else:
         if not args.dry_run or args.runtime_root is None:
             parser.error('manual use requires --dry-run --runtime-root ABSOLUTE_RUNTIME')

@@ -18,12 +18,20 @@ Operator `identities rename` is separate from bound manage-agent. It uses positi
 
 # manage-agent
 
+Native C3 preparation failure or ordinary process return never proves file,
+package or process cleanup. Unknown ownership remains in retained audit census.
+New retry budgets explicitly freeze even an empty schedule; missing legacy facts
+cannot authorize replenishment/reentry. Schedule runtime SID is pinned through
+real preparation/spec/execution and is distinct from provider resume identity.
+Custom-skill authority validates before reservations; only explicit native
+validation/rollback/temporary-cleanup evidence can settle a refused writer.
+No history deletion, automatic recovery, apply or execution authority follows.
+
 Team transfers and manager demotion remain outside manage-agent. Update retains
 the existing team/role. Founder THR296seq135 approved a separate coordinated
 online consultant move under TASK11345. C1 supplies task/host holds and preserves
 real callback/retry/cleanup ownership; it changes no permission generator or
-manage-agent admission. C3/D producer/recovery/old-reader closure is still
-required. No move command/route or apply/COMPLETE writer is available and no live
+manage-agent admission. D recovery/old-reader closure is still required. No move command/route or apply/COMPLETE writer is available and no live
 move is authorized. Later complete source requires founder admission.
 Admission refusal preserves pending work. Retry handoff retains each uncertain
 attempt separately; provider return is not containment proof. Pause attribution
@@ -91,6 +99,24 @@ read/resolve projections. Agent roster/enrollment `name` and canonical `revision
 retain their meanings; `addressable_name`, `name_revision` and `naming_status` are
 additive metadata, null/unavailable when names cannot be read. Never use a label
 as manage-agent's name, callback actor or expected canonical-definition revision.
+C3 now registers dream/wake/schedule/job native source, permanent org/agent and
+owning session before preparation, rechecks actual claims and final host/direct
+launch, and retains original retry budgets/SID/enqueue age on safe deferral.
+Pending work stays native; recurring schedule occurrences retain distinct
+history. Existing queue/timer release seams deduplicate redelivery; reapers
+preserve held or uncertain owners. Complete C3 causal census covers job waits,
+active bindings, remote attempts/workspaces, pending enrollment and writer tails;
+terminal rows or missing trackers never prove cleanup. Native profile/workflow,
+roster/name/settings/skill/policy/cleanup writers reserve affected IDs and
+source/target membership, keeping their original synchronization and journals.
+Strict bounded version1 producer/writer audits append in existing audit_log;
+earlier uncertainty survives later clean outcomes. No extra table, permission
+or auth change, remote engine, move/reset/publication service or COMPLETE writer.
+D composes the canonical capture/coherent publication reader and complete early
+startup/recovery/old-reader guard; D/E/F remain outstanding. APPLY_AVAILABLE=False.
+All behavior/migration/recovery remains UNEXECUTED; integration SKIPPED24342,
+Python units RETIRED, no new cases/fixtures or activation/live-operation authority.
+
 Operator rename accepts only addressable_name and positive expected_name_revision,
 with raw binding-key denial and the shared bearer limitation. The operator CLI is now described above; no agent-session rename authority is added. Mention delivery, CLI targets, fresh prompts and UI enrichment use current names at human boundaries. Names do not
 change allowed tools, execution permissions, task/session principals or workspace
@@ -220,3 +246,39 @@ Agent names must be lowercase with underscores only (e.g. `content_writer`, `seo
   merely to bless an already-composed stale whole-definition payload.
 - Other `422` responses usually mean the payload is missing required auth
   fields (task_id + session_id) — fix the JSON and retry.
+
+C3 writer disposition follows the actual authority/profile interval through
+native naming reconciliation and explicit leading validation. Stale rename or
+prompt CAS may settle only after successful native rollback/reconciliation;
+unfenced status alone proves nothing. Caught reconciliation/publication/clone
+failure, cancellation and partial effects retain unknown ownership. Skill scratch
+cleanup requires no-follow lstat ENOENT; surviving entries, inspection errors and
+prior uncertainty stay unknown. Cleanup causes are retained; existing unknown
+history is never cleared. These are source accounting rules, not behavioral
+verification or new execution/activation authority.
+
+
+Current-main C3 composition preserves automatic job admission: omitted/false
+review_required executes through native owner checks; true refuses before allocation,
+legacy true pending is inert, and /run remains a tombstone. Authenticated later
+prerequisite loss rechecks move/causal ownership in the native Pause transaction
+before its failed-before-launch CAS, audit/journal COMMIT and genuine wake. Only
+that exact completed no-launch refusal may settle; partial scratch/environment,
+output or process effects and earlier uncertainty remain in producer history.
+Naming keeps INSTALL-only N-SAC-1 structural admission and actual install-diagnostic
+provenance alongside SAME native disposition, rollback and reconciliation rules;
+no removed whole-release naming fingerprint is restored.
+
+The scheduled daemon disk worker reserves a global native writer per admitted
+org before spawn, through supervision/reap/report. Held/unowned orgs defer with
+bounded codes in the existing summary/audit; other admitted orgs continue. On-mode
+child admission and prune re-read the actual parent's active global writer ID
+through strict append-only history and validate the optional move layout/hold.
+An installed layout with missing/unknown ownership refuses before mutation; absent
+layout preserves native behavior. Missing/incomplete effect closure, interruption
+and partial mutation retain unknown writer evidence; a clean later provider result
+cannot erase it. The common1800-second window includes reservation admission.
+Off/default dry_run, metadata/process/age/containment safeguards and manual dry-run
+remain; no cleanup/activation authority follows. These source changes have no
+behavioral/migration/recovery proof; integration INCLUDING callback SKIPPED24342,
+Python units RETIRED. APPLY_AVAILABLE=false, no COMPLETE writer; D/E/F remain root-owned.

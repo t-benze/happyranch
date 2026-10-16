@@ -18,6 +18,17 @@ Human Todo-list filters accept current names; `schedules create/spawn` payload a
 
 # Todos — Agent-owned scheduled commitments (THR-105 v2)
 
+Native C3 preparation failure or ordinary process return never proves file,
+package or process cleanup. Unknown ownership remains in retained audit census.
+New retry budgets explicitly freeze even an empty schedule; missing legacy facts
+cannot authorize replenishment/reentry. Schedule runtime SID is pinned through
+real preparation/spec/execution and is distinct from provider resume identity.
+Custom-skill authority validates before reservations; only explicit native
+validation/rollback/temporary-cleanup evidence can settle a refused writer.
+No history deletion, automatic recovery, apply or execution authority follows.
+
+An online team-move hold preserves pending schedules before claim and missed/expiry bookkeeping. The native owner reevaluates ordinary deadlines after release with current context; never shift recurrence, invent catch-up or create a replacement schedule. Stable permanent-ID schedules can remain; retired-team content or unsupported bindings need explicit owner resolution. Firing/session ownership blocks a move. Apply is unavailable; behavior remains UNEXECUTED.
+
 Agents may create `one_shot`, `weekly`, and `recurring` self-scheduled Todos via the
 `schedules create` callback. This is a **self-only, explicit-instruction,
 session-bound** operation available to every valid in-org agent. You cannot
@@ -302,3 +313,13 @@ happyranch schedules create --org happyranch --from-file /tmp/schedule-fortnight
 | Edit `source_instruction` or `normalized_brief` | Immutable; founder can only edit timing/recurrence/timezone |
 | Agent-driven `todos create` | Agent create is `schedules create`; the `todos` surface is founder management (list/show/pause/cancel/edit) |
 | `indefinite: true` from agent callback | Indefinite expiry is founder-set only |
+
+C3 writer disposition follows the actual authority/profile interval through
+native naming reconciliation and explicit leading validation. Stale rename or
+prompt CAS may settle only after successful native rollback/reconciliation;
+unfenced status alone proves nothing. Caught reconciliation/publication/clone
+failure, cancellation and partial effects retain unknown ownership. Skill scratch
+cleanup requires no-follow lstat ENOENT; surviving entries, inspection errors and
+prior uncertainty stay unknown. Cleanup causes are retained; existing unknown
+history is never cleared. These are source accounting rules, not behavioral
+verification or new execution/activation authority.

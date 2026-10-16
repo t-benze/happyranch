@@ -13,6 +13,8 @@ remain outside this cooperative guarantee.
 """
 from __future__ import annotations
 
+from runtime.orchestrator.producer_move import native_writer
+
 import fcntl
 import hashlib
 import json
@@ -111,8 +113,8 @@ def _dependency_profile(executor: str) -> str | None:
 class _ConsumerWriterInterval(_SupportedWriterInterval):
     """Own lifecycle dependency changes alongside the existing canonical fence."""
 
-    def __init__(self, coordinator, *, org, publisher, consumer, executor, preserve):
-        super().__init__(org.workflow_authority, publisher=publisher)
+    def __init__(self, coordinator, *, org, publisher, consumer, executor, preserve, native_disposition):
+        super().__init__(org.workflow_authority, publisher=publisher, native_disposition=native_disposition)
         self.profiles = coordinator
         self.org = org
         self.consumer = consumer
@@ -281,7 +283,7 @@ class ProfileCoordinator:
             yield
 
     @asynccontextmanager
-    async def consumer_writer(self, *, org, publisher, consumer, executor=None, preserve=False):
+    async def consumer_writer(self, *, org, publisher, consumer, executor=None, preserve=False, teams=()):
         """Serialize async roster writers without leasing scans or awaited work.
 
         The coroutine serialization lock is never acquired by global profile
@@ -289,28 +291,32 @@ class ProfileCoordinator:
         leases before the org publisher gate. Publication/compensation capture
         runs only after that segment has released all profile leases.
         """
-        org.workflow_authority._profile_coordinator = self
-        async with org.workflow_authority._async_writer_lock:
-            interval = _ConsumerWriterInterval(
-                self, org=org, publisher=publisher, consumer=consumer,
-                executor=executor, preserve=preserve,
-            )
-            try:
-                yield interval
-            except BaseException:
-                if interval.fenced:
-                    org.workflow_authority.publish_after_supported_change(
-                        publisher=f"{publisher}:compensation",
-                        fence_journal_id=interval.fence_journal_id,
-                        publisher_invocation=interval.publisher_invocation,
-                    )
-                raise
-            else:
-                if interval.fenced:
-                    org.workflow_authority.publish_after_supported_change(
-                        publisher=publisher, fence_journal_id=interval.fence_journal_id,
-                        publisher_invocation=interval.publisher_invocation,
-                    )
+        with native_writer(org.db, publisher=publisher, agents=(consumer,), teams=teams) as disposition:
+            org.workflow_authority._profile_coordinator = self
+            async with org.workflow_authority._async_writer_lock:
+                interval = _ConsumerWriterInterval(
+                    self, org=org, publisher=publisher, consumer=consumer,
+                    executor=executor, preserve=preserve,
+                    native_disposition=disposition,
+                )
+                try:
+                    yield interval
+                except BaseException:
+                    if interval.fenced:
+                        if not org.workflow_authority.publish_after_supported_change(
+                            publisher=f"{publisher}:compensation",
+                            fence_journal_id=interval.fence_journal_id,
+                            publisher_invocation=interval.publisher_invocation,
+                        ):
+                            disposition.uncertain = True
+                    raise
+                else:
+                    if interval.fenced:
+                        if not org.workflow_authority.publish_after_supported_change(
+                            publisher=publisher, fence_journal_id=interval.fence_journal_id,
+                            publisher_invocation=interval.publisher_invocation,
+                        ):
+                            disposition.uncertain = True
 
     def validate_requirements(self, definitions, projection) -> None:
         desired = {
@@ -492,7 +498,8 @@ class ProfileCoordinator:
         operations: Sequence[_ProfileOperation],
         *,
         coordinator_invocation: str,
-    ) -> None:
+    ) -> bool:
+        released = True
         for operation in operations:
             for slug in operation.members:
                 org = self.orgs[slug]
@@ -504,6 +511,7 @@ class ProfileCoordinator:
                             (operation.profile_name, coordinator_invocation),
                         )
                 except Exception:
+                    released = False
                     # This row is diagnostic only; the kernel flock is the
                     # ownership authority and is still released by the outer
                     # context. Startup will overwrite a stale diagnostic row.
@@ -512,6 +520,7 @@ class ProfileCoordinator:
                         slug,
                         operation.profile_name,
                     )
+        return released
 
     def _apply_store_state(
         self,
@@ -625,6 +634,7 @@ class ProfileCoordinator:
         for slug in sorted(expected_fenced):
             org = self.orgs[slug]
             if not self._closure_coherent(org):
+                all_published = False
                 continue
             try:
                 org.workflow_authority.publish_profile_change(
@@ -650,8 +660,9 @@ class ProfileCoordinator:
         bindings: dict[str, ProfileFenceBinding],
         publisher: str,
         mutation_succeeded: bool,
-    ) -> None:
+    ) -> bool:
         fenced = set(bindings)
+        all_resolved = True
         changed_operations: list[_ProfileOperation] = []
         unchanged_operations: list[_ProfileOperation] = []
         for operation in operations:
@@ -665,6 +676,7 @@ class ProfileCoordinator:
                 self._apply_store_state(operation, effective)
                 publishable = self._apply_registry_state(operation, effective)
                 if not publishable:
+                    all_resolved = False
                     self._set_operation_state(
                         operation,
                         "forward_recovery_required",
@@ -691,6 +703,7 @@ class ProfileCoordinator:
                     )
             for operation in unchanged_operations:
                 self._set_operation_state(operation, "aborted")
+        return republished and all_resolved
 
     @contextmanager
     def _operation_with_leases_held(
@@ -720,59 +733,85 @@ class ProfileCoordinator:
                 active = org.workflow_authority._active_journal(org.db._conn, org.workflow_authority.namespace)
             if active is not None and not str(active["publisher_invocation"]).startswith("profile-coordinator:"):
                 raise ProfileCoordinatorError("profile_consumer_changed")
-        for operation in operations:
-            self._insert_operation_rows(
-                operation,
-                coordinator_invocation=coordinator_invocation,
-            )
-        bindings: dict[str, ProfileFenceBinding] = {}
-        with ExitStack() as org_stack:
-            for slug in members:
-                bindings[slug] = org_stack.enter_context(
-                    self.orgs[slug].workflow_authority.profile_change_interval(
-                        reason=f"profile:{','.join(names)}:{publisher}",
-                        coordinator_invocation=coordinator_invocation,
-                    )
-                )
-            for operation in operations:
-                self._set_operation_state(operation, "fenced")
+        with ExitStack() as move_writers:
+            dispositions = []
             try:
-                yield
-            except BaseException:
-                try:
-                    self._finalize(
-                        operations=operations,
-                        bindings=bindings,
-                        publisher=publisher,
-                        mutation_succeeded=False,
-                    )
-                except Exception:
-                    logger.exception(
-                        "profile compensation publication deferred publisher=%s",
-                        publisher,
-                    )
+                for slug in members:
+                    dispositions.append(move_writers.enter_context(native_writer(self.orgs[slug].db,
+                        publisher=f'profile:{publisher}')))
+            except Exception as exc:
+                # Earlier acquired reservations have not entered any profile
+                # operation/fence/body. Only those completed reservations may
+                # settle; a failing reservation retains its own native evidence.
+                for disposition in dispositions:
+                    disposition.no_effect_error = exc
                 raise
-            else:
-                try:
-                    self._finalize(
-                        operations=operations,
-                        bindings=bindings,
-                        publisher=publisher,
-                        mutation_succeeded=True,
-                    )
-                except Exception:
-                    # The existing writer already committed. Preserve its
-                    # response contract while the durable operation/fence
-                    # remains discoverable for cold forward recovery.
-                    logger.exception(
-                        "profile post-commit publication deferred publisher=%s",
-                        publisher,
-                    )
-            finally:
-                self._release_diagnostic_leases(
-                    operations,
+            for operation in operations:
+                self._insert_operation_rows(
+                    operation,
                     coordinator_invocation=coordinator_invocation,
                 )
+            bindings: dict[str, ProfileFenceBinding] = {}
+            with ExitStack() as org_stack:
+                for slug in members:
+                    bindings[slug] = org_stack.enter_context(
+                        self.orgs[slug].workflow_authority.profile_change_interval(
+                            reason=f"profile:{','.join(names)}:{publisher}",
+                            coordinator_invocation=coordinator_invocation,
+                        )
+                    )
+                for operation in operations:
+                    self._set_operation_state(operation, "fenced")
+                try:
+                    yield
+                except BaseException:
+                    try:
+                        reconciled = self._finalize(
+                            operations=operations,
+                            bindings=bindings,
+                            publisher=publisher,
+                            mutation_succeeded=False,
+                        )
+                        if not reconciled:
+                            for disposition in dispositions:
+                                disposition.uncertain = True
+                    except Exception:
+                        for disposition in dispositions:
+                            disposition.uncertain = True
+                        logger.exception(
+                            "profile compensation publication deferred publisher=%s",
+                            publisher,
+                        )
+                    raise
+                else:
+                    try:
+                        reconciled = self._finalize(
+                            operations=operations,
+                            bindings=bindings,
+                            publisher=publisher,
+                            mutation_succeeded=True,
+                        )
+                        if not reconciled:
+                            for disposition in dispositions:
+                                disposition.uncertain = True
+                    except Exception:
+                        for disposition in dispositions:
+                            disposition.uncertain = True
+                        # The existing writer already committed. Preserve its
+                        # response contract while the durable operation/fence
+                        # remains discoverable for cold forward recovery.
+                        logger.exception(
+                            "profile post-commit publication deferred publisher=%s",
+                            publisher,
+                        )
+                finally:
+                    released = self._release_diagnostic_leases(
+                        operations,
+                        coordinator_invocation=coordinator_invocation,
+                    )
+                    if not released:
+                        for disposition in dispositions:
+                            disposition.uncertain = True
 
     @contextmanager
     def operation(

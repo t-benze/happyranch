@@ -6,13 +6,13 @@ Founder THR-296 seq135 (2026-10-14T05:17:20Z), “@engineering_manager start the
 
 Slice B implements the private durable store, closed request/state/progress/receipt contract, optional layout validation and independent whole-release schema reference selection. C1 binds the org-owned coordinator to actual task allocation, preparation and final Pause/host commitment; its projection remains diagnostic. The installer is explicit and org-only; production startup never calls it. Its only external caller in B constructs disposable release-reference databases. Existing installed optional layouts are validated without installation or row rewriting. Generic Database/runtime-audit remain extension-free.
 
-There is no public apply/preview/show/recover route or CLI command, background operation, operational completion writer or available-feature claim. C1 task and C2 thread admission exclusion are active in source whenever a valid durable hold exists. `APPLY_AVAILABLE=False`; `COMPLETE` writes and its unsupported read contract fail closed until D supplies the actual native evidence validator. Source/static acceptance is separate from behavior, activation and live-operation acceptance. A table alone cannot make a prefeature reader recognize a hold.
+There is no public apply/preview/show/recover route or CLI command, background operation, operational completion writer or available-feature claim. C1 task, C2 thread and C3 remaining native producer/writer admission exclusion are active in source whenever a valid durable hold exists. `APPLY_AVAILABLE=False`; `COMPLETE` writes and its unsupported read contract fail closed until D supplies the actual native evidence validator. Source/static acceptance is separate from behavior, activation and live-operation acceptance. A table alone cannot make a prefeature reader recognize a hold.
 
 | Serial unit | Required closure; source status |
 |---|---|
 | C1 | Task allocation/claim and preparation, causal task closure, workflow producers/final-launch, Pause/tracker/host retry ownership: integrated in source; behavioral evidence UNEXECUTED. Installed-layout legacy unowned producers refuse before claim/preparation. |
 | C2 | Thread preparation/final claim/launch, all purposes, durable deferred obligations/attempts, probe admission, census and captured running-turn drain seams: integrated in source; behavior UNEXECUTED. Full operation startup and containment recovery remain D. |
-| C3 | Dream/wake/schedule/job/remote/cleanup and roster/enrollment/profile/skill/name/policy writers: NOT INTEGRATED. |
+| C3 | Dream/wake/schedule/job preparation/final launch, held native recovery/redelivery, complete causal job/remote/workspace census and roster/enrollment/profile/skill/name/policy/cleanup writer reservations: integrated in source; behavior UNEXECUTED. No remote launch engine is added. |
 | D | Pure native preview, canonical files/cache, two audited resets, context/skills, batch profile publisher, bounded recovery, early startup and supported runtime/launcher downgrade refusal: NOT INTEGRATED. |
 | E | Founder-controlled API/client/CLI and supported runbook: NOT INTEGRATED; depends on D and complete admission closure. |
 | F | Root whole-diff/inventory review, independent scoped QA, guarded merge and supported activation/live handoff: outstanding. |
@@ -50,9 +50,77 @@ and propagates unless an original exception is already unwinding; then that
 original exception carries the settlement failure note and log. Every collected
 outer-tail owner is visited even if another settlement fails.
 
-The task-specific deferred notification seam retains tagged metadata and can redeliver through the existing generation-aware/deduplicating queue owner only after durable release. It does not consume result/callback tokens, allocate tasks, release the operation or recover startup. D must join persistent task/Pause/workflow, session/host/remote and writer evidence; an empty process-local reservation registry is never clearance. C2 below connects thread claims/delivery/drain/breaker/probe owners; C3 owns dream/wake/schedule/job/remote/cleanup and writers. Their host constructors carry permanent identity only in C1, which does not close those producer claims. D's whole-operation release, startup/partial-roster recovery and supported old-reader/launcher downgrade guard remain absent. APPLY_AVAILABLE stays literal false, with no apply/COMPLETE writer.
+The task-specific deferred notification seam retains tagged metadata and can redeliver through the existing generation-aware/deduplicating queue owner only after durable release. It does not consume result/callback tokens, allocate tasks, release the operation or recover startup. D must join persistent task/Pause/workflow, session/host/remote and writer evidence; an empty process-local reservation registry is never clearance. C2 below connects thread claims/delivery/drain/breaker/probe owners; C3 below supplies the remaining native producer/writer closure and remote evidence census; no new remote launch engine exists. D's whole-operation release, startup/partial-roster recovery and supported old-reader/launcher downgrade guard remain absent. APPLY_AVAILABLE stays literal false, with no apply/COMPLETE writer.
 
 C1/C2 review/QA uses the plan section8 SOURCE/POLICY/STATIC acceptance. Race, hold/deferral/redelivery, callback/quiescence, recovery/startup and compatibility behavior remains UNEXECUTED; integration SKIPPED THR243seq42. No new unit/integration cases or fixtures, retired units, ad hoc E2E, protected experiments, synthetic/live tasks, DB installation/migration, move or activation is authorized by this source slice.
+
+## C3 remaining producer and writer contract
+
+`ProducerMoveAdmission`, owned by the same org coordinator, resolves dream/wake/schedule/job rows to permanent agent, org, source, occurrence and owning SID before AgentDef/prompt/model/skill/context preparation. Native schedulers reserve affected preparation before routine reads and refuse before minting due work or consuming missed-slot/expiry bookkeeping. Schedule claim and missed rules share the short gate and original DB lock; dream/wake inserts and claims independently recheck under their actual DB owner. No gate spans filesystem work, await, throttle sleep, provider execution or publication-lock acquisition. Unknown installed/unowned layouts refuse; absent layouts remain supported without installation.
+
+Running/claimed work blocks the later operation. Pending native rows survive a hold. Safe deferred re-entry keeps the same SID, original retry boundary/schedule/ordinal/enqueue age, and rebuilds current context; unknown attempts cannot be automatically adopted. Dream/wake startup deferrals retain the original startup-policy flag until ordinary reevaluation; timestamps, recurrence, windows, catch-up and normal missed-slot rules are unchanged. Queues deduplicate queued and running notifications, releasing notification ownership in all tails. Existing timers and the explicit release seam rediscover safe durable pending rows only after release. Recurring schedule lifecycle identity derives from its native row's ID/fire_count/fire_at, preserving every older occurrence and uncertainty. Historical schedule.team is creation attribution: actual callbacks resolve current membership by permanent ID. Explicit retired-team references in content and unsupported schedule kinds fail closed with owner remediation; no text is silently rewritten.
+
+The host recognizes a separate private C3 final-commit protocol, preserving C1/C2 protocols and immutable retry copies. A held request stays outside FIFO. The final gate composes native identity/evidence validation with the host terminal leaf and durable possible-launch COMMIT. Executor-pool ownership reaches BOTH actual builtin/custom Popen paths, passthrough and direct429 through an explicit ContextVar; real on_started and terminal observations remain distinct. Missing/direct/passthrough receipts are not process-tree quiescence. An earlier uncertain attempt survives later clean results. No synthetic callback, failure, cancellation, slot consumption or old-prompt replay substitutes for deferral.
+
+Job creation and automatic admission checks use the real task/session/job owner, including Pause submission provenance and full causal task closure. Actual local subprocess launch rechecks and commits its reservation after scratch preparation, before asynchronous creation. Native job terminal/settlement remains able to record real results; direct exit alone keeps tree cleanup unproven. An already admitted safe no-launch deferral retains its exact native runner closure and is redelivered by the existing timer, without changed request or replacement identity. Lost ownership after process loss requires D reconciliation, never blind approval/relaunch. The job-resume bridge retains actual trigger/job metadata through C1 generation-aware task admission.
+
+C3 census scans all native rows and audit histories without presentation limits, joining complete task lineage/chain/fanout/workflow closure, job waits/resume callbacks, actual active session bindings, remote attempts and causal workspaces, pending source enrollments, profile/publication operations and native writer tails. Terminal rows, missing trackers and a remote terminal digest do not prove quiescence. Leased/recreate_pending/uncertain workspaces, missing ownership, unresolved remote cleanup and opaque bindings report bounded code/ID/remedy records. Remote persistence remains staged; C3 adds no network/remote execution engine, cancellation or settlement writer. D must compose C1/C2/host and these observations under its own final decision; this census does not release a hold or exempt/steal its publisher journal. Pending enrollment filesystem capture precedes the DB interval and a writer epoch change requires recollection.
+
+Roster/enrollment/charter/profile/model/executor/repository/name/org-settings/skill/policy/cleanup writers register their native ownership and affected IDs plus source/target membership before mutation. Existing profile→workflow→roster and shared skill-store synchronization remain. No extra async lock is acquired or nested. Global snapshot-input writers reserve that input; known unrelated scoped consumers can continue. Actual same-owner terminal/compensation/evaluation/session binding writes remain admitted and cannot launch new work. The existing human-failed-leaf recovery caller selects an explicit internal settlement interval; its already-owned DB leaf never takes the move gate in reverse order, and original task/v2 allocation/final-launch checks remain. An already-open unrelated SQL transaction cannot be adopted or committed for C3 writer evidence. Workflow/profile intervals keep their native publication journals; no takeover/reset or permission-generation change is introduced. D's canonical reader boundary is `WorkflowAuthorityCoordinator.capture_canonical_snapshot` and its native coherent publication/cache verification, not a new partial-roster reader or unrelated read rewrite.
+
+Closed version1 C3 producer and native-writer evidence uses only existing audit_log. Serializer→strict actual json.dumps bytes→append/history/owner validator→uncommitted audit insert→native COMMIT precedes in-memory publication. Duplicate/unknown fields, unsupported versions, identity/budget/ordinal replacement, attempt removal, rewritten settlement or erased uncertainty refuse. Producer snapshots retain at most64 immutable attempts and actual persisted bytes are bounded16KiB; census/history scans have no success-producing cap. Writer active/settled/unknown records identify actual native reservations, not task/results or founder authentication. Save failure retains live/unknown ownership and preserves a primary exception. Early native dream/wake/schedule/job reapers preserve held or lifecycle-owned rows under their real DB synchronization instead of fabricating restart failure. Complete early attachment/partial-canonical recovery, old-reader/launcher guard, D operation/reset/context/publication, E public API/CLI and F root acceptance remain absent. APPLY_AVAILABLE=False and no COMPLETE writer persist. Source cannot control old running binaries or out-of-band writers.
+
+All C3 behavior, race, callback, retry, process cleanup, compatibility, migration and recovery observations are UNEXECUTED. Reuse the same thirteen section8 four-answer records; no new cases/parameters/fixtures/campaign. General integration including callback is SKIPPED THR243seq42; Python units are RETIRED. Independent full-diff review, SOURCE/POLICY/STATIC QA, lint-only local all/two hosted checks, normal hooks/nonforce publication and manager guarded merge remain. No activation, live operation, duration or feature-complete claim.
+
+### C3 native correction contract
+
+C3 correction preserves one native schedule runtime SID in materialization,
+actual builtin/custom LaunchSpec and executor.run, including contained/passthrough
+and retry/redelivery. Provider resume/result identity stays separate. Schedule
+preparation appends actual SID/preparation attribution in the existing native
+audit; B2 materialization rows still admit only task/thread/wake/dream contexts.
+Explicit preparation/integrity intervals and caught package/repository failures
+retain failed_cleanup; a normal Python return or terminal source row is not
+settlement of partial file/package effects. Retained audit census stays blocking
+until native ownership is genuinely resolved; no D repair writer is added.
+
+Agent custom-skill identity checks precede durable writer admission under the
+actual binding lease, then current task/session/agent facts are rechecked under
+ownership. Lexical native validation-only refusals may settle only the exact
+exception after successful rollback and affirmative temporary cleanup. HTTP
+status alone is never cleanup evidence; artifact/commit/compensation/interruption
+or uncertain audit tails remain unknown. Authority and profile intervals carry
+the SAME native disposition through sync/async and fallback/naming wrappers.
+Explicit leading read-only validation covers stale rename/prompt CAS and sibling
+agent/roster refusals, with mutable checks retained under native locks. Rename
+certification reaches interval exit only after its native SQL rollback; failed
+rollback cannot inherit the validation exception identity. Completed naming
+refresh is finite reconciliation, not an absent-effect assumption; caught refresh
+failure stays uncertain through both validation refusal and normal return.
+Pre-fence filesystem work, caught clone failures, best-effort publication failure
+and incomplete profile closure likewise retain unknown ownership. No blanket
+unfenced rule, historical settlement rewrite or new recovery/clear writer exists.
+Temporary skill cleanup records the actual removal cause and uses no-follow
+lstat. Only ENOENT positively establishes the literal entry is absent; a surviving
+entry, dangling symlink, permission/I/O/other inspection failure cannot clear local
+uncertainty. Earlier uncertainty remains sticky. Cleanup/probe failures are
+logged and attached to an already-unwinding exception without replacing it. Mutable package facts are re-read at
+the SQL leaf; settings prevalidate before nested publication and preserve unknown
+ownership if a later section fails after an earlier commit. Existing writer
+lock order and strict immutable terminal history remain.
+
+New producer audits carry retry_initialized=false before first initialization
+and true after it, even with an EMPTY schedule. The pinned boundary and budget,
+including zero, cannot change on deferral/reentry or config changes. Missing/null
+legacy facts preserve old history through its version-aware reader; they never
+initialize a new budget. Ambiguous deferred legacy ownership remains a blocker
+and new retry/launch admission refuses with owner remediation. No historical
+bytes, enqueue age, ordinal, attempt identity or earlier uncertainty are rewritten.
+Marker-bearing new records require correction-compatible C3 readers; this is
+not a prefeature binary or old-runtime downgrade safety claim.
+These corrections remain SOURCE/POLICY/STATIC only: behavior UNEXECUTED,
+integration INCLUDING callback SKIPPED24342, units RETIRED. APPLY_AVAILABLE=false;
+D/E/F and actual recovery/old-reader/activation acceptance remain root-owned.
 
 ## C2 thread admission and deferred obligations
 
@@ -160,7 +228,7 @@ All archive refusal/success and eviction/hold/re-entry observations are UNEXECUT
 The actual operation-scoped reset writer and early partial-roster attachment,
 full startup/launcher/old-reader compatibility remain D, not C2. No canonical
 move/reset/publication service, public route/CLI or COMPLETE writer is enabled.
-`APPLY_AVAILABLE` remains literal false. C3/D/E/F and independent final-head
+`APPLY_AVAILABLE` remains literal false. D/E/F and independent final-head
 review, SOURCE/POLICY/STATIC QA and manager guarded merge remain outstanding.
 
 Behavioral/race/retry/drain/callback/recovery/compatibility observations remain
@@ -243,3 +311,29 @@ Reuse TASK11307 section8's finite scenario/expected-observation map: exact eligi
 NO new unit/integration cases/parameters/fixtures, retired Python run/import/collection/restoration, ad hoc Product E2E, protected mutation/process-kill/replay/restoration experiments, Jenkins, live synthetic task/DB operation/provider reset/roster move or reinstated four-control premerge gate. General integration SKIPPED THR243seq42. All unobserved behavior/migration/recovery scenarios remain UNEXECUTED. Source/static QA PASS is not behavioral PASS. Independent full final-head reviewer, honest scoped QA, normal hooks/nonforce publication and manager guarded merge remain; each push renews required gates. PR/main automation remains ONLY Source Boundary Lint and Web Lint(Node24), with standalone source-only dependency lint preserved.
 
 Root source completion owes current-main composition, exact PR/head/checks and inventory, availability and evidence debt plus supported activation/preview/apply/readback handoff. Separately authorized release owner loads source; loaded SHA is UNKNOWN until actually attested. Founder-controlled apply and narrow actual roster/context/reset/authority readback plus ordinary consultant thread turns require separate exact authorization. Preserve holds/receipts on failure and fix the concrete source defect through normal review. Existing consultants stay in Consultant until that actual admitted operation. Historical PR1022/1052 offline evidence remains history, not online readiness or a tool to execute here.
+
+
+Current-main C3 composition preserves automatic job admission: omitted/false
+review_required executes through native owner checks; true refuses before allocation,
+legacy true pending is inert, and /run remains a tombstone. Authenticated later
+prerequisite loss rechecks move/causal ownership in the native Pause transaction
+before its failed-before-launch CAS, audit/journal COMMIT and genuine wake. Only
+that exact completed no-launch refusal may settle; partial scratch/environment,
+output or process effects and earlier uncertainty remain in producer history.
+Naming keeps INSTALL-only N-SAC-1 structural admission and actual install-diagnostic
+provenance alongside SAME native disposition, rollback and reconciliation rules;
+no removed whole-release naming fingerprint is restored.
+
+The scheduled daemon disk worker reserves a global native writer per admitted
+org before spawn, through supervision/reap/report. Held/unowned orgs defer with
+bounded codes in the existing summary/audit; other admitted orgs continue. On-mode
+child admission and prune re-read the actual parent's active global writer ID
+through strict append-only history and validate the optional move layout/hold.
+An installed layout with missing/unknown ownership refuses before mutation; absent
+layout preserves native behavior. Missing/incomplete effect closure, interruption
+and partial mutation retain unknown writer evidence; a clean later provider result
+cannot erase it. The common1800-second window includes reservation admission.
+Off/default dry_run, metadata/process/age/containment safeguards and manual dry-run
+remain; no cleanup/activation authority follows. These source changes have no
+behavioral/migration/recovery proof; integration INCLUDING callback SKIPPED24342,
+Python units RETIRED. APPLY_AVAILABLE=false, no COMPLETE writer; D/E/F remain root-owned.

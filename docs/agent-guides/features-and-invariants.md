@@ -1,14 +1,14 @@
 # Features And Invariants
 
-## Approved online team move — C1 task/host and C2 thread source (THR296seq135)
+## Approved online team move — C1–C3 native admission source (THR296seq135)
 
 B supplies private durable storage; C1 connects holds to task allocation/claim,
 preparation and final Pause/host commitment. Causal task/workflow closure and
 actual retry/callback/cleanup ownership participate; unknown quiescence stays
-reserved. C3/D producer/recovery/startup/old-reader closure remains absent.
+reserved. D complete operation/recovery/startup/old-reader closure remains absent.
 Same-key/body replay is read-only; changed body/active conflict/stale CAS refuse.
 Precommit refusal may release empty progress; postcommit repair retains its hold
-without TTL. No public commands or COMPLETE writer exist until full C2-D closure and
+without TTL. No public commands or COMPLETE writer exist until D closure and
 actual canonical/context/reset/ready-authority validation. Manage-agent cannot
 transfer teams. Preserve histories/IDs/paths/permissions and Engineering routing.
 History validation shares the writer's finite forward/repair edges, requires the
@@ -65,6 +65,45 @@ under a winning hold; callback/drain/new-launch and general participant guards
 remain unchanged. Watermarks, delivery ranges/tokens and runtime SID are retained;
 unknown cleanup remains a blocker. Deferred re-entry cannot reuse the evicted SID.
 These archive/eviction/re-entry behavioral observations remain UNEXECUTED.
+
+C3 now registers dream/wake/schedule/job native source, permanent org/agent and
+owning session before preparation, rechecks actual claims and final host/direct
+launch, and retains original retry budgets/SID/enqueue age on safe deferral.
+Pending work stays native; recurring schedule occurrences retain distinct
+history. Existing queue/timer release seams deduplicate redelivery; reapers
+preserve held or uncertain owners. Complete C3 causal census covers job waits,
+active bindings, remote attempts/workspaces, pending enrollment and writer tails;
+terminal rows or missing trackers never prove cleanup. Native profile/workflow,
+roster/name/settings/skill/policy/cleanup writers reserve affected IDs and
+source/target membership, keeping their original synchronization and journals.
+Strict bounded version1 producer/writer audits append in existing audit_log;
+earlier uncertainty survives later clean outcomes. No extra table, permission
+or auth change, remote engine, move/reset/publication service or COMPLETE writer.
+D composes the canonical capture/coherent publication reader and complete early
+startup/recovery/old-reader guard; D/E/F remain outstanding. APPLY_AVAILABLE=False.
+All behavior/migration/recovery remains UNEXECUTED; integration SKIPPED24342,
+Python units RETIRED, no new cases/fixtures or activation/live-operation authority.
+
+C3 schedule preparation/spec/execution uses the SAME pinned runtime SID;
+provider resume identity remains separate. Native caught materialization,
+integrity/package/repository failures retain sticky failed_cleanup after source
+terminalization; normal return is not cleanup proof. Agent custom-skill identity
+admission precedes reservations. Authority/profile sync/async intervals expose
+the same native disposition to explicit pre-effect validators, including stale
+rename/prompt revisions and roster/profile fallback paths. Naming refresh must
+complete its finite native transaction; caught reconciliation/publication/clone
+failures retain uncertainty even on a normal return. An unfenced interval or an
+HTTP status never certifies absence of effects. Exact validation exceptions may
+settle only after native rollback and terminal reconciliation finish. Scratch
+cleanup uses no-follow lstat: only ENOENT establishes literal absence; surviving
+entries (including dangling symlinks), inspection errors and prior uncertainty
+remain blockers, with actual cleanup causes retained in logs/exception notes.
+Cancellation, partial files/packages, failed rollback or uncertain compensation
+stay unknown. Existing unknown history is immutable; there is no clear writer.
+Retry initialization explicitly freezes EMPTY as well as nonempty schedules;
+missing legacy facts preserve history but cannot grant new retries or automatic
+ambiguous reentry. These are source corrections only; behavior UNEXECUTED,
+integration INCLUDING callback SKIPPED24342, APPLY_AVAILABLE=false and D/E/F remain.
 
 See the [approved contract](../superpowers/specs/2026-10-14-online-team-move.md).
 Behavior/recovery remains UNEXECUTED; source/static acceptance is separate.
@@ -2428,3 +2467,29 @@ and historical delivery stay unchanged. No render-time naming or recipient infer
 Shared data is protocol/thread-mention-corpus.json (51 lexical +13 write-path rows).
 Public-unexposed mentions_json, authentic debt/outage and genuine task/dream/callback
 proof require actual evidence and cannot be inferred from static/mock checks.
+
+
+Current-main C3 composition preserves automatic job admission: omitted/false
+review_required executes through native owner checks; true refuses before allocation,
+legacy true pending is inert, and /run remains a tombstone. Authenticated later
+prerequisite loss rechecks move/causal ownership in the native Pause transaction
+before its failed-before-launch CAS, audit/journal COMMIT and genuine wake. Only
+that exact completed no-launch refusal may settle; partial scratch/environment,
+output or process effects and earlier uncertainty remain in producer history.
+Naming keeps INSTALL-only N-SAC-1 structural admission and actual install-diagnostic
+provenance alongside SAME native disposition, rollback and reconciliation rules;
+no removed whole-release naming fingerprint is restored.
+
+The scheduled daemon disk worker reserves a global native writer per admitted
+org before spawn, through supervision/reap/report. Held/unowned orgs defer with
+bounded codes in the existing summary/audit; other admitted orgs continue. On-mode
+child admission and prune re-read the actual parent's active global writer ID
+through strict append-only history and validate the optional move layout/hold.
+An installed layout with missing/unknown ownership refuses before mutation; absent
+layout preserves native behavior. Missing/incomplete effect closure, interruption
+and partial mutation retain unknown writer evidence; a clean later provider result
+cannot erase it. The common1800-second window includes reservation admission.
+Off/default dry_run, metadata/process/age/containment safeguards and manual dry-run
+remain; no cleanup/activation authority follows. These source changes have no
+behavioral/migration/recovery proof; integration INCLUDING callback SKIPPED24342,
+Python units RETIRED. APPLY_AVAILABLE=false, no COMPLETE writer; D/E/F remain root-owned.

@@ -173,6 +173,7 @@ class Orchestrator:
         from runtime.orchestrator.team_move import TeamMoveCoordinator
         self._team_moves = TeamMoveCoordinator.for_org(TeamMoveStore(db, slug))
         self._team_moves.bind_teams(lambda: self._teams)
+        self._team_moves.producers.root = paths.root
         # THR-181 Track A: deterministic injectable evaluator seam. The daemon
         # wires the production subprocess evaluator; CI wires the strict fake.
         # None disables evaluation (the hook fails closed to ESCALATE), which
@@ -227,6 +228,7 @@ class Orchestrator:
         completion endpoint rejects every callback as `unknown_session` (409)
         and the task fails silently with note="agent session failed"."""
         self._sessions = tracker
+        self._team_moves.producers.sessions = tracker
 
     def attach_host_supervisor(self, supervisor) -> None:
         """Daemon boot wires the daemon-wide HostSessionSupervisor (THR-207

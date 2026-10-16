@@ -1,6 +1,9 @@
 """Automatic job admission, history and nonexecuting legacy disposition."""
 from __future__ import annotations
 
+from runtime.orchestrator.producer_move import owner_for
+from runtime.orchestrator.team_move import DeferredTeamMove
+
 import asyncio
 import hashlib
 import json as _json
@@ -834,12 +837,14 @@ def _settle_pause_job(org, task_id: str, job_id: str, *, no_launch_proven: bool 
             store.save_journal_uncommitted(row)
 
 
-async def _run_job_core(
+async def _run_job_core_impl(
     org, *, job_id: str,
     cwd_override: str | None, timeout_override: int | None,
     trigger: str = "founder",
     trigger_actor: str | None = None,
     submit_session_id: str | None = None,
+    _move_owner=None,
+    _move_disposition=None,
 ) -> dict:
     """Automatic admission core used by submit and authenticated Pause rediscovery.
 
@@ -989,9 +994,14 @@ async def _run_job_core(
         if preflight_error is not None:
             # Writer committed the failed row, audit and proven-no-launch settlement.
             fire_resume_check_for_job(org, job_id)
-            raise HTTPException(status_code=preflight_error.status_code, detail={
+            refusal = HTTPException(status_code=preflight_error.status_code, detail={
                 **preflight_error.detail, "job_id": job_id, "status": "failed",
             })
+            if _move_disposition is not None:
+                # Exact native COMMIT and postcommit bridge completed; this
+                # certifies this refusal only, never an HTTP error category.
+                _move_disposition.no_effect_error = refusal
+            raise refusal
         try:
             jobs_dir.mkdir(parents=True, exist_ok=True)
             stdout_path.write_bytes(b"")
@@ -1074,7 +1084,10 @@ async def _run_job_core(
                 publish=_sync_publish,
                 task_id=record.task_id,
                 workspace_root=str(workspace_root),
+                move_owner=_move_owner,
             )
+        except DeferredTeamMove:
+            raise
         except FileNotFoundError:
             finished = _now_iso()
             try:
@@ -1156,7 +1169,34 @@ async def _run_job_core(
             )
 
     from runtime.daemon.jobs_runner import register_runner_task
-    register_runner_task(job_id, asyncio.create_task(_run_and_persist()))
+    async def owned_run(owner):
+        nonlocal _move_owner
+        _move_owner = owner
+        deferred = failed = False
+        primary = None
+        try:
+            await _run_and_persist()
+        except DeferredTeamMove:
+            deferred = True
+        except BaseException as exc:
+            primary = exc
+            failed = True
+            raise
+        finally:
+            if owner is not None:
+                try:
+                    owner.finish(deferred=deferred, failed=failed)
+                except BaseException as settlement:
+                    if primary is None:
+                        raise
+                    primary.add_note(f'job native ownership settlement failed: {settlement}')
+                if deferred:
+                    owner.admission.deferred_jobs[job_id] = owned_run
+                else:
+                    owner.admission.deferred_jobs.pop(job_id, None)
+    if _move_owner is not None:
+        _move_owner.detached = True
+    register_runner_task(job_id, asyncio.create_task(owned_run(_move_owner)))
 
     return {
         "id": job_id,
@@ -1258,3 +1298,38 @@ async def job_events_stream(slug: str, job_id: str, org: OrgDep) -> StreamingRes
                 next_task.cancel()
 
     return StreamingResponse(gen(), media_type="text/event-stream")
+
+
+async def _run_job_core(org, *, job_id: str, cwd_override: str | None,
+    timeout_override: int | None, trigger: str = 'founder',
+    trigger_actor: str | None = None, submit_session_id: str | None = None) -> dict:
+    admission = owner_for(org.db)
+    owner = None
+    from runtime.orchestrator.producer_move import NativeWriterDisposition
+    disposition = NativeWriterDisposition()
+    deferred = failed = False
+    primary = None
+    try:
+        if admission is not None:
+            owner = admission.reserve('job', job_id)
+        result = await _run_job_core_impl(org, job_id=job_id, cwd_override=cwd_override,
+            timeout_override=timeout_override, trigger=trigger, trigger_actor=trigger_actor,
+            submit_session_id=submit_session_id, _move_owner=owner,
+            _move_disposition=disposition)
+        deferred = bool(result.get('deferred'))
+        return result
+    except DeferredTeamMove as exc:
+        deferred = True
+        return {'id': job_id, 'status': 'pending', 'deferred': True, 'code': exc.code}
+    except BaseException as exc:
+        primary = exc
+        failed = exc is not disposition.no_effect_error
+        raise
+    finally:
+        if owner is not None and not getattr(owner, 'detached', False):
+            try:
+                owner.finish(deferred=deferred, failed=failed)
+            except BaseException as settlement:
+                if primary is None:
+                    raise
+                primary.add_note(f'job native ownership settlement failed: {settlement}')

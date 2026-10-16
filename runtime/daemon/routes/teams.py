@@ -29,17 +29,18 @@ async def ensure_default(slug: str, org: OrgDep, response: Response) -> dict:
             ) as authority_change,
             org.teams_lock,
         ):
-            try:
-                needed = org.teams.needs_empty_default()
-            except ValueError as exc:
-                raise HTTPException(status_code=409, detail={
-                    "code": "default_team_conflict", "committed": False,
-                    "message": str(exc),
-                }) from exc
+            with authority_change.validation():
+                try:
+                    needed = org.teams.needs_empty_default()
+                except ValueError as exc:
+                    raise HTTPException(status_code=409, detail={
+                        "code": "default_team_conflict", "committed": False,
+                        "message": str(exc),
+                    }) from exc
+                if needed:
+                    # Read-only full snapshot precedes the mutation lease.
+                    org.workflow_authority.capture_canonical_snapshot()
             if needed:
-                # Complete canonical/cache and membership validation is a scan,
-                # so it precedes the short synchronous durable mutation lease.
-                org.workflow_authority.capture_canonical_snapshot()
                 with authority_change.canonical_change():
                     created = org.teams.ensure_empty_default()
                     try:
@@ -59,25 +60,26 @@ async def ensure_default(slug: str, org: OrgDep, response: Response) -> dict:
         # Interval exit owns best-effort publication. Reacquire its process gate
         # for coherent current readback, outside every durable lease/transaction.
         async with (
-            org.workflow_authority.async_writer_interval(publisher="ensure_empty_default_readback"),
+            org.workflow_authority.async_writer_interval(publisher="ensure_empty_default_readback") as readback,
             org.teams_lock,
         ):
-            authority: dict
-            try:
-                ready = org.workflow_authority.verify_admission_ready()
-                if org.workflow_authority.capture_snapshot() != ready.snapshot_bytes:
-                    raise WorkflowAuthorityError("workflow_activation_authority_stale")
-                authority = {"ready": True, "namespace": ready.namespace,
-                             "generation": ready.generation, "snapshot_digest": ready.snapshot_digest}
-            except (WorkflowAuthorityError, OrgConsistencyError, OSError, ValueError) as exc:
-                response.status_code = 202
-                authority = {"ready": False, "code": "default_team_authority_not_ready",
-                             "reason": exc.code if isinstance(exc, WorkflowAuthorityError) else str(exc),
-                             "message": "Default exists. Existing supported publication/recovery must complete; "
-                                        "repeating this command does not repair authority."}
-            return {"created": created, "team": org.teams.team_row("default"),
-                    "default_team": org.teams.default_team,
-                    "task_default_team": org.teams.task_default_team, "authority": authority}
+            with readback.validation():
+                authority: dict
+                try:
+                    ready = org.workflow_authority.verify_admission_ready()
+                    if org.workflow_authority.capture_snapshot() != ready.snapshot_bytes:
+                        raise WorkflowAuthorityError("workflow_activation_authority_stale")
+                    authority = {"ready": True, "namespace": ready.namespace,
+                                 "generation": ready.generation, "snapshot_digest": ready.snapshot_digest}
+                except (WorkflowAuthorityError, OrgConsistencyError, OSError, ValueError) as exc:
+                    response.status_code = 202
+                    authority = {"ready": False, "code": "default_team_authority_not_ready",
+                                 "reason": exc.code if isinstance(exc, WorkflowAuthorityError) else str(exc),
+                                 "message": "Default exists. Existing supported publication/recovery must complete; "
+                                            "repeating this command does not repair authority."}
+                return {"created": created, "team": org.teams.team_row("default"),
+                        "default_team": org.teams.default_team,
+                        "task_default_team": org.teams.task_default_team, "authority": authority}
     except (WorkflowAuthorityError, OrgConsistencyError) as exc:
         raise HTTPException(status_code=409, detail={
             "code": exc.code if isinstance(exc, WorkflowAuthorityError) else "teams_consistency_drift",

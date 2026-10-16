@@ -911,6 +911,13 @@ def _build_custom_skill_canonical_specs(
                 )
                 conn.commit()
         except Exception as exc:
+            # The native builder can leave canonical/package effects before
+            # returning an omitted custom spec. Retain the actual C3 owner even
+            # when this failure is caught and the outer materializer returns.
+            from runtime.orchestrator.producer_move import current_producer_preparation
+            preparation = current_producer_preparation()
+            if preparation is not None:
+                preparation.failed_cleanup()
             if recordable:
                 service.record_materialization(
                     conn, skill_id=row["id"], agent_name=agent_name,
@@ -1758,6 +1765,8 @@ def refresh_workspace_repos(workspace: Path) -> dict[str, bool]:
     except OSError as exc:
         logger.debug("repo refresh: could not scan %s: %s", workspace, exc)
         return {}
+    from runtime.orchestrator.producer_move import current_producer_preparation
+    preparation = current_producer_preparation()
     results: dict[str, bool] = {}
     for name in repo_names:
         repo_dir = workspace / "repos" / name
@@ -1769,9 +1778,13 @@ def refresh_workspace_repos(workspace: Path) -> dict[str, bool]:
                 timeout=30,
             )
             results[name] = result.returncode == 0
+            if result.returncode != 0 and preparation is not None:
+                preparation.failed_cleanup()
         except (subprocess.TimeoutExpired, subprocess.SubprocessError, OSError) as exc:
             logger.info("repo refresh: git pull skipped for %s: %s", repo_dir, exc)
             results[name] = False
+            if preparation is not None:
+                preparation.failed_cleanup()
     return results
 
 

@@ -13,6 +13,9 @@ that transitions the row.
 """
 from __future__ import annotations
 
+from runtime.orchestrator.team_move import DeferredTeamMove
+from runtime.orchestrator.producer_move import producer_preparation_effects
+
 import asyncio
 import time
 from datetime import datetime, timezone
@@ -150,13 +153,14 @@ endpoint creates the root task on your own team, targeted to you as executor.
 """
 
 
-async def run_schedule(
+async def _run_schedule(
     *,
     org_state,
     schedule_id: str,
     settings: Settings = global_settings,
     executor_factory: Callable | None = None,
     host_supervisor: HostSessionSupervisor | None = None,
+    _move_owner=None,
 ) -> None:
     """Run one schedule fire session.
 
@@ -226,30 +230,43 @@ async def run_schedule(
         paths=paths, agent_name=record.agent_name,
     )
 
+    session_id = _move_owner.session_id if _move_owner is not None else None
+
+    if _move_owner is not None:
+        # Existing B2 materialization rows admit task/thread/wake/dream only.
+        # Schedule preparation uses its real native audit, with the same SID.
+        org_state.db.insert_audit_log(schedule_id, record.agent_name,
+            "schedule_preparation", {"session_id": session_id,
+                "preparation_id": _move_owner.state.preparation_id})
+
     # Issue #536: serialize the complete pre-spawn skill materialization
     # transaction under a process-local workspace lock.
     try:
-        skills_root = settings.project_root / "runtime" / "skills"
-        expected_specs = materialize_workspace_skills(
-            workspace, settings,
-            slug=org_state.slug,
-            context=SessionContext.SCHEDULE,
-            provider=_prov,
-            agent_name=record.agent_name,
-            team=agent_def.team,
-            skills_root=skills_root,
-            org_root=org_state.root,
-            db=org_state.db,
-        )
+        with producer_preparation_effects(_move_owner):
+            skills_root = settings.project_root / "runtime" / "skills"
+            expected_specs = materialize_workspace_skills(
+                workspace, settings,
+                slug=org_state.slug,
+                context=SessionContext.SCHEDULE,
+                provider=_prov,
+                agent_name=record.agent_name,
+                team=agent_def.team,
+                skills_root=skills_root,
+                org_root=org_state.root,
+                db=org_state.db,
+                session_id=session_id,
+            )
 
-        # ── Pre-launch integrity validation ─────────────────────
-        validate_workspace_skills_integrity(
-            workspace, expected_specs,
-            settings=settings,
-            db=org_state.db,
-            agent_name=record.agent_name,
-            task_id=schedule_id,
-        )
+            # ── Pre-launch integrity validation ─────────────────────
+            validate_workspace_skills_integrity(
+                workspace, expected_specs,
+                settings=settings,
+                db=org_state.db,
+                agent_name=record.agent_name,
+                task_id=schedule_id,
+            )
+    except DeferredTeamMove:
+        raise
     except Exception as e:
         _failure_transition(store, record, now, f"materialization_failed: {e}")
         org_state.db.insert_audit_log(
@@ -264,19 +281,21 @@ async def run_schedule(
     # fresh code regardless of executor (claude/codex/opencode/pi).
     # Must run BEFORE the executor subprocess starts. Failure is non-
     # blocking: offline / dirty / non-ff / timeout are swallowed.
-    repo_refresh_results = refresh_workspace_repos(workspace)
+    with producer_preparation_effects(_move_owner):
+        repo_refresh_results = refresh_workspace_repos(workspace)
 
     repo_refresh_note = format_repo_refresh_note(repo_refresh_results)
 
     # ── Per-retry launch validator ───────────────────────────────
     def _pre_launch_validator():
-        validate_workspace_skills_integrity(
-            workspace, expected_specs,
-            settings=settings,
-            db=org_state.db,
-            agent_name=record.agent_name,
-            task_id=schedule_id,
-        )
+        with producer_preparation_effects(_move_owner):
+            validate_workspace_skills_integrity(
+                workspace, expected_specs,
+                settings=settings,
+                db=org_state.db,
+                agent_name=record.agent_name,
+                task_id=schedule_id,
+            )
 
     from runtime.orchestrator.active_authority_policy import resolve_active_team_policy_section
     from runtime.orchestrator.authority_policy_store import AuthorityPolicyStore
@@ -311,6 +330,11 @@ async def run_schedule(
         else _build_executor_for_provider(executor_name, settings, paths)
     )
 
+    from runtime.orchestrator.producer_move import bind_producer_executor
+    if _move_owner is not None:
+        _move_owner.executor, _move_owner.model = executor_name, model_name
+    executor = bind_producer_executor(executor, _move_owner)
+
     # ── D7B: CustomAdapterExecutor invocation context ──────────────────
     if hasattr(executor, 'set_invocation_context'):
         executor.set_invocation_context(
@@ -344,14 +368,17 @@ async def run_schedule(
     spec_builder = getattr(executor, "build_launch_spec", None)
     if spec_builder is not None:
         try:
-            launch_spec = spec_builder(
-                workspace=workspace,
-                prompt=prompt,
-                session_id=None,
-                model=model_name, reasoning_effort=reasoning_effort,
-                org_slug=org_state.slug,
-                timeout_seconds=settings.session_timeout_seconds,
-            )
+            with producer_preparation_effects(_move_owner):
+                launch_spec = spec_builder(
+                    workspace=workspace,
+                    prompt=prompt,
+                    session_id=session_id,
+                    model=model_name, reasoning_effort=reasoning_effort,
+                    org_slug=org_state.slug,
+                    timeout_seconds=settings.session_timeout_seconds,
+                )
+        except DeferredTeamMove:
+            raise
         except Exception as exc:
             _failure_transition(
                 store, record, datetime.now(timezone.utc),
@@ -381,7 +408,7 @@ async def run_schedule(
         result = executor.run(
             workspace=workspace,
             prompt=prompt,
-            session_id=None,
+            session_id=session_id,
             timeout_seconds=settings.session_timeout_seconds,
             pre_launch_validator=_pre_launch_validator if not contained else None,
             org_slug=org_state.slug,
@@ -405,14 +432,17 @@ async def run_schedule(
             AdmissionRequest(
                 org=org_state.slug,
                 invocation_kind="schedule",
+                move_reservation=_move_owner,
+                on_started=(lambda _pid: _move_owner.on_started()) if _move_owner is not None else None,
                 agent_id=record.agent_name,
                 logical_id=schedule_id,
                 executor_profile=executor_name,
-                enqueued_at=time.monotonic(),
+                enqueued_at=_move_owner.enqueued_at if _move_owner is not None else time.monotonic(),
             ),
             launch_spec=launch_spec,
             launch_body=_launch_body,
             pre_launch_validator=_pre_launch_validator,
+            final_prelaunch_validator=_move_owner,
         ),
     )
     # ``outcome.payload`` is the launch body's LaunchResult; its own
@@ -472,3 +502,14 @@ async def run_schedule(
         action="schedule_failed",
         payload={"reason": error},
     )
+
+
+async def run_schedule(
+    *, org_state, schedule_id: str, settings: Settings = global_settings,
+    executor_factory: Callable | None = None,
+    host_supervisor: HostSessionSupervisor | None = None,
+) -> None:
+    from runtime.orchestrator.producer_move import run_native_producer
+    await run_native_producer(org_state, 'schedule', schedule_id, lambda owner: _run_schedule(
+        org_state=org_state, schedule_id=schedule_id, settings=settings,
+        executor_factory=executor_factory, host_supervisor=host_supervisor, _move_owner=owner))

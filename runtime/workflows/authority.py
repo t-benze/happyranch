@@ -11,6 +11,8 @@ short and never span snapshot capture or filesystem publication.
 """
 from __future__ import annotations
 
+from runtime.orchestrator.producer_move import NativeWriterDisposition, native_writer
+
 import asyncio
 import hashlib
 import json
@@ -85,16 +87,33 @@ class _SupportedWriterInterval:
         coordinator: WorkflowAuthorityCoordinator,
         *,
         publisher: str,
+        native_disposition: NativeWriterDisposition,
     ) -> None:
         self._coordinator = coordinator
         self.publisher = publisher
+        self.native_disposition = native_disposition
         self.fenced = False
         self.fence_journal_id: str | None = None
         self.publisher_invocation: str | None = None
 
     @contextmanager
+    def validation(self) -> Iterator[None]:
+        """Caller-declared read-only validation, before its first effect.
+
+        An unfenced interval alone is not evidence: callers must also account
+        for preceding filesystem/SQL work and completed naming reconciliation.
+        Never certify a later refusal after a canonical mutation segment.
+        """
+        if self.fenced:
+            yield
+        else:
+            with self.native_disposition.validation():
+                yield
+
+    @contextmanager
     def canonical_change(self) -> Iterator[None]:
         """Fence and own only one synchronous canonical mutation segment."""
+        self.native_disposition.no_effect_error = None
         owner = f"workflow-writer:{self.publisher}:{uuid.uuid4().hex}"
         self._coordinator._acquire_lease(owner)
         try:
@@ -756,45 +775,50 @@ class WorkflowAuthorityCoordinator:
         self,
         *,
         publisher: str,
+        settlement: bool = False,
     ) -> Iterator[_SupportedWriterInterval]:
         """Own a synchronous writer batch while leasing only mutations."""
-        with self._publisher_lock:
-            interval = _SupportedWriterInterval(self, publisher=publisher)
-            try:
-                yield interval
-            except BaseException:
-                if interval.fenced:
-                    self.publish_after_supported_change(
-                        publisher=f"{publisher}:compensation",
-                        fence_journal_id=interval.fence_journal_id,
-                        publisher_invocation=interval.publisher_invocation,
-                    )
-                raise
-            else:
-                if interval.fenced:
-                    self.publish_after_supported_change(
-                        publisher=publisher,
-                        fence_journal_id=interval.fence_journal_id,
-                        publisher_invocation=interval.publisher_invocation,
-                    )
+        with native_writer(self._db, publisher=publisher, settlement=settlement) as disposition:
+            with self._publisher_lock:
+                interval = _SupportedWriterInterval(self, publisher=publisher, native_disposition=disposition)
+                try:
+                    yield interval
+                except BaseException:
+                    if interval.fenced:
+                        if not self.publish_after_supported_change(
+                            publisher=f"{publisher}:compensation",
+                            fence_journal_id=interval.fence_journal_id,
+                            publisher_invocation=interval.publisher_invocation,
+                        ):
+                            disposition.uncertain = True
+                    raise
+                else:
+                    if interval.fenced:
+                        if not self.publish_after_supported_change(
+                            publisher=publisher,
+                            fence_journal_id=interval.fence_journal_id,
+                            publisher_invocation=interval.publisher_invocation,
+                        ):
+                            disposition.uncertain = True
 
-        # The one-shot compatibility writer discovers workspace YAML while
-        # owning only its process gate. Reconcile its completed canonical batch
-        # after that gate releases, so profile acquisition never reverses the
-        # profile -> org publisher order and discovery never runs under leases.
-        if (
-            publisher == "agent_yaml_frontmatter_migration"
-            and interval.fenced and self._profile_coordinator is not None
-        ):
-            try:
-                self._profile_coordinator.reconcile_supported_roster_batch(
-                    self, completed_writer_invocation=interval.publisher_invocation,
-                )
-            except Exception:
-                logger.exception(
-                    "profile closure remains fenced after supported roster batch org=%s",
-                    self._org_slug,
-                )
+            # The one-shot compatibility writer discovers workspace YAML while
+            # owning only its process gate. Reconcile its completed canonical batch
+            # after that gate releases, so profile acquisition never reverses the
+            # profile -> org publisher order and discovery never runs under leases.
+            if (
+                publisher == "agent_yaml_frontmatter_migration"
+                and interval.fenced and self._profile_coordinator is not None
+            ):
+                try:
+                    self._profile_coordinator.reconcile_supported_roster_batch(
+                        self, completed_writer_invocation=interval.publisher_invocation,
+                    )
+                except Exception:
+                    disposition.uncertain = True
+                    logger.exception(
+                        "profile closure remains fenced after supported roster batch org=%s",
+                        self._org_slug,
+                    )
 
     @asynccontextmanager
     async def async_writer_interval(
@@ -811,26 +835,29 @@ class WorkflowAuthorityCoordinator:
         thread lock also serializes synchronous startup and thread-pool
         writers with the interval.
         """
-        async with self._async_writer_lock:
-            with self._publisher_lock:
-                interval = _SupportedWriterInterval(self, publisher=publisher)
-                try:
-                    yield interval
-                except BaseException:
-                    if interval.fenced:
-                        self.publish_after_supported_change(
-                            publisher=f"{publisher}:compensation",
-                            fence_journal_id=interval.fence_journal_id,
-                            publisher_invocation=interval.publisher_invocation,
-                        )
-                    raise
-                else:
-                    if interval.fenced:
-                        self.publish_after_supported_change(
-                            publisher=publisher,
-                            fence_journal_id=interval.fence_journal_id,
-                            publisher_invocation=interval.publisher_invocation,
-                        )
+        with native_writer(self._db, publisher=publisher) as disposition:
+            async with self._async_writer_lock:
+                with self._publisher_lock:
+                    interval = _SupportedWriterInterval(self, publisher=publisher, native_disposition=disposition)
+                    try:
+                        yield interval
+                    except BaseException:
+                        if interval.fenced:
+                            if not self.publish_after_supported_change(
+                                publisher=f"{publisher}:compensation",
+                                fence_journal_id=interval.fence_journal_id,
+                                publisher_invocation=interval.publisher_invocation,
+                            ):
+                                disposition.uncertain = True
+                        raise
+                    else:
+                        if interval.fenced:
+                            if not self.publish_after_supported_change(
+                                publisher=publisher,
+                                fence_journal_id=interval.fence_journal_id,
+                                publisher_invocation=interval.publisher_invocation,
+                            ):
+                                disposition.uncertain = True
 
     @contextmanager
     def supported_change(self, *, publisher: str) -> Iterator[None]:
@@ -869,7 +896,8 @@ class WorkflowAuthorityCoordinator:
         """
         store = AuthorityPolicyStore(self._db)
         with self.writer_interval(publisher=publisher) as interval:
-            selector = store.get_authority_selector(team)
+            with interval.validation():
+                selector = store.get_authority_selector(team)
             if selector is None:
                 with interval.canonical_change():
                     selector = store.ensure_authority_selector(team)

@@ -1,6 +1,8 @@
 """Read-only, team-scoped authority-policy projection."""
 from __future__ import annotations
 
+from runtime.orchestrator.team_move import DeferredTeamMove
+
 import json
 import logging
 import hashlib
@@ -319,6 +321,8 @@ def get_team_escalation_policy(slug: str, agent_name: str, org: OrgDep) -> dict:
         return result
     except HTTPException:
         raise
+    except DeferredTeamMove:
+        raise
     except Exception:
         _logger.exception("authority policy projection unavailable for org=%s", slug)
         raise HTTPException(
@@ -352,6 +356,8 @@ def get_team_escalation_policy_history(
         } for row in items], "next_cursor": next_cursor}
     except ValueError:
         raise HTTPException(status_code=422, detail={"code": "invalid_cursor"}) from None
+    except DeferredTeamMove:
+        raise
     except Exception:
         _logger.exception("authority policy history unavailable for org=%s", slug)
         raise HTTPException(status_code=500, detail=_STORE_UNAVAILABLE) from None
@@ -392,6 +398,8 @@ def get_team_escalation_policy_v2_history(
         } for row in items], "next_cursor": next_cursor}
     except ValueError:
         raise HTTPException(status_code=422, detail={"code": "invalid_cursor"}) from None
+    except DeferredTeamMove:
+        raise
     except Exception:
         _logger.exception("authority policy v2 history unavailable for org=%s", slug)
         raise HTTPException(status_code=500, detail=_STORE_UNAVAILABLE) from None
@@ -563,6 +571,8 @@ def get_team_escalation_policy_outcomes(
         return {"items": projected, "next_cursor": next_cursor}
     except ValueError:
         raise HTTPException(status_code=422, detail={"code": "invalid_cursor"}) from None
+    except DeferredTeamMove:
+        raise
     except Exception:
         _logger.exception("authority policy outcomes unavailable for org=%s", slug)
         raise HTTPException(status_code=500, detail=_STORE_UNAVAILABLE) from None
@@ -641,6 +651,8 @@ def create_team_escalation_policy_release(
         else:
             detail = {"code": "release_conflict"}
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=detail) from None
+    except DeferredTeamMove:
+        raise
     except Exception:
         _logger.exception("authority policy release creation unavailable for org=%s", slug)
         raise HTTPException(
@@ -739,6 +751,8 @@ def activate_team_escalation_policy(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail={"code": "invalid_policy_request"},
         ) from None
+    except DeferredTeamMove:
+        raise
     except Exception:
         _logger.exception("authority policy activation unavailable for org=%s", slug)
         raise HTTPException(status_code=500, detail=_STORE_UNAVAILABLE) from None
@@ -792,6 +806,8 @@ async def create_and_activate_team_escalation_policy_v2(
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT, detail={"code": "control_conflict"},
         ) from None
+    except DeferredTeamMove:
+        raise
     except Exception:
         _logger.exception("authority policy v2 paired control unavailable for org=%s", slug)
         raise HTTPException(status_code=500, detail=_STORE_UNAVAILABLE) from None
@@ -843,6 +859,8 @@ async def activate_team_escalation_policy_v2(
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT, detail={"code": "control_conflict"},
         ) from None
+    except DeferredTeamMove:
+        raise
     except Exception:
         _logger.exception("authority policy v2 activation unavailable for org=%s", slug)
         raise HTTPException(status_code=500, detail=_STORE_UNAVAILABLE) from None
