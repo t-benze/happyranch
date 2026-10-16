@@ -251,7 +251,10 @@ and diagnostics until independent verification completes. The native workflow
 and its source/input allocation are unchanged; this new input is not an
 execution grant.
 
-The wrapper performs normal npm ci, exact esbuild optimized-alias preparation,
+The wrapper performs normal npm ci in a subshell with umask 022 so authentic
+package executables retain mode 0755. The parent mask remains 077 and the
+previously created output, scratch and source directories remain private.
+It then performs exact esbuild optimized-alias preparation,
 then one ordinary npm build with a bound packaging Tailwind adapter and the
 original-backed Vite CSS observation patch. The content policy includes pinned
 web tests/stories and needs actual matched baseline/candidate CSS/UI evidence.

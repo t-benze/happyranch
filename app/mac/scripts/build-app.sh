@@ -289,7 +289,12 @@ cp "$OUTPUT/scratch/freeze-work/analysis.json" "$OUTPUT/diagnostics/analysis.jso
 cp "$OUTPUT/scratch/freeze-work/python-toolchain.json" "$OUTPUT/diagnostics/python-toolchain.json"
 STAGE=web
 cd "$SOURCE/web"
-npm ci
+# Ordinary package executable modes are required by authenticated preparation.
+# Keep the parent mask and the already-created output/scratch/source private.
+(
+    umask 022
+    npm ci
+)
 # Direct caller identity, never recovered from a candidate receipt. Preparation
 # happens after ordinary postinstall and before tsc/Vite/config consumes tools.
 # Preparation also excludes native loader alternatives and resolution shadows.

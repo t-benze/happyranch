@@ -373,6 +373,9 @@ LICENSE.md includes its bundled terms. `web/vendor/vite/prepare.py --original
 Only the reviewed CSS/shared asset sites and package version differ from
 Vite 5.4.21. Ordinary callers retain the original Tailwind plugin.
 
+Only ordinary npm ci runs in a subshell with umask 022, preserving authentic
+0755 package executables. The parent mask stays 077 on success or failure;
+output, scratch and source directories are created privately before installation.
 After ordinary npm postinstall, the wrapper authenticates the selected esbuild
 platform member and its optimized alias. Only the exact accounted two-link pair
 can be separated by exclusive copy and replacement of the alias entry. Both
