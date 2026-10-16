@@ -658,10 +658,12 @@ def validate_css(s,operations,plan,observations):
             keys(d,{'input','hoist','hoisted','minify','minified','marker','output'})
             need(parent in chunks and b(d['input'])==urls.get(parent,chunks[parent]),'CSS_FINALIZE_CHAIN_INVALID')
             if not d['hoist']:need(b(d['input'])==b(d['hoisted']),'CSS_FINALIZE_CHAIN_INVALID')
+            # Each finalize consumes its own actual minifier once. A later
+            # finalize cannot reuse a prior result, even when the bytes match.
+            own_minifies=minifies.pop(parent,[])
             if d['minify']:
-                own_minifies=minifies.get(parent,[])
-                need(own_minifies and b(own_minifies[-1]['input'])==b(d['hoisted']) and b(own_minifies[-1]['output'])==b(d['minified']),'CSS_MINIFY_INPUT_MISMATCH')
-            else:need(b(d['hoisted'])==b(d['minified']),'CSS_MINIFY_INPUT_MISMATCH')
+                need(len(own_minifies)==1 and b(own_minifies[0]['input'])==b(d['hoisted']) and b(own_minifies[0]['output'])==b(d['minified']),'CSS_MINIFY_INPUT_MISMATCH')
+            else:need(not own_minifies and b(d['hoisted'])==b(d['minified']),'CSS_MINIFY_INPUT_MISMATCH')
             need(d['marker']=='/*$vite$:1*/' and b(d['output'])==b(d['minified'])+d['marker'],'CSS_FINALIZE_CHAIN_INVALID');finalized[parent]=b(d['output'])
         elif stage=='css_emit':
             keys(d,{'source','referenceId','filename','cssAssetName','originalFileName'})
@@ -681,6 +683,7 @@ def validate_css(s,operations,plan,observations):
             keys(d,{'id','url'});asset=assets.get(d['id'])
             need(asset is not None and asset['url'] is not None and asset['url']==d['url'],'CSS_URL_RELATION_INVALID')
         else:need(False,'CSS_STAGE_INVALID',stage)
+    need(not any(minifies.values()),'CSS_MINIFY_INPUT_MISMATCH')
     need(all(not asset['pending'] for asset in assets.values()),'CSS_URL_RELATION_INVALID')
     need(states and all(st['phase']=='stored' for st in states.values()) and emits,'CSS_COMPLETE_RELATION_MISSING')
     return {'modules':list(states),'emissions':[x['referenceId'] for x in emits]}

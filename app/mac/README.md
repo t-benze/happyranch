@@ -258,6 +258,8 @@ it. The prepared P/A binary paths are both revalidated throughout custody.
 Both web readers require each asset-cache store to consume a read under the
 same enclosing hook, preserving interleaved read parents. Hits require a stored
 URL; incomplete read/store histories refuse.
+Each CSS finalization consumes one pending minifier result under its own hook,
+or none when disabled. Reused, duplicate and unconsumed minifier results refuse.
 
 The final observer uses the fixed `web-completion.jsonl` leaf, never an extra
 inherited FD. Python completes only the actual publish token after independent
