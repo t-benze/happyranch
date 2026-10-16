@@ -946,7 +946,8 @@ def _build_custom_skill_canonical_specs(
             # returning an omitted custom spec. Retain the actual C3 owner even
             # when this failure is caught and the outer materializer returns.
             from runtime.orchestrator.producer_move import current_producer_preparation
-            preparation = current_producer_preparation()
+            from runtime.orchestrator.thread_move import current_thread_preparation
+            preparation = current_thread_preparation() or current_producer_preparation()
             if preparation is not None:
                 preparation.failed_cleanup()
             if recordable:
@@ -1797,7 +1798,8 @@ def refresh_workspace_repos(workspace: Path) -> dict[str, bool]:
         logger.debug("repo refresh: could not scan %s: %s", workspace, exc)
         return {}
     from runtime.orchestrator.producer_move import current_producer_preparation
-    preparation = current_producer_preparation()
+    from runtime.orchestrator.thread_move import current_thread_preparation
+    preparation = current_thread_preparation() or current_producer_preparation()
     results: dict[str, bool] = {}
     for name in repo_names:
         repo_dir = workspace / "repos" / name

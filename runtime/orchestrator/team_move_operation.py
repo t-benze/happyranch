@@ -17,6 +17,7 @@ from runtime.infrastructure.team_move_store import (
     WorkspaceIdentity, _bytes, _decode, _digest, _now, _transaction, _unique_object,
 )
 from runtime.orchestrator import prompt_loader
+from runtime.orchestrator.team_move import DeferredTeamMove
 from runtime.orchestrator._paths import OrgPaths
 from runtime.orchestrator.agent_def import parse_agent_text
 from runtime.orchestrator.canonical_roster import canonical_roster
@@ -234,11 +235,21 @@ class TeamMoveOperation:
         with db._lock:
             causal = set()
             for row in db._conn.execute("SELECT id FROM tasks"):
-                task = db.get_task(row["id"])
-                if self.move._task_closure_uncommitted(task, request):
-                    causal.add(task.id)
-                    if task.status.value not in {"completed", "failed", "cancelled", "superseded"}:
-                        add("task_causal_work", task.id)
+                task = None
+                try:
+                    task = db.get_task(row["id"])
+                    related = self.move._task_closure_uncommitted(task, request)
+                except (DeferredTeamMove, ValueError, TypeError) as exc:
+                    # Preserve the already collected producer/host/thread facts
+                    # and include unknown owners in every dependent join.
+                    code = exc.code if isinstance(exc, DeferredTeamMove) else "team_move_task_record_unavailable"
+                    blockers.append({"kind": "task_owner_unknown", "owner_id": row["id"],
+                        "remedy": f"Resolve native causal ownership ({code}) before fresh preview or recovery"})
+                    related = True
+                if related:
+                    causal.add(row["id"])
+                    if task is None or task.status.value not in {"completed", "failed", "cancelled", "superseded"}:
+                        add("task_causal_work", row["id"])
             for reservation in self.move.blockers():
                 if reservation["agent_id"] in request.affected_agents or reservation["task_id"] in causal:
                     add("task_preparation_or_cleanup", reservation["owner_id"])

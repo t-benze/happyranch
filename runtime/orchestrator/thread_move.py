@@ -35,6 +35,17 @@ def bind_thread_preparation(owner: ThreadPreparation) -> Iterator[None]:
         _current.reset(token)
 
 
+@contextmanager
+def thread_preparation_effects() -> Iterator[None]:
+    """Carry the actual thread owner into shared native filesystem helpers."""
+    owner = current_thread_preparation()
+    if owner is None:
+        yield
+    else:
+        with owner.preparation_effects():
+            yield
+
+
 class ThreadPreparation:
     def __init__(self, admission: ThreadMoveAdmission, inv: Any, state: ThreadLifecycle) -> None:
         self.admission, self.inv, self.state = admission, inv, state
@@ -61,6 +72,23 @@ class ThreadPreparation:
         candidate = self.state.model_copy(update=changes)
         self.admission.store.save_uncommitted(self.inv, candidate)
         self.state = candidate
+
+    @contextmanager
+    def preparation_effects(self) -> Iterator[None]:
+        """Own native effects before a caught error can settle the invocation.
+
+        The existing active lifecycle covers interruption. Only errors inside
+        this effect interval become sticky cleanup uncertainty; ordinary early
+        no-effect refusals do not. A later successful interval cannot clear it.
+        """
+        try:
+            yield
+        except BaseException as exc:
+            try:
+                self.failed_cleanup()
+            except BaseException as evidence:
+                exc.add_note(f"thread preparation evidence failed: {evidence}")
+            raise
 
     def before_fifo(self) -> None:
         with self.admission.move.gate, self.admission.db._lock:
@@ -152,6 +180,12 @@ class ThreadPreparation:
     def terminal(self, outcome: Any) -> None:
         # Called only after backend finish; DB only, NEVER move gate.
         with self.admission.db._lock:
+            if outcome is not None:
+                from runtime.platform.session_backend import TerminalReason
+                if outcome.cleanup_error is not None or outcome.terminal_reason is TerminalReason.PREPARE_FAILURE:
+                    # Backend preparation/abandonment can fail before the first
+                    # thread launch commitment. No attempt is not cleanup proof.
+                    self.failed_cleanup()
             if not self.attempt_open:
                 return
             receipt = None if outcome is None else outcome.receipt

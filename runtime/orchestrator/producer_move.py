@@ -470,13 +470,21 @@ class ProducerMoveAdmission:
             affected = set(request.affected_agents)
             causal = set()
             for row in self.db._conn.execute('SELECT id FROM tasks'):
-                task = self.db.get_task(row['id'])
                 try:
+                    task = self.db.get_task(row['id'])
                     if self.move._task_closure_uncommitted(task, request):
-                        causal.add(task.id)
-                except DeferredTeamMove as exc:
-                    add('task_owner_unknown', task.id, f'Resolve native causal ownership ({exc.code}) before fresh preview')
-                    causal.add(task.id)
+                        causal.add(row['id'])
+                except (DeferredTeamMove, ValueError, TypeError) as exc:
+                    code = exc.code if isinstance(exc, DeferredTeamMove) else 'team_move_task_record_unavailable'
+                    add('task_owner_unknown', row['id'], f'Resolve native causal ownership ({code}) before fresh preview')
+                    causal.add(row['id'])
+            # An accepted callback is still owned work until its native consumer
+            # settles it. A terminal task or callback timestamp cannot erase it.
+            for recovery in self.db._conn.execute('SELECT * FROM task_completion_recoveries'):
+                if recovery['task_id'] in causal or recovery['agent'] in affected:
+                    if recovery['state'] not in ('callback_consumed', 'expired', 'restart_settled', 'superseded') or recovery['settled_at'] is None:
+                        add('task_recovery_callback', str(recovery['id']),
+                            'Resolve the original task/recovery callback and process cleanup through its native owner')
             if active_sessions is None:
                 add('session_owner_unknown', request.source_team, 'Obtain actual SessionTracker and host ownership census')
             else:
