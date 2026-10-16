@@ -2851,7 +2851,8 @@ callbacks, rendering, executor/supervisor or task completion.
 Sealing checkpoints counters/digests without querying history on the callback
 path; its diagnostic is `census_not_reconciled`. Only a complete zero-write read
 validation reconciles history, using at most 256 rows per primary-key page and
-100,000 total audit rows. Database write counts/data versions and all semantic
+250,000 total audit rows with a shared 512 MiB canonical JSON budget. Database
+write counts/data versions and all semantic
 live observer facts bracket capture; changing, incomplete or exhausted capture
 is unavailable. Unresolved task population, parent knowledge or task type is
 unavailable even when identity, binding and start rows exist.

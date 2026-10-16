@@ -933,8 +933,12 @@ class Database(
         No-epoch reports may select their complete diagnostic action set. This
         filter never supplies collection authority or changes the default view.
         """
-        from runtime.infrastructure.memory_collection import MAX_CENSUS_READ_ROWS, AcceptanceUnavailable
+        from runtime.infrastructure.memory_collection import (
+            MAX_CENSUS_READ_ROWS, CENSUS_READ_PAGE_ROWS, _CensusReadBudget,
+            CensusReadUnavailable, AcceptanceUnavailable,
+        )
         tables = {}
+        budget = _CensusReadBudget()
         with self.coherent_read_view() as conn:
             for table in ("tasks", "task_results", "jobs", "audit_log"):
                 where, params = "", ()
@@ -943,11 +947,19 @@ class Database(
                         raise AcceptanceUnavailable("acceptance_read_actions")
                     where = " WHERE action IN (" + ",".join("?" for _ in audit_actions) + ")"
                     params = audit_actions
-                rows = conn.execute(f"SELECT * FROM {table}{where} ORDER BY id LIMIT ?",
-                                    (*params, MAX_CENSUS_READ_ROWS + 1)).fetchall()
-                if len(rows) > MAX_CENSUS_READ_ROWS:
-                    raise AcceptanceUnavailable("acceptance_read_limit")
-                tables[table] = [dict(row) for row in rows]
+                cursor = conn.execute(f"SELECT * FROM {table}{where} ORDER BY id LIMIT ?",
+                                      (*params, MAX_CENSUS_READ_ROWS + 1))
+                rows = []
+                try:
+                    while raw := cursor.fetchmany(CENSUS_READ_PAGE_ROWS):
+                        page = [dict(row) for row in raw]
+                        budget.add(table, page)
+                        rows.extend(page)
+                except CensusReadUnavailable as exc:
+                    raise AcceptanceUnavailable("acceptance_read_limit") from exc
+                finally:
+                    cursor.close()
+                tables[table] = rows
         return tables
 
     def append_memory_collection_transition(self, *, result_row_id: int) -> dict:
