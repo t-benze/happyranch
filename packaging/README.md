@@ -422,6 +422,9 @@ custody, any of the six full closures, or release availability.
 Packaging compilation retains the ordinary Tailwind plugin's `AtProperty` and
 `ColorMix` polyfills (the pinned compiler's combined value `3`); both independent
 readers require that recorded option.
+The existing custody observer records Rollup's public final `moduleParsed` code
+for every module, including profiles with no ordinary handler. Publisher and
+separate fresh reader require that callback and its final transform-chain match.
 
 The private `web-private-plain@2` resource profile retains all null and non-null
 observations: 262144 rows; 32768 each for modules, subjects, CSS operations,

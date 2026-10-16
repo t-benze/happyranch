@@ -326,6 +326,19 @@ export class PackagingCustody {
     return facade;
   }
 
+  private retainModule(id: string, row: Row): void {
+    if (!this.modules.has(id) && this.modules.size >= MAX_MODULES) throw this.limit('WEB_MODULE_CAP');
+    if (++this.callMemberships > MAX_OBSERVATIONS) throw this.limit('WEB_CALL_MEMBERSHIP_CAP');
+    const previous = this.modules.get(id);
+    if (previous) {
+      this.append(previous, 'calls', row.id);
+      if (row.hook === 'moduleParsed') this.update(previous, { code: row.input });
+    } else {
+      const module = { id, code: row.hook === 'moduleParsed' ? row.input : null, calls: [row.id], source: id.startsWith('/') ? id.split('?')[0] : null };
+      this.retain(undefined, module, this.modules.size > 0); this.modules.set(id, module);
+    }
+  }
+
   private wrap(plugin: any, ordinal: number, hook: string): any {
     const descriptor = plugin[hook];
     const original = typeof descriptor === 'function' ? descriptor : descriptor.handler;
@@ -344,18 +357,7 @@ export class PackagingCustody {
         row = self.next('hook_call', { parent_id: self.scope.getStore()?.id ?? null, plugin_ordinal: ordinal, hook, subject_token: null, chunk_id: chunk, input: input === null ? null : self.capture(input), result: null, status: 'open', watch_ids: [], emission_ids: [] });
         self.pending.add(row);
         const id = hook === 'moduleParsed' ? args[0].id : hook === 'transform' ? args[1] : hook === 'load' ? args[0] : null;
-        if (id) {
-          if (!self.modules.has(id) && self.modules.size >= MAX_MODULES) throw self.limit('WEB_MODULE_CAP');
-          if (++self.callMemberships > MAX_OBSERVATIONS) throw self.limit('WEB_CALL_MEMBERSHIP_CAP');
-          const previous = self.modules.get(id);
-          if (previous) {
-            self.append(previous, 'calls', row.id);
-            if (hook === 'moduleParsed') self.update(previous, { code: row.input });
-          } else {
-            const module = { id, code: hook === 'moduleParsed' ? row.input : null, calls: [row.id], source: id.startsWith('/') ? id.split('?')[0] : null };
-            self.retain(undefined, module, self.modules.size > 0); self.modules.set(id, module);
-          }
-        }
+        if (id) self.retainModule(id, row);
       });
       const settle = (value: any, failed = false) => self.observe(() => {
         if (!row) return;
@@ -411,6 +413,16 @@ export class PackagingCustody {
           return Object.create(Object.getPrototypeOf(p), descriptors);
         }) };
       } },
+      moduleParsed(info) {
+        // Observe Rollup's public final module even when no ordinary plugin
+        // installs this hook. The callback belongs to this existing observer.
+        self.observe(() => {
+          if (typeof info.code !== 'string') throw new Error('WEB_MODULE_CODE_MISSING');
+          const ordinal = self.profile!.plugins.find((p: Row) => p.name === observer.name).ordinal;
+          const row = self.next('hook_call', { parent_id: self.scope.getStore()?.id ?? null, plugin_ordinal: ordinal, hook: 'moduleParsed', subject_token: null, chunk_id: null, input: self.capture(info.code), result: null, status: 'no_result', watch_ids: [], emission_ids: [] });
+          self.retainModule(info.id, row);
+        });
+      },
       buildEnd(error) { if (error) self.originalFailed = true; },
       writeBundle: { order: 'post', sequential: true, handler(_options, bundle) {
         if (!self.writeSeen) { self.writeSeen = true; self.core('write_input', self.entries(bundle)); }

@@ -836,7 +836,7 @@ def validate_build(s,payload,context,preparation,*,stored_required=False):
         memberships+=len(module['calls']);need(memberships<=MAX_OBSERVATIONS,'CALL_MEMBERSHIP_CAP')
         need(len(set(module['calls']))==len(module['calls']) and not all_members.intersection(module['calls']),'CALL_MEMBERSHIP_DUPLICATE');all_members.update(module['calls'])
         need(module['calls']==sorted(module['calls'],key=lambda v:int(v[1:])),'CALL_ORDER')
-        current=None
+        current=None;observed_final=False
         if module['source'] is not None:
             path=Path(module['source']);need(path.is_relative_to(s.paths.exported_source/'web'),'MODULE_SOURCE_ROOT')
             token,raw=s.intern_subject(s.paths.exported_source,path.relative_to(s.paths.exported_source).as_posix())
@@ -850,6 +850,9 @@ def validate_build(s,payload,context,preparation,*,stored_required=False):
                 if call['result'] is not None:current=call['result']
             elif call['hook']=='moduleParsed':
                 need(call['input']==current==module['code'],'MODULE_FINAL_CHAIN',module['id'])
+                if profile['plugins'][call['plugin_ordinal']]['name']=='happyranch:packaging-custody':
+                    need(not observed_final,'MODULE_FINAL_CHAIN',module['id']);observed_final=True
+        need(observed_final and current==module['code'],'MODULE_FINAL_CHAIN',module['id'])
     shipped={name for row in write if row['type']=='chunk' for name in row['module_ids']}
     need(shipped<={row['id'] for row in payload['modules']},'GENERATED_RELATION_MISSING')
     html=[o for o in observations if o['kind']=='html_snapshot' and o['stage']=='pre']
