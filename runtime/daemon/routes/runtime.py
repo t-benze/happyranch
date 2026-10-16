@@ -20,6 +20,7 @@ class RuntimePath(BaseModel):
 
 def _swap(state: DaemonState, runtime: RuntimeDir, *, move_diagnostics=None) -> None:
     """Replace the daemon's active runtime atomically."""
+    state.team_move_service.assert_no_owner()
     from runtime.orchestrator.team_move_startup import require_runtime_reader, refuse_runtime_detach
     refuse_runtime_detach(state.runtime, diagnostics=state.broken_orgs)
     diagnostics = dict(move_diagnostics or {})
@@ -34,6 +35,10 @@ def _swap(state: DaemonState, runtime: RuntimeDir, *, move_diagnostics=None) -> 
     state.orgs = new_state.orgs
     state.broken_orgs = new_state.broken_orgs
     state.profile_coordinator = new_state.profile_coordinator
+    # No live owner can cross the switch (checked above). Keep diagnostic
+    # trackers/errors scoped to this runtime rather than the reused org slug.
+    from runtime.daemon.team_move_service import TeamMoveService
+    state.team_move_service = TeamMoveService(state)
     # Close the old metrics store and adopt the new runtime's store so
     # persisted snapshots always target the ACTIVE runtime's metrics.db.
     if state.metrics_store is not None:
@@ -59,6 +64,7 @@ async def register_runtime(body: RuntimePath, request: Request) -> dict:
     from runtime.daemon.app import ensure_workers_started
 
     daemon: DaemonState = request.app.state.daemon
+    daemon.team_move_service.assert_no_owner()
     from runtime.orchestrator.team_move_startup import refuse_runtime_detach
     refuse_runtime_detach(daemon.runtime, diagnostics=daemon.broken_orgs)
     path = Path(body.path).expanduser()
@@ -75,6 +81,8 @@ async def register_runtime(body: RuntimePath, request: Request) -> dict:
         daemon.runtime is not None and daemon.runtime.root == runtime.root
     )
     async with daemon.orgs_lock:
+        daemon.team_move_service.assert_no_owner()
+        refuse_runtime_detach(daemon.runtime, diagnostics=daemon.broken_orgs)
         if not same_root:
             for org in daemon.orgs.values():
                 in_flight = org.db.get_nonterminal_task_ids()
@@ -102,6 +110,7 @@ async def use_runtime(body: RuntimePath, request: Request) -> dict:
     from runtime.daemon.app import ensure_workers_started
 
     daemon: DaemonState = request.app.state.daemon
+    daemon.team_move_service.assert_no_owner()
     from runtime.orchestrator.team_move_startup import refuse_runtime_detach, require_runtime_reader
     refuse_runtime_detach(daemon.runtime, diagnostics=daemon.broken_orgs)
     path = Path(body.path).expanduser().resolve()
@@ -109,6 +118,8 @@ async def use_runtime(body: RuntimePath, request: Request) -> dict:
     diagnostics = require_runtime_reader(runtime)
 
     async with daemon.orgs_lock:
+        daemon.team_move_service.assert_no_owner()
+        refuse_runtime_detach(daemon.runtime, diagnostics=daemon.broken_orgs)
         for org in daemon.orgs.values():
             in_flight = org.db.get_nonterminal_task_ids()
             if in_flight:

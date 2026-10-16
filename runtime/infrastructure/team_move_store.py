@@ -748,16 +748,29 @@ class TeamMoveStore:
             raise TeamMoveError("team_move_unknown_operation")
         return dict(row)
 
-    def read(self, *, operation_key: str | None = None) -> dict | None:
+    def read(self, *, operation_key: str | None = None, operation_id: str | None = None) -> dict | None:
         """Private read; raw definition images must not be returned by public show."""
+        if operation_key is not None and operation_id is not None:
+            raise TeamMoveError("team_move_ambiguous_selector")
         with self.db.coherent_read_view() as conn:
             if not validate_team_move_schema(conn, org_slug=self.org_slug):
                 return None
-            if operation_key is None:
+            if operation_id is not None:
+                row = conn.execute("SELECT * FROM team_move_operations WHERE operation_id=?", (operation_id,)).fetchone()
+            elif operation_key is None:
                 row = conn.execute("SELECT * FROM team_move_operations WHERE active_slot=1").fetchone()
             else:
                 row = conn.execute("SELECT * FROM team_move_operations WHERE operation_key=?", (operation_key,)).fetchone()
             return dict(row) if row is not None else None
+
+    def completed_request(self, request_digest: str) -> dict | None:
+        """Read a prior COMPLETE for native no-write satisfied verification."""
+        with self.db.coherent_read_view() as conn:
+            if not validate_team_move_schema(conn, org_slug=self.org_slug):
+                return None
+            rows = conn.execute("SELECT * FROM team_move_operations WHERE request_digest=? AND phase='complete' ORDER BY operation_id",
+                (request_digest,)).fetchall()
+            return dict(rows[0]) if rows else None
 
     def staging(self, row):
         with self.db.coherent_read_view() as conn:

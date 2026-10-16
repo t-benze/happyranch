@@ -3311,6 +3311,134 @@
         ]
       }
     },
+    "/api/v1/orgs/{slug}/team-moves": {
+      "POST": {
+        "params": [
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "202",
+          "401",
+          "403",
+          "404",
+          "409",
+          "422",
+          "503"
+        ]
+      }
+    },
+    "/api/v1/orgs/{slug}/team-moves/by-key/{operation_key}": {
+      "GET": {
+        "params": [
+          [
+            "operation_key",
+            "path"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "401",
+          "403",
+          "404",
+          "409",
+          "422",
+          "503"
+        ]
+      }
+    },
+    "/api/v1/orgs/{slug}/team-moves/capability": {
+      "GET": {
+        "params": [
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "401",
+          "403",
+          "404",
+          "409",
+          "422",
+          "503"
+        ]
+      }
+    },
+    "/api/v1/orgs/{slug}/team-moves/preview": {
+      "POST": {
+        "params": [
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "401",
+          "403",
+          "404",
+          "409",
+          "422",
+          "503"
+        ]
+      }
+    },
+    "/api/v1/orgs/{slug}/team-moves/{operation_id}": {
+      "GET": {
+        "params": [
+          [
+            "operation_id",
+            "path"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "401",
+          "403",
+          "404",
+          "409",
+          "422",
+          "503"
+        ]
+      }
+    },
+    "/api/v1/orgs/{slug}/team-moves/{operation_id}/recover": {
+      "POST": {
+        "params": [
+          [
+            "operation_id",
+            "path"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "202",
+          "401",
+          "403",
+          "404",
+          "409",
+          "422",
+          "503"
+        ]
+      }
+    },
     "/api/v1/orgs/{slug}/teams": {
       "GET": {
         "params": [

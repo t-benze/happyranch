@@ -5,6 +5,10 @@ import asyncio
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from runtime.daemon.team_move_service import TeamMoveService
 
 from runtime.config import Settings
 from runtime.daemon.direct_connect_store import DirectConnectAuthorityStore
@@ -59,6 +63,7 @@ class DaemonState:
     # constructed only for runtime-backed states after every initial OrgState
     # has loaded, then reconciled before the DaemonState is returned.
     profile_coordinator: ProfileCoordinator | None = None
+    team_move_service: TeamMoveService = field(init=False, repr=False)
 
     @classmethod
     def idle(cls, settings: Settings) -> "DaemonState":
@@ -71,8 +76,10 @@ class DaemonState:
         """Construct metrics_store for runtime-backed state.
 
         Called by from_runtime after the dataclass constructor.
-        For idle state, this is a no-op (metrics_store is set in idle()).
+        Idle states still own the inert move service; metrics_store is set by idle().
         """
+        from runtime.daemon.team_move_service import TeamMoveService
+        self.team_move_service = TeamMoveService(self)
         if self.runtime is not None and self.metrics_store is None:
             self.metrics_store = MetricsStore(
                 str(self.runtime.root / "metrics.db")
@@ -325,11 +332,17 @@ class DaemonState:
 
     async def remove_org(self, slug: str) -> None:
         async with self.orgs_lock:
+            self.team_move_service.assert_no_owner(slug)
+            current = self.orgs.get(slug)
+            if current is not None and current.db._team_move_coordinator.store.read() is not None:
+                from runtime.infrastructure.team_move_store import TeamMoveError
+                raise TeamMoveError("team_move_runtime_detach_held")
             org = self.orgs.pop(slug, None)
             if org is not None:
                 org.close()
 
     async def close_all(self) -> None:
+        await self.team_move_service.close()
         async with self.orgs_lock:
             for org in self.orgs.values():
                 org.close()

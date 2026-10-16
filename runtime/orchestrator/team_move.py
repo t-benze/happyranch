@@ -17,7 +17,7 @@ _task_tail: ContextVar[list | None] = ContextVar("team_move_task_tail", default=
 
 CAPABILITY_VERSION = 1
 APPLY_AVAILABLE = False
-NOT_INTEGRATED = ("founder_public_service_cli", "whole_history_integration_acceptance")
+NOT_INTEGRATED = ("whole_history_integration_acceptance",)
 
 # Required D completion readback; labels are a contract, never Boolean proofs.
 COMPLETION_REQUIREMENTS = (

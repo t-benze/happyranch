@@ -267,6 +267,48 @@ class TeamMoveOperation:
         return (self.org.db._conn.total_changes,
             self.org.db._conn.execute("PRAGMA data_version").fetchone()[0])
 
+    def verify_already_satisfied(self, row):
+        """No writes: roster equality alone cannot admit a new-key no-op.
+
+        Reuse only a genuinely saved COMPLETE, its exact target/context and SAME
+        current ready publication. A changed release/input requires engineering
+        reconciliation rather than a fresh reset or inferred completion.
+        """
+        from runtime.orchestrator.org_validation import validate_team_membership
+        if row["phase"] != "complete" or self.store.read() is not None:
+            raise TeamMoveError("team_move_satisfied_evidence_required")
+        request = _decode(MoveRequest, row["request_bytes"])
+        progress = _decode(Progress, row["progress_bytes"])
+        with self.org.db._lock:
+            initial = (self.move.producers.writer_epoch, self._database_observation())
+        with canonical_roster(self.org.root):
+            validate_team_membership(OrgPaths(self.org.root), self.org.teams)
+            for image in request.files:
+                raw, identity = read_regular(check_parents(self.org.root, image.path))
+                if _digest(raw) != image.after_digest or identity.mode != image.identity.mode:
+                    raise TeamMoveError("team_move_satisfied_canonical_changed")
+            self._verify_stable_inputs(request)
+            for index, plan in enumerate(self._after_plans(request)):
+                if verify_context(self.org, plan) != progress.agents[index].context:
+                    raise TeamMoveError("team_move_satisfied_context_changed")
+            ready = self.org.workflow_authority.verify_admission_ready()
+            current = self.org.workflow_authority.capture_snapshot()
+            with self.org.db._lock:
+                pointer = self.org.workflow_authority._pointer(self.org.db._conn, ready.namespace)
+            publication = progress.publication
+            if (current != ready.snapshot_bytes or
+                    (ready.namespace, ready.generation, ready.snapshot_digest, pointer[1]) !=
+                    (publication.namespace, publication.generation, publication.digest, publication.journal_id)):
+                raise TeamMoveError("team_move_satisfied_authority_changed")
+            blockers, epoch, changes = self.census(request, owned_publication=publication)
+            if blockers or initial != (epoch, changes):
+                raise TeamMoveError("team_move_satisfied_native_owners_unsettled")
+        with self.move.gate, self.org.db._lock:
+            if (initial != (self.move.producers.writer_epoch, self._database_observation())
+                    or self.store.read() is not None or self.store.read(operation_key=row["operation_key"]) != row):
+                raise TeamMoveError("team_move_satisfied_inputs_changed")
+        return row
+
     def _row(self, key):
         row = self.store.read(operation_key=key)
         if row is None:

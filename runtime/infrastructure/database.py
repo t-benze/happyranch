@@ -383,12 +383,13 @@ class Database(
     AuthorityV2ContinuationMixin,
 ):
     @classmethod
-    def _open_team_move_recovery(cls, db_path: Path, *, org_slug: str):
+    def _open_team_move_recovery(cls, db_path: Path, *, org_slug: str, require_active=True):
         """Restricted D owner: open an EXISTING validated org, no migrations.
 
         Never invokes __init__, schema bootstrap, compatibility writers, WAL
-        selection, legacy repair or enrollment migration. Only the private move
-        recovery context uses this handle; it is not attached to any producer.
+        selection, legacy repair or enrollment migration. Diagnostic show uses
+        a read-only handle without requiring an active row; released receipts
+        remain reachable before attachment. Neither handle admits producers.
         """
         from urllib.parse import quote
         from runtime.infrastructure.team_move_store import inspect_team_move_database, TeamMoveError, _inspection_error
@@ -397,7 +398,7 @@ class Database(
             row = inspect_team_move_database(db_path, org_slug=org_slug, require_existing=True)
         except (OSError, sqlite3.Error) as exc:
             raise _inspection_error("team_move_recovery_database_unavailable", exc) from exc
-        if row is None:
+        if row is None and require_active:
             raise TeamMoveError("team_move_recovery_operation_required")
         owner = cls.__new__(cls)
         owner.db_path = db_path
@@ -410,7 +411,8 @@ class Database(
         owner._conn = None
         primary = None
         try:
-            owner._conn = sqlite3.connect("file:" + quote(str(db_path), safe="/") + "?mode=rw", uri=True, check_same_thread=False)
+            mode = "rw" if require_active else "ro"
+            owner._conn = sqlite3.connect("file:" + quote(str(db_path), safe="/") + "?mode=" + mode, uri=True, check_same_thread=False)
             owner._conn.row_factory = sqlite3.Row
             owner._conn.execute("PRAGMA foreign_keys=ON")
             from runtime.infrastructure.workflow_schema import validate_workflow_schema

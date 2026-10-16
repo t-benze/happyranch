@@ -34,6 +34,7 @@ from runtime.daemon.routes import (
     skills,
     tasks,
     teams,
+    team_moves,
     threads,
     tokens,
     usage,
@@ -388,6 +389,9 @@ async def _lifespan(app: FastAPI):
     try:
         yield
     finally:
+        # HTTP disconnect never owns these tasks. Reap the bounded operation
+        # owners before host shutdown or any org DB can close; retain holds.
+        await state.team_move_service.close()
         # ── Host-session drain (THR-207 Slice A real-caller wiring) ──
         # Stop admission, cancel queued, and finish every owned attempt with a
         # durable SHUTDOWN winner BEFORE the producer workers are cancelled, so
@@ -489,6 +493,7 @@ def create_app(state: DaemonState) -> FastAPI:
     app.include_router(identities.router, prefix="/api/v1/orgs/{slug}", tags=["identities"])
     app.include_router(authority_policy.router, prefix="/api/v1/orgs/{slug}", tags=["authority-policy"])
     app.include_router(teams.router, prefix="/api/v1/orgs/{slug}")
+    app.include_router(team_moves.router, prefix="/api/v1/orgs/{slug}", tags=["team-moves"])
     app.include_router(audit.router, prefix="/api/v1/orgs/{slug}")
     app.include_router(tokens.router, prefix="/api/v1/orgs/{slug}")
     app.include_router(usage.router, prefix="/api/v1/orgs/{slug}", tags=["usage"])

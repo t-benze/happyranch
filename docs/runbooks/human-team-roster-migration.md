@@ -1,5 +1,10 @@
 # THR296 bounded roster migration
 
+Historical/deferred offline PR1022/1052 procedure. The current online delivery
+and engineering-owned activation/Founder handoff is [online-team-move.md](online-team-move.md).
+Do not use this offline package as online readiness or ask Founder to edit manifests/YAML.
+
+
 This candidate is not a maintenance release. No successful check, production
 manifest, backup/restore receipt, M venue, apply or deployment is attested.
 Independent code review, behavioral QA, exact-head checks and explicit manager/
