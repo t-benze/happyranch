@@ -4,12 +4,13 @@ description: Use when you need to create a scheduled Todo for yourself from expl
 ---
 
 
-## Public team-move E handoff (THR296seq135)
+## Integrated team-move F candidate handoff (THR296seq135)
 
 Founder-controlled `teams move capability/preview/apply/show/recover` now has
-public service/CLI source. APPLY_AVAILABLE=False and whole-history acceptance
-gate apply AND recovery; skills/agents gain no execution or ambient-bearer
-self-admission authority. Manage-agent retains team/role; transfers use the
+public service/CLI source. F proposes APPLY_AVAILABLE=True with actual native
+apply AND recovery readiness gates; whole-feature independent acceptance and
+manager guarded merge remain required. Skills/agents gain no execution or
+ambient-bearer self-admission authority. Manage-agent retains team/role; transfers use the
 separate admitted founder operation. Preview uses only the pure native planner,
 not materializers/resets/reservations. Exact normalized client bytes/key are
 privately fsynced before POST, including exact saved-file reuse/apply reads;
@@ -34,17 +35,83 @@ no automatic retry or TTL takeover. Both show GET forms declare202/CLI3 in-fligh
 D staging/history/leases, C1-C3 uncertainty/EMPTY budgets and actual callbacks
 remain. Earlier unavailable-E statements below describe historical checkpoints.
 Current contract: docs/superpowers/specs/2026-10-14-online-team-move.md and
-engineering-owned docs/runbooks/online-team-move.md. E disabled source, F reviewed
-enablement, separately authorized release loading and exact Founder live
-operation are distinct. Shared bearer does not prove human presence. Behavior
+engineering-owned docs/runbooks/online-team-move.md. F candidate source,
+independent acceptance/merge, separately authorized release loading and exact
+Founder live operation are distinct. Shared bearer does not prove human presence. Behavior
 UNEXECUTED, integration INCLUDING callback SKIPPED24342, units RETIRED; no new
 cases/campaign, live operation, deployment or cleanup authority follows.
 
 
+F native release preparation runs through `OrgState.load`: strict read-only move
+discovery precedes naming preflight, generic compatibility writes, roster
+validation, publication and producer admission. After complete native workflow
+validation, the DB-owned `install_team_move_schema` transaction validates exact
+existing layout/history/org identity, refuses held/unknown state, installs only
+the literal ONE table if absent, and validates before COMMIT. Repeated compatible
+attachment is idempotent. Generic Database/runtime-audit, capability/preview/show
+and restricted diagnostic recovery never install or repair it. Source delivery
+does not call it on production: separately authorized compatible release loading
+through the supported launcher performs native preparation; Founder assembles
+no files, SQL or offline manifest. Missing schema/owners are engineering release
+dependencies. Even an empty installed table requires reader@3. An absent optional
+layout remains compatible with generic/older readers; source rollback cannot
+undo durable state or grant a downgrade.
+
+F also freezes C2 thread retry initialization explicitly, including EMPTY
+budgets. New initial/fallback/nudge phase initialization is distinct from a
+frozen zero budget; deferral/reentry cannot replenish it. Old missing facts keep
+their original history interpretation but refuse ambiguous new retry/reentry
+with `team_move_thread_retry_initialization_unknown`; no history is backfilled.
+Updated shell/Mac launchers require `online-team-move@3` (reads old @1/@2), so
+earlier supported parsers refuse before startup. Already-running old daemons,
+obsolete launchers and unchecked old interpreters remain outside that guard.
+All behavioral/installation/recovery/launcher observations remain UNEXECUTED.
+
+
+Historical task attribution is separate from current launch eligibility. The
+complete parent/child/revisit/chain/fanout/workflow closure retains task team keys,
+recorded participants and permanent IDs, including retired actors authenticated
+by the existing strict naming owner or native INTEGER task/result/SID attribution.
+It never resolves settled history through today's manager or requires re-enrollment.
+Unknown identity/graph facts remain actionable census blockers without discarding
+collected inventory; dependent sessions/jobs/recovery callbacks/workflows remain
+joined even for terminal tasks. New execution still requires a current executable
+owner. No historical record, team, callback or binding is rewritten.
+
+The SAME INTEGER thread invocation/agent/SID preparation owner spans native
+materialization, integrity, repository refresh and launch-spec/cache preparation,
+including helper-internal omissions and caught failures. Such uncertainty appends
+the existing sticky `failed_cleanup` fact BEFORE ordinary failure settlement;
+backend preparation/cleanup and native workspace/cache failures retain ownership.
+Later success/callback/terminal state cannot erase it. Serializer, audit COMMIT,
+strict history reader, restart/reentry and census preserve that fact, independently
+of frozen EMPTY/nonempty retries. Ordinary stale-claim/agent/breaker or missing
+launch-seam refusals before effects retain their native no-effect disposition;
+returned failure alone never proves compensation. No new schema/journal/backfill
+or generic producer identity is introduced. All behavior remains UNEXECUTED.
+
+Ordinary tasks carry their SAME native TaskInvocation/task/agent/runtime SID
+through materialization, integrity (including retries), package omissions,
+repository refresh, attachment writes/cleanup, task scratch and builtin/custom
+cache/workspace setup. Safe deferred ownership becomes durably `prepared` before
+preparation resumes; this never clears existing uncertainty.
+Preparation failure sets the existing local reservation cleanup flag BEFORE the
+fallible strict Pause save/COMMIT, then retains `execution_unknown`/`unknown` in
+the admitted journal. Terminal/callback/quiescent later attempts and safe unrelated
+worktree cleanup cannot clear it. Settlement persists that fact before release;
+failed saves retain local ownership and original plus persistence errors.
+Restart treats unclosed task `prepared` entries as unknown, including terminal
+rows and prepared recovery/retry owners; absence of first launch is no proof of
+preparation cleanup. Unknown deferred entries cannot authorize a fresh launch.
+Native pre-effect source/artifact validation, repo-scan and missing launch-seam refusals
+retain their no-effect disposition. Existing retry/recovery IDs, frozen budgets,
+INTEGER callbacks and authority-v2 are preserved. No new field/journal, history
+backfill, compensation or clearance writer is introduced. Behavior UNEXECUTED.
+
 ## D private operation and startup holds (THR296seq135)
 
-The corrected reader is online-team-move@2 (also reads old @1 records); supported
-launchers pass --reader-guarded-start=online-team-move@2 and reject earlier D
+The corrected reader is online-team-move@3 (also reads old @1/@2 records); supported
+launchers pass --reader-guarded-start=online-team-move@3 and reject earlier D
 readers. Per-org open/identity/SQLite errors remain diagnostic-only and survive
 startup/switch readback. Restricted recovery preserves the original error on
 close failure; standalone close failures retain native classification and holds.
@@ -67,12 +134,12 @@ outside leases. Matching attachment revalidates its actual already-open DB owner
 in the short segment; only successful attachment clears its diagnostic. Other
 roots, failed attachment, current holds and malformed history stay held. D's
 own-operation/native-identity exception also checks EMPTY dependencies. Public
-recovery/reattachment is source-wired by E, still gated pending F; no skill authority is granted.
+recovery/reattachment is source-wired by E and gated on actual native owners by F; no skill authority is granted.
 
 
 D supplies private canonical/context/reset/profile/publication/recovery source.
-E now supplies public API/CLI source; apply/recover execution remains disabled
-until F independent acceptance;
+E supplies public API/CLI source; F proposes reviewed source enablement with
+separate actual apply/recovery readiness gates;
 no skill or agent may invoke the private owner or use ambient bearer credentials
 to self-admit a move. Manage-agent still cannot transfer teams. New startup
 schema-owner discovery precedes compatibility writers and partial membership;

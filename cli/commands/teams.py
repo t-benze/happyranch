@@ -144,12 +144,12 @@ def register(sub) -> None:
         command = commands.add_parser(name, help=help_text)
         command.add_argument("--org", required=True)
         command.set_defaults(func=handler)
-    move = commands.add_parser("move", help="Founder preview/apply/show/recover; E apply remains disabled")
+    move = commands.add_parser("move", help="Founder move commands; read loaded capability and native readiness")
     operations = move.add_subparsers(dest="move_command", required=True)
     for name in ("capability", "preview", "apply", "show", "recover"):
         operation = operations.add_parser(name, help={"capability": "Read loaded capability and incomplete reasons",
             "preview": "Read exact native diff; save private normalized request/key without reserving",
-            "apply": "Validate/fsync saved exact key/body before explicit POST (gated until reviewed F enablement)",
+            "apply": "Fsync saved key/body for an exact Founder-authorized move; requires compatible loading and native readiness",
             "show": "Read saved operation/receipt without progress or writes",
             "recover": "Explicit bounded progress of SAME operation/revision (gated)"}[name])
         operation.add_argument("--org", required=True, type=_identifier)

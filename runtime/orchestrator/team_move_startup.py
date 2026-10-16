@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from runtime.infrastructure.team_move_store import TeamMoveError, inspect_team_move_org
 
-READER_CAPABILITIES = frozenset({"online-team-move@1", "online-team-move@2"})
+READER_CAPABILITIES = frozenset({"online-team-move@1", "online-team-move@2", "online-team-move@3"})
 
 
 class TeamMoveStartupHold(TeamMoveError):
@@ -44,13 +44,13 @@ def require_runtime_reader(runtime, capabilities=READER_CAPABILITIES):
         if entry.name in {"_pending", "_archive"}:
             continue
         try:
-            _directory, row = inspect_team_move_org(entry, org_slug=entry.name)
+            _directory, row = inspect_team_move_org(entry, org_slug=entry.name, reader_capabilities=capabilities)
         except TeamMoveError as exc:
-            if "online-team-move@2" in capabilities:
+            if "online-team-move@3" in capabilities:
                 diagnostics[entry.name] = str(exc)
                 continue  # Diagnostic owner retains unavailable org, never absent.
             raise
-        if row is not None and "online-team-move@2" not in capabilities:
+        if row is not None and "online-team-move@3" not in capabilities:
             raise TeamMoveError("team_move_incompatible_reader")
     return diagnostics
 

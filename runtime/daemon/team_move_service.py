@@ -76,23 +76,77 @@ class TeamMoveService:
                     raise TeamMoveError("team_move_diagnostic_close_failed") from exc
                 primary.add_note("team move diagnostic close failed; retain diagnostics")
 
-    def capability(self, slug):
+    def availability(self, slug: str) -> dict:
+        """Read actual release/attachment owners; never install or repair.
+
+        This observation grants no reservation or quiescence. Apply and recovery
+        recheck it at admission and the operation revalidates mutable native facts.
+        Recovery deliberately permits a held diagnostic org and fenced authority.
+        """
         self.require_runtime(slug)
         with self.store(slug) as store, store.db.coherent_read_view() as conn:
             installed = validate_team_move_schema(conn, org_slug=slug)
             row = store.read()
         reasons = list(team_move.NOT_INTEGRATED)
+        if not team_move.APPLY_AVAILABLE:
+            reasons.append("team_move_apply_disabled")
         if not installed:
             reasons.append("team_move_schema_absent")
-        if slug not in self.state.orgs:
-            reasons.append("diagnostic_org_requires_recovery")
         if self.closing:
             reasons.append("daemon_owner_stopping")
-        return {"version": team_move.CAPABILITY_VERSION, "apply_available": team_move.APPLY_AVAILABLE and not reasons,
+        profiles, host = self.state.profile_coordinator, self.state.host_supervisor
+        if profiles is None or profiles.orgs is not self.state.orgs:
+            reasons.append("team_move_native_profiles_unavailable")
+        if host is None:
+            reasons.append("team_move_native_host_unavailable")
+        elif host._admission.is_shutdown():
+            reasons.append("daemon_owner_stopping")
+        org = self.state.orgs.get(slug)
+        if org is not None:
+            move = getattr(org.db, "_team_move_coordinator", None)
+            if (move is None or move.store.db is not org.db or move.store.org_slug != slug
+                    or org.orchestrator._team_moves is not move or org.orchestrator._teams is not org.teams
+                    or org.orchestrator._host_supervisor is not host):
+                reasons.append("team_move_native_owner_unavailable")
+            if (org.sessions is None or org.orchestrator._sessions is not org.sessions
+                    or move is None or move.producers.sessions is not org.sessions):
+                reasons.append("team_move_native_tracker_unavailable")
+        elif "team_move_" not in self.state.broken_orgs.get(slug, ""):
+            reasons.append("team_move_diagnostic_owner_unavailable")
+        recovery_reasons = list(dict.fromkeys(reasons))
+        if org is None:
+            reasons.append("diagnostic_org_requires_recovery")
+        else:
+            if org.naming_readiness != "ready":
+                reasons.append("team_move_names_unavailable")
+            try:
+                ready = org.workflow_authority.verify_admission_ready()
+                if ready.snapshot_bytes != org.workflow_authority.capture_snapshot():
+                    reasons.append("team_move_current_authority_stale")
+            except Exception as exc:
+                reasons.append("team_move_authority_not_ready")
+                # Only a bounded native code, never exception prose/private bytes.
+                authority_code = TeamMoveOperation._diagnostic(exc).code
+            else:
+                authority_code = None
+        if row is not None:
+            reasons.append("team_move_operation_held")
+        if any(s == slug for s, _ in self.tasks):
+            reasons.append("team_move_service_owner_busy")
+        reasons = list(dict.fromkeys(reasons))
+        return {"version": team_move.CAPABILITY_VERSION, "apply_available": not reasons,
+            "recover_available": not recovery_reasons,
             "source_apply_enabled": team_move.APPLY_AVAILABLE, "incomplete_reasons": reasons,
+            "recovery_incomplete_reasons": recovery_reasons,
+            "authority_unavailable_code": authority_code if org is not None else None,
             "schema_installed": installed, "org_attached": slug in self.state.orgs,
-            "active_operation": self.show(slug, operation_key=row["operation_key"]) if row else None,
-            "required_reader": "online-team-move@2", "human_boundary": "shared_bearer_no_human_presence_proof"}
+            "active_operation_key": row["operation_key"] if row else None,
+            "required_reader": "online-team-move@3", "human_boundary": "shared_bearer_no_human_presence_proof"}
+
+    def capability(self, slug):
+        result = self.availability(slug)
+        key = result.pop("active_operation_key")
+        return dict(result, active_operation=self.show(slug, operation_key=key) if key else None)
 
     def preview(self, slug, selection):
         org = self.attached(slug)
@@ -147,11 +201,12 @@ class TeamMoveService:
                     result["close_error"] = TeamMoveOperation._diagnostic(exc).code
         return result
 
-    def require_enabled(self):
-        if self.closing:
-            raise TeamMoveError("team_move_owner_stopping")
-        if not team_move.APPLY_AVAILABLE or team_move.NOT_INTEGRATED:
-            raise TeamMoveError("team_move_apply_disabled")
+    def require_enabled(self, slug: str, *, recover: bool = False) -> None:
+        readiness = self.availability(slug)
+        if not readiness["recover_available" if recover else "apply_available"]:
+            error = TeamMoveError("team_move_capability_unavailable")
+            error.incomplete_reasons = readiness["recovery_incomplete_reasons" if recover else "incomplete_reasons"]
+            raise error
 
     def hard_blockers(self, operation, preview):
         """Only consider waiting on actual C2 currently launched preparations.
@@ -194,7 +249,7 @@ class TeamMoveService:
                 if public_request(_decode(MoveRequest, row["request_bytes"])) != command.request:
                     raise TeamMoveError("team_move_changed_body")
                 return self.show(slug, operation_key=command.operation_key)
-        self.require_enabled()
+        self.require_enabled(slug)
         self.assert_no_owner(slug)
         org = self.attached(slug)
         selection_ids(org, command.request)
@@ -221,7 +276,7 @@ class TeamMoveService:
         return self.show(slug, operation_key=command.operation_key)
 
     def recover(self, slug, operation_id, expected_revision):
-        self.require_enabled()
+        self.require_enabled(slug, recover=True)
         with self.store(slug) as store:
             row = store.read(operation_id=operation_id)
         if row is None:

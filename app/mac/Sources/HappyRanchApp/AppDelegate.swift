@@ -442,7 +442,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         do {
             let handle = try pc.launch(
                 executableURL: URL(fileURLWithPath: daemonPath),
-                arguments: ["--reader-guarded-start=online-team-move@2"],
+                arguments: ["--reader-guarded-start=online-team-move@3"],
                 currentDirectoryURL: URL(fileURLWithPath: daemonHome()),
                 environment: childEnv,
                 terminationHandler: { @Sendable [weak self] exitedHandle in
@@ -500,7 +500,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         do {
             let handle = try pc.launch(
                 executableURL: URL(fileURLWithPath: "/usr/bin/env"),
-                arguments: ["uv", "run", "python", "-m", "runtime.daemon", "--reader-guarded-start=online-team-move@2"],
+                arguments: ["uv", "run", "python", "-m", "runtime.daemon", "--reader-guarded-start=online-team-move@3"],
                 currentDirectoryURL: URL(fileURLWithPath: repoRoot()),
                 environment: EnvironmentSanitizer.buildChildEnvironment(
                     daemonHome: daemonHome(),

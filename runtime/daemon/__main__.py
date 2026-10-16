@@ -790,7 +790,7 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument("--reader-guarded-start", nargs="?", const="online-team-move@1",
-        choices=("online-team-move@1", "online-team-move@2"),
+        choices=("online-team-move@1", "online-team-move@2", "online-team-move@3"),
         help="Supported launcher reader-capability protocol; incompatible older parsers refuse before startup.")
     return parser
 

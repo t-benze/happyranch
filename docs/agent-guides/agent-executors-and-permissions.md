@@ -1,15 +1,86 @@
 # Agent Executors And Permissions
 
-## Public online team-move E source — THR296seq135 / TASK11345
+## Integrated online team-move F candidate — THR296seq135 / TASK11345
 
-The founder service and `happyranch teams move capability/preview/apply/show/recover`
-are wired in source. `APPLY_AVAILABLE=False` and
-`whole_history_integration_acceptance` still gate every new apply and explicit
-recovery execution; no request/environment/private bypass exists. Preview and
-saved-state reads are available to the existing bearer + `_require_human`
+The integrated F candidate supplies founder-controlled service/CLI source with
+`APPLY_AVAILABLE=True` and empty `NOT_INTEGRATED`. This candidate still needs
+independent whole-feature review, same-final-head SOURCE/POLICY/STATIC QA and
+manager guarded merge. Unmerged source is not accepted or activated capability.
+The actual daemon service independently checks schema, native org/coordinator,
+profile, host/tracker, naming and current authority before advertising apply.
+Explicit recovery uses the SAME native owner gates while allowing a diagnostic
+org/fenced publisher; `recover_available` and `recovery_incomplete_reasons` are
+separate from apply readiness. Neither projection certifies quiescence. Unknowns
+refuse with actionable reasons; no flag/private bypass/acceptance marker exists.
+Preview and saved-state reads retain the existing bearer + `_require_human`
 boundary, whose shared identity-less secret does not prove human presence.
+
+F native release preparation runs through `OrgState.load`: strict read-only move
+discovery precedes naming preflight, generic compatibility writes, roster
+validation, publication and producer admission. After complete native workflow
+validation, the DB-owned `install_team_move_schema` transaction validates exact
+existing layout/history/org identity, refuses held/unknown state, installs only
+the literal ONE table if absent, and validates before COMMIT. Repeated compatible
+attachment is idempotent. Generic Database/runtime-audit, capability/preview/show
+and restricted diagnostic recovery never install or repair it. Source delivery
+does not call it on production: separately authorized compatible release loading
+through the supported launcher performs native preparation; Founder assembles
+no files, SQL or offline manifest. Missing schema/owners are engineering release
+dependencies. Even an empty installed table requires reader@3. An absent optional
+layout remains compatible with generic/older readers; source rollback cannot
+undo durable state or grant a downgrade.
+
+F also freezes C2 thread retry initialization explicitly, including EMPTY
+budgets. New initial/fallback/nudge phase initialization is distinct from a
+frozen zero budget; deferral/reentry cannot replenish it. Old missing facts keep
+their original history interpretation but refuse ambiguous new retry/reentry
+with `team_move_thread_retry_initialization_unknown`; no history is backfilled.
+Updated shell/Mac launchers require `online-team-move@3` (reads old @1/@2), so
+earlier supported parsers refuse before startup. Already-running old daemons,
+obsolete launchers and unchecked old interpreters remain outside that guard.
+All behavioral/installation/recovery/launcher observations remain UNEXECUTED.
 Agents must not self-authorize with ambient credentials. Manage-agent retains
 team/role and cannot transfer agents.
+
+Historical task attribution is separate from current launch eligibility. The
+complete parent/child/revisit/chain/fanout/workflow closure retains task team keys,
+recorded participants and permanent IDs, including retired actors authenticated
+by the existing strict naming owner or native INTEGER task/result/SID attribution.
+It never resolves settled history through today's manager or requires re-enrollment.
+Unknown identity/graph facts remain actionable census blockers without discarding
+collected inventory; dependent sessions/jobs/recovery callbacks/workflows remain
+joined even for terminal tasks. New execution still requires a current executable
+owner. No historical record, team, callback or binding is rewritten.
+
+The SAME INTEGER thread invocation/agent/SID preparation owner spans native
+materialization, integrity, repository refresh and launch-spec/cache preparation,
+including helper-internal omissions and caught failures. Such uncertainty appends
+the existing sticky `failed_cleanup` fact BEFORE ordinary failure settlement;
+backend preparation/cleanup and native workspace/cache failures retain ownership.
+Later success/callback/terminal state cannot erase it. Serializer, audit COMMIT,
+strict history reader, restart/reentry and census preserve that fact, independently
+of frozen EMPTY/nonempty retries. Ordinary stale-claim/agent/breaker or missing
+launch-seam refusals before effects retain their native no-effect disposition;
+returned failure alone never proves compensation. No new schema/journal/backfill
+or generic producer identity is introduced. All behavior remains UNEXECUTED.
+
+Ordinary tasks carry their SAME native TaskInvocation/task/agent/runtime SID
+through materialization, integrity (including retries), package omissions,
+repository refresh, attachment writes/cleanup, task scratch and builtin/custom
+cache/workspace setup. Safe deferred ownership becomes durably `prepared` before
+preparation resumes; this never clears existing uncertainty.
+Preparation failure sets the existing local reservation cleanup flag BEFORE the
+fallible strict Pause save/COMMIT, then retains `execution_unknown`/`unknown` in
+the admitted journal. Terminal/callback/quiescent later attempts and safe unrelated
+worktree cleanup cannot clear it. Settlement persists that fact before release;
+failed saves retain local ownership and original plus persistence errors.
+Restart treats unclosed task `prepared` entries as unknown, including terminal
+rows and prepared recovery/retry owners; absence of first launch is no proof of
+preparation cleanup. Unknown deferred entries cannot authorize a fresh launch.
+Native pre-effect source/artifact validation, repo-scan and missing launch-seam refusals
+retain their no-effect disposition. Existing retry/recovery IDs, frozen budgets,
+INTEGER callbacks and authority-v2 are preserved. No new field/journal, history
+backfill, compensation or clearance writer is introduced. Behavior UNEXECUTED.
 
 Preview resolves native current names/IDs, rejects former/unknown names, uses
 only D's pure native planner and returns exact founder-only diff/digests,
@@ -79,10 +150,10 @@ INCLUDING callback SKIPPED24342, Python units RETIRED. No new cases or campaign.
 D now supplies the private native operation core in `team_move_operation.py`,
 with pure canonical/context planning, one two-consumer profile interval and one
 operation-owned publication fence. E now mounts the founder service/CLI under
-the existing admitted human boundary, with `APPLY_AVAILABLE=False`. A provenance
-model, agent bearer or caller success flag grants no authority. F and independent
-whole-history acceptance remain outstanding. Earlier B/C/D checkpoint absence
-statements describe those units; the public E section above is current.
+the existing admitted human boundary. F proposes source enablement subject to
+actual native readiness; independent whole-feature acceptance remains required.
+A provenance model, agent bearer or caller success flag grants no authority.
+Earlier B/C/D checkpoint absence statements describe those historical units.
 
 The planner uses native AgentDef/TeamsRegistry validation and instruction/skill
 selectors, without materializing, creating an ArtifactStore root, building a
@@ -132,7 +203,7 @@ handle validates the existing schema and exact images without bootstrap/migratio
 normal attachment or producer admission. Diagnostic orgs also fence global profile
 reconciliation/writers so their dependencies cannot disappear from the closure.
 Runtime registration/switch refuses to detach a hold. Updated shell and native Mac
-launchers pass `--reader-guarded-start=online-team-move@2`: supported older argparse readers reject
+launchers pass `--reader-guarded-start=online-team-move@3`: supported older argparse readers reject
 this protocol before startup, including the earlier D Boolean-flag reader.
 Updated launchers require a matching reader; direct
 old interpreters, already-running old daemons and obsolete launchers remain outside
@@ -181,7 +252,7 @@ shared-map insertion permit the existing post-attachment diagnostic removal.
 Failed attachment and other diagnostic roots stay held. D's matching own-operation
 exception likewise uses its opened native owner plus actual ContextVar identity,
 including EMPTY dependencies; neither exception performs filesystem discovery.
-Public recovery/reattachment is wired by E and remains source-gated pending F.
+Public recovery/reattachment is wired by E; F gates it on actual native owners.
 
 The one batch interval (including empty dependencies) captures AgentDefs, complete
 profile/dependency closure, candidate, current inputs and census outside durable
@@ -199,7 +270,7 @@ process-loss/launcher/live-move result remains UNEXECUTED; general integration
 INCLUDING callback SKIPPED THR243seq42; Python units RETIRED. No new cases,
 parameters, fixtures, replacement campaign or execution allocation follows.
 
-## Approved online team move — C1–C3 native admission source (THR296seq135)
+## Historical C1–C3 source checkpoints (THR296seq135; superseded by F above)
 
 Manage-agent update retains team/role and cannot transfer or demote agents.
 The approved eventual online move reuses native rendering/permission/reset
@@ -1491,4 +1562,5 @@ cannot erase it. The common1800-second window includes reservation admission.
 Off/default dry_run, metadata/process/age/containment safeguards and manual dry-run
 remain; no cleanup/activation authority follows. These source changes have no
 behavioral/migration/recovery proof; integration INCLUDING callback SKIPPED24342,
-Python units RETIRED. APPLY_AVAILABLE=false, no COMPLETE writer; D/E/F remain root-owned.
+Python units RETIRED. That C3 checkpoint had no COMPLETE writer; current D/E/F
+source and independent gates are described above. No live capability follows.
