@@ -276,10 +276,13 @@ def process_use(path: Path, deadline: float, *, on_exemption: Callable[[dict], N
                             denied = True
                             return None
 
-                    namespace = reference(lambda: os.readlink(base / 'ns/mnt'))
-                    if namespace is not None and namespace != os.readlink('/proc/self/ns/mnt'):
-                        raise Retain('unknown_process_mount_namespace')
                     if ident[1] != 'Z':
+                        # Zombies may lack ns/mnt as well as live-use references.
+                        # The identity/Z-state bracket below still covers every
+                        # thread, independently of its leader's state.
+                        namespace = reference(lambda: os.readlink(base / 'ns/mnt'))
+                        if namespace is not None and namespace != os.readlink('/proc/self/ns/mnt'):
+                            raise Retain('unknown_process_mount_namespace')
                         for ref in ('cwd', 'root', 'exe'):
                             check(deadline)
                             value = reference(lambda: os.readlink(base / ref))

@@ -954,7 +954,11 @@ can be omitted, with stable PID/start/name/UID and census checks. Every readable
 reference still gates, even after a denial; unknown identity and other names
 retain. Applied exceptions persist in candidate/org `process_exemptions` in the
 existing JSON/audit, also after later refusal. These names do not authenticate
-executables or establish host-wide absence.
+executables or establish host-wide absence. Stable zombie threads skip namespace
+and live-use references before reading them; missing zombie references need no
+exception. Identity/starttime/comm and Z-state remain bracketed, with UID and
+full census checks preserved. Live siblings are inspected even when their leader
+is a zombie; missing non-zombie references still retain for every name.
 
 See the [full current contract](../superpowers/specs/2026-10-15-nightly-disk-sweeper.md)
 for evidence semantics, limitations, finite disposable verification and staged
