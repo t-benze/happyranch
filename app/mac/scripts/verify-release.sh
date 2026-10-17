@@ -683,6 +683,8 @@ q = s.add_parser('licenses', allow_abbrev=False)
 asset['add_arguments'](q, expectations=True)
 freezer = __import__('runpy').run_path(str(Path(ASSET_HELPER).with_name('freezer_evidence.py')))
 freezer['add_arguments'](q)
+web_custody = __import__('runpy').run_path(str(Path(ASSET_HELPER).with_name('web_evidence.py')))
+web_custody['add_arguments'](q)
 q.add_argument('--mapping', type=Path, required=True, action=asset['Once'])
 a = p.parse_args()
 if a.mode == 'native':
@@ -854,6 +856,7 @@ try:
     elif a.mode == 'licenses':
         asset['verify_arguments'](a)
         freezer['verify_arguments'](a)
+        web_custody['verify_arguments'](a)
         a.app = Path(a.app)
         mapping = json.loads(a.mapping.read_text())
         errors = []

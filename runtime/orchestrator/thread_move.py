@@ -35,6 +35,22 @@ def bind_thread_preparation(owner: ThreadPreparation) -> Iterator[None]:
         _current.reset(token)
 
 
+@contextmanager
+def thread_preparation_effects() -> Iterator[None]:
+    """Carry the actual thread or task owner into native filesystem helpers.
+
+    Keep this existing facade for cache/direct/legacy executor callers; a task
+    keeps its own Pause journal and reservation, never a thread/producer alias.
+    """
+    from runtime.orchestrator.task_pause import current_invocation
+    owner = current_thread_preparation() or current_invocation()
+    if owner is None:
+        yield
+    else:
+        with owner.preparation_effects():
+            yield
+
+
 class ThreadPreparation:
     def __init__(self, admission: ThreadMoveAdmission, inv: Any, state: ThreadLifecycle) -> None:
         self.admission, self.inv, self.state = admission, inv, state
@@ -62,20 +78,41 @@ class ThreadPreparation:
         self.admission.store.save_uncommitted(self.inv, candidate)
         self.state = candidate
 
+    @contextmanager
+    def preparation_effects(self) -> Iterator[None]:
+        """Own native effects before a caught error can settle the invocation.
+
+        The existing active lifecycle covers interruption. Only errors inside
+        this effect interval become sticky cleanup uncertainty; ordinary early
+        no-effect refusals do not. A later successful interval cannot clear it.
+        """
+        try:
+            yield
+        except BaseException as exc:
+            try:
+                self.failed_cleanup()
+            except BaseException as evidence:
+                exc.add_note(f"thread preparation evidence failed: {evidence}")
+            raise
+
     def before_fifo(self) -> None:
         with self.admission.move.gate, self.admission.db._lock:
             self.admission.revalidate_uncommitted(self)
 
     def start_phase(self, phase: str) -> None:
         with self.admission.db._lock:
-            self.admission.write(self, phase=phase, ordinal=0, schedule=())
+            if self.state.retry_initialized is None:
+                raise DeferredTeamMove("team_move_thread_retry_initialization_unknown")
+            self.admission.write(self, phase=phase, ordinal=0, schedule=(), retry_initialized=False)
         self.before_fifo()
 
     def retry_schedule(self, boundary: str, schedule: tuple[float, ...]) -> tuple[int, tuple[float, ...]]:
         with self.admission.move.gate, self.admission.db._lock:
             self.admission.revalidate_uncommitted(self)
-            if not self.state.schedule:
-                self.admission.write(self, boundary=boundary, schedule=tuple(float(x) for x in schedule))
+            if self.state.retry_initialized is None:
+                raise DeferredTeamMove("team_move_thread_retry_initialization_unknown")
+            if self.state.retry_initialized is False:
+                self.admission.write(self, retry_initialized=True, boundary=boundary, schedule=tuple(float(x) for x in schedule))
             elif self.state.boundary != boundary:
                 raise DeferredTeamMove("team_move_thread_retry_owner_mismatch")
             return self.state.ordinal, self.state.schedule
@@ -84,7 +121,7 @@ class ThreadPreparation:
         # Persist original retry budget BEFORE sleeping/reacquiring; no gate in
         # the host terminal leaf. Each unknown attempt stays in the audit.
         with self.admission.db._lock:
-            if ordinal > len(self.state.schedule):
+            if self.state.retry_initialized is not True or not self.state.ordinal < ordinal <= len(self.state.schedule):
                 raise DeferredTeamMove("team_move_thread_retry_budget")
             self.admission.write(self, ordinal=ordinal)
 
@@ -96,6 +133,8 @@ class ThreadPreparation:
                     return False
                 if self.attempt_open:
                     raise DeferredTeamMove("team_move_thread_attempt_unsettled")
+                if self.state.retry_initialized is not True:
+                    raise DeferredTeamMove("team_move_thread_retry_initialization_unknown")
                 self.admission.db._conn.execute("BEGIN IMMEDIATE")
                 previous = self.state
                 try:
@@ -146,6 +185,12 @@ class ThreadPreparation:
     def terminal(self, outcome: Any) -> None:
         # Called only after backend finish; DB only, NEVER move gate.
         with self.admission.db._lock:
+            if outcome is not None:
+                from runtime.platform.session_backend import TerminalReason
+                if outcome.cleanup_error is not None or outcome.terminal_reason is TerminalReason.PREPARE_FAILURE:
+                    # Backend preparation/abandonment can fail before the first
+                    # thread launch commitment. No attempt is not cleanup proof.
+                    self.failed_cleanup()
             if not self.attempt_open:
                 return
             receipt = None if outcome is None else outcome.receipt
@@ -191,10 +236,13 @@ class ThreadPreparation:
 
     def failed_cleanup(self) -> None:
         with self.admission.db._lock:
+            # Retain uncertainty BEFORE persistence: interruption of that write
+            # must not let a caught preparation error finish as a clean owner.
+            # The writer's rollback also restores this already-unknown state.
+            self.state = self.state.model_copy(update={"failed_cleanup": True})
             try:
                 self.admission.write(self, failed_cleanup=True)
             except Exception:
-                self.state = self.state.model_copy(update={"failed_cleanup": True})
                 logger.exception("Thread cleanup attribution persistence failed; retaining unknown owner")
 
     def finish(self, *, deferred: bool, failed: bool) -> None:
@@ -255,6 +303,8 @@ class ThreadMoveAdmission:
                 raise DeferredTeamMove("team_move_thread_owner_live")
             state = self.store.read_uncommitted(inv)
             if state is not None:
+                if state.retry_initialized is None:
+                    raise DeferredTeamMove("team_move_thread_retry_initialization_unknown")
                 if state.unknown or not (state.deferred and state.producer_settled):
                     raise DeferredTeamMove("team_move_thread_owner_unsettled")
             elif inv.started_at is not None:
@@ -262,7 +312,7 @@ class ThreadMoveAdmission:
             else:
                 state = ThreadLifecycle(org_slug=self.move.store.org_slug,
                     invocation_id=inv.id, thread_id=inv.thread_id, agent_id=inv.agent_name,
-                    session_id=f"sess-{uuid.uuid4().hex}", preparation_id=uuid.uuid4().hex)
+                    session_id=f"sess-{uuid.uuid4().hex}", preparation_id=uuid.uuid4().hex, retry_initialized=False)
             owner = ThreadPreparation(self, inv, state)
             self.write(owner, deferred=False, producer_settled=False)
             self.live[inv.id] = owner
@@ -341,9 +391,67 @@ class ThreadMoveAdmission:
         if row is None:
             return
         if row["decision_bytes"] is not None:
+            reset = getattr(self, "_reset_owner", None)
+            if reset == (row["operation_id"], agent_id) and row["phase"] == "reset":
+                return  # Only the synchronous audited native reset owner below.
             raise DeferredTeamMove("team_move_thread_participant_write_held", row["operation_id"])
         if token is not None:
             self.callback_uncommitted(token)
+
+    def reset_operation_agent(self, operation_id: str, agent_id: str):
+        """Native audited reset, with exact operation replay and post-state proof.
+
+        No caller actor/rows/success flags. Attribution comes only from the saved
+        future-service admission; this method does not itself admit a founder.
+        The existing DB reset owner retains its actual transaction and row count.
+        """
+        from runtime.infrastructure.team_move_store import ResetEvidence, TeamMoveError, _digest
+        import json
+        with self.db._lock:
+            row = self.move.active_uncommitted()
+            if (row is None or row["operation_id"] != operation_id or row["phase"] != "reset"
+                    or row["principal"] != "founder" or getattr(self, "_reset_owner", None) is not None
+                    or agent_id not in _decode(MoveRequest, row["request_bytes"]).affected_agents):
+                raise TeamMoveError("team_move_reset_owner")
+            scope = "config:team-move:" + operation_id + ":" + agent_id
+            audits = self.db._conn.execute(
+                "SELECT id,agent,payload FROM audit_log WHERE task_id=? AND action='thread_session_invalidated' ORDER BY id", (scope,)
+            ).fetchall()
+            def post_state():
+                rows = self.db._conn.execute(
+                    "SELECT thread_id,agent_name,agent_session_id,last_resumed_seq FROM thread_participants WHERE agent_name=? ORDER BY thread_id", (agent_id,)
+                ).fetchall()
+                if any(r["agent_session_id"] is not None or r["last_resumed_seq"] != 0 for r in rows):
+                    raise TeamMoveError("team_move_reset_post_state")
+                return rows
+            if audits:
+                if len(audits) != 1 or audits[0]["agent"] != row["principal"]:
+                    raise TeamMoveError("team_move_reset_audit_unknown")
+                from runtime.infrastructure.team_move_store import _unique_object
+                payload = json.loads(audits[0]["payload"], object_pairs_hook=_unique_object)
+                rows = post_state()
+                if payload != {"reason": "team_move", "rows": len(rows), "name": agent_id} or not rows:
+                    raise TeamMoveError("team_move_reset_audit_unknown")
+                audit_id = audits[0]["id"]
+            else:
+                # The guarded owner is meaningful ONLY under this same RLock.
+                self._reset_owner = (operation_id, agent_id)
+                try:
+                    count = self.db.reset_thread_sessions_for_agent(agent_id,
+                        audit_scope_id=scope, audit_agent=row["principal"], audit_reason="team_move")
+                finally:
+                    self._reset_owner = None
+                rows = post_state()
+                if count != len(rows):
+                    raise TeamMoveError("team_move_reset_count_changed")
+                saved = self.db._conn.execute(
+                    "SELECT id FROM audit_log WHERE task_id=? AND action='thread_session_invalidated' ORDER BY id", (scope,)
+                ).fetchall()
+                if len(saved) != (1 if count else 0):
+                    raise TeamMoveError("team_move_reset_audit_unknown")
+                audit_id = saved[0]["id"] if saved else None
+            raw = json.dumps([tuple(r) for r in rows], separators=(",", ":"), ensure_ascii=False).encode()
+            return ResetEvidence(rows=len(rows), audit_id=audit_id, post_state_digest=_digest(raw))
 
     def capture_running_uncommitted(self, operation_id: str) -> tuple[dict, ...]:
         """D calls under move gate/DB AFTER durable WAITING intent commits.
@@ -376,7 +484,9 @@ class ThreadMoveAdmission:
                 state = self.store.read_uncommitted(inv)
                 owner = self.live.get(inv.id)
                 code = None
-                if state and (state.unknown or not state.producer_settled):
+                if state and state.retry_initialized is None and inv.status is ThreadInvocationStatus.PENDING:
+                    code = "thread_retry_initialization_unknown"
+                elif state and (state.unknown or not state.producer_settled):
                     code = "thread_cleanup_unknown" if state.unknown else ("thread_running" if owner and owner.attempt_open and owner.state.attempts[-1].launched else "thread_preparation_or_lost_owner")
                 elif inv.status is ThreadInvocationStatus.PENDING:
                     code = "thread_pending_obligation" if inv.started_at is None or (state and state.deferred) else "thread_legacy_owner_unknown"
@@ -467,7 +577,7 @@ class ThreadMoveAdmission:
                     continue
                 state = self.store.read_uncommitted(inv)
                 if state is not None:
-                    if state.unknown or not (state.deferred and state.producer_settled):
+                    if state.retry_initialized is None or state.unknown or not (state.deferred and state.producer_settled):
                         continue
                 elif inv.started_at is not None:
                     continue

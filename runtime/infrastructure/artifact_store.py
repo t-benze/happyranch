@@ -48,6 +48,19 @@ class ArtifactStore:
         self._root = root
         self._root.mkdir(parents=True, exist_ok=True)
 
+    @classmethod
+    def open_existing(cls, root: Path) -> "ArtifactStore":
+        """Read-only selection owner; unlike __init__, never creates a root.
+
+        The returned store uses the unchanged native name/path/read validation.
+        This factory is not an access grant and is not exposed as a new route.
+        """
+        if root.is_symlink() or not root.is_dir():
+            raise ArtifactNotFound("artifact root unavailable")
+        owner = cls.__new__(cls)
+        owner._root = root
+        return owner
+
     @property
     def root(self) -> Path:
         return self._root

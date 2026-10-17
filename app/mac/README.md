@@ -111,8 +111,11 @@ sha="$(git rev-parse HEAD)"
 tree="$(git rev-parse HEAD^{tree})"
 bash app/mac/scripts/build-app.sh --version 1.0.1 --build 1.0.1 \
   --source-sha "$sha" --source-tree "$tree" --arch arm64 \
+  --web-tool-originals "/absolute/admitted-originals" \
   --output-dir "/absolute/owned-parent/new candidate"
 ```
+
+The absolute originals directory must meet the [generated web input contract](#generated-web-custody-inputs-and-verification).
 
 The output parent must already exist, be owned by the current user and have no
 symlink ancestors. The leaf must be absent and outside the source and Desktop.
@@ -237,3 +240,121 @@ relations and portable fixtures do not resolve any of the six actual closures
 or establish native/full-reader execution. The fifth native allocation remains
 unused and separately source-pinned; whole replacement-input review remains a
 root-owned prerequisite before any changed-source native use.
+
+### Generated web custody inputs and verification
+
+`build-app.sh` now additionally requires `--web-tool-originals
+/absolute/admitted-directory`, containing exactly the fourteen lock-authenticated
+original tarballs described in packaging/README.md. The directory must be
+separate from source/output. Preserve it, the invocation-owned npm tree, scratch
+and diagnostics until independent verification completes. The native workflow
+and its source/input allocation are unchanged; this new input is not an
+execution grant.
+
+The wrapper performs normal npm ci in a subshell with umask 022 so authentic
+package executables retain mode 0755. The parent mask remains 077 and the
+previously created output, scratch and source directories remain private.
+It then performs exact esbuild optimized-alias preparation,
+then one ordinary npm build with a bound packaging Tailwind adapter and the
+original-backed Vite CSS observation patch. The content policy includes pinned
+web tests/stories and needs actual matched baseline/candidate CSS/UI evidence.
+Plain split ES CSS with esbuild minification is the admitted profile; unsupported
+imports/modules/source directives/URL forms refuse instead of silently extending
+it. The prepared P/A binary paths are both revalidated throughout custody.
+Both web readers require each asset-cache store to consume a read under the
+same enclosing hook, preserving interleaved read parents. Hits require a stored
+URL; incomplete read/store histories refuse.
+Each CSS finalization consumes one pending minifier result under its own hook,
+or none when disabled. Reused, duplicate and unconsumed minifier results refuse.
+
+The final observer uses the fixed `web-completion.jsonl` leaf, never an extra
+inherited FD. Python completes only the actual publish token after independent
+full validation, exclusive write/fsync/close/readback, then echoes its exact
+555-byte canonical line. TS admits only raw equality to the original direct
+caller/context/preparation and actual published token. The wrapper independently
+requires actual npm exit0 before accept/seal; later postbuild failure wins.
+Existing markers/attempts remain evidence and cannot be deleted for retry.
+
+The completion token and direct caller-held `WEB_CALLER`,
+`WEB_CONTEXT`, `WEB_PREPARATION`, `WEB_BUILD`, `WEB_DIST` and `WEB_NOTICES` values
+must survive from the genuine wrapper, alongside all existing asset/freezer
+expectations. Standalone `verify-release.sh licenses` additionally requires
+`--web-tool-originals "$WEB_TOOL_ORIGINALS" --web-caller "$WEB_CALLER" --web-context-sha256 "$WEB_CONTEXT"
+--web-preparation-sha256 "$WEB_PREPARATION" --web-build-sha256 "$WEB_BUILD"
+--web-dist-sha256 "$WEB_DIST" --web-notices-sha256 "$WEB_NOTICES"`.
+Never discover expectations from candidate receipts. Retained web originals
+append rows while preserving the complete pre-addition mapping prefix. Source
+and portable web observations are distinct from a real Mac wrapper/licenses run.
+All six actual closures remain UNEXECUTED/UNMET; literal False, six sentinels and
+ordinary failed rows still prevent archive acceptance. Release=null,
+available=false and approved_url=null remain unchanged.
+
+Packaging compilation preserves the ordinary Tailwind `AtProperty` and
+`ColorMix` polyfills, with the same recorded option checked by both readers.
+The existing custody observer also captures each public final `moduleParsed`
+callback; publisher and fresh reader require its code to match the module chain.
+Generated web evidence uses the fixed `web-private-plain@2` profile documented
+in packaging/README.md: lossless262144 observations, other named domains32768,
+96 MiB input /112 MiB envelope (+16 MiB),12582912 build nodes/depth32,
+8 MiB aggregate UTF8 name occurrences (including repeats), unchanged4096-byte
+individual metadata strings,
+1024 MiB represented body work, unchanged512 MiB guarded regular reads and
+web-only192 MiB aggregate JSON per command. Native asset lanes retain one
+persistent512/32 MiB submeter through the whole command; reentry and nested
+bounded calls never replenish it. Every repeated parse/read counts. Default
+asset/freezer limits and shared census semantics stay unchanged. Portable
+measurements are separate from actual Mac execution and release acceptance.
+
+Both build serialization and every independent stored-build read enforce the
+same input/envelope addition limits; a stored registry cannot bypass the 16 MiB
+addition bound through complete, accept, seal or fresh verify.
+
+The actual single Tailwind compile now has a helper-owned loader lifecycle in
+`web-css-loads/`: unique invocation and original transform-call binding, input
+size/hash/options, ordered per-compile stylesheet ordinals and opaque read
+receipts written before callback return, then a successful end from that same
+awaited call. Repeats retain distinct tokens; zero-import compiles still have
+begin/end. Interleaved invocations keep their own sequence. The helper derives
+the complete directory inventory and exclusively creates `seal.json` before
+validating mutable operations. Publisher and separate fresh full verifier both
+reopen that inventory, every event and its original source descriptor, and
+require a complete bijection with compile operations and ordered imports.
+Partial imports, equal-byte subject substitutions, owner/order swaps, duplicate
+imports and whole missing compiles refuse. Unknown leaves, gaps, open compiles,
+extra reads and post-seal writes refuse; failed prefixes are diagnostic only.
+
+Additional sublimits are 32768 lifecycle/read files total, 256 KiB per event,
+8 MiB aggregate event JSON and 8 MiB terminal seal. Bounded enumeration stops
+before excess entries are retained. All existing read/JSON/build/name/body and
+transport caps still apply; event writes/readbacks, parsing and producer
+transport are charged. These limits supply no measured-fit or host-RSS claim.
+The selected optimizer profile passes no map and refuses an unexpected non-null
+returned map before handing code to Vite; both readers require null optimizer
+input/result maps. Vite's later CSS map is a separate relation. Map-bearing P
+graphs are unsupported-profile negatives, not production-positive evidence.
+Each CSS emission consumes its original emission observation once and matches
+its resolved output filename, including when separate emissions have equal bytes.
+This is local custody under the reviewed helper/producer model, not authenticated
+compiler execution or resistance to invisible same-UID forgery/restore.
+
+The packaging preparation checks the authenticated oxide, Rollup and lightningcss
+loaders before Vite or static config imports execute. It refuses earlier local
+and universal bindings, WASI/local fallbacks, nested package shadows and tool
+overrides, and probes Node 24 platform, architecture and importer resolutions
+without loading native modules. Preparation and context retain selected members,
+locked originals, actual ancestor/global package lookup locations and the complete
+excluded file relation: exact stems plus `.js`, `.json` and `.node` candidates,
+even for requests already ending in `.node`. Existing excluded directories refuse
+without reading their package entry metadata. Rollup's exact `existsSync` branch
+retains its loader-specific reachability. Non-loading Node probes corroborate
+excluded-request nonresolution; errors other than `MODULE_NOT_FOUND` refuse.
+Both publication and a fresh reopened reader
+revalidate that relation and the actual build process's resolved paths and loaded
+CJS native cache members. Linux/glibc/x64 observations remain portable evidence;
+Darwin/arm64 execution remains separately required. These local custody checks
+provide no same-UID race or authenticated-execution guarantee.
+
+The embedded notice collector enters the existing 192 MiB JSON web budget before
+parsing the caller and constructing its Session. Nested native asset work retains
+the persistent 32 MiB asset submeter; neither budget is reset or enlarged. Notice
+tokens leave the wrapper only after the complete mapping is successfully written.

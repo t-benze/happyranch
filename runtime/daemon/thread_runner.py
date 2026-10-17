@@ -950,7 +950,7 @@ async def run_invocation(
     *, org_state, invocation_token: str, settings: Settings,
     host_supervisor: HostSessionSupervisor | None = None,
 ) -> None:
-    from runtime.orchestrator.thread_move import ThreadMoveAdmission
+    from runtime.orchestrator.thread_move import ThreadMoveAdmission, bind_thread_preparation
     from runtime.orchestrator.team_move import DeferredTeamMove, TeamMoveCoordinator
     from runtime.infrastructure.team_move_store import TeamMoveStore
     move = getattr(org_state.db, "_team_move_coordinator", None)
@@ -962,8 +962,11 @@ async def run_invocation(
         return
     deferred = failed = False
     try:
-        await _run_invocation_owned(org_state=org_state, invocation_token=invocation_token,
-            settings=settings, host_supervisor=host_supervisor, move_owner=owner)
+        # SAME native thread identity spans all preparation, including helpers
+        # which catch their own package/refresh errors before provider launch.
+        with bind_thread_preparation(owner):
+            await _run_invocation_owned(org_state=org_state, invocation_token=invocation_token,
+                settings=settings, host_supervisor=host_supervisor, move_owner=owner)
     except DeferredTeamMove:
         deferred = True
         raise
@@ -1163,28 +1166,29 @@ async def _run_invocation_owned(
     move_owner.executor, move_owner.model = executor_name, model_name
     move_owner.reasoning_effort = reasoning_effort
     try:
-        skills_root = settings.project_root / "runtime" / "skills"
-        expected_specs = materialize_workspace_skills(
-            workspace, settings,
-            slug=org_state.slug,
-            context="thread",
-            provider=executor_name,
-            agent_name=inv.agent_name,
-            team=agent_team,
-            skills_root=skills_root,
-            org_root=org_state.root,
-            db=org_state.db,
-            session_id=session_id,
-        )
+        with move_owner.preparation_effects():
+            skills_root = settings.project_root / "runtime" / "skills"
+            expected_specs = materialize_workspace_skills(
+                workspace, settings,
+                slug=org_state.slug,
+                context="thread",
+                provider=executor_name,
+                agent_name=inv.agent_name,
+                team=agent_team,
+                skills_root=skills_root,
+                org_root=org_state.root,
+                db=org_state.db,
+                session_id=session_id,
+            )
 
-        # ── Pre-launch integrity validation ─────────────────────
-        validate_workspace_skills_integrity(
-            workspace, expected_specs,
-            settings=settings,
-            db=org_state.db,
-            agent_name=inv.agent_name,
-            task_id=inv.thread_id,
-        )
+            # ── Pre-launch integrity validation ─────────────────────
+            validate_workspace_skills_integrity(
+                workspace, expected_specs,
+                settings=settings,
+                db=org_state.db,
+                agent_name=inv.agent_name,
+                task_id=inv.thread_id,
+            )
     except DeferredTeamMove:
         raise
     except (SystemContractMaterializationError, Exception) as e:
@@ -1202,7 +1206,8 @@ async def _run_invocation_owned(
     # fresh code regardless of executor (claude/codex/opencode/pi).
     # Must run BEFORE the executor subprocess starts. Failure is non-
     # blocking: offline / dirty / non-ff / timeout are swallowed.
-    repo_refresh_results = refresh_workspace_repos(workspace)
+    with move_owner.preparation_effects():
+        repo_refresh_results = refresh_workspace_repos(workspace)
 
     repo_refresh_note = format_repo_refresh_note(repo_refresh_results)
 
@@ -1400,13 +1405,14 @@ async def _run_invocation_owned(
                 ))
 
             def _pre_launch_validator() -> None:
-                validate_workspace_skills_integrity(
-                    workspace, expected_specs,
-                    settings=settings,
-                    db=org_state.db,
-                    agent_name=inv.agent_name,
-                    task_id=inv.thread_id,
-                )
+                with move_owner.preparation_effects():
+                    validate_workspace_skills_integrity(
+                        workspace, expected_specs,
+                        settings=settings,
+                        db=org_state.db,
+                        agent_name=inv.agent_name,
+                        task_id=inv.thread_id,
+                    )
             if host_supervisor is None:
                 # ── Self-launch with C2 final admission and unknown cleanup ──
                 run_kwargs = dict(

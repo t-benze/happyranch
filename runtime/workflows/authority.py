@@ -11,6 +11,8 @@ short and never span snapshot capture or filesystem publication.
 """
 from __future__ import annotations
 
+from runtime.orchestrator.producer_move import NativeWriterDisposition, native_writer
+
 import asyncio
 import hashlib
 import json
@@ -85,16 +87,33 @@ class _SupportedWriterInterval:
         coordinator: WorkflowAuthorityCoordinator,
         *,
         publisher: str,
+        native_disposition: NativeWriterDisposition,
     ) -> None:
         self._coordinator = coordinator
         self.publisher = publisher
+        self.native_disposition = native_disposition
         self.fenced = False
         self.fence_journal_id: str | None = None
         self.publisher_invocation: str | None = None
 
     @contextmanager
+    def validation(self) -> Iterator[None]:
+        """Caller-declared read-only validation, before its first effect.
+
+        An unfenced interval alone is not evidence: callers must also account
+        for preceding filesystem/SQL work and completed naming reconciliation.
+        Never certify a later refusal after a canonical mutation segment.
+        """
+        if self.fenced:
+            yield
+        else:
+            with self.native_disposition.validation():
+                yield
+
+    @contextmanager
     def canonical_change(self) -> Iterator[None]:
         """Fence and own only one synchronous canonical mutation segment."""
+        self.native_disposition.no_effect_error = None
         owner = f"workflow-writer:{self.publisher}:{uuid.uuid4().hex}"
         self._coordinator._acquire_lease(owner)
         try:
@@ -240,6 +259,11 @@ class WorkflowAuthorityCoordinator:
         return self._root / "org" / ".workflow-authority.json"
 
     def capture_canonical_snapshot(self) -> bytes:
+        from runtime.orchestrator.canonical_roster import canonical_roster
+        with canonical_roster(self._root):
+            return self._capture_canonical_snapshot()
+
+    def _capture_canonical_snapshot(self) -> bytes:
         """Discover canonical org inputs without profile/publication leases."""
         paths = OrgPaths(root=self._root)
         fresh_teams = TeamsRegistry.load(self._root)
@@ -517,6 +541,110 @@ class WorkflowAuthorityCoordinator:
             raise WorkflowAuthorityError("authority_pointer_journal_invalid")
         return row
 
+    def _require_move_publication_owner(self, invocation: str | None) -> None:
+        from runtime.infrastructure.team_move_store import ForwardDecision, _decode
+        move = getattr(self._db, "_team_move_coordinator", None)
+        if move is None:
+            return
+        with self._db._lock:
+            row = move.active_uncommitted()
+            if row is not None:
+                decision = None if row["decision_bytes"] is None else _decode(ForwardDecision, row["decision_bytes"])
+                if decision is None or invocation != decision.writer_invocation_id:
+                    raise WorkflowAuthorityError("authority_team_move_publication_owned")
+
+    def begin_move_publication(self, operation_id: str):
+        """Recover an uncertain fence save through this SAME native owner.
+
+        Decision identity is allocated before fencing. A saved journal is found
+        by that exact invocation, never newest-journal or another writer adoption.
+        """
+        from runtime.infrastructure.team_move_store import ForwardDecision, MoveRequest, _decode
+        move = self._db._team_move_coordinator
+        row = move.store.read()
+        if row is None or row["operation_id"] != operation_id or row["decision_bytes"] is None:
+            raise WorkflowAuthorityError("authority_move_owner_required")
+        decision = _decode(ForwardDecision, row["decision_bytes"])
+        request = _decode(MoveRequest, row["request_bytes"])
+        invocation = decision.writer_invocation_id
+        with self._publisher_lock:
+            self._require_move_publication_owner(invocation)
+            with self._db._lock:
+                matches = self._db._conn.execute(
+                    "SELECT id FROM workflow_publication_journals WHERE namespace=? AND publisher_invocation=?", (self.namespace, invocation),
+                ).fetchall()
+                if len(matches) > 1:
+                    raise WorkflowAuthorityError("authority_move_journal_ambiguous")
+                active = self._active_journal(self._db._conn, self.namespace)
+                if matches:
+                    journal = self._journal(self._db._conn, matches[0]["id"])
+                    if journal["state"] == "aborted" or (active is not None and active["id"] != journal["id"]):
+                        raise WorkflowAuthorityError("authority_move_journal_superseded")
+                    return dict(journal)
+                if active is not None or self._pointer(self._db._conn, self.namespace)[0] != request.expected.authority_generation:
+                    raise WorkflowAuthorityError("authority_move_source_changed")
+            # Rehydrate only the already-ready predecessor after process loss.
+            # No active journal is present here; never invoke broad recovery on
+            # an unfinished publisher before D's canonical/context readback.
+            self.recover(move_invocation=invocation)
+            ready = self.verify_admission_ready()
+            if (ready.namespace, ready.generation, ready.snapshot_digest) != (
+                    request.expected.authority_namespace, request.expected.authority_generation, request.expected.authority_digest):
+                raise WorkflowAuthorityError("authority_move_source_changed")
+            self._acquire_lease(invocation)
+            try:
+                journal_id = self._fence_under_lease(reason="team-move:" + operation_id, publisher_invocation=invocation)
+            finally:
+                self._release_lease(invocation)
+            with self._db._lock:
+                return dict(self._journal(self._db._conn, journal_id))
+
+    @contextmanager
+    def move_mutation(self, operation_id: str, identity):
+        """Lease only the synchronous owned canonical replacement segment.
+
+        No new fence/generation, no pointer restoration and no journal adoption.
+        The profile batch owns its leases before entering this native owner.
+        """
+        self._require_move_publication_owner(identity.writer_invocation_id)
+        row = self._db._team_move_coordinator.store.read()
+        if row is None or row["operation_id"] != operation_id:
+            raise WorkflowAuthorityError("authority_move_owner_required")
+        with self._db._lock:
+            journal = self._journal(self._db._conn, identity.journal_id)
+            if (journal["publisher_invocation"], journal["generation"], journal["state"]) != (
+                    identity.writer_invocation_id, identity.generation, "prepared"):
+                raise WorkflowAuthorityError("authority_move_mutation_fence_changed")
+        self._acquire_lease(identity.writer_invocation_id)
+        try:
+            yield
+        finally:
+            self._release_lease(identity.writer_invocation_id)
+
+    def publish_move(self, operation_id: str, identity):
+        """Publish or recover only the operation's immutable native journal."""
+        self._require_move_publication_owner(identity.writer_invocation_id)
+        journal = self.begin_move_publication(operation_id)
+        if (journal["id"], journal["publisher_invocation"], journal["generation"]) != (
+                identity.journal_id, identity.writer_invocation_id, identity.generation):
+            raise WorkflowAuthorityError("authority_move_journal_mismatch")
+        if journal["state"] == "prepared":
+            snapshot = self.capture_snapshot()
+            if _digest(snapshot) != identity.digest:
+                raise WorkflowAuthorityError("authority_move_target_changed")
+            self.publish_current(publisher="team-move:" + operation_id,
+                fence_journal_id=identity.journal_id, publisher_invocation=identity.writer_invocation_id)
+        else:
+            # Native recover must not select a different active/ready journal.
+            self.recover(move_invocation=identity.writer_invocation_id)
+        ready = self.verify_admission_ready()
+        with self._db._lock:
+            pointer = self._pointer(self._db._conn, self.namespace)
+        if (ready.namespace, ready.generation, ready.snapshot_digest, pointer[1]) != (
+                identity.namespace, identity.generation, identity.digest, identity.journal_id):
+            raise WorkflowAuthorityError("authority_move_ready_mismatch")
+        return ready
+
     def _fence_under_lease(
         self,
         *,
@@ -533,6 +661,7 @@ class WorkflowAuthorityCoordinator:
         Once file ownership is reserved, a later writer must fail closed and
         leave recovery to complete the already-started publication.
         """
+        self._require_move_publication_owner(publisher_invocation)
         with self._transaction() as conn:
             active = self._active_journal(conn, self.namespace)
             if active is not None:
@@ -756,45 +885,50 @@ class WorkflowAuthorityCoordinator:
         self,
         *,
         publisher: str,
+        settlement: bool = False,
     ) -> Iterator[_SupportedWriterInterval]:
         """Own a synchronous writer batch while leasing only mutations."""
-        with self._publisher_lock:
-            interval = _SupportedWriterInterval(self, publisher=publisher)
-            try:
-                yield interval
-            except BaseException:
-                if interval.fenced:
-                    self.publish_after_supported_change(
-                        publisher=f"{publisher}:compensation",
-                        fence_journal_id=interval.fence_journal_id,
-                        publisher_invocation=interval.publisher_invocation,
-                    )
-                raise
-            else:
-                if interval.fenced:
-                    self.publish_after_supported_change(
-                        publisher=publisher,
-                        fence_journal_id=interval.fence_journal_id,
-                        publisher_invocation=interval.publisher_invocation,
-                    )
+        with native_writer(self._db, publisher=publisher, settlement=settlement) as disposition:
+            with self._publisher_lock:
+                interval = _SupportedWriterInterval(self, publisher=publisher, native_disposition=disposition)
+                try:
+                    yield interval
+                except BaseException:
+                    if interval.fenced:
+                        if not self.publish_after_supported_change(
+                            publisher=f"{publisher}:compensation",
+                            fence_journal_id=interval.fence_journal_id,
+                            publisher_invocation=interval.publisher_invocation,
+                        ):
+                            disposition.uncertain = True
+                    raise
+                else:
+                    if interval.fenced:
+                        if not self.publish_after_supported_change(
+                            publisher=publisher,
+                            fence_journal_id=interval.fence_journal_id,
+                            publisher_invocation=interval.publisher_invocation,
+                        ):
+                            disposition.uncertain = True
 
-        # The one-shot compatibility writer discovers workspace YAML while
-        # owning only its process gate. Reconcile its completed canonical batch
-        # after that gate releases, so profile acquisition never reverses the
-        # profile -> org publisher order and discovery never runs under leases.
-        if (
-            publisher == "agent_yaml_frontmatter_migration"
-            and interval.fenced and self._profile_coordinator is not None
-        ):
-            try:
-                self._profile_coordinator.reconcile_supported_roster_batch(
-                    self, completed_writer_invocation=interval.publisher_invocation,
-                )
-            except Exception:
-                logger.exception(
-                    "profile closure remains fenced after supported roster batch org=%s",
-                    self._org_slug,
-                )
+            # The one-shot compatibility writer discovers workspace YAML while
+            # owning only its process gate. Reconcile its completed canonical batch
+            # after that gate releases, so profile acquisition never reverses the
+            # profile -> org publisher order and discovery never runs under leases.
+            if (
+                publisher == "agent_yaml_frontmatter_migration"
+                and interval.fenced and self._profile_coordinator is not None
+            ):
+                try:
+                    self._profile_coordinator.reconcile_supported_roster_batch(
+                        self, completed_writer_invocation=interval.publisher_invocation,
+                    )
+                except Exception:
+                    disposition.uncertain = True
+                    logger.exception(
+                        "profile closure remains fenced after supported roster batch org=%s",
+                        self._org_slug,
+                    )
 
     @asynccontextmanager
     async def async_writer_interval(
@@ -811,26 +945,29 @@ class WorkflowAuthorityCoordinator:
         thread lock also serializes synchronous startup and thread-pool
         writers with the interval.
         """
-        async with self._async_writer_lock:
-            with self._publisher_lock:
-                interval = _SupportedWriterInterval(self, publisher=publisher)
-                try:
-                    yield interval
-                except BaseException:
-                    if interval.fenced:
-                        self.publish_after_supported_change(
-                            publisher=f"{publisher}:compensation",
-                            fence_journal_id=interval.fence_journal_id,
-                            publisher_invocation=interval.publisher_invocation,
-                        )
-                    raise
-                else:
-                    if interval.fenced:
-                        self.publish_after_supported_change(
-                            publisher=publisher,
-                            fence_journal_id=interval.fence_journal_id,
-                            publisher_invocation=interval.publisher_invocation,
-                        )
+        with native_writer(self._db, publisher=publisher) as disposition:
+            async with self._async_writer_lock:
+                with self._publisher_lock:
+                    interval = _SupportedWriterInterval(self, publisher=publisher, native_disposition=disposition)
+                    try:
+                        yield interval
+                    except BaseException:
+                        if interval.fenced:
+                            if not self.publish_after_supported_change(
+                                publisher=f"{publisher}:compensation",
+                                fence_journal_id=interval.fence_journal_id,
+                                publisher_invocation=interval.publisher_invocation,
+                            ):
+                                disposition.uncertain = True
+                        raise
+                    else:
+                        if interval.fenced:
+                            if not self.publish_after_supported_change(
+                                publisher=publisher,
+                                fence_journal_id=interval.fence_journal_id,
+                                publisher_invocation=interval.publisher_invocation,
+                            ):
+                                disposition.uncertain = True
 
     @contextmanager
     def supported_change(self, *, publisher: str) -> Iterator[None]:
@@ -869,7 +1006,8 @@ class WorkflowAuthorityCoordinator:
         """
         store = AuthorityPolicyStore(self._db)
         with self.writer_interval(publisher=publisher) as interval:
-            selector = store.get_authority_selector(team)
+            with interval.validation():
+                selector = store.get_authority_selector(team)
             if selector is None:
                 with interval.canonical_change():
                     selector = store.ensure_authority_selector(team)
@@ -883,6 +1021,7 @@ class WorkflowAuthorityCoordinator:
         publisher_invocation: str | None = None,
     ) -> int:
         """Capture then publish the next generation through durable stages."""
+        self._require_move_publication_owner(publisher_invocation)
         with self._publisher_lock:
             if (fence_journal_id is None) != (publisher_invocation is None):
                 raise WorkflowAuthorityError("publication_fence_binding_incomplete")
@@ -1216,8 +1355,9 @@ class WorkflowAuthorityCoordinator:
                 self._validate_admission_uncommitted(conn, capture)
                 yield conn
 
-    def recover(self) -> str:
+    def recover(self, *, move_invocation: str | None = None) -> str:
         """Reconcile one interrupted publisher using only durable ownership."""
+        self._require_move_publication_owner(move_invocation)
         with self._publisher_lock:
             # A prepared journal has not reserved or replaced canonical bytes.
             # Inspect it without acquiring the write lease so an incoherent

@@ -623,6 +623,65 @@ def _publish_canonical_specs(
     return expected_specs
 
 
+def select_system_contracts(workspace: Path):
+    """Pure native all-context selection; does not build packages or links."""
+    from runtime.skills.system_contracts import SessionContext, resolve_system_contracts_for_session
+    _ORDINARY_CONTEXTS = (
+        "task", "thread", "wake", "dream", "schedule", "bootstrap"
+    )
+    contract_ids: set[str] = set()
+    contracts_by_id: dict[str, object] = {}  # SystemContract
+    for ctx_name in _ORDINARY_CONTEXTS:
+        try:
+            ctx = SessionContext(ctx_name)
+        except ValueError:
+            continue
+        for contract in resolve_system_contracts_for_session(ctx, workspace=workspace):
+            if contract.id not in contracts_by_id:
+                contracts_by_id[contract.id] = contract
+            contract_ids.add(contract.id)
+
+    return contracts_by_id
+
+
+def select_release_skills(skills_root, settings, *, slug, team, agent_name, org_root):
+    """Pure existing native registry/eligibility/exposure projection."""
+    from runtime.skills.registry import SkillRegistry
+    from runtime.skills.resolver import EligibilityResolver
+    from runtime.skills.exposure import resolve_exposed_skills
+    if skills_root.is_dir():
+        release_registry = SkillRegistry(skills_root=skills_root)
+        release_entries: dict = {}
+        for entry in release_registry.list_all():
+            release_entries[entry.id] = entry
+
+        if release_entries:
+            union_registry = SkillRegistry(skills_root=skills_root)
+            for entry in release_entries.values():
+                union_registry._entries[entry.id] = entry
+
+            policy: dict = {}
+            if org_root is not None:
+                config_path = org_root / "org" / "config.yaml"
+            else:
+                config_path = settings.project_root / "org" / "config.yaml"
+            if config_path.is_file():
+                import yaml
+                try:
+                    raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+                    if isinstance(raw, dict):
+                        policy = raw.get("skills", {})
+                except (yaml.YAMLError, OSError):
+                    pass
+
+            resolver = EligibilityResolver(policy)
+            return resolve_exposed_skills(
+                union_registry, resolver, org=slug, team=team, agent=agent_name,
+            )
+
+    return []
+
+
 def _materialize_unified_canonical(
     workspace: Path,
     settings: Settings,
@@ -665,7 +724,11 @@ def _materialize_unified_canonical(
     from runtime.skills.resolver import EligibilityResolver
     from runtime.skills.exposure import resolve_exposed_skills
 
-    store = CanonicalSkillStore(settings=settings)
+    from runtime.orchestrator.task_pause import task_preparation_effects
+    # Store initialization has its own native mkdir effects. A successful
+    # initialization does not make a later read-only source refusal uncertain.
+    with task_preparation_effects():
+        store = CanonicalSkillStore(settings=settings)
     materializer = SymlinkMaterializer(store)
     src_root = _resolve_skills_src(settings)
     skills_subdir = ".claude/skills" if provider == "claude" else ".agents/skills"
@@ -677,20 +740,8 @@ def _materialize_unified_canonical(
     #    removes a valid link belonging to another context.
     #    The per-context resolver remains authoritative for
     #    session guidance; the workspace is a safe superset.
-    _ORDINARY_CONTEXTS = (
-        "task", "thread", "wake", "dream", "schedule", "bootstrap"
-    )
-    contract_ids: set[str] = set()
-    contracts_by_id: dict[str, object] = {}  # SystemContract
-    for ctx_name in _ORDINARY_CONTEXTS:
-        try:
-            ctx = SessionContext(ctx_name)
-        except ValueError:
-            continue
-        for contract in resolve_system_contracts_for_session(ctx, workspace=workspace):
-            if contract.id not in contracts_by_id:
-                contracts_by_id[contract.id] = contract
-            contract_ids.add(contract.id)
+    contracts_by_id = select_system_contracts(workspace)
+    contract_ids = set(contracts_by_id)
 
     # Validate ALL sources before any build.
     _preflight_system_contract_sources(
@@ -698,101 +749,111 @@ def _materialize_unified_canonical(
         workspace=workspace, provider=provider,
     )
 
-    # ── Build unified expected_specs ────────────────────────────
-    expected_specs: list[dict] = []
+    # The mandatory-source preflight above is affirmative pre-effect
+    # validation. Package construction/publication below can be partial.
+    with task_preparation_effects():
+        # ── Build unified expected_specs ────────────────────────────
+        expected_specs: list[dict] = []
 
-    # 1. System-contract skills (union across all ordinary contexts)
-    for contract_id in sorted(contracts_by_id):
-        contract = contracts_by_id[contract_id]
-        src_dir = src_root / contract.id
-        content_hash = _compute_dir_hash(src_dir)
-        store.build_from_source(
-            contract.id, "system", content_hash, src_dir,
-            verify_source_hash=content_hash,
-        )
-        # Org context is carried via session/task metadata, not
-        # literal {ORG_SLUG} substitution in canonical bytes.
-        expected_specs.append({
-            "slug": contract.id,
-            "version": "system",
-            "content_hash": content_hash,
-        })
-
-    # 2. Release-managed catalog skills
-    if skills_root.is_dir():
-        release_registry = SkillRegistry(skills_root=skills_root)
-        release_entries: dict = {}
-        for entry in release_registry.list_all():
-            release_entries[entry.id] = entry
-
-        if release_entries:
-            union_registry = SkillRegistry(skills_root=skills_root)
-            for entry in release_entries.values():
-                union_registry._entries[entry.id] = entry
-
-            policy: dict = {}
-            if org_root is not None:
-                config_path = org_root / "org" / "config.yaml"
-            else:
-                config_path = settings.project_root / "org" / "config.yaml"
-            if config_path.is_file():
-                import yaml
-                try:
-                    raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-                    if isinstance(raw, dict):
-                        policy = raw.get("skills", {})
-                except (yaml.YAMLError, OSError):
-                    pass
-
-            resolver = EligibilityResolver(policy)
-            exposed = resolve_exposed_skills(
-                union_registry, resolver, org=slug, team=team, agent=agent_name,
+        # 1. System-contract skills (union across all ordinary contexts)
+        for contract_id in sorted(contracts_by_id):
+            contract = contracts_by_id[contract_id]
+            src_dir = src_root / contract.id
+            content_hash = _compute_dir_hash(src_dir)
+            store.build_from_source(
+                contract.id, "system", content_hash, src_dir,
+                verify_source_hash=content_hash,
             )
+            # Org context is carried via session/task metadata, not
+            # literal {ORG_SLUG} substitution in canonical bytes.
+            expected_specs.append({
+                "slug": contract.id,
+                "version": "system",
+                "content_hash": content_hash,
+            })
 
-            for es in exposed:
-                skill_id_slug = es.skill.slug
-                if es.skill.source == "user_authored" and org_root is not None:
-                    src_dir = org_root / "skills" / skill_id_slug
-                else:
-                    src_dir = skills_root / skill_id_slug
-                if not src_dir.is_dir():
-                    continue
+        # 2. Release-managed catalog skills
+        if skills_root.is_dir():
+            exposed = select_release_skills(skills_root, settings, slug=slug,
+                team=team, agent_name=agent_name, org_root=org_root)
+            if exposed:
+                for es in exposed:
+                    skill_id_slug = es.skill.slug
+                    if es.skill.source == "user_authored" and org_root is not None:
+                        src_dir = org_root / "skills" / skill_id_slug
+                    else:
+                        src_dir = skills_root / skill_id_slug
+                    if not src_dir.is_dir():
+                        continue
 
-                content_hash = _compute_dir_hash(src_dir)
-                store.build_from_source(
-                    skill_id_slug, es.skill.version or "0", content_hash, src_dir,
-                    verify_source_hash=content_hash,
-                )
-                expected_specs.append({
-                    "slug": skill_id_slug,
-                    "version": es.skill.version or "0",
-                    "content_hash": content_hash,
-                })
-
-                if db is not None:
-                    db.insert_skill_validation_event(
-                        skill_id=es.skill.id,
-                        slug=skill_id_slug,
-                        agent=agent_name,
-                        source="materialization",
-                        severity="info",
-                        ok=True,
-                        version=es.skill.version,
+                    content_hash = _compute_dir_hash(src_dir)
+                    store.build_from_source(
+                        skill_id_slug, es.skill.version or "0", content_hash, src_dir,
+                        verify_source_hash=content_hash,
                     )
+                    expected_specs.append({
+                        "slug": skill_id_slug,
+                        "version": es.skill.version or "0",
+                        "content_hash": content_hash,
+                    })
 
-    # 3. B2 custom skills
-    if db is not None and org_root is not None:
-        custom_specs = _build_custom_skill_canonical_specs(
-            store=store, org_root=org_root, db=db, slug=slug,
-            agent_name=agent_name, team=team, task_id=task_id,
-            session_id=session_id, session_context=context,
+                    if db is not None:
+                        db.insert_skill_validation_event(
+                            skill_id=es.skill.id,
+                            slug=skill_id_slug,
+                            agent=agent_name,
+                            source="materialization",
+                            severity="info",
+                            ok=True,
+                            version=es.skill.version,
+                        )
+
+        # 3. B2 custom skills
+        if db is not None and org_root is not None:
+            custom_specs = _build_custom_skill_canonical_specs(
+                store=store, org_root=org_root, db=db, slug=slug,
+                agent_name=agent_name, team=team, task_id=task_id,
+                session_id=session_id, session_context=context,
+            )
+            expected_specs.extend(custom_specs)
+
+        return _publish_canonical_specs(
+            materializer=materializer, expected_specs=expected_specs,
+            workspace=workspace, slug=slug, org_root=org_root, db=db,
         )
-        expected_specs.extend(custom_specs)
 
-    return _publish_canonical_specs(
-        materializer=materializer, expected_specs=expected_specs,
-        workspace=workspace, slug=slug, org_root=org_root, db=db,
-    )
+
+def select_custom_skill_rows(db, *, slug, agent_name, team):
+    """Pure current B2 eligibility, shared with the actual package builder."""
+    from runtime.skills.eligibility import EligibilityRecipient, EligibilityRule, SkillEligibilityState, resolve_custom_skill_eligibility
+    conn = getattr(db, "_conn", db)
+    rows = conn.execute(
+        """SELECT s.id, s.slug, s.retired_at, s.purged_at, v.id AS version_id,
+                  v.content_hash, v.content_artifact_key, v.validation_state
+           FROM custom_skills s
+           JOIN custom_skill_versions v ON v.id = s.current_version_id
+           WHERE s.org_slug = ?""",
+        (slug,),
+    ).fetchall()
+    recipient = EligibilityRecipient(agent_name, (team,))
+    for row in rows:
+        rules = conn.execute(
+            """SELECT scope_type, scope_target, effect
+               FROM custom_skill_eligibility_rules
+               WHERE skill_id = ? AND superseded_at IS NULL""",
+            (row["id"],),
+        ).fetchall()
+        decision = resolve_custom_skill_eligibility(
+            SkillEligibilityState(
+                bool(row["retired_at"]), row["validation_state"], bool(row["purged_at"])
+            ),
+            [EligibilityRule(**dict(rule)) for rule in rules],
+            recipient,
+        )
+        if not decision.visible:
+            continue
+
+        yield row
 
 
 def _build_custom_skill_canonical_specs(
@@ -827,14 +888,7 @@ def _build_custom_skill_canonical_specs(
     )
 
     conn = getattr(db, "_conn", db)
-    rows = conn.execute(
-        """SELECT s.id, s.slug, s.retired_at, s.purged_at, v.id AS version_id,
-                  v.content_hash, v.content_artifact_key, v.validation_state
-           FROM custom_skills s
-           JOIN custom_skill_versions v ON v.id = s.current_version_id
-           WHERE s.org_slug = ?""",
-        (slug,),
-    ).fetchall()
+    rows = select_custom_skill_rows(db, slug=slug, agent_name=agent_name, team=team)
     artifact_store = ArtifactStore(OrgPaths(org_root).artifacts_dir)
     recipient = EligibilityRecipient(agent_name, (team,))
     specs: list[dict] = []
@@ -845,22 +899,7 @@ def _build_custom_skill_canonical_specs(
     )
 
     for row in rows:
-        rules = conn.execute(
-            """SELECT scope_type, scope_target, effect
-               FROM custom_skill_eligibility_rules
-               WHERE skill_id = ? AND superseded_at IS NULL""",
-            (row["id"],),
-        ).fetchall()
-        decision = resolve_custom_skill_eligibility(
-            SkillEligibilityState(
-                bool(row["retired_at"]), row["validation_state"], bool(row["purged_at"])
-            ),
-            [EligibilityRule(**dict(rule)) for rule in rules],
-            recipient,
-        )
-        if not decision.visible:
-            continue
-
+        package_effects = False
         try:
             artifact_key = row["content_artifact_key"]
             if not artifact_key:
@@ -872,6 +911,10 @@ def _build_custom_skill_canonical_specs(
                     "Artifact hash mismatch: expected "
                     f"{row['content_hash'][:16]}..., got {actual_hash[:16]}..."
                 )
+            # Artifact-key/read/hash refusals above are affirmative pre-effect
+            # failures for the task owner. Temporary/package construction below
+            # can leave effects even when this helper later omits the spec.
+            package_effects = True
             with tempfile.TemporaryDirectory() as temporary_dir:
                 source_dir = Path(temporary_dir)
                 (source_dir / "SKILL.md").write_bytes(content)
@@ -911,6 +954,20 @@ def _build_custom_skill_canonical_specs(
                 )
                 conn.commit()
         except Exception as exc:
+            # The native builder can leave canonical/package effects before
+            # returning an omitted custom spec. Retain the actual native owner even
+            # when this failure is caught and the outer materializer returns.
+            from runtime.orchestrator.producer_move import current_producer_preparation
+            from runtime.orchestrator.thread_move import current_thread_preparation
+            from runtime.orchestrator.task_pause import current_invocation
+            preparation = (current_thread_preparation() or current_producer_preparation()
+                           or (current_invocation() if package_effects else None))
+            if preparation is not None:
+                try:
+                    preparation.failed_cleanup()
+                except BaseException as evidence:
+                    exc.add_note(f"custom package preparation evidence failed: {evidence!r}")
+                    raise exc from evidence
             if recordable:
                 service.record_materialization(
                     conn, skill_id=row["id"], agent_name=agent_name,
@@ -1758,6 +1815,10 @@ def refresh_workspace_repos(workspace: Path) -> dict[str, bool]:
     except OSError as exc:
         logger.debug("repo refresh: could not scan %s: %s", workspace, exc)
         return {}
+    from runtime.orchestrator.producer_move import current_producer_preparation
+    from runtime.orchestrator.thread_move import current_thread_preparation
+    from runtime.orchestrator.task_pause import current_invocation
+    preparation = current_thread_preparation() or current_producer_preparation() or current_invocation()
     results: dict[str, bool] = {}
     for name in repo_names:
         repo_dir = workspace / "repos" / name
@@ -1768,10 +1829,21 @@ def refresh_workspace_repos(workspace: Path) -> dict[str, bool]:
                 capture_output=True,
                 timeout=30,
             )
-            results[name] = result.returncode == 0
-        except (subprocess.TimeoutExpired, subprocess.SubprocessError, OSError) as exc:
+        except BaseException as exc:
+            if preparation is not None:
+                try:
+                    preparation.failed_cleanup()
+                except BaseException as evidence:
+                    exc.add_note(f"repository preparation evidence failed: {evidence!r}")
+                    raise exc from evidence
+            if not isinstance(exc, (subprocess.TimeoutExpired, subprocess.SubprocessError, OSError)):
+                raise
             logger.info("repo refresh: git pull skipped for %s: %s", repo_dir, exc)
             results[name] = False
+        else:
+            results[name] = result.returncode == 0
+            if result.returncode != 0 and preparation is not None:
+                preparation.failed_cleanup()
     return results
 
 
@@ -2320,13 +2392,19 @@ class ClaudeWorkspaceAdapter:
             json.dumps(settings_data, indent=2) + "\n"
         )
 
-    def write_claude_md(
+    def write_claude_md(self, workspace: Path, agent_name: str, system_prompt: str,
+                     repo_names: list[str] | None = None) -> None:
+        write_canonical_instruction_pair(workspace, self.render_claude_md(
+            workspace, agent_name, system_prompt, repo_names=repo_names,
+        ))
+
+    def render_claude_md(
         self,
         workspace: Path,
         agent_name: str,
         system_prompt: str,
         repo_names: list[str] | None = None,
-    ) -> None:
+    ) -> str:
         """Write the canonical instruction pair with system prompt and pointers.
 
         The active-executor content is written to the regular canonical
@@ -2337,7 +2415,6 @@ class ClaudeWorkspaceAdapter:
         so the repo list doesn't drift between the two files.
         """
         _assert_no_reserved_headers_in_body(agent_name, system_prompt)
-        workspace.mkdir(parents=True, exist_ok=True)
         sections = self._build_sections(
             agent_name,
             system_prompt,
@@ -2359,7 +2436,7 @@ class ClaudeWorkspaceAdapter:
             ],
             skills_dir=".claude/skills",
         )
-        write_canonical_instruction_pair(workspace, "\n".join(sections))
+        return "\n".join(sections)
 
     def _build_sections(
         self,
@@ -2467,13 +2544,19 @@ class CodexWorkspaceAdapter:
         self._slug = slug
         self._persistent = PersistentWorkspaceSetup(settings)
 
-    def write_agents_md(
+    def write_agents_md(self, workspace: Path, agent_name: str, system_prompt: str,
+                     repo_names: list[str] | None = None) -> None:
+        write_canonical_instruction_pair(workspace, self.render_agents_md(
+            workspace, agent_name, system_prompt, repo_names=repo_names,
+        ))
+
+    def render_agents_md(
         self,
         workspace: Path,
         agent_name: str,
         system_prompt: str,
         repo_names: list[str] | None = None,
-    ) -> None:
+    ) -> str:
         """Write AGENTS.md to workspace with system prompt and context pointers.
 
         Codex CLI ≥0.125 discovers skills by walking ``.agents/skills/`` from
@@ -2484,7 +2567,6 @@ class CodexWorkspaceAdapter:
         the completion contract.
         """
         _assert_no_reserved_headers_in_body(agent_name, system_prompt)
-        workspace.mkdir(parents=True, exist_ok=True)
         # Shared bootstrap sections (KB, memory, artifacts) are assembled in
         # Claude's _build_sections and flow through here unchanged.
         sections = ClaudeWorkspaceAdapter(self._settings, self._paths, slug=self._slug)._build_sections(
@@ -2509,7 +2591,7 @@ class CodexWorkspaceAdapter:
             ],
             skills_dir=".agents/skills",
         )
-        write_canonical_instruction_pair(workspace, "\n".join(sections))
+        return "\n".join(sections)
 
     def _copy_skills(self, workspace: Path) -> None:
         """No-op: canonical store + symlinks supersede wholesale copy."""
@@ -2624,3 +2706,44 @@ class PiWorkspaceAdapter:
         system_prompt: str,
     ) -> None:
         self._codex_adapter.ensure_workspace_ready(workspace, agent_name, system_prompt)
+
+
+def plan_workspace_skills(workspace, settings, *, slug, provider, agent_name, team, skills_root, org_root, db):
+    """Read-only manifest using the actual native all-context selectors.
+
+    Does not instantiate a store/materializer, build a package, emit an event,
+    repair a link, create scratch or modify memory. Artifact failure refuses
+    the preview; the mutating builder retains its ordinary caught-error policy.
+    """
+    import hashlib
+    from runtime.infrastructure.artifact_store import ArtifactStore
+    from runtime.orchestrator._paths import OrgPaths
+    specs = []
+    src_root = _resolve_skills_src(settings)
+    contracts = select_system_contracts(workspace)
+    _preflight_system_contract_sources(set(contracts), src_root, workspace=workspace, provider=provider)
+    for contract_id in sorted(contracts):
+        digest = _compute_dir_hash(src_root / contract_id)
+        specs.append({"slug": contract_id, "version": "system", "content_hash": digest})
+    for exposed in select_release_skills(skills_root, settings, slug=slug,
+            team=team, agent_name=agent_name, org_root=org_root):
+        skill = exposed.skill
+        source = (org_root / "skills" if skill.source == "user_authored" else skills_root) / skill.slug
+        if not source.is_dir():
+            raise ValueError("team_move_selected_skill_source_missing")
+        specs.append({"slug": skill.slug, "version": skill.version or "0", "content_hash": _compute_dir_hash(source)})
+    with db._lock:
+        selected = [dict(row) for row in select_custom_skill_rows(db, slug=slug, agent_name=agent_name, team=team)]
+    artifacts = ArtifactStore.open_existing(OrgPaths(org_root).artifacts_dir) if selected else None
+    for row in selected:
+        if not row["content_artifact_key"]:
+            raise ValueError("team_move_custom_skill_artifact_missing")
+        content = artifacts.read(row["content_artifact_key"])
+        if hashlib.sha256(content).hexdigest() != row["content_hash"]:
+            raise ValueError("team_move_custom_skill_artifact_changed")
+        tree_hash = hashlib.sha256(b"SKILL.md\x00" + content + b"\x00").hexdigest()
+        specs.append({"slug": row["slug"], "version": str(row["version_id"]),
+            "content_hash": row["content_hash"], "tree_hash": tree_hash})
+    if len({s["slug"] for s in specs}) != len(specs):
+        raise ValueError("team_move_skill_slug_collision")
+    return specs

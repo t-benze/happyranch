@@ -268,6 +268,8 @@ class OrgState:
     @classmethod
     def load(cls, *, slug: str, root: Path, settings: Settings) -> "OrgState":
         paths = OrgPaths(root=root)
+        from runtime.orchestrator.team_move_startup import before_org_attachment
+        before_org_attachment(root, slug)
         from runtime.identities.schema import preflight
         naming_preflight = preflight(paths.db_path, org_slug=slug)
         db = Database(paths.db_path)
@@ -275,6 +277,12 @@ class OrgState:
             install_or_recover(db, expected_org_slug=slug)
             with db._lock:
                 layout = validate_workflow_schema(db._conn, expected_org_slug=slug)
+            # Native org release preparation, after strict early move discovery
+            # and complete workflow validation, before any roster/publication or
+            # producer attachment. Generic Database and diagnostic recovery never
+            # install this extension. An existing hold/unknown layout refuses.
+            from runtime.infrastructure.team_move_store import install_team_move_schema
+            install_team_move_schema(db, org_slug=slug)
             if layout == "F":
                 logger.warning("org %r: %s", slug, draft_migration_guidance(
                     org_slug=slug, runtime_root=str(root.parent.parent),
@@ -343,8 +351,8 @@ class OrgState:
             state.naming_diagnostic = naming_preflight
             # Cold load has no concurrent route coroutine. Capture/install is
             # outside short authority/profile leases, after baseline admission.
-            with state.workflow_authority.writer_interval(publisher="identity_names_load"):
-                refresh_names(state, install=True)
+            with state.workflow_authority.writer_interval(publisher="identity_names_load") as interval:
+                refresh_names(state, install=True, writer=interval.native_disposition)
             # U2A publishes/reconciles the org authority generation before the
             # state is returned. Failure remains fail-closed in the workflow
             # pointer but does not detach the org or alter legacy task/chain

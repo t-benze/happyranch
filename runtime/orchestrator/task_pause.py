@@ -32,6 +32,17 @@ def current_invocation() -> TaskInvocation | None:
     return _invocation.get()
 
 
+@contextmanager
+def task_preparation_effects():
+    """Attribute native preparation to the already-reserved real task owner."""
+    owner = current_invocation()
+    if owner is None:
+        yield
+    else:
+        with owner.preparation_effects():
+            yield
+
+
 def fingerprint(task: TaskRecord) -> dict:
     return {"status": task.status.value, "block_kind": task.block_kind.value if task.block_kind else None,
             "count": task.orchestration_step_count, "session_id": task.current_session_id,
@@ -176,6 +187,45 @@ class TaskInvocation:
             entry["phase"] = phase
             entry.update(facts)
             self.store.save_journal_uncommitted(row)
+
+    def failed_cleanup(self) -> None:
+        # Sticky local ownership precedes any fallible journal/COMMIT. A caught
+        # save failure or rollback must never permit clean terminal release.
+        self.move_reservation.failed_cleanup()
+        with self.store.writer(self.task.id) as (_, row):
+            entry = self._entry(row)
+            entry["context"]["execution_unknown"] = True
+            entry["phase"] = "unknown"
+            entry["started_at"] = entry["captured_generation"] = None
+            self.store.save_journal_uncommitted(row)
+
+    @contextmanager
+    def preparation_effects(self):
+        """Errors after native effects retain this SAME task, agent and SID.
+
+        Successful completion proves only this interval. It cannot clear an
+        earlier failed preparation, even if a later host/callback is clean.
+        """
+        # A retry can be safely deferred only until preparation resumes. Commit
+        # that existing prepared state BEFORE effects so restart cannot replay
+        # an unproved partial preparation after an interrupted evidence save.
+        # Never rewrite an already-unknown/possible-launch/ACTION state.
+        with self.store.writer(self.task.id) as (_, row):
+            entry = self._entry(row)
+            if entry["phase"] in {"retry_deferred", "recovery_deferred"}:
+                entry["phase"] = "prepared"
+                self.store.save_journal_uncommitted(row)
+        try:
+            yield
+        except BaseException as exc:
+            try:
+                self.failed_cleanup()
+            except BaseException as evidence:
+                exc.add_note(f"task preparation evidence failed: {evidence!r}")
+                logging.getLogger(__name__).exception(
+                    "task %s session %s owner %s preparation evidence failed; original error preserved",
+                    self.task.id, self.session_id, self.identity)
+            raise
 
     def _business_uncommitted(self, entry: dict) -> float | None:
         db = self.orch._db
@@ -437,6 +487,8 @@ class TaskInvocation:
             if prior and prior["boundary"] != boundary:
                 raise PauseControlError("pause_control_unavailable")
             reservation = self.move_reservation
+            if reservation is not None and reservation.cleanup_failed:
+                raise PauseControlError("pause_control_unavailable")
             if ordinal and reservation is not None and reservation.possible_launch and not reservation.quiescent:
                 if (self.unsettled or reservation.cleanup_failed or not entry["context"].get("execution_unknown")
                         or self.orch._team_moves._reservations.get(self.identity) is not reservation):
@@ -466,6 +518,11 @@ class TaskInvocation:
         return dict(entry["retry"])
 
     def host_terminal(self, outcome: Any) -> None:
+        if outcome is not None and outcome.cleanup_error is not None:
+            # Failed native backend cleanup can precede first commitment. The
+            # current backends' prepare methods only validate/reserve opaque
+            # tokens; their pre-effect refusals alone are not cleanup failure.
+            self.failed_cleanup()
         if self.move_reservation is not None and self.attempt_committed:
             self.move_reservation.terminal(outcome)
         if not self.attempt_committed:
@@ -569,6 +626,8 @@ def deferred_invocation(orch: Any, task: TaskRecord, metadata: dict | None = Non
         landed = store.db.get_latest_task_result(task.id, entry["agent"], consumer_sid)
         consumer_only = landed is not None and type(landed["id"]) is int
         if not consumer_only:
+            if entry["context"].get("execution_unknown"):
+                raise DeferredRootPause("preparation cleanup unknown")
             store.held_uncommitted(task.id)
         if "authority_v2_generation" in entry["owner_identity"]:
             if (not isinstance(metadata, dict) or metadata.get("authority_v2_generation")
@@ -677,7 +736,8 @@ def settle_live(invocation: TaskInvocation, *, failed: bool = False, cleanup: An
             phase = invocation._entry(row)["phase"]
         # Genuine deferred retries/recovery keep their exact owner for the
         # existing redelivery owner. Failure must first become durable unknown.
-        if failed or phase not in {"retry_deferred", "recovery_deferred"}:
+        if (failed or (reservation is not None and reservation.cleanup_failed)
+                or phase not in {"retry_deferred", "recovery_deferred"}):
             invocation.close()
     except BaseException as exc:
         failed = True
@@ -722,9 +782,10 @@ def pause_deferred_owner(db: Any, task_id: str) -> bool:
 
 
 def restore_pause_preparations(orch: Any) -> None:
-    """Cold boot closes only affirmative precommit reservations.
+    """Cold boot retains unclosed task preparation and launch uncertainty.
 
-    Possible launch/ACTION and missing closure remain unknown. A deferred
+    Prepared is not affirmative no-effect evidence. Possible launch/ACTION
+    and missing closure remain unknown. A deferred
     retry/recovery retains its original identity and budget, without replaying
     a consumed result or treating missing PID as a no-launch proof.
     """
@@ -738,17 +799,18 @@ def restore_pause_preparations(orch: Any) -> None:
             retained = []
             for entry in row["journal"]["entries"]:
                 task = orch._db.get_task(entry["task_id"])
-                if (task is not None and (task.cancelled_at is not None or task.status.value in {"completed", "failed", "cancelled", "superseded"})
-                        and entry["phase"] in {"prepared", "retry_deferred", "recovery_deferred"}
+                if entry["owner"] != "job" and (entry["phase"] == "prepared"
+                        or entry["context"].get("execution_unknown")):
+                    # The process died with native preparation unclosed, or
+                    # with already-recorded uncertainty. Neither a terminal
+                    # row, recovery metadata nor retry budget proves cleanup.
+                    entry["phase"] = "unknown"
+                    entry["context"]["execution_unknown"] = True
+                    entry["started_at"] = entry["captured_generation"] = None
+                elif (task is not None and (task.cancelled_at is not None or task.status.value in {"completed", "failed", "cancelled", "superseded"})
+                        and entry["phase"] in {"retry_deferred", "recovery_deferred"}
                         and not entry["context"].get("execution_unknown")):
                     continue
-                if entry["phase"] == "prepared" and entry["owner"] != "job":
-                    if "recovery_return" in entry["context"]:
-                        entry["phase"] = "recovery_deferred"
-                    elif entry["retry"] and entry["retry"]["ordinal"]:
-                        entry["phase"] = "retry_deferred"
-                    else:
-                        continue
                 elif entry["phase"] in {"possible_launch", "running", "action_started", "result_processing"}:
                     entry["phase"] = "unknown"
                     entry["started_at"] = entry["captured_generation"] = None

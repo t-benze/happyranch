@@ -5,6 +5,10 @@ import asyncio
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from runtime.daemon.team_move_service import TeamMoveService
 
 from runtime.config import Settings
 from runtime.daemon.direct_connect_store import DirectConnectAuthorityStore
@@ -59,6 +63,7 @@ class DaemonState:
     # constructed only for runtime-backed states after every initial OrgState
     # has loaded, then reconciled before the DaemonState is returned.
     profile_coordinator: ProfileCoordinator | None = None
+    team_move_service: TeamMoveService = field(init=False, repr=False)
 
     @classmethod
     def idle(cls, settings: Settings) -> "DaemonState":
@@ -71,8 +76,10 @@ class DaemonState:
         """Construct metrics_store for runtime-backed state.
 
         Called by from_runtime after the dataclass constructor.
-        For idle state, this is a no-op (metrics_store is set in idle()).
+        Idle states still own the inert move service; metrics_store is set by idle().
         """
+        from runtime.daemon.team_move_service import TeamMoveService
+        self.team_move_service = TeamMoveService(self)
         if self.runtime is not None and self.metrics_store is None:
             self.metrics_store = MetricsStore(
                 str(self.runtime.root / "metrics.db")
@@ -84,8 +91,14 @@ class DaemonState:
             )
 
     @classmethod
-    def from_runtime(cls, runtime: RuntimeDir, settings: Settings) -> "DaemonState":
+    def from_runtime(cls, runtime: RuntimeDir, settings: Settings, *, move_diagnostics=None) -> "DaemonState":
+        from runtime.orchestrator.team_move_startup import require_runtime_reader
+        diagnostics = dict(move_diagnostics or {})
+        diagnostics.update(require_runtime_reader(runtime))
         state = cls(runtime=runtime, settings=settings)
+        state.broken_orgs.update(diagnostics)
+        from runtime.orchestrator.team_move_startup import diagnostic_move_orgs
+        state.broken_orgs.update(diagnostic_move_orgs(runtime))
         # __post_init__ constructs metrics_store at runtime.root/metrics.db
 
         # THR-207 task-producer wiring: construct the daemon-wide supervisor
@@ -157,6 +170,8 @@ class DaemonState:
                     )
 
         for slug, root in runtime.iter_org_roots():
+            if slug in state.broken_orgs:
+                continue
             try:
                 org = OrgState.load(slug=slug, root=root, settings=settings)
             except (OrgConsistencyError, ValueError) as exc:
@@ -206,6 +221,13 @@ class DaemonState:
             # writers reach their daemon-owned machine coordinator through
             # the already-injected OrgState.
             org._profile_coordinator = state.profile_coordinator
+        # Diagnostic move orgs remain outside runnable orgs. Global profile
+        # writers must not omit their held dependency closure merely because
+        # ordinary attachment correctly refused the partial roster.
+        state.profile_coordinator._move_diagnostic_orgs = {
+            slug: runtime.orgs_dir / slug for slug, reason in state.broken_orgs.items()
+            if "team_move_" in reason
+        }
         state.profile_coordinator.reconcile_startup()
         return state
 
@@ -235,7 +257,19 @@ class DaemonState:
             # OrgConsistencyError propagates — add_org is an explicit
             # action (init / unload+reload) and must fail loudly so the
             # founder sees the reason at the HTTP layer.
-            org = OrgState.load(slug=slug, root=root, settings=self.settings)
+            try:
+                if "team_move_" in self.broken_orgs.get(slug, ""):
+                    from runtime.infrastructure.team_move_store import inspect_team_move_org
+                    inspect_team_move_org(root, org_slug=slug, require_database=True)
+                org = OrgState.load(slug=slug, root=root, settings=self.settings)
+            except ValueError as exc:
+                if "team_move_" in str(exc):
+                    self.broken_orgs[slug] = str(exc)
+                    if self.profile_coordinator is not None:
+                        diagnostics = getattr(self.profile_coordinator, "_move_diagnostic_orgs", {})
+                        diagnostics[slug] = root
+                        self.profile_coordinator._move_diagnostic_orgs = diagnostics
+                raise
             # U2A: a dynamically attached org must cross the same coordinated
             # selector-initialization boundary as daemon startup before it is
             # wired or made runnable. Every launch reader is deliberately
@@ -279,6 +313,12 @@ class DaemonState:
                 org.close()
                 raise
             self.broken_orgs.pop(slug, None)
+            if self.profile_coordinator is not None:
+                # The outside-lease load positively inspected this existing DB;
+                # dynamic attachment revalidated its actual native move owner
+                # under profile leases before synchronization/map insertion.
+                # Failed attachment never reaches this diagnostic clearing.
+                getattr(self.profile_coordinator, "_move_diagnostic_orgs", {}).pop(slug, None)
             # Wire the thread queue + main loop so run_step workers can
             # cross the async boundary via run_coroutine_threadsafe when
             # posting task-followup invocations.
@@ -292,11 +332,17 @@ class DaemonState:
 
     async def remove_org(self, slug: str) -> None:
         async with self.orgs_lock:
+            self.team_move_service.assert_no_owner(slug)
+            current = self.orgs.get(slug)
+            if current is not None and current.db._team_move_coordinator.store.read() is not None:
+                from runtime.infrastructure.team_move_store import TeamMoveError
+                raise TeamMoveError("team_move_runtime_detach_held")
             org = self.orgs.pop(slug, None)
             if org is not None:
                 org.close()
 
     async def close_all(self) -> None:
+        await self.team_move_service.close()
         async with self.orgs_lock:
             for org in self.orgs.values():
                 org.close()

@@ -1,6 +1,8 @@
 """THR-055 B2 custom-skill API: no proposal state or lifecycle coupling."""
 from __future__ import annotations
 
+from runtime.orchestrator.producer_move import native_writer
+
 import hashlib
 import json
 import sqlite3
@@ -113,6 +115,7 @@ def _persist_validated_version(
     event: str = "version_saved",
     requested_description: str | None = None,
     validator_version: str = "THR-262/1.0.0",
+    writer,
 ) -> tuple[int, str, str, str, int | None]:
     """Append one validated version inside the caller's BEGIN IMMEDIATE block.
 
@@ -131,11 +134,11 @@ def _persist_validated_version(
     an integrity failure from ANY later stage (current-pointer update or
     either event append) is NOT a duplicate — it propagates to the generic
     handler below, which compensates only the artifact (and empty directories)
-    this request wrote and lets the caller roll back, so a failed write never
-    returns a false 409 with a stranded file. On any later failure the
+    this request wrote and lets the caller roll back, so a later-stage failure never
+    returns a false duplicate-content 409. Failed compensation remains unknown. On any later failure the
     artifact (written by this request) is compensated and the caller rolls
-    back the transaction, leaving no durable version/event/current-pointer/
-    artifact residue. The append-only uniqueness invariant is preserved,
+    back the transaction, rolling back version/event/current-pointer rows. Artifact
+    compensation is best-effort; uncertain residue remains a writer blocker. The append-only uniqueness invariant is preserved,
     never relaxed.
 
     Description handling (THR-262): a VALID candidate projects its validated
@@ -169,41 +172,42 @@ def _persist_validated_version(
     key = _artifact_key(slug, skill_md)
     artifact_written = False
     try:
-        try:
-            version, content_hash, state = service.create_version(
-                conn, skill_id=skill_id, skill_md=skill_md, actor_kind=actor_kind,
-                actor=actor, artifact_key=key, validation=validation,
-                task_id=task_id, session_id=session_id, brief_digest=brief_digest,
-                parent_id=parent_id, validator_version=validator_version,
-            )
-        except sqlite3.IntegrityError as exc:
-            # Only the version INSERT can violate the append-only uniqueness
-            # invariant, and at that point no artifact has been written by
-            # this request, so there is nothing to compensate and no
-            # concurrent-duplicate deletion race.
-            raise HTTPException(
-                status_code=409,
-                detail={
-                    "code": "version_content_exists",
-                    "detail": "A version with this exact content already exists for this skill",
-                },
-            ) from exc
-        frontmatter = validation.get("frontmatter") if isinstance(validation, dict) else None
-        projected_description = (
-            frontmatter.get("description") if isinstance(frontmatter, dict) else None
-        )
-        if validation["ok"] and requested_description is not None:
-            if requested_description != projected_description:
-                raise HTTPException(
-                    status_code=422,
-                    detail={
-                        "code": "divergent_description",
-                        "detail": (
-                            "The supplied description does not match the validated "
-                            "frontmatter description"
-                        ),
-                    },
+        with writer.validation():
+            try:
+                version, content_hash, state = service.create_version(
+                    conn, skill_id=skill_id, skill_md=skill_md, actor_kind=actor_kind,
+                    actor=actor, artifact_key=key, validation=validation,
+                    task_id=task_id, session_id=session_id, brief_digest=brief_digest,
+                    parent_id=parent_id, validator_version=validator_version,
                 )
+            except sqlite3.IntegrityError as exc:
+                # Only the version INSERT can violate the append-only uniqueness
+                # invariant, and at that point no artifact has been written by
+                # this request, so there is nothing to compensate and no
+                # concurrent-duplicate deletion race.
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "code": "version_content_exists",
+                        "detail": "A version with this exact content already exists for this skill",
+                    },
+                ) from exc
+            frontmatter = validation.get("frontmatter") if isinstance(validation, dict) else None
+            projected_description = (
+                frontmatter.get("description") if isinstance(frontmatter, dict) else None
+            )
+            if validation["ok"] and requested_description is not None:
+                if requested_description != projected_description:
+                    raise HTTPException(
+                        status_code=422,
+                        detail={
+                            "code": "divergent_description",
+                            "detail": (
+                                "The supplied description does not match the validated "
+                                "frontmatter description"
+                            ),
+                        },
+                    )
         _write_artifact(org, key, skill_md)
         artifact_written = True
         current_row = conn.execute(
@@ -242,7 +246,7 @@ def _commit_compensating_artifact(conn, org, key: str) -> None:
     though the version row is still uncommitted. If ``conn.commit()`` fails,
     the caller's rollback clears every DB row but would strand the artifact —
     so this helper removes it (and any now-empty parent directories) before
-    re-raising, keeping the write atomic with zero durable residue. Under
+    re-raising, preserving native compensation while retaining uncertain residue as a blocker. Under
     BEGIN IMMEDIATE no other writer can commit between this request's artifact
     write and its commit, so removing the artifact cannot delete a committed
     row's content; compensation is disarmed by a successful commit.
@@ -291,6 +295,9 @@ def create_agent_custom_skill(slug: str, session_id: str, org: OrgDep, request: 
     with lease:
         if org.sessions.get_active(task_id, agent) != session_id: _error("session_not_current", 403)
         if org.sessions.is_recovery_session(task_id, agent, session_id): _error("recovery_purpose_forbidden", 403)
+        task = org.db.get_task(task_id)
+        if task is None: _error("task_not_found", 422)
+        if task.assigned_agent != agent or task.current_session_id != session_id: _error("session_not_current", 403)
         skill_slug, skill_md = body.get("slug", ""), body.get("skill_md", "")
         # THR-262: omitted (or JSON-null) request description derives from the
         # validated frontmatter; an explicitly supplied string (including "")
@@ -298,58 +305,71 @@ def create_agent_custom_skill(slug: str, session_id: str, org: OrgDep, request: 
         requested_description = body.get("description")
         if not skill_slug or not body.get("name") or not skill_md: _error("invalid_request", 422)
         _reject_invalid_logical_slug(skill_slug)
-        validation_result = service.validate_package(
-            org, slug=skill_slug, name=body["name"], skill_md=skill_md,
-        )
-        if "slug_collision" in validation_result["reason_codes"]:
-            _error("protected_slug", 409)
-        # THR-210 PR 1: a document-contract validation failure is appended as
-        # immutable evidence, never silently discarded — but a protected-slug
-        # candidate is still hard-rejected above (policy gate, not evidence).
-        conn = getattr(org.db, "_conn", org.db); existing = conn.execute("SELECT * FROM custom_skills WHERE org_slug=? AND slug=?", (slug, skill_slug)).fetchone()
-        if existing and (existing["origin_kind"] != "agent" or existing["origin_agent"] != agent): _error("not_origin_owner", 403)
-        if existing:
-            _mutable(existing)
-        task = org.db.get_task(task_id)
-        if task is None: _error("task_not_found", 422)
-        brief = task.brief
-        digest = hashlib.sha256(brief.encode()).hexdigest() if brief else None
-        conn.execute("BEGIN IMMEDIATE")
-        try:
-            if existing:
-                skill_id = existing["id"]
-                version, digest_hash, validation, key, current = _persist_validated_version(
-                    conn, org=org, slug=skill_slug, skill_id=skill_id,
-                    skill_md=skill_md, actor_kind="agent", actor=agent,
-                    validation=validation_result, parent_id=existing["current_version_id"],
-                    task_id=task_id, session_id=session_id, brief_digest=digest,
-                    requested_description=requested_description,
-                )
-            else:
-                skill_id = f"custom:{uuid.uuid4()}"; conn.execute("INSERT INTO custom_skills (id,org_slug,slug,name,description,origin_kind,origin_agent,created_at,created_by) VALUES (?,?,?,?,?,'agent',?,?,?)", (skill_id, slug, skill_slug, body["name"], requested_description if requested_description is not None else "", agent, service.now(), agent))
-                version, digest_hash, validation, key, current = _persist_validated_version(
-                    conn, org=org, slug=skill_slug, skill_id=skill_id,
-                    skill_md=skill_md, actor_kind="agent", actor=agent,
-                    validation=validation_result, task_id=task_id,
-                    session_id=session_id, brief_digest=digest, event="created",
-                    requested_description=requested_description,
-                )
-            _commit_compensating_artifact(conn, org, key)
-        except Exception: conn.rollback(); raise
-    version_row = conn.execute("SELECT * FROM custom_skill_versions WHERE id=?", (version,)).fetchone()
-    skill_row = service.current(conn, skill_id)
-    return {
-        "skill": dict(skill_row),
-        "version": dict(version_row),
-        "hidden_reason": "no_eligibility_policy",
-        "provenance": {
-            "verified_org": verified_org,
-            "task_id": task_id,
-            "agent_name": agent,
-            "session_id": session_id,
-            "task_brief_digest": digest,
-        },
-    }
+        with native_writer(org.db, publisher='custom_skill:create_agent_custom_skill') as writer:
+            with writer.validation():
+                if org.sessions.get_active(task_id, agent) != session_id: _error("session_not_current", 403)
+                if org.sessions.is_recovery_session(task_id, agent, session_id): _error("recovery_purpose_forbidden", 403)
+                task = org.db.get_task(task_id)
+                if task is None: _error("task_not_found", 422)
+                if task.assigned_agent != agent or task.current_session_id != session_id: _error("session_not_current", 403)
+            validation_result = service.validate_package(
+                org, slug=skill_slug, name=body["name"], skill_md=skill_md, writer=writer,
+            )
+            with writer.validation():
+                if "slug_collision" in validation_result["reason_codes"]:
+                    _error("protected_slug", 409)
+                # THR-210 PR 1: a document-contract validation failure is appended as
+                # immutable evidence, never silently discarded — but a protected-slug
+                # candidate is still hard-rejected above (policy gate, not evidence).
+                conn = getattr(org.db, "_conn", org.db); existing = conn.execute("SELECT * FROM custom_skills WHERE org_slug=? AND slug=?", (slug, skill_slug)).fetchone()
+                if existing and (existing["origin_kind"] != "agent" or existing["origin_agent"] != agent): _error("not_origin_owner", 403)
+                if existing:
+                    _mutable(existing)
+                task = org.db.get_task(task_id)
+                if task is None: _error("task_not_found", 422)
+                brief = task.brief
+                digest = hashlib.sha256(brief.encode()).hexdigest() if brief else None
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                with writer.validation():
+                    # Re-read mutable package ownership at the native SQL leaf.
+                    existing = conn.execute("SELECT * FROM custom_skills WHERE org_slug=? AND slug=?", (slug, skill_slug)).fetchone()
+                    if existing and (existing["origin_kind"] != "agent" or existing["origin_agent"] != agent): _error("not_origin_owner", 403)
+                    if existing: _mutable(existing)
+                if existing:
+                    skill_id = existing["id"]
+                    version, digest_hash, validation, key, current = _persist_validated_version(
+                        conn, writer=writer, org=org, slug=skill_slug, skill_id=skill_id,
+                        skill_md=skill_md, actor_kind="agent", actor=agent,
+                        validation=validation_result, parent_id=existing["current_version_id"],
+                        task_id=task_id, session_id=session_id, brief_digest=digest,
+                        requested_description=requested_description,
+                    )
+                else:
+                    skill_id = f"custom:{uuid.uuid4()}"; conn.execute("INSERT INTO custom_skills (id,org_slug,slug,name,description,origin_kind,origin_agent,created_at,created_by) VALUES (?,?,?,?,?,'agent',?,?,?)", (skill_id, slug, skill_slug, body["name"], requested_description if requested_description is not None else "", agent, service.now(), agent))
+                    version, digest_hash, validation, key, current = _persist_validated_version(
+                        conn, writer=writer, org=org, slug=skill_slug, skill_id=skill_id,
+                        skill_md=skill_md, actor_kind="agent", actor=agent,
+                        validation=validation_result, task_id=task_id,
+                        session_id=session_id, brief_digest=digest, event="created",
+                        requested_description=requested_description,
+                    )
+                _commit_compensating_artifact(conn, org, key)
+            except Exception: conn.rollback(); raise
+        version_row = conn.execute("SELECT * FROM custom_skill_versions WHERE id=?", (version,)).fetchone()
+        skill_row = service.current(conn, skill_id)
+        return {
+            "skill": dict(skill_row),
+            "version": dict(version_row),
+            "hidden_reason": "no_eligibility_policy",
+            "provenance": {
+                "verified_org": verified_org,
+                "task_id": task_id,
+                "agent_name": agent,
+                "session_id": session_id,
+                "task_brief_digest": digest,
+            },
+        }
 
 
 @agent_custom_skills_router.post("/agent-create", status_code=201)
@@ -387,30 +407,35 @@ def create_human(slug: str, body: dict = Body(...), org: OrgDep = None, _: None 
     requested_description = body.get("description")
     if not skill_slug or not body.get("name") or not skill_md: _error("invalid_request", 422)
     _reject_invalid_logical_slug(skill_slug)
-    validation_result = service.validate_package(
-        org, slug=skill_slug, name=body["name"], skill_md=skill_md,
-    )
-    if "slug_collision" in validation_result["reason_codes"]:
-        _error("protected_slug", 409)
-    conn = getattr(org.db, "_conn", org.db)
-    existing = conn.execute(
-        "SELECT purged_at FROM custom_skills WHERE org_slug=? AND slug=?",
-        (slug, skill_slug),
-    ).fetchone()
-    if existing:
-        _error("slug_permanently_reserved" if existing["purged_at"] else "slug_exists", 409)
-    skill_id = f"custom:{uuid.uuid4()}"; conn.execute("BEGIN IMMEDIATE")
-    try:
-        conn.execute("INSERT INTO custom_skills (id,org_slug,slug,name,description,origin_kind,created_at,created_by) VALUES (?,?,?,?,?,'human',?,?)", (skill_id,slug,skill_slug,body["name"],requested_description if requested_description is not None else "",service.now(),"founder"))
-        version, content_hash, validation, key, current = _persist_validated_version(
-            conn, org=org, slug=skill_slug, skill_id=skill_id,
-            skill_md=skill_md, actor_kind="human", actor="founder",
-            validation=validation_result, event="created",
-            requested_description=requested_description,
+    with native_writer(org.db, publisher='custom_skill:create_human') as writer:
+        validation_result = service.validate_package(
+            org, slug=skill_slug, name=body["name"], skill_md=skill_md, writer=writer,
         )
-        _commit_compensating_artifact(conn, org, key)
-    except Exception: conn.rollback(); raise
-    return {"skill_id":skill_id,"version_id":version,"content_hash":content_hash,"validation_state":validation,"hidden_reason":"no_eligibility_policy","current_version_id":current}
+        with writer.validation():
+            if "slug_collision" in validation_result["reason_codes"]:
+                _error("protected_slug", 409)
+            conn = getattr(org.db, "_conn", org.db)
+            existing = conn.execute(
+                "SELECT purged_at FROM custom_skills WHERE org_slug=? AND slug=?",
+                (slug, skill_slug),
+            ).fetchone()
+            if existing:
+                _error("slug_permanently_reserved" if existing["purged_at"] else "slug_exists", 409)
+        skill_id = f"custom:{uuid.uuid4()}"; conn.execute("BEGIN IMMEDIATE")
+        try:
+            with writer.validation():
+                existing = conn.execute("SELECT purged_at FROM custom_skills WHERE org_slug=? AND slug=?", (slug, skill_slug)).fetchone()
+                if existing: _error("slug_permanently_reserved" if existing["purged_at"] else "slug_exists", 409)
+            conn.execute("INSERT INTO custom_skills (id,org_slug,slug,name,description,origin_kind,created_at,created_by) VALUES (?,?,?,?,?,'human',?,?)", (skill_id,slug,skill_slug,body["name"],requested_description if requested_description is not None else "",service.now(),"founder"))
+            version, content_hash, validation, key, current = _persist_validated_version(
+                conn, writer=writer, org=org, slug=skill_slug, skill_id=skill_id,
+                skill_md=skill_md, actor_kind="human", actor="founder",
+                validation=validation_result, event="created",
+                requested_description=requested_description,
+            )
+            _commit_compensating_artifact(conn, org, key)
+        except Exception: conn.rollback(); raise
+        return {"skill_id":skill_id,"version_id":version,"content_hash":content_hash,"validation_state":validation,"hidden_reason":"no_eligibility_policy","current_version_id":current}
 
 @router.get("/{skill_id}")
 def detail(skill_id: str, org: OrgDep, _: None = Depends(_require_human)):
@@ -433,67 +458,77 @@ def detail(skill_id: str, org: OrgDep, _: None = Depends(_require_human)):
 def patch_metadata(skill_id: str, body: dict = Body(...), org: OrgDep = None, _: None = Depends(_require_human)):
     allowed = {key: body[key] for key in ("name", "description") if key in body}
     if not allowed: _error("invalid_request", 422)
-    conn=getattr(org.db,"_conn",org.db); conn.execute("BEGIN IMMEDIATE")
-    try:
-        # THR-262: re-read the current pointer inside the transaction so a
-        # description patch is evaluated against the authoritative current
-        # version, never a stale pre-transaction read.
-        row = service.current(conn, skill_id)
-        if row is None: _error("not_found", 404)
-        _mutable(row)
-        if "description" in allowed:
-            supplied = allowed["description"]
-            if row["validation_state"] == "valid":
-                # Valid current: the frontmatter is the authoritative source
-                # when it carries a non-empty description; the equal value is
-                # accepted and a different one is 422 description_divergence.
-                # A valid legacy heading-first version has no frontmatter
-                # description, so it falls through to the stored comparison.
-                frontmatter = parse_skill_frontmatter(row["skill_md_cache"])
-                frontmatter_description = (
-                    frontmatter.get("description") if isinstance(frontmatter, dict) else None
-                )
-                if isinstance(frontmatter_description, str) and frontmatter_description.strip():
-                    if supplied != frontmatter_description:
-                        _error("description_divergence", 422)
-                elif supplied != row["description"]:
-                    _error("description_requires_valid_version", 422)
-            else:
-                # Invalid current: branch on stored validity BEFORE parsing.
-                # The invalid frontmatter is never parsed as a valid source, so
-                # even a supplied value equal to its parseable description is
-                # rejected when it differs from the unchanged stored value.
-                if supplied != row["description"]:
-                    _error("description_requires_valid_version", 422)
-        conn.execute("UPDATE custom_skills SET " + ", ".join(f"{key}=?" for key in allowed) + " WHERE id=?", (*allowed.values(),skill_id)); service.append_event(conn,skill_id,"version_saved","founder",row["version_id"]); conn.commit()
-    except Exception: conn.rollback(); raise
-    return dict(service.current(org.db,skill_id))
+    with native_writer(org.db, publisher='custom_skill:patch_metadata') as writer:
+        conn=getattr(org.db,"_conn",org.db); conn.execute("BEGIN IMMEDIATE")
+        try:
+            with writer.validation():
+                # THR-262: re-read the current pointer inside the transaction so a
+                # description patch is evaluated against the authoritative current
+                # version, never a stale pre-transaction read.
+                row = service.current(conn, skill_id)
+                if row is None: _error("not_found", 404)
+                _mutable(row)
+                if "description" in allowed:
+                    supplied = allowed["description"]
+                    if row["validation_state"] == "valid":
+                        # Valid current: the frontmatter is the authoritative source
+                        # when it carries a non-empty description; the equal value is
+                        # accepted and a different one is 422 description_divergence.
+                        # A valid legacy heading-first version has no frontmatter
+                        # description, so it falls through to the stored comparison.
+                        frontmatter = parse_skill_frontmatter(row["skill_md_cache"])
+                        frontmatter_description = (
+                            frontmatter.get("description") if isinstance(frontmatter, dict) else None
+                        )
+                        if isinstance(frontmatter_description, str) and frontmatter_description.strip():
+                            if supplied != frontmatter_description:
+                                _error("description_divergence", 422)
+                        elif supplied != row["description"]:
+                            _error("description_requires_valid_version", 422)
+                    else:
+                        # Invalid current: branch on stored validity BEFORE parsing.
+                        # The invalid frontmatter is never parsed as a valid source, so
+                        # even a supplied value equal to its parseable description is
+                        # rejected when it differs from the unchanged stored value.
+                        if supplied != row["description"]:
+                            _error("description_requires_valid_version", 422)
+            conn.execute("UPDATE custom_skills SET " + ", ".join(f"{key}=?" for key in allowed) + " WHERE id=?", (*allowed.values(),skill_id)); service.append_event(conn,skill_id,"version_saved","founder",row["version_id"]); conn.commit()
+        except Exception: conn.rollback(); raise
+        return dict(service.current(org.db,skill_id))
 
 @router.post("/{skill_id}/versions", status_code=201)
 def add_version(skill_id: str, body: dict = Body(...), org: OrgDep = None, _: None = Depends(_require_human)):
-    row=service.current(org.db,skill_id)
-    if row is None: _error("not_found",404)
-    _mutable(row)
-    skill_md=body.get("skill_md", "")
-    requested_description=body.get("description")
-    if not skill_md: _error("invalid_request",422)
-    _reject_invalid_logical_slug(row["slug"])
-    validation_result = service.validate_package(
-        org, slug=row["slug"], name=row["name"], skill_md=skill_md,
-    )
-    if "slug_collision" in validation_result["reason_codes"]:
-        _error("protected_slug", 409)
-    conn=getattr(org.db,"_conn",org.db); conn.execute("BEGIN IMMEDIATE")
-    try:
-        version,content_hash,validation,key,current = _persist_validated_version(
-            conn, org=org, slug=row["slug"], skill_id=skill_id,
-            skill_md=skill_md, actor_kind="human", actor="founder",
-            validation=validation_result, parent_id=row["version_id"],
-            requested_description=requested_description,
+    with native_writer(org.db, publisher='custom_skill:add_version') as writer:
+        with writer.validation():
+            row=service.current(org.db,skill_id)
+            if row is None: _error("not_found",404)
+            _mutable(row)
+            skill_md=body.get("skill_md", "")
+            requested_description=body.get("description")
+            if not skill_md: _error("invalid_request",422)
+            _reject_invalid_logical_slug(row["slug"])
+        validation_result = service.validate_package(
+            org, slug=row["slug"], name=row["name"], skill_md=skill_md, writer=writer,
         )
-        _commit_compensating_artifact(conn, org, key)
-    except Exception: conn.rollback(); raise
-    return {"skill_id":skill_id,"version_id":version,"content_hash":content_hash,"validation_state":validation,"current_version_id":current}
+        with writer.validation():
+            if "slug_collision" in validation_result["reason_codes"]:
+                _error("protected_slug", 409)
+        conn=getattr(org.db,"_conn",org.db); conn.execute("BEGIN IMMEDIATE")
+        try:
+            with writer.validation():
+                current_row = service.current(conn, skill_id)
+                if current_row is None: _error("not_found", 404)
+                _mutable(current_row)
+                if current_row["version_id"] != row["version_id"]: _error("stale_revision", 409)
+            version,content_hash,validation,key,current = _persist_validated_version(
+                conn, writer=writer, org=org, slug=row["slug"], skill_id=skill_id,
+                skill_md=skill_md, actor_kind="human", actor="founder",
+                validation=validation_result, parent_id=row["version_id"],
+                requested_description=requested_description,
+            )
+            _commit_compensating_artifact(conn, org, key)
+        except Exception: conn.rollback(); raise
+        return {"skill_id":skill_id,"version_id":version,"content_hash":content_hash,"validation_state":validation,"current_version_id":current}
 
 @router.get("/{skill_id}/versions")
 def versions(skill_id: str, org: OrgDep, _: None = Depends(_require_human)):
@@ -530,23 +565,37 @@ def version_diff(skill_id: str, a: int, b: int, org: OrgDep, _: None = Depends(_
 
 @router.post("/{skill_id}/retire")
 def retire(skill_id: str, body: dict = Body(default={}), org: OrgDep = None, _: None = Depends(_require_human)):
-    row=service.current(org.db,skill_id)
-    if row is None: _error("not_found",404)
-    _mutable(row)
-    conn=getattr(org.db,"_conn",org.db); conn.execute("BEGIN IMMEDIATE")
-    try: conn.execute("UPDATE custom_skills SET retired_at=?,retired_by=?,retired_reason=? WHERE id=?",(service.now(),"founder",body.get("reason",""),skill_id));service.append_event(conn,skill_id,"retired","founder",row["version_id"]);conn.commit()
-    except Exception: conn.rollback();raise
-    return dict(service.current(org.db,skill_id))
+    with native_writer(org.db, publisher='custom_skill:retire') as writer:
+        with writer.validation():
+            row=service.current(org.db,skill_id)
+            if row is None: _error("not_found",404)
+            _mutable(row)
+        conn=getattr(org.db,"_conn",org.db); conn.execute("BEGIN IMMEDIATE")
+        try:
+            with writer.validation():
+                row = service.current(conn, skill_id)
+                if row is None: _error("not_found", 404)
+                _mutable(row)
+            conn.execute("UPDATE custom_skills SET retired_at=?,retired_by=?,retired_reason=? WHERE id=?",(service.now(),"founder",body.get("reason",""),skill_id));service.append_event(conn,skill_id,"retired","founder",row["version_id"]);conn.commit()
+        except Exception: conn.rollback();raise
+        return dict(service.current(org.db,skill_id))
 
 @router.post("/{skill_id}/restore")
 def restore(skill_id: str, org: OrgDep, _: None = Depends(_require_human)):
-    row=service.current(org.db,skill_id)
-    if row is None: _error("not_found",404)
-    _mutable(row)
-    conn=getattr(org.db,"_conn",org.db);conn.execute("BEGIN IMMEDIATE")
-    try: conn.execute("UPDATE custom_skills SET retired_at=NULL,retired_by=NULL,retired_reason=NULL WHERE id=?",(skill_id,));service.append_event(conn,skill_id,"restored","founder",row["version_id"]);conn.commit()
-    except Exception:conn.rollback();raise
-    return dict(service.current(org.db,skill_id))
+    with native_writer(org.db, publisher='custom_skill:restore') as writer:
+        with writer.validation():
+            row=service.current(org.db,skill_id)
+            if row is None: _error("not_found",404)
+            _mutable(row)
+        conn=getattr(org.db,"_conn",org.db);conn.execute("BEGIN IMMEDIATE")
+        try:
+            with writer.validation():
+                row = service.current(conn, skill_id)
+                if row is None: _error("not_found", 404)
+                _mutable(row)
+            conn.execute("UPDATE custom_skills SET retired_at=NULL,retired_by=NULL,retired_reason=NULL WHERE id=?",(skill_id,));service.append_event(conn,skill_id,"restored","founder",row["version_id"]);conn.commit()
+        except Exception:conn.rollback();raise
+        return dict(service.current(org.db,skill_id))
 
 
 @router.post("/{skill_id}/purge")
@@ -557,51 +606,54 @@ def purge(slug: str, skill_id: str, body: dict = Body(...), org: OrgDep = None, 
     filesystem object or retained evidence is removed. An identical or later
     retry returns the stable tombstone.
     """
-    conn = getattr(org.db, "_conn", org.db)
-    _purge_contract(conn)
-    with service.canonical_publication_barrier(slug):
-        conn.execute("BEGIN IMMEDIATE")
-        try:
-            row = service.current(conn, skill_id)
-            if row is None or row["org_slug"] != slug:
-                _error("skill_not_found", 404)
-            if body.get("typed_slug") != row["slug"]:
-                _error("typed_slug_mismatch", 422)
-            existing = service.purge_tombstone(conn, skill_id)
-            if existing is not None:
+    with native_writer(org.db, publisher='custom_skill:purge') as writer:
+        conn = getattr(org.db, "_conn", org.db)
+        with writer.validation():
+            _purge_contract(conn)
+        with service.canonical_publication_barrier(slug):
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                with writer.validation():
+                    row = service.current(conn, skill_id)
+                    if row is None or row["org_slug"] != slug:
+                        _error("skill_not_found", 404)
+                    if body.get("typed_slug") != row["slug"]:
+                        _error("typed_slug_mismatch", 422)
+                    existing = service.purge_tombstone(conn, skill_id)
+                    if existing is not None:
+                        conn.rollback()
+                        return {**dict(existing), "state": "permanently_removed", "already_purged": True}
+                    if row["retired_at"] is None:
+                        _error("skill_not_retired", 409)
+                    purge_id, purged_at = f"purge:{uuid.uuid4()}", service.now()
+                # Preserve policy history while withdrawing the current policy.
+                service.replace_rules(
+                    conn, skill_id=skill_id, actor="founder",
+                    revision=row["version_id"], rules=[],
+                    newly_visible=[], newly_hidden=[],
+                )
+                conn.execute(
+                    "INSERT INTO custom_skill_purge_events "
+                    "(purge_id,skill_id,org_slug,slug,actor,purged_at,physical_erasure) "
+                    "VALUES (?,?,?,?,?,?,0)",
+                    (purge_id, skill_id, slug, row["slug"], "founder", purged_at),
+                )
+                conn.execute(
+                    "UPDATE custom_skills SET purged_at=?,purge_id=? WHERE id=?",
+                    (purged_at, purge_id, skill_id),
+                )
+                conn.commit()
+            except HTTPException:
                 conn.rollback()
-                return {**dict(existing), "state": "permanently_removed", "already_purged": True}
-            if row["retired_at"] is None:
-                _error("skill_not_retired", 409)
-            purge_id, purged_at = f"purge:{uuid.uuid4()}", service.now()
-            # Preserve policy history while withdrawing the current policy.
-            service.replace_rules(
-                conn, skill_id=skill_id, actor="founder",
-                revision=row["version_id"], rules=[],
-                newly_visible=[], newly_hidden=[],
-            )
-            conn.execute(
-                "INSERT INTO custom_skill_purge_events "
-                "(purge_id,skill_id,org_slug,slug,actor,purged_at,physical_erasure) "
-                "VALUES (?,?,?,?,?,?,0)",
-                (purge_id, skill_id, slug, row["slug"], "founder", purged_at),
-            )
-            conn.execute(
-                "UPDATE custom_skills SET purged_at=?,purge_id=? WHERE id=?",
-                (purged_at, purge_id, skill_id),
-            )
-            conn.commit()
-        except HTTPException:
-            conn.rollback()
-            raise
-        except Exception:
-            conn.rollback()
-            raise
-    return {
-        "purge_id": purge_id, "skill_id": skill_id, "org_slug": slug,
-        "slug": row["slug"], "actor": "founder", "purged_at": purged_at,
-        "physical_erasure": 0, "state": "permanently_removed", "already_purged": False,
-    }
+                raise
+            except Exception:
+                conn.rollback()
+                raise
+        return {
+            "purge_id": purge_id, "skill_id": skill_id, "org_slug": slug,
+            "slug": row["slug"], "actor": "founder", "purged_at": purged_at,
+            "physical_erasure": 0, "state": "permanently_removed", "already_purged": False,
+        }
 
 @router.get("/{skill_id}/eligibility")
 def get_eligibility(skill_id: str, org: OrgDep, _: None = Depends(_require_human)):
@@ -619,22 +671,24 @@ def preview(skill_id: str, proposed: list[dict], org: OrgDep, _: None = Depends(
 
 @router.put("/{skill_id}/eligibility")
 def put_eligibility(skill_id: str, proposed: list[dict], org: OrgDep, if_match: str | None = Header(None), _: None = Depends(_require_human)):
-    conn = getattr(org.db, "_conn", org.db); conn.execute("BEGIN IMMEDIATE")
-    try:
-        row = service.current(conn, skill_id)
-        if row is None: _error("not_found", 404)
-        _mutable(row)
-        if if_match != str(row["version_id"]): _error("stale_revision", 409)
-        if row["retired_at"] or row["validation_state"] != "valid": _error("version_not_eligible", 422)
-        recipients = _recipients(org)
-        known = {r.agent_name for r in recipients}; teams = {t for r in recipients for t in r.teams}
-        for rule in proposed:
-            target = rule.get("scope_target")
-            if rule.get("scope_type") == "agent" and target not in known or rule.get("scope_type") == "team" and target not in teams: _error("unknown_target", 422)
-        impact = _preview(org, row, proposed)
-        service.replace_rules(conn, skill_id=skill_id, actor="founder", revision=row["version_id"], rules=proposed, newly_visible=impact["newly_visible"], newly_hidden=impact["newly_hidden"]); conn.commit()
-    except Exception: conn.rollback(); raise
-    return impact
+    with native_writer(org.db, publisher='custom_skill:put_eligibility') as writer:
+        conn = getattr(org.db, "_conn", org.db); conn.execute("BEGIN IMMEDIATE")
+        try:
+            with writer.validation():
+                row = service.current(conn, skill_id)
+                if row is None: _error("not_found", 404)
+                _mutable(row)
+                if if_match != str(row["version_id"]): _error("stale_revision", 409)
+                if row["retired_at"] or row["validation_state"] != "valid": _error("version_not_eligible", 422)
+                recipients = _recipients(org)
+                known = {r.agent_name for r in recipients}; teams = {t for r in recipients for t in r.teams}
+                for rule in proposed:
+                    target = rule.get("scope_target")
+                    if rule.get("scope_type") == "agent" and target not in known or rule.get("scope_type") == "team" and target not in teams: _error("unknown_target", 422)
+                impact = _preview(org, row, proposed)
+            service.replace_rules(conn, skill_id=skill_id, actor="founder", revision=row["version_id"], rules=proposed, newly_visible=impact["newly_visible"], newly_hidden=impact["newly_hidden"]); conn.commit()
+        except Exception: conn.rollback(); raise
+        return impact
 
 @router.get("/{skill_id}/eligibility/explain")
 def explain(skill_id: str, agent: str, org: OrgDep, _: None = Depends(_require_human)):

@@ -177,19 +177,22 @@ def fire_resume_check_for_job(org: "object", job_id: str) -> None:
     # Phase 3: only in_progress(blocked_on_job) tasks are parked on jobs.
     # The boot-time migration flips any legacy blocked(blocked_on_job) rows
     # before request handling, so this scanner never sees them at runtime.
-    rows = db._conn.execute(
-        "SELECT id FROM tasks "
-        "WHERE status = 'in_progress' "
-        "AND block_kind = 'blocked_on_job' "
-        "AND blocked_on_job_ids LIKE ?",
-        (f'%"{job_id}"%',),
-    ).fetchall()
+    with db._lock:
+        rows = db._conn.execute(
+            "SELECT id FROM tasks "
+            "WHERE status = 'in_progress' "
+            "AND block_kind = 'blocked_on_job' "
+            "AND blocked_on_job_ids LIKE ?",
+            (f'%"{job_id}"%',),
+        ).fetchall()
     for row in rows:
-        _maybe_resume_blocked_task(
-            orch, row["id"],
-            trigger="job_terminal",
-            triggering_job_id=job_id,
-        )
+        from runtime.orchestrator.team_move import DeferredTeamMove
+        try:
+            _maybe_resume_blocked_task(orch, row['id'], trigger='job_terminal', triggering_job_id=job_id)
+        except DeferredTeamMove:
+            # C1 revalidates and redelivers the actual task; do not manufacture
+            # another terminal callback or turn a committed job into failure.
+            orch._team_moves.defer_task(row['id'], {'trigger': 'job_terminal', 'triggering_job_id': job_id})
 
 
 def register_runner_task(job_id: str, task: asyncio.Task) -> None:
@@ -317,6 +320,7 @@ async def run_job(
     max_output_bytes: int | None = None,
     task_id: str | None = None,
     workspace_root: str | None = None,
+    move_owner=None,
 ) -> JobRunResult:
     """Spawn the script, pump streams, return JobRunResult.
 
@@ -341,23 +345,29 @@ async def run_job(
 
     started = datetime.now(timezone.utc)
     scratch_token = None
+    from runtime.orchestrator.producer_move import producer_preparation_effects
     if task_id is not None and workspace_root is not None:
-        scratch = prepare_task_scratch(
-            workspace=Path(workspace_root), task_id=task_id,
-            producer_kind="job", producer_id=job_id or "anonymous",
-        )
-        scratch_token = activate_task_scratch(scratch)
+        with producer_preparation_effects(move_owner):
+            scratch = prepare_task_scratch(
+                workspace=Path(workspace_root), task_id=task_id,
+                producer_kind="job", producer_id=job_id or "anonymous",
+            )
+            scratch_token = activate_task_scratch(scratch)
     try:
-        child_env = _sanitize_child_env(dict(os.environ))
-        if scratch_token is not None:
-            # A daemon launched by an agent inherits that parent session's
-            # containment markers.  This job owns a new, task-bound contract;
-            # discard only the superseded sidecar markers before the shared
-            # validator installs the job's canonical values.  TMPDIR/TMP/TEMP
-            # remain intact so unexpected steering is still rejected.
-            child_env.pop("HAPPYRANCH_TASK_TMP_ROOT", None)
-            child_env.pop("HAPPYRANCH_TASK_SCRATCH_MANIFEST", None)
-        child_env = apply_task_scratch_environment(child_env)
+        with producer_preparation_effects(move_owner):
+            child_env = _sanitize_child_env(dict(os.environ))
+            if scratch_token is not None:
+                # A daemon launched by an agent inherits that parent session's
+                # containment markers. This job owns a new, task-bound contract;
+                # discard only superseded markers before shared validation.
+                # TMPDIR/TMP/TEMP retain unexpected-steering refusal.
+                child_env.pop("HAPPYRANCH_TASK_TMP_ROOT", None)
+                child_env.pop("HAPPYRANCH_TASK_SCRATCH_MANIFEST", None)
+            child_env = apply_task_scratch_environment(child_env)
+        if move_owner is not None:
+            move_owner.executor = interpreter
+            move_owner.before_fifo()
+            move_owner.commit()
         proc = await asyncio.create_subprocess_exec(
             binary,
             "-",  # read script from stdin (bash/sh/zsh/python3 all honor this)
@@ -371,6 +381,8 @@ async def run_job(
     finally:
         if scratch_token is not None:
             reset_task_scratch(scratch_token)
+    if move_owner is not None:
+        move_owner.on_started()
     if job_id is not None:
         _INFLIGHT[job_id] = proc
 
@@ -511,6 +523,8 @@ async def run_job(
         reason=reason,
     )
 
+    if move_owner is not None:
+        move_owner.direct_terminal()
     publish({
         "kind": "terminal",
         "status": status,

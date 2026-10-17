@@ -361,3 +361,156 @@ literal closure False and ordinary failed rows remain. Portable source/parser
 checks are distinct from actual Darwin configure/target/transform/cache/EXE/copy
 and full wrapper/licenses integration, which remain N-only UNEXECUTED. No build
 allocation, signing, release, public distribution or deployment follows.
+
+## Generated web observations
+
+The app wrapper requires `--web-tool-originals /absolute/admitted-directory`.
+This is an inert, disjoint input directory with exactly fourteen original npm
+archives named `<package-with-slash-as-underscore>.tgz`. Originals, installed
+implementations and complete notices are authenticated; the original Vite
+LICENSE.md includes its bundled terms. `web/vendor/vite/prepare.py --original
+/path/vite.tgz --check` independently reproduces the deterministic local repack.
+Only the reviewed CSS/shared asset sites and package version differ from
+Vite 5.4.21. Ordinary callers retain the original Tailwind plugin.
+
+Only ordinary npm ci runs in a subshell with umask 022, preserving authentic
+0755 package executables. The parent mask stays 077 on success or failure;
+output, scratch and source directories are created privately before installation.
+After ordinary npm postinstall, the wrapper authenticates the selected esbuild
+platform member and its optimized alias. Only the exact accounted two-link pair
+can be separated by exclusive copy and replacement of the alias entry. Both
+paths must subsequently remain independent, single-link, authenticated files.
+No other overwrite, alternate binary or install-script suppression is allowed.
+
+A fully bound packaging build selects `packaging-tailwind.ts` and explicit
+PostCSS `plugins=[]`. Content comes from regular pinned Git blobs under web/
+with extensions html/js/jsx/mjs/cjs/ts/tsx/mts/cts/vue/svelte/astro/md/mdx/json/svg,
+excluding vendor/, node_modules/ and dist/. Tests/stories are included, in UTF8
+path-byte order. The adapter passes guarded replacement-decoded content and
+extensions to Scanner.scanFiles, preserves candidate Set order, invokes one
+compiler.build and one whole node.optimize, and returns that result to Vite.
+Imported CSS uses finite loaders; module/config loading, filesystem source
+instructions, ambiguous/relative imported URLs and unsupported CSS profiles
+refuse. This input selection needs matched ordinary-build CSS/UI comparison;
+it is not asserted equivalent to automatic scanner discovery.
+
+Private public-hook envelopes, HTML/core snapshots and original patched CSS
+operations retain actual argument/result associations through genuine emission,
+final bundle and write. CSS chunk, URL and minifier chains follow their recorded
+enclosing render call across interleaved emission-queue waits. Unavailable core
+internal references stay null. Each CSS finalization consumes exactly its own
+pending minifier result once; disabled minification consumes none, and unused
+minifier operations refuse even when their bytes match. Each asset-cache store
+consumes a pending read
+under the same enclosing hook; interleaved reads retain their separate parents.
+Cache hits require a stored URL, and incomplete read/store histories refuse. Python
+publish/read stages validate caller-held context/preparation/build/dist/app
+bindings, original bytes and finite relation graphs. Exact stat integers never
+round-trip through JavaScript. The final observer passes the actual successful
+publish token to synchronous `complete-build`. That helper independently checks
+the original caller/context/preparation and complete live build, exclusively
+writes `web-completion.jsonl` under the held evidence directory, fsyncs/closes
+and reads back, then echoes the SAME canonical 555-byte completion line. The TS
+observer compares raw bytes to its original direct inputs and actual publish
+token before acknowledging completion. Only actual npm lifecycle exit 0 enters
+`accept-build`; a later postbuild failure defeats even a valid marker. Missing,
+foreign, malformed, duplicate or unsafe completion leaves diagnostic evidence
+and no accepted build. Existing attempts/markers are never deleted for retry. Generated/public collisions refuse after npm exits and before
+app-copy acceptance, including equal-byte collisions. Existing asset census and
+map removal remain the copy authority.
+
+`web-notices.json` retains the canonical digest of every existing component row
+and records appended candidate notice rows. It cannot clear an ordinary failure,
+sentinel, or literal closure False. A fresh licenses command independently runs
+the web reader before the existing ordinary/global license gate. Unsigned source,
+portable/component/browser observations establish only their measured local
+scope. They establish neither legal applicability nor actual Darwin/native
+custody, any of the six full closures, or release availability.
+
+Packaging compilation retains the ordinary Tailwind plugin's `AtProperty` and
+`ColorMix` polyfills (the pinned compiler's combined value `3`); both independent
+readers require that recorded option.
+The existing custody observer records Rollup's public final `moduleParsed` code
+for every module, including profiles with no ordinary handler. Publisher and
+separate fresh reader require that callback and its final transform-chain match.
+
+The private `web-private-plain@2` resource profile retains all null and non-null
+observations: 262144 rows; 32768 each for modules, subjects, CSS operations,
+snapshots, selected content and candidates; 262144 call/association memberships;
+4096 outputs, 256 plugins, 1024 owners and 32 notices per owner. Input JSON is
+96 MiB, the complete envelope 112 MiB with at most 16 MiB added, build lexical
+nodes 12582912/depth32. Aggregate UTF8 name occurrences are limited to 8 MiB,
+including repeated names; each metadata string remains limited to 4096 bytes.
+Other record byte/node caps stay unchanged. Every body
+capture, including repeated equal bytes, contributes to the independently
+recomputed 1024 MiB producer-work limit; this is separate from filesystem I/O.
+Bounded canonical emission avoids only a redundant producer self-parse; complete,
+accept, seal and fresh verify independently parse/reopen their actual inputs.
+
+The writer and every reopened build reader apply the same bounded canonical
+input-size and actual envelope-minus-input addition check. An over-limit stored
+registry is refused before relation validation, including during fresh verify.
+
+Each web command owns one fixed 512 MiB regular / 192 MiB JSON budget and ONE
+persistent 512/32 MiB asset submeter. Successive/nested native asset lanes share
+that submeter; nested bounded calls keep the active view. Attempted charges stay
+monotonic, including refused work and repeated reads/parses. `read_closed_json`
+charges regular N / JSON N; web `Session.load` conservatively charges regular
+2N / JSON N. Counters are read-only; concurrent census accounting is shared and
+unchanged. Default asset and independent freezer limits remain unchanged. There
+is no numeric override, inner reset, repeated-read exemption or whole-npm I/O
+ceiling. Limits are conjunctions: path4096/component255/depth16 admits at most
+4095 path bytes, and the closed completion body is exactly555 bytes, so neither
+has a reachable valid4096-byte semantic positive. Capacity/headroom requires
+actual scoped measurements; source/static success establishes none of it.
+
+
+The actual single Tailwind compile now has a helper-owned loader lifecycle in
+`web-css-loads/`: unique invocation and original transform-call binding, input
+size/hash/options, ordered per-compile stylesheet ordinals and opaque read
+receipts written before callback return, then a successful end from that same
+awaited call. Repeats retain distinct tokens; zero-import compiles still have
+begin/end. Interleaved invocations keep their own sequence. The helper derives
+the complete directory inventory and exclusively creates `seal.json` before
+validating mutable operations. Publisher and separate fresh full verifier both
+reopen that inventory, every event and its original source descriptor, and
+require a complete bijection with compile operations and ordered imports.
+Partial imports, equal-byte subject substitutions, owner/order swaps, duplicate
+imports and whole missing compiles refuse. Unknown leaves, gaps, open compiles,
+extra reads and post-seal writes refuse; failed prefixes are diagnostic only.
+
+Additional sublimits are 32768 lifecycle/read files total, 256 KiB per event,
+8 MiB aggregate event JSON and 8 MiB terminal seal. Bounded enumeration stops
+before excess entries are retained. All existing read/JSON/build/name/body and
+transport caps still apply; event writes/readbacks, parsing and producer
+transport are charged. These limits supply no measured-fit or host-RSS claim.
+The selected optimizer profile passes no map and refuses an unexpected non-null
+returned map before handing code to Vite; both readers require null optimizer
+input/result maps. Vite's later CSS map is a separate relation. Map-bearing P
+graphs are unsupported-profile negatives, not production-positive evidence.
+Each CSS emission consumes its original emission observation once and matches
+its resolved output filename, including when separate emissions have equal bytes.
+This is local custody under the reviewed helper/producer model, not authenticated
+compiler execution or resistance to invisible same-UID forgery/restore.
+
+The packaging preparation checks the authenticated oxide, Rollup and lightningcss
+loaders before Vite or static config imports execute. It refuses earlier local
+and universal bindings, WASI/local fallbacks, nested package shadows and tool
+overrides, and probes Node 24 platform, architecture and importer resolutions
+without loading native modules. Preparation and context retain selected members,
+locked originals, actual ancestor/global package lookup locations and the complete
+excluded file relation: exact stems plus `.js`, `.json` and `.node` candidates,
+even for requests already ending in `.node`. Existing excluded directories refuse
+without reading their package entry metadata. Rollup's exact `existsSync` branch
+retains its loader-specific reachability. Non-loading Node probes corroborate
+excluded-request nonresolution; errors other than `MODULE_NOT_FOUND` refuse.
+Both publication and a fresh reopened reader
+revalidate that relation and the actual build process's resolved paths and loaded
+CJS native cache members. Linux/glibc/x64 observations remain portable evidence;
+Darwin/arm64 execution remains separately required. These local custody checks
+provide no same-UID race or authenticated-execution guarantee.
+
+The embedded notice collector enters the existing 192 MiB JSON web budget before
+parsing the caller and constructing its Session. Nested native asset work retains
+the persistent 32 MiB asset submeter; neither budget is reset or enlarged. Notice
+tokens leave the wrapper only after the complete mapping is successfully written.

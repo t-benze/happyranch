@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from runtime.orchestrator import prompt_loader
 from runtime.orchestrator._paths import OrgPaths
+from runtime.orchestrator.canonical_roster import coherent_paths_reader
 from runtime.orchestrator.teams import TeamsRegistry
 
 
@@ -22,6 +23,7 @@ class OrgConsistencyError(RuntimeError):
     """Raised when org/teams.yaml and org/agents/*.md disagree."""
 
 
+@coherent_paths_reader
 def validate_team_membership(paths: OrgPaths, teams: TeamsRegistry) -> None:
     """Require matching roles and membership in both canonical directions.
 
@@ -31,9 +33,16 @@ def validate_team_membership(paths: OrgPaths, teams: TeamsRegistry) -> None:
     for workflow authority publication.
     Report all drift so partial three-file migrations fail attachment clearly.
     """
+    validate_team_definitions(
+        teams, prompt_loader.list_agents(paths), prompt_loader.list_pending(paths),
+    )
+
+
+def validate_team_definitions(teams: TeamsRegistry, definitions, pending_definitions) -> None:
+    """Pure complete-candidate validator, also used by ordinary file validation."""
     known_teams = set(teams.teams())
-    active = {agent.name: agent for agent in prompt_loader.list_agents(paths)}
-    pending = {agent.name: agent for agent in prompt_loader.list_pending(paths)}
+    active = {agent.name: agent for agent in definitions}
+    pending = {agent.name: agent for agent in pending_definitions}
     drift: list[str] = []
     for name in sorted(active.keys() & pending.keys()):
         drift.append(f"  - agent {name!r} has both active and pending definitions")

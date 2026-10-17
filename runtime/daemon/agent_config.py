@@ -239,6 +239,8 @@ def _migrate_agent_yaml_to_frontmatter(
             _logger.info("migrate_agent_yaml: %s — %s", agent_name, outcome)
 
         except Exception as exc:
+            if authority_change is not None:
+                authority_change.native_disposition.uncertain = True
             _logger.warning("migrate_agent_yaml: %s — error: %s", agent_name, exc)
             results[agent_name] = f"error: {exc}"
 

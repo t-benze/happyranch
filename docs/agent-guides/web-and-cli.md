@@ -1,5 +1,150 @@
 # Web And CLI
 
+## Integrated online team-move F candidate — THR296seq135 / TASK11345
+
+The integrated F candidate supplies founder-controlled service/CLI source with
+`APPLY_AVAILABLE=True` and empty `NOT_INTEGRATED`. This candidate still needs
+independent whole-feature review, same-final-head SOURCE/POLICY/STATIC QA and
+manager guarded merge. Unmerged source is not accepted or activated capability.
+The actual daemon service independently checks schema, native org/coordinator,
+profile, host/tracker, naming and current authority before advertising apply.
+Explicit recovery uses the SAME native owner gates while allowing a diagnostic
+org/fenced publisher; `recover_available` and `recovery_incomplete_reasons` are
+separate from apply readiness. Neither projection certifies quiescence. Unknowns
+refuse with actionable reasons; no flag/private bypass/acceptance marker exists.
+Preview and saved-state reads retain the existing bearer + `_require_human`
+boundary, whose shared identity-less secret does not prove human presence.
+
+F native release preparation runs through `OrgState.load`: strict read-only move
+discovery precedes naming preflight, generic compatibility writes, roster
+validation, publication and producer admission. After complete native workflow
+validation, the DB-owned `install_team_move_schema` transaction validates exact
+existing layout/history/org identity, refuses held/unknown state, installs only
+the literal ONE table if absent, and validates before COMMIT. Repeated compatible
+attachment is idempotent. Generic Database/runtime-audit, capability/preview/show
+and restricted diagnostic recovery never install or repair it. Source delivery
+does not call it on production: separately authorized compatible release loading
+through the supported launcher performs native preparation; Founder assembles
+no files, SQL or offline manifest. Missing schema/owners are engineering release
+dependencies. Even an empty installed table requires reader@3. An absent optional
+layout remains compatible with generic/older readers; source rollback cannot
+undo durable state or grant a downgrade.
+
+F also freezes C2 thread retry initialization explicitly, including EMPTY
+budgets. New initial/fallback/nudge phase initialization is distinct from a
+frozen zero budget; deferral/reentry cannot replenish it. Old missing facts keep
+their original history interpretation but refuse ambiguous new retry/reentry
+with `team_move_thread_retry_initialization_unknown`; no history is backfilled.
+Updated shell/Mac launchers require `online-team-move@3` (reads old @1/@2), so
+earlier supported parsers refuse before startup. Already-running old daemons,
+obsolete launchers and unchecked old interpreters remain outside that guard.
+All behavioral/installation/recovery/launcher observations remain UNEXECUTED.
+Agents must not self-authorize with ambient credentials. Manage-agent retains
+team/role and cannot transfer agents.
+
+Historical task attribution is separate from current launch eligibility. The
+complete parent/child/revisit/chain/fanout/workflow closure retains task team keys,
+recorded participants and permanent IDs, including retired actors authenticated
+by the existing strict naming owner or native INTEGER task/result/SID attribution.
+It never resolves settled history through today's manager or requires re-enrollment.
+Unknown identity/graph facts remain actionable census blockers without discarding
+collected inventory; dependent sessions/jobs/recovery callbacks/workflows remain
+joined even for terminal tasks. New execution still requires a current executable
+owner. No historical record, team, callback or binding is rewritten.
+
+The SAME INTEGER thread invocation/agent/SID preparation owner spans native
+materialization, integrity, repository refresh and launch-spec/cache preparation,
+including helper-internal omissions and caught failures. Such uncertainty appends
+the existing sticky `failed_cleanup` fact BEFORE ordinary failure settlement;
+backend preparation/cleanup and native workspace/cache failures retain ownership.
+Later success/callback/terminal state cannot erase it. Serializer, audit COMMIT,
+strict history reader, restart/reentry and census preserve that fact, independently
+of frozen EMPTY/nonempty retries. Ordinary stale-claim/agent/breaker or missing
+launch-seam refusals before effects retain their native no-effect disposition;
+returned failure alone never proves compensation. No new schema/journal/backfill
+or generic producer identity is introduced. All behavior remains UNEXECUTED.
+
+Ordinary tasks carry their SAME native TaskInvocation/task/agent/runtime SID
+through materialization, integrity (including retries), package omissions,
+repository refresh, attachment writes/cleanup, task scratch and builtin/custom
+cache/workspace setup. Safe deferred ownership becomes durably `prepared` before
+preparation resumes; this never clears existing uncertainty.
+Preparation failure sets the existing local reservation cleanup flag BEFORE the
+fallible strict Pause save/COMMIT, then retains `execution_unknown`/`unknown` in
+the admitted journal. Terminal/callback/quiescent later attempts and safe unrelated
+worktree cleanup cannot clear it. Settlement persists that fact before release;
+failed saves retain local ownership and original plus persistence errors.
+Restart treats unclosed task `prepared` entries as unknown, including terminal
+rows and prepared recovery/retry owners; absence of first launch is no proof of
+preparation cleanup. Unknown deferred entries cannot authorize a fresh launch.
+Native pre-effect source/artifact validation, repo-scan and missing launch-seam refusals
+retain their no-effect disposition. Existing retry/recovery IDs, frozen budgets,
+INTEGER callbacks and authority-v2 are preserved. No new field/journal, history
+backfill, compensation or clearance writer is introduced. Behavior UNEXECUTED.
+
+Preview resolves native current names/IDs, rejects former/unknown names, uses
+only D's pure native planner and returns exact founder-only diff/digests,
+context/permission/skill deltas, complete blockers/owners, drain candidates and
+org-wide publication impact. It reserves nothing. Internal canonical images
+stay private; never copy these admitted diffs to shared artifacts/logs.
+Only already-running captured threads can drain (at most30s); pending tasks,
+paused roots/children/jobs/workflows/remote/cleanup uncertainty remain blockers.
+`can_drain_threads` identifies candidate turns, not clearance of hard blockers.
+
+The client saves its exact normalized envelope and stable key privately before
+POST. Fresh saves, identical-save reuse and apply reads all establish the same
+positive custody boundary: pinned no-follow private directory/file descriptors,
+exact canonical bytes and stable inode/type/mode/ownership, file fsync/successful
+close, then bottom-up containing-directory fsync/successful close. Existing
+complete bytes after a failed save proceed only after this boundary succeeds;
+partial/changed bytes remain preserved and refuse without overwrite/new key.
+The CLI prints the key and retains it on uncertainty. Same-UID races remain a
+cooperative-storage limitation, not an OS isolation guarantee.
+Apply transport loss performs one same-key GET, never a second POST/new key.
+HTTP202/CLI3 means accepted/in-flight; only saved COMPLETE/readback/release yields
+apply HTTP200/CLI0. Refusal/repair is CLI1; local argument validation is2.
+Show never advances/writes. Explicit recover uses the same ID/expected revision,
+native previous-owner/process-identity proof and CAS, with no TTL takeover.
+New-key already-satisfied verification requires a prior genuine COMPLETE plus
+full current native context/role/authority/census verification; no alias row,
+reset, publication or invented receipt is written.
+
+The daemon owns/reaps bounded tasks across client disconnect and before shutdown
+DB close; timeout/cancellation never erases committed holds. Diagnostic-only orgs
+have strict read-only saved-state access outside OrgDep and use D's restricted
+native recovery owner. Close that context before positive ordinary attachment;
+only successful native discovery/revalidation/map insertion clears diagnostics,
+then real deduplicating owners redeliver.
+Saved `diagnostic` retains the strict code/at-most64 safe owner IDs and original
+history; it is a bounded refusal record, never a complete current census.
+`saved_owners` derives original and latest recovery owner and original publisher
+from strict decision/progress. `current_observation` separately reads native
+blocker kind/ID/owner/remedy and current publisher/recovery/file-phase owners;
+unknown facts stay null/unavailable, with no idle certificate. Diagnostic-only
+orgs use a read-only restricted native context, without attachment or mutating
+preview. Missing trackers remain unknown. `service_diagnostic` carries safe
+asynchronous failure facts and secondary close/reattachment codes, explicitly
+process-local/non-durable; restart loss never erases saved IDs/diagnostics.
+Prior-owner proof/CAS still governs recovery. Native census refusal saves bounded
+IDs only through the existing strict repair transition after that proof; show
+never writes. Resolve the named native dependencies before explicit SAME-key,
+SAME-target recovery at the newly observed revision, without retry/takeover.
+Both GET by-key and GET by-ID declare202 while the daemon-owned task runs; private
+no-store/Location and CLI3 remain, with200 reserved for saved completed readback.
+
+Org unload/runtime switch refuse active
+owners/holds. D staging/history/inode/ENOENT cleanup, all-eight-site outside-lease
+discovery, C1-C3 sticky uncertainty/EMPTY budgets, INTEGER callbacks/v2 and native
+permissions remain intact. No new table/column, auth, permission or hook changes.
+
+Follow [the online runbook](../runbooks/online-team-move.md) for the engineering-owned
+F acceptance/enablement, separately authorized release loading and exact live
+Founder operation/readback handoff. Source delivery is not activation or behavior.
+SAME13 four answers remain; all absent HTTP/CLI/migration/recovery/race/cleanup/
+startup/launcher/downgrade/callback/live observations UNEXECUTED; integration
+INCLUDING callback SKIPPED24342, Python units RETIRED. No new cases or campaign.
+
+
 ## Jobs — automatic admission (THR309seq1)
 
 Both detail surfaces omit callable Run/Approve actions, dialogs and providers;
@@ -2879,3 +3024,41 @@ breakpoint. The transcript has bounded scrolling; all properties and participant
 controls remain reachable in the detail scroll area. At desktop widths the
 properties retain their fixed rail. Resize and locale changes preserve the mounted
 composer, draft, attachments and selection; neither action submits a message.
+
+## Private team-move D source and launcher protocol
+
+D supplies internal preview/operation/recovery owners. E now mounts the founder
+service/CLI; F proposes source enablement with actual native readiness gates.
+Updated shell and Mac bundled/dev launchers pass `--reader-guarded-start=online-team-move@3`; older
+supported argparse readers reject that protocol before startup. Runtime switch
+and registration preserve unresolved holds instead of detaching their org. Early
+schema-owner discovery keeps an unresolved/unknown org diagnostic-only before
+compatibility writers or producer recovery; unrelated orgs can attach. Direct old
+interpreters, obsolete launchers and already-running old daemons remain outside
+this cooperative guard. Source rollback cannot undo durable decisions. No restart,
+activation, preview against the live roster or live move was executed. SAME13
+behavior/migration/recovery/launcher outcomes remain UNEXECUTED; integration
+INCLUDING callback SKIPPED24342 and Python units RETIRED. See the current D section
+of the approved online-team-move spec. The earlier D @2 protocol covered durable operation
+staging ownership and per-org acquisition containment. Earlier diagnostics survive
+register/switch/state adoption. Restricted recovery retains the original error
+when close also fails; standalone close failures stay classified and held.
+
+Global/rebind/claim/retry/synchronization profile writers retain diagnostic roots
+and refuse without diagnostic filesystem/DB acquisition while leased, even with
+EMPTY dependencies.
+Adapter removal reports the retained EMPTY-dependency diagnostic refusal as
+HTTP409 with `detail.code`; its bounded `ProfileCoordinatorError` translation
+preserves unrelated exceptions and native removal/audit/compensation.
+Native startup/attachment performs positive inspection
+outside leases. Matching attachment revalidates its actual already-open DB owner
+in the short segment; only successful attachment clears its diagnostic. Other
+roots, failed attachment, current holds and malformed history stay held. D's
+own-operation/native-identity exception also checks EMPTY dependencies. Public
+recovery/reattachment is wired by E and uses F's actual native readiness gates.
+Failed open or raced loss never establishes fresh
+absence. Discovery/publication capture runs outside durable mutation leases, with
+native capture revalidation in the final DB leaf. Unknown staging cleanup stays
+held through recovery and owner-finished. Old records remain readable; legacy
+canonical-stage ownership gaps remain held. Source/static acceptance is not behavioral
+acceptance or a feature-completion claim.

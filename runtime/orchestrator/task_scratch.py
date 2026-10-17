@@ -142,20 +142,25 @@ def prepare_task_scratch(
     producer_kind = _validate_component(producer_kind, _PRODUCER_ID, "producer_kind")
     producer_id = _validate_component(producer_id, _PRODUCER_ID, "producer_id")
     workspace = Path(workspace).resolve(strict=True)
-    owned = workspace / ".happyranch"
-    scratch_parent = owned / "task-tmp"
-    manifest_parent = owned / "task-scratch-manifests"
-    for path in (owned, scratch_parent, manifest_parent):
-        _mkdir_owned(path)
-    root = scratch_parent / task_id
-    _mkdir_owned(root, parent=scratch_parent)
-    manifest_path = manifest_parent / f"{task_id}.json"
-    contract = TaskScratch(
-        task_id, producer_kind, producer_id, root, manifest_path,
-        tuple((key, os.environ.get(key)) for key in ("TMPDIR", "TMP", "TEMP")),
-    )
-    _write_observation(contract)
-    return contract
+    # Read-only identity/workspace validation above is affirmative no-effect.
+    # The same task owner must survive mkdir/chmod/manifest failures caught by
+    # the orchestrator as an ordinary launch refusal.
+    from runtime.orchestrator.task_pause import task_preparation_effects
+    with task_preparation_effects():
+        owned = workspace / ".happyranch"
+        scratch_parent = owned / "task-tmp"
+        manifest_parent = owned / "task-scratch-manifests"
+        for path in (owned, scratch_parent, manifest_parent):
+            _mkdir_owned(path)
+        root = scratch_parent / task_id
+        _mkdir_owned(root, parent=scratch_parent)
+        manifest_path = manifest_parent / f"{task_id}.json"
+        contract = TaskScratch(
+            task_id, producer_kind, producer_id, root, manifest_path,
+            tuple((key, os.environ.get(key)) for key in ("TMPDIR", "TMP", "TEMP")),
+        )
+        _write_observation(contract)
+        return contract
 
 
 def _write_observation(contract: TaskScratch) -> None:

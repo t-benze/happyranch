@@ -1536,6 +1536,8 @@ def write_org_setting_to_db(
     patch: dict,
     *,
     actor: str = "founder",
+    writer=None,
+    validate_only: bool = False,
 ) -> None:
     """Partial-update the 4 web-writable knobs in the org_settings DB.
 
@@ -1545,7 +1547,10 @@ def write_org_setting_to_db(
     2. Also calls save_org_config to strip writable keys from config.yaml.
 
     Raises OrgConfigError on validation failure."""
-    org_cfg = load_org_config(paths)
+    from contextlib import nullcontext
+    with writer.validation() if writer is not None else nullcontext():
+        org_cfg = load_org_config(paths)
+    effects_started = False
 
     # Helper to get the full effective value for a section in config.yaml shape.
     def _effective_dict(key: str) -> dict:
@@ -1591,57 +1596,61 @@ def write_org_setting_to_db(
     for key in _ORG_WRITABLE_KEYS:
         if key not in patch:
             continue
-        patch_val = patch[key]
+        with writer.validation() if writer is not None and not effects_started else nullcontext():
+            patch_val = patch[key]
 
-        # Read current full effective value as before.
-        if key == "session_timeout_seconds":
-            raw = db.get_org_setting(key)
-            before = json.loads(raw) if raw is not None else org_cfg.session_timeout_seconds
-        elif key == "reviewer_agents":
-            before = list(resolve_org_setting_reviewer_agents(
-                db, known_agents=resolve_known_agent_names(paths),
-            ))
-        else:
-            before = _effective_dict(key)
+            # Read current full effective value as before.
+            if key == "session_timeout_seconds":
+                raw = db.get_org_setting(key)
+                before = json.loads(raw) if raw is not None else org_cfg.session_timeout_seconds
+            elif key == "reviewer_agents":
+                before = list(resolve_org_setting_reviewer_agents(
+                    db, known_agents=resolve_known_agent_names(paths),
+                ))
+            else:
+                before = _effective_dict(key)
 
-        # Deep-merge patch into current effective value.
-        if isinstance(patch_val, dict) and isinstance(before, dict):
-            merged = _deep_merge(dict(before), patch_val)
-        else:
-            merged = patch_val  # scalar replacement (session_timeout_seconds, reviewer_agents)
+            # Deep-merge patch into current effective value.
+            if isinstance(patch_val, dict) and isinstance(before, dict):
+                merged = _deep_merge(dict(before), patch_val)
+            else:
+                merged = patch_val  # scalar replacement (session_timeout_seconds, reviewer_agents)
 
-        # Validate by building a full OrgConfig candidate.
-        candidate = _current_raw_dict_from_config(paths)
-        candidate.pop(key, None)
-        candidate[key] = merged
-        _build_org_config(candidate, str(paths.org_config_path))
+            # Validate by building a full OrgConfig candidate.
+            candidate = _current_raw_dict_from_config(paths)
+            candidate.pop(key, None)
+            candidate[key] = merged
+            _build_org_config(candidate, str(paths.org_config_path))
 
-        # THR-175: a reviewer_agents write must name only real active agents
-        # (defense-in-depth — the PUT route already rejects unknown names with
-        # a HARD REJECT; this guards any direct write_org_setting_to_db caller).
-        if key == "reviewer_agents" and isinstance(merged, list):
-            known = resolve_known_agent_names(paths)
-            if len(set(merged)) != len(merged):
-                raise OrgConfigError("reviewer_agents entries must be unique")
-            unknown = sorted(set(merged) - known)
-            if unknown:
-                raise OrgConfigError(
-                    "reviewer_agents references unknown agent(s): "
-                    + ", ".join(unknown)
-                )
+            # THR-175: a reviewer_agents write must name only real active agents
+            # (defense-in-depth — the PUT route already rejects unknown names with
+            # a HARD REJECT; this guards any direct write_org_setting_to_db caller).
+            if key == "reviewer_agents" and isinstance(merged, list):
+                known = resolve_known_agent_names(paths)
+                if len(set(merged)) != len(merged):
+                    raise OrgConfigError("reviewer_agents entries must be unique")
+                unknown = sorted(set(merged) - known)
+                if unknown:
+                    raise OrgConfigError(
+                        "reviewer_agents references unknown agent(s): "
+                        + ", ".join(unknown)
+                    )
 
-        # Build before/after audit dicts.
-        if key == "session_timeout_seconds":
-            before_audit = {"value": before} if before is not None else {}
-            after_audit = {"value": merged}
-        elif key == "reviewer_agents":
-            before_audit = {"value": before}
-            after_audit = {"value": merged}
-        else:
-            before_audit = before if isinstance(before, dict) else {}
-            after_audit = merged if isinstance(merged, dict) else {}
+            # Build before/after audit dicts.
+            if key == "session_timeout_seconds":
+                before_audit = {"value": before} if before is not None else {}
+                after_audit = {"value": merged}
+            elif key == "reviewer_agents":
+                before_audit = {"value": before}
+                after_audit = {"value": merged}
+            else:
+                before_audit = before if isinstance(before, dict) else {}
+                after_audit = merged if isinstance(merged, dict) else {}
 
         # Write to DB with audit (transactional — single commit).
+        if validate_only:
+            continue
+        effects_started = True
         db.upsert_org_setting(
             section=key,
             value_json=json.dumps(merged if isinstance(merged, dict) else merged),

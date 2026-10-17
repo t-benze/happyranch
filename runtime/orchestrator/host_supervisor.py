@@ -575,6 +575,7 @@ class AdmissionController:
                             granted_generation=self._shutdown_generation,
                             monotonic=self._monotonic,
                             max_retained_samples=self._max_retained_samples,
+                            move_identity=(request.org, request.agent_id, request.logical_id),
                         )
                         self._ownerships[lease_id] = ctx
                         lease = AdmissionLease(self, ctx)
@@ -880,7 +881,9 @@ class _AttemptContext:
         granted_generation: int,
         monotonic: Callable[[], float],
         max_retained_samples: int = _MAX_RETAINED_SAMPLES,
+        move_identity: tuple[str, str | None, str] | None = None,
     ) -> None:
+        self._move_identity = move_identity
         self._logical_id = logical_id
         self._granted_generation = granted_generation
         self._monotonic = monotonic
@@ -1381,7 +1384,7 @@ class HostSessionSupervisor:
 
         grace = self._policy.cleanup_grace_seconds if grace_seconds is None else grace_seconds
         task_invocation = final_prelaunch_validator if hasattr(final_prelaunch_validator, "_task_pause_commit") else None
-        thread_invocation = final_prelaunch_validator if hasattr(final_prelaunch_validator, "_thread_move_commit") else None
+        thread_invocation = final_prelaunch_validator if (hasattr(final_prelaunch_validator, "_thread_move_commit") or hasattr(final_prelaunch_validator, "_producer_move_commit")) else None
         attempt = 0
         retry_limit = self._max_retry_attempts
         retry_schedule = tuple(self._backoff_seconds[i] if i < len(self._backoff_seconds) else 0.0 for i in range(retry_limit))
@@ -1584,6 +1587,8 @@ class HostSessionSupervisor:
         task_commit = getattr(final_prelaunch_validator, "_task_pause_commit", None)
         if task_commit is None:
             task_commit = getattr(final_prelaunch_validator, "_thread_move_commit", None)
+        if task_commit is None:
+            task_commit = getattr(final_prelaunch_validator, "_producer_move_commit", None)
         if task_commit is not None:
             from runtime.orchestrator.task_pause import DeferredRootPause
             try:
@@ -1638,7 +1643,7 @@ class HostSessionSupervisor:
             self._finish_and_reconcile(ctx)
             return self._outcome(request, ctx, attempt)
         if request.on_started is not None and (
-                not hasattr(final_prelaunch_validator, "_thread_move_commit") or running.process is not None):
+                not (hasattr(final_prelaunch_validator, "_thread_move_commit") or hasattr(final_prelaunch_validator, "_producer_move_commit")) or running.process is not None):
             request.on_started(running.root_pid)
 
         # ── sampling ──────────────────────────────────────────────
@@ -1650,7 +1655,7 @@ class HostSessionSupervisor:
             result = launch_body(running)
         except Exception as exc:  # launch body never replaces terminal state
             from runtime.orchestrator.team_move import DeferredTeamMove
-            if hasattr(final_prelaunch_validator, "_thread_move_commit") and isinstance(exc, DeferredTeamMove):
+            if (hasattr(final_prelaunch_validator, "_thread_move_commit") or hasattr(final_prelaunch_validator, "_producer_move_commit")) and isinstance(exc, DeferredTeamMove):
                 deferred_thread_admission = exc
                 ctx.freeze_terminal(TerminalReason.CANCELLED)
             else:
@@ -1748,6 +1753,26 @@ class HostSessionSupervisor:
     def active_count(self) -> int:
         """Admitted-but-not-yet-released attempts (the ownership registry)."""
         return len(self._admission.ownerships_snapshot())
+
+    def team_move_census(self, org: str, agents: tuple[str, ...]) -> tuple[dict, ...]:
+        """Actual unbounded native ownership/residue observation for D.
+
+        Never infer identity from logical_id or use the bounded health DTO as a
+        clearance certificate. Unattributed host residue blocks conservatively.
+        This reads ownership only and changes no host admission/cleanup policy.
+        """
+        result = []
+        for context in self._admission.ownerships_snapshot():
+            identity = context._move_identity
+            if identity is None or (identity[0] == org and (identity[1] is None or identity[1] in agents)):
+                result.append({"kind": "host_attempt_unsettled", "owner_id": "unknown" if identity is None else identity[2],
+                    "remedy": "Wait for the actual host attempt, terminal publication and containment cleanup"})
+        residue = self._residue.census()
+        verdict = self._residue.evaluate()
+        if residue or not verdict.admit:
+            result.append({"kind": "host_residue_or_measurement_unknown", "owner_id": org,
+                "remedy": "Native host owner must reconcile process residue/measurement; no caller idle assertion"})
+        return tuple(result)
 
     def health_snapshot(self) -> dict:
         """Bounded, capability-honest live view for the operator health/metrics

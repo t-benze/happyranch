@@ -20,10 +20,13 @@ import os
 import re
 import signal
 import sqlite3
+import stat
 import subprocess
 import sys
 import time
 from collections import Counter
+from collections.abc import Callable, Iterator
+from contextlib import ExitStack, closing, contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -36,6 +39,10 @@ LOG = logging.getLogger(__name__)
 BUDGET_SECONDS = 1800
 TERMINAL = {'completed', 'failed', 'cancelled'}
 TASK = re.compile(r'TASK-[0-9]+\Z')
+
+
+class _RegistrationUnknown(Retain):
+    """The entire repository registration scope is uncertain."""
 
 
 def git(repo: Path, deadline: float, *args: str) -> str:
@@ -58,8 +65,131 @@ def git(repo: Path, deadline: float, *args: str) -> str:
     return result.stdout.decode('utf-8', errors='strict')
 
 
-def registrations(repo: Path, deadline: float) -> dict[str, dict]:
-    raw = git(repo, deadline, 'worktree', 'list', '--porcelain', '-z')
+def _metadata_file(path: Path, deadline: float, *, text: bool = False) -> tuple:
+    """Read metadata only through literal, no-follow parents and regular files."""
+    check(deadline)
+    try:
+        with directory(path.parent, deadline) as parent:
+            fd = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
+            try:
+                observed = os.fstat(fd)
+                if not stat.S_ISREG(observed.st_mode) or observed.st_nlink != 1:
+                    raise Retain('unknown_metadata_type_or_hardlink')
+                raw = os.read(fd, 65537 if text else 1)
+                if text and (len(raw) > 65536 or len(raw) != observed.st_size or b'\0' in raw):
+                    raise Retain('unknown_metadata_text')
+                if signature(os.fstat(fd)) != signature(observed):
+                    raise Retain('metadata_changed_during_read')
+                check(deadline)
+                return signature(observed), raw.decode('utf-8', errors='strict') if text else None
+            finally:
+                os.close(fd)
+    except Expired:
+        raise
+    except Exception as exc:
+        raise Retain(f'unknown_git_metadata:{path}: {exc}') from exc
+
+
+def _registration_metadata(repo: Path, deadline: float) -> tuple[dict[str, Path], dict]:
+    """Complete linked-admin census, including Git's reciprocal pointers.
+
+    Git silently omits unreadable/missing gitdir records, so its exit0/list is
+    never the census. No aliased entry, pointer or ancestor is read by Git.
+    The stamp binds observations across Git reads and final action gates.
+    """
+    common, stamp, linked = repo / '.git', {}, {}
+    admin = common / 'worktrees'
+    try:
+        absent = False
+        with directory(common, deadline) as fd:
+            stamp[str(common)] = signature(os.fstat(fd))
+            # A primary common directory must not itself redirect Git.
+            for name in ('commondir', 'gitdir'):
+                if os.path.lexists(common / name):
+                    raise Retain(f'unexpected_primary_pointer:{common / name}')
+            try:
+                os.stat('worktrees', dir_fd=fd, follow_symlinks=False)
+            except FileNotFoundError:
+                stamp[str(admin)] = None
+                absent = True
+        tree = {} if absent else snapshot(admin, deadline)
+        for relative, observed in tree.items():
+            check(deadline)
+            path = admin / relative
+            if stat.S_ISDIR(observed.st_mode):
+                stamp[str(path)] = signature(observed)
+            elif stat.S_ISREG(observed.st_mode):
+                seen, _ = _metadata_file(path, deadline)
+                if seen != signature(observed):
+                    raise Retain(f'metadata_changed:{path}')
+                stamp[str(path)] = seen
+            else:
+                raise Retain(f'aliased_or_special_metadata:{path}')
+        entries = []
+        if not absent:
+            with directory(admin, deadline) as fd:
+                entries = names(fd, deadline)
+        for name in entries:
+            check(deadline)
+            entry = admin / name
+            with directory(entry, deadline):
+                pass
+            _, gitdir = _metadata_file(entry / 'gitdir', deadline, text=True)
+            _, commondir = _metadata_file(entry / 'commondir', deadline, text=True)
+            _, head = _metadata_file(entry / 'HEAD', deadline, text=True)
+            # Canonical absolute backlinks, and Git's ordinary ../.. common
+            # pointer (or its exact absolute equivalent); no alias/.. spelling.
+            gitdir = gitdir.removesuffix('\n')
+            if not gitdir or gitdir != os.path.abspath(gitdir) or Path(gitdir).name != '.git':
+                raise Retain(f'malformed_gitdir:{entry / "gitdir"}')
+            path = Path(gitdir).parent
+            if str(path) in linked or path == repo:
+                raise Retain(f'conflicting_gitdir:{entry / "gitdir"}')
+            if commondir not in ('../..\n', str(common) + '\n'):
+                raise Retain(f'redirected_commondir:{entry / "commondir"}')
+            if not (re.fullmatch(r'(?:[0-9a-f]{40}|[0-9a-f]{64})\n', head) or re.fullmatch(r'ref: refs/[^\s]+\n', head)):
+                raise Retain(f'malformed_head:{entry / "HEAD"}')
+            with directory(path, deadline) as fd:
+                stamp[str(path)] = identity(os.fstat(fd))
+            seen, backlink = _metadata_file(Path(gitdir), deadline, text=True)
+            if backlink != 'gitdir: ' + str(entry) + '\n':
+                raise Retain(f'conflicting_worktree_backlink:{gitdir}')
+            stamp[gitdir] = seen
+            linked[str(path)] = entry
+        # A missing admin ENTRY is also invisible to Git. Reconcile literal
+        # task worktree roots so their surviving backlinks cannot disappear
+        # from the inventory. Never scan arbitrary repository children.
+        prefix = repo / '.claude/worktrees'
+        try:
+            with directory(repo / '.claude', deadline) as fd:
+                try:
+                    os.stat('worktrees', dir_fd=fd, follow_symlinks=False)
+                except FileNotFoundError:
+                    return linked, stamp
+        except FileNotFoundError:
+            return linked, stamp
+        with directory(prefix, deadline) as fd:
+            stamp[str(prefix)] = signature(os.fstat(fd))
+            roots = names(fd, deadline)
+        for name in roots:
+            check(deadline)
+            if TASK.fullmatch(name):
+                path = prefix / name
+                if str(path) not in linked:
+                    raise Retain(f'unknown_unregistered_task_worktree:{path}')
+        return linked, stamp
+    except Expired:
+        raise
+    except Exception as exc:
+        raise _RegistrationUnknown(f'unknown_git_registrations:{admin}: {exc}') from exc
+
+
+def registrations(repo: Path, deadline: float, *, metadata: dict | None = None) -> dict[str, dict]:
+    linked, before = _registration_metadata(repo, deadline)
+    try:
+        raw = git(repo, deadline, 'worktree', 'list', '--porcelain', '-z')
+    except (Retain, UnicodeError) as exc:
+        raise _RegistrationUnknown(f'unknown_git_registration_list:{repo}: {exc}') from exc
     result = {}
     for block in raw.strip('\0').split('\0\0'):
         row = {}
@@ -68,8 +198,17 @@ def registrations(repo: Path, deadline: float) -> dict[str, dict]:
             row[key] = value
         path = row.get('worktree')
         if not path or path in result:
-            raise Retain('unknown_git_registration')
+            raise _RegistrationUnknown(f'unknown_git_registration:{repo}')
         result[path] = row
+    if set(result) != {str(repo), *linked}:
+        raise _RegistrationUnknown(f'unknown_git_registration_inventory:{repo / ".git/worktrees"}')
+    for path in linked:
+        if not re.fullmatch(r'(?:[0-9a-f]{40}|[0-9a-f]{64})', result[path].get('HEAD', '')) or set(result[path]['HEAD']) == {'0'}:
+            raise _RegistrationUnknown(f'unknown_git_registration_head:{linked[path]}')
+    if _registration_metadata(repo, deadline) != (linked, before):
+        raise _RegistrationUnknown(f'git_metadata_changed_during_inventory:{repo}')
+    if metadata is not None:
+        metadata.update(before)
     return result
 
 
@@ -90,8 +229,27 @@ def read_json(path: Path, deadline: float, limit: int = 65536):
 
 class Evidence:
     """Read-only native task/job/audit records. Never opens Database/schema."""
-    def __init__(self, org: Path, deadline: float):
+    def __init__(self, org: Path, deadline: float, *, writer_id: str | None = None, writing: bool = False):
         self.org, self.deadline = org, deadline
+        self.writer_id, self.writing = writer_id, writing
+
+    def _move_writer(self, conn: sqlite3.Connection) -> None:
+        if not self.writing:
+            return
+        from types import SimpleNamespace
+        from runtime.infrastructure.team_move_store import validate_team_move_schema
+        from runtime.infrastructure.producer_admission import NativeWriterStore
+        # No Database initializer or schema installation in this child. An
+        # installed layout requires the actual parent's still-active global
+        # reservation, not a flag or process-local coordinator in this worker.
+        if not validate_team_move_schema(conn, org_slug=self.org.name):
+            return
+        writer = NativeWriterStore(SimpleNamespace(_conn=conn), self.org.name).history_uncommitted().get(self.writer_id)
+        if (writer is None or writer.publisher != 'disk_sweep' or writer.state != 'active'
+                or writer.agents or writer.teams):
+            raise Retain('team_move_cleanup_owner_unavailable')
+        if conn.execute('SELECT 1 FROM team_move_operations WHERE active_slot=1').fetchone():
+            raise Retain('team_move_native_held')
 
     def ownership(self, path: Path, workspace: Path, task_id: str) -> None:
         check(self.deadline)
@@ -101,6 +259,7 @@ class Evidence:
         conn.set_progress_handler(lambda: int(time.monotonic() >= self.deadline), 1000)
         try:
             conn.execute('BEGIN')
+            self._move_writer(conn)
             tasks = {}
             for row in conn.execute('SELECT id,parent_task_id,status,assigned_agent FROM tasks'):
                 check(self.deadline)
@@ -169,7 +328,8 @@ def _worktree_gate(candidate: dict, deadline: float) -> tuple:
             or guard.get('primary_root') != candidate['repo']):
         raise Retain('unknown_worktree_owner')
     repo = Path(candidate['repo'])
-    row = registrations(repo, deadline).get(str(path))
+    metadata = {}
+    row = registrations(repo, deadline, metadata=metadata).get(str(path))
     if row is None or 'locked' in row or 'prunable' in row:
         raise Retain('git_unregistered_locked_or_prunable')
     branch = row.get('branch')
@@ -187,7 +347,7 @@ def _worktree_gate(candidate: dict, deadline: float) -> tuple:
         raise Retain('dirty_or_untracked')
     if git(path, deadline, 'rev-list', '-n1', 'HEAD', '--not', '--branches', '--remotes').strip():
         raise Retain('unique_head_commit')
-    return row.get("HEAD"), row.get("branch"), common
+    return row.get("HEAD"), row.get("branch"), common, metadata
 
 def admit(candidate: dict, evidence: Evidence, deadline: float, *, now: float | None = None, repairs: dict | None = None) -> dict:
     """Fresh common gates before each candidate mutation/retry admission."""
@@ -239,47 +399,89 @@ def admit(candidate: dict, evidence: Evidence, deadline: float, *, now: float | 
     with directory(path, deadline) as fd:
         if signature(os.fstat(fd)) != signature(tree['']):
             raise Retain('identity_changed')
+    if candidate['phase'] == 'worktree' and _worktree_gate(candidate, deadline) != git_identity:
+        raise Retain('git_identity_changed_before_action')
     return tree
 
 
-def discover(org: Path, deadline: float):
-    """Discovery completes before stable oldest-first ordering; partial is unknown."""
-    candidates = []
-    workspaces = org / 'workspaces'
-    with directory(workspaces, deadline) as wfd:
-        owners = names(wfd, deadline)
-    for owner in owners:
+@contextmanager
+def _discovery_scope(path: Path, inventory: dict, deadline: float, checkpoint: Callable[[], None], *, missing_ok: bool = False) -> Iterator[None]:
+    """Retain an uncertain literal scope; expiry always unwinds the batch."""
+    try:
         check(deadline)
-        workspace = workspaces / owner
-        with directory(workspace, deadline):
-            pass
-        tmp = workspace / '.happyranch/task-tmp'
-        if tmp.exists() or tmp.is_symlink():
-            with directory(tmp, deadline) as fd:
-                for name in names(fd, deadline):
-                    if TASK.fullmatch(name):
-                        s = os.stat(name, dir_fd=fd, follow_symlinks=False)
-                        candidates.append(dict(phase='scratch', path=str(tmp / name), workspace=str(workspace), oldest=s.st_mtime_ns))
-        repos = workspace / 'repos'
-        if not repos.exists():
-            continue
-        with directory(repos, deadline) as fd:
-            repositories = names(fd, deadline)
-        for name in repositories:
-            repo = repos / name
-            with directory(repo, deadline):
-                pass
-            # A non-Git repository directory is unknown, not an empty inventory.
-            rows = registrations(repo, deadline)
-            prefix = repo / '.claude/worktrees'
-            for literal, row in rows.items():
-                check(deadline)
-                path = Path(literal)
-                if path.parent != prefix or not TASK.fullmatch(path.name):
-                    continue
-                s = path.lstat() if path.exists() or path.is_symlink() else None
-                candidates.append(dict(phase='worktree', path=str(path), workspace=str(workspace), repo=str(repo), oldest=s.st_mtime_ns if s else 0))
-    return sorted(candidates, key=lambda c: (c['phase'] != 'scratch', c['oldest'], c['path']))
+        yield
+    except Expired as exc:
+        # Nested scopes unwind; retain the narrowest interrupted path once.
+        if not inventory['discovery_scopes'] or not inventory['discovery_scopes'][-1].get('interrupted'):
+            inventory['discovery_scopes'].append(dict(path=str(path), reason=str(exc), candidate_count=None, interrupted=True))
+        raise
+    except FileNotFoundError as exc:
+        if not missing_ok:
+            inventory['discovery_scopes'].append(dict(path=str(path), reason=str(exc), candidate_count=None))
+    except Exception as exc:
+        inventory['discovery_scopes'].append(dict(path=str(path), reason=str(exc) or type(exc).__name__, candidate_count=None))
+    finally:
+        try:
+            checkpoint()
+        except Exception as exc:
+            raise Expired('discovery checkpoint failed; global stop: ' + str(exc)) from exc
+
+
+def discover(org: Path, deadline: float, *, inventory: dict | None = None, checkpoint: Callable[[], None] = lambda: None) -> list[dict]:
+    """Stable ordering of known candidates; uncertain scopes are never empty."""
+    inventory = inventory if inventory is not None else {}
+    inventory.update(candidates=[], discovery_scopes=[], discovery='unknown', discovery_root=str(org / 'workspaces'))
+    candidates = inventory['candidates']
+    workspaces = org / 'workspaces'
+    with _discovery_scope(workspaces, inventory, deadline, checkpoint):
+        with directory(workspaces, deadline) as wfd:
+            owners = names(wfd, deadline)
+        for owner in owners:
+            workspace = workspaces / owner
+            with _discovery_scope(workspace, inventory, deadline, checkpoint):
+                with directory(workspace, deadline):
+                    pass
+                tmp = workspace / '.happyranch/task-tmp'
+                with _discovery_scope(tmp, inventory, deadline, checkpoint, missing_ok=True):
+                    with directory(tmp, deadline) as fd:
+                        for name in names(fd, deadline):
+                            if TASK.fullmatch(name):
+                                with _discovery_scope(tmp / name, inventory, deadline, checkpoint):
+                                    s = os.stat(name, dir_fd=fd, follow_symlinks=False)
+                                    candidates.append(dict(phase='scratch', path=str(tmp / name), workspace=str(workspace), oldest=s.st_mtime_ns, state='unreached'))
+                repos = workspace / 'repos'
+                with _discovery_scope(repos, inventory, deadline, checkpoint, missing_ok=True):
+                    with directory(repos, deadline) as fd:
+                        repositories = names(fd, deadline)
+                    for name in repositories:
+                        repo = repos / name
+                        with _discovery_scope(repo, inventory, deadline, checkpoint):
+                            with directory(repo, deadline):
+                                pass
+                            # Never walk arbitrary children or let Git find an
+                            # ancestor repository. Only literal primary .git.
+                            with directory(repo / '.git', deadline):
+                                pass
+                            rows = registrations(repo, deadline)
+                            if str(repo) not in rows:
+                                raise Retain('unknown_git_primary_registration')
+                            prefix = repo / '.claude/worktrees'
+                            for literal in rows:
+                                check(deadline)
+                                path = Path(literal)
+                                if path.parent != prefix or not TASK.fullmatch(path.name):
+                                    continue
+                                with _discovery_scope(path, inventory, deadline, checkpoint):
+                                    with directory(path.parent, deadline) as fd:
+                                        try:
+                                            s = os.stat(path.name, dir_fd=fd, follow_symlinks=False)
+                                        except FileNotFoundError:
+                                            s = None
+                                    candidates.append(dict(phase='worktree', path=str(path), workspace=str(workspace), repo=str(repo), oldest=s.st_mtime_ns if s else 0, state='unreached'))
+    check(deadline)
+    candidates.sort(key=lambda c: (c['phase'] != 'scratch', c['oldest'], c['path']))
+    inventory['discovery'] = 'partial' if inventory['discovery_scopes'] else 'complete'
+    return candidates
 
 
 def atomic_json(path: Path, value: dict) -> None:
@@ -304,23 +506,34 @@ def _summarize_org(result: dict) -> None:
     result['known_eligible_leftovers'] = [c['path'] for c in candidates if c.get('state') == 'eligible']
     for phase, values in result.get('phases', {}).items():
         values['attribution_unknown'] = any(c.get('state') in ('mutation_in_flight', 'partial_or_unknown') for c in candidates if c['phase'] == phase)
+    result['known_candidate_count'] = len(candidates)
+    result['known_unreached_count'] = sum(c.get('state') == 'unreached' for c in candidates)
+    # A known subset count must never stand in for an uncertain total.
+    result['unreached'] = result['known_unreached_count'] if result.get('discovery') == 'complete' else None
     result['unknown_scope'] = {
+        'discovery_scopes': result.get('discovery_scopes', []),
+        'unfinished_discovery_root': result.get('discovery_root') if result.get('discovery') == 'unknown' else None,
         'discovery': result.get('discovery', 'unknown'), 'unreached': result.get('unreached'),
         'inspecting': [c['path'] for c in candidates if c.get('state') == 'inspecting'],
         'partial_mutation': [c['path'] for c in candidates if c.get('state') in ('mutation_in_flight', 'partial_or_unknown')],
     }
 
 
-def sweep_org(org: Path, deadline: float, *, mode: str, checkpoint=lambda: None, now: float | None = None, result: dict | None = None, measurement_seen: set | None = None, removal_seen: set | None = None) -> dict:
+def sweep_org(org: Path, deadline: float, *, mode: str, checkpoint=lambda: None, now: float | None = None, result: dict | None = None, measurement_seen: set | None = None, removal_seen: set | None = None, writer_id: str | None = None) -> dict:
     result = result if result is not None else {}
     result.update(org=org.name, mode=mode, outcome='incomplete', discovery='unknown', candidates=[], unreached=None,
                   phases={p: dict(measured_allocated_bytes=0, removed_attributable_bytes=0, attribution_unknown=False) for p in ('scratch', 'worktree')})
     if mode == 'off':
         result.update(outcome='off', discovery='not_performed')
         return result
-    evidence = Evidence(org, deadline)
+    def report_checkpoint() -> None:
+        _summarize_org(result)
+        checkpoint()
+
+    evidence = Evidence(org, deadline, writer_id=writer_id, writing=mode == 'on')
     measured_inodes = measurement_seen if measurement_seen is not None else set()
     removed_inodes = removal_seen if removal_seen is not None else set()
+    uncertain_repos = set()
 
     def on_config():
         from runtime.orchestrator.org_config import load_org_config
@@ -328,24 +541,23 @@ def sweep_org(org: Path, deadline: float, *, mode: str, checkpoint=lambda: None,
         if load_org_config(OrgPaths(org)).disk_sweep_mode != 'on':
             raise Retain('configuration_no_longer_on')
     try:
-        candidates = discover(org, deadline)
-        result.update(discovery='complete', unreached=len(candidates))
-        checkpoint()
+        candidates = discover(org, deadline, inventory=result, checkpoint=report_checkpoint)
+        report_checkpoint()
         for candidate in candidates:
             check(deadline)
-            result['candidates'].append(candidate)
-            result['unreached'] -= 1
             candidate['state'] = 'inspecting'
-            checkpoint()
+            report_checkpoint()
             phase = result['phases'][candidate['phase']]
             mutation_started = False
             try:
+                if candidate.get('repo') in uncertain_repos:
+                    raise _RegistrationUnknown('unknown_repository_registration_scope')
                 tree = admit(candidate, evidence, deadline, now=now)
                 amount, _ = allocated(tree, measured_inodes)
                 phase['measured_allocated_bytes'] += amount
                 candidate['allocated_bytes'] = amount
                 candidate['state'] = 'eligible'
-                checkpoint()
+                report_checkpoint()
                 if mode != 'on':
                     continue
                 # The entire admission is repeated immediately before mutation;
@@ -354,17 +566,21 @@ def sweep_org(org: Path, deadline: float, *, mode: str, checkpoint=lambda: None,
                 # writing a large summary cannot stale mutation admission.
                 candidate['state'] = 'mutation_in_flight'
                 phase['attribution_unknown'] = True
-                checkpoint()
+                report_checkpoint()
                 on_config()
                 fresh = admit(candidate, evidence, deadline, now=now)
                 on_config()
                 if {k: signature(v) for k, v in tree.items()} != {k: signature(v) for k, v in fresh.items()}:
                     raise Retain('tree_changed_before_mutation')
-                mutation_started = True
                 if candidate['phase'] == 'scratch':
+                    mutation_started = True
                     mutate(Path(candidate['path']), fresh, deadline, remove=True)
                 else:
                     repo, path = Path(candidate['repo']), Path(candidate['path'])
+                    # Last local metadata check after config/tree comparisons;
+                    # Git must never consume a known redirected registration.
+                    registrations(repo, deadline)
+                    mutation_started = True
                     try:
                         git(repo, deadline, 'worktree', 'remove', str(path))
                     except Retain as exc:
@@ -376,9 +592,11 @@ def sweep_org(org: Path, deadline: float, *, mode: str, checkpoint=lambda: None,
                         on_config()
                         retry_tree = admit(candidate, evidence, deadline, now=now)
                         on_config()
+                        registrations(repo, deadline)
                         repairs = mutate(path, retry_tree, deadline, remove=False)
                         admit(candidate, evidence, deadline, now=now, repairs=repairs)
                         on_config()
+                        registrations(repo, deadline)
                         candidate['retry_count'] = 1
                         git(repo, deadline, 'worktree', 'remove', str(path))
                     if str(path) in registrations(repo, deadline):
@@ -393,37 +611,53 @@ def sweep_org(org: Path, deadline: float, *, mode: str, checkpoint=lambda: None,
             except Expired:
                 raise
             except Exception as exc:
+                if isinstance(exc, _RegistrationUnknown):
+                    repo = candidate['repo']
+                    if repo not in uncertain_repos:
+                        result['discovery_scopes'].append(dict(path=repo, reason=str(exc), candidate_count=None))
+                        uncertain_repos.add(repo)
+                    result['discovery'] = 'partial'
                 if mutation_started:
                     candidate['state'] = 'partial_or_unknown'
                 else:
                     candidate['state'] = 'retained'
                 candidate['reason'] = str(exc) or type(exc).__name__
-            checkpoint()
-        result['outcome'] = 'error' if any(c['state'] == 'partial_or_unknown' for c in result['candidates']) else 'complete'
+            report_checkpoint()
+        result['outcome'] = ('error' if any(c['state'] == 'partial_or_unknown' for c in candidates)
+                             else 'complete' if result['discovery'] == 'complete' else 'incomplete')
         # Git prune has repo-wide scope, with no exact-entry option. Never
         # prune if ANY missing/prunable/unknown registration could be affected.
         # No reclaimed-byte claim is made for registration maintenance.
-        if mode == 'on':
+        if mode == 'on' and result['discovery'] == 'complete':
             for repo in sorted({c['repo'] for c in candidates if 'repo' in c}):
-                rows = registrations(Path(repo), deadline)
+                try:
+                    on_config()
+                    rows = registrations(Path(repo), deadline)
+                except _RegistrationUnknown as exc:
+                    result['discovery_scopes'].append(dict(path=repo, reason=str(exc), candidate_count=None))
+                    result.update(discovery='partial', outcome='incomplete')
+                    break
                 # There is no path-selective Git prune. Only run its harmless
                 # empty-admin form; ANY linked/unrelated/unknown record keeps
                 # the whole repository's prune scope untouched.
-                common = Path(git(Path(repo), deadline, 'rev-parse', '--path-format=absolute', '--git-common-dir').strip())
-                admin = common / 'worktrees'
-                with directory(common, deadline):
-                    pass
-                admin_empty = not os.path.lexists(admin)
-                if not admin_empty:
-                    with directory(admin, deadline) as fd:
-                        admin_empty = not names(fd, deadline)
-                if set(rows) != {repo} or not admin_empty:
+                # The reconciled no-follow census proves there are no admin
+                # entries as well as no linked rows when only primary remains.
+                if set(rows) != {repo}:
                     result.setdefault('prune_retained', []).append(repo)
                     continue
+                # Prune also writes agent repository metadata; primary-only
+                # registration does not waive native move writer ownership.
+                with closing(sqlite3.connect((org / 'happyranch.db').as_uri() + '?mode=ro', uri=True, timeout=.1)) as conn:
+                    conn.row_factory = sqlite3.Row
+                    conn.set_progress_handler(lambda: int(time.monotonic() >= deadline), 1000)
+                    conn.execute('BEGIN')
+                    evidence._move_writer(conn)
+                    check(deadline)
                 git(Path(repo), deadline, 'worktree', 'prune', '--expire=now')
     except Expired as exc:
         result.update(outcome='incomplete', error=str(exc))
-        checkpoint()
+        result['candidates'].sort(key=lambda c: (c['phase'] != 'scratch', c['oldest'], c['path']))
+        report_checkpoint()
         raise
     except Exception as exc:
         result.update(outcome='incomplete', error=str(exc) or type(exc).__name__)
@@ -432,7 +666,7 @@ def sweep_org(org: Path, deadline: float, *, mode: str, checkpoint=lambda: None,
     return result
 
 
-def sweep(roots: list[str], deadline: float, summary: Path, *, dry_run: bool, scheduled_date: str | None, revision: str, started_monotonic: float | None = None, runtime_root: Path | None = None) -> dict:
+def sweep(roots: list[str], deadline: float, summary: Path, *, dry_run: bool, scheduled_date: str | None, revision: str, started_monotonic: float | None = None, runtime_root: Path | None = None, native_writers: dict[str, str] | None = None) -> dict:
     from runtime.orchestrator.org_config import load_org_config
     from runtime.orchestrator._paths import OrgPaths
     report = dict(format='disk-sweep@1', revision=revision, scheduled_date=scheduled_date,
@@ -470,7 +704,8 @@ def sweep(roots: list[str], deadline: float, summary: Path, *, dry_run: bool, sc
                 item['config_sha256'] = hashlib.sha256(config_path.read_bytes() if config_path.exists() else b'').hexdigest()
                 item['configured_mode'] = cfg.disk_sweep_mode
                 mode = 'off' if cfg.disk_sweep_mode == 'off' else 'dry_run' if dry_run else cfg.disk_sweep_mode
-                sweep_org(Path(root), deadline, mode=mode, checkpoint=checkpoint, result=item, measurement_seen=measurement_seen, removal_seen=removal_seen)
+                sweep_org(Path(root), deadline, mode=mode, checkpoint=checkpoint, result=item, measurement_seen=measurement_seen, removal_seen=removal_seen,
+                          writer_id=(native_writers or {}).get(root))
             except Expired:
                 raise
             except Exception as exc:
@@ -490,7 +725,7 @@ def sweep(roots: list[str], deadline: float, summary: Path, *, dry_run: bool, sc
     return report
 
 
-async def run_worker(roots: list[str], summary: Path, *, dry_run: bool, scheduled_date: str | None = None, budget: float = BUDGET_SECONDS, runtime_root: Path | None = None) -> dict:
+async def run_worker(roots: list[str], summary: Path, *, dry_run: bool, scheduled_date: str | None = None, budget: float = BUDGET_SECONDS, runtime_root: Path | None = None, native_writers: dict[str, str] | None = None) -> dict:
     """Supervise entire process group, including Git, until stopped/reaped.
 
     SIGKILL at the shared deadline (no deletion grace/window extension).
@@ -504,6 +739,8 @@ async def run_worker(roots: list[str], summary: Path, *, dry_run: bool, schedule
     argv = [sys.executable, '-m', 'runtime.daemon.disk_sweeper', '--worker', '--summary', str(summary), '--deadline', str(deadline), '--started-monotonic', str(started_monotonic), '--revision', revision]
     for root in roots:
         argv += ['--org-root', root]
+    for root, writer_id in sorted((native_writers or {}).items()):
+        argv += ['--native-writer', root, writer_id]
     if runtime_root is not None:
         argv += ['--runtime-root', str(runtime_root)]
     if dry_run:
@@ -569,6 +806,49 @@ async def run_worker(roots: list[str], summary: Path, *, dry_run: bool, schedule
     return report
 
 
+async def _run_scheduled_worker(state, summary: Path, date: str) -> dict:
+    from runtime.orchestrator.producer_move import native_writer
+    from runtime.orchestrator.team_move import DeferredTeamMove
+    deadline = time.monotonic() + BUDGET_SECONDS
+    # Reservations span filesystem/process work; their short gate/transaction
+    # does not. Retain active evidence on process loss; D reads the same history.
+    with ExitStack() as stack:
+        roots, writers, dispositions, deferred = [], {}, {}, {}
+        for slug, org in sorted(state.orgs.items()):
+            check(deadline)
+            try:
+                disposition = stack.enter_context(native_writer(org.db, publisher='disk_sweep'))
+            except DeferredTeamMove as exc:
+                deferred[slug] = exc.code
+                continue
+            root = str(org.root)
+            roots.append(root)
+            dispositions[slug] = disposition
+            if disposition.writer_id is not None:
+                writers[root] = disposition.writer_id
+        # Any unexpected unwind, missing report or interrupted worker remains
+        # unknown. Only affirmative complete native closure below may settle.
+        for disposition in dispositions.values():
+            disposition.uncertain = True
+        check(deadline)
+        report = await run_worker(roots, summary, dry_run=False, scheduled_date=date,
+                                  native_writers=writers, budget=deadline - time.monotonic())
+        for slug, disposition in dispositions.items():
+            items = [item for item in report.get('orgs', []) if item.get('org') == slug]
+            if (len(items) == 1
+                    and (items[0].get('mode') in ('dry_run', 'off')
+                         or items[0].get('outcome') == 'complete')
+                    and not report.get('interruption')
+                    and report.get('worker_group_stop')
+                    and not any(c.get('state') in ('mutation_in_flight', 'partial_or_unknown')
+                                for c in items[0].get('candidates', []))):
+                disposition.uncertain = False
+        if deferred:
+            report.update(outcome='incomplete', move_deferred_orgs=deferred)
+            await asyncio.to_thread(atomic_json, summary, report)
+        return report
+
+
 def _revision() -> str:
     # Build/source identity without running Git on the event loop. Hash the
     # actual executing modules, works in installed wheels too (no .git needed).
@@ -610,11 +890,10 @@ async def disk_sweeper_loop(state) -> None:
         try:
             if not await asyncio.to_thread(reserve):
                 continue
-            roots = [str(org.root) for _, org in sorted(state.orgs.items())]
             summary = data / f'{date}.json'
             cancelled = None
             try:
-                report = await run_worker(roots, summary, dry_run=False, scheduled_date=date)
+                report = await _run_scheduled_worker(state, summary, date)
             except asyncio.CancelledError as exc:
                 report = getattr(exc, 'disk_sweep_report', None)
                 if report is None:
@@ -647,6 +926,7 @@ def _audit_payload(report: dict, item: dict | None, summary: Path) -> dict:
         'budget_seconds': report.get('budget_seconds'), 'outcome': report.get('outcome'),
         'org': item, 'unreached_orgs': report.get('unreached_orgs'),
         'interruption': report.get('interruption'),
+        'move_deferred_orgs': report.get('move_deferred_orgs'),
         'low_disk_below_20_percent': report.get('low_disk_below_20_percent'),
     }
 
@@ -686,11 +966,13 @@ def main() -> int:
     parser.add_argument('--revision', help=argparse.SUPPRESS)
     parser.add_argument('--started-monotonic', type=float, help=argparse.SUPPRESS)
     parser.add_argument('--scheduled-date', help=argparse.SUPPRESS)
+    parser.add_argument('--native-writer', nargs=2, action='append', default=[], help=argparse.SUPPRESS)
     args = parser.parse_args()
     if args.worker:
         if args.summary is None or args.deadline is None:
             parser.error('worker requires deadline and summary')
-        report = sweep(args.org_root, args.deadline, args.summary, dry_run=args.dry_run, scheduled_date=args.scheduled_date, revision=args.revision, started_monotonic=args.started_monotonic, runtime_root=args.runtime_root)
+        report = sweep(args.org_root, args.deadline, args.summary, dry_run=args.dry_run, scheduled_date=args.scheduled_date, revision=args.revision, started_monotonic=args.started_monotonic, runtime_root=args.runtime_root,
+                       native_writers=dict(args.native_writer))
     else:
         if not args.dry_run or args.runtime_root is None:
             parser.error('manual use requires --dry-run --runtime-root ABSOLUTE_RUNTIME')

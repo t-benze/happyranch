@@ -173,6 +173,7 @@ class Orchestrator:
         from runtime.orchestrator.team_move import TeamMoveCoordinator
         self._team_moves = TeamMoveCoordinator.for_org(TeamMoveStore(db, slug))
         self._team_moves.bind_teams(lambda: self._teams)
+        self._team_moves.producers.root = paths.root
         # THR-181 Track A: deterministic injectable evaluator seam. The daemon
         # wires the production subprocess evaluator; CI wires the strict fake.
         # None disables evaluation (the hook fails closed to ESCALATE), which
@@ -227,6 +228,7 @@ class Orchestrator:
         completion endpoint rejects every callback as `unknown_session` (409)
         and the task fails silently with note="agent session failed"."""
         self._sessions = tracker
+        self._team_moves.producers.sessions = tracker
 
     def attach_host_supervisor(self, supervisor) -> None:
         """Daemon boot wires the daemon-wide HostSessionSupervisor (THR-207
@@ -913,7 +915,7 @@ class Orchestrator:
         # A recovery has a new daemon invocation identity.  The provider's
         # opaque conversation identity is deliberately passed separately.
         session_id = runtime_session_id or self._build_session_id()
-        from runtime.orchestrator.task_pause import current_invocation
+        from runtime.orchestrator.task_pause import current_invocation, task_preparation_effects
         pause_invocation = current_invocation()
         if pause_invocation is not None:
             session_id = pause_invocation.session_id
@@ -962,14 +964,15 @@ class Orchestrator:
             WorkspaceIntegrityError as _IntegrityError,
         )
         try:
-            validate_workspace_skills_integrity(
-                workspace,
-                expected_specs,
-                settings=self._settings,
-                db=self.db,
-                agent_name=agent_name,
-                task_id=task_id,
-            )
+            with task_preparation_effects():
+                validate_workspace_skills_integrity(
+                    workspace,
+                    expected_specs,
+                    settings=self._settings,
+                    db=self.db,
+                    agent_name=agent_name,
+                    task_id=task_id,
+                )
         except _IntegrityError:
             from runtime.orchestrator.run_step import _capture_root_worktree_transition, _RootWorktreeTransitions, _root_worktree_batch
             root_transitions = _RootWorktreeTransitions()
@@ -1047,14 +1050,15 @@ class Orchestrator:
                     )
 
         def _pre_launch_integrity_validator() -> None:
-            validate_workspace_skills_integrity(
-                workspace,
-                expected_specs,
-                settings=self._settings,
-                db=self.db,
-                agent_name=agent_name,
-                task_id=task_id,
-            )
+            with task_preparation_effects():
+                validate_workspace_skills_integrity(
+                    workspace,
+                    expected_specs,
+                    settings=self._settings,
+                    db=self.db,
+                    agent_name=agent_name,
+                    task_id=task_id,
+                )
             adapter_error = getattr(executor, "verify_launch_ready", lambda: None)()
             if adapter_error:
                 raise RuntimeError(adapter_error)
@@ -1139,11 +1143,12 @@ class Orchestrator:
 
         # THR-109: resolve inherited task attachments and materialize them
         # into the per-session attachment directory.
-        attachments_block = self._materialize_task_attachments(
-            workspace=workspace,
-            task_id=task_id,
-            session_id=session_id,
-        )
+        with task_preparation_effects():
+            attachments_block = self._materialize_task_attachments(
+                workspace=workspace,
+                task_id=task_id,
+                session_id=session_id,
+            )
 
         from runtime.orchestrator.active_authority_policy import (
             assert_no_reserved_team_policy_header,
@@ -1962,16 +1967,28 @@ def _cleanup_session_attachments(workspace: Path, session_id: str) -> None:
 
     This is a regenerable cache — bytes of record live in the
     task-attachment private store. Safe/idempotent for missing dirs
-    and errors. Only removes the exact session's attachment dir,
+    and errors; failed cleanup retains the native task owner. Only removes
+    the exact session's attachment dir,
     never the workspace itself, shared artifacts, or source private
     store bytes.
     """
     session_dir = workspace / ".happyranch" / "attachments" / session_id
-    if not session_dir.exists():
-        return
+    from runtime.orchestrator.task_pause import task_preparation_effects
     try:
-        import shutil
-        shutil.rmtree(session_dir)
+        # ENOENT is affirmative no-effect/compensation evidence. exists(false)
+        # could instead hide an inspection error or a dangling entry.
+        with task_preparation_effects():
+            try:
+                session_dir.lstat()
+            except FileNotFoundError:
+                return
+            import shutil
+            shutil.rmtree(session_dir)
+            try:
+                session_dir.lstat()
+            except FileNotFoundError:
+                return
+            raise OSError("session attachment cleanup did not remove the entry")
     except Exception:
         logging.getLogger(__name__).warning(
             "Failed to clean up session attachments dir: %s",

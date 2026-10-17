@@ -1,24 +1,26 @@
-"""Org-owned task/thread preparation and launch exclusion; apply remains unavailable.
+"""Org-owned preparation and launch exclusion for the integrated move source.
 
-C3/D still own other claims, whole-operation census, release and recovery.
+Private decision, release and recovery live in team_move_operation. The daemon
+service checks actual native prerequisites before advertising or executing work.
 No optional schema is installed here; absent-layout ordinary tasks remain valid.
 """
 from __future__ import annotations
 
 import json
+import re
+import sqlite3
 import threading
 from contextvars import ContextVar
 from dataclasses import dataclass
-from typing import Any, Callable, Literal
+from typing import Any, Callable
 
 from runtime.infrastructure.team_move_store import MoveRequest, Phase, TeamMoveError, TeamMoveStore, validate_team_move_schema, _decode
 
 _task_tail: ContextVar[list | None] = ContextVar("team_move_task_tail", default=None)
 
 CAPABILITY_VERSION = 1
-APPLY_AVAILABLE = False
-NOT_INTEGRATED = ("other_producers_writers",
-                  "canonical_context_publication_recovery", "startup_launcher_downgrade")
+APPLY_AVAILABLE = True
+NOT_INTEGRATED: tuple[str, ...] = ()
 
 # Required D completion readback; labels are a contract, never Boolean proofs.
 COMPLETION_REQUIREMENTS = (
@@ -58,7 +60,9 @@ class AdmissionProjection:
     state_revision: int | None
     phase: str | None
     committed: bool
-    apply_available: Literal[False] = False
+    # Diagnostic admission facts are not runtime readiness. Only the service
+    # projects apply/recovery availability from its actual native owners.
+    source_apply_enabled: bool = APPLY_AVAILABLE
 
 
 class DeferredTeamMove(Exception):
@@ -123,8 +127,8 @@ class TeamMoveCoordinator:
     retries/fallback/terminal host cleanup. A durable hold is not a mutex lease:
     no TTL, timeout or missing PID releases it. Held agents stay outside host
     FIFO; unaffected traffic keeps normal admission. Captured running thread
-    drain is C2-owned and gives no new claim entitlement. Other producer claims
-    and whole-operation recovery remain C3/D-owned.
+    drain is C2-owned and gives no new claim entitlement. Remaining producer/writer claims are C3-owned;
+    whole-operation recovery remains D-owned.
     """
     def __init__(self, store: TeamMoveStore) -> None:
         # Construction is DB-owned, before any producer uses the gate. This
@@ -140,6 +144,8 @@ class TeamMoveCoordinator:
             store.db._team_move_coordinator = self
             from runtime.orchestrator.thread_move import ThreadMoveAdmission
             self.threads = ThreadMoveAdmission(self)
+            from runtime.orchestrator.producer_move import ProducerMoveAdmission
+            self.producers = ProducerMoveAdmission(self)
 
     @classmethod
     def for_org(cls, store: TeamMoveStore) -> TeamMoveCoordinator:
@@ -168,17 +174,65 @@ class TeamMoveCoordinator:
         row = conn.execute("SELECT * FROM team_move_operations WHERE active_slot=1").fetchone()
         return dict(row) if row is not None else None
 
+    def _task_execution_agent_uncommitted(self, task: Any) -> str:
+        """Current execution eligibility, never historical causal attribution."""
+        teams = self._teams_reader() if self._teams_reader is not None else None
+        if teams is None:
+            raise DeferredTeamMove("team_move_task_owner_unavailable")
+        try:
+            manager = teams.executable_manager_for_team(task.team)
+        except KeyError as exc:
+            raise DeferredTeamMove("team_move_task_team_unavailable") from exc
+        agent = task.assigned_agent if task.assigned_agent is not None else manager
+        if not agent or agent not in teams.all_agents():
+            raise DeferredTeamMove("team_move_task_owner_unavailable")
+        return agent
+
     def _task_closure_uncommitted(self, task: Any, request: MoveRequest) -> bool:
         """Complete causal tree, declared chain targets and immutable bindings.
 
+        Retained task team keys are creation attribution, not today's routing.
+        A retired actor needs an existing canonical-ID owner or native result
+        attribution, never just a plausible string. Neither permits execution.
         No LIMIT, logical-ID inference, role files or filesystem work. Unknown
         ownership/JSON refuses; historical task/team attribution is read only.
         """
         db = self.store.db
         affected = set(request.affected_agents)
         teams = self._teams_reader() if self._teams_reader is not None else None
+        if task is None:
+            raise DeferredTeamMove("team_move_task_owner_unavailable")
         pending = [task]
         seen: set[str] = set()
+        related_to_move = False
+        known_agents = set(teams.all_agents()) if teams is not None else set()
+        historical_agents: set[str] | None = None
+
+        def historical_agent(agent: Any) -> str:
+            nonlocal historical_agents
+            if not isinstance(agent, str) or re.fullmatch(r"[a-z0-9_]{1,64}", agent) is None or agent == "founder":
+                raise DeferredTeamMove("team_move_task_owner_unavailable")
+            if agent not in known_agents:
+                if historical_agents is None:
+                    from runtime.identities.schema import validate_names, NamingError
+                    try:
+                        installed = validate_names(db._conn, org_slug=self.store.org_slug)
+                    except (NamingError, sqlite3.DatabaseError) as exc:
+                        raise DeferredTeamMove("team_move_task_historical_identity_unavailable") from exc
+                    historical_agents = {r[0] for r in db._conn.execute(
+                        "SELECT canonical_id FROM identity_name_owners WHERE kind='agent'")} if installed else set()
+                # Old orgs may predate naming. An existing INTEGER result with
+                # its native task/agent/SID is retained identity attribution too.
+                # This proves attribution only, never cleanup or launch rights.
+                if agent not in historical_agents and db._conn.execute(
+                        "SELECT 1 FROM task_results r JOIN tasks t ON t.id=r.task_id "
+                        "WHERE r.agent=? AND typeof(r.id)='integer' AND r.id>0 "
+                        "AND typeof(r.session_id)='text' AND length(r.session_id)>0 "
+                        "AND (t.assigned_agent=r.agent OR t.assigned_agent IS NULL)", (agent,)).fetchone() is None:
+                    raise DeferredTeamMove("team_move_task_historical_identity_unavailable")
+                known_agents.add(agent)
+            return agent
+
         def referenced(value: Any) -> bool:
             if isinstance(value, dict):
                 if any(value.get(key) in affected for key in ("agent", "manager_agent", "principal")
@@ -193,20 +247,25 @@ class TeamMoveCoordinator:
             if current.id in seen:
                 continue
             seen.add(current.id)
-            if current.assigned_agent in affected or current.team == request.source_team:
-                return True
-            if teams is None:
-                raise DeferredTeamMove("team_move_task_owner_unavailable")
-            try:
-                manager = teams.executable_manager_for_team(current.team)
-            except KeyError as exc:
-                raise DeferredTeamMove("team_move_task_team_unavailable") from exc
-            if manager in affected:
-                return True
-            if current.assigned_agent is not None and current.assigned_agent not in teams.all_agents():
-                raise DeferredTeamMove("team_move_task_owner_unavailable")
-            if current.assigned_agent is None and manager is None:
-                raise DeferredTeamMove("team_move_task_owner_unavailable")
+            if not isinstance(current.team, str) or not current.team.strip():
+                raise DeferredTeamMove("team_move_task_team_unavailable")
+            related_to_move |= current.team == request.source_team
+            if current.assigned_agent is not None:
+                related_to_move |= historical_agent(current.assigned_agent) in affected
+            else:
+                # Legacy manager roots did not pin assigned_agent. Preserve
+                # actual recorded participants rather than reassigning history
+                # to whoever manages that team today. A cancelled, never-run
+                # root can legitimately have only its retained team attribution.
+                for result in db._conn.execute("SELECT id,agent,session_id FROM task_results WHERE task_id=?", (current.id,)):
+                    if result["session_id"] == "":
+                        continue  # Native feedback rows are not execution attribution.
+                    if type(result["id"]) is not int or result["id"] <= 0 or not isinstance(result["session_id"], str) or not result["session_id"]:
+                        raise DeferredTeamMove("team_move_task_historical_identity_unavailable")
+                    related_to_move |= historical_agent(result["agent"]) in affected
+                if current.status.value not in {"completed", "failed", "cancelled", "superseded"}:
+                    # Future implicit dispatch still routes via today's owner.
+                    related_to_move |= self._task_execution_agent_uncommitted(current) in affected
             for kind, raw in (("chain", current.active_chain), ("fanout", current.active_fanout)):
                 if raw is not None:
                     try:
@@ -216,19 +275,31 @@ class TeamMoveCoordinator:
                             chain = ChainState.deserialize(raw)
                             if type(chain.step_index) is not int or not 0 <= chain.step_index <= len(chain.legs):
                                 raise ValueError("unknown chain owner")
+                            for leg in chain.legs:
+                                related_to_move |= historical_agent(leg.agent) in affected
                         else:
                             from runtime.orchestrator.fanout import FanoutState
                             fanout = FanoutState.deserialize(raw)
-                            if (not isinstance(fanout.manager_agent, str) or fanout.manager_agent not in teams.all_agents()
+                            if (not isinstance(fanout.manager_agent, str)
                                     or type(fanout.width) is not int or fanout.width != len(fanout.children_ids)
                                     or len(fanout.children_details) != fanout.width):
                                 raise ValueError("unknown fanout owner")
-                    except (ValueError, TypeError, KeyError) as exc:
+                            related_to_move |= historical_agent(fanout.manager_agent) in affected
+                            from runtime.models import FanoutChild
+                            for child_id, detail in zip(fanout.children_ids, fanout.children_details):
+                                declared = FanoutChild.model_validate(detail)
+                                related_to_move |= historical_agent(declared.agent) in affected
+                                for leg in declared.then:
+                                    related_to_move |= historical_agent(leg.agent) in affected
+                                child = db.get_task(child_id)
+                                if child is None or child.parent_task_id != current.id or child.assigned_agent != declared.agent:
+                                    raise ValueError("missing fanout child ownership")
+                                pending.append(child)
+                    except (ValueError, TypeError, KeyError, AttributeError) as exc:
                         raise DeferredTeamMove("team_move_task_graph_unavailable") from exc
                     if not isinstance(data, dict):
                         raise DeferredTeamMove("team_move_task_graph_unavailable")
-                    if referenced(data):
-                        return True
+                    related_to_move |= referenced(data)
             ids = list(db.get_children(current.id))
             ids.extend(db.get_direct_revisits(current.id))
             ids.extend(x for x in (current.parent_task_id, current.revisit_of_task_id) if x)
@@ -245,11 +316,13 @@ class TeamMoveCoordinator:
                     "SELECT task_id FROM workflow_instance_tasks WHERE instance_id=?", (row["id"],)))
                 if linked:
                     try:
-                        if referenced(json.loads(row["binding_bytes"])):
-                            return True
+                        binding = json.loads(row["binding_bytes"])
+                        if not isinstance(binding, dict):
+                            raise ValueError("unknown workflow binding")
+                        related_to_move |= referenced(binding)
                     except (ValueError, TypeError) as exc:
                         raise DeferredTeamMove("team_move_workflow_owner_unavailable") from exc
-        return False
+        return related_to_move
 
     def check_bindings_uncommitted(self, raw: bytes) -> None:
         row = self.active_uncommitted()
@@ -299,13 +372,17 @@ class TeamMoveCoordinator:
         this check and allocation are indivisible with durable reservation.
         """
         row = self.active_uncommitted()
-        if row is not None and self._task_closure_uncommitted(task, _decode(MoveRequest, row["request_bytes"])):
-            raise DeferredTeamMove("team_move_task_held", row["operation_id"])
+        if row is not None:
+            # New allocations need a current executable target. Existing rows
+            # passed here may be historical parents/revisits, not new launches.
+            if self.store.db.get_task(task.id) is None:
+                self._task_execution_agent_uncommitted(task)
+            if self._task_closure_uncommitted(task, _decode(MoveRequest, row["request_bytes"])):
+                raise DeferredTeamMove("team_move_task_held", row["operation_id"])
 
     def reserve_task_uncommitted(self, invocation: Any) -> TaskPreparation:
         self.check_task_uncommitted(invocation.task)
-        teams = self._teams_reader() if self._teams_reader is not None else None
-        if teams is None or not invocation.agent or invocation.agent not in teams.all_agents():
+        if self._task_execution_agent_uncommitted(invocation.task) != invocation.agent:
             raise DeferredTeamMove("team_move_task_identity_unavailable")
         prior = self._reservations.get(invocation.identity)
         if prior is not None:
@@ -327,6 +404,8 @@ class TeamMoveCoordinator:
         task = self.store.db.get_task(reservation.task_id)
         if task is None:
             raise DeferredTeamMove("team_move_task_owner_unavailable")
+        if self._task_execution_agent_uncommitted(task) != reservation.identity.agent_id:
+            raise DeferredTeamMove("team_move_task_identity_unavailable")
         self.check_task_uncommitted(task)
 
     def retry_uncommitted(self, invocation: Any, unknown_owner: str) -> None:
@@ -406,13 +485,15 @@ class TeamMoveCoordinator:
         )
 
     def startup_contract(self) -> dict:
-        """Data only, not an implemented attach/downgrade admission guard."""
+        """Diagnostic projection; actual early guards live in team_move_startup."""
         row = self.store.read()
+        with self.store.db.coherent_read_view() as conn:
+            installed = validate_team_move_schema(conn, org_slug=self.store.org_slug)
         return {
             "capability_version": CAPABILITY_VERSION,
-            "apply_available": APPLY_AVAILABLE,
+            "source_apply_enabled": APPLY_AVAILABLE,
             "not_integrated": NOT_INTEGRATED,
-            "required_reader": "online-team-move@1" if row is not None else None,
+            "required_reader": "online-team-move@3" if installed else None,
             "unresolved_phase": Phase(row["phase"]).value if row is not None else None,
             "startup_requirements": STARTUP_REQUIREMENTS,
             "completion_requirements": COMPLETION_REQUIREMENTS,
