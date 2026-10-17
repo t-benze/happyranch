@@ -91,104 +91,266 @@ tsnet_open() {
 # These helpers serve only the six virtual-removal sites below. A failed nc
 # remains inconclusive: successful SAME-instance Stop independently establishes
 # local listener teardown; a successful negative-phase nc always vetoes it.
+# Bounded private text observation for only Stop binding and same-peer checks.
+# Raw text is transient, capped, and validated before Bash can strip NUL bytes.
+virtual_text() {
+  local cap="$1" result status=0; shift
+  virtual_text_value=""; virtual_text_reason=unavailable
+  result="$(timeout --kill-after=1 5 python - "$failure_capture_driver" "$cap" "$@" 2>/dev/null <<'PY_VIRTUAL_TEXT'
+import importlib.util
+import sys
+import signal
+
+def cancelled(signum, _frame):
+    for item in (signal.SIGHUP, signal.SIGINT, signal.SIGTERM):
+        signal.signal(item, signal.SIG_IGN)
+    raise SystemExit(128 + signum)
+
+for item in (signal.SIGHUP, signal.SIGINT, signal.SIGTERM):
+    signal.signal(item, cancelled)
+
+spec = importlib.util.spec_from_file_location("n3_capture", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+raw, loss = module._bounded_observation(sys.argv[3:], seconds=3, cap=int(sys.argv[2]))
+if loss != "observed":
+    print(loss)
+    raise SystemExit(1)
+try:
+    value = raw.decode("utf-8", "strict")
+    if not value.endswith("\n") or any(not c.isprintable() and c not in "\n\t" for c in value):
+        raise ValueError
+except (ValueError, UnicodeError):
+    print("parse_loss")
+    raise SystemExit(1)
+print("observed")
+sys.stdout.write(value)
+PY_VIRTUAL_TEXT
+)" || status=$?
+  case "$status" in
+    0) [[ "$result" == observed$'\n'* ]] || return 1
+       virtual_text_value="${result#*$'\n'}"; virtual_text_reason=observed ;;
+    124|137) virtual_text_reason=timeout; return 1 ;;
+    *) case "$result" in timeout|query_error|launch_failure|truncated|parse_loss) virtual_text_reason="$result" ;; esac
+       return 1 ;;
+  esac
+}
 bind_stop_instance() {
   local phase="$1" properties checked key value pid="" invocation="" started="" state="" seen="|"
   stop_phase=""; stop_pid=""; stop_invocation=""; stop_since=""; stop_boot=""
   case "$phase" in final|shipping|health_loss|stop_barrier|readiness_loss|shutdown) ;; *) return 1 ;; esac
-  stop_since="$(date -u +%s.%6N)" || return 1
-  [[ "$stop_since" =~ ^[1-9][0-9]{9}\.[0-9]{6}$ ]] || return 1
-  stop_boot="$(cat /proc/sys/kernel/random/boot_id)" || return 1
-  [[ "$stop_boot" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] || return 1
-  properties="$(systemctl show happyranch-tsnet-sidecar.service -p MainPID -p InvocationID -p ExecMainStartTimestampMonotonic -p ActiveState)" || return 1
+  stop_since="$(date -u +%s.%6N)" || { virtual_refuse "$phase" binding unavailable; return 1; }
+  [[ "$stop_since" =~ ^[1-9][0-9]{9}\.[0-9]{6}$ ]] || { virtual_refuse "$phase" binding timestamp_invalid; return 1; }
+  stop_boot="$(cat /proc/sys/kernel/random/boot_id)" || { virtual_refuse "$phase" binding unavailable; return 1; }
+  [[ "$stop_boot" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] || { virtual_refuse "$phase" binding boot_mismatch; return 1; }
+  virtual_text 1024 systemctl show happyranch-tsnet-sidecar.service -p MainPID -p InvocationID -p ExecMainStartTimestampMonotonic -p ActiveState || { virtual_refuse "$phase" binding "$virtual_text_reason"; return 1; }
+  properties="$virtual_text_value"
   while IFS='=' read -r key value; do
-    [[ "$seen" != *"|$key|"* ]] || return 1
+    [[ "$seen" != *"|$key|"* ]] || { virtual_refuse "$phase" binding duplicate_field; return 1; }
     seen="$seen$key|"
     case "$key" in
       MainPID) pid="$value" ;;
       InvocationID) invocation="$value" ;;
       ExecMainStartTimestampMonotonic) started="$value" ;;
       ActiveState) state="$value" ;;
-      *) return 1 ;;
+      *) virtual_refuse "$phase" binding parse_loss; return 1 ;;
     esac
   done <<<"$properties"
-  [[ "$pid" =~ ^[1-9][0-9]{0,9}$ ]] && (( pid > 1 && pid <= 2147483647 )) || return 1
-  [[ "$invocation" =~ ^[0-9a-f]{32}$ && "$invocation" != 00000000000000000000000000000000 ]] || return 1
-  [[ "$started" =~ ^[1-9][0-9]{0,17}$ && "$state" == active ]] || return 1
+  [[ "$pid" =~ ^[1-9][0-9]{0,9}$ ]] && (( pid > 1 && pid <= 2147483647 )) || { virtual_refuse "$phase" binding pid_mismatch; return 1; }
+  [[ "$invocation" =~ ^[0-9a-f]{32}$ && "$invocation" != 00000000000000000000000000000000 ]] || { virtual_refuse "$phase" binding invocation_mismatch; return 1; }
+  [[ "$started" =~ ^[1-9][0-9]{0,17}$ && "$state" == active ]] || { virtual_refuse "$phase" binding changed; return 1; }
   # Recheck the complete tuple before Stop, rather than combining fields from
   # different activations. Journal invocation+boot+time excludes stale/PID reuse.
-  checked="$(systemctl show happyranch-tsnet-sidecar.service -p MainPID -p InvocationID -p ExecMainStartTimestampMonotonic -p ActiveState)" || return 1
-  [[ "$checked" == "$properties" ]] || return 1
+  virtual_text 1024 systemctl show happyranch-tsnet-sidecar.service -p MainPID -p InvocationID -p ExecMainStartTimestampMonotonic -p ActiveState || { virtual_refuse "$phase" binding "$virtual_text_reason"; return 1; }
+  checked="$virtual_text_value"
+  [[ "$checked" == "$properties" ]] || { virtual_refuse "$phase" binding changed; return 1; }
+  virtual_note "$phase" binding observed || return 1
   stop_pid="$pid"; stop_invocation="$invocation"; stop_phase="$phase"
 }
+# Fixed tokens only; at most 64 records of at most 128 bytes (8 KiB) per run.
+# This private log is already covered by the diagnostics-directory upload.
+virtual_note() {
+  local phase="$1" check="$2" reason="$3" line
+  case "$phase" in final|shipping|health_loss|stop_barrier|readiness_loss|shutdown) ;; *) phase=unknown ;; esac
+  case "$check" in binding|sync|journal|mainpid|peer|probe|removal) ;; *) return 1 ;; esac
+  case "$reason" in observed|complete|unavailable|timeout|query_error|launch_failure|truncated|over_cap|parse_loss|duplicate_field|binary_field|cursor_invalid|pid_mismatch|invocation_mismatch|boot_mismatch|timestamp_invalid|receipt_noncanonical|receipt_duplicate|receipt_missing|changed|nonzero|missing|connected|failed|failed_timeout|refused) ;; *) return 1 ;; esac
+  line="n3-virtual:$phase:$check:$reason"
+  printf '%s\n' "$line" >&2
+  (( ${virtual_note_count:-0} < 64 && ${#line} < 128 )) || return 1
+  virtual_note_count=$(( ${virtual_note_count:-0} + 1 ))
+  printf '%s\n' "$line" >>"$diagnostics/virtual-removal.log"
+}
+virtual_refuse() { virtual_note "$1" "$2" "$3" || true; return 1; }
 stop_completed() {
-  local phase="$1" boot result
-  [[ -n "${stop_phase:-}" && "$stop_phase" == "$phase" ]] || return 1
-  boot="$(cat /proc/sys/kernel/random/boot_id)" || return 1
-  [[ "$boot" == "$stop_boot" ]] || return 1
-  # JSON preserves each original MESSAGE and cursor, including binary fields
-  # as arrays. Validate the stream before Bash sees only a closed result.
-  # pipefail checks BOTH journal and decoder even in conditional/EXIT callers.
-  result="$(sudo journalctl -u happyranch-tsnet-sidecar.service --boot="$stop_boot" --since="@$stop_since" _PID="$stop_pid" _SYSTEMD_INVOCATION_ID="$stop_invocation" --no-pager --all -o json --output-fields=MESSAGE,_PID,_SYSTEMD_INVOCATION_ID | python -c '
-import json,sys
+  local phase="$1" boot result status=0 check reason last pending
+  [[ -n "${stop_phase:-}" && "$stop_phase" == "$phase" ]] || { virtual_refuse "$phase" binding missing; return 1; }
+  boot="$(cat /proc/sys/kernel/random/boot_id)" || { virtual_refuse "$phase" binding unavailable; return 1; }
+  [[ "$boot" == "$stop_boot" ]] || { virtual_refuse "$phase" binding boot_mismatch; return 1; }
+  # Reuse the existing bounded private observer: each query owns 3s + 1s
+  # group teardown, stdout+stderr cap, and no raw output enters diagnostics.
+  # The outer 15s + 1s cap also bounds decoder/import failure (three queries).
+  result="$(timeout --kill-after=1 15 python - "$failure_capture_driver" "$stop_pid" "$stop_invocation" "$stop_boot" "$stop_since" 2>/dev/null <<'PY_STOP'
+import importlib.util
+import json
+import sys
+import signal
+
+def cancelled(signum, _frame):
+    for item in (signal.SIGHUP, signal.SIGINT, signal.SIGTERM):
+        signal.signal(item, signal.SIG_IGN)
+    raise SystemExit(128 + signum)
+
+for item in (signal.SIGHUP, signal.SIGINT, signal.SIGTERM):
+    signal.signal(item, cancelled)
+
+spec = importlib.util.spec_from_file_location("n3_capture", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+pid, invocation, boot, since = sys.argv[2:]
+
+def refuse(reason):
+    raise ValueError(reason)
+
+def query(check, argv, cap):
+    raw, loss = module._bounded_observation(argv, seconds=3, cap=cap)
+    if loss != "observed":
+        print(f"{check}:{loss}", flush=True)
+        raise SystemExit(1)
+    return raw
+
 def unique_object(pairs):
     result = {}
     for key, value in pairs:
         if key in result:
-            raise ValueError("duplicate field")
+            refuse("duplicate_field")
         result[key] = value
     return result
-def invalid_constant(value):
-    raise ValueError("invalid JSON constant")
+
 def printable(value):
     if not isinstance(value, str):
         return False
     value.encode("utf-8", "strict")
     return all(character.isprintable() for character in value)
-pid, invocation, boot, since = sys.argv[1:]
-cutoff = int(since.replace(".", ""))
-expected = {f"lifecycle_stop_complete run={pid} invocation={i}" for i in (1, 2)}
-seen, cursors = set(), set()
-for raw in sys.stdin.buffer:
-    if not raw.endswith(b"\n"):
-        raise ValueError("truncated frame")
-    record = json.loads(raw.decode("utf-8", "strict"), object_pairs_hook=unique_object, parse_constant=invalid_constant)
-    if not isinstance(record, dict):
-        raise ValueError("invalid record")
-    message, cursor = record.get("MESSAGE"), record.get("__CURSOR")
-    if not printable(message) or not printable(cursor) or not cursor or cursor in cursors:
-        raise ValueError("invalid message or cursor")
-    cursors.add(cursor)
-    timestamp = record.get("__REALTIME_TIMESTAMP")
-    if (record.get("_PID") != pid or record.get("_SYSTEMD_INVOCATION_ID") != invocation
-            or record.get("_BOOT_ID") != boot.replace("-", "")
-            or not isinstance(timestamp, str) or not timestamp.isascii()
-            or not timestamp.isdecimal() or int(timestamp) < cutoff):
-        raise ValueError("invalid instance context")
-    # Well-formed printable unrelated MESSAGE records are permitted. Any
-    # completion-like record must be one whole canonical, distinct receipt.
-    if "lifecycle_stop_complete" not in message:
-        continue
-    if message not in expected or message in seen:
-        raise ValueError("invalid completion")
-    seen.add(message)
-if seen != expected:
-    raise ValueError("incomplete completion set")
-print("complete")
-' "$stop_pid" "$stop_invocation" "$stop_boot" "$stop_since" 2>/dev/null)" || return 1
-  [[ "$result" == complete ]] || return 1
-  # A new running instance cannot reuse the preceding completed Stop proof.
-  systemctl_absent_value happyranch-tsnet-sidecar.service MainPID 0
+
+# v255 journalctl uses Varlink Synchronize: deferred NORMAL+15 follows queued
+# stdout NORMAL+5. This is acquisition ordering, never receipt/identity proof.
+query("sync", ["sudo", "-n", "journalctl", "--sync"], 1024)
+print("sync:observed", flush=True)
+raw = query("journal", ["sudo", "-n", "journalctl", "-u", "happyranch-tsnet-sidecar.service",
+    "--boot=" + boot, "--since=@" + since, "_PID=" + pid,
+    "_SYSTEMD_INVOCATION_ID=" + invocation, "--no-pager", "--all", "-o", "json",
+    "--output-fields=MESSAGE,_PID,_SYSTEMD_INVOCATION_ID,_BOOT_ID"], 65536)
+try:
+    if raw and not raw.endswith(b"\n"):
+        refuse("truncated")
+    frames = raw.splitlines(keepends=True)
+    if len(frames) > 256 or any(len(frame) > 8192 for frame in frames):
+        refuse("over_cap")
+    cutoff = int(since.replace(".", ""))
+    expected = {f"lifecycle_stop_complete run={pid} invocation={i}" for i in (1, 2)}
+    seen, cursors = set(), set()
+    for frame in frames:
+        if not frame.endswith(b"\n"):
+            refuse("truncated")
+        record = json.loads(frame.decode("utf-8", "strict"), object_pairs_hook=unique_object,
+                            parse_constant=lambda _: refuse("parse_loss"))
+        if not isinstance(record, dict):
+            refuse("parse_loss")
+        # JSON binary/multivalue fields are arrays, not authentic scalar fields.
+        if any(isinstance(value, list) for value in record.values()):
+            refuse("binary_field")
+        message, cursor = record.get("MESSAGE"), record.get("__CURSOR")
+        if not printable(message):
+            refuse("parse_loss")
+        if not printable(cursor) or not cursor or cursor in cursors:
+            refuse("cursor_invalid")
+        cursors.add(cursor)
+        if record.get("_PID") != pid:
+            refuse("pid_mismatch")
+        if record.get("_SYSTEMD_INVOCATION_ID") != invocation:
+            refuse("invocation_mismatch")
+        if record.get("_BOOT_ID") != boot.replace("-", ""):
+            refuse("boot_mismatch")
+        timestamp = record.get("__REALTIME_TIMESTAMP")
+        if (not isinstance(timestamp, str) or not timestamp.isascii()
+                or not timestamp.isdecimal() or len(timestamp) > 20 or int(timestamp) < cutoff):
+            refuse("timestamp_invalid")
+        if "lifecycle_stop_complete" not in message:
+            continue
+        if message not in expected:
+            refuse("receipt_noncanonical")
+        if message in seen:
+            refuse("receipt_duplicate")
+        seen.add(message)
+    if seen != expected:
+        refuse("receipt_missing")
+except (ValueError, UnicodeError, RecursionError) as error:
+    reasons = {"truncated", "over_cap", "duplicate_field", "binary_field", "parse_loss",
+               "cursor_invalid", "pid_mismatch", "invocation_mismatch", "boot_mismatch",
+               "timestamp_invalid", "receipt_noncanonical", "receipt_duplicate", "receipt_missing"}
+    # Never emit decoder exceptions or raw journal content.
+    reason = str(error) if type(error) is ValueError and str(error) in reasons else "parse_loss"
+    print(f"journal:{reason}", flush=True)
+    raise SystemExit(1)
+print("journal:complete", flush=True)
+# A new running instance cannot reuse the preceding completed Stop proof.
+raw = query("mainpid", ["systemctl", "show", "happyranch-tsnet-sidecar.service",
+                       "-p", "MainPID", "--value"], 32)
+if raw != b"0\n":
+    reason = "nonzero" if raw.rstrip(b"\n").isdigit() else "parse_loss"
+    print(f"mainpid:{reason}", flush=True)
+    raise SystemExit(1)
+print("mainpid:observed", flush=True)
+PY_STOP
+)" || status=$?
+  while IFS=: read -r check reason; do
+    [[ -n "$check" ]] || continue
+    virtual_note "$phase" "$check" "$reason" || return 1
+  done <<<"$result"
+  last="${result##*$'\n'}"; pending=""
+  case "$last" in
+    '') pending=sync ;;
+    sync:observed) pending=journal ;;
+    journal:complete) pending=mainpid ;;
+  esac
+  case "$status" in
+    0) [[ "$result" == $'sync:observed\njournal:complete\nmainpid:observed' ]] || { virtual_refuse "$phase" "${pending:-journal}" unavailable; return 1; } ;;
+    124|137) virtual_refuse "$phase" "${pending:-journal}" timeout; return 1 ;;
+    *) [[ -z "$pending" ]] || virtual_refuse "$phase" "$pending" unavailable; return 1 ;;
+  esac
 }
 virtual_removed() {
-  local phase="$1" probe_failed=0
-  # Always retain the real negative attempt when a target exists, even if the
-  # independent receipt acquisition will fail. Missing input is never evidence.
-  if [[ -n "${sidecar_ip:-}" ]]; then
-    tsnet_open || probe_failed=1
+  local phase="$1" probe_status=0 probe_failed=0 refused=0 probe_result
+  # Always perform the real negative attempt when its inputs are available,
+  # even if receipt acquisition will refuse. A successful dial always vetoes.
+  if [[ -z "${sidecar_ip:-}" || ! -x "$ts_dir/tailscale" || ! -S "$work/peer.sock" ]]; then
+    virtual_note "$phase" probe unavailable || refused=1
+  else
+    # The fixed launch marker distinguishes sudo/launch unavailability from
+    # an actual nc attempt. No nc stdout, stderr or identity is retained.
+    probe_result="$(printf 'GET / HTTP/1.0\r\n\r\n' | timeout --kill-after=1 5 sudo -n sh -c '
+      printf attempt
+      exec "$1" --socket="$2" nc "$3" 443 >/dev/null 2>&1
+    ' sh "$ts_dir/tailscale" "$work/peer.sock" "$sidecar_ip" 2>/dev/null)" || probe_status=$?
+    [[ "$probe_result" == attempt ]] || probe_status=125
+    case "$probe_status" in
+      0) virtual_note "$phase" probe connected || refused=1 ;;
+      1) probe_failed=1; virtual_note "$phase" probe failed || refused=1 ;;
+      124) probe_failed=1; virtual_note "$phase" probe failed_timeout || refused=1 ;;
+      *) virtual_note "$phase" probe unavailable || refused=1 ;;
+    esac
   fi
-  stop_completed "$phase" || return 1
-  peer_current || return 1
-  (( probe_failed == 1 ))
+  stop_completed "$phase" || refused=1
+  # Observe the independent peer check even when receipts refused; no later
+  # result overwrites an initiating refusal or independently proves removal.
+  if peer_current; then
+    virtual_note "$phase" peer observed || refused=1
+  else
+    virtual_note "$phase" peer "${virtual_peer_reason:-unavailable}" || true
+    refused=1
+  fi
+  (( refused == 0 && probe_failed == 1 )) || { virtual_refuse "$phase" removal refused; return 1; }
+  virtual_note "$phase" removal complete
 }
 peer_process_identity() {
   [[ "${peer_pid:-}" =~ ^[1-9][0-9]{0,9}$ ]] || return 1
@@ -215,14 +377,43 @@ peer_identity() {
   sudo "$ts_dir/tailscale" --socket="$work/peer.sock" status --json 2>/dev/null | python -c 'import ipaddress,json,sys; d=json.load(sys.stdin); (isinstance(d,dict)) or sys.exit(1); s=d.get("Self"); (d.get("BackendState")=="Running" and isinstance(s,dict) and s.get("HostName")=="synthetic-peer-ci") or sys.exit(1); i=s.get("ID"); (isinstance(i,str) and i and i.isascii() and i.isalnum()) or sys.exit(1); ips=s.get("TailscaleIPs"); (isinstance(ips,list) and ips and all(isinstance(ip,str) and ip for ip in ips)) or sys.exit(1); [ipaddress.ip_address(ip) for ip in ips]; print(i)' 2>/dev/null
 }
 peer_current() {
-  local process identity
-  [[ -n "${peer_started:-}" && -n "${peer_node:-}" ]] || return 1
+  local process identity status=0
+  virtual_peer_reason=unavailable
+  [[ -n "${peer_started:-}" && -n "${peer_node:-}" ]] || { virtual_peer_reason=missing; return 1; }
   process="$(peer_process_identity)" || return 1
-  [[ "$process" == "$peer_started" ]] || return 1
-  identity="$(peer_identity)" || return 1
-  [[ "$identity" == "$peer_node" ]] || return 1
+  [[ "$process" == "$peer_started" ]] || { virtual_peer_reason=changed; return 1; }
+  virtual_text 65536 sudo -n "$ts_dir/tailscale" --socket="$work/peer.sock" status --json || { virtual_peer_reason="$virtual_text_reason"; return 1; }
+  # Preserve the same peer_identity fields and real local API, with bounded
+  # acquisition and closed parse failure rather than suppressed raw errors.
+  identity="$(timeout --kill-after=1 3 python -c '
+import ipaddress,json,sys
+def unique(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError
+        result[key] = value
+    return result
+d = json.load(sys.stdin, object_pairs_hook=unique)
+(isinstance(d,dict)) or sys.exit(1)
+s = d.get("Self")
+(d.get("BackendState")=="Running" and isinstance(s,dict) and s.get("HostName")=="synthetic-peer-ci") or sys.exit(1)
+i = s.get("ID")
+(isinstance(i,str) and i and i.isascii() and i.isalnum()) or sys.exit(1)
+ips = s.get("TailscaleIPs")
+(isinstance(ips,list) and ips and all(isinstance(ip,str) and ip for ip in ips)) or sys.exit(1)
+[ipaddress.ip_address(ip) for ip in ips]
+print(i)
+' <<<"$virtual_text_value" 2>/dev/null)" || status=$?
+  case "$status" in
+    0) ;;
+    124|137) virtual_peer_reason=timeout; return 1 ;;
+    *) virtual_peer_reason=parse_loss; return 1 ;;
+  esac
+  [[ "$identity" == "$peer_node" ]] || { virtual_peer_reason=changed; return 1; }
   process="$(peer_process_identity)" || return 1
-  [[ "$process" == "$peer_started" ]]
+  [[ "$process" == "$peer_started" ]] || { virtual_peer_reason=changed; return 1; }
+  virtual_peer_reason=observed
 }
 peer_inventory_absent() {
   local process
@@ -689,6 +880,8 @@ owned_unit_files_absent() {
 }
 diagnostics="${N3_DIAGNOSTICS_DIR:-$(mktemp -d)}"
 mkdir -p "$diagnostics"
+: >"$diagnostics/virtual-removal.log"
+virtual_note_count=0
 printf 'subject=%s\n' "${PROOF_SUBJECT_SHA:-missing}" >"$diagnostics/bootstrap.txt"
 [[ -n "${PACKAGE_TAR:-}" && -f "$PACKAGE_TAR" ]] || fail "PACKAGE_TAR missing"
 [[ "${PROOF_SUBJECT_SHA:-}" =~ ^[0-9a-f]{40}$ ]] || fail "PROOF_SUBJECT_SHA missing"

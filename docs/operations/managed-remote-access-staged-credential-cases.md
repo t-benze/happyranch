@@ -1,5 +1,11 @@
 # PR800 staged credential and mode cases — THR228seq428
 
+Current bounded correction: THR228seq514 / sole delivery root TASK11746,
+local maker TASK11757. The historical sections below retain their original
+scope; their statements of remaining seq498 allocation are now superseded by
+its terminal 3/3 FAILED closeout. Only the final section describes the new
+0/2 cycle and first local candidate. No maker publication or execution follows.
+
 Authority: sole root TASK10989, direct maker TASK10991. These are finite source
 case records, not executable tests or execution evidence. Every row supplies
 four answers: affected behavior, actual production seam, expected outcome and
@@ -188,7 +194,7 @@ identity/loss details. Historical seq464 allocation is consumed; current seq498 
 | D11 no storm | Repeated ctx.Done/stopChild loops with refused admission; duplicate states; normal healthy polls | One first, each distinct observation/consequence once; no per-poll healthy output | Unbounded labels, first repeats or healthy polling noise |
 | D12 compatibility | Producer fixed grammar -> connector-journal worker -> failure-snapshot; parse maintained docs/case keys and bound ledger | Exact names, null original attribution,82s/32256B accounted unchanged split; old allocations remain spent; only the seq464 target correction/guard/parity updated | Grammar/cap/doc drift, acceptance ledger changes or old allocation renewed |
 
-## H22 current final-candidate scenarios — THR228seq498 / sole root TASK11641
+## H22 historical final-candidate scenarios — THR228seq498 / sole root TASK11641
 
 These details refine the existing H22 record; the91 P/M/H/D records and their
 four answers are retained. Requirement: one manager-published exact reviewed
@@ -352,3 +358,85 @@ hide attempted execution. The wait may refuse early at four valid online reads;
 12s is a ceiling rather than a promised propagation latency. Slow commands may
 exhaust the bound and refuse. Later credential-free restart, stop propagation,
 installer, shutdown and cleanup remain distinct missing executable proofs.
+
+
+## Stop receipt acquisition and refusal diagnostics — THR228seq514
+
+Sole delivery root TASK11746 retains the new root-wide ceiling of TWO serial
+updates/automatic attempt1 runs; ledger remains **0/2**, with no publication or
+reservation from maker TASK11757. Both current CI boundaries admit only
+before=`e071377a98f72057f90ecba1569fe10c02c696b3`, distinct canonical after equal
+the actual PR800 head, same repo/task6475/main, synchronize and attempt1. The
+second update is NOT pre-enabled. All H22 denial scenarios above apply with
+this new before; the old before9219 is now also spent. Root must freshly bind
+reviewed head/tree/main, preserve nonforce ancestry, reconcile all histories
+and own each result report. This source is local only, pending independent
+full-diff review and same-head source/static QA.
+
+Predecessor TASK11641/seq498 completed 3/3 FAILED:38775630461/1,
+38782221731/1,38788101249/1. The last run reached14 assertion records and failed
+health-loss listener teardown proof. Its exact refused subpredicate is UNKNOWN;
+terminal=null and product/fixture cleanup acceptance remain missing. The new
+fixed diagnostics cannot retrospectively identify that old failure. Neither
+sync nor missing receipts establish a product defect or surviving listener.
+
+Source support: upstream systemd v255 journalctl.c `sync_journal` calls Varlink
+`io.systemd.Journal.Synchronize`; journald-server.c `vl_method_synchronize`
+enqueues `synchronize_second_half` at NORMAL+15, while journald-stream.c installs
+stdout readers at NORMAL+5. The deferred handler calls `server_full_sync` before
+reply. This supports a bounded pre-query acquisition synchronization for queued
+messages. It does not guarantee all pending/future stream bytes, durable writes
+in every failure mode, complete receipts or correct invocation metadata.
+Context refresh reads a per-unit invocation symlink and preserves cached fields
+it cannot refresh; filtering plus strict receipt validation remain necessary.
+The production `stopTwice` still emits each canonical receipt only after the
+corresponding successful `Sidecar.Stop`. Listener close, active-flow drain,
+accept-loop join and engine close remain production-owned and unmodified.
+
+The private `virtual-removal.log`, already covered by the existing diagnostics
+artifact upload, retains only fixed phase/check/reason tokens. Six phases are
+shipping, health_loss, stop_barrier, readiness_loss, shutdown and final. Checks
+are binding, sync, journal, mainpid, peer, probe and removal. There are at most
+42 normal records (seven per phase); failures may add a bounded timeout/loss
+record. A hard64-record/128-byte-per-record guard limits this separate log to
+8192 bytes and refuses on retention failure. This is not an extension of the
+existing failure-snapshot schema or its82s/32256B section ledger.
+
+Each private text/receipt command reuses the existing `_bounded_observation`
+absolute3s launch/read/wait allowance and1s owned-group teardown. Binding has
+two1024-byte property observations; peer status has65536 bytes; sync1024 bytes;
+journal65536 bytes,256 frames,8192 bytes per frame; MainPID32 bytes. These are
+fail-closed observation limits, not empirical sufficiency claims: four small
+binding properties and one PID fit comfortably; oversized journal/peer data
+refuses rather than silently dropping evidence. Journal frame caps match the
+existing bounded collector scale and still permit unrelated printable records.
+Outer text5s+1s and receipt15s+1s caps additionally bound Python startup/import
+and parsing; the latter accommodates three3s+1s observations. Peer parsing has
+3s+1s. The real nc attempt retains5s with1s kill grace; its fixed launch marker
+excludes sudo failure from an observed attempt. Timeout after launch remains an
+inconclusive failed probe, requiring independent Stop and same-peer evidence.
+No generic sleep, retry, new poll or unbounded journal is added. Proc identity
+reads retain their existing real Linux /proc seam. Full-run worst-case timing
+and cap sufficiency are not behaviorally verified.
+
+The following refinements use the existing finite case IDs and four-answer
+map. All are **SOURCE/STATIC ONLY**; intended executable environment is the
+root-owned allocated hosted Ubuntu24.04/systemd255 N3. Assertion, red/green,
+mutation, repetition and executable QA proof are **UNEXECUTED/SUSPENDED**.
+
+| Existing case / requirement | Exact seam, preconditions and action | Observable expected result | Defect detected / level |
+| --- | --- | --- | --- |
+| H24/H25/H46 complete removal conjunction | Bind active PID/invocation/start/boot/time twice; stop; sync; query distinct canonical Stop1+2 receipts; MainPID0; same live peer before/after status; real nc fails | binding/sync/journal/mainpid/peer evidence plus failed probe and removal:complete; unrelated printable journal records allowed | Missing conjunction term, discarded query failure or stale proof; source/static now, hosted N3 later |
+| H50 successful dial veto | Same valid Stop/peer evidence, but real nc returns0 | probe:connected then removal:refused regardless of other successes | Receipts override real successful connection; source/static only |
+| H27/H35/H45/H46 receipt and binding refusal | At actual bind/query decoder, vary missing/duplicate/noncanonical receipt, PID/invocation/boot/time/cursor and changed binding independently | Fixed missing/changed, receipt_missing/receipt_duplicate/receipt_noncanonical, pid_mismatch/invocation_mismatch/boot_mismatch/timestamp_invalid/cursor_invalid; no completion | Stale, duplicated or normalized receipt admitted; source/static only |
+| H25/H45 acquisition loss | Sync/query launch unavailable, nonzero exit, timeout; malformed JSON/UTF8/constants/duplicate fields, binary arrays, truncated LF, raw/frame/count over cap | Fixed launch_failure/query_error/timeout/parse_loss/duplicate_field/binary_field/truncated/over_cap at the refusing check; no raw content or completion | Query errors treated as absence/success, unbounded buffering or failure prose leak; source/static only |
+| H24/H34 peer/probe loss | Missing target/executable/socket, missing peer binding, changed start ticks/node ID, failed/malformed/timed-out status; actual failed/timed-out nc with complete independent evidence | probe unavailable refuses; peer missing/changed/unavailable/parse_loss/query_error/timeout refuses; actual failed probe alone never passes and never proves remote refusal or listener survival | Missing observer or failed privilege launch admitted, failed dial alone used as removal proof; source/static only |
+| H40/H43/D09 original cause and teardown | Refuse any bound check in health-loss/barrier/readiness/shutdown, then enter independent final cleanup; also inject retention failure | Original caller failure/status retained; later fixed phase records remain distinct; remaining safe teardown attempts still run; missing final binding refuses | Later cleanup overwrites initiating cause, hides refusal or skips independent teardown; source/static only |
+| H22/S06 first finite update | Both CI boundaries: exact new before, after=head canonical/distinct, repo/head repo/PR/ref/base/event/attempt; vary each and subsequent unallocated update | Only first authorized update can reach build; wrong fields/old before/attempt2/manual/push/open/reopen and next before refuse; canonical after is enforced pre-build | Spent allocation renewed or slot2 silently opened; source/static only, no guard scenario executed |
+
+Raw journal acquisition is not persisted. No changes to production receipts,
+auth/credentials/schema/units/sandbox, evidence JSON or failure-snapshot schema.
+Normal original-exit handling and all independent teardown call sites remain.
+Retired Python units are never run/imported/collected/restored/added. General
+integration INCLUDING actual CLI callback is **SKIPPED THR243seq42**; daily-only
+Product E2E is unchanged. No behavioral or test-authoring PASS is claimed.
