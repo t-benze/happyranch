@@ -97,7 +97,7 @@ unchanged. Any source refusal persists for its owner across later inputs/maps.
 The [notice index](THIRD_PARTY_NOTICES.md) documents the two byte-preserved
 offline originals and exact pinned identities in `packaging/notice-data/`.
 Installed originals take precedence. The CPython fallback requires matching
-effective toolchain and three stdlib hashes in both Analysis lanes; the ten
+effective toolchain and three stdlib hashes in both Analysis lanes; the twelve
 Radix fallbacks require pinned metadata and every actual emitted source hash.
 Unsafe paths, corrupt inputs and conflicts refuse retention. The web dependency
 now installs a local derivative of upstream scroll-bar source

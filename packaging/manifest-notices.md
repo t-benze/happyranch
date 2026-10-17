@@ -28,6 +28,11 @@ and absent optional platform packages remain explicit. The existing generated-we
 reader separately requires participating tool originals. Every resolved Go
 module is listed; only target go-list dependencies need notices. GOROOT original
 LICENSE/PATENTS and selected `src/vendor/modules.txt` owners are separate.
+All 293 installed production npm owners have original texts in the maker census;
+twelve missing-package-text Radix owners use exact authenticated recoveries.
+The two additional rect/use-rect identities match registry integrity/gitHead,
+installed metadata/module bytes and published-source-map/upstream source bytes
+at the same original LICENSE revision; no nearby-version substitute is used.
 Multiple versions/locations retain separate rows, even when original text bytes
 are shared. All discovered applicable original texts remain associated; a
 nonempty one-text subset cannot replace the measured original set.
