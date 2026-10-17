@@ -1217,12 +1217,22 @@ def correction_processes():
         allowed = [dict(name=name, deny=[ref]) for name, ref in zip(('systemd', '(sd-pam)', 'sshd-session', 'ssh-agent'), ('ns/mnt', 'root', 'fd', 'environ'))]
         observations = []
         summary = f.base / 'summary.json'
+        expected_scope = 'visible Linux same-effective-UID processes, all threads; PermissionError-only denied-reference exceptions for exact program names systemd, (sd-pam), sshd-session, ssh-agent with stable identity/credential/census checks; names do not authenticate executables; readable candidate use still retains; snapshot, not host-wide absence'
         def run(records):
-            result = {}
-            with correction_process_reader(f.base, records), refuse_mutations():
-                ds.sweep_org(f.org, time.monotonic() + 12, mode='dry_run', now=NOW, result=result, checkpoint=lambda: ds.atomic_json(summary, result))
-            assert json.loads(summary.read_text()) == result
-            assert ds._audit_payload({}, result, summary)['org']['process_exemptions'] == result['process_exemptions']
+            # Fixture clock only: exercise the real wrapper/config/JSON path.
+            with correction_process_reader(f.base, records), refuse_mutations(), patch.object(time, 'time', return_value=NOW):
+                report = ds.sweep([str(f.org)], time.monotonic() + 12, summary, dry_run=True, scheduled_date=None, revision='fixture')
+            persisted = json.loads(summary.read_text())
+            assert persisted == report
+            assert persisted['process_scope'] == expected_scope
+            assert report['format'] == 'disk-sweep@1' and report['revision'] == 'fixture'
+            assert report['outcome'] == 'complete' and report['unreached_orgs'] == []
+            assert report['selected_org_roots'] == [str(f.org)] and len(report['orgs']) == 1
+            result = report['orgs'][0]
+            assert result['org'] == f.org.name and result['configured_mode'] == 'on' and result['mode'] == 'dry_run'
+            audit = ds._audit_payload(report, result, summary)
+            assert audit['org'] == result and audit['revision'] == report['revision']
+            assert audit['org']['process_exemptions'] == result['process_exemptions']
             return result
         r = run(allowed)
         assert row(r, p)['state'] == row(r, q)['state'] == 'eligible', r
@@ -1245,7 +1255,7 @@ def correction_processes():
         assert row(r, p).get('process_exemptions', []) == []
         assert candidate_contents(p, q) == before
         assert f.git(repo, 'worktree', 'list', '--porcelain') == registered
-        return dict(allowed_names=[record['name'] for record in allowed], actual_summary_and_audit_projection=True, paired_refusals=observations, readable_use='both phases retained including after denied read', changed_start='retained without exemption', filesystem_and_registration_unchanged=True, proc='fully synthetic syscall reader; no host security change or actual OS denial proof')
+        return dict(allowed_names=[record['name'] for record in allowed], actual_summary_and_audit_projection=True, top_level_wrapper_and_serialized_metadata=True, process_scope=expected_scope, paired_refusals=observations, readable_use='both phases retained including after denied read', changed_start='retained without exemption', filesystem_and_registration_unchanged=True, proc='fully synthetic syscall reader; no host security change or actual OS denial proof')
 
 
 if __name__=='__main__':

@@ -680,7 +680,8 @@ def sweep(roots: list[str], deadline: float, summary: Path, *, dry_run: bool, sc
     report = dict(format='disk-sweep@1', revision=revision, scheduled_date=scheduled_date,
                   timezone=datetime.now().astimezone().tzname(), timezone_offset=datetime.now().astimezone().strftime('%z'),
                   started_at=datetime.now().astimezone().isoformat(), deadline_monotonic=deadline,
-                  budget_seconds=deadline - started_monotonic if started_monotonic is not None else BUDGET_SECONDS, process_scope='visible Linux same-effective-UID processes, all threads; no exemptions; snapshot, not host-wide absence',
+                  budget_seconds=deadline - started_monotonic if started_monotonic is not None else BUDGET_SECONDS,
+                  process_scope='visible Linux same-effective-UID processes, all threads; PermissionError-only denied-reference exceptions for exact program names systemd, (sd-pam), sshd-session, ssh-agent with stable identity/credential/census checks; names do not authenticate executables; readable candidate use still retains; snapshot, not host-wide absence',
                   outcome='incomplete', orgs=[], unreached_orgs=list(sorted(roots)))
     def checkpoint():
         atomic_json(summary, report)
