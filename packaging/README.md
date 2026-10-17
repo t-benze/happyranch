@@ -1,3 +1,14 @@
+## Manifest-notice shipping gate (THR104 seq260/266)
+
+The current standard is resolved dependency-manifest notices plus separately
+bundled fonts, icons and assets. `app/mac/scripts/manifest_notices.py` enumerates
+all resolved npm, Go and Python identities, including explicit target/build-only
+exclusions. Original texts, owner associations and independent inventory
+membership are checked in the candidate and ZIP. It does not claim linker or
+per-byte license closure. Source/custody, resources, architecture, trust and
+release identity checks remain independent. Earlier six-closure descriptions
+below are historical and are being replaced in this delivery.
+
 # Frozen Mac packaging
 
 Run the full [Mac build contract](../app/mac/README.md) from clean reviewed
