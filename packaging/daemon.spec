@@ -284,7 +284,8 @@ components.append(python_component)
 # Do not derive membership from the retained component subset above.
 _manifest_notices = runpy.run_path(str(_PROJ / 'app/mac/scripts/manifest_notices.py'))
 _manifest_notices['python_snapshot'](list(importlib.metadata.distributions()), analysis,
-                                    python_component, evidence, Path(sys.base_prefix).resolve())
+                                    python_component, evidence, Path(sys.base_prefix).resolve(),
+                                    {'daemon': exe.python_lib, 'cli': exe_cli.python_lib})
 (evidence / 'license-mapping.json').write_text(json.dumps(
     {'standard': 'dependency-manifest-notices', 'components': components}, indent=2) + '\n')
 

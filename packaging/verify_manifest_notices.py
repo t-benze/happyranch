@@ -10,6 +10,7 @@ import argparse
 import ast
 import copy
 import hashlib
+import importlib.metadata
 import json
 import os
 import plistlib
@@ -36,6 +37,36 @@ def call(label, argv, expected=0, env=None):
                        stdout=p.stdout[-4000:], stderr=p.stderr[-4000:]))
     assert (p.returncode == 0) == (expected == 0), (label, p.returncode, p.stdout, p.stderr)
     return p
+
+
+def python_fixture_snapshot(source, evidence, extra=()):
+    """Synthetic freezer/toolchain facts; real metadata, snapshot and originals."""
+    prefix = source / 'fixture-python'
+    library = prefix / 'lib/libpython3.12.dylib'
+    stdlib = prefix / 'lib/python3.12/lib-dynload/_struct.cpython-312-darwin.so'
+    # Keep a RECORD-owned native input separate from interpreter ownership.
+    pyroot = source / '.venv/lib/python3.12/site-packages'
+    dist_library = pyroot / 'PyInstaller/vendor/libfixture.dylib'
+    record = pyroot / 'pyinstaller.dist-info/RECORD'
+    data = record.read_bytes()
+    entry = b'PyInstaller/vendor/libfixture.dylib,,\n'
+    if entry not in data:
+        write(record, data + entry)
+    binaries = []
+    for path in (library, stdlib, dist_library, *extra):
+        write(path, b'synthetic Analysis native input: ' + path.name.encode())
+        binaries.append(dict(source=str(path), destination=path.name, kind='BINARY',
+                             sha256=H['sha'](path.read_bytes())))
+    analysis = {lane: dict(binaries=copy.deepcopy(binaries)) for lane in ('daemon', 'cli')}
+    selected = {lane: str(library) for lane in ('daemon', 'cli')}
+    component = dict(version='3.12.10', notices=[dict(sha256=H['sha']((evidence / 'notices/Python-LICENSE.txt').read_bytes()))])
+    H['python_snapshot'](list(importlib.metadata.distributions(path=[str(pyroot)])),
+                         analysis, component, evidence, prefix, selected)
+    snapshot = json.loads((evidence / 'python-distributions.json').read_text())
+    REPORT.append(dict(label='R1 real python_snapshot', exit=0, selected=selected,
+                       analysis=analysis, runtime=snapshot['runtime'],
+                       substitutions='Synthetic EXE.python_lib values for selected standalone CPython 3.12.10, prefix, Analysis bytes/rows and installed RECORD; no sysconfig or native toolchain is executed or claimed.'))
+    return snapshot
 
 
 def fixture(root):
@@ -65,7 +96,7 @@ def fixture(root):
     write(source / 'uv.lock', ('version = 1\n[[package]]\nname = "pyinstaller"\nversion = "' + pyversion + '"\nsource = { path = "packaging/vendor/pyinstaller-6.21.0" }\n').encode())
     pywork = output / 'scratch/freeze-work'
     write(pywork / 'notices/Python-LICENSE.txt', (SOURCE / 'packaging/notice-data/cpython-LICENSE').read_bytes())
-    write(pywork / 'python-distributions.json', dict(distributions=[dict(name='PyInstaller', version=pyversion, root=str(pyroot), originals=[str(pylicense)])], runtime=[dict(key='Python', name='Python interpreter and stdlib', version='3.12.10', source='CPython 0cc81280367df838c4b199f8f0378837165071c2', boundary=str(pywork), originals=[str(pywork / 'notices/Python-LICENSE.txt')])]))
+    python_fixture_snapshot(source, pywork)
     gomod = output / 'scratch/go-modules/github.com/google/uuid@v1.6.0'
     write(gomod / 'LICENSE', (SOURCE / 'packaging/fixtures/manifest-notices/google-uuid-LICENSE').read_bytes())
     module = dict(Path='github.com/google/uuid', Version='v1.6.0', Dir=str(gomod))
@@ -106,9 +137,32 @@ def fixture(root):
 def run(scratch):
     scratch.mkdir(mode=0o700)
     source, output, app, mapping = fixture(scratch)
+    facts = REPORT[-1]
+    for label in ('missing selected Analysis input', 'different lane selection'):
+        analysis, selected = copy.deepcopy(facts['analysis']), dict(facts['selected'])
+        if label.startswith('missing'):
+            analysis['cli']['binaries'] = [r for r in analysis['cli']['binaries'] if r['source'] != selected['cli']]
+        else:
+            selected['cli'] = analysis['cli']['binaries'][1]['source']
+        refused_output = scratch / ('r1-refused-' + str(len(REPORT)))
+        try:
+            H['python_snapshot'](list(importlib.metadata.distributions(path=[str(source / '.venv/lib/python3.12/site-packages')])),
+                                 analysis, dict(version='3.12.10', notices=[]), refused_output,
+                                 source / 'fixture-python', selected)
+        except ValueError as exc:
+            assert 'MANIFEST_NOTICE_REFUSED' in str(exc) and 'interpreter librar' in str(exc)
+            REPORT.append(dict(label='R1 ' + label, result='REFUSED', error=str(exc),
+                               selected=selected, analysis=analysis))
+        else:
+            raise AssertionError('inconsistent freezer selection accepted')
+        assert not (refused_output / 'python-distributions.json').exists()
     cli = [sys.executable, str(SOURCE / 'app/mac/scripts/manifest_notices.py')]
     collect = cli + ['collect', '--source', str(source), '--app', str(app), '--output', str(output), '--mapping', str(output / 'diagnostics/license-mapping.json')]
-    call('case1 real collector complete resolved fixture', collect)
+    py_snapshot = json.loads((output / 'scratch/freeze-work/python-distributions.json').read_text())
+    assert [r['key'] for r in py_snapshot['runtime']] == ['Python']
+    assert py_snapshot['runtime'][0]['interpreter_library']['source'].endswith('/lib/libpython3.12.dylib')
+    assert py_snapshot['distributions'][0]['name'] == 'PyInstaller'
+    call('case1 real collector complete resolved fixture including R1 interpreter library', collect)
     call('case1 independent live inventory verification', cli + ['verify', '--source', str(source), '--app', str(app), '--output', str(output), '--mapping', str(output / 'diagnostics/license-mapping.json')])
     manifest_path = app / H['MANIFEST']
     manifest_raw = manifest_path.read_bytes()
@@ -125,9 +179,34 @@ def run(scratch):
     candidate_zip = output / 'HappyRanch-1.0.1-1.0.1-arm64.zip'
     call('case1 actual shipping archive transition (ditto substituted)', archive, env=env)
     assert candidate_zip.is_file()
+    python_owner = next(r for r in manifest['components'] if r['id'] == 'runtime:Python')
+    assert python_owner['notices']
+    with zipfile.ZipFile(candidate_zip) as z:
+        for notice in python_owner['notices']:
+            assert z.read('HappyRanch.app/' + notice['destination']) == (SOURCE / 'packaging/notice-data/cpython-LICENSE').read_bytes()
+    REPORT.append(dict(label='R1 actual ZIP contains authentic interpreter notice', exit=0,
+                       archive=str(candidate_zip), sha256=H['sha'](candidate_zip.read_bytes()),
+                       size=candidate_zip.stat().st_size, notices=python_owner['notices']))
     valid_zip = scratch / 'complete.zip'
     shutil.copyfile(candidate_zip, valid_zip)
     candidate_zip.unlink()  # exact fixture-owned generated archive, for refusal cases
+    # Misleading basename and prefix membership must not inherit CPython terms.
+    for index, name in enumerate(('lib/vendor/libpython3.12.dylib', 'vendor/Python')):
+        bad_source, bad_output, bad_app, _ = fixture(scratch / ('r1-vendor-' + str(index)))
+        work = bad_output / 'scratch/freeze-work'
+        (work / 'python-distributions.json').unlink()
+        vendor = bad_source / 'fixture-python' / name
+        bad_snapshot = python_fixture_snapshot(bad_source, work, (vendor,))
+        unknown = next(r for r in bad_snapshot['runtime'] if r['key'] == str(vendor))
+        assert unknown['originals'] == []
+        args = cli + ['collect', '--source', str(bad_source), '--app', str(bad_app), '--output', str(bad_output), '--mapping', str(bad_output / 'diagnostics/license-mapping.json')]
+        refused = call('R1 misleading unknown vendor collector refusal ' + name, args, expected=1)
+        assert str(vendor) in refused.stderr and 'no original' in refused.stderr
+        assert not (bad_app / H['MANIFEST']).exists()
+        bad_archive = archive.copy()
+        bad_archive[2:4] = [str(bad_app), str(bad_output)]
+        call('R1 uncollected vendor candidate refuses before archive ' + name, bad_archive, expected=1, env=env)
+        assert not (bad_output / candidate_zip.name).exists()
     for family in ('npm', 'go', 'python', 'asset'):
         broken = copy.deepcopy(manifest)
         removed = next(r for r in broken['components'] if r['family'] == family and r['selection'].startswith('included:'))
@@ -144,8 +223,8 @@ def run(scratch):
     call('case2 omitted second applicable Go PATENTS original', archive, expected=1, env=env)
     assert not candidate_zip.exists()
     write(manifest_path, manifest_raw)
-    for family in ('python', 'asset'):
-        row = next(r for r in manifest['components'] if r['family'] == family and r['notices'])
+    for family in ('python', 'asset', 'runtime:Python'):
+        row = next(r for r in manifest['components'] if (r['family'] == family or r['id'] == family) and r['notices'])
         notice = app / row['notices'][0]['destination']
         data = notice.read_bytes()
         notice.unlink()
@@ -205,7 +284,7 @@ def run(scratch):
         args = verifier.copy()
         args[args.index(option) + 1] = value
         call('case5 independent rejection ' + option, args, expected=1)
-    REPORT.append(dict(label='limitations', native='UNEXECUTED', substitutions=['synthetic resolved manifests and preassembled resource/plist candidate', 'ditto replaced with Python zipfile'], actual='shipping collector, manifest validator, archive shell, resources, ZIP inventory and receipt reconciliation', integration='SKIPPED THR243seq42'))
+    REPORT.append(dict(label='limitations', native='UNEXECUTED', substitutions=['synthetic resolved manifests, installed RECORD, EXE.python_lib selection, standalone prefix and Analysis inputs; preassembled resource/plist candidate', 'ditto replaced with Python zipfile'], actual='shipping collector, manifest validator, archive shell, resources, ZIP inventory and receipt reconciliation', integration='SKIPPED THR243seq42'))
     return scratch / 'evidence.json'
 
 

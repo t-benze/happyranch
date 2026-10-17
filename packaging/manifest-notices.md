@@ -42,6 +42,15 @@ checked in the candidate and ZIP. The icon source census uses the first-party
 original LICENSE and the existing asset reader still checks actual iconutil
 transformation and app publication. Original source/asset/freezer/web custody
 readers stay independent; no new observer profile or toolchain is introduced.
+The Python snapshot binds the canonical library selected by the existing
+PyInstaller `EXE.python_lib` in both daemon and CLI to the same hashed BINARY
+input in each Analysis. That exact input (including standalone
+`PREFIX/lib/libpython3.12.dylib` or a selected framework library) shares the
+validated CPython original; no filename/prefix-only interpreter exemption exists.
+Distribution RECORD ownership remains independent and stdlib `lib-dynload`
+extensions retain their existing handling. Selected-library disagreement or
+missing Analysis membership refuses. The resolved runtime inventory records the
+selected library path/digest; original-text and native custody checks remain.
 Concrete native files outside distribution RECORD/Python core are named in the
 runtime inventory. Without an original-text association they fail with their
 actual source path; they do not inherit another owner's generic license.
@@ -78,7 +87,10 @@ python packaging/verify_manifest_notices.py --scratch /absolute/new/task-scratch
 
 It uses authentic retained PyInstaller/CPython/scrollbar/font/Go/UUID originals;
 Go and UUID provenance is retained under `fixtures/manifest-notices`. The source
-manifests, installed metadata and candidate assembly are synthetic. Only ditto
+manifests, installed metadata/RECORD, EXE.python_lib selections, standalone
+prefix and Analysis native bytes/rows, and candidate assembly are synthetic.
+No actual selected native toolchain/sysconfig observation is claimed. The real
+python_snapshot now produces the inventory consumed by the collector. Only ditto
 is replaced at the shipping archive transition, by Python zipfile; all collector,
 notice/resource/archive/reconcile code is real. No native compilation, full
 asset/freezer/web custody run, daemon, retired unit suite or Product E2E runs.
@@ -87,6 +99,7 @@ General integration is SKIPPED THR243seq42.
 | Requirement | Setup/action at production seam | Observable result | Level/environment |
 | --- | --- | --- | --- |
 | 1. Complete inventory archives | Real collector receives resolved npm/Go/Python and separate asset inputs with authentic originals; invoke shipping archive shell | Candidate contains texts, real ZIP and receipt produced; independent roundtrip succeeds | Portable preassembled candidate; ditto substituted |
+| R1. Selected interpreter ownership | Real python_snapshot receives synthetic freezer-selected standalone library plus stdlib/RECORD inputs and real retained CPython original; collector/archive consume its output; add misleading vendor libpython/Python paths | One licensed Python owner, actual ZIP contains the original; vendors remain separate empty-original owners, collector and archive refuse | Portable synthetic freezer facts; no native toolchain execution |
 | 2. Independent owner/text completeness | Remove each manifest-family/asset owner, required retained notice, or second Go PATENTS association | Nonzero, named owner/path, no ZIP creation | Disposable candidate only |
 | 3. Fail closed on unsafe/mismatched text | Empty/whitespace/unreadable/changed text, identity mismatch, traversal and symlink | Nonzero, no outside mutation or ZIP | Disposable source/candidate only |
 | 4. Preserve versions/selections | Two actual scrollbar source/derivative versions sharing original license, shared font OFL, optional/build-only exclusions | Separate identities and deterministic selections survive | Synthetic resolved inventory, authentic originals |

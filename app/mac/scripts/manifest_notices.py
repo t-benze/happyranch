@@ -191,12 +191,31 @@ def distribution_records(distributions):
     return sorted(rows, key=lambda r: (norm(r['name']), r['version'])), owned
 
 
-def python_snapshot(distributions, analysis, python_component, evidence, prefix):
+def python_snapshot(distributions, analysis, python_component, evidence, prefix, python_libraries):
     """Called by the real spec in its frozen environment, without runtime imports."""
     rows, owned = distribution_records(distributions)
+    # EXE.python_lib is selected by PyInstaller for this running interpreter,
+    # using the same resolver as Analysis. Bind that exact input in both lanes;
+    # neither its basename nor membership beneath sys.base_prefix is ownership.
+    selected = {}
+    for lane in ('daemon', 'cli'):
+        value = python_libraries.get(lane)
+        require(isinstance(value, (str, Path)) and bool(str(value))
+                and Path(value).is_absolute(), 'Python/' + lane, 'missing absolute freezer-selected interpreter library')
+        path = Path(value).resolve()
+        matches = [r for r in analysis[lane]['binaries'] if r['kind'] == 'BINARY'
+                   and r['source'] and Path(r['source']).resolve() == path]
+        digests = {r['sha256'] for r in matches}
+        require(len(digests) == 1 and all(isinstance(d, str) and re.fullmatch(r'[0-9a-f]{64}', d) for d in digests),
+                str(path), 'freezer-selected interpreter library missing or inconsistent in ' + lane + ' Analysis')
+        selected[lane] = (path, next(iter(digests)))
+    require(selected['daemon'] == selected['cli'], 'Python', 'freezer lanes selected different interpreter libraries')
+    interpreter, interpreter_digest = selected['daemon']
     runtime = [dict(key='Python', name='Python interpreter and stdlib',
                     version=python_component['version'], source=str(prefix),
-                    boundary=str(evidence), originals=[])]
+                    boundary=str(evidence), originals=[],
+                    interpreter_library=dict(source=str(interpreter), sha256=interpreter_digest,
+                                             selection='EXE.python_lib matched to daemon and cli Analysis'))]
     # The existing exact CPython fallback already retained a validated original.
     for notice in python_component['notices']:
         runtime[0]['originals'].append(str(evidence / 'notices/Python-LICENSE.txt'))
@@ -210,8 +229,8 @@ def python_snapshot(distributions, analysis, python_component, evidence, prefix)
                 continue
             # Python itself and its stdlib extensions belong to the interpreter.
             # Independently bundled vendor libraries do not inherit that license.
-            if path.is_relative_to(prefix) and (path.name in ('Python', 'Python3')
-                    or 'lib-dynload' in path.parts and path.suffix == '.so'):
+            if path == interpreter or (path.is_relative_to(prefix)
+                    and 'lib-dynload' in path.parts and path.suffix == '.so'):
                 continue
             natives[str(path)] = row['sha256']
     for path, digest in sorted(natives.items()):
