@@ -122,7 +122,48 @@ It compares opening/closing semantic observer facts (including
 errors, pending writer/preparation state and seal progress), excluding sample
 timestamps. Audit, task and result history is acquired in primary-key pages
 of at most 256 rows, with no shared Database lock across pages or decoding,
-and a 100,000-row bound per table including unrelated/prior-boot history.
+and a 250,000-row bound per table and a shared 512 MiB canonical JSON budget, including unrelated/prior-boot
+history.
+The finite acquisition contract is 250,000 rows per table (audit, tasks,
+results and jobs) and 512 MiB aggregate canonical ASCII JSON row bytes per
+capture, whichever refuses first. Audit payload strings are decoded for sizing
+so HTTP objects and database text use the same logical representation; returned
+raw records are preserved. Each JSON row uses sorted keys, compact separators,
+ASCII escaping and finite numbers. There is no caller/environment override.
+Both complete bookends are independently budgeted; no prefix, action/boot/time/
+success filter, checkpoint stitching or retry-until-quiet supplies authority.
+Diagnostic no-epoch filters remain diagnostic only. Generation, assigned-intent
+and wait-list semantic limits remain 100,000 independently of acquisition.
+
+TASK-11694/JOB-4787 received 105,000 audit rows and still had a next cursor; the
+complete population remains UNKNOWN. Those preserved pages contain 146,599,921
+canonical bytes and approximately 554,995,061 recursively counted decoded Python
+bytes. At that observed shape 250,000 audit rows require approximately 349 MB JSON
+and 1.32 GB decoded data per capture, leaving approximately 188 MB of the 512 MiB
+budget for other tables. This is resource headroom, not a population estimate
+or a promise that future B will fit. Two captures, decoded validation copies,
+indexes and semantic JSON comparisons amplify memory to several GB; retained
+bytes are bounded, but the budget is not a hard RSS/latency guarantee. Checks
+occur after one existing bounded page/response is materialized; oversized single
+rows/responses can exhaust resources before charging. Existing request timeouts,
+identity/output limits and movement refusal remain. Overflow requires a new
+source decision, never truncation, pruning or a bypass.
+
+Affected symbol inventory: `memory_collection._CensusReadBudget` and
+`_check_census_budget` charge incrementally; `CollectionObserver._rows` retains
+256-row SELECTs and revision/count/final-key bookends; `validate_census` checks
+complete evidence separately from semantic limits; `_decoded_tables` checks
+before its existing copy. `_collection_pages` and `_http_collection_capture`
+share one budget across full audit/tasks/results/referenced-jobs. The existing
+`acquire_http_collection_report` still compares two complete captures.
+`Database.read_memory_collection_evidence` uses 256-row fetch batches within its
+unchanged coherent SELECT-only view, refusing before retaining a whole excess
+table. `current_epoch_references` acquires controls in 256-row keyset pages and
+still requires complete default unfiltered evidence/current-health validation.
+`loaded_identity` includes the new helper code fingerprints. Transitive
+acceptance, atomic transition, local report and canonical CLI consumers retain
+the same full-history contract; no acceptance predicate or owner changes.
+
 Same-connection write counts
 and other-connection data versions bracket acquisition. Movement, read failure
 or work exhaustion returns unavailable; no partial history is validated and no
@@ -143,7 +184,8 @@ get/search for that exact tuple. No filtered stream or empty default supplies
 absence proof. Independent attempted/persisted counts/digests, all ordinals and
 full seal history remain mandatory, with stable semantic bookends and no error,
 pending writer or preparation. Observer acquisition pages all three tables in
-at most 256-row SELECTs with a 100,000-row bound per table and revision bookends.
+at most 256-row SELECTs with a 250,000-row bound per table and a shared
+512 MiB canonical JSON budget and revision bookends.
 The failed ordinal remains explicitly classified in internal census results and
 all full counts/digests/seals; it creates no shown/natural-session denominator,
 expectation, binding, start, callback or credit. All-failure/zero qualifying
@@ -277,9 +319,10 @@ Both report entry points now acquire complete bounded task and relevant audit
 snapshots, including session start/end, actual job-resume audits and runtime
 identity/launch/terminal. Backend uses the existing coherent SELECT-only evidence
 snapshot with an optional no-epoch audit-action filter; CLI exhausts all relevant
-`/audit` action pages and `/tasks` pages in two stable sweeps. The100000-row
-bound applies to required evidence, without unrelated audit history causing a
-new no-epoch refusal. Accepted-epoch acquisition keeps the default unfiltered
+`/audit` action pages and `/tasks` pages in two stable sweeps. CLI diagnostic
+action sweeps retain their row-only 250,000 bound; backend captures additionally
+share the 512 MiB JSON budget. Unrelated audit history does not consume the
+no-epoch diagnostic bound. Accepted-epoch acquisition keeps the default unfiltered
 tasks/results/jobs/audit snapshots, original task results, referenced probe jobs
 and stable serving bookends. No diagnostic filter supplies collection authority. Task/result
 ownership, duplicate rows, cursor/page ordering, size bounds and changed snapshots

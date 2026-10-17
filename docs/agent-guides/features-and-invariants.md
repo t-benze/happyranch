@@ -1431,7 +1431,8 @@ It compares opening/closing semantic observer facts (including
 errors, pending writer/preparation state and seal progress), excluding sample
 timestamps. Audit, task and result history is acquired in primary-key pages
 of at most 256 rows, with no shared Database lock across pages or decoding,
-and a 100,000-row bound per table including unrelated/prior-boot history.
+and a 250,000-row bound per table and a shared 512 MiB canonical JSON budget, including unrelated/prior-boot
+history.
 Same-connection write counts
 and other-connection data versions bracket acquisition. Movement, read failure
 or work exhaustion returns unavailable; no partial history is validated and no
@@ -1452,7 +1453,8 @@ get/search for that exact tuple. No filtered stream or empty default supplies
 absence proof. Independent attempted/persisted counts/digests, all ordinals and
 full seal history remain mandatory, with stable semantic bookends and no error,
 pending writer or preparation. Observer acquisition pages all three tables in
-at most 256-row SELECTs with a 100,000-row bound per table and revision bookends.
+at most 256-row SELECTs with a 250,000-row bound per table and a shared
+512 MiB canonical JSON budget and revision bookends.
 The failed ordinal remains explicitly classified in internal census results and
 all full counts/digests/seals; it creates no shown/natural-session denominator,
 expectation, binding, start, callback or credit. All-failure/zero qualifying
@@ -1508,7 +1510,9 @@ exhausts original tasks/results/jobs/audit evidence with stable bookends and
 complete owned outputs. No-epoch diagnostics exhaust all relevant memory and
 lifecycle action pages plus a coherent complete task snapshot and roles before
 empty/short returns. Unrelated audit history does not consume their existing
-100000-row bound; authority readers retain the default unfiltered snapshot. HTTP/decoder/timeout, cursor or
+250,000-row diagnostic bound. Backend captures additionally share the 512 MiB
+JSON budget; CLI diagnostic action sweeps retain their row-only bound. Authority
+readers retain the default unfiltered snapshot and shared byte budget. HTTP/decoder/timeout, cursor or
 SELECT failures refuse as `acquisition_unavailable`, without partial CLI stdout.
 Task pages use `(created_at, id)` descending, with parsed wire timestamps and
 the last ID as the server-resolved transport cursor, rather than ID ordering.
