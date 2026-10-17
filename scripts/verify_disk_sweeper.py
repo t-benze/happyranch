@@ -1100,28 +1100,37 @@ def correction_process_reader(base, records):
     proc = base / 'synthetic-proc'
     proc.mkdir(exist_ok=True)
     real_text, real_bytes, real_stat = Path.read_text, Path.read_bytes, Path.stat
+    real_exists = Path.exists
     real_is_dir, real_listdir, real_readlink = Path.is_dir, os.listdir, os.readlink
-    by_pid = {}
+    by_pid, by_thread = {}, {}
     for index, record in enumerate(records, 401):
         pid = str(index)
         by_pid[pid] = record
         leader = proc / pid
-        task = leader / 'task' / pid
-        task.mkdir(parents=True, exist_ok=True)
-        (task / 'fd').mkdir(exist_ok=True)
-        for directory in (leader, task):
-            (directory / 'stat').write_text(f"{pid} ({record['name']}) S " + '0 ' * 18 + '100\n')
+        threads = [(pid, record)] + [(str(index * 10 + offset), sibling) for offset, sibling in enumerate(record.get('threads', []), 1)]
+        for tid, thread in threads:
+            by_thread[pid, tid] = thread
+            task = leader / 'task' / tid
+            task.mkdir(parents=True, exist_ok=True)
+            (task / 'fd').mkdir(exist_ok=True)
+            (task / 'stat').write_text(f"{tid} ({thread['name']}) {thread.get('state', 'S')} " + '0 ' * 18 + '100\n')
+            (task / 'environ').write_bytes(b'')
+        (leader / 'stat').write_text(f"{pid} ({record['name']}) {record.get('state', 'S')} " + '0 ' * 18 + '100\n')
+        for directory in (leader, leader / 'task' / pid):
             (directory / 'status').write_text('Uid:\t' + '\t'.join([str(os.geteuid())] * 4) + '\n')
-        (task / 'environ').write_bytes(b'')
     # Keep old fixture directories out of the declared synthetic census.
     def mapped(path):
         value = str(path)
         return proc / value.removeprefix('/proc/') if value.startswith('/proc/') else path
     def record_for(path):
         parts = str(path).split('/')
+        if len(parts) > 4 and parts[1] == 'proc' and parts[3] == 'task':
+            return by_thread.get((parts[2], parts[4]), {})
         return by_pid.get(parts[2], {}) if len(parts) > 2 and parts[1] == 'proc' else {}
     def denied(path):
         record = record_for(path)
+        if any(str(path).endswith('/' + ref) for ref in record.get('missing', ())):
+            raise FileNotFoundError('synthetic missing proc reference')
         if any(str(path).endswith('/' + ref) for ref in record.get('deny', ())):
             raise PermissionError('synthetic proc denial')
     def read_text(path, *a, **kw):
@@ -1132,6 +1141,13 @@ def correction_process_reader(base, records):
             record['stat_reads'] = record.get('stat_reads', 0) + 1
             if record['stat_reads'] > 2:
                 value = value.removesuffix('100\n') + '101\n'
+        if str(path).endswith('/stat') and '/task/' in str(path):
+            record['thread_stat_reads'] = record.get('thread_stat_reads', 0) + 1
+            if record['thread_stat_reads'] % 2 == 0:
+                if record.get('change_thread_start'):
+                    value = value.removesuffix('100\n') + '101\n'
+                if record.get('change_state'):
+                    value = value.replace(') Z ', ') S ')
         return value
     def read_bytes(path, *a, **kw):
         denied(path)
@@ -1140,9 +1156,13 @@ def correction_process_reader(base, records):
         if str(path) == '/proc':
             return list(by_pid)
         denied(path)
+        parts = str(path).split('/')
+        if len(parts) == 4 and parts[1] == 'proc' and parts[3] == 'task':
+            return [tid for pid, tid in by_thread if pid == parts[2]]
         return real_listdir(mapped(path))
     def readlink(path, *a, **kw):
         if str(path).startswith('/proc/'):
+            record_for(path).setdefault('link_reads', []).append(str(path))
             denied(path)
             if str(path).endswith('/ns/mnt'):
                 return 'mnt:[fixture]'
@@ -1150,7 +1170,10 @@ def correction_process_reader(base, records):
         return real_readlink(path, *a, **kw)
     def is_dir(path):
         return True if str(path) == '/proc/self/task' else real_is_dir(mapped(path))
-    with patch.object(Path, 'read_text', read_text), patch.object(Path, 'read_bytes', read_bytes), patch.object(Path, 'stat', lambda p, *a, **kw: real_stat(mapped(p), *a, **kw)), patch.object(Path, 'is_dir', is_dir), patch.object(os, 'listdir', listdir), patch.object(os, 'readlink', readlink):
+    def exists(path, *a, **kw):
+        # Python 3.14 Path.exists bypasses Path.stat; map the observation itself.
+        return real_exists(mapped(path), *a, **kw)
+    with patch.object(Path, 'read_text', read_text), patch.object(Path, 'read_bytes', read_bytes), patch.object(Path, 'stat', lambda p, *a, **kw: real_stat(mapped(p), *a, **kw)), patch.object(Path, 'exists', exists), patch.object(Path, 'is_dir', is_dir), patch.object(os, 'listdir', listdir), patch.object(os, 'readlink', readlink):
         yield
 
 
@@ -1253,9 +1276,31 @@ def correction_processes():
         r = run([dict(name='ssh-agent', deny=['root'], change_start=True)])
         retained(r, p, 'unknown_process_identity_changed')
         assert row(r, p).get('process_exemptions', []) == []
+        # Stable zombies need neither namespace nor live-use links. This is
+        # per-thread; a zombie leader never hides a live sibling.
+        zombie = dict(name='codex', state='Z', missing=['ns/mnt', 'cwd', 'root', 'exe', 'fd', 'environ'])
+        r = run([zombie])
+        assert row(r, p)['state'] == row(r, q)['state'] == 'eligible', r
+        assert r['process_exemptions'] == [] and zombie.get('link_reads', []) == []
+        zombie_controls = []
+        for control, record, reason in (
+            ('live_missing_namespace', dict(name='codex', missing=['ns/mnt']), 'unknown_missing_process_reference'),
+            ('allowed_name_live_missing_namespace', dict(name='ssh-agent', missing=['ns/mnt']), 'unknown_missing_process_reference'),
+            ('zombie_changed_start', dict(name='codex', state='Z', missing=['ns/mnt'], change_thread_start=True), 'unknown_process_identity_changed'),
+            ('zombie_changed_state', dict(name='codex', state='Z', missing=['ns/mnt'], change_state=True), 'unknown_process_identity_changed'),
+            ('zombie_leader_live_sibling_use', dict(name='codex', state='Z', missing=['ns/mnt'], threads=[dict(name='live-sibling', cwd=str(p), root=str(q))]), 'process_use'),
+            ('zombie_leader_live_sibling_missing', dict(name='codex', state='Z', missing=['ns/mnt'], threads=[dict(name='live-sibling', missing=['ns/mnt'])]), 'unknown_missing_process_reference'),
+        ):
+            try:
+                r = run([record])
+                retained(r, p, reason); retained(r, q, reason)
+                assert r['process_exemptions'] == []
+            except AssertionError as exc:
+                raise AssertionError(f'{control}: {exc}') from exc
+            zombie_controls.append(dict(control=control, both='retained', reason=reason))
         assert candidate_contents(p, q) == before
         assert f.git(repo, 'worktree', 'list', '--porcelain') == registered
-        return dict(allowed_names=[record['name'] for record in allowed], actual_summary_and_audit_projection=True, top_level_wrapper_and_serialized_metadata=True, process_scope=expected_scope, paired_refusals=observations, readable_use='both phases retained including after denied read', changed_start='retained without exemption', filesystem_and_registration_unchanged=True, proc='fully synthetic syscall reader; no host security change or actual OS denial proof')
+        return dict(allowed_names=[record['name'] for record in allowed], actual_summary_and_audit_projection=True, top_level_wrapper_and_serialized_metadata=True, process_scope=expected_scope, paired_refusals=observations, readable_use='both phases retained including after denied read', changed_start='retained without exemption', stable_zombie_missing_namespace='both phases eligible without reference reads or exemptions', zombie_controls=zombie_controls, filesystem_and_registration_unchanged=True, proc='fully synthetic syscall reader; no host security change or actual OS denial proof')
 
 
 if __name__=='__main__':

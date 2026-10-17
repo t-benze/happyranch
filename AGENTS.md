@@ -170,7 +170,10 @@ checks; unknown retains. THR307seq85/88 includes superseded for BOTH owner/root,
 skips recognized finished jobs before owner-lineage lookup, and permits only
 exact unreadable systemd/(sd-pam)/sshd-session/ssh-agent comm identities with
 stable identity/credential/census checks and actual summary reporting. Readable
-candidate use and other uncertainty retain. Preserve manifests/locks/output, dirty worktrees and
+candidate use and other uncertainty retain. Stable zombie threads skip namespace
+and live-use reads while retaining identity/Z-state, UID and full census checks;
+a zombie leader never skips live siblings. Missing non-zombie references retain.
+Preserve manifests/locks/output, dirty worktrees and
 branches. No legacy receipt/count/rotation policy is imported into this new
 mechanism; legacy cleanup, flags and seven sessions are unchanged. Dry run never
 chmods/removes/prunes. One JSON/existing-shaped audit reports attributable allocated

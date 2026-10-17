@@ -119,7 +119,12 @@ Every admission, including permission repair and the one Git retry, requires:
   candidate path, including if later evidence refuses. Repeated observations of
   the same identity within a candidate are deduplicated; this is not a global
   process count. Existing JSON and org audit payloads carry these records.
-  Confirmed disappearance and stable zombies retain their separate handling.
+  Confirmed disappearance retains its separate handling. Each positively identified
+  stable zombie thread skips namespace and live-use references, which may be
+  absent; identity/starttime/comm and Z-state are still bracketed, with UID and
+  full leader/thread census checks intact. A zombie leader does not skip live
+  siblings. Missing references for non-zombies still retain, including the four
+  allowed names; FileNotFoundError is not an unreadability exemption.
   Names are not executable authentication. Other UIDs are outside this scope;
   this is **not host-wide absence**, a writer fence or protection from a later
   opener/hostile same-UID rename.
@@ -298,7 +303,12 @@ and unchanged disposable files/Git registrations, paired active/escalated/unknow
 owner/root refusals. C3 exercises the real process scanner against a synthetic
 proc syscall reader, all four exact denied identities, actual checkpoint JSON
 and audit payload projection, nonlisted/near-name denial, readable use (also
-after a denial) and changed-start refusal. Fixtures reuse the disposable builder
+after a denial) and changed-start refusal. Within the SAME C3, stable zombies
+with absent namespace/live references admit without reference reads or exemption
+records; paired live missing-namespace (including an allowed name), changed
+zombie starttime/Z-state, and live siblings of zombie leaders retain. Every
+control uses the actual top-level wrapper, full serialized JSON and audit payload
+projection. C1/C2 remain unchanged. Fixtures reuse the disposable builder
 and forbid mutation during these dry runs. Synthetic SQLite/proc inputs and the
 advanced wall clock are explicit; filesystem/Git gates and outcomes are real.
 No actual host permission denial or broad operational acceptance is established.
