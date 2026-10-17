@@ -10,7 +10,7 @@ import threading
 import time
 from contextlib import ExitStack, contextmanager
 from typing import TYPE_CHECKING, Any
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import SplitResult, parse_qs, urlsplit
 
 import greenlet
 from pyee import EventEmitter
@@ -28,7 +28,7 @@ if TYPE_CHECKING:
 class _ResponseObservation:
     """Own one real Waiter, Request set and optional original response body."""
     def __init__(self, browser: Browser, path: str, mode: str, document: str,
-                 capture_json: bool, tree: bool) -> None:
+                 capture_json: bool, tree: bool, ordinary_roots: bool) -> None:
         self.browser, self.path, self.mode = browser, path, mode
         self.target, self.start_url = browser.base + document, browser._url
         self.lineage = browser._lineage if mode == "action" else None
@@ -48,11 +48,31 @@ class _ResponseObservation:
                           tree=tree, capture_json=capture_json, deadline=browser._group_end,
                           validation="partial/unvalidated", steps=[])
         self.tree = tree
+        self.ordinary_roots = ordinary_roots
+        if ordinary_roots:
+            self.trace["query_contract"] = "ordinary-roots-limit50"
         browser.events.append(self.trace)
 
     def note(self, event: str, **metadata: Any) -> None:
         self.trace["steps"].append(dict(event=event, sequence=self.browser._sequence,
                                         at=time.monotonic(), **metadata))
+
+    def query_matches(self, parsed: SplitResult, request_sequence: int | None) -> bool:
+        if not self.ordinary_roots:
+            return True
+        try:
+            # Complete semantic identity: retain blank and repeated values.
+            matches = (not parsed.fragment and
+                       parse_qs(parsed.query, keep_blank_values=True, errors="strict",
+                                strict_parsing=True) == {"limit": ["50"]})
+        except (ValueError, UnicodeError):
+            self.note("query-match", request_sequence=request_sequence, contract="ordinary-roots-limit50",
+                      matches=False, reason="invalid-query")
+            raise Error("invalid ordinary roots query") from None
+        self.note("query-match", request_sequence=request_sequence, contract="ordinary-roots-limit50",
+                  matches=matches, reason=("invalid-query" if parsed.fragment else
+                                           "ordinary-root-page" if matches else "other-query"))
+        return matches
 
     def current(self) -> bool:
         b = self.browser
@@ -220,7 +240,8 @@ class Browser:
                 parsed, base = urlsplit(request.url), urlsplit(self.base)
                 if (parsed.scheme, parsed.netloc, parsed.path) != (base.scheme, base.netloc, scope.path):
                     continue
-                eligible = (main and request.method == "GET" and scope.current()
+                query_matches = scope.query_matches(parsed, self._sequence)
+                eligible = (query_matches and main and request.method == "GET" and scope.current()
                             and request.redirected_from is None and request.redirected_to is None
                             and (not scope.tree or parse_qs(parsed.query, keep_blank_values=True).get("tree") == ["true"]))
                 if eligible:
@@ -288,7 +309,8 @@ class Browser:
                 if (parsed.scheme, parsed.netloc, parsed.path) != (base.scheme, base.netloc, scope.path):
                     continue
                 request = response.request
-                eligible = (request in scope.requests and scope.current() and request.method == "GET"
+                query_matches = scope.query_matches(parsed, scope.requests.get(request))
+                eligible = (query_matches and request in scope.requests and scope.current() and request.method == "GET"
                             and request.frame is self.page.main_frame._impl_obj and response.status == 200
                             and request.redirected_from is None and request.redirected_to is None)
                 scope.note("selected" if eligible else "ineligible-response", method=request.method,
@@ -384,7 +406,7 @@ class Browser:
 
     @contextmanager
     def response(self, path: str, *, mode: str = "action", document: str | None = None,
-                 capture_json: bool = False, tree: bool = False) -> Any:
+                 capture_json: bool = False, tree: bool = False, ordinary_roots: bool = False) -> Any:
         c = self.controller
         end = min(c.effective_end(), time.monotonic()+self.page_timeout, self._group_end)
         outer = not self._scopes
@@ -400,7 +422,7 @@ class Browser:
                         "literal caller-declared document destination for both modes")
                 require(path.startswith("/api/v1/orgs/") and urlsplit(path).path == path
                         and not urlsplit(path).query and not urlsplit(path).fragment, "literal API observation path")
-                observation = _ResponseObservation(self, path, mode, document, capture_json, tree)
+                observation = _ResponseObservation(self, path, mode, document, capture_json, tree, ordinary_roots)
                 if self._scopes:
                     parent = self._scopes[-1]
                     require((parent.target, parent.mode, parent.start_url, parent.lineage) ==
@@ -467,7 +489,7 @@ class Browser:
                   cached_recall: bool = False, alien: str | None = None) -> None:
         roots = f"/api/v1/orgs/{org}/tasks/roots"
         with self.response(roots, mode="action" if switch else "new-document",
-                           document=f"/orgs/{org}/tasks"):
+                           document=f"/orgs/{org}/tasks", ordinary_roots=True):
             if switch:
                 self.page.get_by_role("combobox", name="Active org", exact=True).click(timeout=self.controller.remaining(self.page_timeout)*1000)
                 self.controller.remaining()
@@ -936,7 +958,8 @@ class Browser:
         path = "/api/v1/orgs/alpha/tasks/roots"
         self.page.goto(self.base+"/orgs/alpha/tasks",timeout=c.remaining(4)*1000)
         self.controller.remaining()
-        with self.response(path, mode="new-document", document="/orgs/alpha/tasks", capture_json=True) as roots:
+        with self.response(path, mode="new-document", document="/orgs/alpha/tasks",
+                           capture_json=True, ordinary_roots=True) as roots:
             self.page.reload(timeout=c.remaining(4)*1000)
             self.controller.remaining()
         main = self.page.get_by_role("main")

@@ -62,7 +62,8 @@ class PauseBrowser:
 
         page.on("request", record_overview)
         try:
-            with self.b.response(roots_path, mode="new-document", document="/orgs/alpha/tasks"):
+            with self.b.response(roots_path, mode="new-document", document="/orgs/alpha/tasks",
+                                 ordinary_roots=True):
                 page.goto(f"{self.b.base}/orgs/alpha/tasks", timeout=self.c.remaining(self.b.page_timeout)*1000)
                 self.c.remaining()
             main = page.get_by_role("main")
