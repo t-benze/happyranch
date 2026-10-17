@@ -1100,6 +1100,7 @@ def correction_process_reader(base, records):
     proc = base / 'synthetic-proc'
     proc.mkdir(exist_ok=True)
     real_text, real_bytes, real_stat = Path.read_text, Path.read_bytes, Path.stat
+    real_exists = Path.exists
     real_is_dir, real_listdir, real_readlink = Path.is_dir, os.listdir, os.readlink
     by_pid, by_thread = {}, {}
     for index, record in enumerate(records, 401):
@@ -1169,7 +1170,10 @@ def correction_process_reader(base, records):
         return real_readlink(path, *a, **kw)
     def is_dir(path):
         return True if str(path) == '/proc/self/task' else real_is_dir(mapped(path))
-    with patch.object(Path, 'read_text', read_text), patch.object(Path, 'read_bytes', read_bytes), patch.object(Path, 'stat', lambda p, *a, **kw: real_stat(mapped(p), *a, **kw)), patch.object(Path, 'is_dir', is_dir), patch.object(os, 'listdir', listdir), patch.object(os, 'readlink', readlink):
+    def exists(path, *a, **kw):
+        # Python 3.14 Path.exists bypasses Path.stat; map the observation itself.
+        return real_exists(mapped(path), *a, **kw)
+    with patch.object(Path, 'read_text', read_text), patch.object(Path, 'read_bytes', read_bytes), patch.object(Path, 'stat', lambda p, *a, **kw: real_stat(mapped(p), *a, **kw)), patch.object(Path, 'exists', exists), patch.object(Path, 'is_dir', is_dir), patch.object(os, 'listdir', listdir), patch.object(os, 'readlink', readlink):
         yield
 
 
@@ -1287,9 +1291,12 @@ def correction_processes():
             ('zombie_leader_live_sibling_use', dict(name='codex', state='Z', missing=['ns/mnt'], threads=[dict(name='live-sibling', cwd=str(p), root=str(q))]), 'process_use'),
             ('zombie_leader_live_sibling_missing', dict(name='codex', state='Z', missing=['ns/mnt'], threads=[dict(name='live-sibling', missing=['ns/mnt'])]), 'unknown_missing_process_reference'),
         ):
-            r = run([record])
-            retained(r, p, reason); retained(r, q, reason)
-            assert r['process_exemptions'] == []
+            try:
+                r = run([record])
+                retained(r, p, reason); retained(r, q, reason)
+                assert r['process_exemptions'] == []
+            except AssertionError as exc:
+                raise AssertionError(f'{control}: {exc}') from exc
             zombie_controls.append(dict(control=control, both='retained', reason=reason))
         assert candidate_contents(p, q) == before
         assert f.git(repo, 'worktree', 'list', '--porcelain') == registered
