@@ -237,7 +237,7 @@ for dist in importlib.metadata.distributions():
         continue
     notices = []
     for f in files:
-        if not any(token in f.name.lower() for token in ('license', 'notice', 'copying', 'copyright')):
+        if not any(token in f.name.lower() for token in ('license', 'notice', 'copying', 'copyright', 'patents')):
             continue
         src = Path(dist.locate_file(f))
         if not src.is_file():
@@ -280,11 +280,13 @@ try:
 except (OSError, ValueError, KeyError, TypeError, RuntimeError) as exc:
     python_component['reason'] = str(exc)
 components.append(python_component)
-components += [{'component': name, 'disposition': 'LICENSE_UNRESOLVED', 'notices': []}
-               for name in ('PYTHON_NATIVE', 'BOOTLOADER_EXCEPTION_MAPPING', 'GO_LINKED_GRAPH',
-                            'WEB_EMITTED_CLOSURE', 'NATIVE_REDISTRIBUTION', 'ASSET_ATTRIBUTION')]
+# A separate installed metadata/RECORD census is the manifest inventory input.
+# Do not derive membership from the retained component subset above.
+_manifest_notices = runpy.run_path(str(_PROJ / 'app/mac/scripts/manifest_notices.py'))
+_manifest_notices['python_snapshot'](list(importlib.metadata.distributions()), analysis,
+                                    python_component, evidence, Path(sys.base_prefix).resolve())
 (evidence / 'license-mapping.json').write_text(json.dumps(
-    {'closure_complete': False, 'components': components}, indent=2) + '\n')
+    {'standard': 'dependency-manifest-notices', 'components': components}, indent=2) + '\n')
 
 _collect_custody = _freezer['spec_collect_inputs'](_custody, exe, exe_cli, shared)
 coll = COLLECT(

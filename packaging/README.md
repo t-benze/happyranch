@@ -1,13 +1,14 @@
 ## Manifest-notice shipping gate (THR104 seq260/266)
 
+Current shipping standard and finite verification: [manifest-notice contract](manifest-notices.md).
+
 The current standard is resolved dependency-manifest notices plus separately
 bundled fonts, icons and assets. `app/mac/scripts/manifest_notices.py` enumerates
 all resolved npm, Go and Python identities, including explicit target/build-only
 exclusions. Original texts, owner associations and independent inventory
 membership are checked in the candidate and ZIP. It does not claim linker or
 per-byte license closure. Source/custody, resources, architecture, trust and
-release identity checks remain independent. Earlier six-closure descriptions
-below are historical and are being replaced in this delivery.
+release identity checks remain independent. The former six-closure standard is retired without claiming its proof.
 
 # Frozen Mac packaging
 
@@ -110,10 +111,10 @@ collector's existing third-party attribution boundary. The checked-in tarball
 and all preparation inputs survive the release wrapper's git archive export;
 ordinary npm ci requires no local package lifecycle build.
 
-All six unresolved labels remain, and strict license verification still blocks
-ZIP/release finalization with `closure_complete=false`. Scoped non-native
-package/browser checks do not establish final emitted closure, legal
-applicability, actual native custody or Mac acceptance.
+The former six unresolved labels and always-false closure flag are retired.
+The manifest-notice gate allows a complete original-backed inventory to reach
+ZIP creation. Scoped non-native checks do not establish legal certification,
+actual native custody or Mac acceptance.
 
 The Mac wrapper's private `asset_evidence.py` adds local asset observations,
 without a new dependency, Vite change or rights policy. A complete bounded
@@ -152,9 +153,9 @@ directly to the wrapper; the context precedes source, dist and app, with icon
 and notices referencing earlier bindings. Expectations are never recovered from
 the candidate records. Standalone readers require independently retained caller
 arguments/tokens and the original subjects. Missing native evidence refuses the
-full reader; there is no partial-success reader. The unchanged mapping reader
-still requires literal Boolean True and preserves all failed components. It
-does **not** implement the future exact-six-result/sentinel identity contract.
+full reader; there is no partial-success reader. The mapping reader preserves
+concrete failed components and independently verifies the manifest-notice
+inventory. The former exact-six-result/sentinel contract is retired.
 
 Both producer and independent reader use descriptor-relative no-follow,
 nonblocking, regular/single-link and stable-identity reads with complete stable
@@ -169,19 +170,17 @@ Overflow refuses, never a truncated completeness claim. No whole-mapping cap is
 introduced. Failure bundles retain their existing allowlist/caps; new records
 and original subjects remain local, and a summary upload cannot replace them.
 
-Source delivery and portable fixtures do not establish actual PYNOTICES
-append/False/sentinel/error/token behavior, wrapper-to-licenses integration,
-full independent reader or native operation custody. Those remain native-only
-UNEXECUTED/NOT_REACHED, alongside Mac14/WKWebView/install and future all-six
-finalizer cases. Native execution is not a prerequisite for this bounded source
-review; the parent retains actual changed-source/input/custodian disposition.
-All six closures remain UNEXECUTED/UNMET, including ASSET_ATTRIBUTION.
+Source delivery and portable fixtures do not establish actual native PYNOTICES
+append/token behavior, full wrapper/licenses execution or native custody.
+Mac14/WKWebView/install remain UNEXECUTED. Native execution is not a source-review
+prerequisite; the parent retains changed-source/input/custodian disposition.
+No former six-closure claim is asserted.
 
 Failure diagnostics include
 `web-attribution.json`: first 100 rejected records, string fields capped at 512
 characters and serialized records capped at 2048 bytes, with explicit
-omitted-record/field truncation. Retained texts leave `closure_complete=false`
-and release finalization blocked pending actual legal/native/asset reconciliation.
+omitted-record/field truncation. Concrete unresolved owners/texts remain errors;
+complete manifest inventory and retained originals pass the new shipping gate.
 
 The failure bundle preserves complete small files (up to 262144 bytes) as
 `.diagnostic` and larger complete files as `.diagnostic.gz`, with no JSON byte
@@ -191,7 +190,7 @@ map and component/notice provenance plus per-command CLI/catalog/trust results.
 Inputs are capped at 8 MiB each and 32 MiB total; stored bulk is capped at
 2 MiB each and 8 MiB total. Three independent critical files (build failure,
 native failure and all eleven symbol observations) each have a 262144-byte
-budget. At most 102 files and 128 KiB of metadata describe source hashes/sizes,
+budget. At most 106 files and 128 KiB of metadata describe source hashes/sizes,
 whole-file identity/gzip encoding, original/retained/omitted byte and known row
 counts. Missing or uncountable inputs use null counts, never zero-loss claims;
 malformed, unsafe or over-cap inputs get valid explicit loss records. The
@@ -299,8 +298,8 @@ venue owner disposes of it. No added secrets, permissions, signing automation,
 PR/main build/test triggers or automatic release publication.
 
 Source-only/synthetic packaging checks cannot prove native execution. Independent
-QA still owns C01/C04–C08 native assertions, C09 frozen catalog, C10 actual notice
-closure, C11 native archive, C12 real bundled daemon/CLI/web smoke, C13/C14 display
+QA still owns C01/C04–C08 native assertions, C09 frozen catalog, C10 actual manifest
+notices, C11 native archive, C12 real bundled daemon/CLI/web smoke, C13/C14 display
 and process assertions, C15 minimum OS, and C16–C18 signing/public receipts as
 separately authorized. R2 managed Start/quit bounds are 60s/15s; R3 identities
 remain distinct. Q1–Q13 remain UNEXECUTED/deferred. General integration is
@@ -365,10 +364,11 @@ member/name budgets are charged once in admission, cumulatively across archives.
 The Darwin input is custody revision 2; historical revision 1 receipts describe
 only their original input and head.
 
-Technical matches cannot complete PYTHON_NATIVE or BOOTLOADER_EXCEPTION_MAPPING.
-Compilation associations remain `declared_compile_origin`/`origin_unobserved`;
-installer custody and terms applicability remain unresolved. All six sentinels,
-literal closure False and ordinary failed rows remain. Portable source/parser
+Compilation associations remain `declared_compile_origin`/`origin_unobserved`.
+Technical matches do not certify legal applicability. Manifest-selected
+PyInstaller originals include its original exception terms; unknown concrete
+native vendors require their own original association. Former six sentinels
+and literal closure False are retired; concrete failed rows remain. Portable source/parser
 checks are distinct from actual Darwin configure/target/transform/cache/EXE/copy
 and full wrapper/licenses integration, which remain N-only UNEXECUTED. No build
 allocation, signing, release, public distribution or deployment follows.
@@ -431,12 +431,12 @@ app-copy acceptance, including equal-byte collisions. Existing asset census and
 map removal remain the copy authority.
 
 `web-notices.json` retains the canonical digest of every existing component row
-and records appended candidate notice rows. It cannot clear an ordinary failure,
-sentinel, or literal closure False. A fresh licenses command independently runs
-the web reader before the existing ordinary/global license gate. Unsigned source,
+and records appended candidate notice rows. It cannot clear a concrete failure.
+A fresh licenses command independently runs the web reader before the original
+text checks and manifest membership validator. Unsigned source,
 portable/component/browser observations establish only their measured local
 scope. They establish neither legal applicability nor actual Darwin/native
-custody, any of the six full closures, or release availability.
+custody or release availability; former six full closures are not claimed.
 
 Packaging compilation retains the ordinary Tailwind plugin's `AtProperty` and
 `ColorMix` polyfills (the pinned compiler's combined value `3`); both independent

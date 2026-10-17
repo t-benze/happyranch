@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.metadata
 import json
 import os
 import re
@@ -19,11 +20,12 @@ import zipfile
 from pathlib import Path
 
 SCHEMA = 'happyranch-manifest-notices@1'
+STANDARD = 'resolved dependency manifests and separate bundled asset notices'
 BASE = 'Contents/Resources/licenses'
 MANIFEST = BASE + '/manifest-notices.json'
 EVIDENCE = BASE + '/resolved-inventory.json'
 MAX_JSON = 32 * 1024 * 1024
-NOTICE = re.compile(r'(?i)^(licen[cs]e|notice|copying|copyright|authors)(?:[.\-_].*)?$')
+NOTICE = re.compile(r'(?i)^(licen[cs]e|notice|copying|copyright|authors|patents)(?:[.\-_].*)?$')
 
 
 def require(ok, owner, problem):
@@ -145,6 +147,10 @@ def expected(e):
     modules = {r['Path']: r for r in e['go_modules'] if not r.get('Main')}
     used = {r['Module']['Path'] for r in e['go_deps'] if r.get('Module') and not r['Module'].get('Main')}
     require(used <= set(modules), 'go', 'dependency module absent from resolved go list -m all')
+    for dependency in e['go_deps']:
+        mod = dependency.get('Module')
+        if mod and not mod.get('Main'):
+            require(mod.get('Version') == modules[mod['Path']].get('Version'), mod['Path'], 'go dependency version differs from resolved module')
     for name, module in sorted(modules.items()):
         require(not module.get('Replace'), name, 'Go replacement requires explicit original association')
         rows.append(owner('go', name, name, module['Version'], 'go.mod/go.sum:' + name,
@@ -159,12 +165,62 @@ def expected(e):
             selection = 'excluded: first-party project covered separately'
         rows.append(owner('python', name + '@' + version, name, version, json.dumps(package['source'], sort_keys=True), selection))
     for r in e['runtime']:
-        rows.append(owner('runtime', r['key'], r['name'], r['version'], r['source'], 'included: concrete bundled runtime input'))
+        rows.append(owner('runtime', r['key'], r['name'], r['version'], r['source'], r.get('selection', 'included: concrete bundled runtime input')))
     for r in e['assets']:
         rows.append(owner('asset', r['path'], r['name'], r['revision'], r['source'], 'included: separate bundled font/icon/asset'))
     rows.append(owner('project', 'HappyRanch', 'HappyRanch', e['source_tree'], 'LICENSE at source tree ' + e['source_tree'], 'included: first-party code and resources'))
     require(len({r['id'] for r in rows}) == len(rows), 'inventory', 'duplicate owner identity')
     return sorted(rows, key=lambda r: r['id'])
+
+
+def distribution_records(distributions):
+    """Read independently installed metadata/RECORD, without importing packages."""
+    rows, owned = [], set()
+    for dist in distributions:
+        root = Path(dist.locate_file('')).resolve()
+        originals = []
+        for entry in dist.files or []:
+            path = Path(dist.locate_file(entry))
+            owned.add(str(path.resolve()))
+            if NOTICE.match(path.name):
+                # A missing/unsafe RECORD-listed original is a failure, never absence.
+                text(path, root)
+                originals.append(str(path))
+        rows.append(dict(name=dist.metadata['Name'], version=dist.version,
+                         root=str(root), originals=sorted(set(originals))))
+    return sorted(rows, key=lambda r: (norm(r['name']), r['version'])), owned
+
+
+def python_snapshot(distributions, analysis, python_component, evidence, prefix):
+    """Called by the real spec in its frozen environment, without runtime imports."""
+    rows, owned = distribution_records(distributions)
+    runtime = [dict(key='Python', name='Python interpreter and stdlib',
+                    version=python_component['version'], source=str(prefix),
+                    boundary=str(evidence), originals=[])]
+    # The existing exact CPython fallback already retained a validated original.
+    for notice in python_component['notices']:
+        runtime[0]['originals'].append(str(evidence / 'notices/Python-LICENSE.txt'))
+    natives = {}
+    for lane in ('daemon', 'cli'):
+        for row in analysis[lane]['binaries']:
+            if row['kind'] == 'SYMLINK' or not row['source']:
+                continue
+            path = Path(row['source']).resolve()
+            if str(path) in owned:
+                continue
+            # Python itself and its stdlib extensions belong to the interpreter.
+            # Independently bundled vendor libraries do not inherit that license.
+            if path.is_relative_to(prefix) and (path.name in ('Python', 'Python3')
+                    or 'lib-dynload' in path.parts and path.suffix == '.so'):
+                continue
+            natives[str(path)] = row['sha256']
+    for path, digest in sorted(natives.items()):
+        runtime.append(dict(key=path, name=Path(path).name, version=digest,
+                            source=path, originals=[], boundary=str(Path(path).parent)))
+    # Unknown concrete native vendors refuse by owner/path at collect, rather
+    # than asserting six whole-program closure claims or inventing originals.
+    put(evidence / 'python-distributions.json', evidence,
+        encode(dict(distributions=sorted(rows, key=lambda r: (norm(r['name']), r['version'])), runtime=runtime)))
 
 
 def snapshot(source, output, mapping):
@@ -199,29 +255,65 @@ def snapshot(source, output, mapping):
                 package = '/'.join(parts[:2]) if parts[0].startswith('@') else parts[0]
                 emitted.add((Path(prefix) / 'node_modules' / package).relative_to(source / 'web').as_posix())
     py = json.loads(read(output / 'scratch/freeze-work/python-distributions.json', output, MAX_JSON))
+    roots = sorted((source / '.venv/lib').glob('python*/site-packages'))
+    require(bool(roots), 'python', 'installed metadata directory missing')
+    for root in roots:
+        safe_path(root, source)
+    observed, _ = distribution_records(importlib.metadata.distributions(path=[str(p) for p in roots]))
+    require(observed == py['distributions'], 'python', 'independent installed metadata/RECORD census differs from freezer snapshot')
+    for dist in py['distributions']:
+        require(Path(dist['root']).is_relative_to(source / '.venv'), dist['name'], 'installed Python metadata root escapes frozen environment')
     assets = []
     facts = json.loads(read(source / 'packaging/notice-data/font-assets.json', source))
     fonts = {r['destination']: r for r in facts['files']}
+    font_notices = {r['notice']['destination']: r for r in facts['files']}
     asset_roots = ('web/public', 'app/mac/Resources/AppIcon.appiconset')
     for root in asset_roots:
-        if not (source / root).exists():
-            continue
+        require((source / root).is_dir(), root, 'required asset input root missing')
         for path in sorted((source / root).rglob('*')):
             if path.is_dir() and not path.is_symlink():
                 continue
             rel = path.relative_to(source).as_posix()
             raw = read(path, source, MAX_JSON)
-            fact = fonts.get(rel)
+            fact = fonts.get(rel) or font_notices.get(rel)
+            if fact:
+                expected_hash = fact['sha256'] if rel in fonts else fact['notice']['sha256']
+                require(sha(raw) == expected_hash, rel, 'pinned font/original notice identity mismatch')
             assets.append(dict(path=rel, name=fact['family'] if fact else rel,
                                revision=fact['source']['commit'] if fact else sha(raw),
                                source=fact['source']['url'] if fact else 'first-party source:' + rel,
-                               sha256=sha(raw), notice=fact['notice']['destination'] if fact else 'LICENSE'))
+                               sha256=sha(raw), notice=fact['notice']['destination'] if fact else 'LICENSE',
+                               candidate='Contents/Resources/web/dist/' + path.relative_to(source / 'web/public').as_posix() if root == 'web/public' else None))
+    require(set(fonts) <= {r['path'] for r in assets}, 'font inventory', 'original font asset missing from public census')
+    go_deps = stream_json(read(output / 'diagnostics/go-deps.json', output, MAX_JSON).decode())
+    goroot = Path(mapping['go_root'])
+    vendor_lock = goroot / 'src/vendor/modules.txt'
+    vendor_runtime = []
+    if vendor_lock.exists():
+        vendor_text = read(vendor_lock, goroot, MAX_JSON).decode()
+        for name, version in re.findall(r'^# (\S+) (v\S+)$', vendor_text, re.M):
+            root = goroot / 'src/vendor' / relative(name)
+            used = any(not r.get('Module') and r.get('Dir') and Path(r['Dir']).is_relative_to(root) for r in go_deps)
+            vendor_runtime.append(dict(key='Go-vendor/' + name, name=name, version=version,
+                                       source=str(root), originals=[str(p) for p in original_files(root)] if used else [],
+                                       selection='included: Go standard-library vendor dependency' if used else 'excluded: Go vendor module not in target dependency packages'))
+        vendor_roots = [Path(r['source']) for r in vendor_runtime]
+        for dependency in go_deps:
+            path = Path(dependency.get('Dir', '/'))
+            if not dependency.get('Module') and path.is_relative_to(goroot / 'src/vendor'):
+                require(any(path.is_relative_to(root) for root in vendor_roots), dependency.get('ImportPath'), 'Go vendored package absent from toolchain modules.txt')
+    else:
+        require(not any(not r.get('Module') and '/src/vendor/' in r.get('Dir', '') for r in go_deps), 'Go vendor', 'toolchain vendor manifest missing')
+    go_modules = stream_json(read(output / 'diagnostics/go-modules.json', output, MAX_JSON).decode())
+    for module in go_modules:
+        if not module.get('Main') and module.get('Dir'):
+            require(Path(module['Dir']).is_relative_to(output / 'scratch/go-modules'), module['Path'], 'Go module root escapes invocation cache')
     return dict(schema=SCHEMA, target='darwin-arm64', source_tree=mapping['source_tree'],
                 npm_lock=lock, npm_installed=installed, npm_emitted=sorted(emitted),
-                go_modules=stream_json(read(output / 'diagnostics/go-modules.json', output, MAX_JSON).decode()),
-                go_deps=stream_json(read(output / 'diagnostics/go-deps.json', output, MAX_JSON).decode()),
+                go_modules=go_modules,
+                go_deps=go_deps,
                 python_lock=tomllib.loads(read(source / 'uv.lock', source, MAX_JSON).decode()),
-                python_installed=py['distributions'], runtime=py['runtime'] + [dict(
+                python_installed=py['distributions'], runtime=py['runtime'] + vendor_runtime + [dict(
                     key='Go', name='Go runtime', version=mapping['go_version'], source=mapping['go_root'], originals=mapping['go_originals'])],
                 assets=assets,
                 input_digests={p: sha(read(source / p, source, MAX_JSON)) for p in
@@ -237,6 +329,11 @@ def sources_for(row, e, source, mapping):
         if not paths and row['component'].startswith('@radix-ui/'):
             helpers = runpy.run_path(str(source / 'packaging/notice-data/retained_notices.py'))
             inputs = [i for r in mapping['components'] if r.get('scope') == 'web' and r.get('component') == row['component'] and r.get('version') == row['version'] for i in r.get('inclusion', [])]
+            if not inputs:
+                pins = helpers['identities'](source / 'packaging/notice-data')['radix']['packages']
+                pin = next((p for p in pins if (p['name'], p['version']) == (row['component'], row['version'])), None)
+                if pin:
+                    inputs = [dict(input=str(root / name), source_sha256=digest, metadata_chain=[dict(path=str(root / 'package.json'), sha256=pin['metadata_sha256'])]) for name, digest in pin['emitted_sources'].items()]
             fallback = helpers['radix_original'](source / 'packaging/notice-data', row['component'], row['version'], root, inputs)
             if fallback:
                 return [(fallback[0], source)]
@@ -260,6 +357,7 @@ def sources_for(row, e, source, mapping):
 def collect(source, app, output, mapping):
     e = snapshot(source, output, mapping)
     components = []
+    e['originals'] = {}
     for row in expected(e):
         notices = []
         if row['selection'].startswith('included:'):
@@ -270,8 +368,9 @@ def collect(source, app, output, mapping):
                 destination = BASE + '/manifest/' + sha(row['id'].encode()) + '/' + sha(data) + '.txt'
                 put(app / destination, app, data)
                 notices.append(dict(source=str(path), source_sha256=sha(data), destination=destination, sha256=sha(data)))
+        e['originals'][row['id']] = [dict(source=n['source'], sha256=n['source_sha256']) for n in notices]
         components.append(dict(**row, notices=notices))
-    manifest = dict(schema=SCHEMA, standard='resolved dependency manifests and separate bundled asset notices',
+    manifest = dict(schema=SCHEMA, standard=STANDARD,
                     inventory_sha256=sha(encode(e)), components=components)
     # All owner/text checks precede committing the package metadata pair.
     put(app / EVIDENCE, app, encode(e))
@@ -283,17 +382,30 @@ def collect(source, app, output, mapping):
 def validate_data(manifest_raw, evidence_raw, get):
     manifest, e = json.loads(manifest_raw), json.loads(evidence_raw)
     require(manifest.get('schema') == SCHEMA and manifest.get('inventory_sha256') == sha(evidence_raw), 'manifest', 'inventory digest/schema mismatch')
+    require(set(manifest) == {'schema', 'standard', 'inventory_sha256', 'components'} and manifest['standard'] == STANDARD, 'manifest', 'unsupported metadata contract')
     actual = manifest['components']
     wanted = expected(e)
     require([{k: r.get(k) for k in wanted[0]} for r in actual] == wanted, 'inventory membership', 'missing, extra, reordered or mismatched owner; expected IDs ' + ', '.join(r['id'] for r in wanted if r['id'] not in {x.get('id') for x in actual}))
+    require(set(e['originals']) == {r['id'] for r in wanted}, 'original inventory', 'missing or extra owner original associations')
     for row in actual:
+        require(set(row) == {'id', 'family', 'component', 'version', 'source', 'selection', 'notices'}, row.get('id'), 'invalid component fields')
         notices = row['notices']
         require(bool(notices) == row['selection'].startswith('included:'), row['id'], 'required original notices absent or excluded owner has texts')
+        require([dict(source=n['source'], sha256=n['source_sha256']) for n in notices] == e['originals'][row['id']], row['id'], 'required original association missing or changed')
         for notice in notices:
+            require(set(notice) == {'source', 'source_sha256', 'destination', 'sha256'}, row['id'], 'invalid original notice fields')
             rel = relative(notice['destination'])
             require(rel.parts[:4] == ('Contents', 'Resources', 'licenses', 'manifest'), row['id'], 'unsafe notice destination ' + str(rel))
-            data = get(rel.as_posix())
+            try:
+                data = get(rel.as_posix())
+            except (OSError, ValueError, KeyError) as exc:
+                raise ValueError(f"MANIFEST_NOTICE_REFUSED: {row['id']}: {rel}: {exc}; restore original notice") from exc
             require(bool(data.decode('utf-8').strip()) and sha(data) == notice['sha256'] == notice['source_sha256'], row['id'], 'empty text or original/destination digest mismatch at ' + str(rel))
+    for asset in e['assets']:
+        if asset.get('candidate'):
+            path = relative(asset['candidate']).as_posix()
+            require(path.startswith('Contents/Resources/web/dist/'), asset['path'], 'unsafe candidate asset path')
+            require(sha(get(path, MAX_JSON)) == asset['sha256'], asset['path'], 'bundled public asset missing or changed')
     return dict(schema=SCHEMA, inventory_sha256=sha(evidence_raw), manifest_sha256=sha(manifest_raw),
                 owners=len(actual), included=sum(r['selection'].startswith('included:') for r in actual))
 
@@ -302,8 +414,13 @@ def validate(app, source=None, output=None, mapping=None):
     raw = read(app / MANIFEST, app, MAX_JSON)
     evidence = read(app / EVIDENCE, app, MAX_JSON)
     if source is not None:
-        require(encode(snapshot(source, output, mapping)) == evidence, 'inventory', 'live resolved inputs differ from bundled inventory')
-    return validate_data(raw, evidence, lambda p: text(app / p, app))
+        live = snapshot(source, output, mapping)
+        saved = json.loads(evidence)
+        live['originals'] = {}
+        for row in expected(live):
+            live['originals'][row['id']] = [dict(source=str(p), sha256=sha(text(p, root))) for p, root in sources_for(row, live, source, mapping)] if row['selection'].startswith('included:') else []
+        require(encode(live) == encode(saved), 'inventory', 'live resolved inputs/original associations differ from bundled inventory')
+    return validate_data(raw, evidence, lambda p, limit=262144: read(app / p, app, limit))
 
 
 def validate_archive(archive):
@@ -326,6 +443,14 @@ def main():
     parser.add_argument('--app', type=Path)
     parser.add_argument('--archive', type=Path)
     args = parser.parse_args()
+    if args.mode == 'collect' and not all((args.source, args.output, args.mapping, args.app)):
+        parser.error('collect requires --source, --output, --mapping and --app')
+    if args.mode == 'verify' and not args.app:
+        parser.error('verify requires --app')
+    if args.mode == 'verify' and any((args.source, args.output, args.mapping)) and not all((args.source, args.output, args.mapping)):
+        parser.error('live verification requires --source, --output and --mapping together')
+    if args.mode == 'archive' and not args.archive:
+        parser.error('archive requires --archive')
     try:
         if args.mode == 'archive':
             result = validate_archive(args.archive)

@@ -92,8 +92,11 @@ jobs:
             sha="$GITHUB_SHA"
             tree="$(git rev-parse HEAD^{tree})"
           fi
+          originals="$RUNNER_TEMP/happyranch-web-originals-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          python3 app/mac/scripts/prepare_web_originals.py --source "$GITHUB_WORKSPACE" --destination "$originals"
           bash app/mac/scripts/build-app.sh --version "$version" --build "$build" \
             --source-sha "$sha" --source-tree "$tree" --arch arm64 \
+            --web-tool-originals "$originals" \
             --output-dir "$RUNNER_TEMP/happyranch-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
 
       - name: Upload successful internal candidate and exact inner receipt
