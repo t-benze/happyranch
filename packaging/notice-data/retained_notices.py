@@ -7,7 +7,7 @@ import os
 import stat
 from pathlib import Path
 
-_MAP_SHA256 = 'ed3bbad5369ecf0534d080200bb0c5974342d09298bdb8d7e00d06c309581236'
+_MAP_SHA256 = '33fa8d38ceec45d7a88acaf9f7e365eb3b032192a64ad8692828b48330003f54'
 
 
 def safe_path(path: Path, boundary: Path) -> None:

@@ -71,12 +71,14 @@ inputs = [(name, 'diagnostics/' + name, kind) for name, kind in (
     ('go-modules.json', 'json-stream'), ('swift-link.map', 'text'),
     ('swift-bin-path.txt', 'text'), ('swift-release.sha256', 'text'),
     ('resources.json', 'json'), ('license-mapping.json', 'json'),
+    ('manifest-notices.json', 'json'),
     ('web-attribution.json', 'json'), ('native.json', 'json'),
     ('native-nm.txt', 'text'), ('native-members.json', 'json'),
     ('catalog.json', 'json'), ('trust.json', 'json'), ('licenses.json', 'json'))]
 inputs += [(name, 'scratch/freeze-work/' + src, kind) for name, src, kind in (
     ('analysis.json', 'analysis.json', 'json'),
     ('python-toolchain.json', 'python-toolchain.json', 'json'),
+    ('python-distributions.json', 'python-distributions.json', 'json'),
     ('freeze-license-mapping.json', 'license-mapping.json', 'json'),
     ('daemon-analysis.toc', 'daemon/Analysis-00.toc', 'text'),
     ('cli-analysis.toc', 'daemon/Analysis-01.toc', 'text'),
@@ -205,13 +207,13 @@ manifest = {**summary, 'inspection_stages': {name: ('REACHED' if i <= reached el
             'complete_files': sum(r['complete'] for r in rows),
             'partial_or_missing_files': sum(not r['complete'] for r in rows),
             'bulk_read_bytes': read_bytes, 'bulk_stored_bytes': stored_bytes,
-            'caps': {'input_files': 50, 'output_files': 102,
+            'caps': {'input_files': 52, 'output_files': 106,
                      'input_per_file': FILE_READ, 'input_total': TOTAL_READ,
                      'stored_per_file': FILE_STORED, 'stored_total': TOTAL_STORED,
                      'critical_per_file': CRITICAL, 'critical_files': 3,
                      'metadata_total': 131072},
             'scope': 'AVAILABLE_ALLOWLISTED_EVIDENCE_ONLY_NOT_RELEASE_CLOSURE'}
-assert len(rows) == 50
+assert len(rows) == 52
 encoded = encode(manifest)
 # Fixed field names and short dispositions bound all sidecars and this index.
 assert len(encoded) + sum(len(encode(r)) for r in rows) < 131072
@@ -437,7 +439,7 @@ def emitted_source_sha256(path, root):
 def notice_candidates(root):
     # Include unsafe entries too: a notice-named FIFO/directory is not absence.
     return [p for p in sorted(root.iterdir()) if
-            any(n in p.name.lower() for n in ('license', 'notice', 'copying', 'copyright'))]
+            any(n in p.name.lower() for n in ('license', 'notice', 'copying', 'copyright', 'patents'))]
 def texts(name, version, root, layer, inclusion):
     notices = []; prepared = []
     try:
@@ -668,16 +670,18 @@ for root, row in sorted(packages.items()):
     except (OSError, ValueError, RuntimeError) as exc:
         for inclusion in row['inputs']:
             unresolved(inclusion, str(exc) if isinstance(exc, ValueError) else 'notice retention failed: ' + type(exc).__name__)
-# Always preserve the legal closure gaps from the frozen input mapping.
-mapping['closure_complete'] = False
+# Manifest standard: retain original observations without a per-byte closure claim.
+mapping['source_tree'] = sys.argv[8]
+mapping['go_root'] = str(goroot)
+mapping['go_version'] = __import__('subprocess').check_output(['go', 'env', 'GOVERSION'], text=True).strip()
+mapping['go_originals'] = [str(p) for p in notice_candidates(goroot)]
 (output / 'diagnostics/web-attribution.json').write_text(json.dumps(web_diagnostics, indent=2) + '\n')
 license = app / 'Contents/Resources/licenses/LICENSE'
 components.append({'component': 'HappyRanch first-party code and 29 source resources',
                    'disposition': 'RETAINED_TEXT', 'scope': 'pinned source and assembly',
                    'notices': [{'source': str(source / 'LICENSE'), 'sha256': sha(license),
                                 'destination': 'Contents/Resources/licenses/LICENSE'}]})
-# Actual extraction/chunk/SDK and attribution reconciliation requires the native
-# owner. Retain explicit gaps; a dependency list cannot set closure_complete.
+# Preserve actual asset/web original-source and integrity observations.
 asset = __import__('runpy').run_path(sys.argv[4])
 candidate = asset['Candidate'](*sys.argv[7:12])
 paths = asset['Paths'](Path(sys.argv[5]), source, source / 'web/dist', app, output,
@@ -692,11 +696,12 @@ def append_generated():
 web_rows, web_notice_token = append_generated()
 components.extend(web_rows)
 (output / 'diagnostics/license-mapping.json').write_text(json.dumps(mapping, indent=2) + '\n')
-# The token leaves this actual caller only after the unchanged False mapping
-# (all prior rows/sentinels/ordinary failures included) is successfully written.
+# The token leaves this caller only after the observation mapping is written.
 print(json.dumps({'asset':font_token,'web':web_notice_token},separators=(',',':')))
 PYNOTICES
 )"
+python3 "$SOURCE/app/mac/scripts/manifest_notices.py" collect --source "$SOURCE" --app "$APP" \
+    --output "$OUTPUT" --mapping "$OUTPUT/diagnostics/license-mapping.json" > "$OUTPUT/diagnostics/manifest-notices.json"
 WEB_NOTICES="$(web_field "$(web_field "$ASSET_NOTICES_TOKEN" web)" record_sha256)"
 ASSET_NOTICES="$(asset_field "$(web_field "$ASSET_NOTICES_TOKEN" asset)" sha256)"
 WEB_ARGS=(--web-tool-originals "$WEB_TOOL_ORIGINALS" --web-caller "$WEB_CALLER" --web-context-sha256 "$WEB_CONTEXT" --web-preparation-sha256 "$WEB_PREPARATION" --web-build-sha256 "$WEB_BUILD" --web-dist-sha256 "$WEB_DIST" --web-notices-sha256 "$WEB_NOTICES")
@@ -728,9 +733,8 @@ for i, argv in enumerate(commands):
 PY
 INSPECTION_STAGE=catalog
 bash "$VERIFY" catalog --app "$APP" --list-json "$OUTPUT/diagnostics/cli-5.stdout" --validate-json "$OUTPUT/diagnostics/cli-6.stdout" > "$OUTPUT/diagnostics/catalog.json"
-# The freezer retains real installed notice texts and Analysis mappings. Other
-# compiled layers remain named gaps until their actual inclusion is reconciled.
-# Refuse complete-release inventory on missing/unresolved notices. Preserve
+# Verify complete resolved inventory membership and all original text associations.
+# Refuse archive creation for concrete missing or mismatched owners/texts. Preserve
 # all diagnostic evidence and staged app for the owner; no success ZIP/upload.
 INSPECTION_STAGE=trust
 bash "$VERIFY" trust --app "$APP" > "$OUTPUT/diagnostics/trust.json"
@@ -743,10 +747,7 @@ bash "$VERIFY" licenses "${ASSET_ARGS[@]}" --mapping "$OUTPUT/diagnostics/licens
     "${FREEZER_ARGS[@]}" --freezer-copy-sha256 "$FREEZER_COPY" "${WEB_ARGS[@]}" > "$OUTPUT/diagnostics/licenses.json"
 STAGE=archive
 ZIP="$OUTPUT/HappyRanch-${VERSION}-${BUILD}-${ARCH}.zip"
-ditto -c -k --keepParent "$APP" "$ZIP"
-bash "$VERIFY" archive --app "$APP" --archive "$ZIP" --run-id "$RUN_ID" > "$OUTPUT/diagnostics/inner-zip.json"
-bash "$VERIFY" reconcile --archive "$ZIP" --receipt "$OUTPUT/diagnostics/inner-zip.json" \
-    --version "$VERSION" --build "$BUILD" --source-sha "$SOURCE_SHA" --source-tree "$SOURCE_TREE" --arch "$ARCH" --run-id "$RUN_ID" > "$OUTPUT/diagnostics/reconciliation.json"
+bash "$SCRIPT_DIR/archive-app.sh" "$APP" "$OUTPUT" "$VERSION" "$BUILD" "$SOURCE_SHA" "$SOURCE_TREE" "$ARCH" "$RUN_ID"
 # Recheck the actual source before any success finalization. The output still
 # exists, so use the read-only Git observations rather than new-path admission.
 test "$(git -C "$REPO_ROOT" rev-parse HEAD)" = "$SOURCE_SHA"
