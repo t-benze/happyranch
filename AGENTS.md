@@ -166,7 +166,11 @@ notifier change or deployment follows. Current contract: [Jobs](docs/superpowers
 org sweeping under one1800s monotonic batch window, with an owned stoppable worker
 process group. Only actual terminal-owner/terminal-root scratch and registered
 clean retained-ref worktrees can pass fresh jobs/process/recursive-age/containment
-checks; unknown retains. Preserve manifests/locks/output, dirty worktrees and
+checks; unknown retains. THR307seq85/88 includes superseded for BOTH owner/root,
+skips recognized finished jobs before owner-lineage lookup, and permits only
+exact unreadable systemd/(sd-pam)/sshd-session/ssh-agent comm identities with
+stable identity/credential/census checks and actual summary reporting. Readable
+candidate use and other uncertainty retain. Preserve manifests/locks/output, dirty worktrees and
 branches. No legacy receipt/count/rotation policy is imported into this new
 mechanism; legacy cleanup, flags and seven sessions are unchanged. Dry run never
 chmods/removes/prunes. One JSON/existing-shaped audit reports attributable allocated

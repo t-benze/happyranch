@@ -37,7 +37,7 @@ from runtime.daemon._disk_sweep_fs import (
 
 LOG = logging.getLogger(__name__)
 BUDGET_SECONDS = 1800
-TERMINAL = {'completed', 'failed', 'cancelled'}
+TERMINAL = {'completed', 'failed', 'cancelled', 'superseded'}
 TASK = re.compile(r'TASK-[0-9]+\Z')
 
 
@@ -304,16 +304,15 @@ class Evidence:
             # A task/root scope includes all structurally related job owners.
             for row in conn.execute('SELECT task_id,status FROM jobs'):
                 check(self.deadline)
-                # Terminal status does not establish ownership: native TEXT has
-                # no task FK. Validate every owner's lineage before scope use.
-                job_root = ancestry(row['task_id'])
-                if row['status'] in ('pending', 'queued', 'running'):
-                    if job_root == root:
-                        raise Retain('active_job:' + row['status'])
-                # Only native JobStatus terminal values are safe; TEXT storage
-                # cannot rule out unsupported aliases or malformed values.
-                elif row['status'] not in ('completed', 'failed', 'rejected'):
+                # Finished native jobs cannot keep historical owner lineage
+                # live. Skip them BEFORE resolving their (possibly gone) owner.
+                if row['status'] in ('completed', 'failed', 'rejected'):
+                    continue
+                if row['status'] not in ('pending', 'queued', 'running'):
                     raise Retain('unknown_job_status')
+                job_root = ancestry(row['task_id'])
+                if job_root == root:
+                    raise Retain('active_job:' + row['status'])
         finally:
             conn.close()
 
@@ -349,7 +348,7 @@ def _worktree_gate(candidate: dict, deadline: float) -> tuple:
         raise Retain('unique_head_commit')
     return row.get("HEAD"), row.get("branch"), common, metadata
 
-def admit(candidate: dict, evidence: Evidence, deadline: float, *, now: float | None = None, repairs: dict | None = None) -> dict:
+def admit(candidate: dict, evidence: Evidence, deadline: float, *, now: float | None = None, repairs: dict | None = None, checkpoint: Callable[[], None] = lambda: None) -> dict:
     """Fresh common gates before each candidate mutation/retry admission."""
     path, workspace = Path(candidate['path']), Path(candidate['workspace'])
     task_id = path.name
@@ -386,7 +385,14 @@ def admit(candidate: dict, evidence: Evidence, deadline: float, *, now: float | 
             raise Retain('changed_within_hour')
     if candidate['phase'] == 'scratch' and any(Path(p).name == '.git' for p in tree):
         raise Retain('unknown_repository_in_scratch')
-    process_use(path, deadline)
+    def report_exemption(observation: dict) -> None:
+        records = candidate.setdefault('process_exemptions', [])
+        if observation not in records:
+            records.append(observation)
+            # Preserve actual applied exceptions even if a later gate refuses.
+            checkpoint()
+
+    process_use(path, deadline, on_exemption=report_exemption)
     # Re-read durable state after slow filesystem/process/Git observations.
     evidence.ownership(path, workspace, task_id)
     if candidate['phase'] == 'worktree' and _worktree_gate(candidate, deadline) != git_identity:
@@ -499,6 +505,8 @@ def _summarize_org(result: dict) -> None:
     candidates = result.get('candidates', [])
     result['measurement_scope'] = 'eligible scanned inodes only; retained/unreached allocation is unknown; removed allocation is not physical freed space'
     result['physical_freed_bytes'] = None
+    result['process_exemptions'] = [dict(observation, candidate=c['path'])
+                                    for c in candidates for observation in c.get('process_exemptions', [])]
     result['retained_allocation_unknown_count'] = sum(c.get('allocated_bytes') is None for c in candidates)
     result['retained_count'] = sum(c.get('state') == 'retained' for c in candidates)
     result['partial_unknown_count'] = sum(c.get('state') in ('mutation_in_flight', 'partial_or_unknown') for c in candidates)
@@ -552,7 +560,7 @@ def sweep_org(org: Path, deadline: float, *, mode: str, checkpoint=lambda: None,
             try:
                 if candidate.get('repo') in uncertain_repos:
                     raise _RegistrationUnknown('unknown_repository_registration_scope')
-                tree = admit(candidate, evidence, deadline, now=now)
+                tree = admit(candidate, evidence, deadline, now=now, checkpoint=report_checkpoint)
                 amount, _ = allocated(tree, measured_inodes)
                 phase['measured_allocated_bytes'] += amount
                 candidate['allocated_bytes'] = amount
@@ -568,7 +576,7 @@ def sweep_org(org: Path, deadline: float, *, mode: str, checkpoint=lambda: None,
                 phase['attribution_unknown'] = True
                 report_checkpoint()
                 on_config()
-                fresh = admit(candidate, evidence, deadline, now=now)
+                fresh = admit(candidate, evidence, deadline, now=now, checkpoint=report_checkpoint)
                 on_config()
                 if {k: signature(v) for k, v in tree.items()} != {k: signature(v) for k, v in fresh.items()}:
                     raise Retain('tree_changed_before_mutation')
@@ -590,11 +598,11 @@ def sweep_org(org: Path, deadline: float, *, mode: str, checkpoint=lambda: None,
                         # permission/partial changes count as recent and may
                         # conservatively refuse that retry.
                         on_config()
-                        retry_tree = admit(candidate, evidence, deadline, now=now)
+                        retry_tree = admit(candidate, evidence, deadline, now=now, checkpoint=report_checkpoint)
                         on_config()
                         registrations(repo, deadline)
                         repairs = mutate(path, retry_tree, deadline, remove=False)
-                        admit(candidate, evidence, deadline, now=now, repairs=repairs)
+                        admit(candidate, evidence, deadline, now=now, repairs=repairs, checkpoint=report_checkpoint)
                         on_config()
                         registrations(repo, deadline)
                         candidate['retry_count'] = 1
