@@ -34,6 +34,16 @@ jobs:
         with:
           ref: ${{ inputs.source_sha || github.sha }}
 
+      - name: Reserve private candidate run directory
+        id: run_paths
+        run: |
+          set -euo pipefail
+          umask 077
+          run_root="$(mktemp -d "$RUNNER_TEMP/happyranch-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.XXXXXX")"
+          run_root="$(cd "$run_root" && pwd -P)"
+          printf 'root=%s\noutput=%s/output\noriginals=%s/web-originals\n' "$run_root" "$run_root" "$run_root" >> "$GITHUB_OUTPUT"
+          printf 'Run directory allocated; candidate build not started.\n' > "$run_root/setup-status.txt"
+
       - name: Select Xcode 16
         run: sudo xcode-select -s /Applications/Xcode_16.app
 
@@ -75,6 +85,9 @@ jobs:
 
       - name: Build and inspect exact unsigned candidate
         env:
+          RUN_ROOT: ${{ steps.run_paths.outputs.root }}
+          CANDIDATE_OUTPUT: ${{ steps.run_paths.outputs.output }}
+          WEB_ORIGINALS: ${{ steps.run_paths.outputs.originals }}
           INPUT_VERSION: ${{ inputs.version }}
           INPUT_BUILD: ${{ inputs.build }}
           INPUT_SHA: ${{ inputs.source_sha }}
@@ -92,12 +105,14 @@ jobs:
             sha="$GITHUB_SHA"
             tree="$(git rev-parse HEAD^{tree})"
           fi
-          originals="$RUNNER_TEMP/happyranch-web-originals-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          printf 'Preparing web originals; candidate build not started.\n' > "$RUN_ROOT/setup-status.txt"
+          originals="$WEB_ORIGINALS"
           python3 app/mac/scripts/prepare_web_originals.py --source "$GITHUB_WORKSPACE" --destination "$originals"
+          printf 'Invoking build-app; inspect available preflight and bounded diagnostics for outcome.\n' > "$RUN_ROOT/setup-status.txt"
           bash app/mac/scripts/build-app.sh --version "$version" --build "$build" \
             --source-sha "$sha" --source-tree "$tree" --arch arm64 \
             --web-tool-originals "$originals" \
-            --output-dir "$RUNNER_TEMP/happyranch-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+            --output-dir "$CANDIDATE_OUTPUT"
 
       - name: Upload successful internal candidate and exact inner receipt
         if: success()
@@ -106,16 +121,17 @@ jobs:
           name: HappyRanch-unsigned-${{ github.run_id }}-${{ github.run_attempt }}
           if-no-files-found: error
           path: |
-            ${{ runner.temp }}/happyranch-${{ github.run_id }}-${{ github.run_attempt }}/HappyRanch-*.zip
-            ${{ runner.temp }}/happyranch-${{ github.run_id }}-${{ github.run_attempt }}/build-receipt.json
-            ${{ runner.temp }}/happyranch-${{ github.run_id }}-${{ github.run_attempt }}/diagnostics/*.json
+            ${{ steps.run_paths.outputs.output }}/HappyRanch-*.zip
+            ${{ steps.run_paths.outputs.output }}/build-receipt.json
+            ${{ steps.run_paths.outputs.output }}/diagnostics/*.json
 
       - name: Retain bounded failure diagnostics
-        if: failure()
+        if: failure() && steps.run_paths.outputs.root != ''
         uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
         with:
           name: HappyRanch-diagnostics-only-${{ github.run_id }}-${{ github.run_attempt }}
           if-no-files-found: warn
           path: |
-            ${{ runner.temp }}/happyranch-${{ github.run_id }}-${{ github.run_attempt }}/preflight.json
-            ${{ runner.temp }}/happyranch-${{ github.run_id }}-${{ github.run_attempt }}/diagnostics/bounded/*
+            ${{ steps.run_paths.outputs.root }}/setup-status.txt
+            ${{ steps.run_paths.outputs.output }}/preflight.json
+            ${{ steps.run_paths.outputs.output }}/diagnostics/bounded/*

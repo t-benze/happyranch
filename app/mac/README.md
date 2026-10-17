@@ -119,14 +119,35 @@ bash app/mac/scripts/build-app.sh --version 1.0.1 --build 1.0.1 \
 
 The absolute originals directory must meet the [generated web input contract](#generated-web-custody-inputs-and-verification).
 
-The output parent must already exist, be owned by the current user and have no
-symlink ancestors. The leaf must be absent and outside the source and Desktop.
+The output parent must already exist, be private (no group/other permission
+bits), be owned by the current user and have no symlink ancestors. The leaf
+must be absent and outside the source and Desktop.
 No output overwrite or implicit Desktop copy exists. Paths with spaces are
 supported. Builds export the pinned tree to an invocation-owned disposable
 checkout. Go/archive, Python environment, web, Swift, icon and caches stay there;
 no existing debug/archive/dist output is reused. Failed stages retain scratch
 and diagnostics, exit nonzero and produce no successful build receipt. The
 venue owner disposes of only that exact run after retaining evidence.
+
+The hosted workflow atomically reserves a unique mode-0700 run directory under
+`RUNNER_TEMP` using `mktemp -d`; it never changes the shared temp directory's
+permissions. `web-originals` and the initially absent `output` are children of
+that run directory. Step outputs carry these exact paths to preparation, build
+and both artifact collectors. Success uploads only `output/HappyRanch-*.zip`,
+`output/build-receipt.json` and `output/diagnostics/*.json`; failure uploads the
+run's `setup-status.txt`, available `output/preflight.json` and
+`output/diagnostics/bounded/*`. The status file reports the last entered setup
+stage, not build success. If allocation fails before the root is published,
+artifact collection is skipped and the workflow log is the diagnostic evidence;
+no fallback glob scans shared temp. No candidate receipt is invented for early
+setup or native-tool failures.
+
+Portable layout verification (no compilation or native acceptance):
+`python packaging/verify_mac_run_layout.py --scratch /absolute/new-fixture-root`.
+It executes the workflow reservation shell and real preflight/bindings boundary,
+including existing-destination, nonprivate-parent and symlink refusal. Native
+build and hosted upload execution remain separately allocated observations.
+
 The shared freezer overrides inherited `PYINSTALLER_CONFIG_DIR` with a fresh,
 validated cache under this run's freeze work path before invoking build tools.
 PyInstaller `--clean` therefore stays within the invocation's allocations,
