@@ -10,7 +10,7 @@ import difflib
 import json
 from typing import Annotated, Literal
 
-from pydantic import Field, ValidationInfo, field_validator, model_validator
+from pydantic import Field, field_validator, model_validator
 
 from runtime.infrastructure.team_move_store import (
     Closed, Digest, ExpectedInputs, ForwardDecision, Identifier, MoveRequest, Positive, Progress,
@@ -31,13 +31,19 @@ class MoveSelection(Closed):
     charter: Literal[NEW_CHARTER]
     drain_threads: bool
 
-    @field_validator("version", "retire_source", mode="before")
+    @field_validator("version", mode="before")
     @classmethod
-    def literal_types(cls, value, info: ValidationInfo):
+    def version_type(cls, value):
         # Guard literal scalars without materializing the whole JSON object:
         # strict tuple fields (including nested expected inputs) need JSON arrays.
-        expected_type = int if info.field_name == "version" else bool
-        if type(value) is not expected_type:
+        if type(value) is not int:
+            raise TeamMoveError("team_move_invalid_selection")
+        return value
+
+    @field_validator("retire_source", mode="before")
+    @classmethod
+    def retirement_type(cls, value):
+        if type(value) is not bool:
             raise TeamMoveError("team_move_invalid_selection")
         return value
 
