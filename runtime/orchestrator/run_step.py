@@ -1250,7 +1250,7 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
 
 def _run_step_owned(orch: "Orchestrator", task_id: str, metadata: dict | None = None) -> None:
     from runtime.orchestrator.task_pause import (
-        TaskInvocation, DeferredRootPause, _invocation, eligible, deferred_invocation,
+        TaskInvocation, DeferredRootPause, _invocation, eligible, deferred_invocation, adopt_deferred_invocation,
     )
     from runtime.infrastructure.task_pause_controls import PauseControlError
     from runtime.orchestrator.team_move import DeferredTeamMove
@@ -1269,21 +1269,24 @@ def _run_step_owned(orch: "Orchestrator", task_id: str, metadata: dict | None = 
             return
         return _run_step_body(orch, task_id, metadata)
     task = orch._db.get_task(task_id)
-    if task is None:
+    if task is None or task.cancelled_at is not None or task.status in TERMINAL_STATES:
         return
     from runtime.workflows.recovery import classify_task, route_owned_task
     if classify_task(orch._db, task_id, org_slug=orch._slug).kind != "legacy":
         route_owned_task(orch, task_id)
         return
+    invocation = TaskInvocation(orch, task, task.assigned_agent or _default_agent_for_root(orch, task),
+        orch._build_session_id(),
+        owner="v2" if isinstance(metadata, dict) and "authority_v2_generation" in metadata else "ordinary",
+        metadata=metadata or {})
     try:
-        invocation = deferred_invocation(orch, task, metadata)
-        if invocation is None:
+        deferred = deferred_invocation(orch, task, metadata, adopt=False)
+        if deferred is not None:
+            invocation = deferred
+            adopt_deferred_invocation(invocation)
+        else:
             if not eligible(orch, task):
                 return
-            agent = task.assigned_agent or _default_agent_for_root(orch, task)
-            invocation = TaskInvocation(orch, task, agent, orch._build_session_id(),
-                owner="v2" if isinstance(metadata, dict) and "authority_v2_generation" in metadata else "ordinary",
-                metadata=metadata or {})
             invocation.prepare()
     except DeferredTeamMove as exc:
         logger.warning('task %s deferred by move admission: %s operation=%s', task_id, exc.code, exc.operation_id)
@@ -1291,9 +1294,13 @@ def _run_step_owned(orch: "Orchestrator", task_id: str, metadata: dict | None = 
         return
     except DeferredRootPause:
         return
-    except PauseControlError as exc:
-        if exc.detail["code"] == "root_paused":
+    except Exception as exc:
+        if isinstance(exc, PauseControlError) and exc.detail["code"] == "root_paused":
             return
+        if invocation is not None:
+            from runtime.orchestrator.launch_refusals import settle_refusal
+            if settle_refusal(invocation, exc, prepared=False):
+                return
         raise
     token = _invocation.set(invocation)
     root_delivery = dict(orch=orch, events=_RootWorktreeTransitions(), active=True, teardown_incomplete=False)
@@ -1326,6 +1333,15 @@ def _run_step_owned(orch: "Orchestrator", task_id: str, metadata: dict | None = 
         else:
             _run_step_body(orch, task_id, invocation.metadata)
     except (DeferredRootPause, DeferredTeamMove) as exc:
+        # A same-owner cleanup refusal is not an intentional move hold. Keep
+        # every other native move/hold disposition and its admission policy.
+        if (isinstance(exc, DeferredTeamMove) and exc.code == "team_move_preparation_unsettled"
+                and invocation.move_reservation is not None and invocation.move_reservation.cleanup_failed
+                and not invocation.launch_observed):
+            root_delivery['teardown_incomplete'] = True
+            from runtime.orchestrator.launch_refusals import settle_refusal
+            if settle_refusal(invocation, exc, prepared=True):
+                return
         if isinstance(exc, DeferredTeamMove):
             logger.warning('task %s deferred by move admission: %s operation=%s', task_id, exc.code, exc.operation_id)
             orch._team_moves.defer_task(task_id, metadata)
@@ -1337,8 +1353,12 @@ def _run_step_owned(orch: "Orchestrator", task_id: str, metadata: dict | None = 
             invocation.phase("recovery_deferred")
         elif invocation.admitted:
             invocation.phase("retry_deferred", started_at=None, captured_generation=None)
-    except BaseException:
+    except BaseException as exc:
         root_delivery['teardown_incomplete'] = True
+        if isinstance(exc, Exception) and not invocation.launch_observed:
+            from runtime.orchestrator.launch_refusals import settle_refusal
+            if settle_refusal(invocation, exc, prepared=True):
+                return
         if invocation.admitted:
             invocation.phase("unknown")
         raise
@@ -1581,10 +1601,13 @@ def _run_step_body(orch: "Orchestrator", task_id: str, metadata: dict | None = N
                 task_id, agent, prompt, runtime_session_id=reserved_session_id,
             )
     except (DeferredRootPause, DeferredTeamMove, PauseControlError):
-        # Admission errors reach the durable defer/unknown owner. They never
-        # become a business FAILED task, parent wake or thread followup.
+        # Holds remain deferrals. Actual native prelaunch errors reach the
+        # owner boundary for bounded refusal accounting and normal failure.
         raise
     except Exception as exc:
+        if pause_invocation is not None and not pause_invocation.launch_observed:
+            # The native owner records and settles before its release tail.
+            raise
         # Metadata only: never format the traceback/exception (which includes
         # messages and source lines), or inspect frame locals. Diagnostic
         # failure cannot replace the existing failure/wake/followup sequence.
@@ -4618,6 +4641,7 @@ def _complete(orch: "Orchestrator", task_id: str, *, note: str, output_dir: str 
 def _fail(
     orch: "Orchestrator", task_id: str, *, note: str,
     reclaim_terminal_worktree: bool = True,
+    current_owner: Callable[[], bool] | None = None,
 ) -> None:
     root_transitions = _RootWorktreeTransitions()
     from datetime import datetime, timezone
@@ -4627,20 +4651,6 @@ def _fail(
     # overwrite the cancel route's "cancelled by <actor>: ..." note.
     if _is_already_terminal(orch, task_id):
         return
-    # THR-181 Track A (founder lifecycle envelope): a failure closes the single-use
-    # continuation window fail-closed — the continuation was never exercised
-    # for its permitted action and must never be re-used.
-    try:
-        _t = orch._db.get_task(task_id)
-        orch._db.spend_authority_continue_envelope_if_active(
-            task_id,
-            audit_agent=(
-                _t.assigned_agent if _t is not None else "orchestrator"
-            ) or "orchestrator",
-            error="task failed without the permitted continued-turn decision",
-        )
-    except Exception:  # pragma: no cover - fail-closed defensive
-        pass
     with orch._db._lock:
         current = orch._db.get_task(task_id)
         if current is not None:
@@ -4656,6 +4666,22 @@ def _fail(
                     return
         if _is_already_terminal(orch, task_id):
             return
+        if current_owner is not None and not current_owner():
+            return
+        # THR-181 Track A (founder lifecycle envelope): a failure closes the single-use
+        # continuation window fail-closed — the continuation was never exercised
+        # for its permitted action and must never be re-used.
+        try:
+            _t = orch._db.get_task(task_id)
+            orch._db.spend_authority_continue_envelope_if_active(
+                task_id,
+                audit_agent=(
+                    _t.assigned_agent if _t is not None else "orchestrator"
+                ) or "orchestrator",
+                error="task failed without the permitted continued-turn decision",
+            )
+        except Exception:  # pragma: no cover - fail-closed defensive
+            pass
         # Clear any in-flight chain so the CLI/Web UI doesn't show a chain strip
         # on a FAILED task. The chain can't re-activate (the task is terminal),
         # but the dangling state is cosmetically misleading. Always-clear is
@@ -4676,6 +4702,7 @@ def _fail(
         task_id,
         reclaim_terminal_worktree=reclaim_terminal_worktree,
         root_transitions=root_transitions,
+        expected_note=note if current_owner is not None else None,
     )
 
 
