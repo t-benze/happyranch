@@ -1463,6 +1463,16 @@ retry-until-quiet loop or reader write is performed. A restart allocates a new
 observer boot and never reconstructs old completeness. Constructor/attachment
 failure preserves ordinary org startup with explicit unavailable observation.
 
+Future phase persistence failures emit one best-effort bounded ordinary log with
+phase, frozen queued org/boot/ordinal/task/runtime SID, exception class, and only
+explicitly allowlisted SQLite integer code/name pairs (otherwise `unknown`).
+The direct invalid-positive-INTEGER audit-reference check has its own category.
+Malformed or oversized identifiers/class names use fixed fallbacks. No exception
+text, traceback, SQL, payload, credentials or root paths are logged. Logger failure
+cannot alter sticky failure, counters/digests, sealing or subsequent draining.
+These diagnostics cannot recover or establish the cause of an old lost exception;
+source delivery does not establish installed health or collection acceptance.
+
 Founder THR-091 seq428 permits one closed failed-before-exposure class. Exactly
 one ordered authenticated intent -> identity -> raised terminal must agree on
 org/org-root/boot/ordinal/task/agent/runtime SID, actual parent/type/population
