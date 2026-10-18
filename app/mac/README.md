@@ -145,8 +145,34 @@ setup or native-tool failures.
 Portable layout verification (no compilation or native acceptance):
 `python packaging/verify_mac_run_layout.py --scratch /absolute/new-fixture-root`.
 It executes the workflow reservation shell and real preflight/bindings boundary,
-including existing-destination, nonprivate-parent and symlink refusal. Native
-build and hosted upload execution remain separately allocated observations.
+including existing-destination, nonprivate-parent and symlink refusal. It also
+exercises real directory/subject guards and the freezer process-root admission
+helper with disposable fixtures, including role order, repeated equal paths,
+first refusal, descriptor cleanup and uncaught Python stderr propagation.
+Synthetic wrong-owner/formatter boundaries are separate from real filesystem
+observations. Native build and hosted upload execution remain separately
+allocated observations.
+
+Directory guard refusals retain their original category and error text. Python
+tracebacks can additionally show one `DIRECTORY_CONTEXT ` note containing compact
+ASCII JSON: category, full held-descriptor octal `mode`, `uid`, the actual `owned`
+predicate, process-root `role` (or null), truncation flags, offending `cursor` and
+selected `root` (or null). Process roles are checked in order: `prefix`,
+`base_prefix`, `stdlib`, `usr-bin`. An unsafe ancestor names that ancestor even
+when the selected root is a safe child. The note is at most 768 ASCII bytes;
+each path is at most 192 serialized characters including JSON quotes. Long paths
+keep a whole-codepoint prefix plus `...` and an explicit truncation flag. The
+note uses the already held stat observation; it performs no diagnostic stat or
+permission repair. Ancillary formatting failures preserve the original refusal
+and descriptor cleanup, but can leave the diagnostic absent.
+
+These notes are traceback/stderr evidence only. Existing subject, `Session.fail`
+and attribution strings do not persist them; whole-file collector caps can also
+omit a log. Portable subprocess checks do not establish PyInstaller/spec,
+`build.log` or archived diagnostic propagation. No native cause, Python relocation
+fix, successful build, app or launch acceptance follows from the diagnostic.
+Every root still requires the original ancestry, ownership, mode, no-follow and
+identity checks, including repeated equal process roots before admission deduplication.
 
 The shared freezer overrides inherited `PYINSTALLER_CONFIG_DIR` with a fresh,
 validated cache under this run's freeze work path before invoking build tools.

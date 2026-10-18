@@ -328,11 +328,77 @@ def directory(info, name=''):
                 uid=info.st_uid, mode=info.st_mode)
 
 
-def check_dir(info, owned):
-    need(stat.S_ISDIR(info.st_mode), 'DIRECTORY_REQUIRED')
-    need(info.st_uid == os.getuid() if owned else info.st_uid in (0, os.getuid()),
-         'DIRECTORY_OWNER_INVALID')
-    need(not info.st_mode & 0o022, 'DIRECTORY_MODE_UNSAFE')
+DIRECTORY_CONTEXT = 'DIRECTORY_CONTEXT '
+
+
+def _directory_path(value: object) -> tuple[str | None, bool]:
+    """Bound the serialized path, keeping whole Unicode codepoints/escapes."""
+    if value is None:
+        return None, False
+    value = str(value)
+    if len(json.dumps(value, ensure_ascii=True)) <= 192:
+        return value, False
+    prefix, size = '', 2 + len('...')  # JSON quotes and truncation marker.
+    for character in value:
+        width = len(json.dumps(character, ensure_ascii=True)) - 2
+        if size + width > 192:
+            break
+        prefix += character
+        size += width
+    return prefix + '...', True
+
+
+def _directory_note(context: dict) -> str:
+    note = DIRECTORY_CONTEXT + json.dumps(context, ensure_ascii=True, separators=(',', ':'))
+    if len(note) > 768 or not note.isascii() or any(ord(c) < 32 for c in note):
+        raise ValueError('directory diagnostic cannot be represented')
+    return note
+
+
+def directory_context(error: AssetError, *, info: os.stat_result | None = None,
+                      owned: bool | None = None, cursor: object = None,
+                      root: object = None, role: str | None = None) -> None:
+    """Best-effort traceback evidence only; retain no second/full path copy."""
+    try:
+        notes = getattr(error, '__notes__', [])
+        index = next((i for i, note in enumerate(notes)
+                      if note.startswith(DIRECTORY_CONTEXT)), None)
+        if info is not None:
+            cursor, cursor_truncated = _directory_path(cursor)
+            root, root_truncated = _directory_path(root)
+            context = dict(category=error.category, mode=oct(info.st_mode), uid=info.st_uid,
+                           owned=owned, role=role, cursor_truncated=cursor_truncated,
+                           root_truncated=root_truncated, cursor=cursor, root=root)
+        elif index is not None:
+            context = json.loads(notes[index][len(DIRECTORY_CONTEXT):])
+            if context['role'] is not None:
+                return
+            context['role'] = role
+            context['root'], context['root_truncated'] = _directory_path(root)
+        else:
+            return
+        note = _directory_note(context)
+        if index is None:
+            error.add_note(note)
+        else:
+            updated = list(notes)
+            updated[index] = note
+            error.__notes__ = updated
+    except Exception:
+        # A diagnostic failure must never replace the original guard refusal.
+        pass
+
+
+def check_dir(info: os.stat_result, owned: bool, cursor: object = None,
+              root: object = None) -> None:
+    try:
+        need(stat.S_ISDIR(info.st_mode), 'DIRECTORY_REQUIRED')
+        need(info.st_uid == os.getuid() if owned else info.st_uid in (0, os.getuid()),
+             'DIRECTORY_OWNER_INVALID')
+        need(not info.st_mode & 0o022, 'DIRECTORY_MODE_UNSAFE')
+    except AssetError as error:
+        directory_context(error, info=info, owned=owned, cursor=cursor, root=root)
+        raise
 
 
 class RootHandle:
@@ -347,7 +413,7 @@ class RootHandle:
         try:
             fd = os.open('/', DIR_FLAGS)
             self.chain.append((fd, None, None, directory(os.fstat(fd))))
-            check_dir(os.fstat(fd), False)
+            check_dir(os.fstat(fd), False, Path('/'), self.path)
             cursor, boundary_dev = Path('/'), None
             for part in self.path.parts[1:]:
                 parent = fd
@@ -359,9 +425,9 @@ class RootHandle:
                     need(info.st_dev == boundary_dev, 'CROSS_DEVICE_DESCENT', self.path)
                 if self.boundary != Path('/') and cursor == self.boundary:
                     boundary_dev = info.st_dev
-                check_dir(info, False)
+                check_dir(info, False, cursor, self.path)
             self.fd = fd
-            check_dir(os.fstat(fd), require_owned)
+            check_dir(os.fstat(fd), require_owned, cursor, self.path)
             self.dev = os.fstat(fd).st_dev
             self.verify()
         except BaseException:
@@ -402,6 +468,7 @@ def parent_at(root, name, *, create=False):
     root.verify()
     chain = []
     parent = root.fd
+    cursor = root.path
     try:
         for part in name.split('/')[:-1]:
             if create:
@@ -412,7 +479,8 @@ def parent_at(root, name, *, create=False):
             fd = os.open(part, DIR_FLAGS, dir_fd=parent)
             info = os.fstat(fd)
             chain.append((fd, parent, part, directory(info)))
-            check_dir(info, root.owned)
+            cursor = cursor / part
+            check_dir(info, root.owned, cursor, root.path)
             need(info.st_dev == root.dev, 'CROSS_DEVICE_DESCENT', name)
             parent = fd
         yield parent, name.split('/')[-1]
@@ -575,7 +643,7 @@ def census(root, domain=CensusDomain()):
         nonlocal count, name_bytes
         need(depth <= domain.depth, 'TREE_DEPTH_EXCEEDED', prefix)
         before = directory(os.fstat(fd), prefix)
-        check_dir(os.fstat(fd), root.owned)
+        check_dir(os.fstat(fd), root.owned, root.path / prefix, root.path)
         need(before['dev'] == root.dev, 'CROSS_DEVICE_DESCENT', prefix)
         dirs.append(before)
         names = []
