@@ -12,9 +12,11 @@ from collections import deque
 import hashlib
 import inspect
 import json
+import logging
 import marshal
 import os
 import re
+import sqlite3
 import stat
 import sys
 from importlib.metadata import distribution
@@ -35,6 +37,21 @@ from runtime.orchestrator.agent_def import parse_agent_text
 from runtime.orchestrator.executor_registry import get_registry
 from runtime.adapters import get_first_party_adapter
 import yaml
+
+logger = logging.getLogger(__name__)
+# Explicit diagnostic pairs only; exception attributes never supply log text.
+_SQLITE_DIAGNOSTIC_CODES = {getattr(sqlite3, name): name for name in (
+    "SQLITE_ERROR", "SQLITE_INTERNAL", "SQLITE_PERM", "SQLITE_ABORT",
+    "SQLITE_BUSY", "SQLITE_LOCKED", "SQLITE_NOMEM", "SQLITE_READONLY",
+    "SQLITE_INTERRUPT", "SQLITE_IOERR", "SQLITE_CORRUPT", "SQLITE_NOTFOUND",
+    "SQLITE_FULL", "SQLITE_CANTOPEN", "SQLITE_PROTOCOL", "SQLITE_EMPTY",
+    "SQLITE_SCHEMA", "SQLITE_TOOBIG", "SQLITE_CONSTRAINT", "SQLITE_MISMATCH",
+    "SQLITE_MISUSE", "SQLITE_NOLFS", "SQLITE_AUTH", "SQLITE_FORMAT",
+    "SQLITE_RANGE", "SQLITE_NOTADB", "SQLITE_NOTICE", "SQLITE_WARNING",
+    "SQLITE_BUSY_RECOVERY", "SQLITE_BUSY_SNAPSHOT", "SQLITE_CONSTRAINT_UNIQUE",
+    "SQLITE_CONSTRAINT_PRIMARYKEY", "SQLITE_CONSTRAINT_FOREIGNKEY",
+    "SQLITE_CONSTRAINT_NOTNULL", "SQLITE_CONSTRAINT_CHECK",
+)}
 
 # Resolve installed distribution location during best-effort observer module
 # initialization, never by scanning package directories on GET.
@@ -479,8 +496,56 @@ class CollectionObserver:
                     with self._lock:
                         self._counts[phase]["persisted"] += 1
                         self._digests[phase]["persisted"] = _advance(self._digests[phase]["persisted"], row)
-                except Exception:
+                except Exception as exc:
                     self.unavailable(f"{phase}_write_failed")
+                    try:
+                        def token(value: Any, pattern: str) -> str:
+                            if type(value) is str and len(value) <= 128 and re.fullmatch(pattern, value):
+                                return value
+                            return "invalid"
+
+                        # The queued row is frozen; invocation.session_id may
+                        # already describe a later phase when this write fails.
+                        frozen = row["payload"]
+                        ordinal = frozen.get("ordinal")
+                        code, name = "unknown", "unknown"
+                        if isinstance(exc, sqlite3.Error):
+                            # A malformed exception may even raise on attribute
+                            # access; retain the fixed fallback in that case.
+                            try:
+                                candidate = getattr(exc, "sqlite_errorcode", None)
+                                candidate_name = getattr(exc, "sqlite_errorname", None)
+                            except BaseException:
+                                candidate, candidate_name = None, None
+                            if (type(candidate) is int and 0 < candidate < 65536 and type(candidate_name) is str
+                                    and _SQLITE_DIAGNOSTIC_CODES.get(candidate) == candidate_name):
+                                code, name = candidate, _SQLITE_DIAGNOSTIC_CODES[candidate]
+                        # The reference check above is the protected block's
+                        # sole direct ValueError; insert/digest errors have a
+                        # nested traceback. Never infer this from error text
+                        # or a prior iteration's audit_id.
+                        invalid_reference = (type(exc) is ValueError
+                                             and exc.__traceback__.tb_next is None)
+                        diagnostic = {
+                            "phase": phase if type(phase) is str and phase in PHASES else "invalid",
+                            "org": token(frozen.get("org"), r"[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}"),
+                            "boot": token(frozen.get("boot_id"), r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}"),
+                            "ordinal": ordinal if type(ordinal) is int and 0 < ordinal < 2**63 else "invalid",
+                            "task": token(frozen.get("task_id"), r"TASK-[0-9]{3,20}"),
+                            "session": ("none" if frozen.get("session_id") is None else
+                                        token(frozen.get("session_id"), r"sess-[a-zA-Z0-9-]{1,64}")),
+                            "category": "invalid_positive_INTEGER_reference" if invalid_reference else "exception",
+                            "exception": token(type(exc).__name__, r"[a-zA-Z_][a-zA-Z0-9_]{0,63}"),
+                            "sqlite_code": code,
+                            "sqlite_name": name,
+                        }
+                        logger.warning("memory_collection_persist_failed %s",
+                                       json.dumps(diagnostic, ensure_ascii=True, separators=(",", ":")),
+                                       exc_info=False, stack_info=False)
+                    except BaseException:
+                        # Diagnostics must never replace the original writer
+                        # outcome, prevent sealing or interrupt the next drain.
+                        pass
                 self._seal(invocation)
         except BaseException:
             self.unavailable("observation_drain_failed")
