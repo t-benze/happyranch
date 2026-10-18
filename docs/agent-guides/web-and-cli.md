@@ -90,7 +90,12 @@ joining its worker before cancellation propagates and settlement runs. Timeout
 never certifies process-tree quiescence; existing unknown owners remain sticky.
 The four async runner entrypoints retain a private org lifetime through native
 finish (including failure), beyond the refresh Future. Org unload refuses active
-runners and fences detached instances against late starts. Shutdown stops runner
+runners and fences detached instances against late starts. Runtime registration
+(including the same root) and /runtime/use preflight ALL old orgs for tasks,
+runners and team-move holds before any close or registration/activation effect.
+Shutdown refuses runtime replacement before construction; idle replacement closes
+and fences every retired instance before publishing new OrgStates. A busy later
+org leaves earlier orgs open, with busy refusals mapped to409. Shutdown stops runner
 and attachment admission, then joins cancelled workers and native finish before
 DB close; repeated cancellation during that join cannot skip it. No timeout
 establishes quiescence, and failed persistence retains native uncertainty.

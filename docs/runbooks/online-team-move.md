@@ -175,7 +175,13 @@ Async thread/dream/wake/Todo repository refresh runs off-loop with its SAME
 native owner and a joined worker. A private org lifetime begins before native
 reservation and ends after native finish, including failure. Ordinary unload
 refuses active runners with409, retains existing task/team-move checks, and
-fences old OrgState references before detachment. Shutdown stops runner/new-org
+fences old OrgState references before detachment. Runtime registration (same or
+changed root), /runtime/use and their shared swap preflight ALL old orgs for
+tasks, runner lifetime and team-move holds before closing any org or committing
+registration/activation effects. Shutdown refuses replacement before construction.
+Idle replacement closes/fences retired instances before publishing new OrgStates;
+a busy later org leaves earlier orgs open and busy refusals return409.
+Shutdown stops runner/new-org
 attachment admission and joins actual runners through refresh and settlement
 before closing databases; repeated cancellation during the join cannot skip it.
 This is process-local lifetime bookkeeping, not durable clearance or process

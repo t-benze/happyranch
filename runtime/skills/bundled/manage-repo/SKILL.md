@@ -78,7 +78,12 @@ never certifies no effects. Async thread/dream/wake/Todo paths await a joined
 offload inside their actual preparation-effects scope before cancellation and
 settlement; prior unknowns stay sticky. The enclosing runner retains its org
 lifetime through native finish, including failure. Unload refuses active runners
-and fences late starts on detached instances; shutdown stops runner/new-org
+and fences late starts on detached instances. Runtime registration (including
+the same root) and /runtime/use preflight all old orgs for task/runner/team-move
+holds before any close or registration/activation effect, returning409 if busy.
+Shutdown refuses replacement before construction. Idle replacement closes and
+fences all retired instances before publishing the new org map; a busy later org
+leaves earlier orgs open. Shutdown stops runner/new-org
 attachment admission and joins actual runners before DB close. Cancellation or
 timeout never establishes process quiescence. Runtime/race/recovery verification
 remains UNVERIFIED.
