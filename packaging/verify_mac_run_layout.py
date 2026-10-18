@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+from collections.abc import Callable, Iterator
 import errno
 import glob
 import hashlib
@@ -26,6 +27,7 @@ import stat
 import subprocess
 import sys
 from types import SimpleNamespace
+from typing import Any
 
 import yaml
 
@@ -45,23 +47,23 @@ def call(label, argv, *, env=None, cwd=None, failure=None):
 
 
 @contextlib.contextmanager
-def recorded_fds():
+def recorded_fds() -> Iterator[dict[str, Any]]:
     """Observe real opens/closes/fstats; never substitute guard outcomes."""
     opened, closed, held, opens = [], [], [], []
     original_open, original_close, original_fstat = os.open, os.close, os.fstat
 
-    def opening(*args, **kwargs):
+    def opening(*args: Any, **kwargs: Any) -> int:
         fd = original_open(*args, **kwargs)
         opened.append(fd)
         opens.append((str(args[0]), args[1]))
         return fd
 
-    def closing(fd):
+    def closing(fd: int) -> None:
         result = original_close(fd)
         closed.append(fd)
         return result
 
-    def observing(fd):
+    def observing(fd: int) -> os.stat_result:
         info = original_fstat(fd)
         held.append((fd, info))
         return info
@@ -82,7 +84,7 @@ def recorded_fds():
                 raise AssertionError(('recorded descriptor still open', fd))
 
 
-def expected_path(path):
+def expected_path(path: object) -> tuple[str | None, bool]:
     """Independent serialized-quota oracle, including longest-prefix assertion."""
     if path is None:
         return None, False
@@ -94,7 +96,8 @@ def expected_path(path):
     return path[:length] + '...', True
 
 
-def note_value(error, *, category, info, owned, cursor, root, role=None):
+def note_value(error: BaseException, *, category: str, info: Any, owned: bool,
+               cursor: object, root: object, role: str | None = None) -> dict[str, Any]:
     notes = [n for n in getattr(error, '__notes__', []) if n.startswith('DIRECTORY_CONTEXT ')]
     assert len(notes) == 1, notes
     note = notes[0]
@@ -114,7 +117,7 @@ def note_value(error, *, category, info, owned, cursor, root, role=None):
     return value
 
 
-def verify_diagnostics(root):
+def verify_diagnostics(root: Path) -> None:
     """Accepted D1-D7 portable cases; spec/platform and native lanes stay unrun."""
     root.mkdir(mode=0o700)
     freezer = runpy.run_path(str(SOURCE / 'app/mac/scripts/freezer_evidence.py'))
@@ -122,14 +125,15 @@ def verify_diagnostics(root):
     real_root = asset['RootHandle']
     roles = ('prefix', 'base_prefix', 'stdlib', 'usr-bin')
 
-    def directory(name, mode=0o700):
+    def directory(name: str, mode: int = 0o700) -> Path:
         path = root / name
         path.mkdir(mode=0o700, parents=True)
         path.chmod(mode)  # Newly created fixture descendants only.
         return path
 
-    def refusal(label, action, category, *, cursor=None, selected=None, owned=False,
-                role=None, info=None):
+    def refusal(label: str, action: Callable[[], object], category: str, *,
+                cursor: Path | None = None, selected: Path | None = None, owned: bool = False,
+                role: str | None = None, info: os.stat_result | None = None) -> None:
         with recorded_fds() as events:
             try:
                 action()
@@ -274,7 +278,7 @@ def verify_diagnostics(root):
         paths[index].chmod(0o775)
         pairs = tuple(zip(roles, paths))
 
-        def visiting(path, boundary, owned):
+        def visiting(path: Path, boundary: str, owned: bool) -> Any:
             visits.append((str(path), boundary, owned))
             try:
                 return real_root(path, boundary, owned)
@@ -307,7 +311,7 @@ def verify_diagnostics(root):
 
     visits = []
 
-    def visiting_safe(path, boundary, owned):
+    def visiting_safe(path: Path, boundary: str, owned: bool) -> Any:
         visits.append(str(path))
         return real_root(path, boundary, owned)
 
@@ -392,7 +396,7 @@ def verify_diagnostics(root):
     globals_ = asset['directory_context'].__globals__
     formatter = globals_['_directory_note']
 
-    def broken_formatter(_):
+    def broken_formatter(_: dict) -> None:
         raise RuntimeError('ancillary formatter failure')
 
     globals_['_directory_note'] = broken_formatter
@@ -412,7 +416,7 @@ def verify_diagnostics(root):
         globals_['_directory_note'] = formatter
 
     class AttachmentFailure(asset['AssetError']):
-        def add_note(self, note):
+        def add_note(self, note: str) -> None:
             raise RuntimeError('ancillary attachment failure')
 
     error = AttachmentFailure('DIRECTORY_MODE_UNSAFE')
@@ -423,7 +427,7 @@ def verify_diagnostics(root):
                        limitation='Numeric extremes/quotas are formatter probes, distinct from actual long-path IO.'))
 
 
-def verify(root):
+def verify(root: Path) -> None:
     assert root.is_absolute() and not root.exists()
     root.mkdir(mode=0o700)  # No reuse, overwrite or cleanup.
     verify_diagnostics(root / 'diagnostics')
