@@ -355,47 +355,87 @@ def project_headscale_log(raw: bytes) -> dict[str, Any]:
     return {"events": [{"event": event, "count": count} for event, count in sorted(counts.items())], "losses": sorted(losses) if losses else ["observed" if counts else "empty"]}
 
 
-def _terminate_observation(process: subprocess.Popen[bytes]) -> None:
-    """Always terminate the entire owned group, including pipe holders."""
+def _initialize_observation_owner(*, require_root: bool = False) -> bool:
+    """Establish adoption in THIS dedicated observer before spawning a query."""
+    try:
+        if not sys.platform.startswith("linux"):
+            return False
+        # The privileged Stop/peer queries execute directly under this same UID;
+        # no inner sudo/session monitor can outlive or outrank their cleanup owner.
+        if require_root and os.getresuid() != (0, 0, 0):
+            return False
+        # A dedicated owner must retain child statuses rather than auto-reap.
+        signal.signal(signal.SIGCHLD, signal.SIG_DFL)
+        if signal.getsignal(signal.SIGCHLD) != signal.SIG_DFL:
+            return False
+        libc = ctypes.CDLL(None, use_errno=True)
+        enabled = ctypes.c_int()
+        return (libc.prctl(36, 1, 0, 0, 0) == 0  # PR_SET_CHILD_SUBREAPER
+                and libc.prctl(37, ctypes.byref(enabled), 0, 0, 0) == 0
+                and enabled.value == 1)  # PR_GET_CHILD_SUBREAPER
+    except (OSError, AttributeError, ValueError):
+        return False
+
+
+def _terminate_observation(process: subprocess.Popen[bytes]) -> bool:
+    """Terminate and confirm reap of the owned query group, including pipe holders."""
     deadline = time.monotonic() + 1
-    try:
-        os.killpg(process.pid, signal.SIGTERM)
-    except ProcessLookupError:
-        pass
-    try:
-        process.wait(timeout=min(0.05, max(0, deadline - time.monotonic())))
-    except subprocess.TimeoutExpired:
-        pass
-    try:
-        os.killpg(process.pid, signal.SIGKILL)
-    except ProcessLookupError:
-        pass
-    try:
-        process.wait(timeout=max(0, deadline - time.monotonic()))
-    except subprocess.TimeoutExpired:
-        pass
-    # The dedicated Linux capture CLI is a subreaper. Adopted pipe holders
-    # stay in this command's group; never wait on unrelated fixture children.
+    confirmed = True
+    for signum in (signal.SIGTERM, signal.SIGKILL):
+        try:
+            os.killpg(process.pid, signum)
+        except ProcessLookupError:
+            pass
+        except OSError:
+            confirmed = False
+        try:
+            process.wait(timeout=min(0.05, max(0, deadline - time.monotonic())))
+        except subprocess.TimeoutExpired:
+            pass
+        except OSError:
+            confirmed = False
+    # Subreaper adoption, not group membership, grants waitpid ownership.
+    # The finite read-only query commands retain this session/process group.
+    # Never wait on unrelated fixture children or infer reap from leader exit.
     while time.monotonic() < deadline:
         try:
             child, _ = os.waitpid(-process.pid, os.WNOHANG)
         except ChildProcessError:
-            break
+            try:
+                os.killpg(process.pid, 0)
+            except ProcessLookupError:
+                return confirmed and process.poll() is not None
+            except OSError:
+                return False
+            # No adoptable child yet is not proof that the group is gone.
+            child = 0
+        except OSError:
+            return False
         if child == 0:
             time.sleep(min(0.01, max(0, deadline - time.monotonic())))
+    return False
 
 
-def _bounded_observation(argv: list[str], *, seconds: float, cap: int, data: bytes | None = None) -> tuple[bytes, str]:
+def _bounded_observation(argv: list[str], *, seconds: float, cap: int, data: bytes | None = None, require_root: bool = False) -> tuple[bytes, str]:
     """An independent absolute launch/write/read/wait deadline and byte cap."""
     deadline = time.monotonic() + seconds
-    try:
-        process = subprocess.Popen(argv, stdin=subprocess.PIPE if data is not None else subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
-    except OSError:
+    if not _initialize_observation_owner(require_root=require_root):
         return b"", "launch_failure"
-    output = bytearray()
-    total = 0
-    written = 0
-    try:
+    process = None
+    cancelled = 0
+    signals = (signal.SIGHUP, signal.SIGINT, signal.SIGTERM)
+    handlers = {item: signal.getsignal(item) for item in signals}
+
+    def defer_cancel(signum: int, _frame: Any) -> None:
+        nonlocal cancelled
+        # Do not throw between fork/exec and assigning the Popen cleanup handle.
+        cancelled = cancelled or signum
+
+    def read() -> tuple[bytes, str]:
+        assert process is not None
+        output = bytearray()
+        total = 0
+        written = 0
         if time.monotonic() >= deadline:
             return b"", "timeout"
         with selectors.DefaultSelector() as selector:
@@ -450,11 +490,50 @@ def _bounded_observation(argv: list[str], *, seconds: float, cap: int, data: byt
             if time.monotonic() >= deadline:
                 return b"", "timeout"
             return payload, "observed"
+
+    try:
+        for item in signals:
+            signal.signal(item, defer_cancel)
+        if cancelled:
+            raise SystemExit(128 + cancelled)
+        try:
+            process = subprocess.Popen(argv, stdin=subprocess.PIPE if data is not None else subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
+        except OSError:
+            result = (b"", "launch_failure")
+        finally:
+            for item, handler in handlers.items():
+                signal.signal(item, handler)
+        if cancelled:
+            raise SystemExit(128 + cancelled)
+        if process is not None:
+            result = read()
+    except OSError:
+        result = (b"", "query_error")
     finally:
-        _terminate_observation(process)
-        for pipe in (process.stdin, process.stdout, process.stderr):
-            if pipe is not None:
-                pipe.close()
+        cleaned = True
+        try:
+            # A first signal during this transition still enters the inner
+            # finally. During cleanup, record cancellation without throwing;
+            # even a first signal here must prevent an observed result.
+            for item in signals:
+                signal.signal(item, defer_cancel)
+        finally:
+            try:
+                if process is not None:
+                    cleaned = _terminate_observation(process)
+            finally:
+                if process is not None:
+                    for pipe in (process.stdin, process.stdout, process.stderr):
+                        if pipe is not None:
+                            try:
+                                pipe.close()
+                            except OSError:
+                                cleaned = False
+                for item, handler in handlers.items():
+                    signal.signal(item, handler)
+    if cancelled:
+        raise SystemExit(128 + cancelled)
+    return result if cleaned else (b"", "query_error")
 
 
 def capture_headscale(work: Path | None, pid: str | None) -> dict[str, Any]:
@@ -1036,7 +1115,8 @@ def capture_connector_journal(boot: str | None, since: int | None, until: int | 
         # signals cannot interrupt the one bounded owned-child reap.
         signal.signal(signal.SIGTERM, signal.SIG_IGN)
         signal.signal(signal.SIGINT, signal.SIG_IGN)
-        _terminate_observation(process)
+        if not _terminate_observation(process):
+            losses.add("reap_unconfirmed")
         if process.poll() is None:
             losses.add("reap_unconfirmed")
         try:
@@ -1228,13 +1308,16 @@ def main() -> int:
         return 0
     if args.mode in {"headscale", "connector", "connector-journal"}:
         def interrupted(signum: int, frame: Any) -> None:
+            for item in (signal.SIGHUP, signal.SIGTERM, signal.SIGINT):
+                signal.signal(item, signal.SIG_IGN)
             raise KeyboardInterrupt
+        signal.signal(signal.SIGHUP, interrupted)
         signal.signal(signal.SIGTERM, interrupted)
         signal.signal(signal.SIGINT, interrupted)
         try:
             # Linux shipping capture owns all descendants until bounded reap.
             # Failure to establish that ownership launches no observation.
-            if not sys.platform.startswith("linux") or ctypes.CDLL(None, use_errno=True).prctl(36, 1, 0, 0, 0) != 0:
+            if not _initialize_observation_owner():
                 print(json.dumps(_connector_journal_empty("launch_failure") if args.mode == "connector-journal" else _connector_unknown("launch_failure") if args.mode == "connector" else {"process_state": "unknown", "log": {"events": [], "losses": ["launch_failure"]}, "nodes": _unknown_nodes("launch_failure")}, separators=(",", ":")))
                 return 0
             print(json.dumps(capture_connector_journal(args.boot_id, args.since_us, args.until_us) if args.mode == "connector-journal" else capture_connector() if args.mode == "connector" else capture_headscale(Path(args.work) if args.work else None, args.headscale_pid), separators=(",", ":")))

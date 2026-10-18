@@ -93,10 +93,13 @@ tsnet_open() {
 # local listener teardown; a successful negative-phase nc always vetoes it.
 # Bounded private text observation for only Stop binding and same-peer checks.
 # Raw text is transient, capped, and validated before Bash can strip NUL bytes.
+# Elevate only this dedicated observer, using the existing capture CLI pattern.
+# Direct read-only queries inherit its UID/group; no inner sudo monitor detaches.
 virtual_text() {
-  local cap="$1" result status=0; shift
+  local cap="$1" result python_command status=0; shift
   virtual_text_value=""; virtual_text_reason=unavailable
-  result="$(timeout --kill-after=1 5 python - "$failure_capture_driver" "$cap" "$@" 2>/dev/null <<'PY_VIRTUAL_TEXT'
+  python_command="$(command -v python)" || return 1
+  result="$(timeout --kill-after=2 5 sudo -n "$python_command" - "$failure_capture_driver" "$cap" "$@" 2>/dev/null <<'PY_VIRTUAL_TEXT'
 import importlib.util
 import sys
 import signal
@@ -112,7 +115,7 @@ for item in (signal.SIGHUP, signal.SIGINT, signal.SIGTERM):
 spec = importlib.util.spec_from_file_location("n3_capture", sys.argv[1])
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
-raw, loss = module._bounded_observation(sys.argv[3:], seconds=3, cap=int(sys.argv[2]))
+raw, loss = module._bounded_observation(sys.argv[3:], seconds=3, cap=int(sys.argv[2]), require_root=True)
 if loss != "observed":
     print(loss)
     raise SystemExit(1)
@@ -182,14 +185,16 @@ virtual_note() {
 }
 virtual_refuse() { virtual_note "$1" "$2" "$3" || true; return 1; }
 stop_completed() {
-  local phase="$1" boot result status=0 check reason last pending
+  local phase="$1" boot result python_command status=0 check reason last pending
   [[ -n "${stop_phase:-}" && "$stop_phase" == "$phase" ]] || { virtual_refuse "$phase" binding missing; return 1; }
   boot="$(cat /proc/sys/kernel/random/boot_id)" || { virtual_refuse "$phase" binding unavailable; return 1; }
   [[ "$boot" == "$stop_boot" ]] || { virtual_refuse "$phase" binding boot_mismatch; return 1; }
   # Reuse the existing bounded private observer: each query owns 3s + 1s
   # group teardown, stdout+stderr cap, and no raw output enters diagnostics.
-  # The outer 15s + 1s cap also bounds decoder/import failure (three queries).
-  result="$(timeout --kill-after=1 15 python - "$failure_capture_driver" "$stop_pid" "$stop_invocation" "$stop_boot" "$stop_since" 2>/dev/null <<'PY_STOP'
+  # Existing sudo puts the cleanup owner at query privilege, before any query.
+  # Two seconds of outer kill grace leaves room for the bounded one-second reap.
+  python_command="$(command -v python)" || { virtual_refuse "$phase" sync launch_failure; return 1; }
+  result="$(timeout --kill-after=2 15 sudo -n "$python_command" - "$failure_capture_driver" "$stop_pid" "$stop_invocation" "$stop_boot" "$stop_since" 2>/dev/null <<'PY_STOP'
 import importlib.util
 import json
 import sys
@@ -212,7 +217,7 @@ def refuse(reason):
     raise ValueError(reason)
 
 def query(check, argv, cap):
-    raw, loss = module._bounded_observation(argv, seconds=3, cap=cap)
+    raw, loss = module._bounded_observation(argv, seconds=3, cap=cap, require_root=True)
     if loss != "observed":
         print(f"{check}:{loss}", flush=True)
         raise SystemExit(1)
@@ -234,9 +239,9 @@ def printable(value):
 
 # v255 journalctl uses Varlink Synchronize: deferred NORMAL+15 follows queued
 # stdout NORMAL+5. This is acquisition ordering, never receipt/identity proof.
-query("sync", ["sudo", "-n", "journalctl", "--sync"], 1024)
+query("sync", ["journalctl", "--sync"], 1024)
 print("sync:observed", flush=True)
-raw = query("journal", ["sudo", "-n", "journalctl", "-u", "happyranch-tsnet-sidecar.service",
+raw = query("journal", ["journalctl", "-u", "happyranch-tsnet-sidecar.service",
     "--boot=" + boot, "--since=@" + since, "_PID=" + pid,
     "_SYSTEMD_INVOCATION_ID=" + invocation, "--no-pager", "--all", "-o", "json",
     "--output-fields=MESSAGE,_PID,_SYSTEMD_INVOCATION_ID,_BOOT_ID"], 65536)
@@ -382,7 +387,7 @@ peer_current() {
   [[ -n "${peer_started:-}" && -n "${peer_node:-}" ]] || { virtual_peer_reason=missing; return 1; }
   process="$(peer_process_identity)" || return 1
   [[ "$process" == "$peer_started" ]] || { virtual_peer_reason=changed; return 1; }
-  virtual_text 65536 sudo -n "$ts_dir/tailscale" --socket="$work/peer.sock" status --json || { virtual_peer_reason="$virtual_text_reason"; return 1; }
+  virtual_text 65536 "$ts_dir/tailscale" --socket="$work/peer.sock" status --json || { virtual_peer_reason="$virtual_text_reason"; return 1; }
   # Preserve the same peer_identity fields and real local API, with bounded
   # acquisition and closed parse failure rather than suppressed raw errors.
   identity="$(timeout --kill-after=1 3 python -c '

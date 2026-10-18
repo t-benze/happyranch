@@ -190,7 +190,7 @@ identity/loss details. Historical seq464 allocation is consumed; current seq498 
 | D05 process gone | Pre-start window+boot captured; journal labels survive MainPID0, or replacement PID/invocation | Window-attributed events retained by invocation; original pin unavailable; live gates remain null | Replacement diagnose/process attributed to original; vanished PID suppresses journal |
 | D06 identity loss | Journal worker; wrong/missing unit/boot/invocation/PID/time/cursor; duplicate/noncanonical fields, generation/sequence drift | No bad event; parse/attribution loss explicit, original null/window_only | Bad label joins timeline, fabricated original or missing loss |
 | D07 noise/oversize/tail | Arbitrary/sensitive lines, huge frame, raw/frame/event/byte cap at journal read/project seam | Exact grammar filters before retention; journal slot precedes live scan; partial events with lost tail | Sensitive prose or extra bytes/records retained; live/noise exhausts causal slot |
-| D08 capture failure/reap | Worker/query launch failure, timeout, late output, descendant-held pipe, parse/write failure; original exit37 and later cleanup | Closed loss and tail false; bounded group ownership/reap, original37 and subsequent attempts survive | False observed/empty, unreaped child falsely confirmed, status replacement or skipped section |
+| D08 capture failure/reap | Both imported text/Stop observers and existing capture CLI: absent subreaper/readback or required UID0; launch/query/parse/write failure, timeout/cap, pipe-holding group descendant, HUP/INT/TERM during spawn/read/reap, signaling/wait/deadline failure; original exit37 and later cleanup | Owner failure launches no query (launch_failure); direct same-UID query group receives TERM/KILL and adopted children are reaped; unconfirmed cleanup discards output (query_error, or connector-journal reap_unconfirmed/tail false); cancellation remains nonzero, original37 and independent later teardown survive | Missing adoption/privileged cleanup owner, detached inner sudo, unconfirmed reap called observed, status replacement or skipped section; SOURCE/STATIC only; runtime/proof UNEXECUTED/SUSPENDED |
 | D09 inactive before binding | final cleanup with inactive sidecar/PID0; bind_stop_instance then unchanged Stop/virtual_removed | virtual_stop_binding_unconfirmed; removal/aggregate refuse | Historical generic label claimed actual residue/removal or missing tuple accepted |
 | D10 real reachability | Same-instance Stop receipts/current peer; nc reaches target, or target/peer absent | Positive dial vetoes; missing target/current peer remains unconfirmed | Negative dial/dead peer/missing address accepted as removal |
 | D11 no storm | Repeated ctx.Done/stopChild loops with refused admission; duplicate states; normal healthy polls | One first, each distinct observation/consequence once; no per-poll healthy output | Unbounded labels, first repeats or healthy polling noise |
@@ -430,7 +430,7 @@ fail-closed observation limits, not empirical sufficiency claims: four small
 binding properties and one PID fit comfortably; oversized journal/peer data
 refuses rather than silently dropping evidence. Journal frame caps match the
 existing bounded collector scale and still permit unrelated printable records.
-Outer text5s+1s and receipt15s+1s caps additionally bound Python startup/import
+Outer text5s+2s and receipt15s+2s caps additionally bound Python startup/import
 and parsing; the latter accommodates three3s+1s observations. Peer parsing has
 3s+1s. The real nc attempt retains5s with1s kill grace; its fixed launch marker
 excludes sudo failure from an observed attempt. Timeout after launch remains an
@@ -438,6 +438,38 @@ inconclusive failed probe, requiring independent Stop and same-peer evidence.
 No generic sleep, retry, new poll or unbounded journal is added. Proc identity
 reads retain their existing real Linux /proc seam. Full-run worst-case timing
 and cap sufficiency are not behaviorally verified.
+
+TASK11829's R1 source correction gives each of the two inline observers the
+existing sudo privilege, using the established timeout/sudo/capture pattern.
+The outer timeout also bounds sudo launch; sudo forwards cancellation to the
+observer, which owns its detached query group and reaps it itself. Only the
+observer/query process is elevated; the harness shell and unrelated operations
+are unchanged. Before every query, the existing helper establishes Linux
+PR_SET_CHILD_SUBREAPER and checks PR_GET_CHILD_SUBREAPER in the actual owner,
+with SIGCHLD reset/read back as default so child statuses remain waitable;
+these callers also require real/effective/saved UID0. Direct systemctl,
+journalctl and tailscale status queries inherit that UID and their owned group,
+without an inner sudo monitor/session. Unavailable ownership refuses as the
+existing fixed launch_failure token before launch. The dedicated capture main
+uses the same initialization; its nonprivileged headscale queries retain their
+existing UID. Group membership alone never supplies adopted-child wait rights.
+
+Catchable HUP/INT/TERM during Popen is deferred until its cleanup handle exists;
+read/wait cancellation and all normal/error/cap exits enter the same bounded
+TERM/KILL, leader wait and adopted group-child waitpid cleanup. Signals during cleanup are recorded without interrupting it, and still refuse
+the observation after reap. Further signals cannot interrupt that cleanup. Success requires no remaining group, no waitable
+group child and a reaped leader within the existing one-second cleanup budget;
+signaling/wait/pipe-close failure or an unconfirmed deadline discards the payload
+and refuses as query_error. Cancellation still exits nonzero and never becomes
+an observation. The existing connector-journal consumer retains reap_unconfirmed
+and tail_complete=false on failed cleanup. Outer kill grace increases only from
+one to two seconds so it does not cut off that one-second owner cleanup; it is
+not a substitute for adoption/reaping. These finite read-only queries are not
+daemon launchers; arbitrary detached/UID-changing commands are outside this
+helper's query contract. SIGKILL/kernel stalls cannot provide cleanup proof.
+All runtime cancellation, descendant and cleanup results remain UNEXECUTED /
+SUSPENDED; neither this source correction nor a static check confirms cleanup.
+
 
 The following refinements use the existing finite case IDs and four-answer
 map. All are **SOURCE/STATIC ONLY**; intended executable environment is the
@@ -449,7 +481,7 @@ mutation, repetition and executable QA proof are **UNEXECUTED/SUSPENDED**.
 | H24/H25/H46 complete removal conjunction | Bind active PID/invocation/start/boot/time twice; stop; sync; query distinct canonical Stop1+2 receipts; MainPID0; same live peer before/after status; real nc fails | binding/sync/journal/mainpid/peer evidence plus failed probe and removal:complete; unrelated printable journal records allowed | Missing conjunction term, discarded query failure or stale proof; source/static now, hosted N3 later |
 | H50 successful dial veto | Same valid Stop/peer evidence, but real nc returns0 | probe:connected then removal:refused regardless of other successes | Receipts override real successful connection; source/static only |
 | H27/H35/H45/H46 receipt and binding refusal | At actual bind/query decoder, vary missing/duplicate/noncanonical receipt, PID/invocation/boot/time/cursor and changed binding independently | Fixed missing/changed, receipt_missing/receipt_duplicate/receipt_noncanonical, pid_mismatch/invocation_mismatch/boot_mismatch/timestamp_invalid/cursor_invalid; no completion | Stale, duplicated or normalized receipt admitted; source/static only |
-| H25/H45 acquisition loss | Sync/query launch unavailable, nonzero exit, timeout; malformed JSON/UTF8/constants/duplicate fields, binary arrays, truncated LF, raw/frame/count over cap | Fixed launch_failure/query_error/timeout/parse_loss/duplicate_field/binary_field/truncated/over_cap at the refusing check; no raw content or completion | Query errors treated as absence/success, unbounded buffering or failure prose leak; source/static only |
+| H25/H45 acquisition loss | Owner/subreaper/readback/required UID unavailable (no launch), unconfirmed owned-group cleanup (query_error), sync/query launch unavailable, nonzero exit, timeout; malformed JSON/UTF8/constants/duplicate fields, binary arrays, truncated LF, raw/frame/count over cap | Fixed launch_failure/query_error/timeout/parse_loss/duplicate_field/binary_field/truncated/over_cap at the refusing check; no raw content or completion | Query errors treated as absence/success, unbounded buffering or failure prose leak; source/static only |
 | H24/H34 peer/probe loss | Missing target/executable/socket, missing peer binding, changed start ticks/node ID, failed/malformed/timed-out status; actual failed/timed-out nc with complete independent evidence | probe unavailable refuses; peer missing/changed/unavailable/parse_loss/query_error/timeout refuses; actual failed probe alone never passes and never proves remote refusal or listener survival | Missing observer or failed privilege launch admitted, failed dial alone used as removal proof; source/static only |
 | H40/H43/D09 original cause and teardown | Refuse any bound check in health-loss/barrier/readiness/shutdown, then enter independent final cleanup; also inject retention failure | Original caller failure/status retained; later fixed phase records remain distinct; remaining safe teardown attempts still run; missing final binding refuses | Later cleanup overwrites initiating cause, hides refusal or skips independent teardown; source/static only |
 | H22/S06 first finite update | Both CI boundaries: exact new before, after=head canonical/distinct, repo/head repo/PR/ref/base/event/attempt; vary each and subsequent unallocated update | Only first authorized update can reach build; wrong fields/old before/attempt2/manual/push/open/reopen and next before refuse; canonical after is enforced pre-build | Spent allocation renewed or slot2 silently opened; source/static only, no guard scenario executed |
