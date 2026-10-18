@@ -1,10 +1,12 @@
 # PR800 staged credential and mode cases — THR228seq428
 
-Current bounded correction: THR228seq514 / sole delivery root TASK11746,
-local maker TASK11757. The historical sections below retain their original
-scope; their statements of remaining seq498 allocation are now superseded by
-its terminal 3/3 FAILED closeout. Only the final section describes the new
-0/2 cycle and first local candidate. No maker publication or execution follows.
+Current bounded recovery: THR-228 seq514/523 / sole delivery root TASK11824,
+local recovery maker TASK11826. TASK11746 is terminally FAILED; TASK11757's
+preserved local candidate is recovered without reviving predecessor tasks.
+The historical sections below retain their original scope; remaining seq498
+allocation statements are superseded by its terminal 3/3 FAILED closeout.
+The final section records the SAME carried seq514 two-run ceiling at 0/2,
+not a reset or new allocation. No maker publication or execution follows.
 
 Authority: sole root TASK10989, direct maker TASK10991. These are finite source
 case records, not executable tests or execution evidence. Every row supplies
@@ -362,16 +364,34 @@ installer, shutdown and cleanup remain distinct missing executable proofs.
 
 ## Stop receipt acquisition and refusal diagnostics — THR228seq514
 
-Sole delivery root TASK11746 retains the new root-wide ceiling of TWO serial
-updates/automatic attempt1 runs; ledger remains **0/2**, with no publication or
-reservation from maker TASK11757. Both current CI boundaries admit only
+As of the 2026-10-18 local recovery reconciliation, sole delivery root
+TASK11824 carries THR-228 seq514's SAME ceiling of TWO serial updates/automatic
+attempt1 runs under seq523 (approving seq520). TASK11746 is terminally FAILED;
+this is supported recovery, not predecessor revival or a reset. Recorded
+publications/reservations/runs remain **0/2**; neither original maker TASK11757
+nor recovery maker TASK11826 has published or reserved a run. Both current CI
+boundaries admit only
 before=`e071377a98f72057f90ecba1569fe10c02c696b3`, distinct canonical after equal
 the actual PR800 head, same repo/task6475/main, synchronize and attempt1. The
 second update is NOT pre-enabled. All H22 denial scenarios above apply with
 this new before; the old before9219 is now also spent. Root must freshly bind
 reviewed head/tree/main, preserve nonforce ancestry, reconcile all histories
 and own each result report. This source is local only, pending independent
-full-diff review and same-head source/static QA.
+full-diff review and same-head source/static QA. TASK11824 alone owns the
+allocation record, publication, genuine observer/wait, actual-result report to
+THR228 after EACH run, and terminal closeout. Stop on success, product defect,
+necessary unauthorized scope/uncertain protected change, or the second run;
+no post-second repair/publication. Slot2 requires a source-supported in-radius
+correction, renewed full gates and fresh reconciliation; it is not an obligation.
+Seq523 permits equivalent allocation/guard documentary parity, not execution.
+
+TASK11748 and linked TASK11755 retain their FAILED invocation histories.
+TASK11758 remains historical BLOCK/FAILED with unfinished full review; no
+previous source/static verdict becomes approval of this recovered candidate.
+The maintained [package contract](managed-remote-access-linux-package.md) and
+[managed-access contract](../superpowers/specs/2026-08-26-managed-remote-access-contract.md)
+retain the historical observations and current-status pointers. No workspace-only
+path is required to follow this repository's allocation/guard status.
 
 Predecessor TASK11641/seq498 completed 3/3 FAILED:38775630461/1,
 38782221731/1,38788101249/1. The last run reached14 assertion records and failed
