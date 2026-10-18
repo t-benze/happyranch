@@ -21,6 +21,7 @@ from importlib.metadata import distribution
 from email.parser import BytesHeaderParser
 from types import CodeType
 import threading
+import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -44,10 +45,17 @@ except Exception:
 
 PHASES = ("intent", "identity", "expectation", "binding", "launched", "terminal")
 EMPTY_DIGEST = hashlib.sha256(b"").hexdigest()
-# Bound all acquired audit history, including unrelated/prior-boot rows. A
-# limit is an unavailable observation, never permission to validate a prefix.
-CENSUS_READ_PAGE_ROWS = 256
+# Bound selected current activity and its required reference closure. A limit
+# refuses the complete capture; it never validates a prefix or raises authority.
+CENSUS_READ_PAGE_ROWS = 5000
 MAX_CENSUS_READ_ROWS = 100_000
+MAX_CENSUS_READ_BYTES = 64 * 1_048_576
+MAX_CENSUS_ROW_BYTES = 4 * 1_048_576
+MAX_CENSUS_CLOSURE = 4096
+MAX_CENSUS_REQUESTS = 8192
+MAX_CENSUS_SECONDS = 30.0
+MAX_CENSUS_RESPONSE_BYTES = 16 * 1_048_576
+MAX_CENSUS_TRANSPORT_BYTES = 128 * 1_048_576
 
 COLLECTION_TAG = "MemoryCollectionV1: "
 MAX_ACCEPTANCE_BYTES = 1_048_576
@@ -513,46 +521,9 @@ class CollectionObserver:
         )
         return tuple(row)
 
-    def _rows(self) -> dict:
-        """Exhaust all audit, task and result evidence under revision bookends.
-
-        Each SELECT holds only its existing short Database read lock. A cap,
-        failed read or any intervening mutation refuses the entire capture.
-        No action/tuple filter may turn missing exposure or lifecycle into proof.
-        """
-        revision = self._read_revision()
-        tables: dict[str, list[dict]] = {}
-        for table in ("audit_log", "tasks", "task_results"):
-            expected, upper = self.db.fetch_one_readonly(
-                f"SELECT (SELECT count(*) FROM {table}), (SELECT max(id) FROM {table})"
-            )
-            if expected > MAX_CENSUS_READ_ROWS:
-                raise CensusReadUnavailable("census_read_work_limit")
-            cursor = "" if table == "tasks" else 0
-            rows = []
-            while True:
-                limit = min(CENSUS_READ_PAGE_ROWS, MAX_CENSUS_READ_ROWS - len(rows) + 1)
-                raw = self.db.fetch_all_readonly(
-                    f"SELECT * FROM {table} WHERE id>? AND id<=? ORDER BY id LIMIT ?", (cursor, upper, limit),
-                )
-                if len(rows) + len(raw) > MAX_CENSUS_READ_ROWS:
-                    raise CensusReadUnavailable("census_read_work_limit")
-                if not raw:
-                    break
-                page = [dict(row) for row in raw]
-                ids = [row["id"] for row in page]
-                if ids != sorted(set(ids)) or ids[0] <= cursor:
-                    raise CensusReadUnavailable("census_read_order")
-                rows.extend(page)
-                cursor = ids[-1]
-            if len(rows) != expected or (rows and rows[-1]["id"] != upper):
-                raise CensusReadUnavailable("census_read_incomplete")
-            tables[table] = rows
-        if self._read_revision() != revision:
-            raise CensusReadUnavailable("census_read_moving")
-        for row in tables["audit_log"]:
-            row["payload"] = _strict_json(row["payload"]) if isinstance(row["payload"], str) else row["payload"]
-        return tables
+    def _rows(self, snapshot: dict | None = None) -> dict:
+        """Read the SAME activity/reference scope used by reports and admission."""
+        return self.db.read_memory_collection_evidence(view=snapshot or self.snapshot())
 
     def validate(self) -> dict:
         """Zero-write, one bounded capture; moving/in-flight facts fail closed."""
@@ -560,7 +531,7 @@ class CollectionObserver:
         if snapshot["writer_active"] or snapshot["pending_observations"]:
             return _result(["observation_pending"], {})
         try:
-            evidence = self._rows()
+            evidence = self._rows(snapshot)
             integrity = validate_census(snapshot, evidence["audit_log"], evidence=evidence)
             closing = self.snapshot()
             # Compare all semantic facts, including sticky errors and seal
@@ -569,6 +540,12 @@ class CollectionObserver:
             if ({key: value for key, value in snapshot.items() if key != "sampled_at"}
                     != {key: value for key, value in closing.items() if key != "sampled_at"}):
                 return _result(["census_moving"], {})
+            closing_evidence = self._rows(closing)
+            final = self.snapshot()
+            if (collection_record_projection(evidence) != collection_record_projection(closing_evidence)
+                    or {k: v for k, v in closing.items() if k != "sampled_at"}
+                    != {k: v for k, v in final.items() if k != "sampled_at"}):
+                return _result(["census_membership_moving"], {})
             return integrity
         except CensusReadUnavailable as exc:
             return _result([exc.category], {})
@@ -680,7 +657,7 @@ def _failed_before_exposure(snapshot: dict, phases: dict, rows: list[dict], evid
         # Pre-binding SID assignment is not a persisted task binding. A prior
         # SID on that task neither supplies nor removes evidence for this SID.
         for result in evidence["task_results"]:
-            if result["session_id"] == sid:
+            if result["task_id"] == tid and result["session_id"] == sid:
                 return False
             if result["task_id"] == tid:
                 if (not isinstance(result["session_id"], str) or not result["session_id"].strip()
@@ -696,9 +673,11 @@ def _failed_before_exposure(snapshot: dict, phases: dict, rows: list[dict], evid
             if (action.startswith("memory_runtime_") and body.get("boot_id") == snapshot["boot_id"]
                     and body.get("ordinal") == p["ordinal"] and row not in (intent, identity, terminal)):
                 return False
-            # The SID is invocation-local; another boot/ordinal cannot borrow
-            # it, and a mismatched outer/inner task or agent is contradictory.
-            if body.get("session_id") == sid and row not in (identity, terminal):
+            # seq480: only related owner evidence and current-boot ordinal
+            # contradictions participate. Unrelated historical SID sharing is
+            # the documented supplied-liveSID trust limit, not admission proof.
+            owner = body.get("task_id") if action == "memory_read" else row["task_id"]
+            if owner == tid and body.get("session_id") == sid and row not in (identity, terminal):
                 return False
             if action in {"session_start", "memory_digest_impression", "memory_read", "memory_search"}:
                 owner = body.get("task_id") if action == "memory_read" else row["task_id"]
@@ -708,6 +687,216 @@ def _failed_before_exposure(snapshot: dict, phases: dict, rows: list[dict], evid
         return True
     except (KeyError, TypeError, ValueError, OverflowError):
         return False
+
+
+class _CensusBudget:
+    """Finite acquisition work; encoded sizes are not a hard RSS guarantee."""
+
+    def __init__(self, *, captures: int = 1) -> None:
+        self.max_rows = MAX_CENSUS_READ_ROWS * captures
+        self.max_bytes = MAX_CENSUS_READ_BYTES * captures
+        self.started = time.monotonic()
+        self.rows = self.bytes = self.requests = self.transport = self.steps = 0
+
+    def check(self) -> None:
+        if time.monotonic() - self.started > MAX_CENSUS_SECONDS:
+            raise CensusReadUnavailable("census_read_deadline")
+
+    def record(self, row: dict) -> None:
+        self.check()
+        size = len(json.dumps(row, ensure_ascii=False, allow_nan=False, separators=(",", ":")).encode())
+        self.rows += 1
+        self.bytes += size
+        if size > MAX_CENSUS_ROW_BYTES or self.rows > self.max_rows or self.bytes > self.max_bytes:
+            raise CensusReadUnavailable("census_read_size_limit")
+
+    def step(self) -> None:
+        self.check()
+        self.steps += 1
+        if self.steps > MAX_CENSUS_CLOSURE:
+            raise CensusReadUnavailable("census_closure_limit")
+
+    def request(self) -> float:
+        self.check()
+        self.requests += 1
+        if self.requests > MAX_CENSUS_REQUESTS:
+            raise CensusReadUnavailable("census_request_limit")
+        return min(5.0, MAX_CENSUS_SECONDS - (time.monotonic() - self.started))
+
+
+def _scope_references(value: Any) -> tuple[set[str], set[str]]:
+    """Follow structured genuine keys, never scrape prose/commands for IDs."""
+    tasks, jobs, pending = set(), set(), [(value, 0)]
+    nodes = 0
+    while pending:
+        item, depth = pending.pop()
+        nodes += 1
+        if depth > 64 or nodes > MAX_CENSUS_READ_ROWS:
+            raise CensusReadUnavailable("census_reference_limit")
+        if isinstance(item, dict):
+            pending.extend((v, depth + 1) for v in item.values())
+        elif isinstance(item, list):
+            pending.extend((v, depth + 1) for v in item)
+        elif isinstance(item, str):
+            if re.fullmatch(r"TASK-\d+", item):
+                tasks.add(item)
+            elif re.fullmatch(r"JOB-\d+", item):
+                jobs.add(item)
+    return tasks, jobs
+
+
+def _boot_boundary(view: dict, intents: list[dict]) -> str:
+    from runtime.infrastructure.memory_telemetry_report import aware_utc
+    _check_serving_snapshot(view)
+    first = _one([row for row in intents if row["payload"].get("boot_id") == view["boot_id"]
+                  and row["payload"].get("ordinal") == 1], "census_boot_boundary_missing")
+    if view["assigned_intents"] == 0:
+        raise CensusReadUnavailable("census_zero_population")
+    # Use the earlier producer-entered time too: earlier current-window calls
+    # cannot hide behind the first successful intent persistence timestamp.
+    return min(aware_utc(first["timestamp"]), aware_utc(first["payload"]["entered_at"])).isoformat()
+
+
+def _scoped_collection_evidence(view: dict, audit: Any, task: Any, job: Any, candidates: Any, *,
+                                budget: _CensusBudget, seed_task: str | None = None) -> dict:
+    """seq480: boot activity plus lifecycle, retry, QA/job and control closure.
+
+    Adapters exhaust existing filtered reads or refuse. Every historical task
+    has a consumer: current activity attribution, ancestry/revisit or an exact
+    structured delegation/acceptance/job key. All results/history of each such
+    owner and all direct revisits remain visible, including later candidates.
+    Closing/atomic callers run this selection again rather than reread IDs.
+    """
+    intents = audit({"action": "memory_runtime_intent"}, boot=view["boot_id"])
+    since = _boot_boundary(view, intents)
+    tables = {name: {} for name in ("audit_log", "tasks", "task_results", "jobs")}
+    pending_tasks, pending_jobs, history_tasks, read_history = set(), set(), set(), set()
+    probe_agents, probe_roots, scanned_jobs = {}, set(), set()
+    def references(value: Any, *, history: bool = True) -> None:
+        tids, jids = _scope_references(value)
+        if history:
+            history_tasks.update(tids)
+        pending_tasks.update(tids - tables["tasks"].keys() if not history else tids - read_history)
+        pending_jobs.update(jids - tables["jobs"].keys())
+    def add(name: str, row: dict) -> None:
+        key = row["id"]
+        previous = tables[name].get(key)
+        if previous is not None:
+            if previous != row:
+                raise CensusReadUnavailable("census_conflicting_record")
+            return
+        budget.record(row)
+        tables[name][key] = row
+        if name == "audit_log":
+            references(row["task_id"])
+            body = row["payload"]
+            if isinstance(body, dict):
+                # Attribution is a dependency; arbitrary historical prose,
+                # memory-source metadata and unrelated business IDs are not.
+                if row["action"] == "memory_read":
+                    references(body.get("task_id"))
+                if row["action"] in CONTROL_ACTIONS or row["action"] in {
+                        "revisit_of", "revisit_spawned", "escalation_superseded",
+                        "task_resumed_from_jobs", "job_submitted", "job_auto_started",
+                        "job_run_started", "job_run_completed", "orchestration_step"}:
+                    references(body)
+    for row in audit({"since": since}):
+        add("audit_log", row)
+    for action in sorted(CONTROL_ACTIONS):
+        for row in audit({"action": action}):
+            add("audit_log", row)
+    if seed_task is not None:
+        references(seed_task)
+    while pending_tasks or pending_jobs:
+        budget.step()
+        if pending_tasks:
+            tid = min(pending_tasks)
+            pending_tasks.remove(tid)
+            history = tid in history_tasks
+            if tid in read_history or (tid in tables["tasks"] and not history):
+                continue
+            _identifier(tid, "TASK")
+            owner, results, revisits = task(tid, history=history, children=tid in probe_roots)
+            if owner["id"] != tid:
+                raise CensusReadUnavailable("census_task_identity")
+            prior = tables["tasks"].get(tid)
+            if prior is not None:
+                same = (semantic_task_projection(owner) == semantic_task_projection(prior) if set(owner) == set(prior)
+                        else all(owner.get(key) == value for key, value in prior.items()))
+                if not same:
+                    raise CensusReadUnavailable("census_task_promotion_changed")
+                del tables["tasks"][tid]
+            add("tasks", owner)
+            # Ancestry's consumer needs graph facts, not all historical calls
+            # and callbacks of every ancestor's unrelated descendants.
+            references(owner.get("parent_task_id"), history=False)
+            references(owner.get("revisit_of_task_id"), history=history)
+            if not history:
+                continue
+            read_history.add(tid)
+            references(revisits)
+            if owner.get("blocked_on_job_ids"):
+                references(_strict_json(owner["blocked_on_job_ids"]) if isinstance(owner["blocked_on_job_ids"], str)
+                           else owner["blocked_on_job_ids"])
+            for row in audit({"task_id": tid}):
+                # Older seals/intent/expectation/binding rows have no consumer:
+                # the census authenticates this boot; old intervals use actual
+                # identity/start/launched/end/terminal and job/retry controls.
+                if (row["action"] in {"memory_collection_seal", "memory_runtime_intent",
+                        "memory_runtime_expectation", "memory_runtime_binding"}
+                        and isinstance(row["payload"], dict) and row["payload"].get("boot_id") != view["boot_id"]
+                        and not row["payload"].get("session_id")):
+                    continue
+                add("audit_log", row)
+            for result in results:
+                if result["task_id"] != tid:
+                    raise CensusReadUnavailable("census_result_owner")
+                add("task_results", result)
+                if result.get("decision_json"):
+                    references(_strict_json(result["decision_json"]) if isinstance(result["decision_json"], str)
+                               else result["decision_json"])
+                try:
+                    candidate = parse_acceptance(result["output_summary"])
+                except AcceptanceUnavailable:
+                    candidate = None  # retained raw; exact later candidate refuses
+                if candidate is not None:
+                    references(candidate)
+                    if candidate.get("action") != "invalidate":
+                        for receipt in candidate["probe_receipts"]:
+                            agents = probe_agents.setdefault(receipt["job_id"], set())
+                            original_agents = set(agents)
+                            for kind in ("root", "child"):
+                                agents.add(receipt[kind]["agent"])
+                            if agents != original_agents:
+                                scanned_jobs.discard(receipt["job_id"])
+                            root = receipt["root"]["task_id"]
+                            if root not in probe_roots:
+                                probe_roots.add(root)
+                                read_history.discard(root)
+                                references(root)
+                        # A job might already have arrived through a wait key.
+                        for jid in set(probe_agents) & tables["jobs"].keys():
+                            if jid not in scanned_jobs:
+                                record = tables["jobs"][jid]
+                                for agent in sorted(probe_agents[jid]):
+                                    references(candidates(agent, record["started_at"], record["finished_at"]))
+                                scanned_jobs.add(jid)
+        else:
+            jid = min(pending_jobs)
+            pending_jobs.remove(jid)
+            if jid in tables["jobs"]:
+                continue
+            _identifier(jid, "JOB")
+            record = job(jid)
+            if record["id"] != jid:
+                raise CensusReadUnavailable("census_job_identity")
+            add("jobs", record)
+            references(record["task_id"])
+            if jid in probe_agents and jid not in scanned_jobs:
+                for agent in sorted(probe_agents[jid]):
+                    references(candidates(agent, record["started_at"], record["finished_at"]))
+                scanned_jobs.add(jid)
+    return {name: sorted(rows.values(), key=lambda row: row["id"]) for name, rows in tables.items()}
 
 
 _RENDER_TIMESTAMP = "1970-01-01T00:00:00+00:00"
@@ -768,8 +957,20 @@ def validate_census(snapshot: dict, rows: list[dict], *, require_seal: bool = Tr
                 or type(snapshot["writer_active"]) is not bool
                 or type(snapshot["pending_observations"]) is not int or snapshot["pending_observations"] < 0):
             return _result(["census_evidence_invalid"], {})
-        return _validate_census(snapshot, rows, require_seal=require_seal, evidence=evidence)
-    except (KeyError, TypeError, ValueError, OverflowError, AttributeError, IdentityUnavailable):
+        integrity = _validate_census(snapshot, rows, require_seal=require_seal, evidence=evidence)
+        if evidence is not None:
+            from runtime.infrastructure.memory_telemetry_report import _session_diagnostics, aware_utc
+            since = aware_utc(_boot_boundary(snapshot, [row for row in rows if row["action"] == "memory_runtime_intent"]))
+            keys = {(row["agent"], row["task_id"], row["payload"].get("session_id")) for row in rows
+                    if row["action"] == "session_start" and isinstance(row["payload"], dict)
+                    and row["payload"].get("invocation_purpose") in {"manager_decision", "worker_execution"}
+                    and aware_utc(row["timestamp"]) >= since}
+            _, lifecycle, _ = _session_diagnostics(evidence, keys, aware_utc(snapshot["sampled_at"]), since=since)
+            if lifecycle.get("errors") or lifecycle["status"] in {"unhealthy", "unavailable"}:
+                return {**integrity, **_result(integrity["problems"] + ["session_lifecycle_unhealthy"], integrity["discrepancies"]),
+                        "closed_failed_before_exposure": []}
+        return integrity
+    except (KeyError, TypeError, ValueError, OverflowError, AttributeError, IdentityUnavailable, CensusReadUnavailable):
         return _result(["census_evidence_invalid"], {})
 
 
@@ -1060,10 +1261,11 @@ def loaded_identity(org: Any) -> dict:
     from runtime.infrastructure.memory_telemetry_report import reduce_report, reduce_collection_report, _session_diagnostics, aware_utc
     from runtime.orchestrator.run_step import _run_step_body
     from runtime.infrastructure.audit_logger import AuditLogger
-    from cli.commands.learning import cmd_memory_report, _compute_report, _print_report, _paginate, _report_projection, _fetch_agent_roles
+    from cli.commands.learning import cmd_memory_report, _compute_report, _print_report, _fetch_agent_roles
     functions.extend([org.orchestrator._log_step_result, org.memory_collection.reconcile_acceptance,
                       org.memory_collection.context.memory_collection_observation,
-                      inspect.unwrap(Database.read_memory_collection_evidence), Database.append_memory_collection_transition,
+                      Database.read_memory_collection_evidence, Database.append_memory_collection_transition,
+                      Database._memory_collection_read_budget.__wrapped__,
                       inspect.unwrap(Database.verify_retry_link), Database._retry_object, Database._retry_audits,
                       Database._retry_require_audit, Database._retry_manager_edge,
                       Database._retry_escalation_edge, Database._retry_dispatch_edge,
@@ -1075,9 +1277,11 @@ def loaded_identity(org: Any) -> dict:
                       CollectionObserver._rows, CollectionObserver.validate, validate_census, _validate_census, _failed_before_exposure,
                       semantic_task_projection, _semantic_evidence_projection, aware_utc, _run_step_body,
                       _result, _advance, _projection, CollectionObserver._read_revision,
+                      _CensusBudget.__init__, _CensusBudget.check, _CensusBudget.record, _CensusBudget.step, _CensusBudget.request,
+                      _scope_references, _boot_boundary, _scoped_collection_evidence, _collection_get, _collection_task_candidates,
                       _collection_pages, _http_collection_capture, acquire_http_collection_report,
                       current_epoch_references, reduce_report, reduce_collection_report, _session_diagnostics, AuditLogger.compute_memory_telemetry_report,
-                      cmd_memory_report, _compute_report, _print_report, _paginate, _report_projection, _fetch_agent_roles])
+                      cmd_memory_report, _compute_report, _print_report, _fetch_agent_roles])
     code_rows = []
     compiled: dict[str, CodeType] = {}
     def fingerprint(function: Any) -> None:
@@ -1316,9 +1520,8 @@ CONTROL_ACTIONS = frozenset({"memory_collection_epoch_started", "memory_collecti
 
 
 def collection_record_projection(tables: dict) -> str:
-    """Immutable comparison includes originals, jobs and exact admitted results."""
-    return json.dumps({key: [row for row in rows if key != "audit_log" or row["action"] not in CONTROL_ACTIONS]
-                       for key, rows in tables.items()}, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    """Compare complete selected membership/content, including new controls."""
+    return json.dumps(tables, sort_keys=True, separators=(",", ":"), allow_nan=False)
 
 
 def collection_logical_key(candidate: dict) -> str:
@@ -1846,7 +2049,7 @@ def _census_from_view(view: dict, rows: list[dict], *, evidence: dict | None = N
         "org", "boot_id", "generation", "assigned_intents", "intent_digest", "phase_counts",
         "phase_digests", "active_preparations", "observation_error", "latest_seal_audit_id")},
         "seal_attempts": len(seals), "seal_persisted": len(seals), "seal_digest": digest,
-        "writer_active": False, "pending_observations": 0}
+        "writer_active": False, "pending_observations": 0, "sampled_at": view["sampled_at"]}
     integrity = validate_census(snapshot, rows, evidence=evidence)
     if not integrity["census_valid"]:
         raise AcceptanceUnavailable("acceptance_census")
@@ -2035,8 +2238,15 @@ def _registered_cohort(org: Any) -> list[dict]:
 
 
 def prepare_acceptance(org: Any, result_id: int) -> dict:
+    # Ordinary callbacks are not collection candidates. Inspect their exact
+    # keyed carrier before source/file/census acquisition; the admitted carrier
+    # and complete membership are still reread during preparation and commit.
+    carrier = org.db.fetch_one_readonly("SELECT output_summary FROM task_results WHERE id=?", (result_id,))
+    parsed = parse_acceptance(carrier["output_summary"]) if carrier is not None else None
+    if parsed is None or parsed["kind"] != "manager_acceptance":
+        raise AcceptanceUnavailable("acceptance_manager_carrier")
     opening = serving_observation(org)
-    tables = org.db.read_memory_collection_evidence()
+    tables = org.db.read_memory_collection_evidence(view=opening, result_row_id=result_id)
     selected = _one([row for row in tables["task_results"] if row["id"] == result_id], "acceptance_manager_result")
     parsed = parse_acceptance(selected["output_summary"])
     invalidation = parsed is not None and parsed.get("action") == "invalidate"
@@ -2053,7 +2263,10 @@ def prepare_acceptance(org: Any, result_id: int) -> dict:
                                             current_time=admission_time, registered_cohort=roles,
                                             retry_verifier=org.db.verify_retry_link)
     closing = serving_observation(org)
-    if (_view_projection(opening) != _view_projection(closing)
+    if (collection_record_projection(tables) != collection_record_projection(
+                org.db.read_memory_collection_evidence(view=closing, result_row_id=result_id))
+            or _view_projection(opening) != _view_projection(closing)
+            or _view_projection(opening) != _view_projection(serving_observation(org))
             or (invalidation and roles != _registered_cohort(org))
             or (not invalidation and outputs != _local_job_outputs(org, tables))):
         raise AcceptanceUnavailable("acceptance_acquisition_moving")
@@ -2072,9 +2285,9 @@ def acquire_collection_report(org: Any, *, current_time: datetime | None = None)
     from runtime.infrastructure.memory_telemetry_report import aware_utc, ReportAcquisitionUnavailable
     try:
         opening = serving_observation(org)
-        tables = org.db.read_memory_collection_evidence()
+        tables = org.db.read_memory_collection_evidence(view=opening)
         outputs = _local_job_outputs(org, tables)
-        closing_tables = org.db.read_memory_collection_evidence()
+        closing_tables = org.db.read_memory_collection_evidence(view=opening)
         closing = serving_observation(org)
         if tables != closing_tables or _view_projection(opening) != _view_projection(closing) or outputs != _local_job_outputs(org, tables):
             raise ReportAcquisitionUnavailable()
@@ -2084,132 +2297,176 @@ def acquire_collection_report(org: Any, *, current_time: datetime | None = None)
         raise ReportAcquisitionUnavailable() from exc
 
 
-def _collection_pages(client: Any, org: str, *, tasks: bool = False) -> list[dict]:
-    from runtime.infrastructure.memory_telemetry_report import aware_utc, ReportAcquisitionUnavailable
+def _collection_get(client: Any, org: str, path: str, params: dict | None, budget: _CensusBudget) -> dict:
+    """Use the existing client's authenticated transport, with finite raw reads."""
+    timeout = budget.request()
+    chunks, size = [], 0
+    with client._client.stream("GET", f"/api/v1/orgs/{org}/{path}", params=params,
+                               timeout=timeout, headers={"Accept-Encoding": "identity"}) as response:
+        if response.status_code != 200 or response.headers.get("content-encoding", "identity") != "identity":
+            raise CensusReadUnavailable("census_transport_status")
+        length = response.headers.get("content-length")
+        if length is not None and (not length.isdecimal() or int(length) > MAX_CENSUS_RESPONSE_BYTES):
+            raise CensusReadUnavailable("census_transport_size")
+        for chunk in response.iter_raw(chunk_size=65536):
+            budget.check()
+            size += len(chunk)
+            budget.transport += len(chunk)
+            if size > MAX_CENSUS_RESPONSE_BYTES or budget.transport > MAX_CENSUS_TRANSPORT_BYTES:
+                raise CensusReadUnavailable("census_transport_size")
+            chunks.append(chunk)
+        if length is not None and size != int(length):
+            raise CensusReadUnavailable("census_transport_incomplete")
+    body = _strict_json(b"".join(chunks).decode("utf-8", errors="strict"))
+    budget.check()
+    if not isinstance(body, dict):
+        raise CensusReadUnavailable("census_transport_shape")
+    return body
+
+
+def _collection_pages(client: Any, org: str, *, filters: dict | None = None,
+                      boot: str | None = None, budget: _CensusBudget | None = None) -> list[dict]:
+    """Exhaust supported /audit filters, or refuse malformed/moving keysets."""
+    from runtime.infrastructure.database import _decode_cursor
+    from runtime.infrastructure.memory_telemetry_report import aware_utc
+    budget = budget or _CensusBudget()
     items, seen, cursors, cursor = [], set(), set(), None
-    task_anchor = None
+    filters = filters or {}
     while True:
-        params = {"limit": 200 if tasks else 5000}
+        params = {**filters, "limit": CENSUS_READ_PAGE_ROWS}
         if cursor is not None:
-            params["before" if tasks else "cursor"] = cursor
-        response = client.get(f"/api/v1/orgs/{org}/{'tasks' if tasks else 'audit'}", params=params)
-        if response.status_code != 200:
-            raise ReportAcquisitionUnavailable()
-        page = response.json()
-        _closed(page, {"tasks" if tasks else "entries", "next_cursor"})
-        rows = page["tasks" if tasks else "entries"]
-        if (not isinstance(rows, list) or len(rows) > params["limit"]
-                or len(items) + len(rows) > MAX_CENSUS_READ_ROWS):
-            raise ReportAcquisitionUnavailable()
-        for index, row in enumerate(rows):
-            if tasks and isinstance(row, dict):
-                row = dict(row)
-                if (not isinstance(row.get("task_id"), str) or not row["task_id"].strip()
-                        or not isinstance(row.get("created_at"), str)):
-                    raise ReportAcquisitionUnavailable()
-                row["id"] = row.pop("task_id")
-                rows[index] = row
-            if not isinstance(row, dict) or row.get("id") in seen:
-                raise ReportAcquisitionUnavailable()
+            params["cursor"] = cursor
+        page = _collection_get(client, org, "audit", params, budget)
+        _closed(page, {"entries", "next_cursor"}, {"memory_collection_observation"})
+        rows = page["entries"]
+        if not isinstance(rows, list) or len(rows) > CENSUS_READ_PAGE_ROWS:
+            raise CensusReadUnavailable("census_page_size")
+        for row in rows:
+            if (not isinstance(row, dict) or type(row.get("id")) is not int or row["id"] <= 0
+                    or row["id"] in seen):
+                raise CensusReadUnavailable("census_page_identity")
             seen.add(row["id"])
-        order = [row["id"] for row in rows]
-        # /tasks uses (created_at, id) DESC, with an ID-only transport cursor.
-        # Parse the wire datetime: UTC serialization uses Z, whose lexical
-        # order relative to fractional seconds is not chronological.
-        # /audit returns each newest keyset page in
-        # ascending audit-ID order (not descending timestamp order).
-        try:
-            anchors = ([(aware_utc(row["created_at"]), row["id"]) for row in rows] if tasks else
-                       [(row["timestamp"], row["id"]) for row in rows])
-        except (TypeError, ValueError, OverflowError) as exc:
-            raise ReportAcquisitionUnavailable() from exc
-        if (tasks and anchors != sorted(anchors, reverse=True)) or (not tasks and order != sorted(set(order))):
-            raise ReportAcquisitionUnavailable()
-        if cursor is not None and order:
-            from runtime.infrastructure.database import _decode_cursor
-            if max(anchors) >= (task_anchor if tasks else _decode_cursor(cursor)):
-                raise ReportAcquisitionUnavailable()
+            budget.record(row)
+            aware_utc(row["timestamp"])
+            for key, value in filters.items():
+                if ((key == "since" and row["timestamp"] < value)
+                        or (key != "since" and row.get(key) != value)):
+                    raise CensusReadUnavailable("census_page_filter")
+        anchors = [(row["timestamp"], row["id"]) for row in rows]
+        if ([row["id"] for row in rows] != sorted(row["id"] for row in rows)
+                or (cursor is not None and anchors and max(anchors) >= _decode_cursor(cursor))):
+            raise CensusReadUnavailable("census_page_order")
         items.extend(rows)
         next_cursor = page["next_cursor"]
-        if tasks and (len(rows) == params["limit"]) != (next_cursor is not None):
-            raise ReportAcquisitionUnavailable()
-        if next_cursor is None:
-            break
-        if not rows or not isinstance(next_cursor, str) or not next_cursor or next_cursor in cursors:
-            raise ReportAcquisitionUnavailable()
-        if tasks:
-            if next_cursor != rows[-1]["id"]:
-                raise ReportAcquisitionUnavailable()
-            task_anchor = anchors[-1]
-        else:
-            from runtime.infrastructure.database import _decode_cursor
-            anchor = _decode_cursor(next_cursor)
-            if anchor != min(anchors):
-                raise ReportAcquisitionUnavailable()
-            if cursor is not None and anchor >= _decode_cursor(cursor):
-                raise ReportAcquisitionUnavailable()
-        cursors.add(next_cursor)
+        if next_cursor is not None:
+            if (not rows or not isinstance(next_cursor, str) or not next_cursor or next_cursor in cursors
+                    or _decode_cursor(next_cursor) != min(anchors)
+                    or (cursor is not None and _decode_cursor(next_cursor) >= _decode_cursor(cursor))):
+                raise CensusReadUnavailable("census_page_cursor")
+            cursors.add(next_cursor)
+        if next_cursor is None or (boot is not None and any(
+                isinstance(row["payload"], dict) and row["payload"].get("boot_id") == boot
+                and row["payload"].get("ordinal") == 1 for row in rows)):
+            return sorted(items, key=lambda row: row["id"])
         cursor = next_cursor
-    return sorted(items, key=lambda row: row["id"])
 
 
-def _http_collection_capture(client: Any, org: str) -> tuple[dict, dict, dict]:
-    from runtime.infrastructure.memory_telemetry_report import ReportAcquisitionUnavailable
-    def get(path: str, params: dict | None = None) -> dict:
-        response = client.get(f"/api/v1/orgs/{org}/" + path, params=params)
-        if response.status_code != 200:
-            raise ReportAcquisitionUnavailable()
-        body = response.json()
-        if not isinstance(body, dict):
-            raise ReportAcquisitionUnavailable()
-        return body
+def _collection_task_candidates(client: Any, org: str, agent: str, start: str, end: str,
+                                budget: _CensusBudget) -> list[str]:
+    """Complete inverse probe-slot candidates via existing agent task pages.
+
+    Only jobs positively referenced by accepted-format carriers consume this
+    population. Never replace complete candidates with claimed receipt IDs.
+    """
+    from runtime.infrastructure.memory_telemetry_report import aware_utc
+    beginning, ending = aware_utc(start), aware_utc(end)
+    if ending < beginning:
+        raise CensusReadUnavailable("census_probe_window")
+    before, anchor, seen, found = None, None, set(), []
+    while True:
+        params = {"assigned_agent": agent, "limit": 200}
+        if before is not None:
+            params["before"] = before
+        page = _collection_get(client, org, "tasks", params, budget)
+        _closed(page, {"tasks", "next_cursor"})
+        rows = page["tasks"]
+        if not isinstance(rows, list) or len(rows) > 200:
+            raise CensusReadUnavailable("census_probe_page")
+        keys = []
+        for row in rows:
+            budget.record(row)
+            tid = row["task_id"]
+            _identifier(tid, "TASK")
+            if row["assigned_agent"] != agent or tid in seen:
+                raise CensusReadUnavailable("census_probe_candidate")
+            seen.add(tid)
+            stamp = aware_utc(row["created_at"])
+            keys.append((stamp, tid))
+            if beginning <= stamp <= ending:
+                found.append(tid)
+        if keys != sorted(keys, reverse=True) or (anchor is not None and keys and keys[0] >= anchor):
+            raise CensusReadUnavailable("census_probe_order")
+        following = page["next_cursor"]
+        if ((len(rows) == 200) != (following is not None)
+                or (following is not None and following != rows[-1]["task_id"])):
+            raise CensusReadUnavailable("census_probe_cursor")
+        if following is None or (keys and keys[-1][0] < beginning):
+            return found
+        anchor, before = keys[-1], following
+
+
+def _http_collection_capture(client: Any, org: str, *, budget: _CensusBudget | None = None) -> tuple[dict, dict, dict]:
+    budget = budget or _CensusBudget()
+    def get(path, params=None):
+        return _collection_get(client, org, path, params, budget)
     view = get("audit", {"action": "memory_collection_seal", "limit": 1})["memory_collection_observation"]
-    audit_rows, tasks = _collection_pages(client, org), _collection_pages(client, org, tasks=True)
-    results, jobs, outputs = [], [], {}
-    # All original parent/plan results participate in prior-delegation and
-    # retry validation; accepting only final references would omit evidence.
-    result_ids = set()
-    for task in tasks:
-        task_id = task["id"]
-        _identifier(task_id, "TASK")
-        detail = get(f"tasks/{task_id}")
-        current = detail.get("task")
-        if (not isinstance(current, dict) or current.get("task_id") != task_id
-                or semantic_task_projection(task) != semantic_task_projection(
-                    {"id": task_id, **{key: value for key, value in current.items() if key != "task_id"},
-                     "pause": detail.get("pause")})
-                or not isinstance(detail.get("results"), list)):
-            raise ReportAcquisitionUnavailable()
-        for result in detail["results"]:
-            if (not isinstance(result, dict) or type(result.get("id")) is not int or result["id"] <= 0
-                    or result["id"] in result_ids or result.get("task_id") != task_id):
-                raise ReportAcquisitionUnavailable()
-            result_ids.add(result["id"])
-        if len(results) + len(detail["results"]) > MAX_CENSUS_READ_ROWS:
-            raise ReportAcquisitionUnavailable()
-        results.extend(detail["results"])
-    job_ids = _referenced_probe_jobs(results)
-    for job_id in sorted(job_ids):
-        jobs.append(get(f"jobs/{job_id}"))
+    def audit(filters, *, boot=None):
+        return _collection_pages(client, org, filters=filters, boot=boot, budget=budget)
+    def task(tid, *, history, children):
+        if not history:
+            ancestor = get(f"tasks/{tid}/recall")
+            if ancestor.get("task_id") != tid:
+                raise CensusReadUnavailable("census_ancestor_missing")
+            return {"id": tid, **{key: ancestor[key] for key in ("parent_task_id", "revisit_of_task_id")}}, [], []
+        detail = get(f"tasks/{tid}")
+        current, results, revisits = detail.get("task"), detail.get("results"), detail.get("direct_revisits")
+        if (not isinstance(current, dict) or current.get("task_id") != tid
+                or not isinstance(results, list) or not isinstance(revisits, list)
+                or any(not isinstance(item, str) for item in revisits) or len(revisits) != len(set(revisits))):
+            raise CensusReadUnavailable("census_task_shape")
+        ids = [row.get("id") for row in results if isinstance(row, dict)]
+        if len(ids) != len(results) or any(type(i) is not int or i <= 0 for i in ids) or len(ids) != len(set(ids)):
+            raise CensusReadUnavailable("census_result_identity")
+        if children:
+            recall = get(f"tasks/{tid}/recall")
+            if recall.get("task_id") != tid or not isinstance(recall.get("children"), list):
+                raise CensusReadUnavailable("census_probe_children")
+            revisits = revisits + recall["children"]
+        return {"id": tid, **{k: v for k, v in current.items() if k != "task_id"}, "pause": detail.get("pause")}, results, revisits
+    def candidates(agent, start, end):
+        return _collection_task_candidates(client, org, agent, start, end, budget)
+    tables = _scoped_collection_evidence(view, audit, task, lambda jid: get(f"jobs/{jid}"), candidates, budget=budget)
+    outputs = {}
+    for job_id in sorted(_referenced_probe_jobs(tables["task_results"])):
         outputs[job_id] = get(f"jobs/{job_id}/output", {"stream": "both", "max_bytes": 10 * 1_048_576})
-        # The job route reports a missing on-disk stream as an empty stream.
-        # A referenced canary requires both original complete output streams;
-        # refuse acquisition instead of rendering a partial evidence report.
+        # Preserve exact original streams/byte totals; missing files never
+        # become empty successful canaries through the route's fallback.
         output = outputs[job_id]
         _closed(output, {"stdout", "stderr", "truncated_stdout", "truncated_stderr", "total_stdout_bytes", "total_stderr_bytes"})
         for stream in ("stdout", "stderr"):
             text, total = output[stream], output[f"total_{stream}_bytes"]
             if (not isinstance(text, str) or "\ufffd" in text or type(total) is not int or total <= 0
                     or len(text.encode("utf-8")) != total or output[f"truncated_{stream}"] is not False):
-                raise ReportAcquisitionUnavailable()
-    return {"tasks": tasks, "task_results": results, "jobs": jobs, "audit_log": audit_rows}, view, outputs
+                raise CensusReadUnavailable("census_output_incomplete")
+    return tables, view, outputs
 
 
 def acquire_http_collection_report(client: Any, org: str, *, current_time: datetime | None = None) -> tuple[dict, dict, dict, datetime]:
     from runtime.infrastructure.memory_telemetry_report import aware_utc, ReportAcquisitionUnavailable
     try:
-        opening = _http_collection_capture(client, org)
-        closing = _http_collection_capture(client, org)
+        budget = _CensusBudget(captures=2)
+        opening = _http_collection_capture(client, org, budget=budget)
+        closing = _http_collection_capture(client, org, budget=budget)
         if (_semantic_evidence_projection(opening[0]) != _semantic_evidence_projection(closing[0])
                 or opening[2] != closing[2] or _view_projection(opening[1]) != _view_projection(closing[1])):
             raise ReportAcquisitionUnavailable()
@@ -2222,19 +2479,14 @@ def acquire_http_collection_report(client: Any, org: str, *, current_time: datet
 def current_epoch_references(org: Any, view: dict) -> dict:
     """Project references only after actual current evidence validation; zero writes."""
     try:
-        controls = [dict(row) for row in org.db.fetch_all_readonly(
-            "SELECT * FROM audit_log WHERE action IN (?, ?) ORDER BY id LIMIT ?",
-            (*sorted(CONTROL_ACTIONS), MAX_CENSUS_READ_ROWS + 1),
-        )]
+        tables = org.db.read_memory_collection_evidence(view=view)
+        controls = [row for row in tables["audit_log"] if row["action"] in CONTROL_ACTIONS]
         if not controls:
             return view
-        if len(controls) > MAX_CENSUS_READ_ROWS:
-            raise AcceptanceUnavailable("acceptance_control_limit")
-        last = _strict_json(controls[-1]["payload"])
+        last = controls[-1]["payload"]
         head = collection_control_head(controls, org.slug, last["operational_root_task_id"])
         if head["action"] != "memory_collection_epoch_started" or head["payload"]["boot_id"] != view["boot_id"]:
             raise AcceptanceUnavailable("acceptance_epoch_inactive")
-        tables = org.db.read_memory_collection_evidence()
         outputs = _local_job_outputs(org, tables)
         # The serving view was acquired before this separate evidence SELECT.
         # Detect a terminal/seal arriving between them before validating an
@@ -2242,7 +2494,7 @@ def current_epoch_references(org: Any, view: dict) -> dict:
         # validation failure; only measured bookend movement is transient.
         closing = serving_observation(org)
         if (_view_projection(closing) != _view_projection(view)
-                or tables != org.db.read_memory_collection_evidence() or outputs != _local_job_outputs(org, tables)):
+                or tables != org.db.read_memory_collection_evidence(view=view) or outputs != _local_job_outputs(org, tables)):
             return {**view, "observation_error": view["observation_error"] or "observation_moving", "data_through": None}
         candidate = validate_epoch_candidate(tables, head, view, outputs,
                                              current_time=datetime.now(timezone.utc),
@@ -2251,7 +2503,7 @@ def current_epoch_references(org: Any, view: dict) -> dict:
         if candidate != head["payload"]["projection"]:
             raise AcceptanceUnavailable("epoch_projection_changed")
         if (_view_projection(closing) != _view_projection(view)
-                or tables != org.db.read_memory_collection_evidence() or outputs != _local_job_outputs(org, tables)):
+                or tables != org.db.read_memory_collection_evidence(view=view) or outputs != _local_job_outputs(org, tables)):
             return {**view, "observation_error": view["observation_error"] or "observation_moving", "data_through": None}
         return {**view, "epoch_id": head["payload"]["epoch_id"], "epoch_audit_id": head["id"]}
     except Exception:

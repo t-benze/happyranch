@@ -150,6 +150,12 @@ logs/screenshots/review packets to Shared Artifacts as an ownership workaround.
    boundary and recheck current full health. The root retains any explicitly
    requested independent durable within48h AFTER-epoch check and production
    observation follow-through; never infer a renewal, schedule or tuning action.
+   Seq480 census acquisition covers current boot/epoch activity and its required
+   lifecycle/ancestry/retry/QA/job/control references, including current calls on
+   old retired SIDs. Unrelated global SID sharing is the documented PR1084 trust
+   limit; related contradictions and missing evidence still refuse. Both reports
+   share closing/commit membership recomputation. Bounded refusal or source sizing
+   is not healthy observation, installed qualification or collection acceptance.
 
 
 3. **Consult the knowledge base.** Before planning, check for durable knowledge relevant to this task.

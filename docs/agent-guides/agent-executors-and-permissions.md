@@ -669,10 +669,18 @@ Terminal observation never clears another SessionTracker generation. Direct
 executor/manual/thread/dream launches create no task-bootstrap census binding.
 Observation failures do not change executor results, retries or application
 exceptions. Callback sealing performs no history acquisition; diagnostic seals
-remain `census_not_reconciled`. Bounded exhaustive read validation rejects
+remain `census_not_reconciled`. Bounded seq480 activity/reference read validation rejects
 moving captures and unresolved authoritative task/parent/type facts without
 changing ordinary launch/refusal behavior. These source facts confer no
 installed/epoch/collection authority.
+
+The seq480 census uses boot/epoch activity and its required lifecycle, ancestry,
+retry, QA/job and control dependencies, including current activity with preboot
+retired SIDs. It removes unrelated global same-SID searches under PR1084's known
+supplied-liveSID limit; related contradictions still refuse. Closing/atomic reads
+recompute membership, never only prepared IDs. The corrective memory spec states
+finite work/transport/SQL/lock refusal and public-server/RSS limitations. No
+reader acquires execution, writer-repair, health or collection authority.
 
 The seq428 closed failed-before-exposure census class requires complete bounded
 actual task/result/audit evidence, one ordered authenticated tuple and a strict

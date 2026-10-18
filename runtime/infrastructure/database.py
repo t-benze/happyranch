@@ -982,29 +982,135 @@ class Database(
         """
         return self._conn.execute(sql, params).fetchall()
 
-    @_synchronized
-    def read_memory_collection_evidence(self, *, audit_actions: tuple[str, ...] | None = None) -> dict:
-        """Bounded SELECT-only snapshot; acceptance callers always read all history.
+    @contextmanager
+    def _memory_collection_read_budget(self):
+        """Bound lock admission/hold and SQLite VM work, never scan-by-LIMIT.
 
-        No-epoch reports may select their complete diagnostic action set. This
-        filter never supplies collection authority or changes the default view.
+        Caller owns no observer callback or file/network work in this scope.
+        Nested selected rereads share the outer transition's original deadline.
+        The DB RLock excludes other users while the connection handler is set.
         """
-        from runtime.infrastructure.memory_collection import MAX_CENSUS_READ_ROWS, AcceptanceUnavailable
-        tables = {}
-        with self.coherent_read_view() as conn:
-            for table in ("tasks", "task_results", "jobs", "audit_log"):
-                where, params = "", ()
-                if table == "audit_log" and audit_actions is not None:
-                    if not audit_actions:
-                        raise AcceptanceUnavailable("acceptance_read_actions")
-                    where = " WHERE action IN (" + ",".join("?" for _ in audit_actions) + ")"
-                    params = audit_actions
-                rows = conn.execute(f"SELECT * FROM {table}{where} ORDER BY id LIMIT ?",
-                                    (*params, MAX_CENSUS_READ_ROWS + 1)).fetchall()
-                if len(rows) > MAX_CENSUS_READ_ROWS:
-                    raise AcceptanceUnavailable("acceptance_read_limit")
-                tables[table] = [dict(row) for row in rows]
-        return tables
+        from runtime.infrastructure.memory_collection import CensusReadUnavailable
+        if not self._lock.acquire(timeout=0.5):
+            raise CensusReadUnavailable("census_database_busy")
+        nested = getattr(self, "_collection_read_deadline", None) is not None
+        try:
+            if not nested:
+                self._collection_read_deadline = _time.monotonic() + 3.0
+                work = 0
+                def progress():
+                    nonlocal work
+                    work += 1000
+                    return int(work > 50_000_000 or _time.monotonic() > self._collection_read_deadline)
+                self._conn.set_progress_handler(progress, 1000)
+            if _time.monotonic() > self._collection_read_deadline:
+                raise CensusReadUnavailable("census_database_deadline")
+            yield
+        except sqlite3.OperationalError as exc:
+            if str(exc) == "interrupted":
+                raise CensusReadUnavailable("census_database_scan_limit") from exc
+            raise
+        finally:
+            if not nested:
+                self._conn.set_progress_handler(None, 0)
+                self._collection_read_deadline = None
+            self._lock.release()
+
+    def read_memory_collection_evidence(self, *, view: dict | None = None, result_row_id: int | None = None) -> dict:
+        """Select boot activity and its genuine reference closure, read-only.
+
+        Recompute population on every call, including inside BEGIN IMMEDIATE.
+        Native retry verification remains separate and retains its authority.
+        """
+        from runtime.infrastructure.memory_collection import (
+            _CensusBudget, _scoped_collection_evidence, _strict_json,
+            MAX_CENSUS_READ_ROWS, CensusReadUnavailable,
+        )
+        if view is None:
+            org = getattr(self, "_memory_collection_context", None)
+            if org is None or org.memory_collection is None:
+                raise CensusReadUnavailable("census_context_missing")
+            view = org.memory_collection.snapshot()  # before DB lock: observer -> DB
+        budget = _CensusBudget()
+        with self._memory_collection_read_budget(), self.coherent_read_view() as conn:
+            def read(sql, params=()):
+                budget.check()
+                cursor = conn.execute(sql, params)
+                result = []
+                for raw in cursor:
+                    row = dict(raw)
+                    budget.record(row)
+                    result.append(row)
+                return result
+            def audit(filters, *, boot=None):
+                clauses, values = [], []
+                for key, value in filters.items():
+                    if key not in {"task_id", "agent", "action", "since"}:
+                        raise CensusReadUnavailable("census_read_filter")
+                    clauses.append("timestamp >= ?" if key == "since" else key + " = ?")
+                    values.append(value)
+                if boot is not None:
+                    # Native equivalent of the public paged intent discovery:
+                    # one bounded scan, never repeated scans of unrelated boots.
+                    clauses.extend(("json_valid(payload)", "json_extract(payload, '$.boot_id') = ?",
+                                    "json_extract(payload, '$.ordinal') = 1"))
+                    values.append(boot)
+                rows = read("SELECT * FROM audit_log WHERE " + " AND ".join(clauses)
+                            + " ORDER BY id LIMIT ?", (*values, MAX_CENSUS_READ_ROWS + 1))
+                for row in rows:
+                    row["payload"] = _strict_json(row["payload"]) if isinstance(row["payload"], str) else row["payload"]
+                return rows
+            def task(tid, *, history, children):
+                columns = "*" if history else "id, parent_task_id, revisit_of_task_id"
+                owners = read("SELECT " + columns + " FROM tasks WHERE id=?", (tid,))
+                if len(owners) != 1:
+                    raise CensusReadUnavailable("census_task_missing")
+                if not history:
+                    return owners[0], [], []
+                results = read("SELECT * FROM task_results WHERE task_id=? ORDER BY id LIMIT ?", (tid, MAX_CENSUS_READ_ROWS + 1))
+                revisits = read("SELECT id FROM tasks WHERE revisit_of_task_id=? ORDER BY id LIMIT ?", (tid, MAX_CENSUS_READ_ROWS + 1))
+                related = [row["id"] for row in revisits]
+                if children:
+                    related.extend(row["id"] for row in read(
+                        "SELECT id FROM tasks WHERE parent_task_id=? ORDER BY id LIMIT ?", (tid, MAX_CENSUS_READ_ROWS + 1)))
+                return owners[0], results, related
+            def candidates(agent, start, end):
+                from runtime.infrastructure.memory_telemetry_report import aware_utc
+                beginning, ending = aware_utc(start), aware_utc(end)
+                if ending < beginning:
+                    raise CensusReadUnavailable("census_probe_window")
+                found, anchor = [], None
+                cursor = conn.execute(
+                    "SELECT id, created_at FROM tasks WHERE assigned_agent=? ORDER BY created_at DESC, id DESC LIMIT ?",
+                    (agent, MAX_CENSUS_READ_ROWS + 1))
+                for raw in cursor:
+                    row = dict(raw)
+                    budget.record(row)
+                    stamp = aware_utc(row["created_at"])
+                    key = (stamp, row["id"])
+                    if anchor is not None and key >= anchor:
+                        raise CensusReadUnavailable("census_probe_order")
+                    if stamp < beginning:
+                        break
+                    if stamp <= ending:
+                        found.append(row["id"])
+                    anchor = key
+                return found
+            def job(jid):
+                records = read("SELECT * FROM jobs WHERE id=?", (jid,))
+                if len(records) != 1:
+                    raise CensusReadUnavailable("census_job_missing")
+                return records[0]
+            seed = None
+            if result_row_id is not None:
+                results = read("SELECT task_id FROM task_results WHERE id=?", (result_row_id,))
+                if len(results) != 1:
+                    raise CensusReadUnavailable("census_result_missing")
+                seed = results[0]["task_id"]
+            tables = _scoped_collection_evidence(view, audit, task, job, candidates, budget=budget, seed_task=seed)
+            if _time.monotonic() > self._collection_read_deadline:
+                raise CensusReadUnavailable("census_database_deadline")
+            return tables
 
     def append_memory_collection_transition(self, *, result_row_id: int) -> dict:
         """Acquire actual org evidence before the observer->DB atomic publication.
@@ -1026,14 +1132,14 @@ class Database(
             payload = {"boot_id": prepared["view"]["boot_id"],
                        "base_assigned_intents": prepared["view"]["assigned_intents"],
                        "accepted_at": candidate["published_at"], "projection": candidate}
-            with org.memory_collection._lock, self._lock:
+            with org.memory_collection._lock, self._memory_collection_read_budget():
                 current_observer = org.memory_collection._snapshot()
                 if any(current_observer[key] != prepared["view"][key] for key in (
                     "boot_id", "generation", "assigned_intents", "phase_counts", "phase_digests", "observation_error")):
                     raise AcceptanceUnavailable("acceptance_observer_moving")
                 try:
                     self._conn.execute("BEGIN IMMEDIATE")
-                    current = self.read_memory_collection_evidence()
+                    current = self.read_memory_collection_evidence(view=prepared["view"], result_row_id=result_row_id)
                     from runtime.infrastructure.memory_telemetry_report import aware_utc
                     original = equivalent_collection_control(current, candidate)
                     admission_time = aware_utc(original["timestamp"]) if original is not None else datetime.now(timezone.utc)
@@ -1093,6 +1199,8 @@ class Database(
                         for boundary in (aware_utc(row["timestamp"]), datetime.now(timezone.utc)):
                             validate_acceptance_evidence(current, result_row_id, prepared["view"], prepared["outputs"],
                                                          current_time=boundary, retry_verifier=self.verify_retry_link)
+                    if _time.monotonic() > self._collection_read_deadline:
+                        raise AcceptanceUnavailable("acceptance_lock_deadline")
                     self._conn.commit()
                     return {**row, "payload": body}
                 except BaseException:

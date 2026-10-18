@@ -273,23 +273,58 @@ epoch NOT STARTED, 48h handoff NOT DUE; frozen eligibility thresholds unchanged.
 ## Observation-only reporting core (TASK-9673 recovery / TASK-9559)
 
 The backend and canonical CLI share the pure `memory_telemetry_report` reducer.
-Both report entry points now acquire complete bounded task and relevant audit
-snapshots, including session start/end, actual job-resume audits and runtime
-identity/launch/terminal. Backend uses the existing coherent SELECT-only evidence
-snapshot with an optional no-epoch audit-action filter; CLI exhausts all relevant
-`/audit` action pages and `/tasks` pages in two stable sweeps. The100000-row
-bound applies to required evidence, without unrelated audit history causing a
-new no-epoch refusal. Accepted-epoch acquisition keeps the default unfiltered
-tasks/results/jobs/audit snapshots, original task results, referenced probe jobs
-and stable serving bookends. No diagnostic filter supplies collection authority. Task/result
-ownership, duplicate rows, cursor/page ordering, size bounds and changed snapshots
-refuse acquisition. Roles are bracketed separately and remain descriptive when
-unavailable. No-epoch diagnostics need no valid serving health but cannot claim
-collection; accepted epochs retain independent current loaded identity/census
-and authenticated original probe gates. HTTP/decoder/timeout or SELECT failure
-refuses with `acquisition_unavailable`, CLI exit1 and no partial stdout.
-Task pagination follows `(created_at, id)` descending using parsed wire
-timestamps and the last ID as the server-resolved transport cursor, not ID order.
+Founder THR-091 seq480 narrows the census to current boot/epoch activity plus
+its referenced lifecycle, retry, delegation, QA/job and epoch/invalidation
+records. All activity in that window is selected before attribution filtering;
+a read/search now using an old retired SID retains the old task and interval.
+Ancestry-only dependencies retain their parent/revisit graph facts; owners used
+for lifecycle/proof retain original results, lifecycle and control history plus
+direct revisits. Historical seals and SID-less intent/expectation/binding rows
+from other boots have no current-census consumer. No prose/command ID scraping
+or unrelated global same-SID audit/result search supplies an admission gate;
+PR1084's supplied-liveSID trust limit remains. Same-owner contradictions still
+refuse the strict failed-before-exposure class. Every required missing task,
+result, job, lifecycle, control or genuine callback remains a refusal.
+
+Observer, native database, existing HTTP readers, backend and canonical CLI,
+acceptance preparation, current epoch references and the BEGIN IMMEDIATE reread
+use the same scope selector. Closing capture and commit recompute membership,
+including new direct revisits, root results and malformed/later controls, rather
+than rereading prepared IDs. Original job streams/digests, native retry authority,
+INTEGER callbacks, original admission age and observer→DB lock order remain.
+File/network reads stay outside publication locks; any failed revalidation rolls
+back. No-epoch diagnostics are current-boot observations and remain CLOSED;
+preboot dependency records do not inflate their natural denominators.
+
+Acquisition refuses beyond 100000 work records/64 MiB encoded work per capture
+(including overlapping discovery/owner reads), 4 MiB per record, 4096 closure
+steps, 8192 HTTP requests, 16 MiB raw response or 128 MiB transport bytes.
+Paired HTTP captures share a 30-second cooperative deadline and twice the
+per-capture record/byte work allocation. HTTP streams refuse nonidentity content
+encoding, malformed UTF8/JSON/duplicate keys, cursors, ordering and incomplete
+original output. A request has at most a five-second socket timeout and the
+remaining acquisition budget; client refusal does not cancel an already-running
+server query. Native SELECT/publication use 0.5-second DB-lock admission,
+50000000 SQLite VM instructions and a three-second cooperative lock deadline;
+publication checks the deadline again before commit. SQLite progress interrupts
+SQL, not Python/OS scheduling. Public /audit and task-detail server queries keep
+their existing implementation: the native scan guard does not bound that server
+work. Selected LIMIT/encoded bytes are not scanned-row or hard RSS guarantees.
+No schema/index/writer/new endpoint or response envelope is added.
+
+HTTP uses only existing /audit since/action/task filters and keyed task details,
+ancestry recall, direct revisits and job/output reads. Positively referenced
+probe jobs also select complete same-agent task candidates in the original job
+window through existing assigned_agent task pages; probe roots retain all direct
+children. Claimed receipt IDs alone cannot establish slot uniqueness. Roles
+bracket the report.
+Native snapshots are coherent; paired HTTP captures compare full membership,
+raw records/outputs and semantic task/serving bookends. Only valid rendering
+timestamps at pause.observed_at, pause.blockers[*].observed_at and
+child_wait.observed_at are normalized. Malformed/unknown fields remain evidence.
+A moving/refused capture yields acquisition_unavailable, CLI exit1 and no partial
+stdout. Sizing/source checks do not qualify installed readers, repair a sticky
+observation failure, accept B/C or start/reset an epoch.
 
 D (THR-091 seq389–390) adds disjoint `by_session_kind` diagnostics: first_launch,
 job_resume, retry, retry_job_resume, other_continuation, unknown. Actual runtime
