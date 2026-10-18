@@ -1941,8 +1941,10 @@ async def refresh_workspace_repos_async(workspace: Path) -> dict[str, bool]:
             results = await asyncio.shield(worker)
             break
         except asyncio.CancelledError as exc:
-            if worker.cancelled():
-                raise
+            # A completed worker may itself raise CancelledError. Do not
+            # re-await that same completed failure indefinitely.
+            if worker.done():
+                raise cancellation or exc
             cancellation = cancellation or exc
             cancel_requested.set()
         except BaseException as exc:
