@@ -1541,6 +1541,10 @@ epoch/invalidation evidence. Ancestry-only reads retain graph facts; proof and
 interval owners retain original results/history and direct revisits. Unrelated
 global same-SID records are outside admission under PR1084's supplied-liveSID
 trust limit. Related contradictions and missing required evidence still refuse.
+Historical memory_read closure uses payload.task_id while preserving outer AGENT
+scope: one complete bounded action read per capture, selecting only required
+full-history owners. Closing/atomic discovery includes late preboot reads;
+exhausted scan/transport budgets refuse rather than certify absence.
 Both report front doors remove their former all-history/task preflight. Empty or
 short no-epoch diagnostics remain CLOSED. Closing and locked publication rereads
 recompute membership and compare controls as well as records; no prepared-ID

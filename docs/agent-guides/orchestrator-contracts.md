@@ -3160,6 +3160,10 @@ path; its diagnostic is `census_not_reconciled`. Only a complete zero-write read
 validation reconciles the seq480 current-boot/epoch activity and required
 lifecycle/ancestry/retry/QA/job/control closure. Current old-retired-SID activity
 retains the preboot interval; unrelated global SID sharing is outside admission.
+Historical memory_read ownership comes from payload.task_id, preserving outer
+AGENT scope. Each capture exhausts one bounded existing action read and selects
+only required full-history owners; late preboot rows are rediscovered at closing
+and commit. Exhaustion refuses, never a truncated absence proof.
 Missing required evidence and related contradictions refuse. Closing and locked
 publication reads recompute membership, including later controls/results/retries,
 with coherent native snapshots and full semantic serving/evidence comparison.

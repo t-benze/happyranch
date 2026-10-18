@@ -1593,7 +1593,11 @@ all-history/task preflight. Closing and atomic rereads recompute membership,
 including new controls/results/retries. No-epoch output stays CLOSED and excludes
 historical proof rows from current natural denominators. Unrelated global SID
 sharing remains the PR1084 known supplied-liveSID trust limit; same-owner
-contradictions still refuse. The corrective spec documents finite encoded-work,
+contradictions still refuse. A complete bounded existing action=memory_read
+read per capture selects payload.task_id for required full-history owners while
+preserving outer AGENT scope and excluding unrelated owners sharing a SID.
+Closing/atomic discovery repeats it; exhaustion refuses without partial success.
+The corrective spec documents finite encoded-work,
 transport, SQL and cooperative lock limits on existing public/native readers,
 including sampled-scan and hard-RSS limitations. HTTP503 reports exhausted work;
 job-output and receipt reads allocate only each requested stream prefix while

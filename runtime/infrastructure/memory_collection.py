@@ -808,6 +808,17 @@ def _scoped_collection_evidence(view: dict, audit: Any, task: Any, job: Any, can
             add("audit_log", row)
     if seed_task is not None:
         references(seed_task)
+    # memory_read's outer task_id is AGENT-scoped; its task owner lives in
+    # payload.task_id. Exhaust the existing action read once, under the same
+    # adapter budgets, so historical owner reads cannot miss a preboot read.
+    # Index all owners for dependencies discovered later in this closure, but
+    # admit only required full-history owners below, never global SID matches.
+    payload_reads: dict[str, list[dict]] = {}
+    for row in audit({"action": "memory_read"}):
+        budget.check()
+        body = row["payload"]
+        if isinstance(body, dict) and isinstance(body.get("task_id"), str):
+            payload_reads.setdefault(body["task_id"], []).append(row)
     while pending_tasks or pending_jobs:
         budget.step()
         if pending_tasks:
@@ -848,6 +859,8 @@ def _scoped_collection_evidence(view: dict, audit: Any, task: Any, job: Any, can
                         and isinstance(row["payload"], dict) and row["payload"].get("boot_id") != view["boot_id"]
                         and not row["payload"].get("session_id")):
                     continue
+                add("audit_log", row)
+            for row in payload_reads.get(tid, ()):
                 add("audit_log", row)
             for result in results:
                 if result["task_id"] != tid:

@@ -1706,6 +1706,10 @@ The seq480 scope is boot/epoch activity plus referenced lifecycle, ancestry,
 retry, QA/job and epoch/invalidation dependencies, including current activity on
 old retired SIDs. Unrelated global same-SID searches are outside admission under
 PR1084's supplied-liveSID trust limit; same-owner contradictions still refuse.
+Historical `memory_read` ownership uses payload.task_id, preserving its outer
+AGENT scope. Each capture exhausts the existing action read once under the same
+work/transport budgets and selects only required full-history owners; closing
+and atomic rereads rediscover late payload-owned rows. Scan exhaustion refuses.
 Observer, native/HTTP, both report front doors, preparation and locked reread use
 one selector and recompute membership at closing/commit, including new relevant
 controls/results/retries. No-epoch diagnostics remain CLOSED. Finite work,

@@ -283,7 +283,16 @@ direct revisits. Historical seals and SID-less intent/expectation/binding rows
 from other boots have no current-census consumer. No prose/command ID scraping
 or unrelated global same-SID audit/result search supplies an admission gate;
 PR1084's supplied-liveSID trust limit remains. Same-owner contradictions still
-refuse the strict failed-before-exposure class. Every required missing task,
+refuse the strict failed-before-exposure class. Historical `memory_read` rows
+retain their AGENT-scoped outer task_id; the owner is payload.task_id. Each
+capture exhausts the existing action=memory_read read once and indexes literal
+payload owners, including dependencies discovered later in the closure. Only
+required full-history owners enter evidence; unrelated owners sharing a SID do
+not. The complete scan consumes the existing row/byte/SQL/deadline/transport
+budgets, including unrelated returned reads, and exhaustion refuses rather than
+asserting absence. Closing and locked atomic rereads repeat this discovery, so
+late preboot payload-owned membership cannot hide behind prepared IDs.
+Every required missing task,
 result, job, lifecycle, control or genuine callback remains a refusal.
 
 Observer, native database, existing HTTP readers, backend and canonical CLI,
