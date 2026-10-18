@@ -1,11 +1,14 @@
 """Automatic job admission, history and nonexecuting legacy disposition."""
 from __future__ import annotations
 
+from runtime.infrastructure.memory_collection import CensusReadUnavailable
+
 from runtime.orchestrator.producer_move import owner_for
 from runtime.orchestrator.team_move import DeferredTeamMove
 
 import asyncio
 import hashlib
+import os
 import json as _json
 from collections import deque
 from contextlib import nullcontext
@@ -474,7 +477,11 @@ async def get_job_route(
     session_id: str | None = None,
     has_bearer: bool = optional_bearer(),
 ) -> dict:
-    record = org.db.get_job(job_id)
+    try:
+        with org.db._memory_collection_read_budget():
+            record = org.db.get_job(job_id)
+    except CensusReadUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     if record is None:
         raise HTTPException(status_code=404, detail={"code": "unknown_job", "job_id": job_id})
     _enforce_session_or_bearer(
@@ -523,10 +530,14 @@ def _read_job_output_payload(
         if path is None:
             return ("", False, 0)
         output_path = Path(path)
-        if not output_path.exists():
+        try:
+            with output_path.open("rb") as handle:
+                # Size and bytes belong to the same opened stream; never read
+                # an entire potentially large output before applying the cap.
+                total = os.fstat(handle.fileno()).st_size
+                data = handle.read(max_bytes)
+        except FileNotFoundError:
             return ("", False, 0)
-        total = output_path.stat().st_size
-        data = output_path.read_bytes()[:max_bytes]
         return (data.decode("utf-8", errors="replace"), total > max_bytes, total)
 
     out, out_trunc, out_total = (
@@ -1234,7 +1245,11 @@ async def get_job_output(
     stream: str = "both",
     max_bytes: int = 1_048_576,
 ) -> dict:
-    record = org.db.get_job(job_id)
+    try:
+        with org.db._memory_collection_read_budget():
+            record = org.db.get_job(job_id)
+    except CensusReadUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     if record is None:
         raise HTTPException(status_code=404, detail={"code": "unknown_job"})
     return _read_job_output_payload(record, stream=stream, max_bytes=max_bytes)

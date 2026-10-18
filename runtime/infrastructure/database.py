@@ -982,29 +982,177 @@ class Database(
         """
         return self._conn.execute(sql, params).fetchall()
 
-    @_synchronized
-    def read_memory_collection_evidence(self, *, audit_actions: tuple[str, ...] | None = None) -> dict:
-        """Bounded SELECT-only snapshot; acceptance callers always read all history.
+    @contextmanager
+    def _memory_collection_read_budget(self, *, publication: bool = False):
+        """Bound selected reads, including their transitive SQL and decoding.
 
-        No-epoch reports may select their complete diagnostic action set. This
-        filter never supplies collection authority or changes the default view.
+        Enter BEFORE any coherent/synchronized lock. Nested readers share the
+        original work/deadline; no callback, file or network I/O belongs here.
+        SQLite VM sampling and cooperative checks are not hard wall/RSS bounds.
         """
-        from runtime.infrastructure.memory_collection import MAX_CENSUS_READ_ROWS, AcceptanceUnavailable
-        tables = {}
-        with self.coherent_read_view() as conn:
-            for table in ("tasks", "task_results", "jobs", "audit_log"):
-                where, params = "", ()
-                if table == "audit_log" and audit_actions is not None:
-                    if not audit_actions:
-                        raise AcceptanceUnavailable("acceptance_read_actions")
-                    where = " WHERE action IN (" + ",".join("?" for _ in audit_actions) + ")"
-                    params = audit_actions
-                rows = conn.execute(f"SELECT * FROM {table}{where} ORDER BY id LIMIT ?",
-                                    (*params, MAX_CENSUS_READ_ROWS + 1)).fetchall()
-                if len(rows) > MAX_CENSUS_READ_ROWS:
-                    raise AcceptanceUnavailable("acceptance_read_limit")
-                tables[table] = [dict(row) for row in rows]
-        return tables
+        from runtime.infrastructure.memory_collection import (
+            CensusReadUnavailable, MAX_CENSUS_READ_ROWS, MAX_CENSUS_READ_BYTES,
+            MAX_CENSUS_ROW_BYTES,
+        )
+        if not self._lock.acquire(timeout=0.5):
+            raise CensusReadUnavailable("census_database_busy")
+        nested = getattr(self, "_collection_read_deadline", None) is not None
+        old_factory = self._conn.row_factory
+        old_length = old_timeout = None
+        try:
+            if not nested:
+                self._collection_read_deadline = _time.monotonic() + 3.0
+                old_timeout = self._conn.execute("PRAGMA busy_timeout").fetchone()[0]
+                self._conn.execute("PRAGMA busy_timeout=100")
+                old_length = self._conn.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, MAX_CENSUS_ROW_BYTES)
+                work = rows = size = 0
+
+                def progress() -> int:
+                    nonlocal work
+                    work += 1000
+                    return int(work > 50_000_000 or _time.monotonic() > self._collection_read_deadline)
+
+                def bounded_row(cursor: sqlite3.Cursor, values: tuple) -> object:
+                    nonlocal rows, size
+                    # SQLite's length limit rejects huge TEXT/BLOB/records before
+                    # Python allocation. Charge every fetched row before caller
+                    # JSON/Pydantic decoding, including nested projections.
+                    amount = sum(len(v.encode("utf-8")) if isinstance(v, str)
+                                 else len(v) if isinstance(v, bytes) else 8 for v in values)
+                    rows += 1
+                    size += amount
+                    if (amount > MAX_CENSUS_ROW_BYTES or rows > MAX_CENSUS_READ_ROWS
+                            or size > MAX_CENSUS_READ_BYTES):
+                        raise CensusReadUnavailable("census_database_size_limit")
+                    if _time.monotonic() > self._collection_read_deadline:
+                        raise CensusReadUnavailable("census_database_deadline")
+                    return old_factory(cursor, values) if old_factory else values
+
+                self._conn.row_factory = bounded_row
+                self._conn.set_progress_handler(progress, 1000)
+            if _time.monotonic() > self._collection_read_deadline:
+                raise CensusReadUnavailable("census_database_deadline")
+            yield
+            # Publication checks immediately BEFORE COMMIT. Do not turn a
+            # successful COMMIT into an apparent no-write read refusal here.
+            if not publication and _time.monotonic() > self._collection_read_deadline:
+                raise CensusReadUnavailable("census_database_deadline")
+        except sqlite3.DataError as exc:
+            raise CensusReadUnavailable("census_database_size_limit") from exc
+        except sqlite3.OperationalError as exc:
+            if str(exc) == "interrupted":
+                raise CensusReadUnavailable("census_database_scan_limit") from exc
+            if str(exc) in {"database is locked", "database table is locked"}:
+                raise CensusReadUnavailable("census_database_busy") from exc
+            raise
+        finally:
+            try:
+                if not nested:
+                    self._conn.set_progress_handler(None, 0)
+                    self._conn.row_factory = old_factory
+                    if old_length is not None:
+                        self._conn.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, old_length)
+                    if old_timeout is not None:
+                        self._conn.execute(f"PRAGMA busy_timeout={int(old_timeout)}")
+                    self._collection_read_deadline = None
+            finally:
+                self._lock.release()
+
+    def read_memory_collection_evidence(self, *, view: dict | None = None, result_row_id: int | None = None) -> dict:
+        """Select boot activity and its genuine reference closure, read-only.
+
+        Recompute population on every call, including inside BEGIN IMMEDIATE.
+        Native retry verification remains separate and retains its authority.
+        """
+        from runtime.infrastructure.memory_collection import (
+            _CensusBudget, _scoped_collection_evidence, _strict_json,
+            MAX_CENSUS_READ_ROWS, CensusReadUnavailable,
+        )
+        if view is None:
+            org = getattr(self, "_memory_collection_context", None)
+            if org is None or org.memory_collection is None:
+                raise CensusReadUnavailable("census_context_missing")
+            view = org.memory_collection.snapshot()  # before DB lock: observer -> DB
+        budget = _CensusBudget()
+        with self._memory_collection_read_budget(), self.coherent_read_view() as conn:
+            def read(sql, params=()):
+                budget.check()
+                cursor = conn.execute(sql, params)
+                result = []
+                for raw in cursor:
+                    row = dict(raw)
+                    budget.record(row)
+                    result.append(row)
+                return result
+            def audit(filters, *, boot=None):
+                clauses, values = [], []
+                for key, value in filters.items():
+                    if key not in {"task_id", "agent", "action", "since"}:
+                        raise CensusReadUnavailable("census_read_filter")
+                    clauses.append("timestamp >= ?" if key == "since" else key + " = ?")
+                    values.append(value)
+                if boot is not None:
+                    # Native equivalent of the public paged intent discovery:
+                    # one bounded scan, never repeated scans of unrelated boots.
+                    clauses.extend(("json_valid(payload)", "json_extract(payload, '$.boot_id') = ?",
+                                    "json_extract(payload, '$.ordinal') = 1"))
+                    values.append(boot)
+                rows = read("SELECT * FROM audit_log WHERE " + " AND ".join(clauses)
+                            + " ORDER BY id LIMIT ?", (*values, MAX_CENSUS_READ_ROWS + 1))
+                for row in rows:
+                    row["payload"] = _strict_json(row["payload"]) if isinstance(row["payload"], str) else row["payload"]
+                return rows
+            def task(tid, *, history, children):
+                columns = "*" if history else "id, parent_task_id, revisit_of_task_id"
+                owners = read("SELECT " + columns + " FROM tasks WHERE id=?", (tid,))
+                if len(owners) != 1:
+                    raise CensusReadUnavailable("census_task_missing")
+                if not history:
+                    return owners[0], [], []
+                results = read("SELECT * FROM task_results WHERE task_id=? ORDER BY id LIMIT ?", (tid, MAX_CENSUS_READ_ROWS + 1))
+                revisits = read("SELECT id FROM tasks WHERE revisit_of_task_id=? ORDER BY id LIMIT ?", (tid, MAX_CENSUS_READ_ROWS + 1))
+                related = [row["id"] for row in revisits]
+                if children:
+                    related.extend(row["id"] for row in read(
+                        "SELECT id FROM tasks WHERE parent_task_id=? ORDER BY id LIMIT ?", (tid, MAX_CENSUS_READ_ROWS + 1)))
+                return owners[0], results, related
+            def candidates(agent, start, end):
+                from runtime.infrastructure.memory_telemetry_report import aware_utc
+                beginning, ending = aware_utc(start), aware_utc(end)
+                if ending < beginning:
+                    raise CensusReadUnavailable("census_probe_window")
+                found, anchor = [], None
+                cursor = conn.execute(
+                    "SELECT id, created_at FROM tasks WHERE assigned_agent=? ORDER BY created_at DESC, id DESC LIMIT ?",
+                    (agent, MAX_CENSUS_READ_ROWS + 1))
+                for raw in cursor:
+                    row = dict(raw)
+                    budget.record(row)
+                    stamp = aware_utc(row["created_at"])
+                    key = (stamp, row["id"])
+                    if anchor is not None and key >= anchor:
+                        raise CensusReadUnavailable("census_probe_order")
+                    if stamp < beginning:
+                        break
+                    if stamp <= ending:
+                        found.append(row["id"])
+                    anchor = key
+                return found
+            def job(jid):
+                records = read("SELECT * FROM jobs WHERE id=?", (jid,))
+                if len(records) != 1:
+                    raise CensusReadUnavailable("census_job_missing")
+                return records[0]
+            seed = None
+            if result_row_id is not None:
+                results = read("SELECT task_id FROM task_results WHERE id=?", (result_row_id,))
+                if len(results) != 1:
+                    raise CensusReadUnavailable("census_result_missing")
+                seed = results[0]["task_id"]
+            tables = _scoped_collection_evidence(view, audit, task, job, candidates, budget=budget, seed_task=seed)
+            if _time.monotonic() > self._collection_read_deadline:
+                raise CensusReadUnavailable("census_database_deadline")
+            return tables
 
     def append_memory_collection_transition(self, *, result_row_id: int) -> dict:
         """Acquire actual org evidence before the observer->DB atomic publication.
@@ -1026,14 +1174,14 @@ class Database(
             payload = {"boot_id": prepared["view"]["boot_id"],
                        "base_assigned_intents": prepared["view"]["assigned_intents"],
                        "accepted_at": candidate["published_at"], "projection": candidate}
-            with org.memory_collection._lock, self._lock:
+            with org.memory_collection._lock, self._memory_collection_read_budget(publication=True):
                 current_observer = org.memory_collection._snapshot()
                 if any(current_observer[key] != prepared["view"][key] for key in (
                     "boot_id", "generation", "assigned_intents", "phase_counts", "phase_digests", "observation_error")):
                     raise AcceptanceUnavailable("acceptance_observer_moving")
                 try:
                     self._conn.execute("BEGIN IMMEDIATE")
-                    current = self.read_memory_collection_evidence()
+                    current = self.read_memory_collection_evidence(view=prepared["view"], result_row_id=result_row_id)
                     from runtime.infrastructure.memory_telemetry_report import aware_utc
                     original = equivalent_collection_control(current, candidate)
                     admission_time = aware_utc(original["timestamp"]) if original is not None else datetime.now(timezone.utc)
@@ -1093,6 +1241,8 @@ class Database(
                         for boundary in (aware_utc(row["timestamp"]), datetime.now(timezone.utc)):
                             validate_acceptance_evidence(current, result_row_id, prepared["view"], prepared["outputs"],
                                                          current_time=boundary, retry_verifier=self.verify_retry_link)
+                    if _time.monotonic() > self._collection_read_deadline:
+                        raise AcceptanceUnavailable("acceptance_lock_deadline")
                     self._conn.commit()
                     return {**row, "payload": body}
                 except BaseException:
@@ -1100,7 +1250,6 @@ class Database(
                     raise
 
 
-    @_synchronized
     def query_audit_logs(
         self,
         task_id: str | None = None,
@@ -1121,75 +1270,76 @@ class Database(
         encoding the (timestamp, id) of the last row in the prior page.
         ``next_cursor`` is ``None`` exactly when the result set is exhausted.
         """
-        import base64
+        with self._memory_collection_read_budget():
+            import base64
 
-        clauses: list[str] = []
-        params: list[object] = []
+            clauses: list[str] = []
+            params: list[object] = []
 
-        # Decode cursor into a keyset filter (rows BEFORE the cursor anchor)
-        if cursor is not None:
-            cursor_ts, cursor_id = _decode_cursor(cursor)
-            clauses.append(
-                "(timestamp < ? OR (timestamp = ? AND id < ?))"
-            )
-            params.extend([cursor_ts, cursor_ts, cursor_id])
+            # Decode cursor into a keyset filter (rows BEFORE the cursor anchor)
+            if cursor is not None:
+                cursor_ts, cursor_id = _decode_cursor(cursor)
+                clauses.append(
+                    "(timestamp < ? OR (timestamp = ? AND id < ?))"
+                )
+                params.extend([cursor_ts, cursor_ts, cursor_id])
 
-        if task_id is not None:
-            clauses.append("task_id = ?")
-            params.append(task_id)
-        if agent is not None:
-            clauses.append("agent = ?")
-            params.append(agent)
-        if action is not None:
-            clauses.append("action = ?")
-            params.append(action)
-        if since is not None:
-            clauses.append("timestamp >= ?")
-            params.append(since)
+            if task_id is not None:
+                clauses.append("task_id = ?")
+                params.append(task_id)
+            if agent is not None:
+                clauses.append("agent = ?")
+                params.append(agent)
+            if action is not None:
+                clauses.append("action = ?")
+                params.append(action)
+            if since is not None:
+                clauses.append("timestamp >= ?")
+                params.append(since)
 
-        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+            where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
 
-        # Defensive guard: non-positive limit short-circuits to empty result.
-        # Without this, limit=0 returns next_cursor anchored to a row that was
-        # never returned, and limit<0 produces an IndexError on result[limit-1].
-        if limit is not None and limit <= 0:
-            return [], None
+            # Defensive guard: non-positive limit short-circuits to empty result.
+            # Without this, limit=0 returns next_cursor anchored to a row that was
+            # never returned, and limit<0 produces an IndexError on result[limit-1].
+            if limit is not None and limit <= 0:
+                return [], None
 
-        if limit is not None:
-            # Fetch limit+1 to detect whether another page exists
-            sql = (
-                f"SELECT * FROM audit_log {where} "
-                f"ORDER BY timestamp DESC, id DESC LIMIT ?"
-            )
-            params.append(limit + 1)
-        else:
-            sql = f"SELECT * FROM audit_log {where} ORDER BY timestamp DESC, id DESC"
+            if limit is not None:
+                # Fetch limit+1 to detect whether another page exists
+                sql = (
+                    f"SELECT * FROM audit_log {where} "
+                    f"ORDER BY timestamp DESC, id DESC LIMIT ?"
+                )
+                params.append(limit + 1)
+            else:
+                sql = f"SELECT * FROM audit_log {where} ORDER BY timestamp DESC, id DESC"
 
-        db_cursor = self._conn.execute(sql, tuple(params))
-        rows = db_cursor.fetchall()
+            db_cursor = self._conn.execute(sql, tuple(params))
+            rows = db_cursor.fetchall()
 
-        result: list[dict] = []
-        for row in rows:
-            d = dict(row)
-            if d.get("payload"):
-                d["payload"] = json.loads(d["payload"])
-            result.append(d)
+            result: list[dict] = []
+            for row in rows:
+                d = dict(row)
+                if d.get("payload"):
+                    d["payload"] = json.loads(d["payload"])
+                result.append(d)
 
-        next_cursor: str | None = None
-        if limit is not None and len(result) > limit:
-            # The extra row tells us there is a next page.
-            # Encode the (timestamp, id) of the last actual-page row as next_cursor.
-            last_of_page = result[limit - 1]
-            next_cursor = _encode_cursor(
-                last_of_page["timestamp"], last_of_page["id"]
-            )
-            # Trim to exactly the requested page size
-            result = result[:limit]
+            next_cursor: str | None = None
+            if limit is not None and len(result) > limit:
+                # The extra row tells us there is a next page.
+                # Encode the (timestamp, id) of the last actual-page row as next_cursor.
+                last_of_page = result[limit - 1]
+                next_cursor = _encode_cursor(
+                    last_of_page["timestamp"], last_of_page["id"]
+                )
+                # Trim to exactly the requested page size
+                result = result[:limit]
 
-        # Re-sort ascending so callers see chronological (oldest-first) order.
-        result.sort(key=lambda d: d["id"])
+            # Re-sort ascending so callers see chronological (oldest-first) order.
+            result.sort(key=lambda d: d["id"])
 
-        return result, next_cursor
+            return result, next_cursor
 
     # --- Task Results ---
 

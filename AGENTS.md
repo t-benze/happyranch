@@ -1741,7 +1741,7 @@ plus bounded synthetic CLI validation; unconditional PR/push-main hosted
 `Source Boundary Lint` uses Python 3.14 without project dependency installation.
 See the project-layout boundary section and [Local CI](docs/local-ci.md).
 
-## Memory census and report readers (THR-091 seq428)
+## Memory census and report readers (THR-091 seq428/480)
 
 A closed failed-before-exposure invocation stays in every attempted/persisted
 count, ordinal, digest and seal, with no shown/natural-session denominator.
@@ -1749,8 +1749,21 @@ Only one ordered authenticated intent/identity/raised-terminal tuple with actual
 failed lifecycle, correct parent/type/population, Boolean false expectation and
 binding, INTEGER0 launch callbacks, explicit null success/returncode and complete
 absence of exposure/callback/credited get/search qualifies for this class.
-Full bounded audit/task/result evidence, independent counts/digests/seals and
-stable semantic bookends are required; missing/unknown/duplicate/contradictory,
+The seq480 scope is boot/epoch activity plus referenced lifecycle, ancestry,
+retry, QA/job and epoch/invalidation dependencies, including current activity on
+old retired SIDs. Unrelated global same-SID searches are outside admission under
+PR1084's supplied-liveSID trust limit; same-owner contradictions still refuse.
+Historical `memory_read` ownership uses payload.task_id, preserving its outer
+AGENT scope. Each capture exhausts the existing action read once under the same
+work/transport budgets and selects only required full-history owners; closing
+and atomic rereads rediscover late payload-owned rows. Scan exhaustion refuses.
+Observer, native/HTTP, both report front doors, preparation and locked reread use
+one selector and recompute membership at closing/commit, including new relevant
+controls/results/retries. No-epoch diagnostics remain CLOSED. Finite work,
+transport, guarded public-server/native SQLite VM and cooperative lock refusal
+plus scan-measurement/RSS limitations are documented in the corrective memory spec; limits never validate
+a prefix or repair producer errors. Full bounded selected audit/task/result
+evidence, independent counts/digests/seals and stable semantic bookends are required; missing/unknown/duplicate/contradictory,
 pending/moving/error or all-failure evidence refuses. Normal exposed/in-flight
 checks, temporal post-retirement zero, source/boot/cohort, original epoch/reset
 contract and thresholds remain. Classification grants no B/C/health acceptance.

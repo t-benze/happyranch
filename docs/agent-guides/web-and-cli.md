@@ -1609,16 +1609,24 @@ uncredited. Provider resume IDs are never used for this purpose.
 The report neither begins collection nor recommends push, alias, embedding, or
 ranking changes.
 The backend and canonical CLI share the pure `memory_telemetry_report` reducer.
-They acquire complete bounded tasks and relevant memory/lifecycle/control audits,
-including session starts/ends, runtime identity/launch/terminal and actual job
-resumes, before any empty or short return. Backend acquisition uses a coherent
-multi-table SELECT-only evidence snapshot. CLI exhausts `/tasks` pages at limit200
-and relevant `/audit` action pages at limit5000 in two complete sweeps, comparing
-tasks, audit identities/content and `/agents` roles at one aware UTC cutoff.
-Task pages follow `(created_at, id)` descending; the last ID remains the transport
-cursor resolved by the server. No-epoch diagnostic reads filter unrelated audit
-actions without changing the100000-row bound. Accepted epochs retain complete
-unfiltered task/result/job/audit acquisition, original outputs and serving bookends.
+They use the same seq480 boot/epoch-activity plus referenced lifecycle, ancestry,
+retry, QA/job and control closure. Current reads/searches on old retired SIDs
+retain their old intervals. HTTP uses existing /audit since/action/task filters,
+keyed task detail/ancestry recall/direct revisits and job/output reads; no new
+endpoint/query parameter is introduced. Both front doors omit their former
+all-history/task preflight. Closing and atomic rereads recompute membership,
+including new controls/results/retries. No-epoch output stays CLOSED and excludes
+historical proof rows from current natural denominators. Unrelated global SID
+sharing remains the PR1084 known supplied-liveSID trust limit; same-owner
+contradictions still refuse. A complete bounded existing action=memory_read
+read per capture selects payload.task_id for required full-history owners while
+preserving outer AGENT scope and excluding unrelated owners sharing a SID.
+Closing/atomic discovery repeats it; exhaustion refuses without partial success.
+The corrective spec documents finite encoded-work,
+transport, SQL and cooperative lock limits on existing public/native readers,
+including sampled-scan and hard-RSS limitations. HTTP503 reports exhausted work;
+job-output and receipt reads allocate only each requested stream prefix while
+retaining original totals/truncation and missing-file semantics. Acquisition refusal prints no partial report.
 
 Canonical CLI task sweeps and HTTP list/detail/two-capture comparisons share one
 semantic task projection. It excludes only valid rendering timestamps at
