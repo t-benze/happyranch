@@ -26,6 +26,199 @@ if TYPE_CHECKING:
     from controller import Controller
 
 
+# Shared by the native bridge and finite, detached-DOM controls. Ownership is
+# resolved here, not by a fixture or by searching descendant text for a match.
+_RENDERED_DOM = r"""(main, args) => {
+    const {org, task, surface, locale} = args;
+    const fail = name => { throw new Error('rendered-owner:' + name); };
+    const one = (items, name) => { if (items.length !== 1) fail(name); return items[0]; };
+    const direct = el => [...el.children];
+    const path = el => {
+        if (el === main) return ':scope';
+        if (!el || !main.contains(el)) fail('outside-main');
+        return path(el.parentElement) + ' > :nth-child(' +
+            (direct(el.parentElement).indexOf(el) + 1) + ')';
+    };
+    const text = el => el.textContent;
+    const tokens = el => [...el.childNodes].map(n => n.nodeType === 3 ? n.nodeValue :
+        n.nodeType === 1 ? {tag: n.tagName.toLowerCase(), children: tokens(n)} :
+        {unsupported: n.nodeType});
+    const body = el => {
+        if (!el || el.tagName !== 'DIV') fail('body');
+        const prose = one(direct(el).filter(c => c.classList.contains('gl-prose')), 'prose');
+        const buttons = direct(el).filter(c => c.tagName === 'BUTTON');
+        if (direct(el).length !== 1 + buttons.length || el.querySelectorAll('button').length !== buttons.length)
+            fail('body-children');
+        if ([...el.childNodes].some(n => n.nodeType !== 1 && (n.nodeType !== 3 || n.nodeValue.trim())))
+            fail('body-text');
+        return {path: path(el), prose: path(prose), blocks: direct(prose).map(path),
+            content: tokens(prose), buttons: buttons.map(text), toggles: buttons.map(path)};
+    };
+    const doc = main.ownerDocument;
+    if (one([...doc.querySelectorAll('main')], 'main') !== main) fail('main-scope');
+    if (!['en', 'zh-CN'].includes(locale) || doc.documentElement.lang !== locale) fail('locale');
+    const href = '/orgs/' + org + '/tasks/' + task;
+    if (doc.location.pathname !== (surface === 'list' ? '/orgs/' + org + '/tasks' : href)
+        || doc.location.search || doc.location.hash) fail('url');
+    if (surface === 'list') {
+        const link = one([...main.querySelectorAll('a')].filter(a => a.getAttribute('href') === href), 'list-link');
+        const title = one(direct(link).flatMap(c => direct(c)).filter(c => c.tagName === 'SPAN'
+            && c.classList.contains('text-task-title')), 'list-title');
+        return {surface, href: link.getAttribute('href'), path: path(link), titlePath: path(title),
+            headline: text(title), title: title.getAttribute('title')};
+    }
+    const headingText = surface === 'detail' ? (locale === 'en' ? 'Brief' : '简报') :
+        (locale === 'en' ? 'Recall tree' : '回溯树');
+    const heading = one([...main.querySelectorAll('h3')].filter(h => text(h) === headingText), 'heading');
+    const section = heading.parentElement;
+    if (section.tagName !== 'SECTION' || section.firstElementChild !== heading) fail('section');
+    const owned = direct(section);
+    if (owned.length !== 2 || owned[1].tagName !== 'DIV') fail('section-body');
+    if (surface === 'detail') return {surface, heading: path(heading), body: body(owned[1])};
+    if (surface !== 'recall') fail('surface');
+    const node = el => {
+        if (el.tagName !== 'DIV') fail('node');
+        const parts = direct(el), header = parts.shift();
+        if (!header || header.tagName !== 'DIV') fail('header');
+        const fields = direct(header), link = fields.shift(), status = fields.pop();
+        if (!link || link.tagName !== 'A' || !status || status.tagName !== 'SPAN'
+            || fields.length > 1 || fields.some(f => f.tagName !== 'SPAN')
+            || header.querySelectorAll('a').length !== 1) fail('header-fields');
+        let brief = null, outcome = null, outcomeLabel = null, outcomeLabelPath = null;
+        if (parts[0]?.classList.contains('mt-1')) {
+            const wrapper = parts.shift();
+            brief = body(one(direct(wrapper), 'brief-body'));
+        }
+        if (parts[0]?.classList.contains('mt-2')) {
+            const wrapper = parts.shift(), pair = direct(wrapper);
+            if (pair.length !== 2 || pair[0].tagName !== 'DIV') fail('outcome-body');
+            outcomeLabel = text(pair[0]);
+            outcomeLabelPath = path(pair[0]);
+            outcome = body(pair[1]);
+        }
+        return {href: link.getAttribute('href'), id: text(link), header: path(header), identityPath: path(link),
+            status: text(status), statusPath: path(status), agent: fields.length ? text(fields[0]) : null,
+            agentPath: fields.length ? path(fields[0]) : null,
+            brief, outcome, outcomeLabel, outcomeLabelPath, children: parts.map(node)};
+    };
+    return {surface, heading: path(heading), node: node(owned[1]),
+        links: [...section.querySelectorAll('a')].map(a => a.getAttribute('href'))};
+}"""
+
+
+def _rendered_shape(raw: str) -> list:
+    """Finite audited inputs only; never parse/strip arbitrary Markdown."""
+    require(type(raw) is str, 'unsupported-rendered-shape', raw)
+    plain = {
+        'ALPHA_ROOT', 'LOSS_ROOT', 'ALPHA_COLLISION', 'BETA_COLLISION',
+        'ALPHA_ROOT_SENTINEL', 'LOSS_ROOT_SENTINEL', 'ALPHA_CHILD_OUTCOME', 'LOSS_CHILD_OUTCOME',
+        'ALPHA_COLLISION_OUTCOME', 'BETA_COLLISION_OUTCOME',
+        'PAUSE_RESTART_ROOT', 'PAUSE_RESTART_WORKER', 'PAUSE_RESTART_DELEGATE',
+        'PAUSE_RESTART_WORKER_OUTCOME', 'PAUSE_RESTART_DONE', 'PAUSE_RESTART_REVIEW_APPROVED',
+        'E04.approve-exit0', 'E04.reject', 'E04.completed-exit7', 'E04.failed-timeout',
+        'E04.two-jobs-A-first', 'E04.two-jobs-B-first', 'E04_OK completed exit0',
+        'E04_REJECT rejected E04_REJECTED_BY_REVIEW', 'E04_EXIT7 completed exit7; operation nonzero',
+        'E04_TIMEOUT failed timeout exit-9', 'E04_PAIR A completed exit0; B completed exit7',
+    }
+    if raw in plain or raw in {'A' * n for n in (240, 241, 600, 601)} or raw in {
+        'VISIBLE_PREFIX ' + 'word ' * n + 'HIDDEN_SUFFIX' for n in (60, 140)
+    }:
+        return [dict(tag='p', children=[raw])]
+    match = re.fullmatch(
+        r'PAUSE_RESTART_REVIEW\n---\n## Prior leg context \(auto-generated by orchestrator\)\n\n'
+        r'Prior leg:    (TASK-[0-9]+)  \(agent: case_worker\)\nStatus:       completed\n'
+        r'Verdict:      -\nConfidence:   90\nSummary:\n  PAUSE_RESTART_WORKER_OUTCOME\n---', raw)
+    require(match is not None, 'unsupported-rendered-shape', raw)
+    lines = [f'Prior leg:    {match[1]}  (agent: case_worker)', '\nStatus:       completed',
+             '\nVerdict:      -', '\nConfidence:   90', '\nSummary:', '\nPAUSE_RESTART_WORKER_OUTCOME']
+    content: list = [lines[0]]
+    for line in lines[1:]:
+        content.extend([dict(tag='br', children=[]), line])
+    return [dict(tag='h2', children=['PAUSE_RESTART_REVIEW']),
+            dict(tag='h2', children=['Prior leg context (auto-generated by orchestrator)']),
+            dict(tag='h2', children=content)]
+
+
+def _rendered_body(observed: dict | None, raw: str | None, *, surface: str, kind: str,
+                   locale: str, expanded: bool = False) -> None:
+    require(locale in {'en', 'zh-CN'} and surface in {'detail', 'recall'}
+            and kind in {'brief', 'summary'}, 'rendered-body-contract')
+    require(raw is None or type(raw) is str, 'unsupported-rendered-shape', raw)
+    if not raw:
+        require(observed is None, 'rendered-body-absent', observed)
+        return
+    shape = _rendered_shape(raw)  # Admit the full input before considering previews.
+    require(type(observed) is dict, 'rendered-body-present', observed)
+    limit = 600 if surface == 'detail' else 240
+    long = len(raw) > limit
+    if long and not expanded:
+        # Only these independently reviewed ASCII long fixtures are admitted.
+        if raw == 'A' * len(raw):
+            preview = 'A' * limit + '…'
+        else:
+            require(raw == 'VISIBLE_PREFIX ' + 'word ' * (140 if surface == 'detail' else 60)
+                    + 'HIDDEN_SUFFIX', 'unsupported-rendered-preview')
+            preview = 'VISIBLE_PREFIX' + ' word' * (117 if surface == 'detail' else 45) + '…'
+        shape = [dict(tag='p', children=[preview])]
+    # The renderer inserts only single LF text nodes between top-level blocks.
+    content = observed['content']
+    expected: list = []
+    for block in shape:
+        if expected:
+            expected.append('\n')
+        expected.append(block)
+    require(content == expected, 'rendered-body-content', dict(actual=content, expected=expected))
+    if not long:
+        buttons = []
+    elif locale == 'en':
+        buttons = [('Show less' if surface == 'detail' else f'Hide {kind}') if expanded
+                   else f'Show full {kind} ({len(raw)} chars)']
+    else:
+        noun = '简报' if kind == 'brief' else '摘要'
+        buttons = [('收起' if surface == 'detail' else '收起' + noun) if expanded
+                   else f'显示完整{noun}（{len(raw)} 个字符）']
+    require(observed['buttons'] == buttons, 'rendered-body-controls',
+            dict(actual=observed['buttons'], expected=buttons))
+
+
+def _rendered_validate(observed: dict, expected: dict) -> None:
+    """Pure acceptance seam used unchanged by native and isolated controls."""
+    surface, org, task = (expected[k] for k in ('surface', 'org', 'task'))
+    locale = expected.get('locale', 'en')
+    require(observed['surface'] == surface, 'rendered-surface')
+    if surface == 'list':
+        require(observed['href'] == f'/orgs/{org}/tasks/{task}'
+                and observed['title'] == expected['raw'] and observed['headline'] == expected['headline'],
+                'rendered-list-title', observed)
+    elif surface == 'detail':
+        _rendered_body(observed['body'], expected['raw'], surface=surface, kind='brief', locale=locale,
+                       expanded=expected.get('expanded', False))
+    else:
+        require(surface == 'recall', 'rendered-surface')
+        hrefs: list[str] = []
+        def visit(node: dict, want: dict) -> None:
+            href = f'/orgs/{org}/tasks/{want["task_id"]}'
+            hrefs.append(href)
+            require(node['href'] == href and node['id'] == want['task_id'], 'rendered-node-identity', node)
+            require(node['status'] == want['status'], 'rendered-node-status', node)
+            agent = want['assigned_agent']
+            # IdentityName retains the canonical ID, optionally following the
+            # current name and literal separator. Never guess a display name.
+            require(node['agent'] == agent or (type(node['agent']) is str and agent is not None
+                    and node['agent'].endswith(' · ' + agent)), 'rendered-node-agent', node)
+            for kind, slot, key in (('brief', 'brief', 'brief'), ('summary', 'outcome', 'output_summary')):
+                if key in want:
+                    _rendered_body(node[slot], want[key], surface='recall', kind=kind, locale=locale,
+                                   expanded=want.get(slot + '_expanded', False))
+            require(node['outcomeLabel'] == (('Outcome' if locale == 'en' else '结果')
+                    if want['output_summary'] else None), 'rendered-outcome-label', node)
+            require(len(node['children']) == len(want['children']), 'rendered-node-children', node)
+            for child, wanted in zip(node['children'], want['children'], strict=True):
+                visit(child, wanted)
+        visit(observed['node'], expected['node'])
+        require(observed['links'] == hrefs, 'rendered-tree-links', observed['links'])
+
+
 def _json_image(value: Any) -> str:
     """Type-sensitive JSON equality; arrays and all unknown fields survive."""
     return json.dumps(value, sort_keys=True, ensure_ascii=True, allow_nan=False, separators=(",", ":"))
@@ -777,6 +970,75 @@ class Browser:
         scope.note("arm")
         yield scope  # Inner lexical exit has no acceptance/cleanup authority.
 
+    def _rendered_once(self, expected: dict) -> dict:
+        c, main = self.controller, self.page.get_by_role('main')
+        expect(main).to_have_count(1, timeout=c.remaining(5)*1000)
+        c.remaining()
+        surface, locale = expected['surface'], expected.get('locale', 'en')
+        url = f"{self.base}/orgs/{expected['org']}/tasks"
+        if surface != 'list':
+            url += '/' + expected['task']
+        expect(self.page).to_have_url(url, timeout=c.remaining(5)*1000)
+        c.remaining()
+        if surface != 'list':
+            label = ({'detail': 'Brief', 'recall': 'Recall tree'} if locale == 'en' else
+                     {'detail': '简报', 'recall': '回溯树'})[surface]
+            expect(main.get_by_role('heading', name=label, exact=True)).to_be_visible(timeout=c.remaining(5)*1000)
+            c.remaining()
+        observed = main.evaluate(_RENDERED_DOM, {key: expected.get(key, 'en') for key in
+                                               ('org', 'task', 'surface', 'locale')},
+                                 timeout=c.remaining(5)*1000)
+        c.remaining()
+        _rendered_validate(observed, expected)
+        paths = []
+        def body(value: dict | None) -> None:
+            if value:
+                paths.extend([value['path'], value['prose'], *value['blocks'], *value['toggles']])
+        def node(value: dict) -> None:
+            paths.extend([value['header'], value['identityPath'], value['statusPath']])
+            paths.extend(p for p in (value['agentPath'], value['outcomeLabelPath']) if p)
+            body(value['brief'])
+            body(value['outcome'])
+            for child in value['children']:
+                node(child)
+        if surface == 'list':
+            paths.extend([observed['path'], observed['titlePath']])
+        elif surface == 'detail':
+            body(observed['body'])
+        else:
+            node(observed['node'])
+        for path in paths:
+            expect(main.locator(path)).to_be_visible(timeout=c.remaining(5)*1000)
+            c.remaining()
+        return observed
+
+    def rendered(self, expected: dict) -> None:
+        """Own-body assertions, including full/recollapse for supported long inputs."""
+        wanted = deepcopy(expected)
+        observed = self._rendered_once(wanted)
+        bodies: list[tuple[dict, str, str]] = []
+        if wanted['surface'] == 'detail':
+            if len(wanted['raw']) > 600:
+                bodies.append((wanted, 'expanded', observed['body']['path']))
+        elif wanted['surface'] == 'recall':
+            def collect(node: dict, want: dict) -> None:
+                for key, slot in (('brief', 'brief'), ('output_summary', 'outcome')):
+                    if len(want.get(key) or '') > 240:
+                        bodies.append((want, slot + '_expanded', node[slot]['path']))
+                for child, child_want in zip(node['children'], want['children'], strict=True):
+                    collect(child, child_want)
+            collect(observed['node'], wanted['node'])
+        for want, flag, path in bodies:
+            toggle = self.page.get_by_role('main').locator(path).locator(':scope > button')
+            toggle.click(timeout=self.controller.remaining(5)*1000)
+            self.controller.remaining()
+            want[flag] = True
+            self._rendered_once(wanted)
+            toggle.click(timeout=self.controller.remaining(5)*1000)
+            self.controller.remaining()
+            want[flag] = False
+            self._rendered_once(wanted)
+
     def open_task(self, org: str, task: str, brief: str, *, expected: dict, ready: Any = None,
                   switch: bool = False, cached_recall: bool = False, alien: str | None = None) -> None:
         roots = f"/api/v1/orgs/{org}/tasks/roots"
@@ -792,15 +1054,14 @@ class Browser:
                 self.page.goto(f"{self.base}/orgs/{org}/tasks", timeout=self.controller.remaining(self.page_timeout)*1000)
                 self.controller.remaining()
             main = self.page.get_by_role("main")
-            expect(main.get_by_text(brief, exact=False).first).to_be_visible(timeout=self.controller.remaining(5)*1000)
-            self.controller.remaining()
+            self.rendered(dict(surface='list', org=org, task=task, raw=brief, headline=brief))
             if alien:
                 expect(main.get_by_text(alien, exact=False)).to_have_count(0, timeout=self.controller.remaining(5)*1000)
                 self.controller.remaining()
                 other = "beta" if org == "alpha" else "alpha"
                 expect(main.locator(f'a[href^="/orgs/{other}/tasks/"]')).to_have_count(0, timeout=self.controller.remaining(5)*1000)
                 self.controller.remaining()
-            link = main.locator(f'a[href="/orgs/{org}/tasks/{task}"]').first
+            link = main.locator(f'a[href="/orgs/{org}/tasks/{task}"]')
             expect(link).to_be_visible(timeout=self.controller.remaining(5)*1000)
             self.controller.remaining()
             require(self.page.url == self.base+f"/orgs/{org}/tasks", "exact-task-list-url")
@@ -819,19 +1080,16 @@ class Browser:
             self.controller.remaining()
             expect(self.page).to_have_url(self.base+f"/orgs/{org}/tasks/{task}", timeout=self.controller.remaining(5)*1000)
             self.controller.remaining()
-            expect(main.get_by_text(brief, exact=False).first).to_be_visible(timeout=self.controller.remaining(5)*1000)
-            self.controller.remaining()
+            self.rendered(dict(surface='detail', org=org, task=task, raw=brief))
             if ready is not None:
                 ready()
             else:
                 require(expected["task"]["status"] == "in_progress", "terminal-dom-readiness-required")
                 expect(main.locator("h1").get_by_text("in_progress", exact=False).first).to_be_visible(timeout=self.controller.remaining(5)*1000)
                 self.controller.remaining()
-                heading = main.get_by_role("heading", name="Recall tree", exact=True)
-                expect(heading).to_be_visible(timeout=self.controller.remaining(5)*1000)
-                self.controller.remaining()
-                expect(heading.locator("..").locator(f'a[href="/orgs/{org}/tasks/{task}"]')).to_be_visible(timeout=self.controller.remaining(5)*1000)
-                self.controller.remaining()
+                self.rendered(dict(surface='recall', org=org, task=task, node=dict(task_id=task,
+                    brief=brief, status='in_progress', assigned_agent='case_manager',
+                    output_summary=None, children=[])))
                 for text in expected["absent"]:
                     expect(main.get_by_text(text, exact=False)).to_have_count(0, timeout=self.controller.remaining(5)*1000)
                     self.controller.remaining()
@@ -879,39 +1137,14 @@ class Browser:
             return
         require(self.page.url == f"{self.base}/orgs/{org}/tasks/{task}", "exact-terminal-task-url")
         main = self.page.get_by_role("main")
-        expect(main.get_by_text(brief, exact=False).first).to_be_visible(timeout=self.controller.remaining(5)*1000)
-        self.controller.remaining()
-        expect(main.get_by_text(summary, exact=True).first).to_be_visible(timeout=self.controller.remaining(5)*1000)
-        self.controller.remaining()
-        expect(main.get_by_text("completed", exact=True).first).to_be_visible(timeout=self.controller.remaining(5)*1000)
-        self.controller.remaining()
-        # Recall heading and its containing section own their own assertions.
-        recall_heading = main.get_by_role("heading", name="Recall tree", exact=True)
-        expect(recall_heading).to_be_visible(timeout=self.controller.remaining(5)*1000)
-        self.controller.remaining()
-        recall = recall_heading.locator("..")
-        expect(recall.get_by_text("Outcome", exact=True).first).to_be_visible(timeout=self.controller.remaining(5)*1000)
-        self.controller.remaining()
-        expect(recall.get_by_text(summary, exact=True)).to_be_visible(timeout=self.controller.remaining(5)*1000)
-        self.controller.remaining()
-        expect(recall.locator(f'a[href="/orgs/{org}/tasks/{task}"]')).to_be_visible(timeout=self.controller.remaining(5)*1000)
-        self.controller.remaining()
-        if child:
-            expect(recall.locator(f'a[href="/orgs/{org}/tasks/{child}"]')).to_be_visible(timeout=self.controller.remaining(5)*1000)
-            self.controller.remaining()
-            expect(recall.get_by_text(child_summary, exact=True)).to_be_visible(timeout=self.controller.remaining(5)*1000)
-            self.controller.remaining()
-            expect(recall.get_by_text("completed", exact=True)).to_have_count(2, timeout=self.controller.remaining(5)*1000)
-            self.controller.remaining()
-        want_hrefs = [f"/orgs/{org}/tasks/{task}"]
-        if child:
-            want_hrefs.append(f"/orgs/{org}/tasks/{child}")
-        links = recall.locator(f'a[href^="/orgs/{org}/tasks/"]')
-        expect(links).to_have_count(len(want_hrefs), timeout=self.controller.remaining(5)*1000)
-        self.controller.remaining()
-        for index, href in enumerate(want_hrefs):
-            expect(links.nth(index)).to_have_attribute("href", href, timeout=self.controller.remaining(5)*1000)
-            self.controller.remaining()
+        self.rendered(dict(surface='detail', org=org, task=task, raw=brief))
+        # There is no separate detail Outcome section: preserve the root
+        # summary obligation through its own Recall Outcome, never a copy.
+        children = [] if child is None else [dict(task_id=child, status='completed',
+            assigned_agent='case_worker', output_summary=child_summary, children=[])]
+        self.rendered(dict(surface='recall', org=org, task=task, node=dict(task_id=task,
+            brief=brief, status='completed', assigned_agent='case_manager',
+            output_summary=summary, children=children)))
         if alien:
             expect(main.get_by_text(alien, exact=False)).to_have_count(0, timeout=self.controller.remaining(5)*1000)
             self.controller.remaining()

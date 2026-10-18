@@ -1039,3 +1039,51 @@ owner's actual source-bound evidence. No extra collection/run/retry/schedule/
 notification, production/schema/auth/permission change, deployment or Jenkins
 work is authorized. Root TASK10680 remains INCOMPLETE and alone owns renewed
 independent full review, scoped static QA, hold assessment and guarded merge.
+
+### Owned rendered task bodies (THR-291 / TASK-11919)
+
+`Browser.rendered` is a shared test-side observer used by ordinary task and
+Pause readback. List checks bind the exact org/task row to its explicitly
+expected headline and full raw `title`. Detail checks bind the localized Brief
+section to its direct body. Recall checks bind each node's own header,
+canonical agent identity, status, Brief and separate Outcome to the exact
+recursive children, preorder and complete link inventory. The root summary
+remains required through its own Recall Outcome; detail has no separate
+Outcome section. Correct text in a sibling, descendant, other section or org
+cannot satisfy an own-body assertion.
+
+The finite body contract admits the audited plain paragraphs and the exact
+prior-worker context generated for Pause's reviewer. That context renders as
+three h2 blocks, five br elements and zero hr elements, with exact metadata,
+spacing and newline-prefixed post-br text nodes. Unknown Markdown or malformed
+context explicitly refuses. List titles have a separate contract: a multiline
+headline example is list-only, not a supported detail body. Pause supplies
+rendered expectations from known scenario IDs, callback summaries and states
+before observation; its prearm raw transport oracle remains unchanged.
+
+Body-owned controls retain exact English/Chinese labels and character counts,
+Recall's 240/detail's 600 thresholds, complete expanded content and identical
+recollapsed previews. Native calls still require visible owned bodies, blocks,
+headers, links, labels and controls and check the controller's remaining time
+after synchronous operations. Existing action/group/checkpoint deadlines,
+cache expiry 31s, org return, reloads and six accepted DOM-only sites are
+unchanged. No baseline variant, product renderer or transport comparison is
+changed.
+
+Finite maker/QA controls execute the actual owner-resolving DOM expression on
+fresh disposable jsdom fixtures, then the actual validators loaded from the
+candidate AST. They cover generated/plain content, wrong ownership/tenant,
+recursive statuses/order/links, malformed shapes and bilingual short/long,
+full/recollapsed snapshots. These controls establish structural sensitivity
+only. Native Playwright bridging, React clicks, CSS visibility/layout/timing,
+built bundle, sanitizer/export/screenshots and full Product E2E sensitivity
+remain UNVERIFIED until actual evidence. Fixture transitions are not React
+interaction proof or protected deliberate-defect proof.
+
+Historical run39133417299 remains 33 PASS +1 partial/error +22 unreached EACH
+Python 3.12/3.14; its one manual allocation is consumed. No corrected daily or
+overall test-authoring/product PASS follows. Protected12/repetitions remain
+UNEXECUTED/unauthorized; integration INCLUDING actual CLI callback is SKIPPED
+THR243seq42, and Python units remain RETIRED. Required automation stays
+lint/static only; independent full review, same-head scoped QA and manager
+guarded merge remain with ROOT TASK-11919. No second E2E execution is released.
