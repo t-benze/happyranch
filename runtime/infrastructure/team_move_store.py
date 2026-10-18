@@ -1007,7 +1007,13 @@ def inspect_team_move_org(root, *, org_slug, require_database=False, reader_capa
         from runtime.orchestrator._paths import OrgPaths
         row = inspect_team_move_database(OrgPaths(root).db_path, org_slug=org_slug,
             require_existing=require_database, reader_capabilities=reader_capabilities)
-        if root.lstat() != info:
+        after = root.lstat()
+        # A mode=ro SQLite WAL read can create -wal/-shm sidecars, changing
+        # directory timestamps/size without replacing the directory. Compare
+        # identity and access metadata, and recheck canonical path resolution.
+        if (root.resolve(strict=True) != root
+                or (info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_gid)
+                != (after.st_dev, after.st_ino, after.st_mode, after.st_uid, after.st_gid)):
             raise TeamMoveError("team_move_startup_org_identity_changed")
         return True, row
     except OSError as exc:
