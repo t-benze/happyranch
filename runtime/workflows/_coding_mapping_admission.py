@@ -11,7 +11,7 @@ import hashlib
 from datetime import datetime
 
 from runtime.workflows._coding_source_capture import _decode_capture
-from runtime.workflows.coding_authority_history import _Budget
+from runtime.workflows.coding_authority_history import _Budget, _decoded
 from runtime.workflows.coding_source_history import (
     _AUDIT_COLUMNS, _AUDIT_TYPES, _RESULT_COLUMNS, _RESULT_TYPES, _RESULT_SQL,
     _check, _inventory, _projection, _session_start, _task,
@@ -102,28 +102,47 @@ def capture_body(org, principal, conn, *, admission_id, mapping_id, raw, now, ma
             coding_revision_limit=3, coding_same_principal_retry_limit=1), observed_at=now)
 
 
-def mapping_capture(conn, org_slug, mapping_id, raw, record, budget):
+class _MappingCaptures:
+    """One complete decoded fixed-action inventory per caller snapshot/budget."""
+
+    def __init__(self, conn, org_slug, budget):
+        self.conn, self.org_slug, self.budget = conn, org_slug, budget
+        self.loaded = False
+        self.by_admission, self.by_mapping, self.admission_uses = {}, {}, {}
+        self.tasks, self.starts = {}, {}
+
+    def load(self):
+        if self.loaded:
+            return
+        owners = set()
+        for audit in _inventory(self.conn, _CAPTURE_SQL, (), _AUDIT_COLUMNS, _AUDIT_TYPES, self.budget):
+            capture = _decode_capture(audit, self.org_slug, self.budget)
+            owner = (capture.phase, capture.native_owner.table, capture.native_owner.id)
+            _check(owner not in owners)
+            owners.add(owner)
+            self.admission_uses[capture.source_admission_id] = (
+                self.admission_uses.get(capture.source_admission_id, 0) + 1)
+            if capture.phase == 'source':
+                _check(capture.source_admission_id not in self.by_admission)
+                self.by_admission[capture.source_admission_id] = capture
+            if capture.native_owner.table == 'workflow_coding_mappings':
+                _check(capture.native_owner.id not in self.by_mapping)
+                self.by_mapping[capture.native_owner.id] = capture
+        self.loaded = True
+
+
+def mapping_capture(conn, org_slug, mapping_id, raw, record, budget, *, inventory=None):
     """Read the original mapping witness, never reconstruct old live permission."""
-    selected = None
-    owners, admissions = set(), set()
-    for audit in _inventory(conn, _CAPTURE_SQL, (), _AUDIT_COLUMNS, _AUDIT_TYPES, budget):
-        capture = _decode_capture(audit, org_slug, budget)
-        owner = (capture.phase, capture.native_owner.table, capture.native_owner.id)
-        _check(owner not in owners)
-        owners.add(owner)
-        if capture.phase == 'source':
-            _check(capture.source_admission_id not in admissions)
-            admissions.add(capture.source_admission_id)
-        if capture.source_admission_id == record['authority']['admission_record_id'] or (
-                capture.native_owner.table == 'workflow_coding_mappings' and capture.native_owner.id == mapping_id):
-            _check(selected is None and capture.phase == 'source'
-                   and capture.native_owner.table == 'workflow_coding_mappings'
-                   and capture.native_owner.id == mapping_id
-                   and capture.source_admission_id == record['authority']['admission_record_id']
-                   and capture.command_bytes == raw and capture.result_record is None
-                   and capture.observed_at == record['created_at'])
-            selected = capture
-    _check(selected is not None)
+    cache = inventory if inventory is not None else _MappingCaptures(conn, org_slug, budget)
+    cache.load()
+    budget.step()
+    selected = cache.by_mapping.get(mapping_id)
+    admission = record['authority']['admission_record_id']
+    _check(selected is not None and selected is cache.by_admission.get(admission)
+           and cache.admission_uses.get(admission) == 1
+           and selected.phase == 'source' and selected.source_admission_id == admission
+           and selected.command_bytes == raw and selected.result_record is None
+           and selected.observed_at == record['created_at'])
     task = selected.task_record
     issuer = record['issuer']
     _check(task._text('id') == issuer['task_id']
@@ -131,28 +150,39 @@ def mapping_capture(conn, org_slug, mapping_id, raw, record, budget):
            and task._text('current_session_id') == issuer['session_id']
            and task._text('team') == record['mapping']['roles']['agent_manager']['team'])
     from runtime.workflows.coding_authority_history import _setup_configuration, _canonical, _digest
-    snapshot = json.loads(base64.b64decode(record['authority']['snapshot_bytes_base64'], validate=True))
-    grant = json.loads(base64.b64decode(record['authority']['grant_bytes_base64'], validate=True))
+    snapshot = _decoded(json.loads(base64.b64decode(record['authority']['snapshot_bytes_base64'], validate=True)), budget)
+    grant = _decoded(json.loads(base64.b64decode(record['authority']['grant_bytes_base64'], validate=True)), budget)
     for setup in grant['setups']:
+        budget.step()
         _setup_configuration(setup, snapshot)
     agents = {agent['name']: agent for agent in snapshot['agents'] if agent['status'] == 'active'}
     for role, selector in record['mapping']['roles'].items():
         for candidate in [selector, *record['mapping']['eligible_replacements'][role]]:
+            budget.step()
             _check(bool(agents[candidate['principal']]['executor']))
     for entry in record['mapping']['repository_bindings']:
+        budget.step()
         binding = entry['binding']
         origin = agents[binding['store_owner']]['repos'].get(binding['repo_key'])
         _check(type(origin) is str and _digest(origin.encode('utf8')) == binding['origin_digest']
                and binding['repository_id'] == 'workflow-repository:' + _digest(_canonical(
                    [org_slug, binding['repo_key'], binding['origin_digest']])))
-    start = _session_start(conn, issuer, budget)
+    start_key = (issuer['task_id'], issuer['session_id'], issuer['principal'])
+    budget.step()
+    if start_key not in cache.starts:
+        cache.starts[start_key] = _session_start(conn, issuer, budget)
+    start = cache.starts[start_key]
     _check(start._value('id') == selected.session_start_audit_id)
     observed = datetime.fromisoformat(selected.observed_at.replace('Z', '+00:00'))
     _check(datetime.fromisoformat(start._text('timestamp').replace('Z', '+00:00')) <= observed)
     for original in (task, *selected.ancestor_records):
         _check(datetime.fromisoformat(original._text('created_at').replace('Z', '+00:00')) <= observed)
     for original in (task, *selected.ancestor_records):
-        today = _task(conn, original._text('id'), budget)
+        identity = original._text('id')
+        budget.step()
+        if identity not in cache.tasks:
+            cache.tasks[identity] = _task(conn, identity, budget)
+        today = cache.tasks[identity]
         for name in ('id', 'created_at', 'parent_task_id', 'task_type'):
             _check(today._value(name) == original._value(name))
     return selected

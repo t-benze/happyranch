@@ -280,13 +280,20 @@ def _validate_coding_data(conn: sqlite3.Connection, *, layout: str,
     storage = None
     imported = None
     mappings = None
+    mapping_rows = {}
+    budget = None
     if layout == 'J' and expected_org_slug is not None:
-        from runtime.workflows.coding_authority_history import read_setup_storage
-        storage = read_setup_storage(conn, expected_org_slug=expected_org_slug)
+        from runtime.workflows.coding_authority_history import (
+            _Budget, _SetupHistoryReader, _bounded_rows, _read_setup_storage,
+        )
+        budget = _Budget()
+        setups = _SetupHistoryReader(conn, expected_org_slug, budget)
+        storage = _read_setup_storage(conn, expected_org_slug=expected_org_slug, reader=setups)
         from runtime.workflows._coding_release_history import read_release_import
         imported = read_release_import(conn, expected_org_slug=expected_org_slug)
-        from runtime.workflows.coding_mapping_history import read_mapping_storage
-        mappings = read_mapping_storage(conn, expected_org_slug=expected_org_slug)
+        from runtime.workflows.coding_mapping_history import _read_mapping_storage
+        mappings, mapping_rows = _read_mapping_storage(conn, expected_org_slug=expected_org_slug,
+                                                       budget=budget, setups=setups)
         if mappings is not None and imported is None:
             raise ValueError('workflow_coding_mapping_release_missing')
     for table in CODING_TABLES:
@@ -323,43 +330,55 @@ def _validate_coding_data(conn: sqlite3.Connection, *, layout: str,
         file_key = _audit_log_file_key(conn) if table == 'audit_log' and mappings is None else None
         watermark = _audit_log_watermark(conn, file_key)
         last_id = watermark
-        query = f'SELECT rowid, {selected} FROM "{quoted}"' + (' WHERE rowid > ? ORDER BY rowid' if file_key else '')
-        for rowid, *row in conn.execute(query, (watermark,) if file_key else ()):
+        if mappings is not None:
+            # Every selected cell, including ordinary audit scalars/payloads,
+            # receives fresh type/per-value/remaining-byte gates before fetch.
+            # The mapping path never trusts an audit watermark. Ordinary
+            # nonmapping scanning below retains its historical contract.
+            types = {
+                'workflow_coding_mappings': (('text',), ('text',), ('text',), ('integer',),
+                    ('text',), ('text',), ('text',), ('blob',), ('text',), ('text',)),
+                'workflow_admission_records': (('text',), ('text',), ('integer',), ('text',), ('text',)),
+                'audit_log': (('integer',), ('text',), ('text',), ('text',), ('null', 'text'), ('text',)),
+            }.get(table)
+            # Other legacy families keep their existing native type semantics;
+            # their selected values still receive the same raw fetch bounds.
+            allowed = types or (('text', 'blob', 'integer', 'real', 'null'),) * len(selected_columns)
+            bounded = _bounded_rows(conn, table, tuple(selected_columns), allowed, budget, with_rowid=True)
+            rows = (row[:len(selected_columns) + 1] for row in bounded)
+        else:
+            query = f'SELECT rowid, {selected} FROM "{quoted}"' + (' WHERE rowid > ? ORDER BY rowid' if file_key else '')
+            rows = conn.execute(query, (watermark,) if file_key else ())
+        for rowid, *row in rows:
             data = dict(zip(selected_columns, row, strict=True))
             if native_mapping:
-                from runtime.workflows._coding_mapping_admission import audit_values
-                matched = False
-                for entry in mappings.mappings:
-                    record = json.loads(entry.mapping_bytes)
-                    capture = record['authority']
-                    expected = None
-                    if table == 'workflow_coding_mappings':
-                        expected = dict(id=entry.mapping_id, org_slug=entry.org_slug,
-                            release_identity=entry.release_identity, generation=entry.generation,
-                            principal=entry.principal, operation_key=entry.operation_key,
-                            request_digest=entry.request_digest, mapping_bytes=entry.mapping_bytes,
-                            mapping_digest=entry.mapping_digest, created_at=entry.created_at)
-                    elif table == 'workflow_admission_records':
-                        expected = dict(id=capture['admission_record_id'], namespace=capture['pin']['namespace'],
-                            generation=capture['pin']['generation'], request_digest=entry.request_digest,
-                            admitted_by=entry.principal)
-                    else:
-                        expected = audit_values(entry.source_capture)
-                    if data.keys() == expected.keys() and all(type(data[key]) is type(value)
-                            and data[key] == value for key, value in expected.items()):
-                        matched = True
-                        break
-                if matched:
-                    continue
+                budget.step()
+                expected = mapping_rows.get(table, {}).get((type(data.get('id')), data.get('id')))
+                if expected is not None:
+                    budget.step()  # index lookup is never positive admission
+                    equal = data.keys() == expected.keys()
+                    for key, value in expected.items():
+                        budget.step()
+                        equal = equal and type(data.get(key)) is type(value) and data[key] == value
+                    if equal:
+                        continue  # Complete typed row equality, not an ID exemption.
                 if table == 'workflow_coding_mappings':
                     raise ValueError('workflow_coding_mapping_row_mismatch')
-            if imported is not None and native_import and imported.matches(table, data):
-                continue  # Complete independently derived typed row, never an ID exemption.
+            if imported is not None and native_import:
+                if mappings is not None:
+                    # Fixed six-row import comparison is also charged here.
+                    for _, expected in imported.rows:
+                        for _ in expected:
+                            budget.step()
+                if imported.matches(table, data):
+                    continue  # Complete independently derived typed row, never an ID exemption.
             if native_setup and storage is not None:
                 # A supported family dispatch is an exact whole-row equality,
                 # never an exemption based solely on namespace, ID or digest.
                 if table == 'workflow_authorization_revisions':
                     for entry in storage.issuances:
+                        if mappings is not None:
+                            budget.step()
                         expected = dict(id=entry.authorization_id, namespace=entry.namespace,
                             revision=entry.revision, authority_bytes=entry.authority_bytes,
                             authority_digest=entry.authority_digest,
@@ -377,6 +396,8 @@ def _validate_coding_data(conn: sqlite3.Connection, *, layout: str,
                         and (data['namespace'], data['authorization_revision_id']) in storage.pointers):
                     continue
             for column, raw in zip(selected_columns, row, strict=True):
+                if mappings is not None:
+                    budget.step()  # scalar classification or one metadata decode
                 if column in scalar:
                     if _coding_scalar(column, raw):
                         raise ValueError(f'workflow_coding_data_unsupported: {table}.{column}; coding reader required')

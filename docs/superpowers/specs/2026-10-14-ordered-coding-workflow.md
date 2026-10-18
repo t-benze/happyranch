@@ -56,6 +56,24 @@ whole-row family matching covers mappings, original capture audit and all five
 admission columns; orphan/foreign/malformed/unsupported families still refuse.
 Central schema validation, also data=False, reopen/recovery and drain/downgrade
 compose that same reader without recursive schema validation or ID exemptions.
+Mapping-positive central scans, including the complete ordinary audit inventory,
+use singleton rowid keyset pages with explicit overflow refusal. Before Python
+fetch, every selected scalar/variable cell gates its original SQLite storage
+class and each TEXT/BLOB UTF8 byte length (including multibyte/NUL suffixes),
+and the whole row must fit the remaining shared raw-byte and candidate budget.
+Original typeof and a separate refusal sentinel preserve genuine nullable NULL;
+invalid/oversized rows never become coerced, truncated or partial success.
+One call shares8192 fetched candidates,16384 traversal steps and16MiB accepted
+raw bytes across setup, mapping, original-capture and central selected scans;
+per-value1MiB and mapping/setup inventories1024 remain upper bounds. Bounds may
+refuse earlier; they do not bound total SQLite/process/decoded-object memory.
+Complete expected mapping/own-admission/source-audit rows are derived once from
+validated records, indexed only for lookup, then compared in full with exact
+native types. Original capture inventory and required setup histories are cached
+only within this coherent call. No mapping row or supported audit is exempted
+by ID or watermark. Unknown/orphan/malformed/duplicate evidence still refuses.
+Ordinary nonmapping scans retain their historical discriminator/watermark
+contract. This R1 source correction is not behavioral/security verification.
 Mapping/setup/import have no run/host tail; compatible J reader is always needed.
 F–J SQL/reference bytes and all historical document meanings are unchanged.
 
