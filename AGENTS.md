@@ -1505,9 +1505,12 @@ without pytest, integration-parent monkeypatches or product hooks. It runs only
 on disposable GitHub Ubuntu with exact Python/browser inputs, Node24, bounded
 owned-process cleanup and complete variant/cell receipts. Retained pytest
 integration/platform/callback selections keep the existing parent fences.
-`Product E2E` admits only the daily default-branch schedule under THR-291 seq69.
+`Product E2E` retains the daily default-branch 19:00 UTC schedule under THR-291
+seq69 and admits main-only `workflow_dispatch`. Founder THR291seq247 allocates
+ONE manual full run to sole root TASK-11897 after its independent source gates;
+the entry grants no standing execution/retry authority or local E2E target.
 Scheduled runs38482572306 and38644465643 failed at their own sources; corrected
-behavior remains pending the existing daily lane. Historical baseline is separate evidence.
+behavior remains pending an authorized main run. Historical baseline is separate evidence.
 The aggregate also requires real TERM/INT launcher diagnostics with non-success
 and complete owned cleanup; product cancellation remains uncovered.
 See `e2e/README.md` and `docs/local-ci.md`. Old units remain retired.

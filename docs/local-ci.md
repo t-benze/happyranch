@@ -237,7 +237,9 @@ settlement allowance); no cross-run polling service, automatic retry or maker
 launch. Missing artifacts, results or cleanup remain missing evidence.
 
 This finite QA venue is separate from lint/static merge CI, general integration
-(**SKIPPED THR243seq42**) and schedule-only daily Product E2E. The earlier maker
+(**SKIPPED THR243seq42**) and Product E2E's daily 19:00 UTC schedule plus main-only
+`workflow_dispatch` entry. Founder THR291seq247 allocates ONE manual full run to
+sole root TASK-11897; local E2E remains refused. The earlier maker
 27-case exit0 is historical evidence without adequate venue qualification; it is
 not independent hosted proof. Exact synthetic producer-positive and dependent
 race/replay/crash/causal/repetition proof remain **UNPROVEN THR299seq11**. Native
@@ -289,7 +291,9 @@ The former `pr1022-roster-selected` PR entry is superseded by merged
 PR1025/THR291seq69; it is absent from current CI. Normal publication now starts
 lint/static checks only. The retained feature/platform/original callback sources
 are not automatic merge gates; missing behavioral proof remains missing.
-Product E2E runs only on its daily default-branch schedule. Python units and
+Product E2E retains its daily default-branch 19:00 UTC schedule plus main-only
+`workflow_dispatch`, with ONE manual run allocated to root TASK-11897 under
+Founder THR291seq247 and no local E2E target. Python units and
 their gate remain RETIRED; broad integration remains SKIPPED THR243seq42.
 The live daemon host cannot execute integration, even through jobs.
 

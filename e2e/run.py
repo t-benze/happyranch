@@ -378,7 +378,7 @@ def main() -> int:
                             if key in closure}
             safe_cleanup.update(ok=False, observed_units=closure.get("observed_units", sorted(closure.get("units", {}))),
                                 observed_groups=closure.get("observed_groups", sorted(closure.get("groups", {}))))
-            binding = {key: receipt[key] for key in ("event", "cron", "source_ref", "interpreter", "node") if key in receipt}
+            binding = {key: receipt[key] for key in ADMISSION_FIELDS + ("interpreter", "node") if key in receipt}
             return dict(binding, schema=1, status="FAIL", source_sha=receipt["source_sha"],
                         python=receipt["python"], exercise=args.exercise, skipped=0,
                         variants={}, signals=receipt["signals"], phases=receipt["phases"],
