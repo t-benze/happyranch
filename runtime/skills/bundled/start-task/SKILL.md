@@ -142,6 +142,12 @@ logs/screenshots/review packets to Shared Artifacts as an ownership workaround.
       ```
    4. If the brief does not reference prior work, skip step 3. Do not pull history speculatively.
 
+   Existing audit/task/job acquisition refuses exhausted scan/lock/row/byte work
+   with a non-success response. Never treat that as an empty completed census or
+   retry with a caller-selected subset. Output totals/truncation remain evidence;
+   missing/incomplete streams refuse collection validation. Cooperative budgets
+   and practical measurements do not certify hard RSS or wall time.
+
    Memory telemetry reports are observation-only. Valid collection requires
    independently admitted G1 role/job/probe evidence and current serving health;
    source fixtures, a summary tag, merge/deploy, or raw sample counts do not start
@@ -150,6 +156,16 @@ logs/screenshots/review packets to Shared Artifacts as an ownership workaround.
    boundary and recheck current full health. The root retains any explicitly
    requested independent durable within48h AFTER-epoch check and production
    observation follow-through; never infer a renewal, schedule or tuning action.
+   Seq480 census acquisition covers current boot/epoch activity and its required
+   lifecycle/ancestry/retry/QA/job/control references, including current calls on
+   old retired SIDs. Historical memory_read closure uses payload.task_id for
+   required full-history owners, preserving outer AGENT scope. Each capture
+   exhausts one bounded existing action read; closing/atomic rereads rediscover
+   late preboot rows. Exhaustion refuses without an absence claim.
+   Unrelated global SID sharing is the documented PR1084 trust
+   limit; related contradictions and missing evidence still refuse. Both reports
+   share closing/commit membership recomputation. Bounded refusal or source sizing
+   is not healthy observation, installed qualification or collection acceptance.
 
 
 3. **Consult the knowledge base.** Before planning, check for durable knowledge relevant to this task.

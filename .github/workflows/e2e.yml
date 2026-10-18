@@ -3,12 +3,15 @@ name: Product E2E
 on:
   schedule:
     - cron: '0 19 * * *'
+  # THR291seq247: one root-owned execution after review/QA/merge; no inputs/retry.
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
   cells:
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.event.repository.default_branch == 'main')
     name: Product E2E (Python ${{ matrix.python }}, Node 24)
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -45,6 +48,7 @@ jobs:
           retention-days: 7
 
   cancellation:
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.event.repository.default_branch == 'main')
     name: E2E launcher cancellation (${{ matrix.signal }}, Python ${{ matrix.python }})
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -84,7 +88,7 @@ jobs:
 
   aggregate:
     name: Daily Product E2E Health
-    if: always()
+    if: ${{ always() && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.event.repository.default_branch == 'main')) }}
     needs: [cells, cancellation]
     runs-on: ubuntu-24.04
     timeout-minutes: 3
@@ -100,7 +104,7 @@ jobs:
       - name: Check aggregate refusal controls (harness only)
         if: always()
         run: python3 e2e/aggregate.py --controls
-      - name: "Report daily health: exact source, all cells, diagnostics and cleanup"
+      - name: "Report event health: exact source, all cells, diagnostics and cleanup"
         if: always()
         env:
           SOURCE_SHA: ${{ github.sha }}

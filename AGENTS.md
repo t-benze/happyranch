@@ -1791,9 +1791,12 @@ without pytest, integration-parent monkeypatches or product hooks. It runs only
 on disposable GitHub Ubuntu with exact Python/browser inputs, Node24, bounded
 owned-process cleanup and complete variant/cell receipts. Retained pytest
 integration/platform/callback selections keep the existing parent fences.
-`Product E2E` admits only the daily default-branch schedule under THR-291 seq69.
+`Product E2E` retains the daily default-branch 19:00 UTC schedule under THR-291
+seq69 and admits main-only `workflow_dispatch`. Founder THR291seq247 allocates
+ONE manual full run to sole root TASK-11897 after its independent source gates;
+the entry grants no standing execution/retry authority or local E2E target.
 Scheduled runs38482572306 and38644465643 failed at their own sources; corrected
-behavior remains pending the existing daily lane. Historical baseline is separate evidence.
+behavior remains pending an authorized main run. Historical baseline is separate evidence.
 The aggregate also requires real TERM/INT launcher diagnostics with non-success
 and complete owned cleanup; product cancellation remains uncovered.
 See `e2e/README.md` and `docs/local-ci.md`. Old units remain retired.
@@ -1937,16 +1940,25 @@ Independent full code review and scoped QA remain mandatory. Static checks
 cannot establish lifecycle, callback, browser or platform correctness;
 behavioral regressions can be detected only later when their coverage executes.
 
-Fresh Product E2E runs **schedule only**, `0 19 * * *` (19:00 UTC / 03:00
-Asia/Shanghai), on default-branch immutable `github.sha`. Baseline Python
-3.12/3.14 and existing TERM3.12/INT3.14 launcher diagnostics feed
-`Daily Product E2E Health`: exactly56 variants on each baseline and four execution
-artifacts (`e2e-3.12`, `e2e-3.14`, `e2e-cancel-TERM`, `e2e-cancel-INT`).
-Product Python support is unchanged. It is never a merge check. No local E2E alias,
-manual/PR/push/release dispatch, auto-retry or extra schedule is supported.
+Fresh Product E2E keeps the daily `0 19 * * *` schedule (19:00 UTC /
+03:00 Asia/Shanghai) on immutable default-branch `github.sha`. Founder
+THR291seq247 additionally authorizes **ONE** immediate full main execution under
+sole root TASK-11897 through the reviewed `workflow_dispatch` entry. Manual
+admission requires actual `refs/heads/main`, default branch `main`, and matching
+repository/workflow/run/source identity. This entry is not standing execution
+authority. Baseline56 variants EACH Python3.12/3.14 plus TERM3.12/INT3.14 retain
+exactly four execution artifacts (`e2e-3.12`, `e2e-3.14`, `e2e-cancel-TERM`,
+`e2e-cancel-INT`) and the original bounds. Product Python support is unchanged.
+`Daily Product E2E Health` remains outside merge checks and reports the actual event, run/attempt,
+SHA and checkout tree; manual receipts are never labeled scheduled.
+There is no local E2E alias, PR/push/release/workflow_call/repository_dispatch
+entry, automatic retry, extra schedule or SLA. Admission, lint and scoped QA
+success do not establish product execution success. The root owns the one
+actual dispatch after independent review/scoped QA, both final-head lints,
+guarded merge and an exact-main receipt.
 Scheduled historical runs38482572306 and38644465643 were observed and failed
 at their own immutable sources. Corrected behavior remains **PENDING** until
-the existing daily default-source lane executes the repair; historical3.13
+an authorized main run executes the repair; historical3.13
 failures and all-six-cell evidence remain unchanged. Prior first-slice receipts remain
 historical evidence at their own source, not daily/final-head verification.
 Engineering_manager owns daily failure/missing-evidence triage through existing
@@ -1980,7 +1992,7 @@ plus bounded synthetic CLI validation; unconditional PR/push-main hosted
 `Source Boundary Lint` uses Python 3.14 without project dependency installation.
 See the project-layout boundary section and [Local CI](docs/local-ci.md).
 
-## Memory census and report readers (THR-091 seq428)
+## Memory census and report readers (THR-091 seq428/480)
 
 A closed failed-before-exposure invocation stays in every attempted/persisted
 count, ordinal, digest and seal, with no shown/natural-session denominator.
@@ -1988,8 +2000,21 @@ Only one ordered authenticated intent/identity/raised-terminal tuple with actual
 failed lifecycle, correct parent/type/population, Boolean false expectation and
 binding, INTEGER0 launch callbacks, explicit null success/returncode and complete
 absence of exposure/callback/credited get/search qualifies for this class.
-Full bounded audit/task/result evidence, independent counts/digests/seals and
-stable semantic bookends are required; missing/unknown/duplicate/contradictory,
+The seq480 scope is boot/epoch activity plus referenced lifecycle, ancestry,
+retry, QA/job and epoch/invalidation dependencies, including current activity on
+old retired SIDs. Unrelated global same-SID searches are outside admission under
+PR1084's supplied-liveSID trust limit; same-owner contradictions still refuse.
+Historical `memory_read` ownership uses payload.task_id, preserving its outer
+AGENT scope. Each capture exhausts the existing action read once under the same
+work/transport budgets and selects only required full-history owners; closing
+and atomic rereads rediscover late payload-owned rows. Scan exhaustion refuses.
+Observer, native/HTTP, both report front doors, preparation and locked reread use
+one selector and recompute membership at closing/commit, including new relevant
+controls/results/retries. No-epoch diagnostics remain CLOSED. Finite work,
+transport, guarded public-server/native SQLite VM and cooperative lock refusal
+plus scan-measurement/RSS limitations are documented in the corrective memory spec; limits never validate
+a prefix or repair producer errors. Full bounded selected audit/task/result
+evidence, independent counts/digests/seals and stable semantic bookends are required; missing/unknown/duplicate/contradictory,
 pending/moving/error or all-failure evidence refuses. Normal exposed/in-flight
 checks, temporal post-retirement zero, source/boot/cohort, original epoch/reset
 contract and thresholds remain. Classification grants no B/C/health acceptance.

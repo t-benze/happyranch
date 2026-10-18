@@ -12,12 +12,13 @@ import traceback
 from pathlib import Path
 
 from owned import identity
-from run import daily_admission, validate_timing
+from run import daily_admission, validate_admission, validate_timing
 
 
 def validate(row: dict, source: str, python: str, signum: int) -> None:
     result, active = row["launcher_result"], row["active"]
     validate_timing(result)
+    validate_admission(result, row)
     if (row["source_sha"] != source or active["source_sha"] != source
             or result["source_sha"] != source or result["python"] != python
             or result["exercise"] != "cancellation" or result["status"] != "FAIL"

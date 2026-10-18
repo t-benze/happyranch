@@ -3400,11 +3400,21 @@ without a timer/service and without holding metadata locks across application
 callbacks, rendering, executor/supervisor or task completion.
 Sealing checkpoints counters/digests without querying history on the callback
 path; its diagnostic is `census_not_reconciled`. Only a complete zero-write read
-validation reconciles history, using at most 256 rows per primary-key page and
-100,000 total audit rows. Database write counts/data versions and all semantic
-live observer facts bracket capture; changing, incomplete or exhausted capture
-is unavailable. Unresolved task population, parent knowledge or task type is
-unavailable even when identity, binding and start rows exist.
+validation reconciles the seq480 current-boot/epoch activity and required
+lifecycle/ancestry/retry/QA/job/control closure. Current old-retired-SID activity
+retains the preboot interval; unrelated global SID sharing is outside admission.
+Historical memory_read ownership comes from payload.task_id, preserving outer
+AGENT scope. Each capture exhausts one bounded existing action read and selects
+only required full-history owners; late preboot rows are rediscovered at closing
+and commit. Exhaustion refuses, never a truncated absence proof.
+Missing required evidence and related contradictions refuse. Closing and locked
+publication reads recompute membership, including later controls/results/retries,
+with coherent native snapshots and full semantic serving/evidence comparison.
+The corrective memory spec defines finite encoded-work, transport, SQLite VM and
+cooperative lock deadlines on public/native reads and their scan-measurement/RSS
+limitations. The private guard precedes coherent/synchronized lock admission;
+nested reads share its original budget and restore connection settings. Limits
+never authorize a prefix, clear a sticky error or change producer behavior.
 
 The seal-action audit GET reads the actual serving OrgState through its
 `memory_collection_observation` accessor. Nonblocking short observer snapshots

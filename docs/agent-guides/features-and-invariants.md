@@ -1770,15 +1770,31 @@ counts/digests/seals/errors/generations remain compared. Real serving movement
 (including generation53->54, seal312201->312222 and terminal6->7) refuses;
 timestamp equality cannot retroactively qualify an earlier moving capture.
 
-Backend and canonical CLI JSON/text share the report core. G1 acquisition
-exhausts original tasks/results/jobs/audit evidence with stable bookends and
-complete owned outputs. No-epoch diagnostics exhaust all relevant memory and
-lifecycle action pages plus a coherent complete task snapshot and roles before
-empty/short returns. Unrelated audit history does not consume their existing
-100000-row bound; authority readers retain the default unfiltered snapshot. HTTP/decoder/timeout, cursor or
-SELECT failures refuse as `acquisition_unavailable`, without partial CLI stdout.
-Task pages use `(created_at, id)` descending, with parsed wire timestamps and
-the last ID as the server-resolved transport cursor, rather than ID ordering.
+Existing public audit/task list/detail/default recall and keyed job reads use
+finite scan/row/byte/decode and lock budgets before their coherent read views;
+exhaustion refuses with HTTP503. Job output/receipt reads retain totals and
+truncation while reading only the requested bytes outside DB locks. These are
+cooperative finite-work limits, not hard RSS/wall-time guarantees; see the
+corrective memory spec for exact values and prepared-output custody limits.
+
+Backend and canonical CLI JSON/text share the report core and seq480 selector:
+current boot/epoch activity, including unknown attribution and current calls on
+preboot retired SIDs, plus genuine referenced lifecycle/ancestry/retry, QA/job and
+epoch/invalidation evidence. Ancestry-only reads retain graph facts; proof and
+interval owners retain original results/history and direct revisits. Unrelated
+global same-SID records are outside admission under PR1084's supplied-liveSID
+trust limit. Related contradictions and missing required evidence still refuse.
+Historical memory_read closure uses payload.task_id while preserving outer AGENT
+scope: one complete bounded action read per capture, selecting only required
+full-history owners. Closing/atomic discovery includes late preboot reads;
+exhausted scan/transport budgets refuse rather than certify absence.
+Both report front doors remove their former all-history/task preflight. Empty or
+short no-epoch diagnostics remain CLOSED. Closing and locked publication rereads
+recompute membership and compare controls as well as records; no prepared-ID
+shortcut, writer repair or new endpoint is supplied. Work/transport/SQL limits
+and their cooperative timing/server-work/RSS limitations are recorded in the
+corrective memory spec. HTTP/decoder/cursor/SELECT failures yield
+`acquisition_unavailable`, without partial CLI stdout.
 Natural population excludes designated probes/retries, recovery and all
 pre-start invocations from qualifying metrics. Credited late events on old
 tuples remain visible to the retirement diagnostic and can close eligibility. D1 remains the later of

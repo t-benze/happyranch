@@ -1,4 +1,4 @@
-"""Daily health: missing cells/variants, skips and unknown cleanup always fail."""
+"""Event health: missing cells/variants, skips and unknown cleanup always fail."""
 from __future__ import annotations
 
 import argparse
@@ -9,7 +9,7 @@ import signal
 from datetime import datetime, timedelta
 
 from cancellation import validate as validate_cancellation
-from run import BASELINE_ARTIFACTS, daily_admission, validate_timing
+from run import BASELINE_ARTIFACTS, daily_admission, validate_admission, validate_timing
 from pathlib import Path
 
 
@@ -89,6 +89,114 @@ def controls() -> dict:
             raise AssertionError(f"gate incorrectly accepted {name}")
     validate(valid, MANIFEST["daily_python"], source, "success")
     results.update(cancellation_controls())
+    results.update(admission_controls())
+    return results
+
+
+def admission_fixture(event: str) -> dict:
+    """Synthetic identity only; never an execution receipt."""
+    return dict(event=event, cron="0 19 * * *" if event == "schedule" else None,
+                repository="t-benze/happyranch",
+                workflow_ref="t-benze/happyranch/.github/workflows/e2e.yml@refs/heads/main",
+                workflow_sha="1" * 40, run_id="123", run_attempt="1",
+                source_ref="refs/heads/main", source_sha="1" * 40, source_tree="2" * 40)
+
+
+def admission_controls() -> dict:
+    """Call only shipping admission/receipt predicates, with child launch forbidden.
+
+    Actions-shaped payloads/env and git outputs below are isolated synthetic
+    inputs, not authentic Actions evidence or permission to execute scenarios.
+    """
+    import tempfile
+    from unittest.mock import patch
+
+    results = {}
+    with tempfile.TemporaryDirectory(prefix="e2e-admission-control-") as scratch:
+        payload = Path(scratch) / "event.json"
+        for event_name in ("schedule", "workflow_dispatch"):
+            expected = admission_fixture(event_name)
+            event = dict(repository=dict(full_name="t-benze/happyranch", default_branch="main"))
+            if event_name == "schedule":
+                event["schedule"] = "0 19 * * *"
+            else:
+                event.update(ref="refs/heads/main", inputs={})
+            env = dict(GITHUB_ACTIONS="true", GITHUB_EVENT_NAME=event_name,
+                       GITHUB_EVENT_PATH=str(payload), GITHUB_REPOSITORY="t-benze/happyranch",
+                       GITHUB_REF="refs/heads/main", GITHUB_SHA="1" * 40,
+                       GITHUB_WORKFLOW_SHA="1" * 40, GITHUB_RUN_ID="123", GITHUB_RUN_ATTEMPT="1",
+                       GITHUB_WORKFLOW_REF="t-benze/happyranch/.github/workflows/e2e.yml@refs/heads/main")
+
+            def admit(environment: dict, body: dict, head: str = "1" * 40, tree: str = "2" * 40) -> dict:
+                payload.write_text(json.dumps(body))
+
+                def git_read(command: list, **kwargs: object) -> str:
+                    if kwargs != dict(cwd=Path(scratch), text=True):
+                        raise AssertionError("unexpected git cwd/options")
+                    if command == ["git", "rev-parse", "HEAD"]:
+                        return head + "\n"
+                    if command == ["git", "rev-parse", "HEAD^{tree}"]:
+                        return tree + "\n"
+                    raise AssertionError("non-admission command prohibited")
+
+                with patch.dict(os.environ, environment, clear=True), \
+                        patch("run.subprocess.check_output", side_effect=git_read), \
+                        patch("subprocess.Popen", side_effect=AssertionError("child launch prohibited")):
+                    return daily_admission(Path(scratch))
+
+            if admit(env, event) != expected:
+                raise AssertionError("wrong admitted event/run/source identity")
+            results["admission-" + event_name] = "synthetic identity admitted; no child launch"
+            cases = []
+            for key in env:
+                missing = dict(env)
+                missing.pop(key)
+                cases.append(("missing-" + key, missing, event, "1" * 40, "2" * 40))
+            for key, value in (("GITHUB_ACTIONS", "false"), ("GITHUB_REF", "refs/heads/other"),
+                               ("GITHUB_REPOSITORY", "other/repo"), ("GITHUB_SHA", "bad"),
+                               ("GITHUB_WORKFLOW_SHA", "3" * 40), ("GITHUB_RUN_ID", "0"),
+                               ("GITHUB_RUN_ATTEMPT", "-1"), ("GITHUB_RUN_ID", "１２３"),
+                               ("GITHUB_WORKFLOW_REF", "t-benze/happyranch/.github/workflows/ci.yml@refs/heads/main")):
+                cases.append(("wrong-" + key + "-" + value, dict(env, **{key: value}), event, "1" * 40, "2" * 40))
+            for unsupported in ("pull_request", "push", "release", "workflow_call", "repository_dispatch", "unknown"):
+                cases.append((unsupported, dict(env, GITHUB_EVENT_NAME=unsupported), event, "1" * 40, "2" * 40))
+            cases.extend([("checkout-mismatch", env, event, "3" * 40, "2" * 40),
+                          ("invalid-tree", env, event, "1" * 40, "bad"),
+                          ("missing-repository", env, {}, "1" * 40, "2" * 40),
+                          ("repository-mismatch", env, dict(event, repository=dict(full_name="other/repo", default_branch="main")), "1" * 40, "2" * 40),
+                          ("default-mismatch", env, dict(event, repository=dict(full_name="t-benze/happyranch", default_branch="other")), "1" * 40, "2" * 40)])
+            if event_name == "schedule":
+                missing = dict(event)
+                missing.pop("schedule")
+                cases.extend([("missing-cron", env, missing, "1" * 40, "2" * 40),
+                              ("wrong-cron", env, dict(event, schedule="0 7 * * *"), "1" * 40, "2" * 40)])
+            else:
+                missing = dict(event)
+                missing.pop("ref")
+                cases.extend([("missing-payload-ref", env, missing, "1" * 40, "2" * 40),
+                              ("non-main-payload", env, dict(event, ref="refs/heads/other"), "1" * 40, "2" * 40),
+                              ("invented-schedule", env, dict(event, schedule="0 19 * * *"), "1" * 40, "2" * 40)])
+            for name, environment, body, head, tree in cases:
+                try:
+                    admit(environment, body, head, tree)
+                except (RuntimeError, ValueError, KeyError, TypeError) as exc:
+                    results["admission-" + event_name + "-" + name] = type(exc).__name__ + ": " + str(exc)
+                else:
+                    raise AssertionError("admission incorrectly accepted " + name)
+            validate_admission(expected, expected)
+            for key in expected:
+                for missing in (False, True):
+                    row = dict(expected)
+                    if missing:
+                        row.pop(key)
+                    else:
+                        row[key] = "conflicting-identity"
+                    try:
+                        validate_admission(row, expected)
+                    except ValueError as exc:
+                        results[f"receipt-{event_name}-{key}-{'missing' if missing else 'conflict'}"] = str(exc)
+                    else:
+                        raise AssertionError("receipt incorrectly accepted " + key)
     return results
 
 
@@ -116,9 +224,12 @@ def cancellation_controls() -> dict:
                                                      survivors={}, errors=[], identities={"11": "101"},
                                                      units={"happyranch-example.service": {"stdout": "LoadState=not-found"}},
                                                      groups={"/example": False}, ports_absent={"1234": True, "1235": True})))
+    admission = admission_fixture("schedule")
+    fixture.update(admission)
+    fixture["launcher_result"].update(admission)
     validate_cancellation(fixture, source, "3.12", 15)
     results = {}
-    for name in ("no-delivery", "wrong-signal", "false-success", "not-active", "missing-identity", "missing-unit", "live-cgroup", "missing-port", "data-residue", "setup-failure"):
+    for name in ("no-delivery", "wrong-signal", "false-success", "not-active", "missing-identity", "missing-unit", "live-cgroup", "missing-port", "data-residue", "setup-failure", "wrong-event", "wrong-run", "wrong-tree", "missing-admission"):
         row = copy.deepcopy(fixture)
         result = row["launcher_result"]
         if name == "no-delivery": result["signals"] = []
@@ -131,12 +242,21 @@ def cancellation_controls() -> dict:
         elif name == "missing-port": result["cleanup"]["ports_absent"] = {}
         elif name == "data-residue": result["cleanup"]["data_absent"] = False
         elif name == "setup-failure": result["phases"][0]["exit"] = 1
+        elif name == "wrong-event": result["event"] = "workflow_dispatch"
+        elif name == "wrong-run": result["run_id"] = "456"
+        elif name == "wrong-tree": result["source_tree"] = "3" * 40
+        elif name == "missing-admission": result.pop("cron")
         try:
             validate_cancellation(row, source, "3.12", 15)
         except ValueError as exc:
             results["cancellation-" + name] = str(exc)
         else:
             raise AssertionError(f"cancellation validator accepted {name}")
+    manual = admission_fixture("workflow_dispatch")
+    fixture.update(manual)
+    fixture["launcher_result"].update(manual)
+    validate_cancellation(fixture, source, "3.12", 15)
+    results["cancellation-manual-identity"] = "synthetic wrapper/inner identity matched"
     return results
 
 
@@ -1507,7 +1627,7 @@ def main() -> int:
     parser.add_argument("--controls", action="store_true")
     parser.add_argument("--artifacts", type=Path)
     parser.add_argument("--source")
-    parser.add_argument("--event", choices=["schedule"])
+    parser.add_argument("--event", choices=["schedule", "workflow_dispatch"])
     parser.add_argument("--matrix-result")
     parser.add_argument("--cancellation-result")
     args = parser.parse_args()
@@ -1518,12 +1638,14 @@ def main() -> int:
         parser.error("artifacts, source, event, matrix-result and cancellation-result are required")
     expected = MANIFEST["daily_python"]
     names = ["e2e-" + version for version in expected] + ["e2e-cancel-TERM", "e2e-cancel-INT"]
-    health = dict(status="FAIL", event=args.event, source_sha=args.source,
+    health = dict(status="FAIL", event=None, source_sha=None,
+                  requested_event=args.event, requested_source_sha=args.source,
                   cells=expected, artifacts=names, errors=[])
     try:
         admission = daily_admission(Path(__file__).resolve().parents[1])
-        if admission["source_sha"] != args.source:
-            raise ValueError("aggregate source differs from scheduled github.sha")
+        health.update(admission)
+        if admission["source_sha"] != args.source or admission["event"] != args.event:
+            raise ValueError("requested aggregate event/source differs from admitted Actions identity")
         rows = []
         required = ["result.json", *BASELINE_ARTIFACTS]
         phase_logs = [name + ".txt" for name in ("dependencies", "browser-dependencies", "browser-install",
@@ -1552,8 +1674,8 @@ def main() -> int:
             health["errors"].append("unexpected artifact directories: " + ", ".join(sorted(unexpected)))
         try:
             validate(rows, expected, args.source, args.matrix_result)
-            if any(any(row.get(key) != admission[key] for key in admission) for row in rows):
-                raise ValueError("baseline daily event/source receipt mismatch")
+            for row in rows:
+                validate_admission(row, admission)
         except (ValueError, KeyError, TypeError) as exc:
             health["errors"].append(str(exc))
         if args.cancellation_result != "success":
@@ -1566,10 +1688,10 @@ def main() -> int:
                     health["errors"].append(f"missing/empty artifact: e2e-cancel-{label}/{name}")
             try:
                 row = json.loads((directory / "cancellation.json").read_text())
-                if row["status"] != "PASS" or any(row.get(key) != admission[key] for key in admission):
-                    raise ValueError("failed or mismatched daily cancellation receipt")
-                if any(row["launcher_result"].get(key) != admission[key] for key in admission):
-                    raise ValueError("launcher daily event/source receipt mismatch")
+                if row["status"] != "PASS":
+                    raise ValueError("failed cancellation receipt")
+                validate_admission(row, admission)
+                validate_admission(row["launcher_result"], admission)
                 validate_cancellation(row, args.source, version, signum)
             except (OSError, ValueError, KeyError, TypeError) as exc:
                 health["errors"].append(f"{label}: {exc}")
@@ -1580,8 +1702,13 @@ def main() -> int:
     print(json.dumps(health, indent=2))
     summary = os.environ.get("GITHUB_STEP_SUMMARY")
     if summary:
-        lines = ["## Daily Product E2E health: " + health["status"],
-                 "", "Default-branch source: `" + args.source + "`", "Event: `schedule` (19:00 UTC)",
+        event_label = health["event"] or "UNVERIFIED"
+        event_detail = {"schedule": " (19:00 UTC)", "workflow_dispatch": " (manual main dispatch)"}.get(event_label, "")
+        lines = ["## Product E2E health: " + health["status"],
+                 "", "Default-branch source: `" + str(health["source_sha"] or "UNVERIFIED") + "`",
+                 "Event: `" + event_label + "`" + event_detail,
+                 "Run: `" + str(health.get("run_id", "UNVERIFIED")) + "`, attempt: `" + str(health.get("run_attempt", "UNVERIFIED")) + "`",
+                 "Source tree: `" + str(health.get("source_tree", "UNVERIFIED")) + "`",
                  "", "Expected artifacts (7-day retention): " + ", ".join("`" + name + "`" for name in names),
                  "", "Baseline jobs: " + args.matrix_result + "; launcher diagnostics: " + args.cancellation_result,
                  "", "Engineering_manager owns triage through existing tasks/threads. This health result does not block merging."]

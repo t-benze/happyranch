@@ -598,14 +598,19 @@ def reduce_collection_report(tables: dict, view: dict, outputs: dict, agent_role
     from runtime.infrastructure.memory_collection import (
         AcceptanceUnavailable, CONTROL_ACTIONS, _decoded_tables, _strict_json,
         collection_control_head, collection_logical_key, parse_acceptance,
-        validate_epoch_candidate,
+        validate_epoch_candidate, _boot_boundary,
     )
     now = aware_utc(current_time if current_time is not None else datetime.now(timezone.utc))
     rows = tables["audit_log"]
     def diagnostic() -> dict:
-        return reduce_report(*([row for row in rows if row["action"] == action] for action in METRIC_ACTIONS[1:]),
-                             agent_role_map, now, session_start_rows=[row for row in rows if row["action"] == "session_start"],
-                             evidence_tables=tables)
+        # Historical lifecycle/proof rows are dependencies, not extra natural
+        # observations. Current calls on old tuples remain in the diagnostic.
+        since = aware_utc(_boot_boundary(view, [row for row in _decoded_tables(tables)["audit_log"]
+                                               if row["action"] == "memory_runtime_intent"]))
+        activity = [row for row in rows if aware_utc(row["timestamp"]) >= since]
+        return reduce_report(*([row for row in activity if row["action"] == action] for action in METRIC_ACTIONS[1:]),
+                             agent_role_map, now, session_start_rows=[row for row in activity if row["action"] == "session_start"],
+                             evidence_tables=tables, collection_since=since)
     if not any(row["action"] in CONTROL_ACTIONS for row in rows):
         return diagnostic()
     report = None

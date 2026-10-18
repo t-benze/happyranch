@@ -8,13 +8,31 @@ Source and design acceptance do not establish behavioral PASS. Actual disposable
 runner results, authoring proof, independent review/QA and check enforcement are
 separate delivery obligations.
 
-Founder THR-291 seq69 admits fresh E2E only from `.github/workflows/e2e.yml`'s
-`0 19 * * *` schedule on default-branch immutable `github.sha` (19:00 UTC /
-03:00 Asia/Shanghai). There is no local execution alias, manual dispatch, PR,
-push, release, workflow_call or repository_dispatch entry. `run.py` and
-`cancellation.py` reject absent/unsupported events, wrong cron/workflow/default
-branch or checkout/source mismatch before launching scenarios. Actions metadata
-validation is not protection against a hostile runner forging its environment.
+Fresh Product E2E keeps the daily `0 19 * * *` schedule (19:00 UTC /
+03:00 Asia/Shanghai) on immutable default-branch `github.sha`. Founder
+THR291seq247 additionally authorizes **ONE** immediate full main execution under
+sole root TASK-11897 through the reviewed `workflow_dispatch` entry. Manual
+admission requires actual `refs/heads/main`, default branch `main`, and matching
+repository/workflow/run/source identity. This entry is not standing execution
+authority. Baseline56 variants EACH Python3.12/3.14 plus TERM3.12/INT3.14 retain
+exactly four execution artifacts and the original bounds. `Daily Product E2E
+Health` remains outside merge checks and reports the actual event, run/attempt,
+SHA and checkout tree; manual receipts are never labeled scheduled.
+There is no local E2E alias, PR/push/release/workflow_call/repository_dispatch
+entry, automatic retry, extra schedule or SLA. Admission, lint and scoped QA
+success do not establish product execution success. The root owns the one
+actual dispatch after independent review/scoped QA, both final-head lints,
+guarded merge and an exact-main receipt.
+
+`run.daily_admission` validates genuine schedule payloads with the exact cron;
+manual payloads carry their actual main ref and no invented schedule. Both
+launchers and aggregate agree on event, cron (null for manual), repository,
+workflow ref/SHA, run ID/attempt, source ref/SHA and independently read checkout
+tree. Missing or cross-event/run/source receipt fields fail health, including
+cancellation wrapper versus inner launcher. The admission environment/payload
+checks are not a hostile-runner security boundary. GitHub supplies the
+[run/workflow metadata](https://docs.github.com/en/actions/reference/workflows-and-actions/variables)
+and [dispatch event identity](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#workflow_dispatch).
 
 Founder THR291seq171/172 selects exactly56 variants EACH on Python3.12/3.14
 and TERM3.12/INT3.14 launcher diagnostics. Product Python support remains unchanged. Exactly four execution directories,
@@ -360,11 +378,37 @@ and authentic memory thresholds remain root-owned uncovered work. Provider hold 
 loss in the baseline do not establish restart/recovery. No merge or deployment follows from a
 successful run. Deletion PR1024 is merged at
 `5e87e778c6968338a12bd5cd65d461e5699836be`; this lane preserves that deletion and
-all current product/Web/shared assets. The current schedule-only baseline covers
+all current product/Web/shared assets. The current full baseline covers
 Python3.12/3.14, with TERM3.12/INT3.14 launcher diagnostics at 19:00 UTC /
 03:00 Asia/Shanghai from immutable default-branch source. Historical scheduled
 executions failed; corrected behavior is pending. Historical TASK10532/run38035241095 at `afb46cbb6` supplies only the
 3.12/3.14 baseline and launcher cleanup, not current-head or daily evidence.
+
+## Admission controls (THR291seq247 / TASK-11897)
+
+`python e2e/aggregate.py --controls` exercises shipping admission and receipt
+validators with isolated synthetic Actions-shaped payloads/environment and git
+read outputs. Child launch is prohibited in the admission controls. These
+fixtures never invoke scenarios or authorize local E2E. Existing aggregate
+refusal controls retain missing/failed cells, variants, cleanup/export and
+deadline cases. The finite change cases and four authoring answers are:
+
+| Case/input and expected observation | Observable assertion | Wrong outcome detected | Why earlier evidence misses it | Production seam added? |
+| --- | --- | --- | --- | --- |
+| Exact scheduled payload/env/SHA/tree -> schedule identity; missing/wrong cron/env/source -> refusal | `daily_admission` returns literal expected identity or raises | Admission of unsupported or inconsistent schedule | Older predicate had no run/tree binding | NO; direct existing callable, fake git reads only |
+| Main dispatch payload without schedule -> workflow_dispatch; non-main/default/repo/workflow/run/SHA/tree failures -> refusal | Same shipping callable and child-launch prohibition | Non-main or mislabeled manual admission | Older predicate rejected every dispatch | NO |
+| Absent/PR/push/release/workflow_call/repository_dispatch -> refusal | Same predicate; static workflow/CLI selection checks | Broadened unsupported entry or local alias | Schedule-only positive did not exercise these changed branches | NO |
+| Coherent manual/schedule receipts -> identity accepted; any missing/conflicting field -> refusal; missing execution evidence -> FAIL | `validate_admission`, cancellation wrapper/inner joins, aggregate controls and health output | Cross-event/run/tree receipt adoption or scheduled label for manual | Older source only compared SHA and hardcoded schedule | NO; existing validator lane only |
+| Current docs/workflow retain cron,56 each3.12/3.14,TERM/INT,four artifacts,bounds,two lint checks | Static source comparison at final head | Policy drift, hidden subset/retry or added merge test | Control success cannot verify documentation or workflow preservation | NO |
+
+These are source/static and isolated predicate/aggregate control levels on the
+maker/QA host, never product/browser/daemon/provider execution or authentic
+Actions receipts. Concrete command/outcome attribution lives in the task/PR
+record. Protected12 defect operations, RED/restoration/GREEN and repetitions
+remain UNEXECUTED and unauthorized. General integration INCLUDING actual
+callback stays SKIPPED THR243seq42; Python units stay RETIRED. Historical daily-only
+case-stage descriptions below remain evidence of their original source, not
+current manual-admission policy or a renewed execution budget.
 
 ## Cadence delivery and remaining test-authoring evidence (THR-291 seq69)
 
@@ -417,7 +461,7 @@ abrupt R andseq126 E04 cap/persistent Stop implementation/acceptance remain HELD
 ## Bounded Pause source increment (THR-292 / TASK-10555)
 
 `controller.main` executes the unchanged `scenarios.exercise` closure first,
-then `pause.exercise`, inside the existing schedule-only launcher. The original
+then `pause.exercise`, inside the shared admitted launcher. The original
 23 variants, 9 starts, alpha 6 tasks/8 results and beta 1 task/1 result are still
 asserted before any Pause work. The manifest adds 19 separately attributed
 variants (42 combined). `observations.json` records their inputs, CLI transport,

@@ -389,7 +389,8 @@ show_help() {
   echo "  - Retained integration uses the installed uv + Python interpreter, not the"
   echo "    standalone E2E matrix (whose execution evidence remains PENDING)."
   echo "  - Integration requires an authorized disposable venue; never the live daemon host."
-  echo "  - Fresh E2E admits only the daily hosted schedule; no local execution target."
+  echo "  - Hosted E2E admits the daily 19:00 UTC schedule or main-only workflow_dispatch."
+  echo "    THR291seq247 allocates ONE manual run to root TASK-11897; no local target."
   echo "  - Retained Web tests/builds are optional separate commands, outside all/hooks."
   echo "  - uv sync --frozen ensures lockfile parity; run 'uv lock' first if"
   echo "    you've changed pyproject.toml."
@@ -404,7 +405,7 @@ case "${1:-all}" in
   boundary-lint) run_boundary_lint "${@:2}" ;;
   web)          run_web ;;
   integration)  run_integration ;;
-  e2e)          echo "REFUSED: fresh Product E2E is daily schedule-only (THR-291 seq69)." >&2; exit 2 ;;
+  e2e)          echo "REFUSED: fresh Product E2E requires hosted admission (daily schedule or explicitly authorized main dispatch; THR291seq247)." >&2; exit 2 ;;
   all)          run_all ;;
   help|-h|--help) show_help ;;
   *)

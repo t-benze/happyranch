@@ -1073,18 +1073,14 @@ class AuditLogger:
     ) -> dict:
         """Acquire complete bounded task/lifecycle facts, then reduce read-only."""
         from datetime import datetime, timezone
-        from runtime.infrastructure.memory_telemetry_report import ACTIONS, ReportAcquisitionUnavailable, reduce_collection_report
-        from runtime.infrastructure.memory_collection import CONTROL_ACTIONS, acquire_collection_report
+        from runtime.infrastructure.memory_telemetry_report import ReportAcquisitionUnavailable, reduce_collection_report
+        from runtime.infrastructure.memory_collection import acquire_collection_report
         cutoff = current_time if current_time is not None else datetime.now(timezone.utc)
         try:
-            tables = self._db.read_memory_collection_evidence(audit_actions=(*ACTIONS, *sorted(CONTROL_ACTIONS)))
-            if any(row["action"] in CONTROL_ACTIONS for row in tables["audit_log"]):
-                context = getattr(self._db, "_memory_collection_context", None)
-                if context is None:
-                    raise ReportAcquisitionUnavailable()
-                tables, view, outputs, cutoff = acquire_collection_report(context, current_time=cutoff)
-            else:
-                view, outputs = {}, {}
+            context = getattr(self._db, "_memory_collection_context", None)
+            if context is None:
+                raise ReportAcquisitionUnavailable()
+            tables, view, outputs, cutoff = acquire_collection_report(context, current_time=cutoff)
             return reduce_collection_report(tables, view, outputs, agent_role_map, cutoff)
         except Exception as exc:
             raise ReportAcquisitionUnavailable() from exc

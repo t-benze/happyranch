@@ -433,7 +433,9 @@ reset/audit helper, while preserving thread delivery and breaker continuity.
 > Test-policy update (THR-291 seq40): former Python unit tests and unit-only
 > fixtures referenced in historical implementation evidence below are retired.
 > THR-291 seq69: merge CI/default/all/pre-push are lint/static only; normal hooks
-> remain enabled. Daily-only E2E at19:00UTC is separate, first scheduled run PENDING.
+> remain enabled. Daily E2E at19:00UTC is separate; THR291seq247 additionally
+> allocates ONE reviewed main-only dispatch under TASK-11897. This entry grants
+> no standing execution authority; actual health remains separately observed.
 > Retained platform/callback sources are not automatic merge gates. See
 > [coverage gaps](../python-test-reset.md) and [current lanes](../local-ci.md).
 
@@ -669,10 +671,23 @@ Terminal observation never clears another SessionTracker generation. Direct
 executor/manual/thread/dream launches create no task-bootstrap census binding.
 Observation failures do not change executor results, retries or application
 exceptions. Callback sealing performs no history acquisition; diagnostic seals
-remain `census_not_reconciled`. Bounded exhaustive read validation rejects
+remain `census_not_reconciled`. Bounded seq480 activity/reference read validation rejects
 moving captures and unresolved authoritative task/parent/type facts without
 changing ordinary launch/refusal behavior. These source facts confer no
 installed/epoch/collection authority.
+
+The seq480 census uses boot/epoch activity and its required lifecycle, ancestry,
+retry, QA/job and control dependencies, including current activity with preboot
+retired SIDs. It removes unrelated global same-SID searches under PR1084's known
+supplied-liveSID limit; related contradictions still refuse. Closing/atomic reads
+recompute membership, never only prepared IDs. Historical memory_read closure
+selects payload.task_id for required full-history owners, preserving outer AGENT
+scope. One bounded complete existing action read per capture includes late
+preboot rows; exhaustion refuses without an absence claim.
+The corrective memory spec states
+finite work/transport/SQL/lock refusal, including guarded existing public reads,
+and scan-measurement/RSS limitations. No
+reader acquires execution, writer-repair, health or collection authority.
 
 The seq428 closed failed-before-exposure census class requires complete bounded
 actual task/result/audit evidence, one ordered authenticated tuple and a strict
