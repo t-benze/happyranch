@@ -763,3 +763,11 @@ Errors capture provenance when they arrive: `{ key }` is an app fallback, `{ raw
 Locale changes do not key/remount the dock or enter its connection-effect dependencies. They preserve the active conversation, history/inflight state, composer/rename draft, selection/focus and open delete confirmation, and issue no HTTP/session/socket activity. Existing A-mode parsing/order/hydration, query/polling keys, activation/new/rename/delete callbacks, reconnect triggers, optimistic send/trim/clear semantics, hotkeys, focus trap/restore and SPA navigation remain unchanged. Help and Command Palette chrome already use the shared locale context and retain their current interaction ownership.
 
 Historical ordinary-build evidence used `web/scripts/w4a-browser-evidence.mjs --slice assistant` and the narrow `assistant-dock-browser-cases.mjs` fixture/cases: real shipping HTTP/WS seams, server request/socket ledger, mounted-node/focus assertions and 390/1440 captures. The coverage inventory includes both actual mounted consumers. The `system-assistant` marker is translated after complete mounted-copy coverage is established by component regressions and ordinary-build browser evidence; catalog binding alone does not prove coverage. W5a accepted the finite mounted audit and resolved the Settings Organization disable-confirm close label (PR993). W5b enables full browser-language defaults while preserving the state/transport contract. Desktop restart persistence remains deferred; deployment/live acceptance is separate.
+
+---
+
+**Cross-reference 2026-10-18 (THR-305).** `VITE_ENABLE_KB_COMPOSE` no longer
+gates Compose directly; the build-time flag `kb_compose_ui` does (see
+`web/ARCHITECTURE.md` § Build-time UI flags). The i18n source inventory accepts
+the additional `@happyranch/feature-flags` tsconfig path and Vite alias, which
+resolve to a JSON flag profile with no owned copy.

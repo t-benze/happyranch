@@ -1980,6 +1980,7 @@ scripts/daemon.sh stop --force
 
 scripts/build_web.sh
 cd web && npm run dev
+cd web && npm run build:local     # local UI flag profile; never a release build
 happyranch web [--no-open]
 
 scripts/local_ci.sh              # default: lint/static only; corrected daily E2E pending after historical failures
@@ -2077,6 +2078,27 @@ machine identifiers and raw diagnostics remain verbatim. Preserve drafts, focus,
 selection, navigation and original actions across locale changes; a locale
 change must not trigger a request, mutation or transport restart. See
 `docs/agent-guides/web-and-cli.md` for the affected-state review checklist.
+
+**Build-time UI flags (THR-305).** Unfinished web UI is gated by named booleans
+in `web/config/features.*.json`: a registry with purpose/owner/removal
+condition, complete development and production profiles, and an optional
+gitignored `features.local.json`. Read them ONLY from `web/src/config/features.ts`.
+
+- `npm run build`, `scripts/build_web.sh` and Mac packaging always use the
+  production file.
+- `npm run dev` and `npm run build:local` use development defaults plus the
+  local override.
+- Vitest uses development defaults.
+- The `VITE_ENABLE_KB_COMPOSE` compatibility input (local/test only) is strict
+  literal `true`/`false`.
+- Values are fixed per startup or build.
+
+`work_hours_ui` (off in production) hides the whole Work Hours UI, and
+`kb_compose_ui` (off everywhere) hides KB Compose. Flags are UI visibility only;
+they change no daemon, API, CLI, auth or stored data behavior. The resolver lives
+inline in `web/vite.config.ts` and uses `resolve.alias` only: never add
+`define`, injected env, plugins or config imports, which Mac custody pins. See
+`web/ARCHITECTURE.md` § Build-time UI flags.
 
 - Python snapshot maintainer: `scripts/generate_openapi_snapshot.py`; data: `tests/contract/openapi.json`.
 - TS coverage: `web/src/test/openapi-coverage.test.ts`.

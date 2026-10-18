@@ -23,7 +23,8 @@
 
     "baseUrl": ".",
     "paths": {
-      "@/*": ["src/*"]
+      "@/*": ["src/*"],
+      "@happyranch/feature-flags": ["config/features.production.json"]
     },
     "types": ["vitest/globals", "@testing-library/jest-dom"]
   },

@@ -8,3 +8,8 @@ storybook-static/
 # FE screenshot harness (scripts/screenshot-harness) scratch output
 scripts/screenshot-harness/out/
 .screenshot-harness-tmp/
+
+# Build-time UI feature flags: optional per-checkout local override and the
+# resolved local/test snapshots written by vite.config.ts.
+config/features.local.json
+.feature-flags/

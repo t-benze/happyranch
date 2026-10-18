@@ -44,6 +44,7 @@ import { SettingsPage } from '@/features/settings/SettingsPage';
 import { ThreadsPage } from '@/features/threads/ThreadsPage';
 import { TodosPage } from '@/features/todos/TodosPage';
 import { PROTOTYPES_DISABLED, prototypeRoutes } from '@/prototypes';
+import { features } from '@/config/features';
 
 function RootRedirect(): JSX.Element {
   const orgsQuery = useOrgsList();
@@ -160,10 +161,16 @@ export function AppRoutes(): JSX.Element {
           <Route path="dreams" element={<DreamsPage />} />
           {/* THR-035: the standalone Schedule surface folded into Work Hours.
               Old bookmarks redirect to the Wakes view; the wake list now lives
-              as the `?view=wakes` tab of the Work Hours surface. */}
-          <Route path="schedule" element={<ScheduleRedirect />} />
-          <Route path="work-hours" element={<WorkHoursSurface />} />
-          <Route path="work-hours/:agent" element={<WorkHoursAgentDetailPage />} />
+              as the `?view=wakes` tab of the Work Hours surface.
+              THR-305: with `work_hours_ui` off none of these routes exist, so
+              the direct and legacy URLs fall through to the not-found route. */}
+          {features.work_hours_ui && (
+            <>
+              <Route path="schedule" element={<ScheduleRedirect />} />
+              <Route path="work-hours" element={<WorkHoursSurface />} />
+              <Route path="work-hours/:agent" element={<WorkHoursAgentDetailPage />} />
+            </>
+          )}
           <Route path="artifacts" element={<ArtifactsPage />} />
           <Route path="settings/*" element={<SettingsPage />} />
         </Route>

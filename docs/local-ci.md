@@ -52,7 +52,8 @@ scripts/local_ci.sh e2e           # REFUSED exit2: daily schedule-only
 scripts/local_ci.sh help
 # Optional retained Web source, separately selected outside merge CI:
 (cd web && npx vitest run)
-(cd web && npm run build)
+(cd web && npm run build)        # production UI flag profile
+(cd web && npm run build:local)  # local UI flag profile (development + local override)
 (cd web && npm run build-storybook)
 # Integration requires separate authorization/disposable venue; general suite SKIPPED.
 ```

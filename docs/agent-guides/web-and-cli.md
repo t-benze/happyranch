@@ -1551,10 +1551,35 @@ unload prechecks and close can still block the loop.
 Build and dev commands:
 
 ```bash
-scripts/build_web.sh
-cd web && npm run dev
+scripts/build_web.sh                 # release build: production UI flag profile
+cd web && npm run dev                # local profile (restart after flag edits)
+cd web && npm run build:local        # bundle with the local profile, never for release
 happyranch web
 ```
+
+**Build-time UI flags (THR-305).** `web/config/features.*.json` holds the flag
+registry (purpose/owner/removal condition) and the complete development and
+production profiles. An optional, gitignored `web/config/features.local.json`
+holds per-checkout overrides (see `features.local.example.json`). The SPA reads
+flags only from `web/src/config/features.ts`.
+
+- `npm run build`, `scripts/build_web.sh` and the Mac `build-app.sh` caller
+  always select the production profile. A local file, `VITE_ENABLE_KB_COMPOSE`,
+  Vite mode or `NODE_ENV` cannot change that.
+- `npm run dev` and `npm run build:local` use development defaults, then the
+  local file, then an explicit `VITE_ENABLE_KB_COMPOSE`.
+- Vitest uses development defaults plus that explicit input, and ignores the
+  local file.
+- `VITE_ENABLE_KB_COMPOSE` accepts only the literal `true` or `false`; empty
+  or unset means no opinion. Any other value now fails startup, where it used
+  to mean off silently.
+- Values are fixed per startup or build: restart the dev server after editing
+  the local file, and rebuild for a build.
+
+Production hides the whole Work Hours UI (`work_hours_ui=false`). The daemon
+scheduler/API/CLI and stored `working_hours` settings are unchanged. These
+flags are UI visibility only. The full selection table, failure messages and
+the add/remove procedure are in `web/ARCHITECTURE.md` § Build-time UI flags.
 
 The SPA fetches the daemon bearer token once via `GET /api/v1/auth/bootstrap`, which is localhost-gated, then caches it in `sessionStorage` and attaches it to HTTP and SSE calls. CLI bearer-token behavior is unchanged.
 

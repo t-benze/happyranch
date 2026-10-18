@@ -42,9 +42,10 @@
  *      byte-for-byte across both switches; an injected "translated" diagnostic
  *      fails the same raw predicate (causal negative).
  *
- * Build + run (from web/):
- *   ./node_modules/.bin/vite build --outDir <tmp>/dist-w2c-preview
- *   ./node_modules/.bin/vite build --outDir <tmp>/dist-ordinary
+ * Build + run (from web/). Row H drives the Work Hours switch, which the
+ * production flag profile hides (THR-305), so both dists use build:local:
+ *   npm run build:local -- --outDir <tmp>/dist-w2c-preview
+ *   npm run build:local -- --outDir <tmp>/dist-ordinary
  *   node scripts/w2c-preferences-browser-evidence.mjs \
  *     --preview-dist <tmp>/dist-w2c-preview --dist <tmp>/dist-ordinary \
  *     --out <evidence dir> --head <40-char-sha> [--chrome google-chrome] \

@@ -22,13 +22,21 @@
  *      copy, ZERO /api requests per switch window.
  *
  * Build + run (from web/):
- *   ./node_modules/.bin/vite build --outDir <tmp>/dist-ordinary
- *   node scripts/w4a-browser-evidence.mjs --dist <tmp>/dist-ordinary \
+ *   npm run build:local -- --outDir <tmp>/dist-local
+ *   node scripts/w4a-browser-evidence.mjs --dist <tmp>/dist-local \
  *     --out <evidence dir> --head <sha>
+ *
+ * THR-305: a plain `vite build`/`npm run build` selects the PRODUCTION flag
+ * profile, which hides the Work Hours UI; slices that exercise Work Hours need
+ * the local dist above. `--slice feature-flags` instead runs against any of
+ * the three profiles and requires the dist's own build log:
+ *   node scripts/w4a-browser-evidence.mjs --slice feature-flags --dist <dist> \
+ *     --expect-profile production|local|local-wh-off --build-log <build.log> --out <dir>
  */
 import { runLocaleActivationCases } from './w5-locale-browser-cases.mjs';
 import { runHeaderLanguageCases } from './header-language-browser-cases.mjs';
 import { runWorkHoursCases, workHoursFixture } from './work-hours-browser-cases.mjs';
+import { createFeatureFlagsFixture, runFeatureFlagsCases } from './feature-flags-browser-cases.mjs';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
@@ -442,7 +450,9 @@ function startServer(root) {
         const url = new URL(request.url, 'http://127.0.0.1');
         const p = url.pathname;
         if (p.startsWith('/api/')) {
-          LEDGER.push({ method: request.method, path: p, search: url.search, t: Date.now() });
+          // The row is captured before any body read; handlers attach to THIS row.
+          const row = { method: request.method, path: p, search: url.search, t: Date.now() };
+          LEDGER.push(row);
           if (p.endsWith('/events') || p.includes('/stream') || p.endsWith('/tail')) {
             response.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store' });
             HUNG.push(response);
@@ -509,6 +519,7 @@ function startServer(root) {
             }
           }
           if (selectedSlice === 'locale-activation' && p === '/api/v1/orgs' && ref.searchParams.has('localeStartup')) { HUNG.push(response); return; }
+          if (selectedSlice === 'feature-flags' && ffFixture.handle(request, response, p, ref, row)) return;
           if (selectedSlice === 'work-hours-reachability') {
             const fixture = workHoursFixture(p, ref, { org: ORG, settings: WH_SETTINGS, roster: ROSTER });
             if (fixture !== undefined) { response.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' }); response.end(JSON.stringify(fixture)); return; }
@@ -525,6 +536,12 @@ function startServer(root) {
           if (p.includes('/usage/') && mode === 'empty') payload = p.endsWith('/workload') ? { ...USAGE_META, agents: [] } : { ...USAGE_META, cohorts: [], rows: [], unattributed: { current: USAGE_UNATTRIBUTED, previous: null } };
           response.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
           response.end(JSON.stringify(payload));
+          return;
+        }
+        if (selectedSlice === 'feature-flags' && p === '/__ff_reset') {
+          ffFixture.reset(url.searchParams.get('wh'));
+          response.writeHead(204, { 'cache-control': 'no-store' });
+          response.end();
           return;
         }
         if (p === '/__w4a_blank') {
@@ -1072,7 +1089,14 @@ const SWITCH_ROUTES = [
 ];
 
 const selectedSlice = arg('slice', 'all');
-if (!['all', 'kb-artifacts', 'usage', 'usage-fallback', 'work-hours-reachability', 'locale-activation', 'agents-safeguard', 'header-language', 'assistant-retirement'].includes(selectedSlice)) throw new Error('unknown --slice');
+if (!['all', 'kb-artifacts', 'usage', 'usage-fallback', 'work-hours-reachability', 'locale-activation', 'agents-safeguard', 'header-language', 'assistant-retirement', 'feature-flags'].includes(selectedSlice)) throw new Error('unknown --slice');
+const expectProfile = arg('expect-profile');
+const buildLog = arg('build-log') && resolve(arg('build-log'));
+if (selectedSlice === 'feature-flags' && (!['production', 'local', 'local-wh-off'].includes(expectProfile) || !buildLog || !existsSync(buildLog))) {
+  console.error('--slice feature-flags requires --expect-profile production|local|local-wh-off and an existing --build-log <file>');
+  process.exit(2);
+}
+const ffFixture = createFeatureFlagsFixture(WH_SETTINGS, ORG);
 // F1 repair: reuse the real populated and switch cases with only malformed
 // response metadata. Keep the independent raw-string oracle out of formatters.
 const emptyZoneChecks = () => [['both Usage sections retain raw Data-through and Generated timestamps', `(() => { const sections = [...document.querySelectorAll('section[aria-labelledby^="usage-"]')]; return sections.length === 2 && sections.every(s => s.textContent.split('2026-09-29T06:03:00Z').length - 1 === 2); })()`, true]];
@@ -1089,8 +1113,8 @@ const EMPTY_ZONE_SWITCH = {
   checks: locale => [...switchUsage.checks(locale), ...emptyZoneChecks()],
   shot: 'zh-usage-empty-zone-switch-1440',
 };
-const ACTIVE_VIEWS = ['work-hours-reachability', 'locale-activation', 'header-language', 'assistant-retirement'].includes(selectedSlice) ? [] : selectedSlice === 'usage-fallback' ? [EMPTY_ZONE_VIEW] : selectedSlice === 'all' ? VIEW_ROUTES : VIEW_ROUTES.filter(row => selectedSlice === 'usage' ? row.id.startsWith('usage-') : row.id.startsWith('kb-') || row.id.startsWith('artifacts-'));
-const ACTIVE_SWITCHES = ['work-hours-reachability', 'locale-activation', 'header-language', 'assistant-retirement'].includes(selectedSlice) ? [] : selectedSlice === 'usage-fallback' ? [EMPTY_ZONE_SWITCH] : selectedSlice === 'all' ? SWITCH_ROUTES : SWITCH_ROUTES.filter(row => row.id.startsWith(selectedSlice === 'usage' ? 'usage-' : 'artifacts-'));
+const ACTIVE_VIEWS = ['work-hours-reachability', 'locale-activation', 'header-language', 'assistant-retirement', 'feature-flags'].includes(selectedSlice) ? [] : selectedSlice === 'usage-fallback' ? [EMPTY_ZONE_VIEW] : selectedSlice === 'all' ? VIEW_ROUTES : VIEW_ROUTES.filter(row => selectedSlice === 'usage' ? row.id.startsWith('usage-') : row.id.startsWith('kb-') || row.id.startsWith('artifacts-'));
+const ACTIVE_SWITCHES = ['work-hours-reachability', 'locale-activation', 'header-language', 'assistant-retirement', 'feature-flags'].includes(selectedSlice) ? [] : selectedSlice === 'usage-fallback' ? [EMPTY_ZONE_SWITCH] : selectedSlice === 'all' ? SWITCH_ROUTES : SWITCH_ROUTES.filter(row => row.id.startsWith(selectedSlice === 'usage' ? 'usage-' : 'artifacts-'));
 
 /** Resolve a VIEW_ROUTES key spec; a param value '@key' is itself translated. */
 function expected(locale, spec) {
@@ -1515,6 +1539,8 @@ async function main() {
       await runHeaderLanguageCases({ ...h, openPage, closePage, capture, check, beginCase, endCase, cdp, ledger: LEDGER, base, tr, seedLocale, chineseNavigator: CHINESE_NAVIGATOR, selectedCase: arg('header-case', 'all') });
     } else if (selectedSlice === 'locale-activation') {
       await runLocaleActivationCases({ ...h, openPage, closePage, capture, check, beginCase, endCase, cdp, ledger: LEDGER, base, tr, startupOnly: arg('locale-case', 'all') === 'startup', geometryOnly: arg('locale-case', 'all') === 'geometry' });
+    } else if (selectedSlice === 'feature-flags') {
+      await runFeatureFlagsCases({ ...h, openPage, closePage, capture, check, beginCase, endCase, cdp, ledger: LEDGER, base, tr, seedLocale, chineseNavigator: CHINESE_NAVIGATOR, fixture: ffFixture, currentCase: () => current }, { org: ORG, expectProfile, buildLog, distIndexSha256: fingerprint.indexHtmlSha256 });
     } else if (selectedSlice === 'work-hours-reachability') {
       await runWorkHoursCases({ ...h, openPage, closePage, capture, check, beginCase, endCase, crossTabSwitch, cdp, ledger: LEDGER, base, tr, seedLocale, chineseNavigator: CHINESE_NAVIGATOR }, { org: ORG, geometryOnly: arg('work-hours-case', 'all') === 'geometry', entryOnly: arg('work-hours-case', 'all') === 'entry', longOnly: arg('work-hours-case', 'all') === 'long-cell', editorOnly: ['editor', 'editor-keyboard'].includes(arg('work-hours-case', 'all')), editorRed: arg('work-hours-case', 'all') === 'editor-red', editorKeyboard: arg('work-hours-case', 'all') === 'editor-keyboard' });
     } else {
