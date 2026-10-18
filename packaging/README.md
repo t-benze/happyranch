@@ -47,14 +47,26 @@ children under the new work root. Paths with spaces remain supported.
 `uv python install --no-bin` requests **CPython 3.12.10** into the admitted
 `UV_PYTHON_INSTALL_DIR`; no user/global executable link is installed. Discovery
 is managed-only with automatic downloads disabled and must return a safe,
-owned executable within that root. Its actual version and base prefix are
-checked before sync. The base executable is distinct from the project venv.
+owned executable within that root. Before sync, its actual executable must
+match that concrete selection and report CPython 3.12.10. Raw prefix and base
+prefix must agree in the private installation, with raw stdlib beneath that
+base; every raw root is admitted through the existing no-follow ancestry/FD,
+owner/mode/device and identity rechecks before physical executable comparisons.
+The admitted raw base prefix remains the expectation for the project venv.
 Frozen sync and both run commands share explicit absolute project/directory,
-selected-base and managed-only/no-download arguments, with
+patch-bearing `--python cpython@3.12.10` and managed-only/no-download arguments, with
 `UV_PROJECT_ENVIRONMENT` fixed to exported-source/.venv. Both runs disable
-dotenv loading. The four-field `python-toolchain.json` still records the actual
-venv executable/version/platform/machine, with prefix/base and executable
-agreement checked before PyInstaller. The freeze run uses the same venv
+dotenv loading. The patch-bearing request retains fixed venv upgrade semantics;
+the separately validated concrete executable remains the physical identity
+expectation. Before writing the four-field `python-toolchain.json`, the actual
+venv must pass executable/version/platform/machine checks, raw prefix must equal
+absolute exported-source/.venv, and raw base prefix must equal the admitted
+base. Raw venv/base/stdlib roots are admitted within source/install/base,
+respectively, before resolved executable equality is considered. Directory
+aliases are refused; permitted executable leaf links retain the separate later
+`executable_alias` checks. Earlier admission grants no later root/toolchain
+exemption or same-UID race guarantee. The receipt still records only the actual
+venv executable/version/platform/machine. The freeze run uses the same venv
 `python -I` command via `-m PyInstaller`, avoiding console-script shebang aliases. The vendored Darwin wheel and frozen
 lock are unchanged; sync/run keep project source configuration enabled.
 

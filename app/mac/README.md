@@ -31,11 +31,24 @@ toolchains; missing tools or evidence fail explicitly.
 
 The freezer requests **CPython 3.12.10** through uv into a newly reserved,
 uid-owned private install root under freeze-work; it never falls back to the
-ambient framework or creates global/user bin links. Sync and both no-dotenv
-runs bind that base to the absent absolute exported-source/.venv, retain the
-frozen local Darwin PyInstaller wheel, and disable subsequent downloads. The
-strict four-field toolchain receipt describes the actual venv interpreter,
-whose executable and base prefix must agree with the selected installation.
+ambient framework or creates global/user bin links. Before sync, the actual
+CPython 3.12.10 executable must match the separately validated concrete selection;
+raw prefix/base prefix must agree within the private installation and raw
+stdlib must be beneath that base. Sync and both no-dotenv runs share the
+patch-bearing `--python cpython@3.12.10` request to retain fixed venv upgrade
+semantics, with the concrete executable kept as the physical identity
+expectation. They bind the absent absolute exported-source/.venv, retain the
+frozen local Darwin PyInstaller wheel, and disable subsequent downloads.
+Before writing the strict four-field toolchain receipt, the actual venv must
+pass executable/version/platform/machine checks, raw prefix must equal that
+absolute .venv and raw base prefix must equal the admitted concrete base.
+Raw venv/base/stdlib directories pass the existing no-follow ancestry/FD,
+owner/mode/device and identity rechecks within source/install/base boundaries
+before resolved executable comparisons. Directory aliases refuse; permitted
+executable leaf links retain the separate later executable_alias checks.
+Earlier admission grants no later root/toolchain exemption or same-UID race
+guarantee. The receipt describes only the actual venv interpreter's
+executable/version/platform/machine.
 
 Before any uv command (including the early version read), both entries refuse
 inherited UV_* selection/source/mirror/catalog/mode controls. The only exceptions
