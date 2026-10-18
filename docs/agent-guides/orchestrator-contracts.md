@@ -4496,3 +4496,23 @@ or locals enter this evidence. An audit/storage save failure remains an explicit
 persistence limitation, not a durable count or terminal-success claim. No new timer,
 service, automatic successor or permission follows. Source/scoped verification is
 separate from deployment, running-code identity and operational acceptance.
+
+<!-- TASK11932 current-ancestor correction and owner support boundary -->
+Every selected source ancestor now revalidates its OWN saved operation and
+original mapping against current admission before object work and again in the
+writer. One bounded iterative traversal shares the native owner and mapping
+selection; historical containment never substitutes for current admission.
+P1 minted under M1 cannot authorize P2 under newer M2 while P1 is revoked; deeper
+stale ancestors also refuse. Original GET/replay keeps original identities and
+returns revoked metadata without recapture; an eligible initial source under U
+is independent of that revoked lineage.
+TASK11927's preflight ownership finding remains OPEN: the current request does
+not durably retain worker/process/private-storage obligations through refusal,
+cancellation or org close. A concrete private ownership support delta is returned
+to ROOT10693 before dependent persistence/lifecycle edits. No cleanup, restart,
+security or cancellation guarantee follows from this source correction or lint.
+SAME PR1083 remains incomplete OPEN DRAFT and unmerged; independent FULL review
+and same-final-head scoped SOURCE QA are still required. Python units RETIRED;
+integration INCLUDING callback SKIPPED24342; behavioral/security/cleanup proof
+UNEXECUTED/FOUNDER-WAIVED139429/430, never PASS. No live operation follows.
+<!-- /TASK11932 current-ancestor correction and owner support boundary -->

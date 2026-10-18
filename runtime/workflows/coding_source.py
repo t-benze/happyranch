@@ -140,6 +140,28 @@ class CodingSourceStore:
             _integer(row._value('revision_count'))
             _integer(row._value('orchestration_step_count'))
         self.org.workflow_authority._validate_admission_uncommitted(conn, capture)
+        native = issuer, chain, start, owner
+        # Historical containment does not establish current parent admission.
+        # Check each ancestor's OWN saved operation/mapping, in the same read
+        # boundary as the new command. No recursion or per-ancestor owner read.
+        budget, seen, mapping_selection = _Budget(), set(), {}
+        selected = self._selection_one(conn, principal, capture, command, state,
+                                       references, native, mapping_selection)
+        parent_id = command['parent_id']
+        while parent_id in state[2]:
+            budget.step()
+            if parent_id in seen or len(seen) >= 64:
+                raise CodingSourceError('coding_source_parent_unavailable')
+            seen.add(parent_id)
+            _, operation, _ = state[2][parent_id]
+            self._selection_one(conn, principal, capture, operation['command'], state,
+                                references, native, mapping_selection)
+            parent_id = operation['command']['parent_id']
+        return selected
+
+    def _selection_one(self, conn, principal, capture, command, state, references,
+                       native, mapping_selection):
+        issuer, chain, start, owner = native
         setups, mappings, histories = state
         parent = None
         if command['parent_id'] in histories:
@@ -165,8 +187,10 @@ class CodingSourceStore:
             raise CodingSourceError('coding_source_mapping_stale')
         entry = mappings.selected
         mapped = json.loads(entry.mapping_bytes)
-        roots, stores = self.mapping._roots(conn, principal, capture, json.loads(entry.command_bytes),
-                                           references)
+        if entry.mapping_id not in mapping_selection:
+            mapping_selection[entry.mapping_id] = self.mapping._roots(
+                conn, principal, capture, json.loads(entry.command_bytes), references)
+        roots, stores = mapping_selection[entry.mapping_id]
         if root not in roots or roots != json.loads(base64.b64decode(mapped['authority']['grant_bytes_base64'], validate=True))['setups']:
             raise CodingSourceError('coding_source_setup_revoked')
         work = command['work']
