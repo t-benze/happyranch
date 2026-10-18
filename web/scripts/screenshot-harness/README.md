@@ -32,7 +32,11 @@ you must prove. Escalate rightward only when the cheaper mode cannot render the
 state (real data → A). See the KB entry for the full
 per-mode gotchas (MEM-007/010/014/016).
 
-Modes A/B need a built app — run `npm run build` in `web/` first.
+Modes A/B need a built app — run `npm run build` in `web/` first. That build
+uses the **production** UI flag profile (THR-305), which hides unfinished
+surfaces such as Work Hours; to capture them, build with
+`npm run build:local` (development defaults plus your optional
+`config/features.local.json`). See `web/ARCHITECTURE.md` § Build-time UI flags.
 
 ## Quick start (the worked example)
 

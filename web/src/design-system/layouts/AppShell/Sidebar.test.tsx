@@ -9,7 +9,7 @@
 import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
-import { afterAll, beforeAll, describe, expect, test, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, test, vi } from 'vitest';
 import { transferableAbortController } from 'node:util';
 import { AppRoutes } from '@/routes';
 import type { NarrativeCounts } from '@/lib/api/types';
@@ -644,5 +644,35 @@ describe('THR-230: the sidebar owns its own vertical overflow', () => {
     expect(nav.contains(settings)).toBe(false);
     expect(nav.contains(account)).toBe(false);
     expect(account).toHaveAttribute('tabindex', '0');
+  });
+});
+
+describe('THR-305: work_hours_ui off removes the Work Hours navigation', () => {
+  afterEach(() => {
+    vi.doUnmock('@/config/features');
+    vi.resetModules();
+  });
+
+  test('the primary list keeps every other item and has no Work Hours link', async () => {
+    seedSidebarShell();
+    vi.resetModules();
+    vi.doMock('@/config/features', () => ({ features: Object.freeze({ work_hours_ui: false, kb_compose_ui: false }) }));
+    // Sequential imports: the mock registration settles before the graph loads.
+    const { features } = await import('@/config/features');
+    const { AppRoutes: GatedRoutes } = await import('@/routes');
+    const { renderWithProviders: renderGated } = await import('@/test/render');
+    expect(features.work_hours_ui).toBe(false);
+    renderGated(<GatedRoutes />, { route: `/orgs/${SLUG}/dashboard` });
+
+    const aside = within(await screen.findByRole('navigation', { name: 'Primary navigation' }));
+    const primaryItems = within(aside.getByRole('navigation', { name: 'Primary navigation items' }));
+    await waitFor(() => expect(primaryItems.getByRole('link', { name: 'Home' })).toBeInTheDocument());
+    const names = primaryItems.getAllByRole('link').map((link) => link.textContent?.trim());
+    expect(names).toEqual([
+      'Home', 'Threads', 'Tasks', 'Reviews', 'Jobs', 'Todos', 'Agents',
+      'Skills', 'Knowledge', 'Artifacts', 'Audit', 'Dreams', 'Usage', 'Health',
+    ]);
+    expect(document.querySelector('a[href*="/work-hours"]')).toBeNull();
+    expect(screen.queryByText('Work Hours')).toBeNull();
   });
 });

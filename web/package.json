@@ -7,6 +7,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "build:local": "tsc -b && node scripts/build-local.mjs",
     "preview": "vite preview",
     "lint": "eslint src",
     "typecheck": "tsc -b --noEmit",

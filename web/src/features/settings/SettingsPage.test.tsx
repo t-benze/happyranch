@@ -1,7 +1,7 @@
 import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse, delay } from 'msw';
-import { describe, expect, test, beforeEach } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { useLocation, useNavigationType } from 'react-router-dom';
 import { AppRoutes } from '@/routes';
 import { renderGuarded } from './sections/capacityTestMount';
@@ -1402,5 +1402,127 @@ describe('active SettingsPage — retired maximum absence', () => {
     expect(await screen.findByTestId('settings-content')).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Organization' })).toBeInTheDocument();
     expect(screen.queryByText(/max(?:imum)? orchestration steps|step budget/i)).not.toBeInTheDocument();
+  });
+});
+
+describe('THR-305: work_hours_ui off — Organization settings without Work Hours (C9)', () => {
+  type Row = { method: string; path: string; body?: Record<string, unknown> };
+  let rows: Row[];
+  let stored: typeof SETTINGS_PAYLOAD;
+  const onRequest = ({ request }: { request: Request }) => {
+    // Capture the row before awaiting its body; attach the body to that row.
+    const row: Row = { method: request.method, path: new URL(request.url).pathname };
+    rows.push(row);
+    if (request.method !== 'GET') void request.clone().json().then((body) => { row.body = body as Record<string, unknown>; }, () => undefined);
+  };
+
+  beforeEach(() => {
+    rows = [];
+    stored = structuredClone(SETTINGS_PAYLOAD);
+    stubBaseHandlers();
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/settings`, () => HttpResponse.json(stored)),
+      http.put(`/api/v1/orgs/${SLUG}/settings/org`, async ({ request }) => {
+        const patch = (await request.json()) as Record<string, unknown>;
+        stored = { ...stored, org: { ...stored.org, ...patch } as typeof stored.org };
+        return HttpResponse.json(stored);
+      }),
+    );
+    server.events.on('request:start', onRequest);
+  });
+
+  afterEach(() => {
+    server.events.removeListener('request:start', onRequest);
+    vi.doUnmock('@/config/features');
+    vi.resetModules();
+    vi.restoreAllMocks();
+  });
+
+  async function mountWorkHoursOff(): Promise<boolean> {
+    vi.resetModules();
+    vi.doMock('@/config/features', () => ({ features: Object.freeze({ work_hours_ui: false, kb_compose_ui: false }) }));
+    // Sequential imports: the mock registration settles before the graph loads.
+    const { features } = await import('@/config/features');
+    const { AppRoutes: GatedRoutes } = await import('@/routes');
+    const { renderGuarded: renderGated } = await import('./sections/capacityTestMount');
+    sessionStorage.setItem('happyranch.token', 'tok');
+    renderGated(<><GatedRoutes /><RouteEvidence /></>, { entries: [`/orgs/${SLUG}/settings/organization`] });
+    return features.work_hours_ui;
+  }
+
+  const settingsWrites = (from = 0) => rows.slice(from).filter((r) => r.method !== 'GET' && r.path.endsWith('/settings/org'));
+  const featureRequests = () => rows.filter((r) => r.path.includes('/work-hours') || (r.body !== undefined && 'working_hours' in r.body));
+
+  async function settledForm(): Promise<HTMLElement> {
+    const content = await screen.findByTestId('settings-content');
+    await waitFor(() => expect(within(content).getByText('Session timeout (s)')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Organization' })).toBeInTheDocument());
+    return content;
+  }
+
+  test('populated form renders without the operating block, dialog or feature requests', async () => {
+    const consoleError = vi.spyOn(console, 'error');
+    expect(await mountWorkHoursOff()).toBe(false);
+    const content = await settledForm();
+    expect(within(content).getByText('Included agents')).toBeInTheDocument();
+    expect(screen.queryByText(translate('en', 'settings.organization.operating.heading'))).toBeNull();
+    expect(screen.queryByTestId('operating-controls')).toBeNull();
+    expect(screen.queryByRole('switch', { name: translate('en', 'settings.organization.operating.workHours') })).toBeNull();
+    expect(screen.queryByRole('button', { name: translate('en', 'settings.organization.operating.editEligibility') })).toBeNull();
+    expect(document.querySelector('a[href*="/work-hours"]')).toBeNull();
+    expect(document.body.querySelector('[role="dialog"][data-state="open"]')).toBeNull();
+    // The shared roster read still populates the dream include picker.
+    await waitFor(() => expect(rows.some((r) => r.method === 'GET' && r.path === `/api/v1/orgs/${SLUG}/agents`)).toBe(true));
+    expect(screen.getByTestId('route-evidence').textContent).toBe(`POP:/orgs/${SLUG}/settings/organization`);
+    expect(settingsWrites()).toEqual([]);
+    expect(featureRequests()).toEqual([]);
+    expect(consoleError.mock.calls.filter((call) => /hook/i.test(String(call[0])))).toEqual([]);
+  });
+
+  test('general Save sends exactly one PUT without working_hours and preserves stored Work Hours', async () => {
+    expect(await mountWorkHoursOff()).toBe(false);
+    const content = await settledForm();
+    const user = userEvent.setup();
+    const timeoutInput = screen.getByPlaceholderText('use system default');
+    await user.clear(timeoutInput);
+    await user.type(timeoutInput, '90');
+    const saveButton = await within(content).findByText('Save changes');
+    const from = rows.length;
+    await user.click(saveButton);
+    // Settled success: the form re-synced from the response (clean, no error).
+    // The transient "Saved" banner is reset by the existing org re-sync effect
+    // whenever the response differs from the loaded data (same on base, WH on).
+    await waitFor(() => expect(within(content).queryByText('Save changes')).toBeNull());
+    expect(within(content).queryByText('Save failed', { exact: false })).toBeNull();
+    await waitFor(() => expect(settingsWrites(from)[0]?.body).toBeDefined());
+    const writes = settingsWrites(from);
+    expect(writes).toHaveLength(1);
+    expect(writes[0].method).toBe('PUT');
+    expect(Object.keys(writes[0].body ?? {}).sort()).toEqual(['dreaming', 'session_timeout_seconds', 'threads']);
+    expect(writes[0].body).toEqual(expect.objectContaining({ session_timeout_seconds: 90 }));
+    expect(stored.org.working_hours).toEqual(SETTINGS_PAYLOAD.org.working_hours);
+    expect(featureRequests()).toEqual([]);
+    expect(screen.getByPlaceholderText('use system default')).toHaveValue(90);
+  });
+
+  test('Discard issues no write', async () => {
+    expect(await mountWorkHoursOff()).toBe(false);
+    const content = await settledForm();
+    const user = userEvent.setup();
+    const timeoutInput = screen.getByPlaceholderText('use system default');
+    await user.type(timeoutInput, '60');
+    const from = rows.length;
+    await user.click(await within(content).findByText('Discard'));
+    await waitFor(() => expect(within(content).queryByText('Save changes')).toBeNull());
+    expect(screen.getByPlaceholderText('use system default')).toHaveValue(null);
+    expect(settingsWrites(from)).toEqual([]);
+  });
+
+  test('a failed settings read shows the existing error state, not a hidden success', async () => {
+    server.use(http.get(`/api/v1/orgs/${SLUG}/settings`, () => HttpResponse.json({ detail: 'boom' }, { status: 500 })));
+    expect(await mountWorkHoursOff()).toBe(false);
+    expect(await screen.findByText(translate('en', 'settings.page.loadError'), { exact: false })).toBeInTheDocument();
+    expect(screen.queryByTestId('operating-controls')).toBeNull();
+    expect(featureRequests()).toEqual([]);
   });
 });

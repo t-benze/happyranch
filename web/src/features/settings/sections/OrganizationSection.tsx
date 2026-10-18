@@ -47,6 +47,7 @@ import {
 import { RecipientsInput } from '@/design-system/patterns/RecipientsInput';
 import { useParams } from 'react-router-dom';
 import { useTranslation } from '@/hooks/i18n';
+import { features } from '@/config/features';
 
 interface FieldState {
   timeout: string;
@@ -397,72 +398,78 @@ export function OrganizationSection({ org }: Props): JSX.Element {
       </div>
 
       {/* ── Operating controls ── */}
-      <h4 className="mb-2 text-sm font-medium">{t('settings.organization.operating.heading')}</h4>
-      <p className="text-text-secondary mb-3 text-xs">
-        {render('settings.organization.operating.description', {
-          link: (
-            <a
-              href={`/orgs/${orgSlug}/work-hours`}
-              className="text-accent-text hover:underline"
-            >
-              {t('settings.organization.operating.workHoursLink')}
-            </a>
-          ),
-        })}
-      </p>
+      {/* THR-305: the whole Work Hours block is UI-gated; its hooks above stay
+          unconditional and the general Save never sends working_hours. */}
+      {features.work_hours_ui && (
+        <>
+          <h4 className="mb-2 text-sm font-medium">{t('settings.organization.operating.heading')}</h4>
+          <p className="text-text-secondary mb-3 text-xs">
+            {render('settings.organization.operating.description', {
+              link: (
+                <a
+                  href={`/orgs/${orgSlug}/work-hours`}
+                  className="text-accent-text hover:underline"
+                >
+                  {t('settings.organization.operating.workHoursLink')}
+                </a>
+              ),
+            })}
+          </p>
 
-      {whSaved && (
-        <SavedBanner message={t('settings.organization.workHoursSaved')} />
-      )}
-      {whError && (
-        <div
-          role="alert"
-          className="border-tier-red bg-feedback-danger/10 text-tier-red mb-4 rounded border p-3 text-sm"
-        >
-          {whError}
-        </div>
-      )}
-
-      <div className="border-border divide-border mb-4 divide-y rounded-md border" data-testid="operating-controls">
-        <EditableRow label={t('settings.organization.operating.workHours')} labelId="work-hours-switch-label" badge={t('settings.organization.badge.live')}>
-          <div className="flex items-center gap-2">
-            <BooleanToggle
-              ref={workHoursToggleRef}
-              aria-labelledby="work-hours-switch-label"
-              value={wh?.enabled ?? false}
-              onChange={(v) => {
-                if (v) {
-                  setEnabled(true);
-                } else {
-                  setConfirmDisable(true);
-                }
-              }}
-            />
-            <span className="text-text-muted text-xs" aria-hidden="true">
-              {wh?.enabled ? t('settings.organization.operating.on') : t('settings.organization.operating.off')}
-            </span>
-          </div>
-        </EditableRow>
-        <EditableRow label={t('settings.organization.operating.eligibility')}>
-          <div className="flex items-center gap-2">
-            <span className="text-text-muted text-xs">
-              {wh?.agents?.mode === 'whitelist'
-                ? t('settings.organization.operating.whitelist', { count: wh.agents.include.length })
-                : t('settings.organization.operating.allAgents')}
-              {wh?.agents?.exclude.length
-                ? t('settings.organization.operating.excluded', { count: wh.agents.exclude.length })
-                : ''}
-            </span>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setEditEligibility(true)}
+          {whSaved && (
+            <SavedBanner message={t('settings.organization.workHoursSaved')} />
+          )}
+          {whError && (
+            <div
+              role="alert"
+              className="border-tier-red bg-feedback-danger/10 text-tier-red mb-4 rounded border p-3 text-sm"
             >
-              {t('settings.organization.operating.editEligibility')}
-            </Button>
+              {whError}
+            </div>
+          )}
+
+          <div className="border-border divide-border mb-4 divide-y rounded-md border" data-testid="operating-controls">
+            <EditableRow label={t('settings.organization.operating.workHours')} labelId="work-hours-switch-label" badge={t('settings.organization.badge.live')}>
+              <div className="flex items-center gap-2">
+                <BooleanToggle
+                  ref={workHoursToggleRef}
+                  aria-labelledby="work-hours-switch-label"
+                  value={wh?.enabled ?? false}
+                  onChange={(v) => {
+                    if (v) {
+                      setEnabled(true);
+                    } else {
+                      setConfirmDisable(true);
+                    }
+                  }}
+                />
+                <span className="text-text-muted text-xs" aria-hidden="true">
+                  {wh?.enabled ? t('settings.organization.operating.on') : t('settings.organization.operating.off')}
+                </span>
+              </div>
+            </EditableRow>
+            <EditableRow label={t('settings.organization.operating.eligibility')}>
+              <div className="flex items-center gap-2">
+                <span className="text-text-muted text-xs">
+                  {wh?.agents?.mode === 'whitelist'
+                    ? t('settings.organization.operating.whitelist', { count: wh.agents.include.length })
+                    : t('settings.organization.operating.allAgents')}
+                  {wh?.agents?.exclude.length
+                    ? t('settings.organization.operating.excluded', { count: wh.agents.exclude.length })
+                    : ''}
+                </span>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setEditEligibility(true)}
+                >
+                  {t('settings.organization.operating.editEligibility')}
+                </Button>
+              </div>
+            </EditableRow>
           </div>
-        </EditableRow>
-      </div>
+        </>
+      )}
 
       {/* Sticky save bar */}
       {dirty && (
@@ -489,53 +496,57 @@ export function OrganizationSection({ org }: Props): JSX.Element {
         </div>
       )}
 
-      {/* Confirm-before-disable the global feature switch. */}
-      <Dialog
-        open={confirmDisable}
-        onOpenChange={(open) => {
-          if (!open) closeConfirmDisable();
-        }}
-      >
-        <DialogContent closeLabel={t('common.close')}
-          onCloseAutoFocus={(event) => {
-            event.preventDefault();
-            workHoursToggleRef.current?.focus();
-          }}
-        >
-          <DialogHeader>
-            <DialogTitle>{t('settings.organization.disableDialog.title')}</DialogTitle>
-            <DialogDescription>
-              {t('settings.organization.disableDialog.description')}
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <Button variant="ghost" onClick={closeConfirmDisable}>
-              {t('settings.organization.disableDialog.cancel')}
-            </Button>
-            <Button
-              variant="destructive"
-              onClick={() => {
-                closeConfirmDisable();
-                void setEnabled(false);
+      {features.work_hours_ui && (
+        <>
+          {/* Confirm-before-disable the global feature switch. */}
+          <Dialog
+            open={confirmDisable}
+            onOpenChange={(open) => {
+              if (!open) closeConfirmDisable();
+            }}
+          >
+            <DialogContent closeLabel={t('common.close')}
+              onCloseAutoFocus={(event) => {
+                event.preventDefault();
+                workHoursToggleRef.current?.focus();
               }}
             >
-              {t('settings.organization.disableDialog.confirm')}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+              <DialogHeader>
+                <DialogTitle>{t('settings.organization.disableDialog.title')}</DialogTitle>
+                <DialogDescription>
+                  {t('settings.organization.disableDialog.description')}
+                </DialogDescription>
+              </DialogHeader>
+              <DialogFooter>
+                <Button variant="ghost" onClick={closeConfirmDisable}>
+                  {t('settings.organization.disableDialog.cancel')}
+                </Button>
+                <Button
+                  variant="destructive"
+                  onClick={() => {
+                    closeConfirmDisable();
+                    void setEnabled(false);
+                  }}
+                >
+                  {t('settings.organization.disableDialog.confirm')}
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
 
-      {/* Eligibility editor — shared dialog from work-hours-config. */}
-      {editEligibility && wh && (
-        <EligibilityEditorDialog
-          open={editEligibility}
-          onOpenChange={setEditEligibility}
-          wh={wh}
-          allAgents={allAgentNames}
-          onSaved={() => {
-            setWhSaved(true);
-          }}
-        />
+          {/* Eligibility editor — shared dialog from work-hours-config. */}
+          {editEligibility && wh && (
+            <EligibilityEditorDialog
+              open={editEligibility}
+              onOpenChange={setEditEligibility}
+              wh={wh}
+              allAgents={allAgentNames}
+              onSaved={() => {
+                setWhSaved(true);
+              }}
+            />
+          )}
+        </>
       )}
 
     </section>
