@@ -221,6 +221,13 @@ single interactive interface for founders. Keyboard shortcuts: `N` new,
 to reopen them. The dev server (`cd web && npm run dev`)
 proxies to the daemon for hot-reload development.
 
+Unfinished screens sit behind build-time UI flags. Release builds
+(`scripts/build_web.sh`) hide them, for example Work Hours. The dev server and
+`cd web && npm run build:local` show them according to
+`web/config/features.development.json` plus an optional local
+`web/config/features.local.json`. Flags only change what the UI shows; daemon
+behavior and saved settings are unchanged. See `web/ARCHITECTURE.md`.
+
 (The previous Textual TUI under `src/tui/` was removed in favor of the
 web UI; `happyranch threads` with no subcommand now points you at `happyranch web`.)
 

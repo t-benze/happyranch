@@ -1,11 +1,221 @@
 /// <reference types="vitest" />
-import { defineConfig } from 'vite';
+import { defineConfig, loadEnv } from 'vite';
 import react from '@vitejs/plugin-react';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { packagingCustody } from './scripts/packaging-custody';
 import { packagingTailwind } from './scripts/packaging-tailwind';
+
+// ------------------------------------------------------------ build-time UI feature flags
+//
+// THR-305. The SPA reads named booleans from ONE consumer module
+// (`src/config/features.ts`), which imports `@happyranch/feature-flags`. This
+// config resolves that specifier with `resolve.alias` only — no `define`, no
+// injected env, no plugin and no config-time import — because the Mac custody
+// validator pins those (app/mac/scripts/web_evidence.py). Profile data is read
+// with fs, so it is not a config dependency.
+//
+// Selection is fixed per startup/build:
+//   * `vite build` in every form              -> production (checked-in file only)
+//   * `npm run build:local`                    -> local (marker + lifecycle, see
+//                                                 scripts/build-local.mjs)
+//   * `vite` serve (dev, Storybook dev)        -> local
+//   * serve under Vitest                       -> test
+//   * `vite preview`                           -> no resolution (serves dist)
+// Production never reads the local file or the KB compatibility input.
+
+export type FeatureProfile = 'production' | 'local' | 'test';
+export type FeatureSelection = FeatureProfile | 'preview';
+export type FeatureFlags = Record<string, boolean>;
+
+export const FEATURE_FLAGS_MODULE = '@happyranch/feature-flags';
+export const FEATURE_PROFILE_MARKER = Symbol.for('happyranch.featureProfile');
+const FEATURE_LOCAL_LIFECYCLE = 'build:local';
+const FEATURE_COMPAT_ENV = 'VITE_ENABLE_KB_COMPOSE';
+const FEATURE_COMPAT_FLAG = 'kb_compose_ui';
+const FEATURE_LOCAL_FILE = 'features.local.json';
+const FEATURE_REGISTRY_META = ['purpose', 'owner', 'removal_condition'] as const;
+
+function featureError(message: string): Error {
+  return new Error(`[features] ${message}`);
+}
+
+function describeMarker(value: unknown): string {
+  return typeof value === 'string' ? JSON.stringify(value) : typeof value;
+}
+
+/** Pick the flag profile for one Vite invocation; throws on any unsupported selector. */
+export function selectFeatureProfile({
+  command,
+  isPreview = false,
+  env = process.env,
+  marker = (globalThis as Record<symbol, unknown>)[FEATURE_PROFILE_MARKER],
+}: {
+  command: 'build' | 'serve';
+  isPreview?: boolean;
+  env?: Record<string, string | undefined>;
+  marker?: unknown;
+}): FeatureSelection {
+  const lifecycle = env.npm_lifecycle_event;
+  if (marker !== undefined) {
+    if (marker !== 'local' || command !== 'build' || lifecycle !== FEATURE_LOCAL_LIFECYCLE) {
+      throw featureError(
+        `unsupported selector: marker=${describeMarker(marker)} command=${command} lifecycle=${lifecycle ?? '(unset)'}; only \`npm run build:local\` may select the local profile for a build`,
+      );
+    }
+    return 'local';
+  }
+  if (lifecycle === FEATURE_LOCAL_LIFECYCLE) {
+    throw featureError('unsupported selector: lifecycle build:local without the build-local marker; run `npm run build:local`');
+  }
+  if (isPreview) return 'preview';
+  if (command === 'build') return 'production';
+  return env.VITEST ? 'test' : 'local';
+}
+
+function readFeatureJson(file: string, label: string): unknown {
+  let raw: string;
+  try {
+    raw = fs.readFileSync(file, 'utf-8');
+  } catch {
+    throw featureError(`${label} ${file} is missing or unreadable`);
+  }
+  try {
+    return JSON.parse(raw) as unknown;
+  } catch {
+    throw featureError(`${label} ${file} is not valid JSON`);
+  }
+}
+
+function featureObject(value: unknown, file: string, label: string): Record<string, unknown> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw featureError(`${label} ${file} root must be an object`);
+  }
+  return value as Record<string, unknown>;
+}
+
+function featureValues(
+  value: unknown,
+  file: string,
+  label: string,
+  names: string[],
+  complete: boolean,
+): FeatureFlags {
+  const entries = featureObject(value, file, label);
+  const out: FeatureFlags = {};
+  for (const [key, flag] of Object.entries(entries)) {
+    if (!names.includes(key)) throw featureError(`${label} ${file} has unknown flag "${key}"`);
+    if (typeof flag !== 'boolean') throw featureError(`${label} ${file} flag "${key}" must be true or false (got ${flag === null ? 'null' : typeof flag})`);
+    out[key] = flag;
+  }
+  if (complete) {
+    for (const name of names) {
+      if (!(name in out)) throw featureError(`${label} ${file} is missing flag "${name}"`);
+    }
+  }
+  return out;
+}
+
+/**
+ * Resolve the selected profile's flags, write the local/test snapshot and
+ * return the alias target. The KB compatibility input comes from Vite's
+ * `loadEnv(mode, webRoot)` (process env over `.env*` files).
+ */
+export function resolveFeatureFlags({
+  profile,
+  webRoot,
+  mode,
+}: {
+  profile: FeatureProfile;
+  webRoot: string;
+  mode: string;
+}): { flags: FeatureFlags; sources: Record<string, string>; ignored: string[]; aliasTarget: string; logLine: string } {
+  const configDir = path.join(webRoot, 'config');
+  const registryFile = path.join(configDir, 'features.registry.json');
+  const registry = featureObject(readFeatureJson(registryFile, 'registry'), registryFile, 'registry');
+  const names = Object.keys(registry);
+  if (names.length === 0) throw featureError(`registry ${registryFile} declares no flags`);
+  for (const name of names) {
+    const entry = registry[name];
+    if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
+      throw featureError(`registry ${registryFile} entry "${name}" must be an object`);
+    }
+    for (const field of FEATURE_REGISTRY_META) {
+      const text = (entry as Record<string, unknown>)[field];
+      if (typeof text !== 'string' || text.trim() === '') {
+        throw featureError(`registry ${registryFile} entry "${name}" needs a nonempty ${field}`);
+      }
+    }
+  }
+
+  const localFile = path.join(configDir, FEATURE_LOCAL_FILE);
+  const ignored: string[] = [];
+  const sourceFiles: string[] = [];
+  const sources: Record<string, string> = {};
+  let flags: FeatureFlags;
+  let aliasTarget: string;
+
+  if (profile === 'production') {
+    const file = path.join(configDir, 'features.production.json');
+    flags = featureValues(readFeatureJson(file, 'production profile'), file, 'production profile', names, true);
+    for (const name of names) sources[name] = 'production';
+    sourceFiles.push('production');
+    // Presence only: production never reads either input's value.
+    if (fs.existsSync(localFile)) ignored.push(FEATURE_LOCAL_FILE);
+    if (loadEnv(mode, webRoot, FEATURE_COMPAT_ENV)[FEATURE_COMPAT_ENV] !== undefined) ignored.push(FEATURE_COMPAT_ENV);
+    aliasTarget = file;
+  } else {
+    const file = path.join(configDir, 'features.development.json');
+    flags = featureValues(readFeatureJson(file, 'development profile'), file, 'development profile', names, true);
+    for (const name of names) sources[name] = 'development';
+    sourceFiles.push('development');
+    if (fs.existsSync(localFile)) {
+      if (profile === 'local') {
+        const local = featureValues(readFeatureJson(localFile, 'local override'), localFile, 'local override', names, false);
+        for (const [name, value] of Object.entries(local)) {
+          flags[name] = value;
+          sources[name] = FEATURE_LOCAL_FILE;
+        }
+        sourceFiles.push(FEATURE_LOCAL_FILE);
+      } else {
+        ignored.push(FEATURE_LOCAL_FILE);
+      }
+    }
+    // Explicit KB compatibility input (local/test only), applied last:
+    // literal 'true'/'false'; unset or empty means no opinion.
+    const compat = loadEnv(mode, webRoot, FEATURE_COMPAT_ENV)[FEATURE_COMPAT_ENV];
+    if (compat !== undefined && compat !== '') {
+      if (compat !== 'true' && compat !== 'false') {
+        throw featureError(`${FEATURE_COMPAT_ENV} must be the literal true or false (or empty/unset)`);
+      }
+      flags[FEATURE_COMPAT_FLAG] = compat === 'true';
+      sources[FEATURE_COMPAT_FLAG] = FEATURE_COMPAT_ENV;
+      sourceFiles.push(FEATURE_COMPAT_ENV);
+    }
+    const ordered = Object.fromEntries(names.map((name) => [name, flags[name]]));
+    const content = `${JSON.stringify(ordered, null, 2)}\n`;
+    const digest = createHash('sha256').update(content).digest('hex').slice(0, 8);
+    const snapshotDir = path.join(webRoot, '.feature-flags');
+    aliasTarget = path.join(snapshotDir, `resolved-${profile}-${digest}.json`);
+    if (fs.existsSync(aliasTarget)) {
+      if (fs.readFileSync(aliasTarget, 'utf-8') !== content) {
+        throw featureError(`snapshot ${aliasTarget} does not match its content address; delete it and restart`);
+      }
+    } else {
+      // Write-once, content-addressed: concurrent startups converge on one file.
+      fs.mkdirSync(snapshotDir, { recursive: true });
+      const temp = `${aliasTarget}.${process.pid}.${Date.now()}.tmp`;
+      fs.writeFileSync(temp, content, { flag: 'wx' });
+      fs.renameSync(temp, aliasTarget);
+    }
+  }
+
+  const values = names.map((name) => `${name}=${flags[name]}(${sources[name]})`).join(' ');
+  const logLine = `[features] profile=${profile} sources=${sourceFiles.join(',')} ${values}${ignored.length ? ` ignored: ${ignored.join(',')}` : ''}`;
+  return { flags, sources, ignored, aliasTarget, logLine };
+}
 
 function resolveDaemonPort(): number {
   const home = process.env.HAPPYRANCH_DAEMON_HOME || path.join(os.homedir(), '.happyranch');
@@ -159,13 +369,22 @@ function i18nEvidenceInstrumentation() {
   };
 }
 
-export default defineConfig(async () => {
+export default defineConfig(async ({ command, mode, isPreview }) => {
+  const selection = selectFeatureProfile({ command, isPreview });
+  let featureAlias: Record<string, string> = {};
+  if (selection === 'preview') {
+    console.info('[features] preview: serves existing dist');
+  } else {
+    const resolved = resolveFeatureFlags({ profile: selection, webRoot: __dirname, mode });
+    console.info(resolved.logLine);
+    featureAlias = { [FEATURE_FLAGS_MODULE]: resolved.aliasTarget };
+  }
   const custody = packagingCustody();
   return {
     plugins: [i18nEvidenceInstrumentation(), react(), custody ? packagingTailwind(custody) : (await import('@tailwindcss/vite')).default(), ...(custody?.plugins() ?? [])],
     ...(custody ? { css: { postcss: { plugins: [] }, devSourcemap: false } } : {}),
     resolve: {
-      alias: { '@': path.resolve(__dirname, 'src') },
+      alias: { ...featureAlias, '@': path.resolve(__dirname, 'src') },
     },
     server: {
       port: 5173,

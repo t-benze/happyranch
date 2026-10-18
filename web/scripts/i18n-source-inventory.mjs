@@ -166,7 +166,9 @@ export function inventorySource(webRoot = process.cwd()) {
   const entry = /\bsrc\s*=\s*["']([^"']+)["']/.exec(entries[0][1])?.[1];
   if (entry !== '/src/main.tsx') throw new Error(`i18n inventory: unsupported index.html module entry ${entry}; review entry/root before release`);
   const configFile = ts.readConfigFile(resolve(root, 'tsconfig.json'), ts.sys.readFile);
-  if (configFile.error || JSON.stringify(configFile.config?.compilerOptions?.paths) !== JSON.stringify({ '@/*': ['src/*'] }) || configFile.config.compilerOptions.baseUrl !== '.') throw new Error('i18n inventory: unsupported tsconfig.json alias/root; expected @/* -> src/*');
+  // THR-305: the build-time feature-flag specifier maps to a JSON profile (no
+  // owned copy); the inventory treats it as an external module.
+  if (configFile.error || JSON.stringify(configFile.config?.compilerOptions?.paths) !== JSON.stringify({ '@/*': ['src/*'], '@happyranch/feature-flags': ['config/features.production.json'] }) || configFile.config.compilerOptions.baseUrl !== '.') throw new Error('i18n inventory: unsupported tsconfig.json alias/root; expected @/* -> src/* and @happyranch/feature-flags -> config/features.production.json');
   const vite = readInput(root, 'vite.config.ts');
   // Parse, never execute config (which has a daemon/proxy reader).
   const viteAST = parse('vite.config.ts', vite), aliases = [], customInputs = [];
@@ -174,7 +176,7 @@ export function inventorySource(webRoot = process.cwd()) {
     if (ts.isPropertyAssignment(n) && n.name.getText(viteAST) === 'alias') aliases.push(n.initializer.getText(viteAST));
     if (ts.isPropertyAssignment(n) && ['input', 'root'].includes(n.name.getText(viteAST))) customInputs.push(n.name.getText(viteAST));
   });
-  if (aliases.length !== 1 || !/^\{\s*['"]@['"]\s*:\s*path\.resolve\(__dirname,\s*['"]src['"]\)\s*,?\s*\}$/.test(aliases[0]) || customInputs.length) throw new Error('i18n inventory: unsupported Vite alias/root/input; align static Vite and tsconfig mapping before release');
+  if (aliases.length !== 1 || !/^\{\s*\.\.\.featureAlias,\s*['"]@['"]\s*:\s*path\.resolve\(__dirname,\s*['"]src['"]\)\s*,?\s*\}$/.test(aliases[0]) || customInputs.length) throw new Error('i18n inventory: unsupported Vite alias/root/input; align static Vite and tsconfig mapping before release');
   const modules = new Map(), resolving = new Set(), mounted = new Set(), routes = [], dialogs = [], mounts = [];
   const portable = p => relative(root, p).split('\\').join('/');
   function localPath(from, specifier) {

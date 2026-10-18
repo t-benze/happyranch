@@ -53,7 +53,9 @@ does not establish complete emitted or native package attribution.
 Storybook supersedes the former committed JSON registry and in-app
 `/__design__` route. There is no generated catalogue, registry generator,
 route flag, daemon endpoint, MCP transport, or on-disk agent contract.
-`npm run dev` and `npm run build` build only the product SPA.
+`npm run dev` and `npm run build` build only the product SPA. Storybook dev
+uses the local UI flag profile and `build-storybook` the production profile
+(see `ARCHITECTURE.md` § Build-time UI flags).
 
 ```bash
 npm run storybook

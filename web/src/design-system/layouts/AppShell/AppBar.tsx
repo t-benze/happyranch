@@ -4,6 +4,7 @@ import { useI18n, useTranslation } from '@/hooks/i18n';
 import { useTheme } from '@/hooks/theme';
 import { translate, type Locale, type MessageKey } from '@/lib/i18n';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/design-system/primitives/Select';
+import { features } from '@/config/features';
 
 /**
  * AppBar — persistent top app bar (THR-030 BUG-04/05/06).
@@ -27,7 +28,9 @@ const SECTION_TITLES: Record<string, MessageKey> = {
   artifacts: 'shell.title.artifacts',
   usage: 'shell.title.usage',
   dreams: 'shell.title.dreams',
-  'work-hours': 'shell.title.workHours',
+  // THR-305: no Work Hours title while the UI is off; the not-found page then
+  // keeps the ordinary fallback title.
+  ...(features.work_hours_ui ? { 'work-hours': 'shell.title.workHours' as MessageKey } : {}),
   audit: 'shell.title.audit',
   settings: 'shell.title.settings',
   jobs: 'shell.title.jobs',
