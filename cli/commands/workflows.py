@@ -532,16 +532,64 @@ def cmd_workflow_coding_capability_set(args: argparse.Namespace) -> None:
         print(f"{receipt['authorization_id']} revision={receipt['revision']} "
               f"state={receipt['current']['state']} replayed={str(receipt['replayed']).lower()}")
 
+
+def cmd_workflow_coding_release_import(args: argparse.Namespace) -> None:
+    import hashlib
+    from runtime.workflows._coding_release_history import COMMAND_LIMIT, parse_import_command
+    from runtime.workflows.coding_release_import import ImportReceipt
+    raw = None
+    command = None
+    try:
+        if args.coding_command == 'release-import':
+            absolute = require_absolute_payload_path(args.from_file, kind='coding-release-import')
+            with Path(absolute).open('rb') as source:
+                raw = source.read(COMMAND_LIMIT + 1)
+            command = parse_import_command(raw)
+        with _client() as client:
+            slug = _resolve_org(args.org, _available_orgs(client))
+            path = f'/api/v1/orgs/{slug}/workflows/release-templates/coding/1/import'
+            if raw is None:
+                response = client.get(path)
+            else:
+                # Human-only transport, complete original bytes and stable key.
+                # Transport loss preserves the file; never issue another POST.
+                response = client.post(path, content=raw, headers={'Content-Type': 'application/json'})
+        if response.status_code not in ((200,) if raw is None else (200, 201)):
+            _print_error(response)
+        receipt = ImportReceipt.model_validate(response.json()).model_dump()
+        if command is not None and (receipt['operation_key'] != command['operation_key']
+                or receipt['request_digest'] != hashlib.sha256(raw).hexdigest()
+                or receipt['replayed'] != (response.status_code == 200)):
+            raise ValueError('coding_release_import_receipt_mismatch')
+        if command is None and receipt['replayed']:
+            raise ValueError('coding_release_import_receipt_mismatch')
+    except (OSError, ValueError, httpx.HTTPError):
+        print('error: coding release import command, transport or receipt unavailable; preserve original file/key',
+              file=sys.stderr)
+        raise SystemExit(1) from None
+    if args.json:
+        print(json.dumps(receipt, sort_keys=True))
+    else:
+        print(f"{receipt['version_id']} current={receipt['current']['state']} "
+              f"replayed={str(receipt['replayed']).lower()} coding-enabled=false")
+
 def register(sub: argparse._SubParsersAction) -> None:
     workflows = sub.add_parser("workflows", help="Publish templates and activate bounded workflow drafts")
     workflow_sub = workflows.add_subparsers(dest="workflows_command", required=True)
-    coding = workflow_sub.add_parser('coding', help='Founder coding setup; no coding run allocation')
+    coding = workflow_sub.add_parser('coding', help='Founder coding setup/import; no coding run allocation')
     coding_sub = coding.add_subparsers(dest='coding_command', required=True)
     capability_set = coding_sub.add_parser('capability-set', help='Issue or withdraw one reusable coding setup')
     capability_set.add_argument('--org', required=True)
     capability_set.add_argument('--from-file', required=True)
     capability_set.add_argument('--json', action='store_true')
     capability_set.set_defaults(func=cmd_workflow_coding_capability_set)
+    for form in ('release-import', 'release-import-show'):
+        command = coding_sub.add_parser(form, help='Explicit fixed coding v1 import or saved receipt')
+        command.add_argument('--org', required=True)
+        command.add_argument('--json', action='store_true')
+        if form == 'release-import':
+            command.add_argument('--from-file', required=True)
+        command.set_defaults(func=cmd_workflow_coding_release_import)
     release = workflow_sub.add_parser("release-template", help="Read the disabled release catalog")
     release.add_argument("kind", choices=["coding"])
     release.add_argument("--version", required=True, type=int, choices=[1])

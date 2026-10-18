@@ -278,9 +278,12 @@ def _validate_coding_data(conn: sqlite3.Connection, *, layout: str,
     """
     tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_schema WHERE type='table'")}
     storage = None
+    imported = None
     if layout == 'J' and expected_org_slug is not None:
         from runtime.workflows.coding_authority_history import read_setup_storage
         storage = read_setup_storage(conn, expected_org_slug=expected_org_slug)
+        from runtime.workflows._coding_release_history import read_release_import
+        imported = read_release_import(conn, expected_org_slug=expected_org_slug)
     for table in CODING_TABLES:
         if table not in tables:
             if layout == 'J':
@@ -300,7 +303,10 @@ def _validate_coding_data(conn: sqlite3.Connection, *, layout: str,
                       and column not in ('submission_bytes', 'candidate_bytes')]
         selected_columns = scalar + structured
         native_setup = table in ('workflow_authorization_revisions', 'workflow_active_authorizations')
-        if native_setup:
+        native_import = table in ('workflow_template_identities', 'workflow_template_drafts',
+            'workflow_template_versions', 'workflow_template_identity_versions',
+            'workflow_template_publish_operations', 'workflow_admission_records')
+        if native_setup or native_import:
             selected_columns = columns
         if not selected_columns:
             continue
@@ -311,6 +317,8 @@ def _validate_coding_data(conn: sqlite3.Connection, *, layout: str,
         query = f'SELECT rowid, {selected} FROM "{quoted}"' + (' WHERE rowid > ? ORDER BY rowid' if file_key else '')
         for rowid, *row in conn.execute(query, (watermark,) if file_key else ()):
             data = dict(zip(selected_columns, row, strict=True))
+            if imported is not None and native_import and imported.matches(table, data):
+                continue  # Complete independently derived typed row, never an ID exemption.
             if native_setup and storage is not None:
                 # A supported family dispatch is an exact whole-row equality,
                 # never an exemption based solely on namespace, ID or digest.

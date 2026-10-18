@@ -5,6 +5,27 @@ import Foundation
 @Suite("SurfaceAllowList deny gate")
 struct SurfaceAllowListTests {
 
+    @Test("Fixed coding import and saved receipt deny both path candidates")
+    func codingImportDenial() {
+        let policy = SurfaceAllowList.default
+        let family = "/workflows/release-templates/coding/1/import"
+        for method in ["POST", "GET"] {
+            for prefix in ["", "/api/v1", "/orgs/alpha", "/api/v1/orgs/alpha"] {
+                for suffix in ["", "/", "?x=1", "/?x=1"] {
+                    let target = prefix + family + suffix
+                    #expect(!policy.isAllowed(method: method, path: target, rawPath: "/tasks"))
+                    #expect(!policy.isAllowed(method: method, path: "/tasks", rawPath: target))
+                }
+            }
+            let encoded = "/%61pi/v1/orgs/alpha/workflows/release-templates/%63oding/1/%69mport"
+            #expect(!policy.isAllowed(method: method, path: encoded, rawPath: "/tasks"))
+            #expect(!policy.isAllowed(method: method, path: "/tasks", rawPath: encoded))
+        }
+        #expect(policy.isAllowed(method: "GET", path: "/workflows/release-templates/coding/1",
+                                 rawPath: "/api/v1/orgs/alpha/workflows/release-templates/coding/1"))
+        #expect(policy.isAllowed(method: "POST", path: "/tasks", rawPath: "/tasks?next=" + family))
+    }
+
     @Test("Founder setup is denied for raw and normalized candidates independently")
     func codingSetupDenial() {
         let policy = SurfaceAllowList.default
@@ -500,6 +521,8 @@ struct SurfaceAllowListTests {
     /// EXCLUDED_PATHS.  Tested with concrete values for template placeholders.
     private static let excludedRoutes: [(method: String, path: String)] = [
         ("POST", "/workflows/revisions/revision-1/submissions"),
+        ("POST", "/workflows/release-templates/coding/1/import"),
+        ("GET", "/workflows/release-templates/coding/1/import"),
         ("POST", "/workflows/coding/capabilities"),
         ("GET", "/workflows/coding/capabilities/" + String(repeating: "a", count: 64)),
         // Task agent callbacks

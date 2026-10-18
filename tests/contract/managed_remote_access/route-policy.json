@@ -166,6 +166,14 @@
       ]
     },
     {
+      "id": "coding_release_import_cli_only",
+      "description": "Explicit fixed coding release import and selected saved receipt are Founder CLI-only, never remote. No allow-list, credential or normalization mechanism change.",
+      "examples": [
+        "POST /api/v1/orgs/{slug}/workflows/release-templates/coding/1/import",
+        "GET /api/v1/orgs/{slug}/workflows/release-templates/coding/1/import"
+      ]
+    },
+    {
       "id": "coding_setup_cli_only",
       "description": "Founder-only reusable coding setup mutation and selected metadata are CLI-only, never remote. No credential/normalization policy change.",
       "examples": [

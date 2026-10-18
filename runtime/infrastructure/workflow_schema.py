@@ -752,6 +752,19 @@ def _validate_source_data(conn: sqlite3.Connection) -> None:
         for row in _records(conn, f'SELECT * FROM {table}'):
             value = _stored_json(row[column], row[digest])
             if table.startswith('workflow_template_'):
+                if row['namespace'] == 'release/happyranch':
+                    from runtime.workflows._coding_release_history import read_release_import
+                    owned = not conn.in_transaction
+                    if owned:
+                        conn.execute('BEGIN')
+                    try:
+                        imported = read_release_import(conn, expected_org_slug=None)
+                    finally:
+                        if owned:
+                            conn.rollback()
+                    if imported is None or not imported.matches(table, row):
+                        raise ValueError('workflow_source_data_corrupt')
+                    continue
                 from runtime.workflows.templates import _validate_definition_pins
                 if _validate_definition_pins(value, compiler_pin=row['compiler_pin'],
                         validator_pin=row['validator_pin'], source_pin=row['source_pin']) != row[column]:

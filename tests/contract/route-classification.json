@@ -228,6 +228,8 @@
     "POST /api/v1/orgs/{slug}/team-moves": "Founder-controlled team-move CLI/operator service; no browser flow. Existing shared bearer/human boundary; apply/recover disabled until F enablement.",
     "GET /api/v1/orgs/{slug}/team-moves/by-key/{operation_key}": "Founder-controlled team-move CLI/operator service; no browser flow. Existing shared bearer/human boundary; apply/recover disabled until F enablement.",
     "GET /api/v1/orgs/{slug}/team-moves/{operation_id}": "Founder-controlled team-move CLI/operator service; no browser flow. Existing shared bearer/human boundary; apply/recover disabled until F enablement.",
-    "POST /api/v1/orgs/{slug}/team-moves/{operation_id}/recover": "Founder-controlled team-move CLI/operator service; no browser flow. Existing shared bearer/human boundary; apply/recover disabled until F enablement."
+    "POST /api/v1/orgs/{slug}/team-moves/{operation_id}/recover": "Founder-controlled team-move CLI/operator service; no browser flow. Existing shared bearer/human boundary; apply/recover disabled until F enablement.",
+    "POST /api/v1/orgs/{slug}/workflows/release-templates/coding/1/import": "Founder-only CLI fixed release import/receipt; no browser or remote grant",
+    "GET /api/v1/orgs/{slug}/workflows/release-templates/coding/1/import": "Founder-only CLI fixed release import/receipt; no browser or remote grant"
   }
 }

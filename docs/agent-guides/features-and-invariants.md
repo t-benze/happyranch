@@ -1,5 +1,83 @@
 # Features And Invariants
 
+## K2b fixed coding release import checkpoint — ROOT10693 / Founder139562/559/329/606
+
+Manager step68 extends SAME incomplete draft PR1083. This source checkpoint adds
+explicit fixed release import and its own historical/current/public/cold readers;
+setup-only descriptions below retain their original checkpoint meaning. K2b
+remains DRAFT/unmerged until mapping/adoption/current K1 and source attenuation
+with actual nonallocating task/SID/invocation/Pause/ancestor capture producers and
+all their own readers are complete. First coding-run writer is K3, not this unit.
+
+POST `/api/v1/orgs/{slug}/workflows/release-templates/coding/1/import` uses the
+existing Founder human predicate and current native authority admission. It takes
+only canonical UTF8 `workflow-coding-release-import-command@1` with exactly
+`format,operation_key,expected_current_version`; the selector is INTEGER 0..1 (only0 can create the fixed version1) and
+the stable key is 1..128 token characters. The full command is at most1024 bytes.
+No query/body actor, task, SID, namespace, definition, gate or pin selector is
+accepted. The server selects the exact634-byte packaged coding.v1 resource,
+SHA256 `6ee02be98738d3c95fe584b165abe07d0dbef66e510133c117ee0d62c953cad8`,
+namespace `release/happyranch`, template `coding`, version1 and pins
+`workflow-coding-compiler@1`, `workflow-coding-validator@1`, `release-input@1`.
+Human import creates no task/SID/result and does not require an invented machine
+grant. Manager import remains unavailable until genuine source attenuation and
+nonallocating admission producers ship on SAME K2b; identity/setup alone is not
+machine authority. Existing org/team publication grammar remains unchanged.
+
+CLI `happyranch workflows coding release-import --org ORG --from-file ABS --json`
+sends the complete original file once with existing human transport; keep its
+original key/file after transport loss. `release-import-show --org ORG --json`
+uses GET on the SAME path. Both return a closed
+`workflow-coding-release-import-receipt@1` with exact identity/version/admission
+IDs, operation_key/request_digest/replayed, current `{state,reason}`, and the
+unchanged disabled release projection. POST is201 for initial import,200 for
+exact replay; GET is200 and never writes. Current state is admitted/unavailable,
+not coding readiness. Entitlement precedes private decode; absent import is404,
+invalid command/query422, stale admission/duplicate import/conflict409, corrupt
+history/resource500, missing resource503. Both import methods are CLI-only,
+browser-excluded and native remote-denied for raw and normalized paths
+independently, including prefixes, one decode, literal query split and one final
+slash. The original catalog GET remains write-free and enabled:false.
+
+Resource I/O/reference construction/discovery occur outside writer locks; after
+waits the real Founder and current native capture are revalidated. One native
+admission transaction inserts existing draft/version/identity/version-link/
+publish-operation/admission rows and validates complete cold closure before
+COMMIT. `author_principal`/`published_by` retain equal typed canonical import
+provenance `{format:workflow-coding-release-import-provenance@1,org_slug,publisher,
+command_bytes_base64,command_digest,admission:{record,capture},created_at}`;
+publisher is the actual Founder provenance, never a synthetic task principal.
+The original command and native capture bind every row, exact resource hash/pins,
+all five native admission columns and complete original publication/profile
+journal. Ordinary document provenance is unchanged. Exact replay precedes fresh
+CAS, returns original IDs, changes no authority pointer, and separately reports
+current policy loss. A different key cannot create version2 or another import;
+changed bytes under the same key conflict. Missing package I/O can hold a fresh
+import while exact saved replay remains readable. Any partial/foreign/malformed/
+extra/orphan/incorrectly typed relation refuses; failures roll back all new rows.
+
+Central J validation, including validate_data=False, source-data validation,
+startup/reopen, recovery pre-legacy discrimination and drain/downgrade all consume
+complete immutable import closure; no ID exemption or compiler-pin-only admission
+exists. Saved history is independent of today's permission. Ordinary template
+listing includes the shared org-local imported release and exposes only actual
+publisher provenance, never private capture bytes. Exact release store get and
+low-level version readers validate the complete import and J before returning;
+the public selected receipt is the dedicated GET/CLI above. Import cannot bind
+an activation or document binding: unsupported code execution continues to refuse.
+F–J SQL/independent references, create-org I, generic Database/runtime-audit,
+K0 disabled readiness and unavailable K1 current resolution remain unchanged.
+No startup/catalog import, mapping/P/run/attempt/event/receipt writer or live
+operation is added. No schema, authentication, credential, shared transport,
+permission, callback, hook or dependency mechanism changes follow.
+
+Python units RETIRED; integration INCLUDING callback SKIPPED24342. SQL/parser/
+behavior/security/negative/mutation/repetition/executable-QA proof is UNEXECUTED /
+FOUNDER-WAIVED139429/430. Native assertions are retained source, not executed
+coverage. Lint/static checks and inert OpenAPI inspection do not prove behavior.
+Fresh FULL independent final-head review then same-head scoped SOURCE QA return
+to SAME sole ROOT10693. No maker approval/QA/merge or complete K2b acceptance.
+
 ## K2b first setup producer checkpoint — ROOT10693 / Founder139562
 
 Manager step65 and THR139seq595/596 select **one K2b draft PR**, continuing
