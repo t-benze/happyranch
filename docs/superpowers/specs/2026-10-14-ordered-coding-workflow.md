@@ -72,6 +72,14 @@ validated records, indexed only for lookup, then compared in full with exact
 native types. Original capture inventory and required setup histories are cached
 only within this coherent call. No mapping row or supported audit is exempted
 by ID or watermark. Unknown/orphan/malformed/duplicate evidence still refuses.
+The SAME enclosing traversal allowance also covers metadata discrimination:
+every structured node/member, duplicate pair and classified member string,
+and malformed lexical prefix/member/whitespace/string/escape visits consume it.
+Nested lists/objects and fallback after partial pairs-hook work never reset or
+replace that allowance. Exhaustion refuses before a normal return, positive
+admission or watermark advance; even small wide ordinary metadata may exhaust
+it. JSON-decoder/encoding internals, total SQL/decoded-object/process memory
+and wall-clock work are not bounded by this traversal or raw-byte accounting.
 Ordinary nonmapping scans retain their historical discriminator/watermark
 contract. This R1 source correction is not behavioral/security verification.
 Mapping/setup/import have no run/host tail; compatible J reader is always needed.

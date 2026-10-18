@@ -10,6 +10,10 @@ import json
 import os
 import sqlite3
 import threading
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from runtime.workflows.coding_authority_history import _Budget
 
 # Accepted TASK10693 step34: 3987 UTF8 bytes, SHA256
 # 2c4b556671ef76582cdcbaed1e68d8575d9648ce29773f52c3d947ceaeeb0d70.
@@ -141,17 +145,26 @@ def _coding_scalar(key: str, value: object, *, incomplete: bool = False) -> bool
             or (incomplete and any(item.startswith(value) for item in (*prefixes, *values))))
 
 
-def _coding_value(value: object) -> bool:
+def _coding_value(value: object, budget: _Budget | None) -> bool:
     """Recognize reserved typed metadata, not mentions in document prose."""
+    if budget is not None:
+        budget.step()
     if isinstance(value, dict):
-        return any(_coding_scalar(key, item) or _coding_value(item)
-                   for key, item in value.items())
+        for key, item in value.items():
+            if budget is not None:
+                budget.step()
+                for text in (key, item):
+                    if isinstance(text, str):
+                        for _ in text:
+                            budget.step()
+            if _coding_scalar(key, item) or _coding_value(item, budget):
+                return True
     if isinstance(value, list):
-        return any(_coding_value(item) for item in value)
+        return any(_coding_value(item, budget) for item in value)
     return False
 
 
-def _metadata_string(text: str, start: int) -> tuple[str, int, bool]:
+def _metadata_string(text: str, start: int, budget: _Budget | None) -> tuple[str, int, bool]:
     """Consume ONE JSON string without mistaking its prose for object members.
 
     Decode escaped keys/values even if the containing object never closes.
@@ -159,12 +172,16 @@ def _metadata_string(text: str, start: int) -> tuple[str, int, bool]:
     rest of that string; absence of complete JSON never erases a discriminator.
     This lexer is not a retained-family validity reader.
     """
+    if budget is not None:
+        budget.step()  # opening quote
     parts: list[str] = []
     index = start + 1
     valid = True
     escapes = {'"': '"', '\\': '\\', '/': '/', 'b': '\b', 'f': '\f',
                'n': '\n', 'r': '\r', 't': '\t'}
     while index < len(text):
+        if budget is not None:
+            budget.step()
         char = text[index]
         index += 1
         if char == '"':
@@ -172,10 +189,15 @@ def _metadata_string(text: str, start: int) -> tuple[str, int, bool]:
         if char == '\\':
             if index == len(text):
                 break
+            if budget is not None:
+                budget.step()
             escape = text[index]
             index += 1
             if escape == 'u':
                 digits = text[index:index + 4]
+                if budget is not None:
+                    for _ in digits:
+                        budget.step()
                 if len(digits) == 4 and all(digit in '0123456789abcdefABCDEF' for digit in digits):
                     if valid:
                         parts.append(chr(int(digits, 16)))
@@ -194,38 +216,51 @@ def _metadata_string(text: str, start: int) -> tuple[str, int, bool]:
     return ''.join(parts), index, False
 
 
-def _malformed_coding_value(text: str) -> bool:
+def _malformed_coding_value(text: str, budget: _Budget | None) -> bool:
     """Visit every lexical member, including duplicate and unclosed objects.
 
     Only structured envelopes participate. Quoted document prose is consumed
     as one string, never searched for embedded JSON snippets or coding words.
     The same finite scalar inventory handles every successful-decoder family.
     """
-    text = text.lstrip(' \t\r\n\ufeff')
-    if not text.startswith(('{', '[')):
-        return False
     index = 0
+    while index < len(text) and text[index] in ' \t\r\n\ufeff':
+        if budget is not None:
+            budget.step()
+        index += 1
+    if budget is not None:
+        budget.step()
+    if index == len(text) or text[index] not in '{[':
+        return False
     while index < len(text):
+        if budget is not None:
+            budget.step()
         if text[index] != '"':
             index += 1
             continue
-        key, index, key_complete = _metadata_string(text, index)
+        key, index, key_complete = _metadata_string(text, index, budget)
         following = index
         while following < len(text) and text[following] in ' \t\r\n':
+            if budget is not None:
+                budget.step()
             following += 1
         if not key_complete or following == len(text) or text[following] != ':':
             continue
         following += 1
         while following < len(text) and text[following] in ' \t\r\n':
+            if budget is not None:
+                budget.step()
             following += 1
         if following < len(text) and text[following] == '"':
-            item, index, complete = _metadata_string(text, following)
+            item, index, complete = _metadata_string(text, following, budget)
             if _coding_scalar(key, item, incomplete=not complete):
                 return True
     return False
 
 
-def _refuse_coding_metadata(raw: object, *, location: str) -> None:
+def _refuse_coding_metadata(raw: object, *, location: str, budget: _Budget | None) -> None:
+    # None preserves the ordinary nonmapping discriminator/watermark contract.
+    # Mapping scans pass their enclosing budget unchanged, including fallback.
     if not isinstance(raw, (bytes, str)):
         return  # Existing retained-family readers check their required types.
     if len(raw) > 16777216:
@@ -234,18 +269,29 @@ def _refuse_coding_metadata(raw: object, *, location: str) -> None:
         # Check EVERY duplicate-key value; later document values cannot erase
         # a reserved value even when the outer object subsequently truncates.
         def pairs(items: list[tuple[str, object]]) -> dict:
-            if any(_coding_scalar(key, value) or _coding_value(value) for key, value in items):
-                raise ValueError(f'workflow_coding_data_unsupported: {location}; complete family reader required')
-            return dict(items)
+            if budget is not None:
+                budget.step()  # also account for empty objects
+            result = {}
+            for key, value in items:
+                if budget is not None:
+                    budget.step()  # duplicate members and dict construction
+                    for text in (key, value):
+                        if isinstance(text, str):
+                            for _ in text:
+                                budget.step()
+                if _coding_scalar(key, value) or _coding_value(value, budget):
+                    raise ValueError(f'workflow_coding_data_unsupported: {location}; complete family reader required')
+                result[key] = value
+            return result
         value = json.loads(raw, object_pairs_hook=pairs)
-        if _coding_value(value):
+        if _coding_value(value, budget):
             raise ValueError(f'workflow_coding_data_unsupported: {location}; complete family reader required')
     except (UnicodeError, json.JSONDecodeError):
         # Mirror JSON's supported UTF8/16/32 input encodings even when the
         # envelope truncates. A malformed byte envelope cannot lose its family
         # merely because the successful decoder would recognize its encoding.
         text = raw.decode(json.detect_encoding(raw), errors='replace') if isinstance(raw, bytes) else raw
-        if _malformed_coding_value(text):
+        if _malformed_coding_value(text, budget):
             raise ValueError(f'workflow_coding_data_unsupported: {location}; malformed coding metadata') from None
         return  # Family discrimination only, never a legacy validity PASS.
     except RecursionError as exc:
@@ -402,7 +448,8 @@ def _validate_coding_data(conn: sqlite3.Connection, *, layout: str,
                     if _coding_scalar(column, raw):
                         raise ValueError(f'workflow_coding_data_unsupported: {table}.{column}; coding reader required')
                 else:
-                    _refuse_coding_metadata(raw, location=f'{table}.{column}')
+                    _refuse_coding_metadata(raw, location=f'{table}.{column}',
+                                            budget=budget if mappings is not None else None)
             last_id = rowid
         if file_key is not None:
             _advance_audit_log_watermark(conn, file_key, last_id)
