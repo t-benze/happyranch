@@ -1,7 +1,9 @@
 # Current THR307 nightly disk sweeper contract
 
 Authority: Founder THR307 seq51 approves seq48, engineering seq49 and consultant
-seq50; sole delivery root TASK-11518. This new mechanism replaces the unimplemented
+seq50; original delivery root TASK-11518. Founder seq85/88 authorizes the
+three bounded corrections under continuation root TASK-11742; TASK-11518 remains
+cancelled. This new mechanism replaces the unimplemented
 capacity/rotation proposal, not any legacy cleanup implementation or its rules.
 The operator disk/output reports are inputs, not independent feature evidence.
 Retry counts in those reports are not distinct removed-root counts. No operator
@@ -86,28 +88,46 @@ Every admission, including permission repair and the one Git retry, requires:
 
 * Existing authoritative task record assigned to the actual workspace owner;
   a complete acyclic `parent_task_id` walk to a real NULL-parent structural root;
-  both owner and root exactly completed/failed/cancelled. Missing, conflicting,
-  superseded, escalated, active or unknown facts retain. Revisit names are not
+  both owner and root exactly completed/failed/cancelled/superseded. Missing,
+  conflicting, escalated, active or unknown facts retain. Revisit names are not
   parentage. Recorded `session_start.workspace` must consistently match the
   literal workspace. A task-like directory name alone proves no ownership.
 * Complete native jobs-table inspection, no pending/queued/running job anywhere
-  in that structural root's task scope. Unknown job ownership/lineage/status
-  fails closed; missing evidence is not an empty job set. Every observed job
-  owner must have complete structural lineage, including jobs with supported
-  terminal status completed/failed/rejected. Native TEXT storage supplies no
-  ownership FK. Valid terminal jobs remain acceptable, and known unrelated
-  job roots (including active jobs) do not block progress. Applies to both phases
-  and refreshed Git repair/retry gates; stored rows are never repaired.
+  in that structural root's task scope. Recognized finished jobs exactly
+  completed/failed/rejected are skipped BEFORE owner-lineage lookup, including
+  orphaned historical owners. Unknown status retains; every active job must have
+  complete structural lineage. An active job in the candidate's structural root
+  retains; known unrelated active roots do not block. Missing evidence is not an
+  empty job set. Applies to both phases and refreshed Git repair/retry gates;
+  stored rows are never repaired or archived.
 * Fresh Linux `/proc` inspection of all visible **same-effective-UID** process
   leaders and every thread, with bracketed identity and thread/PID census. It
   reads cwd/root/exe, all fd links and TMPDIR/TMP/TEMP; temp aliases resolve
-  through the inspected task's root. Different mount namespaces refuse rather
-  than inventing host-path equivalence. There are no legacy daemon exemptions.
-  Denial, malformed credentials, missing live-task references, unstable census
-  or incomplete evidence retain unknown. Confirmed process/task disappearance
-  differs from denial; stable zombies have no live references. Other UIDs are
-  outside this scope; this is **not host-wide absence**, a writer fence or
-  protection from a later opener/hostile same-UID rename.
+  through the inspected task's root. A readable different mount namespace
+  refuses rather than inventing host-path equivalence. On PermissionError only,
+  the exact stat comm names `systemd`, `(sd-pam)`, `sshd-session`, `ssh-agent`
+  may omit that denied reference. All remaining readable references are still
+  inspected, including after a denial; readable candidate use always retains.
+  This includes denied namespace/fd-directory/environment/temp-alias reads,
+  never denied identity or credential evidence. Exact PID/starttime/comm and
+  same-UID checks bracket the exception; names shorter than Linux's comm limit
+  avoid truncated-prefix matching. No argv substring, generic SSH or Codex
+  allowance exists. Unknown identity/credentials, other unreadable names,
+  missing live references, namespace mismatches and unstable census still retain.
+  Applied exemptions are checkpointed as candidate `process_exemptions` and
+  aggregated under the same org key, with PID/TID/starttime/name/UID/reason and
+  candidate path, including if later evidence refuses. Repeated observations of
+  the same identity within a candidate are deduplicated; this is not a global
+  process count. Existing JSON and org audit payloads carry these records.
+  Confirmed disappearance retains its separate handling. Each positively identified
+  stable zombie thread skips namespace and live-use references, which may be
+  absent; identity/starttime/comm and Z-state are still bracketed, with UID and
+  full leader/thread census checks intact. A zombie leader does not skip live
+  siblings. Missing references for non-zombies still retain, including the four
+  allowed names; FileNotFoundError is not an unreadability exemption.
+  Names are not executable authentication. Other UIDs are outside this scope;
+  this is **not host-wide absence**, a writer fence or protection from a later
+  opener/hostile same-UID rename.
 * A complete no-follow descendant scan, all entries at least3600s old by BOTH
   mtime and ctime; atime is excluded because observations may update it. Root
   mtime alone never admits. Unreadable directories, special objects, external
@@ -221,7 +241,8 @@ retained/unknown/eligible backlog and errors precede separately approved cutover
 
 ## Finite disposable verification
 
-Run `.venv/bin/python scripts/verify_disk_sweeper.py` after `uv sync --frozen`.
+Historical broader driver (not authorized for the seq85 three-case delivery):
+`.venv/bin/python scripts/verify_disk_sweeper.py` after `uv sync --frozen`.
 This standalone script imports no retired unit selection and uses real files,
 Git and processes with synthetic task/job/audit projections. An advanced wall
 clock makes fresh fixture ctimes old; monotonic budgets remain real. It covers
@@ -263,18 +284,40 @@ review and independently executed scoped QA remain required after publication.
 
 ### Focused recovery fixtures and isolated boundaries
 
-`python scripts/verify_disk_sweeper.py --cases 9 10` exercises real scratch and
-registered Git roots for the nine completed/failed/rejected x missing-owner/
-self-cycle/empty-parent combinations from QA TASK11530, additional malformed
-owner/parent and conflicting synthetic projections, valid terminal and unrelated
-job controls, and the preserved unknown-status/active controls. Refusal compares
-bytes/modes/registration and forbids mutation calls. A controlled real Git
-failure after one actual tracked-file unlink introduces each of the nine lineage
-combinations before refreshed gates; no permission repair or second removal is
-allowed, surviving contents/registration stay exact and prior partial deletion
-remains attribution_unknown with zero invented removal bytes. Native constraints
-exclude the extra NULL-owner/duplicate-task projection cases; these explicitly
-exercise malformed/inconsistent reader input, not claims about native storage.
+Historical QA TASK11530 terminal-job lineage refusals are superseded by
+Founder seq85. The maintained case9/10 lineage refusal helpers now cover active
+jobs only; their other unknown-status, active scope and retry checks remain.
+These broad historical cases are NOT authorized for this correction delivery.
+
+Current bounded execution is exactly three cases, with paired assertions inside
+one case per correction:
+
+```bash
+TMPDIR=/absolute/actual-child-task-tmp PYTHONDONTWRITEBYTECODE=1 .venv/bin/python scripts/verify_disk_sweeper.py --corrections-only
+```
+
+C1 exercises both shipping dry-run phases with finished orphan jobs unchanged,
+active orphan/unknown status refusal and a valid active job in the structural
+root. C2 exercises superseded owner AND root eligibility with actual allocation
+and unchanged disposable files/Git registrations, paired active/escalated/unknown
+owner/root refusals. C3 exercises the real process scanner against a synthetic
+proc syscall reader, all four exact denied identities, actual checkpoint JSON
+and audit payload projection, nonlisted/near-name denial, readable use (also
+after a denial) and changed-start refusal. Within the SAME C3, stable zombies
+with absent namespace/live references admit without reference reads or exemption
+records; paired live missing-namespace (including an allowed name), changed
+zombie starttime/Z-state, and live siblings of zombie leaders retain. Every
+control uses the actual top-level wrapper, full serialized JSON and audit payload
+projection. C1/C2 remain unchanged. Fixtures reuse the disposable builder
+and forbid mutation during these dry runs. Synthetic SQLite/proc inputs and the
+advanced wall clock are explicit; filesystem/Git gates and outcomes are real.
+No actual host permission denial or broad operational acceptance is established.
+Missing baseline/defect/repetition proof stays UNEXECUTED, not test-authoring PASS.
+The selector skips config checks and all historical/isolation cases. General
+integration SKIPPED24342; seq62 mount/process-root fixtures SKIPPED/UNEXECUTED.
+
+The following existing isolation source describes separate historical coverage;
+it is not execution authority for this three-case delivery.
 
 The driver now invokes actual executable boundary fixtures, not `unshare true`:
 

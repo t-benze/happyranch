@@ -334,7 +334,10 @@ Captured actual running turns alone may settle under WAITING; no drain label
 admits new work. Queue dedup spans queued/in-flight work, typed deferrals release
 notification ownership, and complete durable runnable discovery/redelivery keeps
 pending tokens/ranges/probe/catchup obligations intact. Native thread recovery
-and raw reapers preserve held/C2-owned history. Participant/session writes
+and raw reapers preserve held/C2-owned history. A pending receipt whose
+producer settled without deferral or unknown cleanup and has no live owner
+takes ordinary daemon_restart recovery; a shutdown cancellation after every
+attempt settled quiescent records no failed_cleanup. Participant/session writes
 cooperate during future forward reset; messages remain admissible. The bounded
 thread census/drain and post-release seams are available to D, whose complete
 startup/containment/operation/old-reader closure remains absent. No public apply
@@ -922,9 +925,12 @@ batch budget. No cursor/rotation or candidate count cap. Unknown eligibility and
 unreached scope retain; the owned worker process group is stopped on deadline or
 shutdown. `output/` and durable scratch manifest/lock siblings stay excluded.
 
-Terminal actual task AND structural root, fresh complete jobs/process evidence,
-recursive mtime+ctime age of at least one hour and no-follow/same-filesystem
-containment apply to both phases. Git additionally requires owned registration,
+Actual task AND structural root must each be completed/failed/cancelled/superseded.
+Recognized finished jobs completed/failed/rejected are skipped before owner-lineage
+lookup; active jobs still require valid lineage and retain their structural root.
+Unknown job status/active lineage retains. Fresh process evidence, recursive
+mtime+ctime age of at least one hour and no-follow/same-filesystem containment
+apply to both phases. Git additionally requires owned registration,
 clean/nonignored-untracked status and HEAD reachability through retained local
 branches/remotes; branches remain, ignored contents are disposable. Git removal
 is nonforce, with at most one fully refreshed contained repair/retry. Dry run
@@ -945,7 +951,17 @@ removal-attributed; retained/partial/unreached bytes and physical freed space st
 unknown, whole-disk percent is context only. Below20% is flagged in audit/JSON;
 no new notification interface. Linux same-effective-UID all-thread process
 observations are snapshots, not host-wide absence or a writer fence. Missing
-mount/process/ownership evidence refuses.
+mount/process/ownership evidence refuses except the exact unreadability policy:
+only denied reads for stat comm `systemd`, `(sd-pam)`, `sshd-session`, `ssh-agent`
+can be omitted, with stable PID/start/name/UID and census checks. Every readable
+reference still gates, even after a denial; unknown identity and other names
+retain. Applied exceptions persist in candidate/org `process_exemptions` in the
+existing JSON/audit, also after later refusal. These names do not authenticate
+executables or establish host-wide absence. Stable zombie threads skip namespace
+and live-use references before reading them; missing zombie references need no
+exception. Identity/starttime/comm and Z-state remain bracketed, with UID and
+full census checks preserved. Live siblings are inspected even when their leader
+is a zombie; missing non-zombie references still retain for every name.
 
 See the [full current contract](../superpowers/specs/2026-10-15-nightly-disk-sweeper.md)
 for evidence semantics, limitations, finite disposable verification and staged

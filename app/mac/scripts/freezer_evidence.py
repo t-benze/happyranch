@@ -82,7 +82,7 @@ def parse(raw):
     # Existing guarded parser also refuses duplicate keys, floats and excess depth.
     value = ASSET['parse_json'](raw)
     boolean_fields = {'declared_strip','declared_upx','availability','effective_strip','effective_upx',
-                      'strict_arch_validation','append_pkg','closure_complete','ready'}
+                      'strict_arch_validation','append_pkg','ready'}
     def boolean_shape(item, field=None):
         if type(item) is bool:
             need(field in boolean_fields, 'JSON_BOOLEAN_FIELD')
@@ -1594,7 +1594,7 @@ def main():
                 result = session.write('copy',{'output':ref,'before':before,'after':after,'mode_changes':changes,
                                               'unresolved':output['payload']['unresolved']},[ref])
             else:
-                result = {'technical_relations':'MATCHED','closure_complete':False}
+                result = {'technical_relations':'MATCHED','notice_standard':'dependency-manifest-notices'}
         raw = encoded(result)
         need(len(raw) <= 4096,'TOKEN_CAP')
         print(raw.decode(),end='')

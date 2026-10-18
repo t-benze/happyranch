@@ -1,0 +1,7 @@
+{
+  "component": "github.com/google/uuid",
+  "version": "v1.6.0",
+  "source": "https://raw.githubusercontent.com/google/uuid/v1.6.0/LICENSE",
+  "sha256": "0a8d61ed3cbfd5312326e8126c31ce9c627a283adc99131b56896d29ada04b2d",
+  "relation": "Bytes match installed Go module v1.6.0 and tag original; version is already in app/mac/tsnet-bridge/go.sum."
+}

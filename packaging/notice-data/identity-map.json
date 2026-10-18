@@ -282,6 +282,56 @@
             "content_sha256": "a233612daa3826fcecf257e9f4a4023799c40f4c83a5435afeb89196058be6cf"
           }
         ]
+      },
+      {
+        "name": "@radix-ui/react-use-rect",
+        "version": "1.1.1",
+        "metadata_sha256": "9c977de80b701b018e1240e6f750544deda622233dc0d73094b2cfae28801e7a",
+        "emitted_sources": {
+          "dist/index.mjs": "2a343c71a1bf04786378b2e7517d2a1146df87d733703d683c6ed8735b231403"
+        },
+        "registry_url": "https://registry.npmjs.org/@radix-ui%2freact-use-rect/1.1.1",
+        "registry_gitHead": "fcef0668a5c827e5a4baac405474d75680f9a4eb",
+        "archive_url": "https://registry.npmjs.org/@radix-ui/react-use-rect/-/react-use-rect-1.1.1.tgz",
+        "archive_integrity": "sha512-QTYuDesS0VtuHNNvMh+CjlKJ4LJickCMUAqjlE3+j8w+RlRpwyX3apEQKGFzbZGdo7XNG1tXa+bQqIE7HIXT2w==",
+        "upstream_metadata": {
+          "path": "packages/react/use-rect/package.json",
+          "sha256": "00a1646fab09eff6dda78a1bcdc689a12443bc30221b19b372ad868ef8f39eec",
+          "version": "1.1.1-rc.9"
+        },
+        "published_source_map_sha256": "f6f78401a8e2afeee96a85d531ae8e32bddb1fd99d71ae3a886a5ec1d1781265",
+        "upstream_source_bindings": [
+          {
+            "published_map_source": "../src/use-rect.tsx",
+            "upstream_path": "packages/react/use-rect/src/use-rect.tsx",
+            "content_sha256": "b7eefba887360293041482502c6612789a37b8253be8d95da5648060f2ae91fe"
+          }
+        ]
+      },
+      {
+        "name": "@radix-ui/rect",
+        "version": "1.1.1",
+        "metadata_sha256": "d59c3d6bd0117489e3de453a2f858e4614bf1903c7a394bf4f4460e81fb4b7b1",
+        "emitted_sources": {
+          "dist/index.mjs": "270adcf382b302cb158474f431601a0fa24b2c5e52f58546c5177064c9b9b301"
+        },
+        "registry_url": "https://registry.npmjs.org/@radix-ui%2frect/1.1.1",
+        "registry_gitHead": "fcef0668a5c827e5a4baac405474d75680f9a4eb",
+        "archive_url": "https://registry.npmjs.org/@radix-ui/rect/-/rect-1.1.1.tgz",
+        "archive_integrity": "sha512-HPwpGIzkl28mWyZqG52jiqDJ12waP11Pa1lGoiyUkIEuMLBP0oeK/C89esbXrxsky5we7dfd8U58nm0SgAWpVw==",
+        "upstream_metadata": {
+          "path": "packages/core/rect/package.json",
+          "sha256": "315f56c9de26a1fe80028c03886ef76cc7e9f85cca4bafa05e5d475739cc451b",
+          "version": "1.1.1-rc.9"
+        },
+        "published_source_map_sha256": "a92d9dffcfa357078dfb11d8ac9cb68c38fad0b8dc8fe0a4c62646775a7bffb3",
+        "upstream_source_bindings": [
+          {
+            "published_map_source": "../src/observe-element-rect.ts",
+            "upstream_path": "packages/core/rect/src/observe-element-rect.ts",
+            "content_sha256": "fc38b1c27d5bdbde579a5ce518814d372fed364905c16df7f8d8d5699cbb7689"
+          }
+        ]
       }
     ]
   }

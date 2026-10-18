@@ -64,6 +64,19 @@ eligibility later. Main-frame GET200, exact origin/port/API path and Recall's
 semantic tree=true remain required. Unrelated dashboard503 stays observable;
 its cause and the historical extra navigation's cause remain unestablished.
 
+All three ordinary roots observers (`open_task`, Pause's `held`, and
+`e07_terminal`) declare `ordinary_roots=True`. Before admitting an actual
+Request, the complete semantic query must equal `limit=["50"]`, retaining
+blank and duplicate values. Missing/blank/wrong/duplicate limits, extra filters,
+pagination and unknown keys do not qualify. An observed nonempty fragment also
+does not qualify; this does not imply browsers transmit fragments over HTTP.
+The independent `status=escalated` attention request remains observable but
+cannot enter the ordinary Request set or create ambiguity there. Response
+admission rechecks the same query while retaining actual Request membership.
+Malformed query parsing fails through the existing poison/cleanup path with a
+fixed error, never raw parser text. Other endpoint contracts, including Recall
+`tree=true`, keep their existing defaults.
+
 Each scope owns its pinned native Waiter/result/listeners and timeout tasks.
 Nested scopes retain the earliest absolute group end even after inner exit;
 they share lineage/end, with distinct actual Request/Response identities. A
@@ -86,6 +99,14 @@ Arm/request/raw commit/selection/body/error/cleanup diagnostics remain sanitized
 partial traces do not establish acceptance. No headers, bootstrap, storage or
 arbitrary query secrets are collected. Cached alpha-return provenance/rendering
 and the separate genuine expired-cache revisit remain unchanged.
+The existing trace's roots `query-match` steps join the local Request sequence
+to the fixed `ordinary-roots-limit50` contract, Boolean match and fixed
+`ordinary-root-page` / `other-query` / `invalid-query` category. At response
+time an unadmitted Request has no eligible request sequence; its response cannot
+substitute for the selected original. No arbitrary query keys or values are
+logged. These diagnostics and source/static checks do not prove corrected
+browser behavior; Q1–Q7 runtime, negative/race/body/cleanup and protected
+mutation/repetition evidence remain UNEXECUTED pending authorized evidence.
 
 Terminal stop admits only the healthy pinned owner/standard loop with positive
 existing work. It invokes synchronous context exit once under one absolute S.

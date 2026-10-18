@@ -363,7 +363,7 @@ def broken_job_owner(f,kind):
 def lineage_refusals():
     observations=[]
     for kind in LINEAGE_KINDS:
-        for status in ('completed','failed','rejected','running'):
+        for status in ('running',):
             with fixture() as f:
                 owner=broken_job_owner(f,kind)
                 item=job_refusal(f,status,'lineage',job_owner=owner)
@@ -476,7 +476,7 @@ def c10():
 def lineage_retry_refusals():
     observations=[]
     for kind in ('missing','cycle','empty_parent'):
-        for status in ('completed','failed','rejected'):
+        for status in ('running',):
             with fixture() as f:
                 repo,q=f.worktree('TASK-1')
                 before=candidate_contents(q);registered=f.git(repo,'worktree','list','--porcelain')
@@ -1090,9 +1090,223 @@ def isolated_boundary(kind):
     return dict(result,command=command,exit=proc.returncode)
 
 
+@contextmanager
+def correction_process_reader(base, records):
+    """Synthetic proc syscall boundary only; no production scanner replacement.
+
+    Each record supplies a complete visible PID/thread identity. Denials and
+    references are explicit fixture inputs; this is not actual host proc proof.
+    """
+    proc = base / 'synthetic-proc'
+    proc.mkdir(exist_ok=True)
+    real_text, real_bytes, real_stat = Path.read_text, Path.read_bytes, Path.stat
+    real_exists = Path.exists
+    real_is_dir, real_listdir, real_readlink = Path.is_dir, os.listdir, os.readlink
+    by_pid, by_thread = {}, {}
+    for index, record in enumerate(records, 401):
+        pid = str(index)
+        by_pid[pid] = record
+        leader = proc / pid
+        threads = [(pid, record)] + [(str(index * 10 + offset), sibling) for offset, sibling in enumerate(record.get('threads', []), 1)]
+        for tid, thread in threads:
+            by_thread[pid, tid] = thread
+            task = leader / 'task' / tid
+            task.mkdir(parents=True, exist_ok=True)
+            (task / 'fd').mkdir(exist_ok=True)
+            (task / 'stat').write_text(f"{tid} ({thread['name']}) {thread.get('state', 'S')} " + '0 ' * 18 + '100\n')
+            (task / 'environ').write_bytes(b'')
+        (leader / 'stat').write_text(f"{pid} ({record['name']}) {record.get('state', 'S')} " + '0 ' * 18 + '100\n')
+        for directory in (leader, leader / 'task' / pid):
+            (directory / 'status').write_text('Uid:\t' + '\t'.join([str(os.geteuid())] * 4) + '\n')
+    # Keep old fixture directories out of the declared synthetic census.
+    def mapped(path):
+        value = str(path)
+        return proc / value.removeprefix('/proc/') if value.startswith('/proc/') else path
+    def record_for(path):
+        parts = str(path).split('/')
+        if len(parts) > 4 and parts[1] == 'proc' and parts[3] == 'task':
+            return by_thread.get((parts[2], parts[4]), {})
+        return by_pid.get(parts[2], {}) if len(parts) > 2 and parts[1] == 'proc' else {}
+    def denied(path):
+        record = record_for(path)
+        if any(str(path).endswith('/' + ref) for ref in record.get('missing', ())):
+            raise FileNotFoundError('synthetic missing proc reference')
+        if any(str(path).endswith('/' + ref) for ref in record.get('deny', ())):
+            raise PermissionError('synthetic proc denial')
+    def read_text(path, *a, **kw):
+        denied(path)
+        value = real_text(mapped(path), *a, **kw)
+        record = record_for(path)
+        if str(path).endswith('/stat') and record.get('change_start'):
+            record['stat_reads'] = record.get('stat_reads', 0) + 1
+            if record['stat_reads'] > 2:
+                value = value.removesuffix('100\n') + '101\n'
+        if str(path).endswith('/stat') and '/task/' in str(path):
+            record['thread_stat_reads'] = record.get('thread_stat_reads', 0) + 1
+            if record['thread_stat_reads'] % 2 == 0:
+                if record.get('change_thread_start'):
+                    value = value.removesuffix('100\n') + '101\n'
+                if record.get('change_state'):
+                    value = value.replace(') Z ', ') S ')
+        return value
+    def read_bytes(path, *a, **kw):
+        denied(path)
+        return real_bytes(mapped(path), *a, **kw)
+    def listdir(path):
+        if str(path) == '/proc':
+            return list(by_pid)
+        denied(path)
+        parts = str(path).split('/')
+        if len(parts) == 4 and parts[1] == 'proc' and parts[3] == 'task':
+            return [tid for pid, tid in by_thread if pid == parts[2]]
+        return real_listdir(mapped(path))
+    def readlink(path, *a, **kw):
+        if str(path).startswith('/proc/'):
+            record_for(path).setdefault('link_reads', []).append(str(path))
+            denied(path)
+            if str(path).endswith('/ns/mnt'):
+                return 'mnt:[fixture]'
+            return record_for(path).get(Path(path).name, str(base))
+        return real_readlink(path, *a, **kw)
+    def is_dir(path):
+        return True if str(path) == '/proc/self/task' else real_is_dir(mapped(path))
+    def exists(path, *a, **kw):
+        # Python 3.14 Path.exists bypasses Path.stat; map the observation itself.
+        return real_exists(mapped(path), *a, **kw)
+    with patch.object(Path, 'read_text', read_text), patch.object(Path, 'read_bytes', read_bytes), patch.object(Path, 'stat', lambda p, *a, **kw: real_stat(mapped(p), *a, **kw)), patch.object(Path, 'exists', exists), patch.object(Path, 'is_dir', is_dir), patch.object(os, 'listdir', listdir), patch.object(os, 'readlink', readlink):
+        yield
+
+
+def correction_jobs():
+    with fixture() as f:
+        p = f.scratch('TASK-1')
+        repo, q = f.worktree('TASK-2')
+        f.task('TASK-3')
+        f.db.execute("UPDATE tasks SET parent_task_id='TASK-3' WHERE id IN ('TASK-1','TASK-2')")
+        finished = [('missing-owner', status) for status in ('completed', 'failed', 'rejected')]
+        f.db.executemany('INSERT INTO jobs VALUES(?,?)', finished)
+        f.db.commit()
+        before = candidate_contents(p, q)
+        registered = f.git(repo, 'worktree', 'list', '--porcelain')
+        observations = []
+        with correction_process_reader(f.base, [dict(name='fixture')]), refuse_mutations():
+            r = f.sweep('dry_run')
+            assert row(r, p)['state'] == row(r, q)['state'] == 'eligible', r
+            assert f.db.execute('SELECT task_id,status FROM jobs').fetchall() == finished
+            for owner, status, reason in [('missing-owner', 'running', 'lineage'), ('missing-owner', 'alien', 'unknown_job_status'), ('TASK-3', 'running', 'active_job')]:
+                f.db.execute('INSERT INTO jobs VALUES(?,?)', (owner, status)); f.db.commit()
+                r = f.sweep('dry_run')
+                retained(r, p, reason); retained(r, q, reason)
+                observations.append(dict(owner=owner, status=status, reason=row(r, p)['reason']))
+                f.db.execute('DELETE FROM jobs WHERE status=?', (status,)); f.db.commit()
+        assert candidate_contents(p, q) == before
+        assert f.git(repo, 'worktree', 'list', '--porcelain') == registered
+        assert f.db.execute('SELECT task_id,status FROM jobs').fetchall() == finished
+        return dict(finished_orphans='both phases eligible; rows unchanged', paired_refusals=observations, filesystem_and_registration_unchanged=True, proc='synthetic syscall reader')
+
+
+def correction_superseded():
+    with fixture() as f:
+        p = f.scratch('TASK-1', status='superseded')
+        repo, q = f.worktree('TASK-2')
+        f.task('TASK-3', status='superseded')
+        f.db.execute("UPDATE tasks SET status='superseded',parent_task_id='TASK-3' WHERE id IN ('TASK-1','TASK-2')"); f.db.commit()
+        before = candidate_contents(p, q)
+        registered = f.git(repo, 'worktree', 'list', '--porcelain')
+        observations = []
+        with correction_process_reader(f.base, [dict(name='fixture')]), refuse_mutations():
+            r = f.sweep('dry_run')
+            assert row(r, p)['state'] == row(r, q)['state'] == 'eligible', r
+            assert all(phase['measured_allocated_bytes'] > 0 for phase in r['phases'].values()), r
+            for target in ('owner', 'root'):
+                ids = ('TASK-1', 'TASK-2') if target == 'owner' else ('TASK-3',)
+                for status in ('in_progress', 'escalated', 'alien'):
+                    f.db.executemany('UPDATE tasks SET status=? WHERE id=?', [(status, task) for task in ids]); f.db.commit()
+                    r = f.sweep('dry_run')
+                    retained(r, p, 'task_or_root_not_terminal'); retained(r, q, 'task_or_root_not_terminal')
+                    observations.append(dict(target=target, status=status, both='retained'))
+                f.db.executemany("UPDATE tasks SET status='superseded' WHERE id=?", [(task,) for task in ids]); f.db.commit()
+        assert candidate_contents(p, q) == before
+        assert f.git(repo, 'worktree', 'list', '--porcelain') == registered
+        return dict(superseded_owner_and_root='both phases dry-run eligible; measured allocation positive', paired_refusals=observations, filesystem_and_registration_unchanged=True, proc='synthetic syscall reader')
+
+
+def correction_processes():
+    with fixture() as f:
+        p = f.scratch('TASK-1')
+        repo, q = f.worktree('TASK-2')
+        before = candidate_contents(p, q)
+        registered = f.git(repo, 'worktree', 'list', '--porcelain')
+        allowed = [dict(name=name, deny=[ref]) for name, ref in zip(('systemd', '(sd-pam)', 'sshd-session', 'ssh-agent'), ('ns/mnt', 'root', 'fd', 'environ'))]
+        observations = []
+        summary = f.base / 'summary.json'
+        expected_scope = 'visible Linux same-effective-UID processes, all threads; PermissionError-only denied-reference exceptions for exact program names systemd, (sd-pam), sshd-session, ssh-agent with stable identity/credential/census checks; names do not authenticate executables; readable candidate use still retains; snapshot, not host-wide absence'
+        def run(records):
+            # Fixture clock only: exercise the real wrapper/config/JSON path.
+            with correction_process_reader(f.base, records), refuse_mutations(), patch.object(time, 'time', return_value=NOW):
+                report = ds.sweep([str(f.org)], time.monotonic() + 12, summary, dry_run=True, scheduled_date=None, revision='fixture')
+            persisted = json.loads(summary.read_text())
+            assert persisted == report
+            assert persisted['process_scope'] == expected_scope
+            assert report['format'] == 'disk-sweep@1' and report['revision'] == 'fixture'
+            assert report['outcome'] == 'complete' and report['unreached_orgs'] == []
+            assert report['selected_org_roots'] == [str(f.org)] and len(report['orgs']) == 1
+            result = report['orgs'][0]
+            assert result['org'] == f.org.name and result['configured_mode'] == 'on' and result['mode'] == 'dry_run'
+            audit = ds._audit_payload(report, result, summary)
+            assert audit['org'] == result and audit['revision'] == report['revision']
+            assert audit['org']['process_exemptions'] == result['process_exemptions']
+            return result
+        r = run(allowed)
+        assert row(r, p)['state'] == row(r, q)['state'] == 'eligible', r
+        for path in (p, q):
+            records = row(r, path)['process_exemptions']
+            assert {record['name'] for record in records} == {record['name'] for record in allowed}
+            assert len(records) == 4 and all(record['starttime'] == '100' and record['uid'] == os.geteuid() for record in records)
+        assert len(r['process_exemptions']) == 8
+        for control in ('codex', 'ssh-agent-extra'):
+            r = run(allowed + [dict(name=control, deny=['root'])])
+            retained(r, p, 'unknown_process_denied'); retained(r, q, 'unknown_process_denied')
+            assert len(r['process_exemptions']) == 8, r  # earlier actual exceptions survive refusal
+            observations.append(dict(control=control, both='retained', reported_exemptions=8))
+        # An exempt denial must not hide a later readable reference in SAME task.
+        r = run([dict(name='ssh-agent', deny=['cwd'], root=str(p)), dict(name='systemd', cwd=str(q))])
+        retained(r, p, 'process_use'); retained(r, q, 'process_use')
+        assert r['process_exemptions'] == [] or all(record['name'] == 'ssh-agent' for record in r['process_exemptions'])
+        r = run([dict(name='ssh-agent', deny=['root'], change_start=True)])
+        retained(r, p, 'unknown_process_identity_changed')
+        assert row(r, p).get('process_exemptions', []) == []
+        # Stable zombies need neither namespace nor live-use links. This is
+        # per-thread; a zombie leader never hides a live sibling.
+        zombie = dict(name='codex', state='Z', missing=['ns/mnt', 'cwd', 'root', 'exe', 'fd', 'environ'])
+        r = run([zombie])
+        assert row(r, p)['state'] == row(r, q)['state'] == 'eligible', r
+        assert r['process_exemptions'] == [] and zombie.get('link_reads', []) == []
+        zombie_controls = []
+        for control, record, reason in (
+            ('live_missing_namespace', dict(name='codex', missing=['ns/mnt']), 'unknown_missing_process_reference'),
+            ('allowed_name_live_missing_namespace', dict(name='ssh-agent', missing=['ns/mnt']), 'unknown_missing_process_reference'),
+            ('zombie_changed_start', dict(name='codex', state='Z', missing=['ns/mnt'], change_thread_start=True), 'unknown_process_identity_changed'),
+            ('zombie_changed_state', dict(name='codex', state='Z', missing=['ns/mnt'], change_state=True), 'unknown_process_identity_changed'),
+            ('zombie_leader_live_sibling_use', dict(name='codex', state='Z', missing=['ns/mnt'], threads=[dict(name='live-sibling', cwd=str(p), root=str(q))]), 'process_use'),
+            ('zombie_leader_live_sibling_missing', dict(name='codex', state='Z', missing=['ns/mnt'], threads=[dict(name='live-sibling', missing=['ns/mnt'])]), 'unknown_missing_process_reference'),
+        ):
+            try:
+                r = run([record])
+                retained(r, p, reason); retained(r, q, reason)
+                assert r['process_exemptions'] == []
+            except AssertionError as exc:
+                raise AssertionError(f'{control}: {exc}') from exc
+            zombie_controls.append(dict(control=control, both='retained', reason=reason))
+        assert candidate_contents(p, q) == before
+        assert f.git(repo, 'worktree', 'list', '--porcelain') == registered
+        return dict(allowed_names=[record['name'] for record in allowed], actual_summary_and_audit_projection=True, top_level_wrapper_and_serialized_metadata=True, process_scope=expected_scope, paired_refusals=observations, readable_use='both phases retained including after denied read', changed_start='retained without exemption', stable_zombie_missing_namespace='both phases eligible without reference reads or exemptions', zombie_controls=zombie_controls, filesystem_and_registration_unchanged=True, proc='fully synthetic syscall reader; no host security change or actual OS denial proof')
+
+
 if __name__=='__main__':
     parser=argparse.ArgumentParser(description=__doc__)
     selection=parser.add_mutually_exclusive_group()
+    selection.add_argument('--corrections-only', action='store_true', help='THR307seq85: exactly C1 jobs, C2 superseded, C3 unreadable identities; no historical/config/isolation cases')
     selection.add_argument('--cases',type=int,nargs='+',choices=range(1,23))
     selection.add_argument('--isolation-case',choices=('mount','root'),help='only the private executable namespace fixture; exit77 if unavailable')
     args=parser.parse_args()
@@ -1101,7 +1315,10 @@ if __name__=='__main__':
     if os.geteuid()==0: parser.error('run this driver as an unprivileged user')
     status=0
     try:
-        if args.isolation_case:
+        if args.corrections_only:
+            for number, purpose, fn in ((1, 'Finished jobs before lineage', correction_jobs), (2, 'Superseded owner and structural root', correction_superseded), (3, 'Exact unreadable process identities and reporting', correction_processes)):
+                case(number, purpose, fn)
+        elif args.isolation_case:
             detail=isolated_boundary(args.isolation_case)
             RESULTS.append(dict(case=args.isolation_case,result=detail['result'],observations=detail))
             status=77 if detail['result']=='UNAVAILABLE' else 0

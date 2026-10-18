@@ -1,5 +1,7 @@
 # HappyRanch Mac app
 
+Current shipping standard and finite verification: [manifest-notice contract](../../packaging/manifest-notices.md).
+
 The Swift app supports a development checkout and an internal bundled candidate
 with frozen daemon/CLI, web assets and a Go tsnet archive. Bundled release
 verification is still pending. Candidates are unsigned; no public download,
@@ -35,10 +37,9 @@ explicit [preparation/check script](../../web/vendor/react-remove-scroll-bar/REA
 The build's ordinary npm ci installs regular package files and the original
 notice without compiling this package or downloading upstream build tooling.
 Existing Radix/react-remove-scroll consumers and notice attribution remain.
-This is source preparation, not approval to replace the separately pinned
-native-run source or consume an allocation. Six actual candidate closures
-remain UNEXECUTED/UNMET; native build, macOS/WKWebView behavior, minimum OS,
-install, trust and release acceptance remain separate.
+Native build allocation remains owned by the delivery root. Native build,
+macOS/WKWebView behavior, minimum OS, installation, trust and release acceptance
+remain separate from the manifest-notice shipping standard.
 
 Web font source delivery retains unmodified Hanken Grotesk and Newsreader
 variable TTFs plus their two full co-version original OFL texts under
@@ -50,7 +51,8 @@ and existing app assembly copies that directory with the rest of dist to
 the removed WOFF2 subsets), with another 8,796 bytes of notices before
 transport compression. This source retention does not establish actual
 app/archive custody, macOS 14 / WKWebView font loading or rasterization,
-SVG/icon rights, ICNS transformation evidence or any of the six closures.
+ICNS transformation evidence or native acceptance. Original notices are checked
+under the current manifest standard; no whole-program closure is claimed.
 
 The release wrapper now measures the complete selected Git/export public tree
 (including hidden and unreferenced files), ordinary dist, and actual app copy.
@@ -76,10 +78,10 @@ unchanged strict legacy license checks; it never reruns iconutil. See the
 
 Portable synthetic-copy fixture results cover shipping helper operations only.
 Actual native process capture, PYNOTICES append/token capture, full reader,
-macOS14/WKWebView/install and future all-six finalization remain unexecuted.
-Literal `closure_complete=False`, six sentinels and ordinary failed components
-remain. This slice closes no whole requirement and grants no changed-source
-native execution, signing, deployment or release authority.
+macOS14/WKWebView/install remain unexecuted. The former six sentinels and
+literal False gate are retired by THR104seq260. Concrete failed original-text
+rows still refuse. Source delivery grants no native execution, signing,
+deployment or release authority.
 
 The existing hosted workflow installs exact native arm64 Go **1.23.12** with
 `actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e` (v7.0.0), with
@@ -117,14 +119,35 @@ bash app/mac/scripts/build-app.sh --version 1.0.1 --build 1.0.1 \
 
 The absolute originals directory must meet the [generated web input contract](#generated-web-custody-inputs-and-verification).
 
-The output parent must already exist, be owned by the current user and have no
-symlink ancestors. The leaf must be absent and outside the source and Desktop.
+The output parent must already exist, be private (no group/other permission
+bits), be owned by the current user and have no symlink ancestors. The leaf
+must be absent and outside the source and Desktop.
 No output overwrite or implicit Desktop copy exists. Paths with spaces are
 supported. Builds export the pinned tree to an invocation-owned disposable
 checkout. Go/archive, Python environment, web, Swift, icon and caches stay there;
 no existing debug/archive/dist output is reused. Failed stages retain scratch
 and diagnostics, exit nonzero and produce no successful build receipt. The
 venue owner disposes of only that exact run after retaining evidence.
+
+The hosted workflow atomically reserves a unique mode-0700 run directory under
+`RUNNER_TEMP` using `mktemp -d`; it never changes the shared temp directory's
+permissions. `web-originals` and the initially absent `output` are children of
+that run directory. Step outputs carry these exact paths to preparation, build
+and both artifact collectors. Success uploads only `output/HappyRanch-*.zip`,
+`output/build-receipt.json` and `output/diagnostics/*.json`; failure uploads the
+run's `setup-status.txt`, available `output/preflight.json` and
+`output/diagnostics/bounded/*`. The status file reports the last entered setup
+stage, not build success. If allocation fails before the root is published,
+artifact collection is skipped and the workflow log is the diagnostic evidence;
+no fallback glob scans shared temp. No candidate receipt is invented for early
+setup or native-tool failures.
+
+Portable layout verification (no compilation or native acceptance):
+`python packaging/verify_mac_run_layout.py --scratch /absolute/new-fixture-root`.
+It executes the workflow reservation shell and real preflight/bindings boundary,
+including existing-destination, nonprivate-parent and symlink refusal. Native
+build and hosted upload execution remain separately allocated observations.
+
 The shared freezer overrides inherited `PYINSTALLER_CONFIG_DIR` with a fresh,
 validated cache under this run's freeze work path before invoking build tools.
 PyInstaller `--clean` therefore stays within the invocation's allocations,
@@ -132,7 +155,7 @@ including for standalone freezer builds; external caches remain untouched.
 
 Success requires a real release executable, all eleven strong tsnet exports
 bound to fresh archive members, native component inspection, all 29 exact
-resources, exact frozen catalog JSON, notice closure and ZIP reconciliation.
+resources, exact frozen catalog JSON, manifest notices and ZIP reconciliation.
 Each export requires one final strong definition and one unambiguous map object
 whose origin exactly matches the full archive path and a unique `ar -t` member.
 Both `archive(member)` and Apple's `archive[3](member)` syntax are accepted;
@@ -154,10 +177,10 @@ malformed, unsafe and over-cap inputs carry explicit loss records; no byte-tail
 JSON is called a complete mapping. Native linkage acceptance remains pending.
 
 Notice collection retains original installed texts and actual Analysis/Go/web
-input mappings. Native redistribution, embedded bootloader exception, emitted
-web/static-Go closure and asset attribution remain unresolved until independent
-artifact reconciliation. This currently prevents complete-release finalization;
-a staged app and diagnostic inventories are partial evidence. See
+input mappings. The shipping gate now checks resolved manifest membership,
+explicit selections, original texts and separate asset owners. A complete
+inventory can archive; concrete missing vendor originals still refuse with the
+owner/path. This is not a per-byte/linker closure or legal-certification claim. See
 [packaging instructions](../../packaging/README.md) and
 [notice dispositions](../../packaging/THIRD_PARTY_NOTICES.md).
 
@@ -236,10 +259,9 @@ caller-held tokens exactly once:
 These tokens cannot be discovered from candidate diagnostics. The ordinary
 wrapper retains them synchronously and supplies them alongside unchanged asset
 expectations. Missing/foreign/partial observations refuse. Selected technical
-relations and portable fixtures do not resolve any of the six actual closures
-or establish native/full-reader execution. The fifth native allocation remains
-unused and separately source-pinned; whole replacement-input review remains a
-root-owned prerequisite before any changed-source native use.
+relations and portable fixtures do not establish native/full-reader execution.
+The fifth native allocation and exact-source review remain root-owned; the
+manifest standard replaces the former six-closure prerequisite.
 
 ### Generated web custody inputs and verification
 
@@ -247,9 +269,8 @@ root-owned prerequisite before any changed-source native use.
 /absolute/admitted-directory`, containing exactly the fourteen lock-authenticated
 original tarballs described in packaging/README.md. The directory must be
 separate from source/output. Preserve it, the invocation-owned npm tree, scratch
-and diagnostics until independent verification completes. The native workflow
-and its source/input allocation are unchanged; this new input is not an
-execution grant.
+and diagnostics until independent verification completes. The native workflow prepares this same pinned input directory; dispatch inputs
+and allocation controls are unchanged. This source change is not an execution grant.
 
 The wrapper performs normal npm ci in a subshell with umask 022 so authentic
 package executables retain mode 0755. The parent mask remains 077 and the
@@ -285,9 +306,9 @@ expectations. Standalone `verify-release.sh licenses` additionally requires
 Never discover expectations from candidate receipts. Retained web originals
 append rows while preserving the complete pre-addition mapping prefix. Source
 and portable web observations are distinct from a real Mac wrapper/licenses run.
-All six actual closures remain UNEXECUTED/UNMET; literal False, six sentinels and
-ordinary failed rows still prevent archive acceptance. Release=null,
-available=false and approved_url=null remain unchanged.
+The former six-closure requirement is retired, without asserting that claim.
+Concrete failed rows and incomplete manifest membership prevent archiving.
+Release=null, available=false and approved_url=null remain unchanged.
 
 Packaging compilation preserves the ordinary Tailwind `AtProperty` and
 `ColorMix` polyfills, with the same recorded option checked by both readers.
