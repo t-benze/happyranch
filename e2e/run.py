@@ -68,33 +68,60 @@ def validate_timing(row: dict) -> None:
             raise ValueError("inconsistent command timing")
 
 
+ADMISSION_FIELDS = ("event", "cron", "repository", "workflow_ref", "workflow_sha",
+                    "run_id", "run_attempt", "source_ref", "source_sha", "source_tree")
+
+
+def validate_admission(row: dict, admission: dict) -> None:
+    """Join a receipt to the independently admitted Actions event/run/source."""
+    if any(key not in row or row[key] != admission[key] for key in ADMISSION_FIELDS):
+        raise ValueError("Actions event/run/source receipt mismatch")
+
+
 def daily_admission(source: Path) -> dict:
-    """Validate Actions' scheduled default-branch source before launching work.
+    """Admit the daily schedule or an explicitly authorized main dispatch.
 
     Environment/payload checks are admission validation, not a hostile-runner
-    security boundary. No CLI event override or local execution alias exists.
+    security boundary or execution allocation. No CLI event override exists.
     """
-    if os.environ.get("GITHUB_EVENT_NAME") != "schedule":
-        raise RuntimeError("fresh Product E2E requires the daily schedule event; absent/other events refuse")
+    event_name = os.environ.get("GITHUB_EVENT_NAME")
+    if event_name not in {"schedule", "workflow_dispatch"}:
+        raise RuntimeError("fresh Product E2E requires schedule or authorized main workflow_dispatch")
     event_path = os.environ.get("GITHUB_EVENT_PATH")
     if not event_path:
-        raise RuntimeError("scheduled Actions event payload is required")
+        raise RuntimeError("Actions event payload is required")
     event = json.loads(Path(event_path).read_text())
     repository = event["repository"]
     branch = repository["default_branch"]
     repo = repository["full_name"]
+    if not isinstance(branch, str) or not branch or not isinstance(repo, str) or not repo:
+        raise RuntimeError("missing default-branch/repository identity")
     ref = "refs/heads/" + branch
+    if event_name == "schedule":
+        if event.get("schedule") != "0 19 * * *":
+            raise RuntimeError("daily cron mismatch")
+    elif branch != "main" or event.get("ref") != "refs/heads/main" or "schedule" in event:
+        raise RuntimeError("manual dispatch requires actual main/default branch without a schedule")
     sha = os.environ.get("GITHUB_SHA", "")
-    if (event.get("schedule") != "0 19 * * *" or not branch
+    workflow_ref = repo + "/.github/workflows/e2e.yml@" + ref
+    workflow_sha = os.environ.get("GITHUB_WORKFLOW_SHA")
+    run_id, attempt = (os.environ.get(key, "") for key in ("GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT"))
+    if (os.environ.get("GITHUB_ACTIONS") != "true"
             or os.environ.get("GITHUB_REPOSITORY") != repo
             or os.environ.get("GITHUB_REF") != ref
-            or os.environ.get("GITHUB_WORKFLOW_REF") != repo + "/.github/workflows/e2e.yml@" + ref
-            or len(sha) != 40 or any(c not in "0123456789abcdef" for c in sha)):
-        raise RuntimeError("daily cron/default-branch/workflow/source metadata mismatch")
+            or os.environ.get("GITHUB_WORKFLOW_REF") != workflow_ref
+            or workflow_sha != sha
+            or len(sha) != 40 or any(c not in "0123456789abcdef" for c in sha)
+            or any(not value or value[0] not in "123456789" or any(c not in "0123456789" for c in value)
+                   for value in (run_id, attempt))):
+        raise RuntimeError("Actions default-branch/repository/workflow/run/source metadata mismatch")
     actual = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=source, text=True).strip()
-    if actual != sha:
-        raise RuntimeError("checkout differs from immutable scheduled github.sha")
-    return dict(event="schedule", cron=event["schedule"], source_sha=sha, source_ref=ref)
+    tree = subprocess.check_output(["git", "rev-parse", "HEAD^{tree}"], cwd=source, text=True).strip()
+    if actual != sha or len(tree) != 40 or any(c not in "0123456789abcdef" for c in tree):
+        raise RuntimeError("checkout differs from immutable Actions source or has invalid tree")
+    return dict(event=event_name, cron=event.get("schedule"), repository=repo,
+                workflow_ref=workflow_ref, workflow_sha=workflow_sha, run_id=run_id,
+                run_attempt=attempt, source_sha=sha, source_ref=ref, source_tree=tree)
 
 
 def main() -> int:

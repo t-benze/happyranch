@@ -1713,8 +1713,10 @@ python -m runtime.daemon.pr_ci_merge \
 For HappyRanch under THR-291 seq69, the two names above are unconditional on
 both PR and exact-merge main. Daily Product E2E Health, manual Docs/lab and
 release packaging are outside expected-check lists. Protection contexts/checks
-are observed empty with strict=false, not enforced by these examples. First
-scheduled E2E is PENDING; other repositories use their own policy.
+are observed empty with strict=false, not enforced by these examples. Current policy retains daily19UTC and
+ONE THR291seq247 main-only dispatch owned by TASK-11897 after review/QA/lints/
+guarded merge/exact-main receipt; no standing run authority. Other repositories
+use their own policy.
 
 Both print structured JSON verdicts to stdout and exit with mapped codes (0 = success).
 The review/QA evidence extraction follows the **Merge-evidence contract** in

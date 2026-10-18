@@ -404,7 +404,7 @@ case "${1:-all}" in
   boundary-lint) run_boundary_lint "${@:2}" ;;
   web)          run_web ;;
   integration)  run_integration ;;
-  e2e)          echo "REFUSED: fresh Product E2E is daily schedule-only (THR-291 seq69)." >&2; exit 2 ;;
+  e2e)          echo "REFUSED: fresh Product E2E requires hosted admission (daily schedule or explicitly authorized main dispatch; THR291seq247)." >&2; exit 2 ;;
   all)          run_all ;;
   help|-h|--help) show_help ;;
   *)

@@ -403,7 +403,11 @@ python -m runtime.daemon.pr_ci_waiter \
 For HappyRanch under THR-291 seq69, exactly these two unconditional lint/static
 checks apply on PR and exact-merge main; there are no path-specific behavioral
 merge checks. Daily Product E2E Health is outside expected-check lists and
-schedule-only at19:00UTC. First scheduled run is PENDING. Docs/lab are manual;
+daily at19:00UTC. Founder THR291seq247 additionally allocates ONE main-only
+workflow_dispatch under sole TASK-11897 after independent review/scoped QA,
+two final-head lints, guarded merge and exact-main receipt. The manual entry
+grants no standing run authority or retry. Actual health is separately observed.
+Docs/lab are manual;
 mac packaging is manual/tag; legacy integration schedule remains separate.
 Local default/all/pre-push selection is lint/static only; units RETIRED exit2.
 The waiter takes caller-supplied names; product gate semantics are unchanged.
