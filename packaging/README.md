@@ -60,20 +60,37 @@ lock are unchanged; sync/run keep project source configuration enabled.
 
 Both build entries refuse inherited `UV_*` controls before their first uv
 invocation, except `UV_CACHE_DIR` (replaced by an admitted allocation),
-`UV_OFFLINE`, `UV_PYTHON_DOWNLOADS` and `UV_NO_PROGRESS`. This closed rule covers
-project/install/bin/interpreter/config/directory redirects, no-sources/package
+`UV_OFFLINE`, `UV_PYTHON_DOWNLOADS`, `UV_NO_PROGRESS`, and `UV_PYTHON` only
+when absent or exactly the literal `3.12` emitted by the pinned workflow caller.
+Present-empty, path, patch, alternate or whitespace selectors refuse without
+printing values. After the entire inherited-environment check succeeds, each
+parent shell explicitly unsets `UV_PYTHON` before any uv invocation or wrapper
+handoff. This compatibility input grants no interpreter-selection authority;
+the fixed private CPython request and absolute managed executable remain binding.
+This closed rule covers project/install/bin/interpreter/config/directory
+redirects, no-sources/package
 modes, custom mirrors/catalogs and unknown future controls. Inherited `PYTHON*`
 controls and a mismatched `VIRTUAL_ENV` also refuse, without printing values.
 Offline or non-automatic Python-download settings refuse a fresh install;
 no prohibition is converted into network permission. Discovered `uv.toml`
 overrides (source/ancestors, home, XDG and system locations), unreadable
 configuration and changes to the reviewed `[tool.uv.sources]` configuration
-refuse before installation. This preserves local wheel selection without
+refuse before installation. Every ancestor above the source through `/` must
+also have no `pyproject.toml`: any presence (unrelated, malformed, oversized,
+unreadable, directory or symlink, including dangling) or inspection error
+refuses using the pinned ancestry descriptors, before freezer dist/work
+reservation, install or sync. Only the source's own project is admitted through
+the exact frozen uv-settings check. This preserves local wheel selection
+without
 silently loading ambient user/system settings. Use a disposable build venue
 without those overrides; the script never edits external configuration.
 
 The full-app wrapper validates its own private temp/uv-cache roots before its
-early `uv --no-config --version` read. The freezer always selects its own
+early `uv --no-config --version` read. Ancestor-project admission occurs later
+in the freezer: the wrapper has already reserved scratch, exported source and
+read the uv version. Its existing finish diagnostics apply to that refusal;
+early inherited-environment refusal precedes the wrapper's finish trap.
+The freezer always selects its own
 admitted work/tmp for standalone and full-app use, overriding inherited TMPDIR.
 `PYINSTALLER_CONFIG_DIR` confines `--clean` to the fresh work/pyinstaller-cache.
 Allocation, install, discovery, identity or sync failure stops nonzero without

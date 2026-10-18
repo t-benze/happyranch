@@ -24,13 +24,16 @@ while [ "$#" -gt 0 ]; do
     shift 2
 done
 # Refuse inherited uv selection/source/mirror/catalog/cache modes, including
-# future UV_* controls, before ANY uv invocation. Cache alone is replaced below.
+# future UV_* controls, before ANY uv invocation. Cache is replaced below;
+# only the pinned caller's literal UV_PYTHON=3.12 is admitted, then unset.
 # Never include environment values in a refusal.
 python3 -I - "$OUTPUT/scratch/source/.venv" <<'PYENV'
 import os, sys
-allowed = {'UV_CACHE_DIR', 'UV_OFFLINE', 'UV_PYTHON_DOWNLOADS', 'UV_NO_PROGRESS'}
+allowed = {'UV_CACHE_DIR', 'UV_OFFLINE', 'UV_PYTHON_DOWNLOADS', 'UV_NO_PROGRESS', 'UV_PYTHON'}
 if any(key.startswith('UV_') and key not in allowed for key in os.environ):
-    raise SystemExit('FREEZE_UV_ENV_CONFLICT: unset inherited UV_* controls (except cache/offline/downloads/progress)')
+    raise SystemExit('FREEZE_UV_ENV_CONFLICT: unset inherited UV_* controls (except cache/offline/downloads/progress and literal UV_PYTHON=3.12)')
+if 'UV_PYTHON' in os.environ and os.environ['UV_PYTHON'] != '3.12':
+    raise SystemExit('FREEZE_UV_ENV_CONFLICT: unset UV_PYTHON or use the exact literal 3.12')
 if 'VIRTUAL_ENV' in os.environ and os.environ['VIRTUAL_ENV'] != sys.argv[1]:
     raise SystemExit('FREEZE_VIRTUAL_ENV_CONFLICT: unset VIRTUAL_ENV; only exported-source/.venv is supported')
 if any(key.startswith('PYTHON') for key in os.environ):
@@ -42,6 +45,9 @@ if os.environ.get('UV_OFFLINE', 'false').lower() not in ('false', '0'):
 if os.environ.get('UV_PYTHON_DOWNLOADS', 'automatic') != 'automatic':
     raise SystemExit('FREEZE_DOWNLOADS_PROHIBITED: fresh private installation requires permitted Python downloads')
 PYENV
+# Whole inherited-environment admission succeeded. Remove the compatibility
+# input in this parent shell before version/install/discovery/sync/run or handoff.
+unset UV_PYTHON
 [ -n "$WEB_TOOL_ORIGINALS" ] && [[ "$WEB_TOOL_ORIGINALS" = /* ]] || { echo WEB_TOOL_ORIGINALS_REQUIRED >&2; exit 2; }
 # All platform-independent validation precedes tools, writes and build effects.
 PREFLIGHT="$(bash "$VERIFY" preflight --source "$REPO_ROOT" --version "$VERSION" \

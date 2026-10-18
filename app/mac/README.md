@@ -40,12 +40,26 @@ whose executable and base prefix must agree with the selected installation.
 Before any uv command (including the early version read), both entries refuse
 inherited UV_* selection/source/mirror/catalog/mode controls. The only exceptions
 are cache (replaced), offline/download policy (honored by refusal when downloads
-are prohibited) and progress. Mismatched VIRTUAL_ENV and inherited PYTHON*
+are prohibited), progress, and UV_PYTHON only when absent or exactly the
+literal `3.12` supplied by the pinned workflow caller. Empty, path, patch,
+alternate and whitespace selectors refuse without exposing values. After the
+entire inherited-environment check succeeds, each parent shell explicitly
+unsets UV_PYTHON before any uv command or wrapper handoff. The literal is only
+a compatibility input; the fixed private CPython request and absolute managed
+executable control selection. Mismatched VIRTUAL_ENV and inherited PYTHON*
 controls refuse without exposing values. The wrapper validates its private
 temp/cache ancestry and mode before use; standalone freezer temp/cache/install
 allocations receive the same custody predicates before effects. Discovered
-uv.toml overrides and unexpected project uv configuration refuse before install,
-without suppressing the committed source table. See the complete
+uv.toml overrides and unexpected source-project uv configuration refuse before
+install, without suppressing the committed source table. Every ancestor above
+the source through `/` must have no pyproject.toml: unrelated, malformed,
+oversized or unreadable entries, directories, all symlinks (including dangling)
+and inspection errors refuse via pinned ancestry descriptors before freezer
+dist/work reservations, install or sync. The source's own project retains its
+exact frozen uv-settings check. At this freezer boundary the wrapper has
+already reserved scratch, exported source and read the uv version; its existing
+finish diagnostics apply. Early environment refusal occurs before that trap.
+See the complete
 [freezer selection and allocation contract](../../packaging/README.md#frozen-mac-packaging).
 No shared framework modes or external environments are repaired. Original
 nonzero install/discovery/sync failures stop without ambient retry, with the

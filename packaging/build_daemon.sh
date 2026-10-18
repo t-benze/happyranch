@@ -3,13 +3,16 @@
 set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 # Refuse inherited uv selection/source/mirror/catalog/cache modes, including
-# future UV_* controls, before ANY uv invocation. Cache alone is replaced below.
+# future UV_* controls, before ANY uv invocation. Cache is replaced below;
+# only the pinned caller's literal UV_PYTHON=3.12 is admitted, then unset.
 # Never include environment values in a refusal.
 python3 -I - "$REPO_ROOT/.venv" <<'PYENV'
 import os, sys
-allowed = {'UV_CACHE_DIR', 'UV_OFFLINE', 'UV_PYTHON_DOWNLOADS', 'UV_NO_PROGRESS'}
+allowed = {'UV_CACHE_DIR', 'UV_OFFLINE', 'UV_PYTHON_DOWNLOADS', 'UV_NO_PROGRESS', 'UV_PYTHON'}
 if any(key.startswith('UV_') and key not in allowed for key in os.environ):
-    raise SystemExit('FREEZE_UV_ENV_CONFLICT: unset inherited UV_* controls (except cache/offline/downloads/progress)')
+    raise SystemExit('FREEZE_UV_ENV_CONFLICT: unset inherited UV_* controls (except cache/offline/downloads/progress and literal UV_PYTHON=3.12)')
+if 'UV_PYTHON' in os.environ and os.environ['UV_PYTHON'] != '3.12':
+    raise SystemExit('FREEZE_UV_ENV_CONFLICT: unset UV_PYTHON or use the exact literal 3.12')
 if 'VIRTUAL_ENV' in os.environ and os.environ['VIRTUAL_ENV'] != sys.argv[1]:
     raise SystemExit('FREEZE_VIRTUAL_ENV_CONFLICT: unset VIRTUAL_ENV; only exported-source/.venv is supported')
 if any(key.startswith('PYTHON') for key in os.environ):
@@ -21,6 +24,9 @@ if os.environ.get('UV_OFFLINE', 'false').lower() not in ('false', '0'):
 if os.environ.get('UV_PYTHON_DOWNLOADS', 'automatic') != 'automatic':
     raise SystemExit('FREEZE_DOWNLOADS_PROHIBITED: fresh private installation requires permitted Python downloads')
 PYENV
+# Whole inherited-environment admission succeeded. Remove the compatibility
+# input in this parent shell before version/install/discovery/sync/run or handoff.
+unset UV_PYTHON
 DIST="" WORK=""
 while [ "$#" -gt 0 ]; do
     [ "$#" -ge 2 ] || { echo FREEZE_ARGUMENT_MISSING >&2; exit 2; }
@@ -67,6 +73,20 @@ for config in configs:
     raise SystemExit('FREEZE_UV_CONFIG_CONFLICT: remove discovered uv.toml overrides for this disposable build')
 with contextlib.ExitStack() as stack:
     src = stack.enter_context(open_root(source, source, True))
+    # The source chain pins '/' through source. Inspect only ancestors, using
+    # their descriptors so missing leaves cannot conceal unsafe/missing ancestry.
+    # Any enclosing project (even unrelated or malformed) is unsupported; never
+    # parse it to decide whether workspace discovery could use it.
+    for fd, *_ in src.chain[:-1]:
+        src.verify()
+        try:
+            os.stat('pyproject.toml', dir_fd=fd, follow_symlinks=False)
+        except FileNotFoundError:
+            src.verify()
+            continue
+        # All other inspection errors propagate; links (including dangling),
+        # directories and unreadable files are present and refuse without reads.
+        raise SystemExit('FREEZE_UV_ANCESTOR_PROJECT_CONFLICT: use a standalone disposable export without enclosing pyproject.toml')
     _, raw = read_bytes(src, 'pyproject.toml', ReadDomain(262144, True, True))
     project = tomllib.loads(raw.decode())
     # Current reviewed source configuration has only its frozen Darwin source.
