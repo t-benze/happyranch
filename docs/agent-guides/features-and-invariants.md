@@ -1545,9 +1545,21 @@ is retained. Missing, duplicate, misjoined or ambiguous lifecycle/lineage is
 unknown, with null hard-zero diagnostics where evidence is unavailable. An
 exact current in-progress task/agent/SID may lawfully remain active without a
 terminal. Empty kinds say `no_observed_population`, never PASS. These read-only
-diagnostics cannot detect which caller supplied another *live* task's SID;
-TASK-11402/JOB-4624's foreign-credit defect remains unaccepted pending the
-separately authorized caller-context decision. No control row is written.
+diagnostics cannot detect which caller supplied another *live* task's SID.
+Memory get/search credit trusts the supplied live SID matching the live
+org/agent context and derives the task from that context. Deliberately supplying
+another same-agent task's live SID credits that selected session: a known
+observational trust limit, not authentication or hostile-caller proof.
+Founder THR-091 seq401 declined `caller_task_id`, added no API requirement and
+made explicit foreign-live-SID rejection non-gating. A is scoped accepted from
+completed JOB-4624's resume, retry, overlap, ended, absent, lifecycle-join and
+cleanup results without rerun. Original JOB-4624 exit1/raw FAIL and TASK-11402
+QA REVISE remain unchanged historical evidence under the prior criterion.
+Ended/absent selectors still must be uncredited; POST-retirement credit remains
+hard-zero, with legitimate earlier active reads retained. D establishes no
+actual caller identity. Restart, source merge and this documentation accept
+neither B, C nor an epoch; original admission/current full health, immutable
+epoch and frozen observation requirements remain. No control row is written.
 
 Source tests and source publication do not accept a production canary, start
 an official epoch, or fulfill the independently owned durable health check
