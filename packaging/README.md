@@ -37,20 +37,80 @@ bash packaging/build_daemon.sh \
 ```
 
 Both paths must be new, disjoint, outside source, with existing owned parents
-and no symlink ancestors. `uv sync --group build --frozen` installs existing
-build dependencies in that checkout; PyInstaller receives explicit dist/work
-paths and the checked-in equivalent hook. Before any build tool runs, the
-freezer allocates and validates a fresh `pyinstaller-cache.*` directory under
-the admitted work path and exports it as `PYINSTALLER_CONFIG_DIR`, overriding
-any inherited selection. Thus `--clean` operates only on that invocation's
-cache in both standalone and full-app builds. Work and cache are retained with
-diagnostics; the venue owner disposes of only these invocation allocations,
-preserving external caches. Both daemon and CLI must be
+and no symlink ancestors. Before uv writes, the freezer uses the existing
+no-follow ancestry/FD checks (root/current-user ancestors, no group/other write,
+uid-owned allocation roots) and exclusive directory reservation. It requires
+an absent exported-source `.venv`, including no dangling symlink, and reserves
+private mode0700 `python-install`, `uv-cache`, `tmp` and `pyinstaller-cache`
+children under the new work root. Paths with spaces remain supported.
+
+`uv python install --no-bin` requests **CPython 3.12.10** into the admitted
+`UV_PYTHON_INSTALL_DIR`; no user/global executable link is installed. Discovery
+is managed-only with automatic downloads disabled and must return a safe,
+owned executable within that root. Its actual version and base prefix are
+checked before sync. The base executable is distinct from the project venv.
+Frozen sync and both run commands share explicit absolute project/directory,
+selected-base and managed-only/no-download arguments, with
+`UV_PROJECT_ENVIRONMENT` fixed to exported-source/.venv. Both runs disable
+dotenv loading. The four-field `python-toolchain.json` still records the actual
+venv executable/version/platform/machine, with prefix/base and executable
+agreement checked before PyInstaller. The freeze run uses the same venv
+`python -I` command via `-m PyInstaller`, avoiding console-script shebang aliases. The vendored Darwin wheel and frozen
+lock are unchanged; sync/run keep project source configuration enabled.
+
+Both build entries refuse inherited `UV_*` controls before their first uv
+invocation, except `UV_CACHE_DIR` (replaced by an admitted allocation),
+`UV_OFFLINE`, `UV_PYTHON_DOWNLOADS`, `UV_NO_PROGRESS`, and `UV_PYTHON` only
+when absent or exactly the literal `3.12` emitted by the pinned workflow caller.
+Present-empty, path, patch, alternate or whitespace selectors refuse without
+printing values. After the entire inherited-environment check succeeds, each
+parent shell explicitly unsets `UV_PYTHON` before any uv invocation or wrapper
+handoff. This compatibility input grants no interpreter-selection authority;
+the fixed private CPython request and absolute managed executable remain binding.
+This closed rule covers project/install/bin/interpreter/config/directory
+redirects, no-sources/package
+modes, custom mirrors/catalogs and unknown future controls. Inherited `PYTHON*`
+controls and a mismatched `VIRTUAL_ENV` also refuse, without printing values.
+Offline or non-automatic Python-download settings refuse a fresh install;
+no prohibition is converted into network permission. Discovered `uv.toml`
+overrides (source/ancestors, home, XDG and system locations), unreadable
+configuration and changes to the reviewed `[tool.uv.sources]` configuration
+refuse before installation. Every ancestor above the source through `/` must
+also have no `pyproject.toml`: any presence (unrelated, malformed, oversized,
+unreadable, directory or symlink, including dangling) or inspection error
+refuses using the pinned ancestry descriptors, before freezer dist/work
+reservation, install or sync. Only the source's own project is admitted through
+the exact frozen uv-settings check. This preserves local wheel selection
+without
+silently loading ambient user/system settings. Use a disposable build venue
+without those overrides; the script never edits external configuration.
+
+The full-app wrapper validates its own private temp/uv-cache roots before its
+early `uv --no-config --version` read. Ancestor-project admission occurs later
+in the freezer: the wrapper has already reserved scratch, exported source and
+read the uv version. Its existing finish diagnostics apply to that refusal;
+early inherited-environment refusal precedes the wrapper's finish trap.
+The freezer always selects its own
+admitted work/tmp for standalone and full-app use, overriding inherited TMPDIR.
+`PYINSTALLER_CONFIG_DIR` confines `--clean` to the fresh work/pyinstaller-cache.
+Allocation, install, discovery, identity or sync failure stops nonzero without
+ambient retry or later freeze/success. Work and caches remain with diagnostics;
+the venue owner disposes only of exact invocation allocations after evidence
+retention. No shared framework is chmodded, chowned, copied or repaired.
+Both daemon and CLI must be
 executable. Separate daemon/CLI PYZ archives share the byte-checked union of
 both native/data closures. Destination collisions refuse instead of dropping
 CLI-only payloads. `analysis.json` records actual pure/binary/data rows and CLI
 set differences, including empty differences. No missing-module bug is claimed
 from source inference; no removed runtime modules or retired units are restored.
+
+This repair has source/static evidence only. Actual managed installation,
+external-byte preservation, three-stage interpreter selection, new-distribution
+originals/fallback eligibility/library owners, freeze/app/ZIP, launch and native
+failure transitions remain **UNVERIFIED**, owned by engineering_manager. Risks
+include repeat fail-closed selection, freeze or finalization refusal; an
+uncontrolled external write remains a source defect requiring correction.
+No new native run, helper/test harness or release acceptance follows.
 
 `license-mapping.json` and `notices/` retain original installed license texts,
 versions, input inclusion and hashes. Go compilation dependencies and web source
@@ -99,7 +159,14 @@ offline originals and exact pinned identities in `packaging/notice-data/`.
 Installed originals take precedence. The CPython fallback requires matching
 effective toolchain and three stdlib hashes in both Analysis lanes; the twelve
 Radix fallbacks require pinned metadata and every actual emitted source hash.
-Unsafe paths, corrupt inputs and conflicts refuse retention. The web dependency
+Unsafe paths, corrupt inputs and conflicts refuse retention. A fixed 3.12.10
+request does not establish the old fallback's full build/platform/machine or
+stdlib/Analysis hashes. Unsafe/dangling installed originals never become
+absence fallback. Notice errors are caught by the spec as LICENSE_MISSING;
+Python-library disagreement can fail at python_snapshot, while a matching
+snapshot with a missing original (including a separate bundled library owner)
+is refused by final collect. The wrapper preserves the original failure and
+available=false rather than completing verification/archive/success. The web dependency
 now installs a local derivative of upstream scroll-bar source
 `8ca9ba5ea52de03308fe8ced94f7b159a44d28ff` (upstream version 2.3.7), including
 its byte-preserved original MIT LICENSE. This replaces the registry 2.3.8 input;
@@ -313,8 +380,9 @@ The full app wrapper opts into the private `freezer_evidence.py` contract. Befor
 the ordinary frozen sync it verifies the exact committed Darwin input described
 in [vendor provenance](vendor/pyinstaller-6.21.0/README.md), captures source and
 asset/toolchain bindings and reserves an exclusive response directory. Other
-platforms keep registry PyInstaller 6.21.0. The shared `build_daemon.sh` command
-is unchanged. Standalone freezer work has no app-custody token.
+platforms keep registry PyInstaller 6.21.0. The shared `build_daemon.sh` command retains that custody handoff while
+binding the private managed interpreter described above. Standalone freezer
+work has no app-custody token.
 
 The spec retains each Analysis/PYZ/EXE generation before later lanes can replace
 it. PYZ bootstrap selections and redirects, EXE raw inputs, both dependency
