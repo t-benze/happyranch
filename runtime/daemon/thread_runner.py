@@ -962,49 +962,52 @@ async def run_invocation(
     *, org_state, invocation_token: str, settings: Settings,
     host_supervisor: HostSessionSupervisor | None = None,
 ) -> None:
-    from runtime.orchestrator.thread_move import ThreadMoveAdmission, bind_thread_preparation
-    from runtime.orchestrator.team_move import DeferredTeamMove, TeamMoveCoordinator
-    from runtime.infrastructure.team_move_store import TeamMoveStore
-    move = getattr(org_state.db, "_team_move_coordinator", None)
-    if move is None:
-        move = TeamMoveCoordinator.for_org(TeamMoveStore(org_state.db, org_state.slug))
-    admission: ThreadMoveAdmission = move.threads
-    owner = admission.reserve(invocation_token)
-    if owner is None:
-        return
-    deferred = failed = False
-    try:
-        # SAME native thread identity spans all preparation, including helpers
-        # which catch their own package/refresh errors before provider launch.
-        with bind_thread_preparation(owner):
-            await _run_invocation_owned(org_state=org_state, invocation_token=invocation_token,
-                settings=settings, host_supervisor=host_supervisor, move_owner=owner)
-    except DeferredTeamMove:
-        deferred = True
-        raise
-    except asyncio.CancelledError:
-        # Shutdown can cancel the runner after its provider attempt already
-        # settled quiescent (e.g. during post-turn bookkeeping). That is not
-        # cleanup uncertainty. Cancellation before any launch, or with an open,
-        # unsettled or non-quiescent attempt, still retains it.
-        failed = not _attempts_settled_quiescent(owner)
-        raise
-    except BaseException:
-        failed = True
-        raise
-    finally:
-        import sys
-        primary = sys.exception()
+    with org_state._runner_lifetime() as admitted:
+        if not admitted:
+            return
+        from runtime.orchestrator.thread_move import ThreadMoveAdmission, bind_thread_preparation
+        from runtime.orchestrator.team_move import DeferredTeamMove, TeamMoveCoordinator
+        from runtime.infrastructure.team_move_store import TeamMoveStore
+        move = getattr(org_state.db, "_team_move_coordinator", None)
+        if move is None:
+            move = TeamMoveCoordinator.for_org(TeamMoveStore(org_state.db, org_state.slug))
+        admission: ThreadMoveAdmission = move.threads
+        owner = admission.reserve(invocation_token)
+        if owner is None:
+            return
+        deferred = failed = False
         try:
-            owner.finish(deferred=deferred, failed=failed)
-        except BaseException as settlement:
-            owner.owner_live = False
-            # Retain process-local attribution when durable settlement refuses.
-            if primary is not None:
-                primary.add_note(f"C2 lifecycle settlement failed: {settlement}")
-                logger.exception("C2 lifecycle settlement failed while preserving primary error")
-            else:
-                raise
+            # SAME native thread identity spans all preparation, including helpers
+            # which catch their own package/refresh errors before provider launch.
+            with bind_thread_preparation(owner):
+                await _run_invocation_owned(org_state=org_state, invocation_token=invocation_token,
+                    settings=settings, host_supervisor=host_supervisor, move_owner=owner)
+        except DeferredTeamMove:
+            deferred = True
+            raise
+        except asyncio.CancelledError:
+            # Shutdown can cancel the runner after its provider attempt already
+            # settled quiescent (e.g. during post-turn bookkeeping). That is not
+            # cleanup uncertainty. Cancellation before any launch, or with an open,
+            # unsettled or non-quiescent attempt, still retains it.
+            failed = not _attempts_settled_quiescent(owner)
+            raise
+        except BaseException:
+            failed = True
+            raise
+        finally:
+            import sys
+            primary = sys.exception()
+            try:
+                owner.finish(deferred=deferred, failed=failed)
+            except BaseException as settlement:
+                owner.owner_live = False
+                # Retain process-local attribution when durable settlement refuses.
+                if primary is not None:
+                    primary.add_note(f"C2 lifecycle settlement failed: {settlement}")
+                    logger.exception("C2 lifecycle settlement failed while preserving primary error")
+                else:
+                    raise
 
 
 async def _run_invocation_owned(

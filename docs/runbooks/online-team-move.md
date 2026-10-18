@@ -168,8 +168,19 @@ rows and prepared recovery/retry owners; absence of first launch is no proof of
 preparation cleanup. Unknown deferred entries cannot authorize a fresh launch.
 Native pre-effect source/artifact validation, repo-scan and missing launch-seam refusals
 retain their no-effect disposition. Existing retry/recovery IDs, frozen budgets,
-INTEGER callbacks and authority-v2 are preserved. No new field/journal, history
+INTEGER callbacks and authority-v2 are preserved. No new persisted field/journal, history
 backfill, compensation or clearance writer is introduced. Behavior UNEXECUTED.
+
+Async thread/dream/wake/Todo repository refresh runs off-loop with its SAME
+native owner and a joined worker. A private org lifetime begins before native
+reservation and ends after native finish, including failure. Ordinary unload
+refuses active runners with409, retains existing task/team-move checks, and
+fences old OrgState references before detachment. Shutdown stops runner/new-org
+attachment admission and joins actual runners through refresh and settlement
+before closing databases; repeated cancellation during the join cannot skip it.
+This is process-local lifetime bookkeeping, not durable clearance or process
+quiescence proof. Earlier unknown history and persistence failures remain sticky;
+all timing/race/shutdown/recovery behavior remains UNVERIFIED.
 
 Exact diffs/manifests belong only in the admitted Founder's private client
 session. Do not paste them into shared artifacts, logs or public PRs. They

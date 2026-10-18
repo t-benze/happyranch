@@ -88,8 +88,14 @@ one 30-second batch deadline; exhausted/unattempted siblings stay false. Thread/
 wake/Todo await off-loop refresh under the SAME native preparation-effects scope,
 joining its worker before cancellation propagates and settlement runs. Timeout
 never certifies process-tree quiescence; existing unknown owners remain sticky.
+The four async runner entrypoints retain a private org lifetime through native
+finish (including failure), beyond the refresh Future. Org unload refuses active
+runners and fences detached instances against late starts. Shutdown stops runner
+and attachment admission, then joins cancelled workers and native finish before
+DB close; repeated cancellation during that join cannot skip it. No timeout
+establishes quiescence, and failed persistence retains native uncertainty.
 Existing retry/recovery IDs, frozen budgets,
-INTEGER callbacks and authority-v2 are preserved. No new field/journal, history
+INTEGER callbacks and authority-v2 are preserved. No new persisted field/journal, history
 backfill, compensation or clearance writer is introduced. Behavior UNEXECUTED.
 
 Preview resolves native current names/IDs, rejects former/unknown names, uses

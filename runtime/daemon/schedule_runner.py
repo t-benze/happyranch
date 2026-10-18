@@ -510,7 +510,10 @@ async def run_schedule(
     executor_factory: Callable | None = None,
     host_supervisor: HostSessionSupervisor | None = None,
 ) -> None:
-    from runtime.orchestrator.producer_move import run_native_producer
-    await run_native_producer(org_state, 'schedule', schedule_id, lambda owner: _run_schedule(
-        org_state=org_state, schedule_id=schedule_id, settings=settings,
-        executor_factory=executor_factory, host_supervisor=host_supervisor, _move_owner=owner))
+    with org_state._runner_lifetime() as admitted:
+        if not admitted:
+            return
+        from runtime.orchestrator.producer_move import run_native_producer
+        await run_native_producer(org_state, 'schedule', schedule_id, lambda owner: _run_schedule(
+            org_state=org_state, schedule_id=schedule_id, settings=settings,
+            executor_factory=executor_factory, host_supervisor=host_supervisor, _move_owner=owner))

@@ -556,7 +556,10 @@ async def run_dream(
     admission_gate: Callable[[], Awaitable[None]] | None = None,
     host_supervisor: HostSessionSupervisor | None = None,
 ) -> None:
-    from runtime.orchestrator.producer_move import run_native_producer
-    await run_native_producer(org_state, 'dream', dream_id, lambda owner: _run_dream(
-        org_state=org_state, dream_id=dream_id, settings=settings,
-        executor_factory=executor_factory, admission_gate=admission_gate, host_supervisor=host_supervisor, _move_owner=owner))
+    with org_state._runner_lifetime() as admitted:
+        if not admitted:
+            return
+        from runtime.orchestrator.producer_move import run_native_producer
+        await run_native_producer(org_state, 'dream', dream_id, lambda owner: _run_dream(
+            org_state=org_state, dream_id=dream_id, settings=settings,
+            executor_factory=executor_factory, admission_gate=admission_gate, host_supervisor=host_supervisor, _move_owner=owner))

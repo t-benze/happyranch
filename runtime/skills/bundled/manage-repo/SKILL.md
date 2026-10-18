@@ -76,7 +76,12 @@ source. Every executed pull failure, including dirty/non-FF/partial recursive
 effects, retains native uncertainty; upstream lookup or equal parent summaries
 never certifies no effects. Async thread/dream/wake/Todo paths await a joined
 offload inside their actual preparation-effects scope before cancellation and
-settlement; prior unknowns stay sticky.
+settlement; prior unknowns stay sticky. The enclosing runner retains its org
+lifetime through native finish, including failure. Unload refuses active runners
+and fences late starts on detached instances; shutdown stops runner/new-org
+attachment admission and joins actual runners before DB close. Cancellation or
+timeout never establishes process quiescence. Runtime/race/recovery verification
+remains UNVERIFIED.
 
 ## Error handling
 
