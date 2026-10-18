@@ -51,8 +51,10 @@ jobs:
 
   managed-n3-real-systemd:
     name: Managed N3 Real systemd (Ubuntu 24.04)
-    # THR228seq514 first candidate: exactly ONE PR800 synchronization from the
-    # published head, attempt 1. Later updates, reopen/main/manual/rerun events
+    # THR228seq514/523 conditional FINAL candidate after FAILED39124834332/1:
+    # exactly ONE PR800 synchronization from ef586038, attempt1. LOCAL source
+    # grants no publication; ROOT11824 must renew full review and same-head QA.
+    # Later updates, reopen/main/manual/rerun events
     # cannot renew this allocation. before/after belong to synchronize payloads.
     if: >-
       ${{ github.event_name == 'pull_request' &&
@@ -62,7 +64,7 @@ jobs:
           github.event.pull_request.head.repo.full_name == github.repository &&
           github.event.pull_request.head.ref == 'task/TASK-6475' &&
           github.event.pull_request.base.ref == 'main' &&
-          github.event.before == 'e071377a98f72057f90ecba1569fe10c02c696b3' &&
+          github.event.before == 'ef586038b9fc1ba6bb830b36a6998165fab41dae' &&
           github.event.after != '' &&
           github.event.after != github.event.before &&
           github.event.after == github.event.pull_request.head.sha &&
@@ -95,7 +97,7 @@ jobs:
               and head.get("ref") == "task/TASK-6475"
               and head.get("repo", {}).get("full_name") == "t-benze/happyranch"
               and base.get("ref") == "main"
-              and event.get("before") == "e071377a98f72057f90ecba1569fe10c02c696b3"
+              and event.get("before") == "ef586038b9fc1ba6bb830b36a6998165fab41dae"
               and isinstance(after, str) and re.fullmatch(r"[0-9a-f]{40}", after) is not None
               and after != event["before"] and after == head.get("sha")
           )

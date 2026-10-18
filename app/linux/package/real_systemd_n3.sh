@@ -96,10 +96,11 @@ tsnet_open() {
 # Elevate only this dedicated observer, using the existing capture CLI pattern.
 # Direct read-only queries inherit its UID/group; no inner sudo monitor detaches.
 virtual_text() {
-  local cap="$1" result python_command status=0; shift
+  local cap="$1" framing="$2" result python_command status=0; shift 2
   virtual_text_value=""; virtual_text_reason=unavailable
+  case "$framing" in lf|json) ;; *) return 1 ;; esac
   python_command="$(command -v python)" || return 1
-  result="$(timeout --kill-after=2 5 sudo -n "$python_command" - "$failure_capture_driver" "$cap" "$@" 2>/dev/null <<'PY_VIRTUAL_TEXT'
+  result="$(timeout --kill-after=2 5 sudo -n "$python_command" - "$failure_capture_driver" "$cap" "$framing" "$@" 2>/dev/null <<'PY_VIRTUAL_TEXT'
 import importlib.util
 import sys
 import signal
@@ -115,13 +116,16 @@ for item in (signal.SIGHUP, signal.SIGINT, signal.SIGTERM):
 spec = importlib.util.spec_from_file_location("n3_capture", sys.argv[1])
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
-raw, loss = module._bounded_observation(sys.argv[3:], seconds=3, cap=int(sys.argv[2]), require_root=True)
+raw, loss = module._bounded_observation(sys.argv[4:], seconds=3, cap=int(sys.argv[2]), require_root=True)
 if loss != "observed":
     print(loss)
     raise SystemExit(1)
 try:
     value = raw.decode("utf-8", "strict")
-    if not value.endswith("\n") or any(not c.isprintable() and c not in "\n\t" for c in value):
+    if sys.argv[3] == "lf" and not value.endswith("\n"):
+        print("framing_invalid")
+        raise SystemExit(1)
+    if any(not c.isprintable() and c not in "\n\t" for c in value):
         raise ValueError
 except (ValueError, UnicodeError):
     print("parse_loss")
@@ -134,7 +138,7 @@ PY_VIRTUAL_TEXT
     0) [[ "$result" == observed$'\n'* ]] || return 1
        virtual_text_value="${result#*$'\n'}"; virtual_text_reason=observed ;;
     124|137) virtual_text_reason=timeout; return 1 ;;
-    *) case "$result" in timeout|query_error|launch_failure|truncated|parse_loss) virtual_text_reason="$result" ;; esac
+    *) case "$result" in timeout|query_error|launch_failure|truncated|parse_loss|framing_invalid) virtual_text_reason="$result" ;; esac
        return 1 ;;
   esac
 }
@@ -146,7 +150,7 @@ bind_stop_instance() {
   [[ "$stop_since" =~ ^[1-9][0-9]{9}\.[0-9]{6}$ ]] || { virtual_refuse "$phase" binding timestamp_invalid; return 1; }
   stop_boot="$(cat /proc/sys/kernel/random/boot_id)" || { virtual_refuse "$phase" binding unavailable; return 1; }
   [[ "$stop_boot" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] || { virtual_refuse "$phase" binding boot_mismatch; return 1; }
-  virtual_text 1024 systemctl show happyranch-tsnet-sidecar.service -p MainPID -p InvocationID -p ExecMainStartTimestampMonotonic -p ActiveState || { virtual_refuse "$phase" binding "$virtual_text_reason"; return 1; }
+  virtual_text 1024 lf systemctl show happyranch-tsnet-sidecar.service -p MainPID -p InvocationID -p ExecMainStartTimestampMonotonic -p ActiveState || { virtual_refuse "$phase" binding "$virtual_text_reason"; return 1; }
   properties="$virtual_text_value"
   while IFS='=' read -r key value; do
     [[ "$seen" != *"|$key|"* ]] || { virtual_refuse "$phase" binding duplicate_field; return 1; }
@@ -164,7 +168,7 @@ bind_stop_instance() {
   [[ "$started" =~ ^[1-9][0-9]{0,17}$ && "$state" == active ]] || { virtual_refuse "$phase" binding changed; return 1; }
   # Recheck the complete tuple before Stop, rather than combining fields from
   # different activations. Journal invocation+boot+time excludes stale/PID reuse.
-  virtual_text 1024 systemctl show happyranch-tsnet-sidecar.service -p MainPID -p InvocationID -p ExecMainStartTimestampMonotonic -p ActiveState || { virtual_refuse "$phase" binding "$virtual_text_reason"; return 1; }
+  virtual_text 1024 lf systemctl show happyranch-tsnet-sidecar.service -p MainPID -p InvocationID -p ExecMainStartTimestampMonotonic -p ActiveState || { virtual_refuse "$phase" binding "$virtual_text_reason"; return 1; }
   checked="$virtual_text_value"
   [[ "$checked" == "$properties" ]] || { virtual_refuse "$phase" binding changed; return 1; }
   virtual_note "$phase" binding observed || return 1
@@ -176,7 +180,7 @@ virtual_note() {
   local phase="$1" check="$2" reason="$3" line
   case "$phase" in final|shipping|health_loss|stop_barrier|readiness_loss|shutdown) ;; *) phase=unknown ;; esac
   case "$check" in binding|sync|journal|mainpid|peer|probe|removal) ;; *) return 1 ;; esac
-  case "$reason" in observed|complete|unavailable|timeout|query_error|launch_failure|truncated|over_cap|parse_loss|duplicate_field|binary_field|cursor_invalid|pid_mismatch|invocation_mismatch|boot_mismatch|timestamp_invalid|receipt_noncanonical|receipt_duplicate|receipt_missing|changed|nonzero|missing|connected|failed|failed_timeout|refused) ;; *) return 1 ;; esac
+  case "$reason" in observed|complete|unavailable|timeout|query_error|launch_failure|truncated|over_cap|parse_loss|framing_invalid|json_invalid|status_shape|backend_state|self_shape|hostname_mismatch|node_invalid|ips_invalid|ip_invalid|duplicate_field|binary_field|cursor_invalid|pid_mismatch|invocation_mismatch|boot_mismatch|timestamp_invalid|receipt_noncanonical|receipt_duplicate|receipt_missing|changed|nonzero|missing|connected|failed|failed_timeout|refused) ;; *) return 1 ;; esac
   line="n3-virtual:$phase:$check:$reason"
   printf '%s\n' "$line" >&2
   (( ${virtual_note_count:-0} < 64 && ${#line} < 128 )) || return 1
@@ -241,8 +245,11 @@ def printable(value):
 # stdout NORMAL+5. This is acquisition ordering, never receipt/identity proof.
 query("sync", ["journalctl", "--sync"], 1024)
 print("sync:observed", flush=True)
+
+# v255 parses a canonical32 selector; retain original dashed boot binding
+# and compare each journal _BOOT_ID against exactly that same original ID.
 raw = query("journal", ["journalctl", "-u", "happyranch-tsnet-sidecar.service",
-    "--boot=" + boot, "--since=@" + since, "_PID=" + pid,
+    "--boot=" + boot.replace("-", ""), "--since=@" + since, "_PID=" + pid,
     "_SYSTEMD_INVOCATION_ID=" + invocation, "--no-pager", "--all", "-o", "json",
     "--output-fields=MESSAGE,_PID,_SYSTEMD_INVOCATION_ID,_BOOT_ID"], 65536)
 try:
@@ -387,33 +394,55 @@ peer_current() {
   [[ -n "${peer_started:-}" && -n "${peer_node:-}" ]] || { virtual_peer_reason=missing; return 1; }
   process="$(peer_process_identity)" || return 1
   [[ "$process" == "$peer_started" ]] || { virtual_peer_reason=changed; return 1; }
-  virtual_text 65536 "$ts_dir/tailscale" --socket="$work/peer.sock" status --json || { virtual_peer_reason="$virtual_text_reason"; return 1; }
-  # Preserve the same peer_identity fields and real local API, with bounded
-  # acquisition and closed parse failure rather than suppressed raw errors.
+  virtual_text 65536 json "$ts_dir/tailscale" --socket="$work/peer.sock" status --json || { virtual_peer_reason="$virtual_text_reason"; return 1; }
+  # Tailscale1.102.3 emits complete JSON without a final LF. Only this
+  # acquisition uses json framing; all identity predicates still run below.
+  # Emit fixed refusal identifiers only; never decoder text or status values.
   identity="$(timeout --kill-after=1 3 python -c '
 import ipaddress,json,sys
+def refuse(reason):
+    print(reason)
+    raise SystemExit(1)
 def unique(pairs):
     result = {}
     for key, value in pairs:
         if key in result:
-            raise ValueError
+            refuse("duplicate_field")
         result[key] = value
     return result
-d = json.load(sys.stdin, object_pairs_hook=unique)
-(isinstance(d,dict)) or sys.exit(1)
+try:
+    d = json.load(sys.stdin, object_pairs_hook=unique)
+except (ValueError, RecursionError):
+    refuse("json_invalid")
+if not isinstance(d,dict):
+    refuse("status_shape")
+if d.get("BackendState") != "Running":
+    refuse("backend_state")
 s = d.get("Self")
-(d.get("BackendState")=="Running" and isinstance(s,dict) and s.get("HostName")=="synthetic-peer-ci") or sys.exit(1)
+if not isinstance(s,dict):
+    refuse("self_shape")
+if s.get("HostName") != "synthetic-peer-ci":
+    refuse("hostname_mismatch")
 i = s.get("ID")
-(isinstance(i,str) and i and i.isascii() and i.isalnum()) or sys.exit(1)
+if not (isinstance(i,str) and i and i.isascii() and i.isalnum()):
+    refuse("node_invalid")
 ips = s.get("TailscaleIPs")
-(isinstance(ips,list) and ips and all(isinstance(ip,str) and ip for ip in ips)) or sys.exit(1)
-[ipaddress.ip_address(ip) for ip in ips]
+if not (isinstance(ips,list) and ips and all(isinstance(ip,str) and ip for ip in ips)):
+    refuse("ips_invalid")
+try:
+    [ipaddress.ip_address(ip) for ip in ips]
+except ValueError:
+    refuse("ip_invalid")
 print(i)
 ' <<<"$virtual_text_value" 2>/dev/null)" || status=$?
   case "$status" in
     0) ;;
     124|137) virtual_peer_reason=timeout; return 1 ;;
-    *) virtual_peer_reason=parse_loss; return 1 ;;
+    *) case "$identity" in
+         duplicate_field|json_invalid|status_shape|backend_state|self_shape|hostname_mismatch|node_invalid|ips_invalid|ip_invalid) virtual_peer_reason="$identity" ;;
+         *) virtual_peer_reason=parse_loss ;;
+       esac
+       return 1 ;;
   esac
   [[ "$identity" == "$peer_node" ]] || { virtual_peer_reason=changed; return 1; }
   process="$(peer_process_identity)" || return 1

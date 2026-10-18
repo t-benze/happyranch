@@ -1,11 +1,11 @@
 # PR800 staged credential and mode cases — THR228seq428
 
 Current bounded recovery: THR-228 seq514/523 / sole delivery root TASK11824,
-local recovery maker TASK11826. TASK11746 is terminally FAILED; TASK11757's
+local correction maker TASK11872 after recovery makers TASK11826/11861. TASK11746 is terminally FAILED; TASK11757's
 preserved local candidate is recovered without reviving predecessor tasks.
 The historical sections below retain their original scope; remaining seq498
 allocation statements are superseded by its terminal 3/3 FAILED closeout.
-The final section records the SAME carried seq514 two-run ceiling at 0/2,
+The final section records the SAME carried seq514 two-run ceiling at 1/2,
 not a reset or new allocation. No maker publication or execution follows.
 
 Authority: sole root TASK10989, direct maker TASK10991. These are finite source
@@ -367,14 +367,19 @@ installer, shutdown and cleanup remain distinct missing executable proofs.
 As of the 2026-10-18 local recovery reconciliation, sole delivery root
 TASK11824 carries THR-228 seq514's SAME ceiling of TWO serial updates/automatic
 attempt1 runs under seq523 (approving seq520). TASK11746 is terminally FAILED;
-this is supported recovery, not predecessor revival or a reset. Recorded
-publications/reservations/runs remain **0/2**; neither original maker TASK11757
-nor recovery maker TASK11826 has published or reserved a run. Both current CI
-boundaries admit only
-before=`e071377a98f72057f90ecba1569fe10c02c696b3`, distinct canonical after equal
-the actual PR800 head, same repo/task6475/main, synchronize and attempt1. The
-second update is NOT pre-enabled. All H22 denial scenarios above apply with
-this new before; the old before9219 is now also spent. Root must freshly bind
+this is supported recovery, not predecessor revival or a reset. The predecessor
+checkpoint recorded0/2; neither maker published or reserved.
+ROOT11824 subsequently published ef586038; actual run39124834332/1 FAILED,
+reported/read back THR228seq526. Current publications/runs consumed **1/2**,
+no reservation; remaining1 CLOSED. FULL11864/QA11865 cover ef586038 only,
+SOURCE/STATIC. This conditional LOCAL candidate requires NEW FULL exact-head
+independent review followed by SAME-head static QA before ROOT considers the
+last slot. Both conditional final CI boundaries admit only
+before=`ef586038b9fc1ba6bb830b36a6998165fab41dae`, distinct canonical after equal
+the actual PR800 head, same repo/task6475/main, synchronize and attempt1.
+Local guard source grants no reservation or publication. All H22 denial
+scenarios above apply with
+this new before; old beforee071 and before9219 are spent. Root must freshly bind
 reviewed head/tree/main, preserve nonforce ancestry, reconcile all histories
 and own each result report. This source is local only, pending independent
 full-diff review and same-head source/static QA. TASK11824 alone owns the
@@ -399,6 +404,37 @@ health-loss listener teardown proof. Its exact refused subpredicate is UNKNOWN;
 terminal=null and product/fixture cleanup acceptance remain missing. The new
 fixed diagnostics cannot retrospectively identify that old failure. Neither
 sync nor missing receipts establish a product defect or surviving listener.
+
+Actual first recovery run39124834332/1 retains14 completed observations;
+health-loss binding:observed, probe:failed_timeout, sync:observed,
+journal:query_error, independent peer:parse_loss and removal:refused.
+MainPID was unreached. Later final binding pid_mismatch/missing, failed_timeout
+and parse_loss do not prove removal. terminal=null, fixtures_reaped0, no completed
+cleanup record: missing proof, not proven residue. Window-only/truncated connector
+consequences do not establish an initiating product defect. All earlier failures,
+including38788101249/1 UNKNOWN receipt/binding/peer/probe refusal, remain history.
+
+THR228seq526 conditional correction uses two source-supported acquisition findings:
+v255 `parse_boot_descriptor` copies first32 characters, then parses an offset;
+`--boot` now serializes the validated dashed36 source as canonical32. Original
+exact dashed boot binding, receipt canonical32 identity, PID/invocation/time/cursor
+and Stop1+2 assertions are unchanged. No retry follows query/decoder/identity loss.
+Pinned Tailscale1.102.3 (commit53a0d659afa51835dd7a9283873cca44261454f8)
+[status producer](https://github.com/tailscale/tailscale/blob/53a0d659afa51835dd7a9283873cca44261454f8/cmd/tailscale/cli/status.go)
+uses MarshalIndent and printf without a trailing LF; its
+[printf](https://github.com/tailscale/tailscale/blob/53a0d659afa51835dd7a9283873cca44261454f8/cmd/tailscale/cli/cli.go)
+uses Fprintf without adding one. `virtual_text` had required LF before the
+peer decoder. Only peer acquisition now selects JSON framing; systemctl property
+queries retain LF, all raw text retains UTF8/control and size restrictions.
+`peer_identity` and `peer_current` require Running, Self object, exact HostName,
+ASCII alphanumeric nonempty ID, nonempty valid IP list; current also rejects
+duplicates and compares SAME node plus live process start ticks before/after.
+The bounded fixed identifiers separate framing from actually evaluated decoding
+and identity subpredicates, never raw JSON/IDs/keys/errors. No identity assertion
+is removed. These source mismatches support correction, not retrospective proof
+of the actual/only runtime cause: suppressed stderr/raw bytes leave it **UNKNOWN**.
+Journal-delay remains unconfirmed; sync is not complete delivery or binding.
+No new runtime success, repeated case proof or product repair is claimed.
 
 Source support: upstream systemd v255 journalctl.c `sync_journal` calls Varlink
 `io.systemd.Journal.Synchronize`; journald-server.c `vl_method_synchronize`
@@ -493,13 +529,13 @@ mutation, repetition and executable QA proof are **UNEXECUTED/SUSPENDED**.
 
 | Existing case / requirement | Exact seam, preconditions and action | Observable expected result | Defect detected / level |
 | --- | --- | --- | --- |
-| H24/H25/H46 complete removal conjunction | Bind active PID/invocation/start/boot/time twice; stop; sync; query distinct canonical Stop1+2 receipts; MainPID0; same live peer before/after status; real nc fails | binding/sync/journal/mainpid/peer evidence plus failed probe and removal:complete; unrelated printable journal records allowed | Missing conjunction term, discarded query failure or stale proof; source/static now, hosted N3 later |
+| H24/H25/H46 complete removal conjunction | Bind active PID/invocation/start/boot/time twice; validate original dashed36 boot, serialize canonical32 selector only; invalid/changed boot refuses; stop; sync; query distinct canonical Stop1+2 receipts; MainPID0; same live peer before/after status; real nc fails | binding/sync/journal/mainpid/peer evidence plus failed probe and removal:complete; unrelated printable journal records allowed | Missing conjunction term, discarded query failure or stale proof; source/static now, hosted N3 later |
 | H50 successful dial veto | Same valid Stop/peer evidence, but real nc returns0 | probe:connected then removal:refused regardless of other successes | Receipts override real successful connection; source/static only |
-| H27/H35/H45/H46 receipt and binding refusal | At actual bind/query decoder, vary missing/duplicate/noncanonical receipt, PID/invocation/boot/time/cursor and changed binding independently | Fixed missing/changed, receipt_missing/receipt_duplicate/receipt_noncanonical, pid_mismatch/invocation_mismatch/boot_mismatch/timestamp_invalid/cursor_invalid; no completion | Stale, duplicated or normalized receipt admitted; source/static only |
-| H25/H45 acquisition loss | Owner/subreaper/readback/required UID unavailable (no launch), first/repeated HUP/INT/TERM across launch-handle/read/cleanup/restore (nonzero, never observed), unconfirmed owned-group cleanup (query_error), sync/query launch unavailable, nonzero exit, timeout; malformed JSON/UTF8/constants/duplicate fields, binary arrays, truncated LF, raw/frame/count over cap | Fixed launch_failure/query_error/timeout/parse_loss/duplicate_field/binary_field/truncated/over_cap at the refusing check; no raw content or completion | Query errors treated as absence/success, unbounded buffering or failure prose leak; source/static only |
-| H24/H34 peer/probe loss | Missing target/executable/socket, missing peer binding, changed start ticks/node ID, failed/malformed/timed-out status; actual failed/timed-out nc with complete independent evidence | probe unavailable refuses; peer missing/changed/unavailable/parse_loss/query_error/timeout refuses; actual failed probe alone never passes and never proves remote refusal or listener survival | Missing observer or failed privilege launch admitted, failed dial alone used as removal proof; source/static only |
+| H27/H35/H45/H46 receipt and binding refusal | At actual bind/query decoder, vary missing/duplicate/noncanonical receipt, PID/invocation/boot/time/cursor and changed binding independently | Original exact boot equality and canonical32 _BOOT_ID comparison retained alongside fixed missing/changed, receipt_missing/receipt_duplicate/receipt_noncanonical, pid_mismatch/invocation_mismatch/boot_mismatch/timestamp_invalid/cursor_invalid; no completion | Stale, duplicated or normalized receipt admitted; source/static only |
+| H25/H45 acquisition loss | Owner/subreaper/readback/required UID unavailable (no launch), first/repeated HUP/INT/TERM across launch-handle/read/cleanup/restore (nonzero, never observed), unconfirmed owned-group cleanup (query_error), sync/query launch unavailable, nonzero exit, timeout without retry; malformed JSON/UTF8/constants/duplicate fields, binary arrays, truncated LF, raw/frame/count over cap | Fixed launch_failure/query_error/timeout/parse_loss/duplicate_field/binary_field/truncated/over_cap at the refusing check; no raw content or completion | Query errors treated as absence/success, unbounded buffering or failure prose leak; source/static only |
+| H24/H34 peer/probe loss | Pinned complete peer JSON without LF (and with LF), property text missing LF, missing target/executable/socket, missing peer binding, changed start ticks/node ID; duplicate/invalid JSON, wrong status/Self/hostname/ID/IP predicates, failed/malformed/timed-out status; actual failed/timed-out nc with complete independent evidence | Peer-only JSON acquisition accepts absent final LF without bypassing decoding or identity; properties still require LF. Fixed framing_invalid/json_invalid/duplicate_field/status_shape/backend_state/self_shape/hostname_mismatch/node_invalid/ips_invalid/ip_invalid distinguish evaluated refusal, fallback parse_loss stays UNKNOWN. Peer missing/changed/unavailable/query_error/timeout refuses without retry; probe unavailable refuses; actual failed probe alone never passes and never proves remote refusal or listener survival | Missing observer or failed privilege launch admitted, failed dial alone used as removal proof; source/static only |
 | H40/H43/D09 original cause and teardown | Refuse any bound check in health-loss/barrier/readiness/shutdown, then enter independent final cleanup; also inject retention failure | Original caller failure/status retained; later fixed phase records remain distinct; remaining safe teardown attempts still run; missing final binding refuses | Later cleanup overwrites initiating cause, hides refusal or skips independent teardown; source/static only |
-| H22/S06 first finite update | Both CI boundaries: exact new before, after=head canonical/distinct, repo/head repo/PR/ref/base/event/attempt; vary each and subsequent unallocated update | Only first authorized update can reach build; wrong fields/old before/attempt2/manual/push/open/reopen and next before refuse; canonical after is enforced pre-build | Spent allocation renewed or slot2 silently opened; source/static only, no guard scenario executed |
+| H22/S06 conditional final finite update | Both CI boundaries: exact new before, after=head canonical/distinct, repo/head repo/PR/ref/base/event/attempt; vary each and subsequent unallocated update | Only ROOT-authorized final update can reach build; wrong fields/old before/attempt2/manual/push/open/reopen and next before refuse; canonical after is enforced pre-build | Spent allocation renewed or local source treated as slot/publication authority; source/static only, no guard scenario executed |
 
 Raw journal acquisition is not persisted. No changes to production receipts,
 auth/credentials/schema/units/sandbox, evidence JSON or failure-snapshot schema.
