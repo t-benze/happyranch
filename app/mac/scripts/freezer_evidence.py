@@ -973,6 +973,19 @@ def check_toolchain(session,tool):
         check_subject(observed['subject'],session.roots,session.budget)
 
 
+def _admit_process_roots(roles: tuple[tuple[str, Path], ...], roots: list[str]) -> None:
+    """Validate every occurrence before incremental, admission-only deduplication."""
+    for role, root in roles:
+        try:
+            with ASSET['RootHandle'](root, '/', False):
+                pass
+        except ASSET['AssetError'] as error:
+            ASSET['directory_context'](error, role=role, root=root)
+            raise
+        if str(root) not in roots:
+            roots.append(str(root))
+
+
 def spec_begin(project):
     raw = os.environ.get('HAPPYRANCH_FREEZER_CALLER')
     if raw is None:
@@ -986,11 +999,9 @@ def spec_begin(project):
     session.context()
     need(sys.platform == 'darwin' and platform.machine() == 'arm64' and (3,12) <= sys.version_info[:2] <= (3,14), 'NATIVE_PLATFORM')
     # These explicit observed process roots are not installer or image attestation.
-    for root in (Path(sys.prefix), Path(sys.base_prefix), Path(sysconfig.get_path('stdlib')), Path('/usr/bin')):
-        with ASSET['RootHandle'](root, '/', False):
-            pass
-        if str(root) not in session.roots:
-            session.roots.append(str(root))
+    _admit_process_roots((('prefix', Path(sys.prefix)), ('base_prefix', Path(sys.base_prefix)),
+                          ('stdlib', Path(sysconfig.get_path('stdlib'))), ('usr-bin', Path('/usr/bin'))),
+                         session.roots)
     need(len(session.roots) <= 16, 'ROOT_CAP')
     session.analysis, session.lanes = {}, {}
     session.installed = installed_pyinstaller(session)
