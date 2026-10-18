@@ -65,9 +65,18 @@ Manage the repositories cloned into your `repos/` directory. You can **add** a n
 
 ## What happens
 
-- **add**: writes the entry to your `org/agents/<name>.md` frontmatter (`AgentDef.repos`), clones the repo into `repos/<name>/` (or `git pull --ff-only` if a clone already exists), and refreshes executor workspace metadata. Repo freshness is daemon-side (THR-103): the session-spawn `refresh_workspace_repos` fast-forward-pull covers the new repo automatically — no per-workspace git-pull hook is emitted.
+- **add**: writes the entry to your `org/agents/<name>.md` frontmatter (`AgentDef.repos`), clones the repo into `repos/<name>/` (or `git pull --ff-only` if a clone already exists), and refreshes executor workspace metadata. Repo freshness is daemon-side (THR-103); no per-workspace git-pull hook is emitted.
 - **remove**: deletes the entry from your `org/agents/<name>.md` frontmatter, removes the `repos/<name>/` directory, and refreshes executor workspace metadata.
 - **update**: updates the URL in your `org/agents/<name>.md` frontmatter, deletes the old clone, re-clones from the new URL, and refreshes executor workspace metadata.
+
+Session-spawn `refresh_workspace_repos` attempts refresh under one 30-second
+batch deadline. Detached HEAD or missing/unusable/unreadable upstream refuses
+before pull; refused/unattempted repos stay false and the prompt warns of stale
+source. Every executed pull failure, including dirty/non-FF/partial recursive
+effects, retains native uncertainty; upstream lookup or equal parent summaries
+never certifies no effects. Async thread/dream/wake/Todo paths await a joined
+offload inside their actual preparation-effects scope before cancellation and
+settlement; prior unknowns stay sticky.
 
 ## Error handling
 

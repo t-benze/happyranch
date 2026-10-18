@@ -51,7 +51,7 @@ from runtime.orchestrator.org_config import (
 from runtime.orchestrator.workspace_adapters import (
     format_repo_refresh_note,
     materialize_workspace_skills,
-    refresh_workspace_repos,
+    refresh_workspace_repos_async,
     validate_workspace_skills_integrity,
     WorkspaceIntegrityError,
     SystemContractMaterializationError,
@@ -1223,10 +1223,11 @@ async def _run_invocation_owned(
 
     # THR-103: fast-forward-refresh every cloned repo so the agent has
     # fresh code regardless of executor (claude/codex/opencode/pi).
-    # Must run BEFORE the executor subprocess starts. Failure is non-
-    # blocking: offline / dirty / non-ff / timeout are swallowed.
+    # Await the joined offload BEFORE executor launch, inside the SAME native
+    # effects scope. Failed/skipped refreshes warn of stale source; executed
+    # failures retain uncertainty. Cancellation waits for worker completion.
     with move_owner.preparation_effects():
-        repo_refresh_results = refresh_workspace_repos(workspace)
+        repo_refresh_results = await refresh_workspace_repos_async(workspace)
 
     repo_refresh_note = format_repo_refresh_note(repo_refresh_results)
 
