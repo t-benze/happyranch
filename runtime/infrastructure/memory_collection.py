@@ -47,7 +47,10 @@ EMPTY_DIGEST = hashlib.sha256(b"").hexdigest()
 # Bound all acquired audit history, including unrelated/prior-boot rows. A
 # limit is an unavailable observation, never permission to validate a prefix.
 CENSUS_READ_PAGE_ROWS = 256
-MAX_CENSUS_READ_ROWS = 100_000
+MAX_CENSUS_READ_ROWS = 250_000
+MAX_CENSUS_READ_BYTES = 512 * 1_048_576
+# Semantic work bounds are independent of complete-history acquisition.
+MAX_CENSUS_SEMANTIC_COUNT = 100_000
 
 COLLECTION_TAG = "MemoryCollectionV1: "
 MAX_ACCEPTANCE_BYTES = 1_048_576
@@ -300,6 +303,42 @@ class CensusReadUnavailable(Exception):
         super().__init__(category)
         self.category = category
 
+
+class _CensusReadBudget:
+    """Per-capture rows/table and aggregate canonical ASCII JSON bytes.
+
+    Charge the complete logical row, decoding audit payloads only for sizing.
+    Returned raw rows remain intact. Check incrementally after each bounded
+    page; this is a retained-evidence budget, not a preemptive HTTP/RSS limit.
+    """
+
+    def __init__(self) -> None:
+        self.rows: dict[str, int] = {}
+        self.bytes = 0
+
+    def add(self, table: str, rows: list[dict]) -> None:
+        count = self.rows.get(table, 0) + len(rows)
+        if count > MAX_CENSUS_READ_ROWS:
+            raise CensusReadUnavailable("census_read_work_limit")
+        for row in rows:
+            logical = row
+            if table == "audit_log" and isinstance(row["payload"], str):
+                logical = {**row, "payload": _strict_json(row["payload"])}
+            # ASCII encoding makes len equal to encoded bytes, independent of
+            # Unicode storage width. Only one row serialization is transient.
+            self.bytes += len(json.dumps(logical, sort_keys=True, separators=(",", ":"),
+                                         ensure_ascii=True, allow_nan=False))
+            if self.bytes > MAX_CENSUS_READ_BYTES:
+                raise CensusReadUnavailable("census_read_byte_limit")
+        self.rows[table] = count
+
+
+def _check_census_budget(tables: dict) -> None:
+    budget = _CensusReadBudget()
+    for table, rows in tables.items():
+        budget.add(table, rows)
+
+
 RENDER_CONTRACT_DIGEST = hashlib.sha256(
     inspect.getsource(MemoryStore.render_memory_digest).encode("utf-8")
 ).hexdigest()
@@ -522,6 +561,7 @@ class CollectionObserver:
         """
         revision = self._read_revision()
         tables: dict[str, list[dict]] = {}
+        budget = _CensusReadBudget()
         for table in ("audit_log", "tasks", "task_results"):
             expected, upper = self.db.fetch_one_readonly(
                 f"SELECT (SELECT count(*) FROM {table}), (SELECT max(id) FROM {table})"
@@ -543,6 +583,7 @@ class CollectionObserver:
                 ids = [row["id"] for row in page]
                 if ids != sorted(set(ids)) or ids[0] <= cursor:
                     raise CensusReadUnavailable("census_read_order")
+                budget.add(table, page)
                 rows.extend(page)
                 cursor = ids[-1]
             if len(rows) != expected or (rows and rows[-1]["id"] != upper):
@@ -761,15 +802,16 @@ def validate_census(snapshot: dict, rows: list[dict], *, require_seal: bool = Tr
     """Malformed or incomplete evidence refuses without yielding a partial census."""
     try:
         _check_serving_snapshot(snapshot)
+        _check_census_budget({**(evidence or {}), "audit_log": rows})
         ids = [row["id"] for row in rows]
-        if (len(rows) > MAX_CENSUS_READ_ROWS or snapshot["assigned_intents"] > MAX_CENSUS_READ_ROWS
-                or snapshot["generation"] > MAX_CENSUS_READ_ROWS
+        if (snapshot["assigned_intents"] > MAX_CENSUS_SEMANTIC_COUNT
+                or snapshot["generation"] > MAX_CENSUS_SEMANTIC_COUNT
                 or any(type(value) is not int or value <= 0 for value in ids) or ids != sorted(set(ids))
                 or type(snapshot["writer_active"]) is not bool
                 or type(snapshot["pending_observations"]) is not int or snapshot["pending_observations"] < 0):
             return _result(["census_evidence_invalid"], {})
         return _validate_census(snapshot, rows, require_seal=require_seal, evidence=evidence)
-    except (KeyError, TypeError, ValueError, OverflowError, AttributeError, IdentityUnavailable):
+    except (KeyError, TypeError, ValueError, OverflowError, AttributeError, IdentityUnavailable, CensusReadUnavailable):
         return _result(["census_evidence_invalid"], {})
 
 
@@ -1075,6 +1117,7 @@ def loaded_identity(org: Any) -> dict:
                       CollectionObserver._rows, CollectionObserver.validate, validate_census, _validate_census, _failed_before_exposure,
                       semantic_task_projection, _semantic_evidence_projection, aware_utc, _run_step_body,
                       _result, _advance, _projection, CollectionObserver._read_revision,
+                      _CensusReadBudget.__init__, _CensusReadBudget.add, _check_census_budget,
                       _collection_pages, _http_collection_capture, acquire_http_collection_report,
                       current_epoch_references, reduce_report, reduce_collection_report, _session_diagnostics, AuditLogger.compute_memory_telemetry_report,
                       cmd_memory_report, _compute_report, _print_report, _paginate, _report_projection, _fetch_agent_roles])
@@ -1372,6 +1415,7 @@ def collection_control_head(rows: list[dict], org: str, root: str) -> dict | Non
 
 
 def _decoded_tables(tables: dict) -> dict:
+    _check_census_budget(tables)
     value = copy.deepcopy(tables)
     for row in value["audit_log"]:
         if isinstance(row["payload"], str):
@@ -1560,7 +1604,7 @@ def _validate_job_continuation(data: dict, job: dict, submitted: dict, finished:
         raise AcceptanceUnavailable(category)
     waiting = blocked.get("waiting_on_job_ids")
     waiting = _strict_json(waiting) if isinstance(waiting, str) else waiting
-    if (not isinstance(waiting, list) or not waiting or len(waiting) > MAX_CENSUS_READ_ROWS
+    if (not isinstance(waiting, list) or not waiting or len(waiting) > MAX_CENSUS_SEMANTIC_COUNT
             or any(not isinstance(jid, str) for jid in waiting)
             or len(set(waiting)) != len(waiting) or job["id"] not in waiting):
         raise AcceptanceUnavailable(category)
@@ -2084,9 +2128,11 @@ def acquire_collection_report(org: Any, *, current_time: datetime | None = None)
         raise ReportAcquisitionUnavailable() from exc
 
 
-def _collection_pages(client: Any, org: str, *, tasks: bool = False) -> list[dict]:
+def _collection_pages(client: Any, org: str, *, tasks: bool = False,
+                      _budget: _CensusReadBudget | None = None) -> list[dict]:
     from runtime.infrastructure.memory_telemetry_report import aware_utc, ReportAcquisitionUnavailable
     items, seen, cursors, cursor = [], set(), set(), None
+    budget = _budget if _budget is not None else _CensusReadBudget()
     task_anchor = None
     while True:
         params = {"limit": 200 if tasks else 5000}
@@ -2129,6 +2175,10 @@ def _collection_pages(client: Any, org: str, *, tasks: bool = False) -> list[dic
             from runtime.infrastructure.database import _decode_cursor
             if max(anchors) >= (task_anchor if tasks else _decode_cursor(cursor)):
                 raise ReportAcquisitionUnavailable()
+        try:
+            budget.add("tasks" if tasks else "audit_log", rows)
+        except CensusReadUnavailable as exc:
+            raise ReportAcquisitionUnavailable() from exc
         items.extend(rows)
         next_cursor = page["next_cursor"]
         if tasks and (len(rows) == params["limit"]) != (next_cursor is not None):
@@ -2164,7 +2214,9 @@ def _http_collection_capture(client: Any, org: str) -> tuple[dict, dict, dict]:
             raise ReportAcquisitionUnavailable()
         return body
     view = get("audit", {"action": "memory_collection_seal", "limit": 1})["memory_collection_observation"]
-    audit_rows, tasks = _collection_pages(client, org), _collection_pages(client, org, tasks=True)
+    budget = _CensusReadBudget()
+    audit_rows = _collection_pages(client, org, _budget=budget)
+    tasks = _collection_pages(client, org, tasks=True, _budget=budget)
     results, jobs, outputs = [], [], {}
     # All original parent/plan results participate in prior-delegation and
     # retry validation; accepting only final references would omit evidence.
@@ -2187,10 +2239,19 @@ def _http_collection_capture(client: Any, org: str) -> tuple[dict, dict, dict]:
             result_ids.add(result["id"])
         if len(results) + len(detail["results"]) > MAX_CENSUS_READ_ROWS:
             raise ReportAcquisitionUnavailable()
+        try:
+            budget.add("task_results", detail["results"])
+        except CensusReadUnavailable as exc:
+            raise ReportAcquisitionUnavailable() from exc
         results.extend(detail["results"])
     job_ids = _referenced_probe_jobs(results)
     for job_id in sorted(job_ids):
-        jobs.append(get(f"jobs/{job_id}"))
+        job = get(f"jobs/{job_id}")
+        try:
+            budget.add("jobs", [job])
+        except CensusReadUnavailable as exc:
+            raise ReportAcquisitionUnavailable() from exc
+        jobs.append(job)
         outputs[job_id] = get(f"jobs/{job_id}/output", {"stream": "both", "max_bytes": 10 * 1_048_576})
         # The job route reports a missing on-disk stream as an empty stream.
         # A referenced canary requires both original complete output streams;
@@ -2222,10 +2283,18 @@ def acquire_http_collection_report(client: Any, org: str, *, current_time: datet
 def current_epoch_references(org: Any, view: dict) -> dict:
     """Project references only after actual current evidence validation; zero writes."""
     try:
-        controls = [dict(row) for row in org.db.fetch_all_readonly(
-            "SELECT * FROM audit_log WHERE action IN (?, ?) ORDER BY id LIMIT ?",
-            (*sorted(CONTROL_ACTIONS), MAX_CENSUS_READ_ROWS + 1),
-        )]
+        controls, cursor = [], 0
+        budget = _CensusReadBudget()
+        while True:
+            page = [dict(row) for row in org.db.fetch_all_readonly(
+                "SELECT * FROM audit_log WHERE action IN (?, ?) AND id>? ORDER BY id LIMIT ?",
+                (*sorted(CONTROL_ACTIONS), cursor, CENSUS_READ_PAGE_ROWS),
+            )]
+            if not page:
+                break
+            budget.add("audit_log", page)
+            controls.extend(page)
+            cursor = page[-1]["id"]
         if not controls:
             return view
         if len(controls) > MAX_CENSUS_READ_ROWS:

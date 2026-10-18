@@ -1571,7 +1571,9 @@ and relevant `/audit` action pages at limit5000 in two complete sweeps, comparin
 tasks, audit identities/content and `/agents` roles at one aware UTC cutoff.
 Task pages follow `(created_at, id)` descending; the last ID remains the transport
 cursor resolved by the server. No-epoch diagnostic reads filter unrelated audit
-actions without changing the100000-row bound. Accepted epochs retain complete
+actions within the 250,000-row diagnostic bound; these CLI diagnostic action sweeps
+remain row-bounded, while backend captures also share the 512 MiB JSON budget.
+Accepted epochs use both finite bounds and retain complete
 unfiltered task/result/job/audit acquisition, original outputs and serving bookends.
 
 Canonical CLI task sweeps and HTTP list/detail/two-capture comparisons share one

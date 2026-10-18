@@ -707,6 +707,10 @@ Detailed contracts: `docs/agent-guides/agent-executors-and-permissions.md` § "C
   Seals checkpoint counters without history reads and explicitly remain
   `census_not_reconciled`. Exhaustive read validation is bounded and compares
   closing semantic observer/database facts; movement or work exhaustion refuses.
+  Each capture retains at most 250,000 rows/table and 512 MiB canonical ASCII JSON
+  across required tables. Semantic generation/intent/wait limits remain 100,000.
+  Overflow is unavailable, never a partial/zero census; see the corrective spec
+  for sizing, incremental reads and the exact affected symbol inventory.
   Internal census validity is never collection health or epoch authority.
   Seal-action `/audit` adds the closed optional serving-observation/loaded-identity
   view described in the corrective memory spec; it performs zero durable writes.
