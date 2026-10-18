@@ -147,6 +147,9 @@ class TaskInvocation:
     prompt_reader: Callable[[], str] | None = None
     workflow_dispatcher: Any = None
     move_reservation: Any = None
+    refusal_attempt_id: str = field(default_factory=lambda: uuid.uuid4().hex)
+    launch_observed: bool = False
+    preparation_cause: dict | None = None
 
     @property
     def store(self) -> TaskPauseStore:
@@ -188,6 +191,11 @@ class TaskInvocation:
             entry.update(facts)
             self.store.save_journal_uncommitted(row)
 
+    def record_preparation_cause(self, stage: str, exc: BaseException | None = None, **facts: Any) -> None:
+        if self.preparation_cause is None:
+            from runtime.orchestrator.launch_refusals import safe_cause
+            self.preparation_cause = safe_cause(stage, exc, **facts)
+
     def failed_cleanup(self) -> None:
         # Sticky local ownership precedes any fallible journal/COMMIT. A caught
         # save failure or rollback must never permit clean terminal release.
@@ -218,6 +226,7 @@ class TaskInvocation:
         try:
             yield
         except BaseException as exc:
+            self.record_preparation_cause("native_preparation", exc)
             try:
                 self.failed_cleanup()
             except BaseException as evidence:
@@ -408,6 +417,8 @@ class TaskInvocation:
         Only the original server-observed return reaches this producer.
         """
         from runtime.orchestrator.team_move import DeferredTeamMove
+        if not (self.admitted and self.owner == "recovery"):
+            self._begin_launch_attempt()
         with self.store.writer(self.task.id, admission=True) as (_, row):
             entry = self._entry(row)
             proof = entry["context"].get("recovery_return")
@@ -471,10 +482,18 @@ class TaskInvocation:
             result.error = f"completion recovery launch failed: {exc}"
             return self.admitted, result, None
 
+    def _begin_launch_attempt(self) -> None:
+        # A returned producer's positive PID belongs to its previous attempt.
+        # Reset only local refusal attribution before fallible preparation;
+        # durable launch/unknown evidence and live-attempt protection survive.
+        self.launch_observed = False
+        self.refusal_attempt_id = uuid.uuid4().hex
+
     def retry_attempt(self, *, boundary: str, ordinal: int, budget: int,
                       backoff: float = 0.0, schedule: tuple[float, ...] | None = None,
                       enqueued_at: str | None = None) -> dict:
         """Retain the original retry budget; every actual retry arbitrates again."""
+        self._begin_launch_attempt()
         if boundary == "host" and ordinal and self.unsettled:
             raise PauseControlError("pause_control_unavailable")
         unknown_owner = None
@@ -548,6 +567,11 @@ class TaskInvocation:
 
     def started(self, pid: int) -> None:
         if pid > 0:
+            # Local launch fact precedes fallible storage: an audit/phase save
+            # failure after Popen must never be counted as a launch refusal.
+            self.launch_observed = True
+            from runtime.orchestrator.launch_refusals import record_started
+            record_started(self)
             self.phase("running", started_at=now())
 
     def close(self) -> None:
@@ -605,68 +629,132 @@ def _authenticate_deferred_v2(store: TaskPauseStore, entry: dict) -> None:
         _authenticate_v2_retry(store, entry)
 
 
-def deferred_invocation(orch: Any, task: TaskRecord, metadata: dict | None = None) -> TaskInvocation | None:
-    """Adopt only an exact durable deferred owner, once per live worker."""
+def _unclaimed_recovery_current(store: TaskPauseStore, entry: dict) -> bool:
+    """Read the existing claim exclusions without spending a recovery episode."""
+    proof = entry["context"]["recovery_return"]
+    return (proof["deadline_at"] is None
+        and store.db._conn.execute(
+            "SELECT 1 FROM task_completion_recoveries WHERE task_id=? AND agent=? "
+            "AND (origin_session_id=? OR state='claimed') LIMIT 1",
+            (entry["task_id"], entry["agent"], proof["origin_session_id"])).fetchone() is None)
+
+
+def _deferred_invocation_uncommitted(orch: Any, task: TaskRecord, metadata: dict | None,
+                                    row: dict | None) -> TaskInvocation | None:
+    """Authenticate a decoded journal copy; publish no reservation or write."""
     store = orch._db._task_pause_store
-    with store.writer(task.id, admission=True) as (_, row):
-        if row is not None:
-            _observe_settled_producers(store, row)
-            store.save_journal_uncommitted(row)
-        entries = [] if row is None else [e for e in row["journal"]["entries"]
-                                          if e["task_id"] == task.id and e["owner"] != "job"
-                                          and not e["context"].get("producer_settled")]
-        if not entries:
-            store.held_uncommitted(task.id)
-            return None
-        if len(entries) != 1 or entries[0]["phase"] not in {"retry_deferred", "recovery_deferred"}:
-            raise DeferredRootPause("invocation already owned")
-        entry = entries[0]
-        consumer_sid = (entry["context"]["recovery_return"]["origin_session_id"]
-                        if entry["phase"] == "recovery_deferred" else entry["session_id"])
-        landed = store.db.get_latest_task_result(task.id, entry["agent"], consumer_sid)
-        consumer_only = landed is not None and type(landed["id"]) is int
-        if not consumer_only:
-            if entry["context"].get("execution_unknown"):
-                raise DeferredRootPause("preparation cleanup unknown")
-            store.held_uncommitted(task.id)
-        if "authority_v2_generation" in entry["owner_identity"]:
-            if (not isinstance(metadata, dict) or metadata.get("authority_v2_generation")
-                    != entry["owner_identity"].get("authority_v2_generation")):
-                raise DeferredRootPause("v2 retry requires original tagged delivery")
-            _authenticate_deferred_v2(store, entry)
-        elif isinstance(metadata, dict) and "authority_v2_generation" in metadata:
-            raise DeferredRootPause("tagged delivery cannot adopt another owner")
-        if task.cancelled_at is not None or task.status in {TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED, TaskStatus.SUPERSEDED}:
-            raise DeferredRootPause("deferred owner no longer eligible")
-        if entry["phase"] == "retry_deferred":
-            if (task.current_session_id != entry["session_id"] or task.assigned_agent != entry["agent"]
-                    or not entry["retry"] or task.status != TaskStatus.IN_PROGRESS):
-                raise PauseControlError("pause_control_unavailable")
-            if not consumer_only and datetime.fromisoformat(entry["retry"]["not_before"]) > datetime.now(timezone.utc):
-                raise DeferredRootPause("retry backoff pending")
-            f = entry["fingerprint"]
-            original = task.model_copy(update={"status": TaskStatus(f["status"]),
-                "block_kind": BlockKind(f["block_kind"]) if f["block_kind"] else None,
-                "orchestration_step_count": f["count"], "current_session_id": f["session_id"],
-                "assigned_agent": f["agent"], "active_fanout": f["fanout"], "blocked_on_job_ids": f["jobs"]})
-            admitted = True
-        else:
-            proof = entry["context"]["recovery_return"]
-            if task.current_session_id != proof["origin_session_id"] or task.assigned_agent != entry["agent"]:
-                raise PauseControlError("pause_control_unavailable")
-            original, admitted = task, False
-        metadata = dict(entry["owner_identity"])
-        invocation = TaskInvocation(orch, original, entry["agent"], entry["session_id"],
-                                    owner=entry["owner"], metadata=metadata, identity=entry["id"], admitted=admitted)
-        invocation.move_reservation = orch._team_moves.reserve_task_uncommitted(invocation)
-        invocation.deferred_recovery = entry["phase"] == "recovery_deferred"
-        invocation.consumer_only = consumer_only
-        invocation.consumer_session_id = consumer_sid
-        entry["phase"] = "result_processing" if consumer_only else "prepared"
-        store.save_journal_uncommitted(row)
-    with store.db._lock:
-        store._live[invocation.identity] = invocation
+    if row is not None:
+        _observe_settled_producers(store, row)
+    entries = [] if row is None else [e for e in row["journal"]["entries"]
+                                      if e["task_id"] == task.id and e["owner"] != "job"
+                                      and not e["context"].get("producer_settled")]
+    if any(live.task.id == task.id for live in store._live.values()):
+        raise DeferredRootPause("invocation already live")
+    if not entries:
+        store.held_uncommitted(task.id)
+        return None
+    if len(entries) != 1 or entries[0]["phase"] not in {"retry_deferred", "recovery_deferred"}:
+        raise DeferredRootPause("invocation already owned")
+    entry = entries[0]
+    f = entry["fingerprint"]
+    if (task.parent_task_id != f["parent"]
+            or hashlib.sha256(task.brief.encode()).hexdigest() != f["brief_digest"]
+            or task.status != TaskStatus.IN_PROGRESS or task.block_kind is not None):
+        raise DeferredRootPause("deferred continuation changed")
+    consumer_sid = (entry["context"]["recovery_return"]["origin_session_id"]
+                    if entry["phase"] == "recovery_deferred" else entry["session_id"])
+    landed = store.db.get_latest_task_result(task.id, entry["agent"], consumer_sid)
+    consumer_only = landed is not None and type(landed["id"]) is int
+    if not consumer_only:
+        if entry["context"].get("execution_unknown"):
+            raise DeferredRootPause("preparation cleanup unknown")
+        store.held_uncommitted(task.id)
+    if "authority_v2_generation" in entry["owner_identity"]:
+        if (not isinstance(metadata, dict) or metadata.get("authority_v2_generation")
+                != entry["owner_identity"].get("authority_v2_generation")):
+            raise DeferredRootPause("v2 retry requires original tagged delivery")
+        _authenticate_deferred_v2(store, entry)
+    elif isinstance(metadata, dict) and "authority_v2_generation" in metadata:
+        raise DeferredRootPause("tagged delivery cannot adopt another owner")
+    if task.cancelled_at is not None or task.status in {TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED, TaskStatus.SUPERSEDED}:
+        raise DeferredRootPause("deferred owner no longer eligible")
+    if entry["phase"] == "retry_deferred":
+        if (task.current_session_id != entry["session_id"] or task.assigned_agent != entry["agent"]
+                or not entry["retry"]
+                or task.orchestration_step_count != f["count"] + 1):
+            raise PauseControlError("pause_control_unavailable")
+        if not consumer_only and datetime.fromisoformat(entry["retry"]["not_before"]) > datetime.now(timezone.utc):
+            raise DeferredRootPause("retry backoff pending")
+        original = task.model_copy(update={"status": TaskStatus(f["status"]),
+            "block_kind": BlockKind(f["block_kind"]) if f["block_kind"] else None,
+            "orchestration_step_count": f["count"], "current_session_id": f["session_id"],
+            "assigned_agent": f["agent"], "active_fanout": f["fanout"], "blocked_on_job_ids": f["jobs"]})
+        admitted = True
+    else:
+        proof = entry["context"]["recovery_return"]
+        if task.current_session_id != proof["origin_session_id"] or task.assigned_agent != entry["agent"]:
+            raise PauseControlError("pause_control_unavailable")
+        if fingerprint(task) != f or (not consumer_only and not _unclaimed_recovery_current(store, entry)):
+            raise DeferredRootPause("recovery continuation changed")
+        original, admitted = task, False
+    metadata = dict(entry["owner_identity"])
+    invocation = TaskInvocation(orch, original, entry["agent"], entry["session_id"],
+                                owner=entry["owner"], metadata=metadata, identity=entry["id"], admitted=admitted)
+    invocation.deferred_recovery = entry["phase"] == "recovery_deferred"
+    invocation.consumer_only = consumer_only
+    invocation.consumer_session_id = consumer_sid
+    invocation.deferred_adoption_pending = True
+    invocation.deferred_entry = deepcopy(entry)
     return invocation
+
+
+def _same_deferred_owner(left: TaskInvocation, right: TaskInvocation) -> bool:
+    return ((left.identity, left.agent, left.session_id, left.owner, left.metadata,
+             left.task.team, left.task.task_type, fingerprint(left.task), left.deferred_entry) ==
+            (right.identity, right.agent, right.session_id, right.owner, right.metadata,
+             right.task.team, right.task.task_type, fingerprint(right.task), right.deferred_entry))
+
+
+def deferred_invocation(orch: Any, task: TaskRecord, metadata: dict | None = None,
+                        *, adopt: bool = True) -> TaskInvocation | None:
+    """Identify the durable owner before any fallible adoption write."""
+    store = orch._db._task_pause_store
+    with store.db._lock:
+        current = store.db.get_task(task.id)
+        if current is None:
+            raise DeferredRootPause("deferred owner disappeared")
+        row = store.row_uncommitted(store.root_uncommitted(task.id)["id"])
+        invocation = _deferred_invocation_uncommitted(orch, current, metadata, row)
+    if invocation is not None and adopt:
+        adopt_deferred_invocation(invocation)
+    return invocation
+
+
+def adopt_deferred_invocation(invocation: TaskInvocation) -> None:
+    """Revalidate under the native writer; the caller already owns attribution."""
+    store = invocation.store
+    try:
+        with store.writer(invocation.task.id, admission=True) as (_, row):
+            task = store.db.get_task(invocation.task.id)
+            if task is None:
+                raise DeferredRootPause("deferred owner disappeared")
+            current = _deferred_invocation_uncommitted(invocation.orch, task, invocation.metadata, row)
+            if current is None or not _same_deferred_owner(invocation, current):
+                raise DeferredRootPause("deferred owner changed")
+            invocation.move_reservation = invocation.orch._team_moves.reserve_task_uncommitted(invocation)
+            invocation.consumer_only = current.consumer_only
+            entry = invocation._entry(row)
+            entry["phase"] = "result_processing" if current.consumer_only else "prepared"
+            store.save_journal_uncommitted(row)
+    except BaseException:
+        # Reservation alone has no effects. A rolled-back adoption must not
+        # leave a pristine local owner_live latch blocking its next delivery;
+        # release_task retains every possible-launch/failed-cleanup blocker.
+        invocation.orch._team_moves.release_task(invocation)
+        raise
+    with store.db._lock:
+        invocation.deferred_adoption_pending = False
+        store._live[invocation.identity] = invocation
 
 
 @contextmanager
@@ -874,6 +962,9 @@ async def discover_pause_work(org: Any, queue: Any) -> None:
             and e["phase"] in {"retry_deferred", "recovery_deferred"}}
         if held:
             for entry in deferred_callbacks.values():
+                task = org.db.get_task(entry["task_id"])
+                if task is None or task.cancelled_at is not None or task.status.value in {"completed", "failed", "cancelled", "superseded"}:
+                    continue
                 sid = (entry["context"]["recovery_return"]["origin_session_id"]
                        if entry["phase"] == "recovery_deferred" else entry["session_id"])
                 result = org.db.get_latest_task_result(entry["task_id"], entry["agent"], sid)
@@ -891,6 +982,10 @@ async def discover_pause_work(org: Any, queue: Any) -> None:
                         and e["phase"] in {"retry_deferred", "recovery_deferred"}}
             for (task_id,) in task_rows:
                 task = org.db.get_task(task_id)
+                # Retain unknown evidence, but terminal owners cannot launch
+                # or replay consumed callbacks through the deferred branch.
+                if task is None or task.cancelled_at is not None or task.status.value in {"completed", "failed", "cancelled", "superseded"}:
+                    continue
                 if task_id in deferred:
                     entry = deferred[task_id]
                     if "authority_v2_generation" in entry["owner_identity"]:

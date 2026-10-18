@@ -2782,6 +2782,9 @@ class TasksMixin:
         informational = {"session_end", "progress", "zombie_flagged", "zombie_cleared",
                          "task_attachment_materialized", "executor_throttle", "task_scratch_report",
                          "task_scratch_reclaimed", "portability_reconciled",
+                         # Native launch/refusal accounting observes attempts;
+                         # it does not select or consume a recovery result.
+                         "task_native_launch_boundary",
                          # AuditLogger's native task-scoped memory observations.
                          # Other memory CRUD/read rows use AGENT- scope, outside
                          # get_audit_logs(task_id); collection controls are not

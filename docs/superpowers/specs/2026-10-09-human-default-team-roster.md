@@ -363,7 +363,9 @@ observations: `memory_added`, `memory_digest_impression`, `memory_search`,
 `memory_runtime_binding`, `memory_runtime_launched`, `memory_runtime_terminal`,
 and `memory_collection_seal`. Agent-scoped memory read/update/promotion/lifecycle
 rows are outside this task history; collection acceptance/invalidation controls
-are not informational recovery exemptions. Unknown actions, including a
+are not informational recovery exemptions. The exact native launch/refusal
+observation `task_native_launch_boundary` is also informational; it does not
+select or consume the recovery result. Unknown actions, including a
 dictionary-payload `memory_unrecognized_transition`, refuse as
 `ambiguous_history` before failure, review, marker, job or parent effects.
 Selected result/session/owner, review ordering and replay fences are unchanged.
