@@ -104,6 +104,8 @@ public struct SurfaceAllowList: Sendable {
             // Founder coding setup is CLI-only; no remote/browser grant.
             ("POST", "/workflows/release-templates/coding/1/import"),
             ("GET", "/workflows/release-templates/coding/1/import"),
+            ("POST", "/workflows/coding/mappings"),
+            ("GET", "/workflows/coding/mappings"),
             ("POST", "/workflows/coding/capabilities"),
             ("GET", "/workflows/coding/capabilities/*"),
             // Original-current author staging is a native-sensitive mutation.
@@ -257,6 +259,11 @@ public struct SurfaceAllowList: Sendable {
            [rawPath, path].contains(where: {
                Self.stageDenialCandidate($0) == "/workflows/release-templates/coding/1/import"
            }) {
+            return false
+        }
+        if ["POST", "GET"].contains(method),
+           deniedMethods.contains("\(method) /workflows/coding/mappings"),
+           [rawPath, path].contains(where: { Self.stageDenialCandidate($0) == "/workflows/coding/mappings" }) {
             return false
         }
         if method == "POST", deniedMethods.contains("POST /workflows/coding/capabilities"),

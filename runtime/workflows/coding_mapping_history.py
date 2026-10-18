@@ -1,9 +1,9 @@
-"""Unmounted SELECT-only retained coding mapping and setup history.
+"""SELECT-only mapping/setup/original native admission closure.
 
 Caller admits the complete native/J schema and owns one coherent SQLite read
 transaction/connection/lock with raw native values for the entire call. This
 reader establishes saved grammar, original operation/generation prefix and
-historical admission/publication/setup containment only. No current default,
+historical admission/publication/setup and original native containment only. No current default,
 grant, task/SID/policy/source-rule/capability/J graph authenticity is asserted.
 No current pointer, roster, cache, filesystem, objects or network is read.
 """
@@ -58,6 +58,7 @@ class HistoricalCodingMapping:
     storage_classes: tuple[str, ...]
     command_bytes: bytes
     setup_histories: tuple[SetupIssuanceHistory, ...]
+    source_capture: object
 
 
 @dataclass(frozen=True)
@@ -168,8 +169,10 @@ def _history(conn: sqlite3.Connection, org_slug: str,
             # Exact canonical U must belong to a genuine native issuance with
             # its own earlier complete prefix/admission/publication closure.
             histories.append(setups.setup(setup['id'], _canonical(setup)))
+        from runtime.workflows._coding_mapping_admission import mapping_capture
+        original = mapping_capture(conn, org_slug, values[0], command_raw, record, budget)
         result.append(HistoricalCodingMapping(
-            *values, storage_classes, command_raw, tuple(histories)))
+            *values, storage_classes, command_raw, tuple(histories), original))
     return CodingMappingHistory(tuple(result))
 
 
@@ -191,9 +194,9 @@ def read_mapping_history(conn: sqlite3.Connection, *, expected_org_slug: str,
     native admission/publication/setup closure is established for the selected
     mapping prefix and its required issuance prefixes only. Later withdrawal
     does not invalidate an earlier genuine issue or restore any current grant.
-    Native issuer task/SID/policy/source rule, current authority/capabilities and
-    full native/J run/event/result/session/receipt/heartbeat graph remain owed
-    downstream with each corresponding mapping producer. Human setup needs its
+    Original mapping task/SID/session-start/capture/publication policy is checked;
+    current authority/capabilities/store identity are separate producer/read gates.
+    Run/event/result/session/receipt/heartbeat graph remains owed with its producer. Human setup needs its
     own complete readers only. Reading never attests or adopts a store.
     """
     try:
@@ -205,3 +208,15 @@ def read_mapping_history(conn: sqlite3.Connection, *, expected_org_slug: str,
     except (sqlite3.Error, CodingSavedRecordError, CodingAuthorityHistoryError,
             ValueError, TypeError, KeyError, UnicodeError, RecursionError, OverflowError):
         raise CodingMappingHistoryError(_REFUSAL) from None
+
+
+def read_mapping_storage(conn: sqlite3.Connection, *, expected_org_slug: str) -> CodingMappingHistory | None:
+    """Complete bounded mapping prefix; an empty store is not current authority."""
+    rows = conn.execute("SELECT CASE WHEN typeof(id)='text' AND length(CAST(id AS BLOB))<=128 "
+        "THEN id ELSE NULL END,typeof(id) FROM workflow_coding_mappings "
+        "ORDER BY generation DESC,id LIMIT 1").fetchall()
+    if not rows:
+        return None
+    if rows[0][0] is None or rows[0][1] != 'text':
+        raise CodingMappingHistoryError(_REFUSAL)
+    return read_mapping_history(conn, expected_org_slug=expected_org_slug, mapping_id=rows[0][0])

@@ -27,6 +27,7 @@ def classify_task(db: Any, task_id: str, *, org_slug: str | None) -> WorkflowTas
     try:
         conn = db._conn
         try:
+            # Complete setup/import/mapping originals validate before legacy recovery.
             # Native coding decisions/authority may be orphaned, with no old
             # root/draft/F5 alias or even any workflow tables. Refuse BEFORE
             # either legacy return, under the same lock and exception fence.

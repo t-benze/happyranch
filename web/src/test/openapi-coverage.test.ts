@@ -84,6 +84,16 @@ describe('openapi coverage', () => {
     expect(INCLUDED_PATHS.has('POST /api/v1/orgs/{slug}/workflows/reviews/stages')).toBe(false);
   });
 
+  test('K2b mapping endpoints require the current agent manager outside the browser', () => {
+    for (const [method, description] of [
+      ['POST', 'publication/adoption'], ['GET', 'selected metadata'],
+    ]) {
+      const path = `${method} /api/v1/orgs/{slug}/workflows/coding/mappings`;
+      expect(EXCLUDED_PATHS.get(path)).toBe(`Agent-only current manager mapping ${description}; no browser or remote grant`);
+      expect(INCLUDED_PATHS.has(path)).toBe(false);
+    }
+  });
+
   test('K2b setup endpoints remain Founder CLI-only', () => {
     const writer = 'POST /api/v1/orgs/{slug}/workflows/coding/capabilities';
     const reader = 'GET /api/v1/orgs/{slug}/workflows/coding/capabilities/{setup_key}';

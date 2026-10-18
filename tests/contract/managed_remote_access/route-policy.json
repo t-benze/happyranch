@@ -180,6 +180,14 @@
         "POST /api/v1/orgs/{slug}/workflows/coding/capabilities",
         "GET /api/v1/orgs/{slug}/workflows/coding/capabilities/{setup_key}"
       ]
+    },
+    {
+      "id": "coding_mapping_cli_only",
+      "description": "Mapping publication/adoption and selected metadata require the genuine current native agent manager; never remote or browser accessible.",
+      "examples": [
+        "POST /api/v1/orgs/{slug}/workflows/coding/mappings",
+        "GET /api/v1/orgs/{slug}/workflows/coding/mappings"
+      ]
     }
   ],
   "allow": [

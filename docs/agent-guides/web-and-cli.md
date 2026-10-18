@@ -1,5 +1,78 @@
 # Web And CLI
 
+## K2b mapping publication/adoption checkpoint — ROOT10693 step70
+
+SAME incomplete OPEN DRAFT PR1083 now includes the explicit nonallocating
+mapping writer and every own saved/native/current/cold/public/CLI consumer.
+POST `/api/v1/orgs/{slug}/workflows/coding/mappings?session_id=CURRENT`
+accepts canonical `workflow-coding-mapping-command@1` with only
+`format,operation_key,expected_generation,mapping`; mapping has exactly
+`release,roles,eligible_replacements,repository_selectors,authority`. Each of
+at most eight selectors is exactly `repository_id,store_owner,repo_key,policy`,
+with policy `adopted-local-store@1`. No paths, URLs, proof flags or server
+capsules are accepted. GET on the same path requires the same genuine current
+acting manager binding, selects the latest complete generation and rechecks
+current setup/role/store eligibility. Both return the closed six-field
+`workflow-coding-mapping-receipt@1 {format,id,generation,mapping_digest,mapping,replayed}`.
+POST is201/new or200/exact replay, GET200; missing selection404, malformed422,
+revoked manager/scope403 and unavailable/stale/conflicting admission409.
+CLI `workflows coding mapping-publish --org ORG --session-id CURRENT
+--from-file ABS --json` and `mapping-show --org ORG --session-id CURRENT --json`
+use actual loopback session transport, without bearer fallback or automatic
+retry. Preserve the original key/file after transport loss. Both routes remain
+browser-excluded and native remote-denied on raw and normalized candidates
+independently before credential lookup/forwarding.
+
+Server selection derives the actual assigned executable team manager, task/SID,
+unique native manager_decision session_start, real ordinary/v2 TaskInvocation,
+Pause journal/generation, current tree/move admission and no own-SID callback.
+Reusable M.setup roots authorize publication and each adoption separately for
+its repository/action/store/format; neither roster membership nor a parsed
+capsule grants permission. Fixed coding import and complete published role and
+replacement eligibility are required; four contributors stay distinct. Empty
+repository selectors require one unambiguous eligible setup; no arbitrary root
+selection or empty grant becomes authority.
+
+Configured primary stores are resolved server-side. A shared bounded no-follow
+preflight checks custody, ordinary .git/config/object format/origin and object
+inventory, refuses linked/indirect/symlink/alternate/promisor/shallow/replace/
+graft/helper/unsupported stores, and executes no Git, hook, filter, credential,
+fetch or clone. It derives server adoption-proof@1 and config/store identity.
+After the await, repeat observation and compare before the SQLite writer, then
+revalidate actual native authority/setup/current owner and generation in the
+writer without filesystem/object work or awaits. Local adoption attests local
+storage, not remote provenance or hostile same-UID/OS isolation.
+
+One native admission transaction appends the exact ten J mapping columns,
+complete canonical command/issuer/capture/M roots/adoptions/mapping bytes, and
+its fixed original source-phase native capture. Full original task/ancestry,
+unique session-start ID, actual invocation ID and admitted counters are retained;
+result/claim/callback fields remain genuinely null. Final complete cold closure
+precedes COMMIT; rollback preserves prior rows/ownership. Exact replay compares
+org/real principal/key plus ALL original command bytes before fresh generation
+CAS/adoption I/O, keeps original IDs and issues no work or renewed authority.
+Historical validity does not establish today's permission. Complete positive
+whole-row family matching covers mappings, original capture audit and all five
+admission columns; orphan/foreign/malformed/unsupported families still refuse.
+Central schema validation, also data=False, reopen/recovery and drain/downgrade
+compose that same reader without recursive schema validation or ID exemptions.
+Mapping/setup/import have no run/host tail; compatible J reader is always needed.
+F–J SQL/reference bytes and all historical document meanings are unchanged.
+
+Current K1 exact-subject disclosure still requires a genuine immutable subject
+and selected entitled admission; the placeholder remains unavailable. SAME-K2b
+remainder is source capability attenuation/current K1 subject selection and its
+original source captures/current readers. K2c–K6 remain per delivery-map; K3 is
+the FIRST run writer. No task/run/stage allocation, live setup/mapping/adoption,
+migration/deploy/restart/cutover or retired trial execution is authorized.
+Python units RETIRED; integration INCLUDING callback SKIPPED24342; SQL/parser/
+product/timing/security/negative/mutation/repetition/executable QA proof remains
+UNEXECUTED/FOUNDER-WAIVED139429/430. Source assertions/lint are no behavioral,
+security or test-authoring PASS. Fresh independent FULL review then same-head
+scoped SOURCE QA and manager disposition remain required. Keep PR1083 draft,
+unmerged and incomplete until the genuine SAME-K2b remainder is delivered.
+
+
 ## K2b fixed coding release import checkpoint — ROOT10693 / Founder139562/559/329/606
 
 Manager step68 extends SAME incomplete draft PR1083. This source checkpoint adds

@@ -975,3 +975,104 @@ def _resolve_objects(*, paths: OrgPaths, binding: RepositoryBinding,
 
 if __name__ == '__main__':
     _reader_child()
+
+
+def _observe_adoption(*, paths: OrgPaths, org_slug: str, store_owner: str,
+                      repo_key: str, configured_origin: str, budget: _Budget) -> dict:
+    """Bounded no-follow primary-store observation, without Git or copy effects.
+
+    Only the mapping producer calls this with authenticated configured selectors.
+    Observations attest local custody/configuration, not remote provenance or
+    hostile same-UID isolation. Repeat immediately before the DB-only commit.
+    """
+    if (type(paths) is not OrgPaths or paths.root.name != org_slug
+            or not paths.workspaces_dir.is_absolute()):
+        raise WorkflowRepositoryError('binding_unavailable')
+    with ExitStack() as stack:
+        root_fd = os.open('/', _DIR_FLAGS)
+        stack.callback(os.close, root_fd)
+        parent = root_fd
+        opened = []
+        for part in paths.workspaces_dir.parts[1:] + (store_owner, 'repos', repo_key):
+            if not part or part in ('.', '..') or '/' in part:
+                raise WorkflowRepositoryError('binding_unavailable')
+            fd = stack.enter_context(_directory(parent, part, budget))
+            opened.append((parent, part, fd))
+            parent = fd
+        repo_fd = parent
+        git_fd = stack.enter_context(_directory(repo_fd, '.git', budget))
+        objects_fd = stack.enter_context(_directory(git_fd, 'objects', budget))
+        opened.extend(((repo_fd, '.git', git_fd), (git_fd, 'objects', objects_fd)))
+        for fd in (repo_fd, git_fd, objects_fd):
+            st = os.fstat(fd)
+            if st.st_uid != os.getuid() or st.st_mode & 0o022:
+                raise WorkflowRepositoryError('binding_unavailable')
+        for name in ('commondir', 'gitdir', 'shallow'):
+            _absent(git_fd, name, budget)
+        for name, forbidden in (('info', 'grafts'), ('refs', 'replace')):
+            try:
+                fd = stack.enter_context(_directory(git_fd, name, budget))
+            except FileNotFoundError:
+                continue
+            _absent(fd, forbidden, budget)
+        try:
+            refs = _regular(git_fd, 'packed-refs', budget, COMMIT_LIMIT)
+        except FileNotFoundError:
+            refs = b''
+        if b' refs/replace/' in refs:
+            raise WorkflowRepositoryError('content_unsupported')
+        config = _regular(git_fd, 'config', budget, COMMIT_LIMIT)
+        config_stat = os.stat('config', dir_fd=git_fd, follow_symlinks=False)
+        if config_stat.st_uid != os.getuid() or config_stat.st_mode & 0o022:
+            raise WorkflowRepositoryError('binding_unavailable')
+        # Closed parser authenticates the format, rejecting every helper,
+        # include, promisor, filter, worktree and unsupported config member.
+        formats = []
+        for fmt in ('sha1', 'sha256'):
+            try:
+                if _config(config, fmt) == configured_origin:
+                    formats.append(fmt)
+            except WorkflowRepositoryError:
+                pass
+        if len(formats) != 1:
+            raise WorkflowRepositoryError('binding_unavailable')
+        object_format = formats[0]
+        size = 40 if object_format == 'sha1' else 64
+        # Inventory is metadata-only, but no alternates/promisor/unknown or
+        # symlink entry may be hidden in the adopted object store.
+        for name in _names(objects_fd, budget):
+            with _directory(objects_fd, name, budget) as child:
+                custody = os.fstat(child)
+                if custody.st_uid != os.getuid() or custody.st_mode & 0o022:
+                    raise WorkflowRepositoryError('binding_unavailable')
+                names = _names(child, budget)
+                if name == 'info':
+                    if names:
+                        raise WorkflowRepositoryError('content_unsupported')
+                elif name == 'pack':
+                    for item in names:
+                        match = re.fullmatch(r'pack-([0-9a-f]{' + str(size) + r'})\.(pack|idx)', item)
+                        if match is None or ('pack-' + match[1] + ('.idx' if match[2] == 'pack' else '.pack')) not in names:
+                            raise WorkflowRepositoryError('content_unsupported')
+                elif re.fullmatch('[0-9a-f]{2}', name):
+                    if any(re.fullmatch('[0-9a-f]{' + str(size - 2) + '}', item) is None for item in names):
+                        raise WorkflowRepositoryError('content_unsupported')
+                else:
+                    raise WorkflowRepositoryError('content_unsupported')
+                for item in names:
+                    budget.charge('objects', 1, OBJECT_LIMIT)
+                    st = os.stat(item, dir_fd=child, follow_symlinks=False)
+                    if (not stat.S_ISREG(st.st_mode) or st.st_nlink != 1
+                            or st.st_uid != os.getuid() or st.st_mode & 0o022 or st.st_size > COPY_LIMIT):
+                        raise WorkflowRepositoryError('content_unsupported')
+        stats = [os.fstat(fd) for fd in (repo_fd, git_fd, objects_fd)]
+        for parent, name, fd in opened:
+            a, b = os.fstat(fd), os.stat(name, dir_fd=parent, follow_symlinks=False)
+            if (a.st_dev, a.st_ino) != (b.st_dev, b.st_ino) or not stat.S_ISDIR(b.st_mode):
+                raise WorkflowRepositoryError('binding_unavailable')
+        if _regular(git_fd, 'config', budget, COMMIT_LIMIT) != config:
+            raise WorkflowRepositoryError('binding_unavailable')
+        return dict(object_format=object_format, origin_digest=_digest(configured_origin.encode('utf8')),
+            store_identity=dict(repo_device=stats[0].st_dev, repo_inode=stats[0].st_ino,
+                git_device=stats[1].st_dev, git_inode=stats[1].st_ino,
+                objects_device=stats[2].st_dev, objects_inode=stats[2].st_ino, config_digest=_digest(config)))
