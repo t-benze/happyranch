@@ -382,6 +382,62 @@ class Database(
     AuthorityV2AttemptsMixin,
     AuthorityV2ContinuationMixin,
 ):
+    @classmethod
+    def _open_team_move_recovery(cls, db_path: Path, *, org_slug: str, require_active=True):
+        """Restricted D owner: open an EXISTING validated org, no migrations.
+
+        Never invokes __init__, schema bootstrap, compatibility writers, WAL
+        selection, legacy repair or enrollment migration. Diagnostic show uses
+        a read-only handle without requiring an active row; released receipts
+        remain reachable before attachment. Neither handle admits producers.
+        """
+        from urllib.parse import quote
+        from runtime.infrastructure.team_move_store import inspect_team_move_database, TeamMoveError, _inspection_error
+        try:
+            original_identity = db_path.lstat()
+            row = inspect_team_move_database(db_path, org_slug=org_slug, require_existing=True)
+        except (OSError, sqlite3.Error) as exc:
+            raise _inspection_error("team_move_recovery_database_unavailable", exc) from exc
+        if row is None and require_active:
+            raise TeamMoveError("team_move_recovery_operation_required")
+        owner = cls.__new__(cls)
+        owner.db_path = db_path
+        owner._lock = threading.RLock()
+        owner._lock_warn_threshold_seconds = 1.0
+        owner._v2_live_attempt_owners = {}
+        owner._v2_refusal_failed_owners = {}
+        owner._v2_permission_surface_reader = None
+        owner._v2_process_boot_id = None
+        owner._conn = None
+        primary = None
+        try:
+            mode = "rw" if require_active else "ro"
+            owner._conn = sqlite3.connect("file:" + quote(str(db_path), safe="/") + "?mode=" + mode, uri=True, check_same_thread=False)
+            owner._conn.row_factory = sqlite3.Row
+            owner._conn.execute("PRAGMA foreign_keys=ON")
+            from runtime.infrastructure.workflow_schema import validate_workflow_schema
+            from runtime.infrastructure.team_move_store import validate_team_move_schema
+            with owner._lock:
+                validate_workflow_schema(owner._conn, expected_org_slug=org_slug)
+                validate_team_move_schema(owner._conn, org_slug=org_slug)
+            fresh = inspect_team_move_database(db_path, org_slug=org_slug, require_existing=True)
+            acquired_identity = db_path.lstat()
+            if fresh != row or (original_identity.st_dev, original_identity.st_ino) != (acquired_identity.st_dev, acquired_identity.st_ino):
+                raise TeamMoveError("team_move_recovery_acquisition_changed")
+            return owner
+        except (OSError, sqlite3.Error) as exc:
+            primary = exc
+            raise _inspection_error("team_move_recovery_database_unavailable", exc) from exc
+        except BaseException as exc:
+            primary = exc
+            raise
+        finally:
+            if primary is not None and owner._conn is not None:
+                try:
+                    owner._conn.close()
+                except sqlite3.Error as cleanup:
+                    primary.add_note("restricted move acquisition close failed: " + type(cleanup).__name__)
+
     def __init__(self, db_path: Path) -> None:
         self.db_path = db_path
         db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -453,8 +509,8 @@ class Database(
             # Working-hours CRUD lives in its own module but shares THIS connection
             # and lock so the single-connection serialization invariant (see
             # `_synchronized`) is preserved across both surfaces.
-            self.work_hours = WorkHoursStore(self._conn, self._lock)
-            self.schedules = ScheduleStore(self._conn, self._lock)
+            self.work_hours = WorkHoursStore(self._conn, self._lock, db=self)
+            self.schedules = ScheduleStore(self._conn, self._lock, db=self)
         except BaseException:
             # Database owns the connection as soon as connect() succeeds.  A
             # fail-closed schema check or interrupted migration can raise before

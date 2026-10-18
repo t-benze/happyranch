@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Read-only packaging inspection; never imports runtime or executes skill helpers.
 set -euo pipefail
-exec python3 - "$@" <<'PYTHON'
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
+exec python3 - "$SCRIPT_DIR/asset_evidence.py" "$@" <<'PYTHON'
 import argparse
 import hashlib
 import json
@@ -14,6 +15,11 @@ import sys
 import zipfile
 from pathlib import Path
 
+# Only the private helper adjacent to this selected verifier is imported.
+ASSET_HELPER = sys.argv.pop(1)
+notices = __import__('runpy').run_path(str(Path(ASSET_HELPER).with_name('manifest_notices.py')))
+
+# Same 29 required resource members; exact originals at fresh main 7812caa6.
 BASELINE = [{'path': 'LICENSE',
   'size': 11358,
   'sha256': 'cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30',
@@ -36,18 +42,18 @@ BASELINE = [{'path': 'LICENSE',
   'blob_oid': '99c19ab116a6e131db7d756186481d31ca5ea5cc',
   'prior_member': True},
  {'path': 'runtime/skills/bundled/dream/SKILL.md',
-  'size': 1848,
-  'sha256': '6e560586938965b9a2982d2ef4968e1e2cc8b6b22e96cdea6f23fa7f0c3ce8aa',
+  'size': 14118,
+  'sha256': '91fd7d70f9a96a2e2802379c95df91ee001cd3f46febf67377d413ba4f6ae1fb',
   'git_mode': '100644',
   'posix_mode': '0644',
-  'blob_oid': 'bacff04ce3bd98dbecede6fdaacbd869b3333cf4',
+  'blob_oid': '1dbe6352f801e9b4124b4fb47d19701341e9a983',
   'prior_member': True},
  {'path': 'runtime/skills/bundled/jobs/SKILL.md',
-  'size': 18667,
-  'sha256': '0efb501401444869d369b4751e4f1ad3406bfdef6f1ea799ccee5d82079c9691',
+  'size': 32002,
+  'sha256': 'b12d8537d82284d0a37fefce4969077754bc27c1f4ba6ecc68efb92a399acd97',
   'git_mode': '100644',
   'posix_mode': '0644',
-  'blob_oid': '93c34da4fe29b028f97eb492a5b5a489b3ac8363',
+  'blob_oid': '8000371c8dd6f3f1b25276d88ece0affbab32a9c',
   'prior_member': True},
  {'path': 'runtime/skills/bundled/make-worktree/SKILL.md',
   'size': 7683,
@@ -64,11 +70,11 @@ BASELINE = [{'path': 'LICENSE',
   'blob_oid': 'eedfa92de82e9c304f7440c98d0b47ad0cc1306c',
   'prior_member': False},
  {'path': 'runtime/skills/bundled/manage-agent/SKILL.md',
-  'size': 12204,
-  'sha256': '57b227247c789fa5656fcc827b3d84ea8215a9e52be1e4cc7e592b15ebbd6781',
+  'size': 31293,
+  'sha256': '5f1813f54321107a91cc7d3d8c29c6388830c8b4827335a9c77213929345bcd2',
   'git_mode': '100644',
   'posix_mode': '0644',
-  'blob_oid': 'bc42c0087ff9f9bbae1ebcf5247e80b166ad6113',
+  'blob_oid': '6a29e7bd0a6b0efca64fb6270e82d9eeea17b972',
   'prior_member': True},
  {'path': 'runtime/skills/bundled/manage-repo/SKILL.md',
   'size': 3203,
@@ -85,32 +91,32 @@ BASELINE = [{'path': 'LICENSE',
   'blob_oid': 'fd5fb640513d1bec3ef06cfa083d6e4baac28cbd',
   'prior_member': True},
  {'path': 'runtime/skills/bundled/start-task/SKILL.md',
-  'size': 29926,
-  'sha256': '69fba3c6699a60b45cc93e9c3d900a07c7860ca7d5b9ab5693f81613af8ae64e',
+  'size': 32358,
+  'sha256': '40d4fd4fa2ffe318cfbdb832cee39770c0adbc447712cc51c4f2628be1a97a01',
   'git_mode': '100644',
   'posix_mode': '0644',
-  'blob_oid': 'edf337c8b8c735c61174b7c1bbac93d742099127',
+  'blob_oid': '1f89b3a11c0d8835dc1a59b26e10c363e95c7dc5',
   'prior_member': True},
  {'path': 'runtime/skills/bundled/thread/SKILL.md',
-  'size': 19401,
-  'sha256': '4016f8d7838b99251fea3ea75e546d81fb8637fad489c0262c17fb86f0da0699',
+  'size': 23922,
+  'sha256': 'f67b78f87d25ec04f7cd92be909581a9968c89340cae0f115886403bf56d23c1',
   'git_mode': '100644',
   'posix_mode': '0644',
-  'blob_oid': '271a64ff398a1ab0f1ed47a1f51cbbc85f768ed0',
+  'blob_oid': 'ede793ef2eb7d6a86d5a42d8d7ec5b5fa8716584',
   'prior_member': True},
  {'path': 'runtime/skills/bundled/todos/SKILL.md',
-  'size': 14161,
-  'sha256': 'c754c864bf2766124ecac4a463ae8abefe5720d7774237f642ffecab5c9d027a',
+  'size': 26543,
+  'sha256': 'cd262078043bbfabf74f5edd8e723a75d5658df51b4712527eaa76e6078c6945',
   'git_mode': '100644',
   'posix_mode': '0644',
-  'blob_oid': 'fdeb8a94c32c45ed9c49fe6b1c6f7b3db5c4369d',
+  'blob_oid': '9eeaf04c8d84b78a794e448b453413704865d1b1',
   'prior_member': True},
  {'path': 'runtime/skills/bundled/workspace-cleanup/SKILL.md',
-  'size': 37303,
-  'sha256': '0fe3b010096e955c861b2f7a4df62100a6b95d8c1d0649bf74cf0693fe1f8c2f',
+  'size': 57899,
+  'sha256': '7fb6a0271328e79f68c9f139d5871b51195b06b3d97ea0a79dbd5bef2c14aa8d',
   'git_mode': '100644',
   'posix_mode': '0644',
-  'blob_oid': 'e27626bac7dec716c858493bdc0c26c878d3ddc1',
+  'blob_oid': '36661d861e303889ee66a3ee84fae15e0a139323',
   'prior_member': True},
  {'path': 'runtime/skills/bundled/workspace-cleanup/scripts/check_path_use.py',
   'size': 82540,
@@ -120,32 +126,32 @@ BASELINE = [{'path': 'LICENSE',
   'blob_oid': '4ba3223e72bdb7bd54ad97a305bfe9e6be5ebd7a',
   'prior_member': False},
  {'path': 'runtime/skills/bundled/workspace-cleanup/scripts/observe_cleanup_batch.py',
-  'size': 39682,
-  'sha256': 'a36ca708888418f3dd99e3b038489cbb29bb3f0901f565a4f973d100952da35c',
+  'size': 43384,
+  'sha256': 'b3626364938f21e06875878ea4d713d8aa3afe7c4dc8ece99928323bec905fdb',
   'git_mode': '100644',
   'posix_mode': '0644',
-  'blob_oid': 'd22641d0e4d3b7f2799901bcce1da57642c2f913',
+  'blob_oid': '8cf408fc474e45e9f44cdfb2f657c55a8ec72ac0',
   'prior_member': False},
  {'path': 'runtime/skills/bundled/workspace-cleanup/scripts/prepare_cleanup.py',
-  'size': 14709,
-  'sha256': '70c5b89d698af33d50b08892edc95ee822a9c323a032ac622c726adae91fcaf9',
+  'size': 36215,
+  'sha256': '048b009d186e5acfc2ca033125f62597d6d3ac9bc60ff2cdbcbf77a09c98329c',
   'git_mode': '100644',
   'posix_mode': '0644',
-  'blob_oid': '8a7807cbcc4813641ad305c87cc358f96f101266',
+  'blob_oid': '6d483e3b20b8b82dffbdc5ce39be5ec300796c8b',
   'prior_member': False},
  {'path': 'runtime/skills/bundled/workspace-cleanup/scripts/run_cleanup_batch.py',
-  'size': 15779,
-  'sha256': '5ebf3732f0603daefda2e3a6898e58c2a90c5740ad9d0a5cb1ca1f7f32272372',
+  'size': 23349,
+  'sha256': 'e524933bf62729f292faadbd3836a994a08d4cd98c09fab8b41154aeb631feac',
   'git_mode': '100644',
   'posix_mode': '0644',
-  'blob_oid': '41d082533b709c05b19f1271f2b7b04feddd4512',
+  'blob_oid': '07847b5c9a52b4f42101dad44cef0330b270054e',
   'prior_member': False},
  {'path': 'runtime/skills/bundled/workspace-cleanup/scripts/run_cleanup_candidate.sh',
-  'size': 51374,
-  'sha256': '41837b7d9263dd81629de781d7cb933930d03d2ad3511a891b09d1f555c31595',
+  'size': 58643,
+  'sha256': '32808665c1a200b67af9eedee6cafa5155197dcf05fb22624c0ae919ba091a3b',
   'git_mode': '100755',
   'posix_mode': '0755',
-  'blob_oid': '033fa7305a434da9f594ed7fcf4ab0dd7c396166',
+  'blob_oid': '99f95780de48c71fb19ae0e12e7208cd11dd2952',
   'prior_member': True},
  {'path': 'runtime/skills/bundled/workspace-cleanup/scripts/worktree_safety.py',
   'size': 23134,
@@ -672,8 +678,16 @@ q.add_argument('--receipt', type=Path, required=True)
 q.add_argument('--transform-chain', type=Path, help='Read-only signed/submission/notary/staple/final relationship comparison; never public admission')
 for key in ('version', 'build', 'source-sha', 'source-tree', 'arch', 'run-id'):
     q.add_argument('--' + key, required=True)
-q = s.add_parser('licenses'); q.add_argument('--app', type=Path, required=True)
-q.add_argument('--mapping', type=Path, required=True)
+# Keep asset options closed and explicitly single-valued. Ordinary argparse
+# store actions accept duplicates; these options must refuse them instead.
+asset = __import__('runpy').run_path(ASSET_HELPER)
+q = s.add_parser('licenses', allow_abbrev=False)
+asset['add_arguments'](q, expectations=True)
+freezer = __import__('runpy').run_path(str(Path(ASSET_HELPER).with_name('freezer_evidence.py')))
+freezer['add_arguments'](q)
+web_custody = __import__('runpy').run_path(str(Path(ASSET_HELPER).with_name('web_evidence.py')))
+web_custody['add_arguments'](q)
+q.add_argument('--mapping', type=Path, required=True, action=asset['Once'])
 a = p.parse_args()
 if a.mode == 'native':
     NATIVE_EVIDENCE_DIR = a.evidence_dir
@@ -732,6 +746,9 @@ try:
               'classification': classification, 'installed_manual_semantics_review': 'REQUIRED',
               'signature_notary_staple_acceptance': 'UNPROVEN', 'available': False, 'approved_url': None})
     elif a.mode == 'archive':
+        notice_receipt = notices['validate'](a.app)
+        if notices['validate_archive'](a.archive) != notice_receipt:
+            fail('MANIFEST_NOTICE_ARCHIVE_MISMATCH', 'candidate and archive notice receipts differ')
         resources(a.app, a.archive)
         with zipfile.ZipFile(a.archive) as z:
             inv = inventory(a.app)
@@ -753,12 +770,15 @@ try:
               'source_sha': info['GitCommitSHA'], 'source_tree': info['GitTreeSHA'],
               'version': info['CFBundleShortVersionString'], 'build': info['CFBundleVersion'],
               'arch': info['ReleaseArchitecture'], 'run_id': a.run_id,
-              'app_inventory_sha256': inv['inventory_sha256'], 'available': False,
+              'app_inventory_sha256': inv['inventory_sha256'], 'manifest_notices': notice_receipt, 'available': False,
               'approved_url': None, 'signing': 'UNEXECUTED', 'ordinary_reader_execution': 'UNEXECUTED'})
     elif a.mode == 'reconcile':
         if not a.archive.is_file() or not a.receipt.is_file():
             fail('RELEASE_EVIDENCE_MISSING', [str(a.archive), str(a.receipt)])
         receipt = json.loads(a.receipt.read_text())
+        notice_receipt = notices['validate_archive'](a.archive)
+        if receipt.get('manifest_notices') != notice_receipt:
+            fail('MANIFEST_NOTICE_RECEIPT_MISMATCH', 'archived notice inventory differs from release receipt')
         errors = []
         expected_name = f'HappyRanch-{a.version}-{a.build}-{a.arch}.zip'
         fields = {'size': (a.archive.stat().st_size, 'ARCHIVE_SIZE_MISMATCH'),
@@ -842,6 +862,10 @@ try:
         emit({'local_reconciliation': 'MATCHED_TRANSFORM_RELATIONS' if a.transform_chain else 'MATCHED_UNSIGNED_INNER_BYTES', 'available': False,
               'approved_url': None, 'signing_chain': 'SUPPLIED_RELATIONS_ONLY' if a.transform_chain else 'UNEXECUTED', 'public_admission_owner': 'TASK-11196'})
     elif a.mode == 'licenses':
+        asset['verify_arguments'](a)
+        freezer['verify_arguments'](a)
+        web_custody['verify_arguments'](a)
+        a.app = Path(a.app)
         mapping = json.loads(a.mapping.read_text())
         errors = []
         for row in mapping['components']:
@@ -857,9 +881,10 @@ try:
                 path = a.app / relative
                 if not path.resolve().is_relative_to(a.app.resolve()) or path.is_symlink() or not path.is_file() or digest(path) != notice['sha256']:
                     errors.append({'error': 'LICENSE_MISSING', 'component': row['component'], 'notice': notice})
-        if not mapping['components'] or errors or mapping.get('closure_complete') is not True:
-            fail('LICENSE_CLOSURE_UNRESOLVED', {'components': errors, 'closure_complete': mapping.get('closure_complete')})
-        emit(mapping)
+        if not mapping['components'] or errors:
+            fail('MANIFEST_NOTICE_ORIGINALS_MISSING', {'components': errors, 'remediation': 'restore exact owner original texts and recollect'})
+        emit(notices['validate'](a.app, Path(a.exported_source), Path(a.output_dir), mapping))
+
 except (OSError, ValueError, KeyError, zipfile.BadZipFile, subprocess.SubprocessError) as exc:
     fail('INSPECTION_INPUT_OR_TOOL_FAILURE', str(exc))
 PYTHON

@@ -1,22 +1,42 @@
 # Packaging notice index and unresolved dispositions
 
-This index is not a substitute for original license texts or legal acceptance.
-An actual build maps shipped code/resources to source/version/digest, Analysis
-input or archive-member/chunk inclusion, original notice path/hash, retained app
-notice path/hash and disposition. Dependency/lock lists nominate inputs; they
-do not prove complete shipping obligations. Build-only tooling requires actual
-exclusion evidence before `BUILD_ONLY_NOT_SHIPPED` can be recorded.
+This index supplements the original texts bundled by `manifest_notices.py`.
+THR104seq260/266 selects dependency-manifest notices, not per-byte/linker closure
+or legal certification. `licenses/manifest-notices.json` names every resolved
+owner, selection and original/destination digest; `resolved-inventory.json`
+retains the independently enumerated inventory. Complete originals are copied
+under `licenses/manifest/OWNER_HASH/TEXT_HASH.txt`. Existing source/custody
+observations and their notice copies are retained too.
 
-| Layer | Original texts and retained location | Current disposition |
-| --- | --- | --- |
-| First-party Swift/C/Python/resources | Exact root Apache 2.0 LICENSE → Resources/licenses/LICENSE; SHA256 cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30 | Build checks exact resource bytes; preserve per-file attribution |
-| Python distributions selected by daemon/CLI Analysis | Actual installed LICENSE/NOTICE/COPYING/copyright files → licenses/python/NAME/VERSION; RECORD inputs and hashes retained | Missing text is LICENSE_MISSING; actual native/stdlib inclusion still requires reconciliation |
-| Python runtime/stdlib | Effective interpreter LICENSE.txt, or exact authenticated offline CPython fallback → licenses/python/Python-LICENSE.txt | Missing text is LICENSE_MISSING; embedded native vendor obligations unresolved |
-| PyInstaller bootloader/support | Effective distribution original license and redistribution-exception texts → licenses/python/PyInstaller/VERSION | LICENSE_UNRESOLVED:BOOTLOADER_EXCEPTION_MAPPING until actual bootloader/source/exception mapping is reconciled |
-| Go runtime and compiled dependencies | GOROOT original texts and real readonly go-list dependency module LICENSE/NOTICE → licenses/go | LICENSE_UNRESOLVED:GO_LINKED_GRAPH until fresh archive-member/final link inclusion is reconciled |
-| Generated web assets | Emitted source-map package input graph, original installed package notices → licenses/web | LICENSE_UNRESOLVED:WEB_EMITTED_CLOSURE; source maps alone do not resolve minifier/static helpers or all assets |
-| Native extensions/dylibs/frameworks | Recursive actual native closure, vendor texts; system frameworks explicitly host references | LICENSE_UNRESOLVED:PYTHON_NATIVE and NATIVE_REDISTRIBUTION |
-| Generated icon and source resources | Original source attribution and build receipts; preserve all 29 accepted resources | LICENSE_UNRESOLVED:ASSET_ATTRIBUTION where ownership/attribution is not established |
+| Layer | Membership and original text association |
+| --- | --- |
+| First-party Swift/C/Python/resources | Source tree and original root LICENSE; all 29 resource checks remain |
+| Python distributions | Every uv.lock identity; installed frozen-environment superset has its own metadata/RECORD original texts, unselected marker/group/version rows are explicit |
+| Python runtime/stdlib | Effective interpreter original or exact authenticated CPython fallback; independent native vendor files cannot inherit that text |
+| PyInstaller | Exact installed distribution and its complete original COPYING/redistribution-exception terms |
+| Go modules/runtime/vendor | Resolved go-list module graph and target package selection; module originals, GOROOT LICENSE/PATENTS and selected toolchain vendor modules.txt owners |
+| npm/generated web | Full package-lock identity/location inventory; production and emitted owners retain originals, installed build-only and absent optional packages carry explicit exclusions; existing generated-tool reader retains its originals |
+| Native vendor binaries | Concrete Analysis inputs outside distribution RECORD/Python core are named individually; missing original association refuses by path |
+| Fonts/icons/public assets | Separate census, exact font revision and co-version OFL association; first-party assets use the original source LICENSE; source/app/archive bytes remain checked |
+
+The self-hosted web fonts retain three unmodified upstream originals:
+Hanken Grotesk at `marcologous/hanken-grotesk@e6e3c4df55acfe44333c587e3d97ae3c44b7dce5`
+and Newsreader normal/italic at
+`productiontype/NewsReader@1ece6a8bfe5db1a2b90c76cc1fe5d3b2eed5dcf3`.
+Their full co-version original OFL texts are retained verbatim as
+`web/public/fonts/HankenGrotesk-OFL.txt` and `Newsreader-OFL.txt`.
+[`notice-data/font-assets.json`](notice-data/font-assets.json) records the
+source URLs, commit-to-tree-to-blob identities and font-to-notice relations.
+The Hanken Google Fonts import title says 3.012; its body and original font
+say 3.013. Both facts are preserved in that record.
+
+Vite's existing public-copy step emits these three TTFs and two notices into
+`web/dist/fonts/`; the existing app assembly copies that dist into
+`Contents/Resources/web/dist/`. Source retention and a web-copy observation
+do not prove actual app/archive custody, native loading or complete asset
+attribution. The manifest standard preserves these separate font identities
+and original texts. Actual ICNS/native evidence remains independently required;
+the former six-closure claim is not asserted.
 
 A named `LICENSE_MISSING:<component>:<path>` means an identified original text or
 retained copy is absent. `LICENSE_UNRESOLVED:<component>:<reason>` means shipped
@@ -24,7 +44,7 @@ inclusion/version/provenance/obligations remain unproved. The machine mapping
 retains component and source fields separately. Missing/unresolved entries
 prevent the verifier from emitting complete-license or successful-release
 inventory. Logs, actual found texts and partial mappings survive; return exact
-remaining component/text/destination evidence to TASK11199/TASK11196. Do not
+remaining component/text/destination evidence to the current delivery root. Do not
 remove/replace dependencies or treat an index/dependency list as compliance.
 
 Emitted web inputs are attributed within their innermost installed package
@@ -88,16 +108,16 @@ Symlinked/escaping paths, corrupt offline originals or conflicting destination
 bytes refuse retention. Mapping rows preserve original/retained hashes,
 destinations and provenance. `react-remove-scroll-bar` 2.3.8 remains missing;
 its tarball lacks a full notice and its recorded upstream revision is unresolved.
-All six named unresolved labels and `closure_complete=false` remain. Source
-retention does not establish current native binary custody, legal acceptance
-or complete emitted closure; strict license verification still blocks ZIP and
-release finalization.
+That historical 2.3.8 notice gap does not apply to the original-backed 2.3.7
+derivative now selected by the lock. Source retention does not establish native
+acceptance. The former six labels/False predicate are retired; incomplete
+manifest membership or concrete missing originals still block ZIP creation.
 
 Failure diagnostics include
 `web-attribution.json`: first 100 rejected records, string fields capped at 512
 characters and serialized records capped at 2048 bytes, with explicit
-omitted-record/field truncation. Retained texts leave `closure_complete=false`
-and release finalization blocked pending actual legal/native/asset reconciliation.
+omitted-record/field truncation. Concrete unresolved owners/texts remain errors;
+complete manifest inventory and retained originals pass the new shipping gate.
 
 The failure bundle preserves complete small files (up to 262144 bytes) as
 `.diagnostic` and larger complete files as `.diagnostic.gz`, with no JSON byte
@@ -107,7 +127,7 @@ map and component/notice provenance plus per-command CLI/catalog/trust results.
 Inputs are capped at 8 MiB each and 32 MiB total; stored bulk is capped at
 2 MiB each and 8 MiB total. Three independent critical files (build failure,
 native failure and all eleven symbol observations) each have a 262144-byte
-budget. At most 102 files and 128 KiB of metadata describe source hashes/sizes,
+budget. At most 106 files and 128 KiB of metadata describe source hashes/sizes,
 whole-file identity/gzip encoding, original/retained/omitted byte and known row
 counts. Missing or uncountable inputs use null counts, never zero-loss claims;
 malformed, unsafe or over-cap inputs get valid explicit loss records. The

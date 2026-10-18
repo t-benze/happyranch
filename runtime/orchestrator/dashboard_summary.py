@@ -105,6 +105,7 @@ class DashboardSummaryResponse(BaseModel):
     escalations: list[EscalationRow]
     # Default preserves compatibility with persisted projections written
     # before approval-required jobs were included in the dashboard.
+    # Historical pending+true disposition backlog, never a new approval queue.
     pending_review_jobs: list[PendingReviewJobRow] = Field(default_factory=list)
     stale_escalations: list[StaleEscalationRow]
     active_by_team: list[ActiveByTeam]
@@ -584,7 +585,7 @@ def compute_active_by_team(db: Database) -> list[ActiveByTeam]:
 
 
 def compute_pending_review_jobs(db: Database) -> list[PendingReviewJobRow]:
-    """Current founder-gated jobs, newest first with an id tie-breaker."""
+    """Legacy pending+true disposition backlog, newest first with id tie-breaker."""
     rows = db.fetch_all_readonly(
         "SELECT id, task_id, agent_name, title, created_at FROM jobs "
         "WHERE status = 'pending' AND review_required = 1 "

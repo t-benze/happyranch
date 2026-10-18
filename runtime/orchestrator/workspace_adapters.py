@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
 import shutil
 import subprocess
 import threading
+import time
 from contextlib import contextmanager
+from contextvars import copy_context
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -623,6 +626,65 @@ def _publish_canonical_specs(
     return expected_specs
 
 
+def select_system_contracts(workspace: Path):
+    """Pure native all-context selection; does not build packages or links."""
+    from runtime.skills.system_contracts import SessionContext, resolve_system_contracts_for_session
+    _ORDINARY_CONTEXTS = (
+        "task", "thread", "wake", "dream", "schedule", "bootstrap"
+    )
+    contract_ids: set[str] = set()
+    contracts_by_id: dict[str, object] = {}  # SystemContract
+    for ctx_name in _ORDINARY_CONTEXTS:
+        try:
+            ctx = SessionContext(ctx_name)
+        except ValueError:
+            continue
+        for contract in resolve_system_contracts_for_session(ctx, workspace=workspace):
+            if contract.id not in contracts_by_id:
+                contracts_by_id[contract.id] = contract
+            contract_ids.add(contract.id)
+
+    return contracts_by_id
+
+
+def select_release_skills(skills_root, settings, *, slug, team, agent_name, org_root):
+    """Pure existing native registry/eligibility/exposure projection."""
+    from runtime.skills.registry import SkillRegistry
+    from runtime.skills.resolver import EligibilityResolver
+    from runtime.skills.exposure import resolve_exposed_skills
+    if skills_root.is_dir():
+        release_registry = SkillRegistry(skills_root=skills_root)
+        release_entries: dict = {}
+        for entry in release_registry.list_all():
+            release_entries[entry.id] = entry
+
+        if release_entries:
+            union_registry = SkillRegistry(skills_root=skills_root)
+            for entry in release_entries.values():
+                union_registry._entries[entry.id] = entry
+
+            policy: dict = {}
+            if org_root is not None:
+                config_path = org_root / "org" / "config.yaml"
+            else:
+                config_path = settings.project_root / "org" / "config.yaml"
+            if config_path.is_file():
+                import yaml
+                try:
+                    raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+                    if isinstance(raw, dict):
+                        policy = raw.get("skills", {})
+                except (yaml.YAMLError, OSError):
+                    pass
+
+            resolver = EligibilityResolver(policy)
+            return resolve_exposed_skills(
+                union_registry, resolver, org=slug, team=team, agent=agent_name,
+            )
+
+    return []
+
+
 def _materialize_unified_canonical(
     workspace: Path,
     settings: Settings,
@@ -665,7 +727,11 @@ def _materialize_unified_canonical(
     from runtime.skills.resolver import EligibilityResolver
     from runtime.skills.exposure import resolve_exposed_skills
 
-    store = CanonicalSkillStore(settings=settings)
+    from runtime.orchestrator.task_pause import task_preparation_effects
+    # Store initialization has its own native mkdir effects. A successful
+    # initialization does not make a later read-only source refusal uncertain.
+    with task_preparation_effects():
+        store = CanonicalSkillStore(settings=settings)
     materializer = SymlinkMaterializer(store)
     src_root = _resolve_skills_src(settings)
     skills_subdir = ".claude/skills" if provider == "claude" else ".agents/skills"
@@ -677,20 +743,8 @@ def _materialize_unified_canonical(
     #    removes a valid link belonging to another context.
     #    The per-context resolver remains authoritative for
     #    session guidance; the workspace is a safe superset.
-    _ORDINARY_CONTEXTS = (
-        "task", "thread", "wake", "dream", "schedule", "bootstrap"
-    )
-    contract_ids: set[str] = set()
-    contracts_by_id: dict[str, object] = {}  # SystemContract
-    for ctx_name in _ORDINARY_CONTEXTS:
-        try:
-            ctx = SessionContext(ctx_name)
-        except ValueError:
-            continue
-        for contract in resolve_system_contracts_for_session(ctx, workspace=workspace):
-            if contract.id not in contracts_by_id:
-                contracts_by_id[contract.id] = contract
-            contract_ids.add(contract.id)
+    contracts_by_id = select_system_contracts(workspace)
+    contract_ids = set(contracts_by_id)
 
     # Validate ALL sources before any build.
     _preflight_system_contract_sources(
@@ -698,101 +752,111 @@ def _materialize_unified_canonical(
         workspace=workspace, provider=provider,
     )
 
-    # ── Build unified expected_specs ────────────────────────────
-    expected_specs: list[dict] = []
+    # The mandatory-source preflight above is affirmative pre-effect
+    # validation. Package construction/publication below can be partial.
+    with task_preparation_effects():
+        # ── Build unified expected_specs ────────────────────────────
+        expected_specs: list[dict] = []
 
-    # 1. System-contract skills (union across all ordinary contexts)
-    for contract_id in sorted(contracts_by_id):
-        contract = contracts_by_id[contract_id]
-        src_dir = src_root / contract.id
-        content_hash = _compute_dir_hash(src_dir)
-        store.build_from_source(
-            contract.id, "system", content_hash, src_dir,
-            verify_source_hash=content_hash,
-        )
-        # Org context is carried via session/task metadata, not
-        # literal {ORG_SLUG} substitution in canonical bytes.
-        expected_specs.append({
-            "slug": contract.id,
-            "version": "system",
-            "content_hash": content_hash,
-        })
-
-    # 2. Release-managed catalog skills
-    if skills_root.is_dir():
-        release_registry = SkillRegistry(skills_root=skills_root)
-        release_entries: dict = {}
-        for entry in release_registry.list_all():
-            release_entries[entry.id] = entry
-
-        if release_entries:
-            union_registry = SkillRegistry(skills_root=skills_root)
-            for entry in release_entries.values():
-                union_registry._entries[entry.id] = entry
-
-            policy: dict = {}
-            if org_root is not None:
-                config_path = org_root / "org" / "config.yaml"
-            else:
-                config_path = settings.project_root / "org" / "config.yaml"
-            if config_path.is_file():
-                import yaml
-                try:
-                    raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-                    if isinstance(raw, dict):
-                        policy = raw.get("skills", {})
-                except (yaml.YAMLError, OSError):
-                    pass
-
-            resolver = EligibilityResolver(policy)
-            exposed = resolve_exposed_skills(
-                union_registry, resolver, org=slug, team=team, agent=agent_name,
+        # 1. System-contract skills (union across all ordinary contexts)
+        for contract_id in sorted(contracts_by_id):
+            contract = contracts_by_id[contract_id]
+            src_dir = src_root / contract.id
+            content_hash = _compute_dir_hash(src_dir)
+            store.build_from_source(
+                contract.id, "system", content_hash, src_dir,
+                verify_source_hash=content_hash,
             )
+            # Org context is carried via session/task metadata, not
+            # literal {ORG_SLUG} substitution in canonical bytes.
+            expected_specs.append({
+                "slug": contract.id,
+                "version": "system",
+                "content_hash": content_hash,
+            })
 
-            for es in exposed:
-                skill_id_slug = es.skill.slug
-                if es.skill.source == "user_authored" and org_root is not None:
-                    src_dir = org_root / "skills" / skill_id_slug
-                else:
-                    src_dir = skills_root / skill_id_slug
-                if not src_dir.is_dir():
-                    continue
+        # 2. Release-managed catalog skills
+        if skills_root.is_dir():
+            exposed = select_release_skills(skills_root, settings, slug=slug,
+                team=team, agent_name=agent_name, org_root=org_root)
+            if exposed:
+                for es in exposed:
+                    skill_id_slug = es.skill.slug
+                    if es.skill.source == "user_authored" and org_root is not None:
+                        src_dir = org_root / "skills" / skill_id_slug
+                    else:
+                        src_dir = skills_root / skill_id_slug
+                    if not src_dir.is_dir():
+                        continue
 
-                content_hash = _compute_dir_hash(src_dir)
-                store.build_from_source(
-                    skill_id_slug, es.skill.version or "0", content_hash, src_dir,
-                    verify_source_hash=content_hash,
-                )
-                expected_specs.append({
-                    "slug": skill_id_slug,
-                    "version": es.skill.version or "0",
-                    "content_hash": content_hash,
-                })
-
-                if db is not None:
-                    db.insert_skill_validation_event(
-                        skill_id=es.skill.id,
-                        slug=skill_id_slug,
-                        agent=agent_name,
-                        source="materialization",
-                        severity="info",
-                        ok=True,
-                        version=es.skill.version,
+                    content_hash = _compute_dir_hash(src_dir)
+                    store.build_from_source(
+                        skill_id_slug, es.skill.version or "0", content_hash, src_dir,
+                        verify_source_hash=content_hash,
                     )
+                    expected_specs.append({
+                        "slug": skill_id_slug,
+                        "version": es.skill.version or "0",
+                        "content_hash": content_hash,
+                    })
 
-    # 3. B2 custom skills
-    if db is not None and org_root is not None:
-        custom_specs = _build_custom_skill_canonical_specs(
-            store=store, org_root=org_root, db=db, slug=slug,
-            agent_name=agent_name, team=team, task_id=task_id,
-            session_id=session_id, session_context=context,
+                    if db is not None:
+                        db.insert_skill_validation_event(
+                            skill_id=es.skill.id,
+                            slug=skill_id_slug,
+                            agent=agent_name,
+                            source="materialization",
+                            severity="info",
+                            ok=True,
+                            version=es.skill.version,
+                        )
+
+        # 3. B2 custom skills
+        if db is not None and org_root is not None:
+            custom_specs = _build_custom_skill_canonical_specs(
+                store=store, org_root=org_root, db=db, slug=slug,
+                agent_name=agent_name, team=team, task_id=task_id,
+                session_id=session_id, session_context=context,
+            )
+            expected_specs.extend(custom_specs)
+
+        return _publish_canonical_specs(
+            materializer=materializer, expected_specs=expected_specs,
+            workspace=workspace, slug=slug, org_root=org_root, db=db,
         )
-        expected_specs.extend(custom_specs)
 
-    return _publish_canonical_specs(
-        materializer=materializer, expected_specs=expected_specs,
-        workspace=workspace, slug=slug, org_root=org_root, db=db,
-    )
+
+def select_custom_skill_rows(db, *, slug, agent_name, team):
+    """Pure current B2 eligibility, shared with the actual package builder."""
+    from runtime.skills.eligibility import EligibilityRecipient, EligibilityRule, SkillEligibilityState, resolve_custom_skill_eligibility
+    conn = getattr(db, "_conn", db)
+    rows = conn.execute(
+        """SELECT s.id, s.slug, s.retired_at, s.purged_at, v.id AS version_id,
+                  v.content_hash, v.content_artifact_key, v.validation_state
+           FROM custom_skills s
+           JOIN custom_skill_versions v ON v.id = s.current_version_id
+           WHERE s.org_slug = ?""",
+        (slug,),
+    ).fetchall()
+    recipient = EligibilityRecipient(agent_name, (team,))
+    for row in rows:
+        rules = conn.execute(
+            """SELECT scope_type, scope_target, effect
+               FROM custom_skill_eligibility_rules
+               WHERE skill_id = ? AND superseded_at IS NULL""",
+            (row["id"],),
+        ).fetchall()
+        decision = resolve_custom_skill_eligibility(
+            SkillEligibilityState(
+                bool(row["retired_at"]), row["validation_state"], bool(row["purged_at"])
+            ),
+            [EligibilityRule(**dict(rule)) for rule in rules],
+            recipient,
+        )
+        if not decision.visible:
+            continue
+
+        yield row
 
 
 def _build_custom_skill_canonical_specs(
@@ -827,14 +891,7 @@ def _build_custom_skill_canonical_specs(
     )
 
     conn = getattr(db, "_conn", db)
-    rows = conn.execute(
-        """SELECT s.id, s.slug, s.retired_at, s.purged_at, v.id AS version_id,
-                  v.content_hash, v.content_artifact_key, v.validation_state
-           FROM custom_skills s
-           JOIN custom_skill_versions v ON v.id = s.current_version_id
-           WHERE s.org_slug = ?""",
-        (slug,),
-    ).fetchall()
+    rows = select_custom_skill_rows(db, slug=slug, agent_name=agent_name, team=team)
     artifact_store = ArtifactStore(OrgPaths(org_root).artifacts_dir)
     recipient = EligibilityRecipient(agent_name, (team,))
     specs: list[dict] = []
@@ -845,22 +902,7 @@ def _build_custom_skill_canonical_specs(
     )
 
     for row in rows:
-        rules = conn.execute(
-            """SELECT scope_type, scope_target, effect
-               FROM custom_skill_eligibility_rules
-               WHERE skill_id = ? AND superseded_at IS NULL""",
-            (row["id"],),
-        ).fetchall()
-        decision = resolve_custom_skill_eligibility(
-            SkillEligibilityState(
-                bool(row["retired_at"]), row["validation_state"], bool(row["purged_at"])
-            ),
-            [EligibilityRule(**dict(rule)) for rule in rules],
-            recipient,
-        )
-        if not decision.visible:
-            continue
-
+        package_effects = False
         try:
             artifact_key = row["content_artifact_key"]
             if not artifact_key:
@@ -872,6 +914,10 @@ def _build_custom_skill_canonical_specs(
                     "Artifact hash mismatch: expected "
                     f"{row['content_hash'][:16]}..., got {actual_hash[:16]}..."
                 )
+            # Artifact-key/read/hash refusals above are affirmative pre-effect
+            # failures for the task owner. Temporary/package construction below
+            # can leave effects even when this helper later omits the spec.
+            package_effects = True
             with tempfile.TemporaryDirectory() as temporary_dir:
                 source_dir = Path(temporary_dir)
                 (source_dir / "SKILL.md").write_bytes(content)
@@ -911,6 +957,20 @@ def _build_custom_skill_canonical_specs(
                 )
                 conn.commit()
         except Exception as exc:
+            # The native builder can leave canonical/package effects before
+            # returning an omitted custom spec. Retain the actual native owner even
+            # when this failure is caught and the outer materializer returns.
+            from runtime.orchestrator.producer_move import current_producer_preparation
+            from runtime.orchestrator.thread_move import current_thread_preparation
+            from runtime.orchestrator.task_pause import current_invocation
+            preparation = (current_thread_preparation() or current_producer_preparation()
+                           or (current_invocation() if package_effects else None))
+            if preparation is not None:
+                try:
+                    preparation.failed_cleanup()
+                except BaseException as evidence:
+                    exc.add_note(f"custom package preparation evidence failed: {evidence!r}")
+                    raise exc from evidence
             if recordable:
                 service.record_materialization(
                     conn, skill_id=row["id"], agent_name=agent_name,
@@ -1488,8 +1548,10 @@ def _non_stop_command_warning_section() -> list[str]:
         "continues, and you check on it with `happyranch jobs tail|wait|stop` when",
         "ready. See the **jobs** skill (available",
         "to you under your workspace's skills directory) for the form fields, the",
-        "two policy flags (`review_required`, `persistent`), and how to self-block",
-        "when founder review is required.\n",
+        "persistence flag and genuine job-result waits. Obtain required content",
+        "authorization in a thread BEFORE submission from an ordinary task session.",
+        "Omit review_required or set false; true is refused before allocation.",
+        "Admission is not script success; inspect the actual terminal receipt.\n",
         "If you're uncertain whether a command will return, submit it as a job",
         "with `persistent: true` — cheaper to be wrong than to lose a session.\n",
     ]
@@ -1731,45 +1793,167 @@ class PersistentWorkspaceSetup:
         )
 
 
-def refresh_workspace_repos(workspace: Path) -> dict[str, bool]:
-    """Fast-forward-refresh every cloned repo under ``workspace/repos/``.
+# One budget for the complete batch, not a fresh allowance per probe/repo.
+_REPO_REFRESH_SECONDS = 30.0
 
-    Called by the orchestrator on EVERY session spawn, before the executor
-    subprocess starts, so all executors (claude, codex, opencode, pi) get
-    fresh repo state (THR-103). This replaces the Claude-only PreToolUse
-    settings hook that previously ran the same pull.
 
-    Failure semantics: NEVER raises and never blocks a spawn. Offline,
-    dirty-tree, non-fast-forward, or conflicted pulls exit non-zero, which
-    ``subprocess.run`` without ``check=True`` does not raise for — the
-    returncode is recorded in the returned mapping. Hung fetches are bounded
-    by a per-repo 30s timeout; one repo's failure does not stop its siblings.
+def _repo_refresh_git(
+    repo_dir: Path, arguments: list[str], *, deadline: float,
+    cancel_requested: threading.Event | None,
+) -> subprocess.CompletedProcess[bytes] | None:
+    """None means no command was started; a raised timeout is not that proof."""
+    remaining = deadline - time.monotonic()
+    if remaining <= 0 or (cancel_requested is not None and cancel_requested.is_set()):
+        return None
+    return subprocess.run(
+        ["git", "--no-optional-locks", *arguments], cwd=str(repo_dir),
+        capture_output=True, timeout=remaining,
+    )
 
-    Only already-cloned repos are refreshed (``detect_repo_names`` filters to
-    dirs with a ``.git``); first-time cloning stays in the bootstrap path
-    (``context_builder.clone_repo``). The returned mapping records whether
-    each detected repo fast-forwarded cleanly; scan failures return an empty
-    mapping.
+
+def _repo_refresh_can_pull(
+    repo_dir: Path, *, deadline: float, cancel_requested: threading.Event | None,
+) -> bool:
+    """Read-only admission only. A refusal skips pull, never certifies freshness.
+
+    In particular ls-remote catches a configured branch deleted upstream even
+    when the local remote-tracking ref still exists. Its positive result is
+    NOT a lock on remote/local state: every subsequent executed failure stays
+    uncertain regardless of this check or any checkout/status summaries.
     """
+    def observe(arguments: list[str]) -> bytes | None:
+        result = _repo_refresh_git(repo_dir, arguments, deadline=deadline,
+                                   cancel_requested=cancel_requested)
+        if result is None or result.returncode != 0:
+            return None
+        return result.stdout.removesuffix(b"\n")
+
+    try:
+        branch_ref = observe(["symbolic-ref", "--quiet", "HEAD"])
+        if branch_ref is None or not branch_ref.startswith(b"refs/heads/"):
+            return False
+        branch = branch_ref[len(b"refs/heads/"):].decode("utf8")
+        remote = observe(["config", "--get-all", f"branch.{branch}.remote"])
+        merge = observe(["config", "--get-all", f"branch.{branch}.merge"])
+        if (not remote or not merge or b"\n" in remote or b"\n" in merge
+                or not merge.startswith(b"refs/heads/")):
+            return False
+        if observe(["rev-parse", "--verify", "--quiet", "@{upstream}"]) is None:
+            return False
+        upstream = observe(["ls-remote", "--exit-code", "--refs", "--",
+                            remote.decode("utf8"), merge.decode("utf8")])
+        # Require one exact advertised ref; no stderr-based classification.
+        return (upstream is not None and b"\n" not in upstream
+                and upstream.partition(b"\t")[0] != b""
+                and upstream.partition(b"\t")[2] == merge)
+    except (subprocess.SubprocessError, OSError, UnicodeError, ValueError) as exc:
+        logger.debug("repo refresh: pre-pull admission refused for %s: %s", repo_dir, exc)
+        return False
+
+
+def refresh_workspace_repos(
+    workspace: Path, *, _deadline: float | None = None,
+    _cancel_requested: threading.Event | None = None,
+) -> dict[str, bool]:
+    """Best-effort refresh of already-cloned repos before executor launch.
+
+    All read-only admission checks and pulls share ONE 30-second monotonic
+    batch deadline, including scan time. Each subprocess gets only what is
+    left; expired/cancelled and otherwise refused siblings return false without
+    starting a pull. A failed repo may leave budget for later siblings. Scan,
+    process creation/reap and native evidence persistence are synchronous OS/DB
+    operations, not hard real-time bounds. Async runners use the joined offload
+    below so none of these waits occupies their shared event loop.
+
+    Detached/unusable/missing/unreadable upstream checks refuse BEFORE pull.
+    Any executed pull failure/exception/timeout retains native failed_cleanup;
+    parent HEAD/branch/porcelain equality cannot establish absence of effects,
+    especially with recursive submodules. Timeout is no process-tree quiescence
+    claim. Existing unknown reservations are never cleared. Expected Git errors
+    are best-effort; native evidence errors and cancellation still propagate.
+    False results always retain the stale-source prompt warning.
+    """
+    deadline = time.monotonic() + _REPO_REFRESH_SECONDS if _deadline is None else _deadline
     try:
         repo_names = PersistentWorkspaceSetup.detect_repo_names(workspace)
     except OSError as exc:
         logger.debug("repo refresh: could not scan %s: %s", workspace, exc)
         return {}
+    from runtime.orchestrator.producer_move import current_producer_preparation
+    from runtime.orchestrator.thread_move import current_thread_preparation
+    from runtime.orchestrator.task_pause import current_invocation
+    preparation = current_thread_preparation() or current_producer_preparation() or current_invocation()
     results: dict[str, bool] = {}
     for name in repo_names:
+        results[name] = False
         repo_dir = workspace / "repos" / name
+        if not _repo_refresh_can_pull(repo_dir, deadline=deadline,
+                                      cancel_requested=_cancel_requested):
+            continue
         try:
-            result = subprocess.run(
-                ["git", "pull", "--ff-only"],
-                cwd=str(repo_dir),
-                capture_output=True,
-                timeout=30,
-            )
-            results[name] = result.returncode == 0
-        except (subprocess.TimeoutExpired, subprocess.SubprocessError, OSError) as exc:
-            logger.info("repo refresh: git pull skipped for %s: %s", repo_dir, exc)
-            results[name] = False
+            result = _repo_refresh_git(repo_dir, ["pull", "--ff-only"],
+                                       deadline=deadline, cancel_requested=_cancel_requested)
+        except BaseException as exc:
+            if preparation is not None:
+                try:
+                    preparation.failed_cleanup()
+                except BaseException as evidence:
+                    exc.add_note(f"repository preparation evidence failed: {evidence!r}")
+                    raise exc from evidence
+            if not isinstance(exc, (subprocess.SubprocessError, OSError)):
+                raise
+            logger.info("repo refresh: git pull failed for %s: %s", repo_dir, exc)
+        else:
+            # None is an affirmative refusal before invoking pull. Every
+            # executed nonzero exit is uncertain, even with equal summaries.
+            if result is not None:
+                results[name] = result.returncode == 0
+                if result.returncode != 0 and preparation is not None:
+                    preparation.failed_cleanup()
+    return results
+
+
+async def refresh_workspace_repos_async(workspace: Path) -> dict[str, bool]:
+    """Offload with the caller's ContextVars and join before owner settlement.
+
+    Match the existing owned cleanup shield/join pattern. Cancelling an offload
+    await alone does not stop its worker. Keep the caller's preparation-effects scope
+    open through actual worker completion, including repeated cancellation.
+    Stop admitting further Git commands and then propagate cancellation; an
+    active command retains the original batch deadline and uncertainty rules.
+    Executor-queue time also consumes that deadline.
+    """
+    cancel_requested = threading.Event()
+    deadline = time.monotonic() + _REPO_REFRESH_SECONDS
+    context = copy_context()
+
+    def refresh() -> dict[str, bool]:
+        return refresh_workspace_repos(workspace, _deadline=deadline,
+                                       _cancel_requested=cancel_requested)
+
+    # A private executor Future, rather than a separately cancellable asyncio
+    # Task, also avoids all-task shutdown cancelling a to_thread task while its
+    # actual thread is still running. Only shielded awaits observe this future.
+    worker = asyncio.get_running_loop().run_in_executor(None, context.run, refresh)
+    cancellation: asyncio.CancelledError | None = None
+    while True:
+        try:
+            results = await asyncio.shield(worker)
+            break
+        except asyncio.CancelledError as exc:
+            # A completed worker may itself raise CancelledError. Do not
+            # re-await that same completed failure indefinitely.
+            if worker.done():
+                raise cancellation or exc
+            cancellation = cancellation or exc
+            cancel_requested.set()
+        except BaseException as exc:
+            if cancellation is not None:
+                cancellation.add_note(f"repository refresh worker failed: {exc!r}")
+                raise cancellation from exc
+            raise
+    if cancellation is not None:
+        raise cancellation
     return results
 
 
@@ -2318,13 +2502,19 @@ class ClaudeWorkspaceAdapter:
             json.dumps(settings_data, indent=2) + "\n"
         )
 
-    def write_claude_md(
+    def write_claude_md(self, workspace: Path, agent_name: str, system_prompt: str,
+                     repo_names: list[str] | None = None) -> None:
+        write_canonical_instruction_pair(workspace, self.render_claude_md(
+            workspace, agent_name, system_prompt, repo_names=repo_names,
+        ))
+
+    def render_claude_md(
         self,
         workspace: Path,
         agent_name: str,
         system_prompt: str,
         repo_names: list[str] | None = None,
-    ) -> None:
+    ) -> str:
         """Write the canonical instruction pair with system prompt and pointers.
 
         The active-executor content is written to the regular canonical
@@ -2335,7 +2525,6 @@ class ClaudeWorkspaceAdapter:
         so the repo list doesn't drift between the two files.
         """
         _assert_no_reserved_headers_in_body(agent_name, system_prompt)
-        workspace.mkdir(parents=True, exist_ok=True)
         sections = self._build_sections(
             agent_name,
             system_prompt,
@@ -2357,7 +2546,7 @@ class ClaudeWorkspaceAdapter:
             ],
             skills_dir=".claude/skills",
         )
-        write_canonical_instruction_pair(workspace, "\n".join(sections))
+        return "\n".join(sections)
 
     def _build_sections(
         self,
@@ -2465,13 +2654,19 @@ class CodexWorkspaceAdapter:
         self._slug = slug
         self._persistent = PersistentWorkspaceSetup(settings)
 
-    def write_agents_md(
+    def write_agents_md(self, workspace: Path, agent_name: str, system_prompt: str,
+                     repo_names: list[str] | None = None) -> None:
+        write_canonical_instruction_pair(workspace, self.render_agents_md(
+            workspace, agent_name, system_prompt, repo_names=repo_names,
+        ))
+
+    def render_agents_md(
         self,
         workspace: Path,
         agent_name: str,
         system_prompt: str,
         repo_names: list[str] | None = None,
-    ) -> None:
+    ) -> str:
         """Write AGENTS.md to workspace with system prompt and context pointers.
 
         Codex CLI ≥0.125 discovers skills by walking ``.agents/skills/`` from
@@ -2482,7 +2677,6 @@ class CodexWorkspaceAdapter:
         the completion contract.
         """
         _assert_no_reserved_headers_in_body(agent_name, system_prompt)
-        workspace.mkdir(parents=True, exist_ok=True)
         # Shared bootstrap sections (KB, memory, artifacts) are assembled in
         # Claude's _build_sections and flow through here unchanged.
         sections = ClaudeWorkspaceAdapter(self._settings, self._paths, slug=self._slug)._build_sections(
@@ -2507,7 +2701,7 @@ class CodexWorkspaceAdapter:
             ],
             skills_dir=".agents/skills",
         )
-        write_canonical_instruction_pair(workspace, "\n".join(sections))
+        return "\n".join(sections)
 
     def _copy_skills(self, workspace: Path) -> None:
         """No-op: canonical store + symlinks supersede wholesale copy."""
@@ -2622,3 +2816,44 @@ class PiWorkspaceAdapter:
         system_prompt: str,
     ) -> None:
         self._codex_adapter.ensure_workspace_ready(workspace, agent_name, system_prompt)
+
+
+def plan_workspace_skills(workspace, settings, *, slug, provider, agent_name, team, skills_root, org_root, db):
+    """Read-only manifest using the actual native all-context selectors.
+
+    Does not instantiate a store/materializer, build a package, emit an event,
+    repair a link, create scratch or modify memory. Artifact failure refuses
+    the preview; the mutating builder retains its ordinary caught-error policy.
+    """
+    import hashlib
+    from runtime.infrastructure.artifact_store import ArtifactStore
+    from runtime.orchestrator._paths import OrgPaths
+    specs = []
+    src_root = _resolve_skills_src(settings)
+    contracts = select_system_contracts(workspace)
+    _preflight_system_contract_sources(set(contracts), src_root, workspace=workspace, provider=provider)
+    for contract_id in sorted(contracts):
+        digest = _compute_dir_hash(src_root / contract_id)
+        specs.append({"slug": contract_id, "version": "system", "content_hash": digest})
+    for exposed in select_release_skills(skills_root, settings, slug=slug,
+            team=team, agent_name=agent_name, org_root=org_root):
+        skill = exposed.skill
+        source = (org_root / "skills" if skill.source == "user_authored" else skills_root) / skill.slug
+        if not source.is_dir():
+            raise ValueError("team_move_selected_skill_source_missing")
+        specs.append({"slug": skill.slug, "version": skill.version or "0", "content_hash": _compute_dir_hash(source)})
+    with db._lock:
+        selected = [dict(row) for row in select_custom_skill_rows(db, slug=slug, agent_name=agent_name, team=team)]
+    artifacts = ArtifactStore.open_existing(OrgPaths(org_root).artifacts_dir) if selected else None
+    for row in selected:
+        if not row["content_artifact_key"]:
+            raise ValueError("team_move_custom_skill_artifact_missing")
+        content = artifacts.read(row["content_artifact_key"])
+        if hashlib.sha256(content).hexdigest() != row["content_hash"]:
+            raise ValueError("team_move_custom_skill_artifact_changed")
+        tree_hash = hashlib.sha256(b"SKILL.md\x00" + content + b"\x00").hexdigest()
+        specs.append({"slug": row["slug"], "version": str(row["version_id"]),
+            "content_hash": row["content_hash"], "tree_hash": tree_hash})
+    if len({s["slug"] for s in specs}) != len(specs):
+        raise ValueError("team_move_skill_slug_collision")
+    return specs

@@ -1,5 +1,8 @@
-"""Script request endpoints (spec §5)."""
+"""Automatic job admission, history and nonexecuting legacy disposition."""
 from __future__ import annotations
+
+from runtime.orchestrator.producer_move import owner_for
+from runtime.orchestrator.team_move import DeferredTeamMove
 
 import asyncio
 import hashlib
@@ -11,7 +14,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, Field, model_validator
 
 from runtime.daemon.auth import optional_bearer, require_token
 from runtime.daemon.event_bus import job_topic
@@ -25,8 +28,6 @@ from runtime.models import (
     JobInterpreter,
     JobRecord,
     JobStatus,
-    ThreadMessageKind,
-    ThreadStatus,
 )
 
 # Two routers mounted at the same prefix. ``router`` carries the bearer-only
@@ -148,15 +149,15 @@ class SubmitBody(BaseModel):
     task_id: str | None = None
     session_id: str | None = None
     title: str
-    # Rationale is required ONLY when review_required=True. Default empty so
-    # agent-side auto-run callers can omit it. When review_required=True the
-    # handler enforces a non-blank value (400 rationale_required).
+    # Optional context; authorization belongs in a thread before submission.
     rationale: str = ""
     script: str
     interpreter: str
     cwd_hint: str | None = None
-    # Founder-review gate (default False = auto-run inline).
-    review_required: bool = False
+    review_required: bool = Field(
+        default=False, deprecated=True,
+        description="Omit or set false for automatic admission. Parsed true refuses with 422 review_required_removed before allocation; obtain required authorization in a thread first.",
+    )
     # Long-running flag (default False = 300s default runtime cap).
     persistent: bool = False
     # Optional explicit runtime cap; None falls back to the persistent-aware
@@ -180,58 +181,10 @@ class SubmitBody(BaseModel):
 _DEFAULT_BOUNDED_RUNTIME_SECONDS = 300
 
 
-def _append_pending_review_thread_message(
-    org,
-    *,
-    task_id: str,
-    job_id: str,
-    title: str,
-    slug: str,
-) -> None:
-    """Surface a review-gated job on its originating open founder thread.
-
-    This is deliberately a durable visibility note only: it neither creates a
-    thread invocation nor changes the task, thread, or job state.
-    """
-    from runtime.infrastructure.database import LineageTooDeep
-
-    try:
-        ancestors = org.db.walk_ancestors(task_id, max_hops=200)
-    except LineageTooDeep:
-        return
-    if not ancestors:
-        return
-    root = ancestors[-1]
-    chain = org.db.walk_revisit_chain(root.id, max_hops=200, truncate=True)
-    original = chain[-1] if chain else root
-    thread_id = original.dispatched_from_thread_id
-    if thread_id is None:
-        return
-    thread = org.db.get_thread(thread_id)
-    if thread is None or thread.status is not ThreadStatus.OPEN:
-        return
-
-    job_path = f"/orgs/{slug}/jobs/{job_id}"
-    org.db.append_thread_message(
-        thread_id=thread_id,
-        speaker="system",
-        kind=ThreadMessageKind.SYSTEM,
-        body_markdown=(
-            f"Job [{job_id}]({job_path}) — {title} — is waiting for your review. "
-            "Review it and approve & run or reject."
-        ),
-        system_payload={
-            "kind_tag": "job_pending_approval",
-            "job_id": job_id,
-            "task_id": task_id,
-            "title": title,
-            "action": "review_and_approve_or_reject",
-        },
-        sent_from_task_id=task_id,
-    )
-
-
-@router.post("/jobs/submit", status_code=201)
+@router.post("/jobs/submit", status_code=201, responses={
+    422: {"description": "Invalid input or review_required_removed; authorize in a thread before submission"},
+    409: {"description": "Session mismatch or missing cwd; post-allocation failures identify job_id and status"},
+})
 async def submit_job(slug: str, body: SubmitBody, org: OrgDep) -> dict:
     # §5.1 validation order. Task-path auth only.
     # SubmitBody validator guarantees both task_id and session_id.
@@ -277,14 +230,13 @@ async def submit_job(slug: str, body: SubmitBody, org: OrgDep) -> dict:
             detail={"code": "title_too_long", "max": _MAX_TITLE_LEN},
         )
 
-    # 5. Rationale: required ONLY when founder review is requested.
-    #    On the auto-run path we accept blank rationale (the agent didn't need
-    #    to talk the founder through anything — it's just running its own work).
+    # 5. Refuse the obsolete mode before any job allocation, even with rationale.
     rationale = body.rationale.strip()
-    if body.review_required and not rationale:
-        raise HTTPException(
-            status_code=400, detail={"code": "rationale_required"},
-        )
+    if body.review_required:
+        raise HTTPException(status_code=422, detail={
+            "code": "review_required_removed",
+            "message": "Obtain any required authorization in a thread before submitting; omit review_required or set it to false. This request was not submitted.",
+        })
 
     # 6. Script size (check before stripping to catch payloads that are only whitespace).
     if len(body.script.encode("utf-8")) > _MAX_SCRIPT_BYTES:
@@ -319,6 +271,12 @@ async def submit_job(slug: str, body: SubmitBody, org: OrgDep) -> dict:
         effective_max_runtime = None
     else:
         effective_max_runtime = _DEFAULT_BOUNDED_RUNTIME_SECONDS
+
+    # Side-effect-free prerequisites are checked before allocating an ID/row.
+    _preflight_launch(
+        interpreter=body.interpreter, cwd_hint=cwd_hint,
+        workspace_root=org.root / "workspaces" / agent,
+    )
 
     # The authentic submit session is persisted with the pending job. It
     # grants no exception unless captured as positively running at Pause.
@@ -374,46 +332,11 @@ async def submit_job(slug: str, body: SubmitBody, org: OrgDep) -> dict:
             interpreter=body.interpreter, cwd_hint=cwd_hint,
             byte_size=len(body.script.encode("utf-8")), line_count=body.script.count("\n") + 1)
 
-    # Founder-review path: leave pending, return.
-    if body.review_required:
-        _append_pending_review_thread_message(
-            org,
-            task_id=scope_id,
-            job_id=job_id,
-            title=title,
-            slug=slug,
-        )
-        if getattr(org, "orchestrator", None) is not None:
-            org.orchestrator.notify_job_submitted(
-                job_id=job_id, agent=agent, task_id=scope_id,
-                title=title, rationale=rationale, script_text=body.script,
-                interpreter=body.interpreter, cwd_hint=cwd_hint,
-            )
-        return {
-            "id": job_id,
-            "status": "pending",
-            "created_at": record.created_at,
-            "authentication": {
-                "task_id": body.task_id,
-                "session_id": body.session_id,
-            },
-        }
-
-    # Auto-run path: dispatch the runner immediately. _run_job_core already
-    # handles validation (cwd, interpreter, transition_to_running) + spawns
-    # the background task. We pass trigger="agent" so it logs the right
-    # audit action (job_auto_started, not job_run_started).
-    try:
-        run_result = await _run_job_core(
-            org, job_id=job_id,
-            cwd_override=None, timeout_override=None,
-            trigger="agent", trigger_actor=agent, submit_session_id=body.session_id,
-        )
-    except HTTPException:
-        # cwd_missing / interpreter_unavailable / invalid_cwd_override —
-        # surface to the caller; the row stays pending so the founder
-        # could /run it manually later if appropriate.
-        raise
+    # Automatic admission retains the original agent, session and audit proof.
+    run_result = await _run_job_core(
+        org, job_id=job_id, cwd_override=None, timeout_override=None,
+        trigger="agent", trigger_actor=agent, submit_session_id=body.session_id,
+    )
 
     return {
         "id": job_id,
@@ -843,6 +766,25 @@ def _resolve_cwd(
     return workspace_root
 
 
+def _preflight_launch(
+    *, interpreter: str, cwd_hint: str | None, workspace_root: Path,
+    cwd_override: str | None = None,
+) -> Path:
+    """Resolve existing prerequisites without allocating output or launching."""
+    try:
+        cwd = _resolve_cwd(cwd_override=cwd_override, cwd_hint=cwd_hint,
+                           workspace_root=workspace_root)
+    except (ValueError, OSError):
+        raise HTTPException(status_code=422, detail={"code": "invalid_cwd_override"})
+    if not cwd.exists() or not cwd.is_dir():
+        raise HTTPException(status_code=409, detail={"code": "cwd_missing", "resolved": str(cwd)})
+    if _interpreter_binary(interpreter) is None:
+        raise HTTPException(status_code=422, detail={
+            "code": "interpreter_unavailable", "interpreter": interpreter,
+        })
+    return cwd
+
+
 def _job_submission_digest(record: JobRecord) -> str:
     fields = ("id", "task_id", "agent_name", "title", "rationale", "script_text", "interpreter",
               "cwd_hint", "review_required", "persistent", "max_runtime_seconds", "created_at")
@@ -895,18 +837,20 @@ def _settle_pause_job(org, task_id: str, job_id: str, *, no_launch_proven: bool 
             store.save_journal_uncommitted(row)
 
 
-async def _run_job_core(
+async def _run_job_core_impl(
     org, *, job_id: str,
     cwd_override: str | None, timeout_override: int | None,
     trigger: str = "founder",
     trigger_actor: str | None = None,
     submit_session_id: str | None = None,
+    _move_owner=None,
+    _move_disposition=None,
 ) -> dict:
-    """Shared core for HTTP and in-process run paths.
+    """Automatic admission core used by submit and authenticated Pause rediscovery.
 
     ``trigger`` picks the audit action and the ``reviewed_by`` value:
 
-    - ``"founder"`` (default) — the founder /run path. Logs job_run_started
+    - ``"founder"`` (default) — legacy internal initiator (no HTTP caller). Logs job_run_started
       and stamps ``reviewed_by="founder"`` on the row.
     - ``"agent"`` — the auto-run-at-submit path. Logs job_auto_started with
       the agent's name, stamps ``reviewed_by=<agent>`` so audit traces stay
@@ -943,30 +887,14 @@ async def _run_job_core(
         reviewer = "founder"
 
     workspace_root = org.root / "workspaces" / record.agent_name
+    preflight_error: HTTPException | None = None
     try:
-        cwd_resolved = _resolve_cwd(
-            cwd_override=cwd_override,
-            cwd_hint=record.cwd_hint,
-            workspace_root=workspace_root,
+        cwd_resolved = _preflight_launch(
+            interpreter=record.interpreter.value, cwd_hint=record.cwd_hint,
+            workspace_root=workspace_root, cwd_override=cwd_override,
         )
-    except (ValueError, OSError):
-        raise HTTPException(status_code=422, detail={"code": "invalid_cwd_override"})
-
-    if not cwd_resolved.exists() or not cwd_resolved.is_dir():
-        raise HTTPException(
-            status_code=409,
-            detail={"code": "cwd_missing", "resolved": str(cwd_resolved)},
-        )
-
-    # Interpreter binary must exist.
-    if _interpreter_binary(record.interpreter.value) is None:
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "code": "interpreter_unavailable",
-                "interpreter": record.interpreter.value,
-            },
-        )
+    except HTTPException as exc:
+        preflight_error = exc
 
     # Reserve the launch before any output or runner side effect. A committed
     # winner drains even if Pause lands before asynchronous process creation.
@@ -1008,48 +936,91 @@ async def _run_job_core(
                             and not org.sessions.is_recovery_session(record.task_id, record.agent_name, sid)
                         if not exact or (effective and not exception):
                             return {"id": job_id, "status": "pending", "deferred": True, "code": "root_paused" if effective else "job_owner_unavailable"}
-                    if job_entry is None:
-                        if task is None:
-                            raise HTTPException(status_code=409, detail={"code": "pause_control_unavailable"})
-                        control = control or store.ensure_uncommitted(root["id"])
-                        job_entry = {"id": f"job:{job_id}", "org": org.slug, "root_task_id": root["id"],
-                            "task_id": record.task_id, "agent": record.agent_name,
-                            "session_id": None, "owner": "job", "owner_identity": {"job_id": job_id},
-                            "fingerprint": fingerprint(task), "generation": control["generation"],
-                            "phase": "pending_job", "retry": {}, "context": {},
-                            "started_at": None, "captured_generation": None}
-                        control["journal"]["entries"].append(job_entry)
-                    if current is None or current.status != JobStatus.PENDING:
-                        raise HTTPException(status_code=409, detail={"code": "not_pending"})
-                    if not org.db._transition_job_to_running_uncommitted(
-                            job_id, reviewer=reviewer, reviewed_at=now, started_at=now,
-                            cwd_resolved=str(cwd_resolved), max_runtime_seconds=timeout,
-                            stdout_path=str(stdout_path), stderr_path=str(stderr_path)):
-                        raise HTTPException(status_code=409, detail={"code": "not_pending"})
-                    if job_entry is not None:
-                        job_entry["phase"] = "possible_launch"
-                        job_entry["captured_generation"] = control["generation"] if effective else None
+                    if preflight_error is not None:
+                        # Only authenticated, never-launched automatic work may fail here.
+                        # Retain unknown/possible launch evidence and every race winner.
+                        owned_entries = [e for e in entries if e["owner"] == "job"
+                                         and e["owner_identity"].get("job_id") == job_id]
+                        if (trigger != "agent" or len(owned_entries) != 1
+                                or preflight_error.detail.get("code") not in {"cwd_missing", "interpreter_unavailable"}
+                                or job_entry["started_at"] is not None
+                                or job_entry["captured_generation"] is not None):
+                            raise preflight_error
+                        diagnostic = _json.dumps(preflight_error.detail, ensure_ascii=False)[:4096]
+                        if not org.db._fail_unlaunched_job_uncommitted(
+                                job_id, task_id=current.task_id, agent=current.agent_name,
+                                finished_at=_now_iso(), diagnostic=diagnostic):
+                            winner = org.db.get_job(job_id)
+                            raise HTTPException(status_code=409, detail={
+                                "code": "not_pending", "job_id": job_id,
+                                "status": winner.status.value if winner else None,
+                            })
+                        control["journal"]["entries"].remove(job_entry)
                         store.save_journal_uncommitted(control)
-                    payload = dict(script_request_id=job_id, cwd_resolved=str(cwd_resolved),
-                                   timeout_seconds=timeout, interpreter=record.interpreter.value)
-                    if trigger == "agent":
-                        payload.update(agent=reviewer, persistent=record.persistent)
+                        org.db.insert_audit_log_uncommitted(current.task_id, current.agent_name,
+                            "job_run_failed", {"script_request_id": job_id, "exit_code": None,
+                                "duration_ms": 0, "reason": "spawn_failed"})
                     else:
-                        payload.update(reviewer=reviewer)
-                    org.db.insert_audit_log_uncommitted(record.task_id, reviewer,
-                        "job_auto_started" if trigger == "agent" else "job_run_started", payload)
+                        if job_entry is None:
+                            if task is None:
+                                raise HTTPException(status_code=409, detail={"code": "pause_control_unavailable"})
+                            control = control or store.ensure_uncommitted(root["id"])
+                            job_entry = {"id": f"job:{job_id}", "org": org.slug, "root_task_id": root["id"],
+                                "task_id": record.task_id, "agent": record.agent_name,
+                                "session_id": None, "owner": "job", "owner_identity": {"job_id": job_id},
+                                "fingerprint": fingerprint(task), "generation": control["generation"],
+                                "phase": "pending_job", "retry": {}, "context": {},
+                                "started_at": None, "captured_generation": None}
+                            control["journal"]["entries"].append(job_entry)
+                        if current is None or current.status != JobStatus.PENDING:
+                            raise HTTPException(status_code=409, detail={"code": "not_pending"})
+                        if not org.db._transition_job_to_running_uncommitted(
+                                job_id, reviewer=reviewer, reviewed_at=now, started_at=now,
+                                cwd_resolved=str(cwd_resolved), max_runtime_seconds=timeout,
+                                stdout_path=str(stdout_path), stderr_path=str(stderr_path)):
+                            raise HTTPException(status_code=409, detail={"code": "not_pending"})
+                        if job_entry is not None:
+                            job_entry["phase"] = "possible_launch"
+                            job_entry["captured_generation"] = control["generation"] if effective else None
+                            store.save_journal_uncommitted(control)
+                        payload = dict(script_request_id=job_id, cwd_resolved=str(cwd_resolved),
+                                       timeout_seconds=timeout, interpreter=record.interpreter.value)
+                        if trigger == "agent":
+                            payload.update(agent=reviewer, persistent=record.persistent)
+                        else:
+                            payload.update(reviewer=reviewer)
+                        org.db.insert_audit_log_uncommitted(record.task_id, reviewer,
+                            "job_auto_started" if trigger == "agent" else "job_run_started", payload)
+        if preflight_error is not None:
+            # Writer committed the failed row, audit and proven-no-launch settlement.
+            fire_resume_check_for_job(org, job_id)
+            refusal = HTTPException(status_code=preflight_error.status_code, detail={
+                **preflight_error.detail, "job_id": job_id, "status": "failed",
+            })
+            if _move_disposition is not None:
+                # Exact native COMMIT and postcommit bridge completed; this
+                # certifies this refusal only, never an HTTP error category.
+                _move_disposition.no_effect_error = refusal
+            raise refusal
         try:
             jobs_dir.mkdir(parents=True, exist_ok=True)
             stdout_path.write_bytes(b"")
             stderr_path.write_bytes(b"")
-        except OSError:
+        except OSError as exc:
             org.db.transition_job_to_terminal(job_id, status=JobStatus.FAILED,
                 exit_code=None, finished_at=_now_iso(), duration_ms=0,
-                stdout_head=None, stderr_head=None, reason="spawn_failed")
+                stdout_head=None, stderr_head=str(exc)[:4096], reason="spawn_failed")
             _settle_pause_job(org, record.task_id, job_id, no_launch_proven=True)
+            audit.log_job_run_failed(task_id=record.task_id, job_id=job_id,
+                actor=reviewer, reason="spawn_failed")
             fire_resume_check_for_job(org, job_id)
-            raise
+            raise HTTPException(status_code=500, detail={
+                "code": "spawn_failed", "job_id": job_id, "status": "failed",
+            }) from exc
     else:
+        if preflight_error is not None:
+            # Without the authenticated journal there is no settlement authority.
+            raise preflight_error
         # Allocate output paths under <runtime>/orgs/<slug>/jobs/.
         jobs_dir = org.root / "jobs"
         jobs_dir.mkdir(parents=True, exist_ok=True)
@@ -1113,7 +1084,10 @@ async def _run_job_core(
                 publish=_sync_publish,
                 task_id=record.task_id,
                 workspace_root=str(workspace_root),
+                move_owner=_move_owner,
             )
+        except DeferredTeamMove:
+            raise
         except FileNotFoundError:
             finished = _now_iso()
             try:
@@ -1195,7 +1169,34 @@ async def _run_job_core(
             )
 
     from runtime.daemon.jobs_runner import register_runner_task
-    register_runner_task(job_id, asyncio.create_task(_run_and_persist()))
+    async def owned_run(owner):
+        nonlocal _move_owner
+        _move_owner = owner
+        deferred = failed = False
+        primary = None
+        try:
+            await _run_and_persist()
+        except DeferredTeamMove:
+            deferred = True
+        except BaseException as exc:
+            primary = exc
+            failed = True
+            raise
+        finally:
+            if owner is not None:
+                try:
+                    owner.finish(deferred=deferred, failed=failed)
+                except BaseException as settlement:
+                    if primary is None:
+                        raise
+                    primary.add_note(f'job native ownership settlement failed: {settlement}')
+                if deferred:
+                    owner.admission.deferred_jobs[job_id] = owned_run
+                else:
+                    owner.admission.deferred_jobs.pop(job_id, None)
+    if _move_owner is not None:
+        _move_owner.detached = True
+    register_runner_task(job_id, asyncio.create_task(owned_run(_move_owner)))
 
     return {
         "id": job_id,
@@ -1207,17 +1208,24 @@ async def _run_job_core(
     }
 
 
-@router.post("/jobs/{job_id}/run", status_code=202)
+@router.post("/jobs/{job_id}/run", status_code=410, deprecated=True, responses={
+    404: {"description": "Unknown job"}, 409: {"description": "Held root or nonpending job"},
+    410: {"description": "job_manual_run_removed: manual execution is retired; no job was run"},
+})
 async def run_job_route(
     slug: str, job_id: str, body: RunBody, org: OrgDep,
 ) -> dict:
-    result = await _run_job_core(
-        org,
-        job_id=job_id,
-        cwd_override=body.cwd_override,
-        timeout_override=body.timeout_seconds,
-    )
-    return result
+    """Nonexecuting compatibility tombstone; reject legacy pending IDs explicitly."""
+    record = org.db.get_job(job_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail={"code": "unknown_job", "job_id": job_id})
+    assert_origin_unheld(org, record.task_id)
+    if record.status != JobStatus.PENDING:
+        raise HTTPException(status_code=409, detail={"code": "not_pending", "status": record.status.value})
+    raise HTTPException(status_code=410, detail={
+        "code": "job_manual_run_removed",
+        "message": "Manual job execution is retired. This job was not run. Inspect its history; reject a legacy pending job with a reason if it should be closed.",
+    })
 
 
 @router.get("/jobs/{job_id}/output")
@@ -1290,3 +1298,38 @@ async def job_events_stream(slug: str, job_id: str, org: OrgDep) -> StreamingRes
                 next_task.cancel()
 
     return StreamingResponse(gen(), media_type="text/event-stream")
+
+
+async def _run_job_core(org, *, job_id: str, cwd_override: str | None,
+    timeout_override: int | None, trigger: str = 'founder',
+    trigger_actor: str | None = None, submit_session_id: str | None = None) -> dict:
+    admission = owner_for(org.db)
+    owner = None
+    from runtime.orchestrator.producer_move import NativeWriterDisposition
+    disposition = NativeWriterDisposition()
+    deferred = failed = False
+    primary = None
+    try:
+        if admission is not None:
+            owner = admission.reserve('job', job_id)
+        result = await _run_job_core_impl(org, job_id=job_id, cwd_override=cwd_override,
+            timeout_override=timeout_override, trigger=trigger, trigger_actor=trigger_actor,
+            submit_session_id=submit_session_id, _move_owner=owner,
+            _move_disposition=disposition)
+        deferred = bool(result.get('deferred'))
+        return result
+    except DeferredTeamMove as exc:
+        deferred = True
+        return {'id': job_id, 'status': 'pending', 'deferred': True, 'code': exc.code}
+    except BaseException as exc:
+        primary = exc
+        failed = exc is not disposition.no_effect_error
+        raise
+    finally:
+        if owner is not None and not getattr(owner, 'detached', False):
+            try:
+                owner.finish(deferred=deferred, failed=failed)
+            except BaseException as settlement:
+                if primary is None:
+                    raise
+                primary.add_note(f'job native ownership settlement failed: {settlement}')

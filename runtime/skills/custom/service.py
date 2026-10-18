@@ -33,7 +33,7 @@ def _conn(db):
     return getattr(db, "_conn", db)
 
 
-def validate_package(org, *, slug: str, name: str, skill_md: str) -> dict:
+def validate_package(org, *, slug: str, name: str, skill_md: str, writer=None) -> dict:
     """Run the built-in package validator for a custom-skill version."""
     # Keep custom skills on the same deterministic safety guard as the
     # built-in authoring pipeline; do not duplicate protected-slug policy.
@@ -47,6 +47,7 @@ def validate_package(org, *, slug: str, name: str, skill_md: str) -> dict:
         version="1",
         policy_class="standard_operational",
         skill_md=skill_md,
+        writer=writer,
     )
 
 

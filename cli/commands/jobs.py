@@ -12,7 +12,7 @@ from cli.client.client import DaemonNotRunning, DaemonStateInconsistent, OpcClie
 def _jobs_submit_payload_from_file(path: str) -> dict:
     """Load a jobs-submit payload from a JSON file (mirrors manage-repo / dispatch pattern).
 
-    Two mutually-exclusive auth paths (same shape as manage-agent / threads compose):
+    Auth binding (same task/session shape as manage-agent / threads compose):
 
     - Task path: ``task_id`` + ``session_id`` from an active task session.
 
@@ -23,7 +23,7 @@ def _jobs_submit_payload_from_file(path: str) -> dict:
     import json as _json
     with open(path) as f:
         data = _json.load(f)
-    base_required = ("title", "rationale", "script", "interpreter")
+    base_required = ("title", "script", "interpreter")
     missing = [k for k in base_required if not data.get(k)]
     if missing:
         raise ValueError(f"jobs submit file missing keys: {missing}")
@@ -37,12 +37,20 @@ def _jobs_submit_payload_from_file(path: str) -> dict:
         raise ValueError(
             "jobs submit file: supply task_id + session_id"
         )
+    # Use the existing Pydantic Boolean parser, matching server coercion.
+    from pydantic import TypeAdapter
+    if TypeAdapter(bool).validate_python(data.get("review_required", False)):
+        raise ValueError(
+            "review_required_removed: obtain any required authorization in a thread "
+            "before submitting; upgrade old clients and omit review_required or set "
+            "it to false. This request was not submitted."
+        )
     return data
 
 
 
 def cmd_jobs_submit(args: argparse.Namespace) -> None:
-    """Agent callback: submit a script for founder review."""
+    """Agent callback: submit a job for automatic admission."""
     if not args.org:
         print("error: --org <slug> is required for agent callbacks", file=sys.stderr)
         sys.exit(1)
@@ -162,7 +170,6 @@ def cmd_jobs_show(args: argparse.Namespace) -> None:
     elif d["status"] == "pending":
         print()
         print("Founder actions:")
-        print(f"  happyranch scripts run {d['id']} [--cwd PATH] [--timeout-seconds N]")
         print(f"  happyranch scripts reject {d['id']} --reason \"...\"")
     elif d["status"] == "rejected":
         print()
@@ -247,97 +254,13 @@ def cmd_jobs_output(args: argparse.Namespace) -> None:
 
 
 def cmd_jobs_run(args: argparse.Namespace) -> None:
-    """Founder action: run a pending script request with TTY-gated confirm + SSE stream."""
-    import json as _json
-
-    if not sys.stdin.isatty():
-        print(
-            "error: scripts run requires a TTY (interactive confirmation). "
-            "Use the web UI to run non-interactively.",
-            file=sys.stderr,
-        )
-        sys.exit(2)
-
-    try:
-        client = OpcClient.from_env()
-    except (DaemonNotRunning, DaemonStateInconsistent) as exc:
-        print(f"Error: {exc}", file=sys.stderr)
-        sys.exit(1)
-
-    slug = resolve_org_slug(args_org=args.org, available=_shared._fetch_available_orgs(client))
-
-    # Fetch + show.
-    r = client.get(f"/api/v1/orgs/{slug}/jobs/{args.job_id}")
-    if not _ok(r):
-        return
-    d = r.json()
-    if d["status"] != "pending":
-        print(f"Error: job {args.job_id} is {d['status']}, not pending", file=sys.stderr)
-        sys.exit(1)
-    print(f"About to execute {d['id']}:")
-    print(f"  Agent:       {d['agent_name']}")
-    print(f"  Task:        {d['task_id']}")
-    print(f"  Interpreter: {d['interpreter']}")
-    cwd_display = args.cwd_override or d["cwd_hint"] or "(workspace root)"
-    print(f"  Cwd:         {cwd_display}")
-    print(f"  Timeout:     {args.timeout_seconds or d['timeout_seconds']}s")
-    print()
-    print("Script:")
-    for line in d["script_text"].splitlines():
-        print(f"  {line}")
-    print()
-    answer = input("Proceed? [y/N]: ").strip().lower()
-    if answer != "y":
-        print("Aborted.")
-        sys.exit(1)
-
-    # POST /run.
-    body: dict = {}
-    if args.cwd_override is not None:
-        body["cwd_override"] = args.cwd_override
-    if args.timeout_seconds is not None:
-        body["timeout_seconds"] = args.timeout_seconds
-    r = client.post(f"/api/v1/orgs/{slug}/jobs/{args.job_id}/run", json=body)
-    if r.status_code != 202:
-        print(f"Error: {r.status_code} {r.text}", file=sys.stderr)
-        sys.exit(1)
-
-    # Stream SSE until terminal event. The events endpoint uses `event:` lines to
-    # distinguish stdout/stderr/terminal, so we consume raw lines via httpx directly
-    # rather than client.stream() which strips the event: prefix.
-    terminal_status = None
-    terminal_exit = None
-    etype = ""
-    edata = ""
-    events_path = f"/api/v1/orgs/{slug}/jobs/{args.job_id}/events"
-    with client._client.stream("GET", events_path) as response:
-        response.raise_for_status()
-        for raw_line in response.iter_lines():
-            if raw_line.startswith("event: "):
-                etype = raw_line[7:].strip()
-                edata = ""
-            elif raw_line.startswith("data: "):
-                edata = raw_line[6:]
-            elif raw_line == "":
-                # blank line = end of SSE frame; dispatch
-                if etype in ("stdout", "stderr"):
-                    payload = _json.loads(edata) if edata else {}
-                    prefix = "[stdout]" if etype == "stdout" else "[stderr]"
-                    print(f"{prefix} {payload.get('line', '')}")
-                elif etype == "terminal":
-                    payload = _json.loads(edata) if edata else {}
-                    terminal_status = payload.get("status")
-                    terminal_exit = payload.get("exit_code")
-                    dur = payload.get("duration_ms") or 0
-                    print(f"[done]   exit={terminal_exit} duration={dur/1000:.1f}s")
-                    break
-                etype = ""
-                edata = ""
-
-    if terminal_status == "completed":
-        sys.exit(0 if (terminal_exit or 0) == 0 else 1)
+    """Local compatibility tombstone; never looks up or calls a daemon."""
+    print(
+        "error: job_manual_run_removed: manual job execution is retired. "
+        "This job was not run. Inspect its history; reject a legacy pending job "
+        "with a reason if it should be closed.", file=sys.stderr,
+    )
     sys.exit(2)
-
 
 
 def cmd_jobs_tail(args: argparse.Namespace) -> None:
@@ -440,7 +363,7 @@ def _register_jobs_verbs(
         return _wrapped
 
     p_submit = parent.add_parser(
-        "submit", help="Agent callback: submit a job for execution or founder review"
+        "submit", help="Agent callback: Submit a job for automatic admission; authorize in a thread first"
     )
     p_submit.add_argument(
         "--from-file", dest="from_file", required=True, help="JSON payload file"
@@ -500,7 +423,7 @@ def _register_jobs_verbs(
     p_output.add_argument("--session-id", dest="session_id", default=None)
     p_output.set_defaults(func=wrap(cmd_jobs_output))
 
-    p_run = parent.add_parser("run", help="Run a pending job (TTY-gated)")
+    p_run = parent.add_parser("run", help="Retired: manual job execution is unavailable")
     p_run.add_argument("job_id")
     p_run.add_argument("--cwd", dest="cwd_override")
     p_run.add_argument("--timeout-seconds", type=int, dest="timeout_seconds")

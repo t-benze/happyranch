@@ -14,6 +14,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from runtime.config import (
     Settings,
@@ -50,7 +51,7 @@ from runtime.orchestrator.org_config import (
 from runtime.orchestrator.workspace_adapters import (
     format_repo_refresh_note,
     materialize_workspace_skills,
-    refresh_workspace_repos,
+    refresh_workspace_repos_async,
     validate_workspace_skills_integrity,
     WorkspaceIntegrityError,
     SystemContractMaterializationError,
@@ -946,43 +947,67 @@ def _qualifying_breaker_failure(result: ExecutorResult | None) -> str | None:
     return None
 
 
+def _attempts_settled_quiescent(owner: Any) -> bool:
+    """True when every recorded attempt launched and settled quiescent."""
+    state = owner.state
+    return bool(
+        not owner.attempt_open
+        and not state.failed_cleanup
+        and state.attempts
+        and all(a.launched and a.settled and a.quiescent for a in state.attempts)
+    )
+
+
 async def run_invocation(
     *, org_state, invocation_token: str, settings: Settings,
     host_supervisor: HostSessionSupervisor | None = None,
 ) -> None:
-    from runtime.orchestrator.thread_move import ThreadMoveAdmission
-    from runtime.orchestrator.team_move import DeferredTeamMove, TeamMoveCoordinator
-    from runtime.infrastructure.team_move_store import TeamMoveStore
-    move = getattr(org_state.db, "_team_move_coordinator", None)
-    if move is None:
-        move = TeamMoveCoordinator.for_org(TeamMoveStore(org_state.db, org_state.slug))
-    admission: ThreadMoveAdmission = move.threads
-    owner = admission.reserve(invocation_token)
-    if owner is None:
-        return
-    deferred = failed = False
-    try:
-        await _run_invocation_owned(org_state=org_state, invocation_token=invocation_token,
-            settings=settings, host_supervisor=host_supervisor, move_owner=owner)
-    except DeferredTeamMove:
-        deferred = True
-        raise
-    except BaseException:
-        failed = True
-        raise
-    finally:
-        import sys
-        primary = sys.exception()
+    with org_state._runner_lifetime() as admitted:
+        if not admitted:
+            return
+        from runtime.orchestrator.thread_move import ThreadMoveAdmission, bind_thread_preparation
+        from runtime.orchestrator.team_move import DeferredTeamMove, TeamMoveCoordinator
+        from runtime.infrastructure.team_move_store import TeamMoveStore
+        move = getattr(org_state.db, "_team_move_coordinator", None)
+        if move is None:
+            move = TeamMoveCoordinator.for_org(TeamMoveStore(org_state.db, org_state.slug))
+        admission: ThreadMoveAdmission = move.threads
+        owner = admission.reserve(invocation_token)
+        if owner is None:
+            return
+        deferred = failed = False
         try:
-            owner.finish(deferred=deferred, failed=failed)
-        except BaseException as settlement:
-            owner.owner_live = False
-            # Retain process-local attribution when durable settlement refuses.
-            if primary is not None:
-                primary.add_note(f"C2 lifecycle settlement failed: {settlement}")
-                logger.exception("C2 lifecycle settlement failed while preserving primary error")
-            else:
-                raise
+            # SAME native thread identity spans all preparation, including helpers
+            # which catch their own package/refresh errors before provider launch.
+            with bind_thread_preparation(owner):
+                await _run_invocation_owned(org_state=org_state, invocation_token=invocation_token,
+                    settings=settings, host_supervisor=host_supervisor, move_owner=owner)
+        except DeferredTeamMove:
+            deferred = True
+            raise
+        except asyncio.CancelledError:
+            # Shutdown can cancel the runner after its provider attempt already
+            # settled quiescent (e.g. during post-turn bookkeeping). That is not
+            # cleanup uncertainty. Cancellation before any launch, or with an open,
+            # unsettled or non-quiescent attempt, still retains it.
+            failed = not _attempts_settled_quiescent(owner)
+            raise
+        except BaseException:
+            failed = True
+            raise
+        finally:
+            import sys
+            primary = sys.exception()
+            try:
+                owner.finish(deferred=deferred, failed=failed)
+            except BaseException as settlement:
+                owner.owner_live = False
+                # Retain process-local attribution when durable settlement refuses.
+                if primary is not None:
+                    primary.add_note(f"C2 lifecycle settlement failed: {settlement}")
+                    logger.exception("C2 lifecycle settlement failed while preserving primary error")
+                else:
+                    raise
 
 
 async def _run_invocation_owned(
@@ -1163,28 +1188,29 @@ async def _run_invocation_owned(
     move_owner.executor, move_owner.model = executor_name, model_name
     move_owner.reasoning_effort = reasoning_effort
     try:
-        skills_root = settings.project_root / "runtime" / "skills"
-        expected_specs = materialize_workspace_skills(
-            workspace, settings,
-            slug=org_state.slug,
-            context="thread",
-            provider=executor_name,
-            agent_name=inv.agent_name,
-            team=agent_team,
-            skills_root=skills_root,
-            org_root=org_state.root,
-            db=org_state.db,
-            session_id=session_id,
-        )
+        with move_owner.preparation_effects():
+            skills_root = settings.project_root / "runtime" / "skills"
+            expected_specs = materialize_workspace_skills(
+                workspace, settings,
+                slug=org_state.slug,
+                context="thread",
+                provider=executor_name,
+                agent_name=inv.agent_name,
+                team=agent_team,
+                skills_root=skills_root,
+                org_root=org_state.root,
+                db=org_state.db,
+                session_id=session_id,
+            )
 
-        # ── Pre-launch integrity validation ─────────────────────
-        validate_workspace_skills_integrity(
-            workspace, expected_specs,
-            settings=settings,
-            db=org_state.db,
-            agent_name=inv.agent_name,
-            task_id=inv.thread_id,
-        )
+            # ── Pre-launch integrity validation ─────────────────────
+            validate_workspace_skills_integrity(
+                workspace, expected_specs,
+                settings=settings,
+                db=org_state.db,
+                agent_name=inv.agent_name,
+                task_id=inv.thread_id,
+            )
     except DeferredTeamMove:
         raise
     except (SystemContractMaterializationError, Exception) as e:
@@ -1200,9 +1226,11 @@ async def _run_invocation_owned(
 
     # THR-103: fast-forward-refresh every cloned repo so the agent has
     # fresh code regardless of executor (claude/codex/opencode/pi).
-    # Must run BEFORE the executor subprocess starts. Failure is non-
-    # blocking: offline / dirty / non-ff / timeout are swallowed.
-    repo_refresh_results = refresh_workspace_repos(workspace)
+    # Await the joined offload BEFORE executor launch, inside the SAME native
+    # effects scope. Failed/skipped refreshes warn of stale source; executed
+    # failures retain uncertainty. Cancellation waits for worker completion.
+    with move_owner.preparation_effects():
+        repo_refresh_results = await refresh_workspace_repos_async(workspace)
 
     repo_refresh_note = format_repo_refresh_note(repo_refresh_results)
 
@@ -1400,13 +1428,14 @@ async def _run_invocation_owned(
                 ))
 
             def _pre_launch_validator() -> None:
-                validate_workspace_skills_integrity(
-                    workspace, expected_specs,
-                    settings=settings,
-                    db=org_state.db,
-                    agent_name=inv.agent_name,
-                    task_id=inv.thread_id,
-                )
+                with move_owner.preparation_effects():
+                    validate_workspace_skills_integrity(
+                        workspace, expected_specs,
+                        settings=settings,
+                        db=org_state.db,
+                        agent_name=inv.agent_name,
+                        task_id=inv.thread_id,
+                    )
             if host_supervisor is None:
                 # ── Self-launch with C2 final admission and unknown cleanup ──
                 run_kwargs = dict(

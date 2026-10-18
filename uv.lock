@@ -1,6 +1,10 @@
 version = 1
 revision = 3
 requires-python = ">=3.12, <3.15"
+resolution-markers = [
+    "sys_platform != 'darwin'",
+    "sys_platform == 'darwin'",
+]
 
 [[package]]
 name = "altgraph"
@@ -116,7 +120,8 @@ dependencies = [
 
 [package.dev-dependencies]
 build = [
-    { name = "pyinstaller" },
+    { name = "pyinstaller", version = "6.21.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'darwin'" },
+    { name = "pyinstaller", version = "6.21.0", source = { path = "packaging/vendor/pyinstaller-6.21.0/dist/pyinstaller-6.21.0-1happyranchcustody2-py3-none-macosx_10_13_universal2.whl" }, marker = "sys_platform == 'darwin'" },
 ]
 dev = [
     { name = "pytest" },
@@ -138,7 +143,10 @@ requires-dist = [
 ]
 
 [package.metadata.requires-dev]
-build = [{ name = "pyinstaller", specifier = ">=6.21.0" }]
+build = [
+    { name = "pyinstaller", marker = "sys_platform != 'darwin'", specifier = "==6.21.0" },
+    { name = "pyinstaller", marker = "sys_platform == 'darwin'", path = "packaging/vendor/pyinstaller-6.21.0/dist/pyinstaller-6.21.0-1happyranchcustody2-py3-none-macosx_10_13_universal2.whl" },
+]
 dev = [
     { name = "pytest", specifier = ">=7.0" },
     { name = "pytest-asyncio" },
@@ -375,9 +383,11 @@ wheels = [
 name = "pyinstaller"
 version = "6.21.0"
 source = { registry = "https://pypi.org/simple" }
+resolution-markers = [
+    "sys_platform != 'darwin'",
+]
 dependencies = [
     { name = "altgraph" },
-    { name = "macholib", marker = "sys_platform == 'darwin'" },
     { name = "packaging" },
     { name = "pefile", marker = "sys_platform == 'win32'" },
     { name = "pyinstaller-hooks-contrib" },
@@ -386,7 +396,6 @@ dependencies = [
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/d5/4d/ec706c3fcf39e26888c35b39615ff4d5865d184069666c47492cff1fbe50/pyinstaller-6.21.0.tar.gz", hash = "sha256:bb9fab705983e393a2d1cac77d6972513057ad800215fd861dc15ff5272e98fd", size = 4061519, upload-time = "2026-06-13T14:15:06.25Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/0c/4a/53cf98bf66daed012dc9cd78c8203f19a675d696f2fc12afcf8c5049a0e0/pyinstaller-6.21.0-py3-none-macosx_10_13_universal2.whl", hash = "sha256:327d132389f37912609e01be62810cf96b5aa95b613903e4b8692e0d12fb0eda", size = 1052350, upload-time = "2026-06-13T14:13:55.88Z" },
     { url = "https://files.pythonhosted.org/packages/30/83/b591295c352ef464c50b4c6ffff1c4f771d875c9e833f578d1b9f564f6b3/pyinstaller-6.21.0-py3-none-manylinux2014_aarch64.whl", hash = "sha256:7071d4b094d5b40deeef5fa3d3b98a1b846087f7562b49209663d5f9281fe251", size = 748477, upload-time = "2026-06-13T14:14:00.327Z" },
     { url = "https://files.pythonhosted.org/packages/3d/8f/88fff4e403873b1e22286911350e75ff00db014aa08e57045da9d4328993/pyinstaller-6.21.0-py3-none-manylinux2014_i686.whl", hash = "sha256:6b6374d652107dd4a2eeece903ff82bb4045bb5e1006c5a158a6dcdbefe84bf2", size = 760877, upload-time = "2026-06-13T14:14:04.836Z" },
     { url = "https://files.pythonhosted.org/packages/8a/13/f0e48fbdfd1d05d948157121cea8b1b823dcb89efe6934b71fdd8bdb3f0f/pyinstaller-6.21.0-py3-none-manylinux2014_ppc64le.whl", hash = "sha256:4e3108b3f02384560da70e39b8bf22b0ad597d02bd68a40d76ea91c1cfa00cad", size = 759194, upload-time = "2026-06-13T14:14:10.61Z" },
@@ -398,6 +407,41 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/c1/fa/ca1d7e5257dd8566a9dfc0dfb02f8a8075eeb53d4b2d3c579f1276759042/pyinstaller-6.21.0-py3-none-win_amd64.whl", hash = "sha256:7fae06c494ce0ebfe6bd3055c0e409def884f63af2e3705d06bd431ad9237fc7", size = 1397487, upload-time = "2026-06-13T14:14:42.328Z" },
     { url = "https://files.pythonhosted.org/packages/dc/75/21b51523ce8d96629b71311775a0a65f5f5a872124ab0de33e5c848f8bff/pyinstaller-6.21.0-py3-none-win_arm64.whl", hash = "sha256:f13c95c9c03fb567217135919f93815c305813126780b0ed6e0123cb8acaf025", size = 1346094, upload-time = "2026-06-13T14:14:48.914Z" },
 ]
+
+[[package]]
+name = "pyinstaller"
+version = "6.21.0"
+source = { path = "packaging/vendor/pyinstaller-6.21.0/dist/pyinstaller-6.21.0-1happyranchcustody2-py3-none-macosx_10_13_universal2.whl" }
+resolution-markers = [
+    "sys_platform == 'darwin'",
+]
+dependencies = [
+    { name = "altgraph" },
+    { name = "macholib" },
+    { name = "packaging" },
+    { name = "pyinstaller-hooks-contrib" },
+    { name = "setuptools" },
+]
+wheels = [
+    { filename = "pyinstaller-6.21.0-1happyranchcustody2-py3-none-macosx_10_13_universal2.whl", hash = "sha256:ad82e86911292188f2c40385c50c140b98bba2c2ebcd103fdd0a8c8dd4c699e3" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "altgraph" },
+    { name = "argcomplete", marker = "extra == 'completion'" },
+    { name = "execnet", marker = "extra == 'hook-testing'", specifier = ">=1.5.0" },
+    { name = "importlib-metadata", marker = "python_full_version < '3.10'", specifier = ">=4.6" },
+    { name = "macholib", marker = "sys_platform == 'darwin'", specifier = ">=1.8" },
+    { name = "packaging", specifier = ">=22.0" },
+    { name = "pefile", marker = "sys_platform == 'win32'", specifier = ">=2022.5.30" },
+    { name = "psutil", marker = "extra == 'hook-testing'" },
+    { name = "pyinstaller-hooks-contrib", specifier = ">=2026.6" },
+    { name = "pytest", marker = "extra == 'hook-testing'", specifier = ">=2.7.3" },
+    { name = "pywin32-ctypes", marker = "sys_platform == 'win32'", specifier = ">=0.2.1" },
+    { name = "setuptools", specifier = ">=42.0.0" },
+]
+provides-extras = ["completion", "hook-testing"]
 
 [[package]]
 name = "pyinstaller-hooks-contrib"

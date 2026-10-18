@@ -1,6 +1,9 @@
 """Executor-backed private dream invocations."""
 from __future__ import annotations
 
+from runtime.orchestrator.team_move import DeferredTeamMove
+from runtime.orchestrator.producer_move import producer_preparation_effects
+
 import asyncio
 import time
 import uuid
@@ -34,7 +37,7 @@ from runtime.orchestrator.org_config import (
 from runtime.orchestrator.workspace_adapters import (
     format_repo_refresh_note,
     materialize_workspace_skills,
-    refresh_workspace_repos,
+    refresh_workspace_repos_async,
     validate_workspace_skills_integrity,
     SystemContractMaterializationError,
 )
@@ -137,7 +140,7 @@ def _active_agent_def(paths: OrgPaths, agent_name: str) -> "AgentDef | None":
     return agent_def
 
 
-async def run_dream(
+async def _run_dream(
     *,
     org_state,
     dream_id: str,
@@ -145,9 +148,10 @@ async def run_dream(
     executor_factory: Callable | None = None,
     admission_gate: Callable[[], Awaitable[None]] | None = None,
     host_supervisor: HostSessionSupervisor | None = None,
+    _move_owner=None,
 ) -> None:
     dream = org_state.db.get_dream(dream_id)
-    if dream is None or dream.status != DreamStatus.PENDING:
+    if dream is None or (dream.status != DreamStatus.PENDING and not (_move_owner is not None and dream.status == DreamStatus.RUNNING)):
         return
 
     paths = OrgPaths(root=org_state.root)
@@ -182,11 +186,8 @@ async def run_dream(
             # Atomic PENDING -> RUNNING claim. If a concurrent termination
             # terminalized the dream before this lock was acquired, the
             # conditional update fails and we return without an executor.
-            transitioned = org_state.db.update_dream_status_if(
-                dream_id,
-                DreamStatus.PENDING,
-                DreamStatus.RUNNING,
-                started_at=now,
+            transitioned = dream.status == DreamStatus.RUNNING or org_state.db.update_dream_status_if(
+                dream_id, DreamStatus.PENDING, DreamStatus.RUNNING, started_at=now,
             )
 
     if agent_def is None:
@@ -241,30 +242,33 @@ async def run_dream(
     # transaction under a process-local workspace lock.
     # FAIL-CLOSED: a materialization error must persist a terminal failure
     # and return BEFORE executor spawn (REVISE TASK-2829).
-    session_id = f"sess-{uuid.uuid4().hex}"
+    session_id = _move_owner.session_id if _move_owner is not None else f"sess-{uuid.uuid4().hex}"
     try:
-        skills_root = settings.project_root / "runtime" / "skills"
-        expected_specs = materialize_workspace_skills(
-            workspace, settings,
-            slug=org_state.slug,
-            context="dream",
-            provider=_prov,
-            agent_name=dream.agent_name,
-            team=agent_team,
-            skills_root=skills_root,
-            org_root=org_state.root,
-            db=org_state.db,
-            session_id=session_id,
-        )
+        with producer_preparation_effects(_move_owner):
+            skills_root = settings.project_root / "runtime" / "skills"
+            expected_specs = materialize_workspace_skills(
+                workspace, settings,
+                slug=org_state.slug,
+                context="dream",
+                provider=_prov,
+                agent_name=dream.agent_name,
+                team=agent_team,
+                skills_root=skills_root,
+                org_root=org_state.root,
+                db=org_state.db,
+                session_id=session_id,
+            )
 
-        # ── Pre-launch integrity validation ─────────────────────
-        validate_workspace_skills_integrity(
-            workspace, expected_specs,
-            settings=settings,
-            db=org_state.db,
-            agent_name=dream.agent_name,
-            task_id=dream_id,
-        )
+            # ── Pre-launch integrity validation ─────────────────────
+            validate_workspace_skills_integrity(
+                workspace, expected_specs,
+                settings=settings,
+                db=org_state.db,
+                agent_name=dream.agent_name,
+                task_id=dream_id,
+            )
+    except DeferredTeamMove:
+        raise
     except Exception as e:
         org_state.db.update_dream(
             dream_id,
@@ -280,21 +284,24 @@ async def run_dream(
 
     # THR-103: fast-forward-refresh every cloned repo so the agent has
     # fresh code regardless of executor (claude/codex/opencode/pi).
-    # Must run BEFORE the executor subprocess starts. Failure is non-
-    # blocking: offline / dirty / non-ff / timeout are swallowed.
-    repo_refresh_results = refresh_workspace_repos(workspace)
+    # Await the joined offload BEFORE executor launch, inside the SAME native
+    # effects scope. Failed/skipped refreshes warn of stale source; executed
+    # failures retain uncertainty. Cancellation waits for worker completion.
+    with producer_preparation_effects(_move_owner):
+        repo_refresh_results = await refresh_workspace_repos_async(workspace)
 
     repo_refresh_note = format_repo_refresh_note(repo_refresh_results)
 
     # ── Per-retry launch validator ───────────────────────────────
     def _pre_launch_validator():
-        validate_workspace_skills_integrity(
-            workspace, expected_specs,
-            settings=settings,
-            db=org_state.db,
-            agent_name=dream.agent_name,
-            task_id=dream_id,
-        )
+        with producer_preparation_effects(_move_owner):
+            validate_workspace_skills_integrity(
+                workspace, expected_specs,
+                settings=settings,
+                db=org_state.db,
+                agent_name=dream.agent_name,
+                task_id=dream_id,
+            )
 
     from runtime.orchestrator.active_authority_policy import resolve_active_team_policy_section
     from runtime.orchestrator.authority_policy_store import AuthorityPolicyStore
@@ -320,6 +327,11 @@ async def run_dream(
 
     executor_name = _prov  # already resolved above (TASK-2511)
     executor = executor_factory(executor_name, settings, paths) if executor_factory else _build_executor_for_provider(executor_name, settings, paths)
+
+    from runtime.orchestrator.producer_move import bind_producer_executor
+    if _move_owner is not None:
+        _move_owner.executor, _move_owner.model = executor_name, model_name
+    executor = bind_producer_executor(executor, _move_owner)
 
     # ── D7B: CustomAdapterExecutor invocation context ──────────────────
     if hasattr(executor, 'set_invocation_context'):
@@ -368,14 +380,17 @@ async def run_dream(
             )
             return
         try:
-            launch_spec = spec_builder(
-                workspace=workspace,
-                prompt=prompt,
-                session_id=session_id,
-                model=model_name, reasoning_effort=reasoning_effort,
-                org_slug=org_state.slug,
-                timeout_seconds=settings.session_timeout_seconds,
-            )
+            with producer_preparation_effects(_move_owner):
+                launch_spec = spec_builder(
+                    workspace=workspace,
+                    prompt=prompt,
+                    session_id=session_id,
+                    model=model_name, reasoning_effort=reasoning_effort,
+                    org_slug=org_state.slug,
+                    timeout_seconds=settings.session_timeout_seconds,
+                )
+        except DeferredTeamMove:
+            raise
         except Exception as exc:
             org_state.db.update_dream(
                 dream_id,
@@ -423,14 +438,17 @@ async def run_dream(
                 AdmissionRequest(
                     org=org_state.slug,
                     invocation_kind="dream",
+                    move_reservation=_move_owner,
+                    on_started=(lambda _pid: _move_owner.on_started()) if _move_owner is not None else None,
                     agent_id=dream.agent_name,
                     logical_id=dream_id,
                     executor_profile=executor_name,
-                    enqueued_at=time.monotonic(),
+                    enqueued_at=_move_owner.enqueued_at if _move_owner is not None else time.monotonic(),
                 ),
                 launch_spec=launch_spec,
                 launch_body=_launch_body,
                 pre_launch_validator=_pre_launch_validator,
+                final_prelaunch_validator=_move_owner,
             ),
         )
         if outcome.terminal_reason in (TerminalReason.SHUTDOWN, TerminalReason.CANCELLED):
@@ -530,3 +548,18 @@ async def run_dream(
         error=reason,
     )
     AuditLogger(org_state.db).log_dream_failed(dream_id, dream.agent_name, reason=reason)
+
+
+async def run_dream(
+    *, org_state, dream_id: str, settings: Settings = global_settings,
+    executor_factory: Callable | None = None,
+    admission_gate: Callable[[], Awaitable[None]] | None = None,
+    host_supervisor: HostSessionSupervisor | None = None,
+) -> None:
+    with org_state._runner_lifetime() as admitted:
+        if not admitted:
+            return
+        from runtime.orchestrator.producer_move import run_native_producer
+        await run_native_producer(org_state, 'dream', dream_id, lambda owner: _run_dream(
+            org_state=org_state, dream_id=dream_id, settings=settings,
+            executor_factory=executor_factory, admission_gate=admission_gate, host_supervisor=host_supervisor, _move_owner=owner))

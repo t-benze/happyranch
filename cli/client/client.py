@@ -57,6 +57,29 @@ class OpcClient:
     def request(self, method: str, path: str, **kwargs) -> httpx.Response:
         return self._client.request(method, path, **kwargs)
 
+    def team_move_capability(self, slug: str) -> httpx.Response:
+        return self.get(f"/api/v1/orgs/{slug}/team-moves/capability")
+
+    def team_move_preview(self, slug: str, request_bytes: bytes) -> httpx.Response:
+        return self.post(f"/api/v1/orgs/{slug}/team-moves/preview", content=request_bytes,
+                         headers={"Content-Type": "application/json"})
+
+    def team_move_apply(self, slug: str, request_bytes: bytes) -> httpx.Response:
+        # Exact durable bytes; transport loss never triggers a second POST.
+        return self.post(f"/api/v1/orgs/{slug}/team-moves", content=request_bytes,
+                         headers={"Content-Type": "application/json"})
+
+    def team_move_show(self, slug: str, *, operation_id: str | None = None,
+                       operation_key: str | None = None) -> httpx.Response:
+        if (operation_id is None) == (operation_key is None):
+            raise ValueError("Choose exactly one operation ID or key")
+        selector = operation_id if operation_id is not None else "by-key/" + operation_key
+        return self.get(f"/api/v1/orgs/{slug}/team-moves/{selector}")
+
+    def team_move_recover(self, slug: str, operation_id: str, expected_revision: int) -> httpx.Response:
+        return self.post(f"/api/v1/orgs/{slug}/team-moves/{operation_id}/recover",
+                         json={"expected_revision": expected_revision})
+
     def list_tokens(
         self,
         slug: str,

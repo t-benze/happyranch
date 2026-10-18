@@ -1,0 +1,21 @@
+{
+  "name": "react-remove-scroll-bar",
+  "version": "2.3.7+upstream.8ca9ba5ea52d",
+  "description": "Locally compiled derivative of upstream react-remove-scroll-bar at 8ca9ba5ea52de03308fe8ced94f7b159a44d28ff",
+  "main": "dist/es5/index.js",
+  "jsnext:main": "dist/es2015/index.js",
+  "module": "dist/es2015/index.js",
+  "types": "dist/es5/index.d.ts",
+  "module:es2019": "dist/es2019/index.js",
+  "author": "Anton Korzunov <thekashey@gmail.com>",
+  "license": "MIT",
+  "repository": "https://github.com/theKashey/react-remove-scroll-bar",
+  "engines": { "node": ">=10" },
+  "peerDependencies": {
+    "@types/react": "*",
+    "react": "^16.8.0 || ^17.0.0 || ^18.0.0 || ^19.0.0"
+  },
+  "peerDependenciesMeta": { "@types/react": { "optional": true } },
+  "dependencies": { "react-style-singleton": "^2.2.1", "tslib": "^2.0.0" },
+  "files": ["dist", "constants", "upstream", "LICENSE", "provenance.json", "README.md"]
+}

@@ -165,16 +165,16 @@ describe('Jobs list i18n', () => {
     stubList();
     mount(`/orgs/${SLUG}/jobs`, 'zh-CN');
 
-    expect(await screen.findByRole('heading', { name: '等待决定的命令' })).toBeInTheDocument();
-    expect(screen.getByText('需创始人把关的命令 · 智能体提议，由你批准')).toBeInTheDocument();
-    expect(await screen.findByText('1 个作业需要你处理')).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: '作业与执行历史' })).toBeInTheDocument();
+    expect(screen.getByText('已授权作业 · 提交后自动受理')).toBeInTheDocument();
+    expect(await screen.findByText('1 个历史待处理作业需要处置')).toBeInTheDocument();
     for (const column of ['作业', '命令', '请求者', '任务', '发起']) {
       expect(screen.getAllByText(column).length).toBeGreaterThan(0);
     }
-    for (const group of ['等待你批准', '运行中', '已完成', '已拒绝']) {
+    for (const group of ['待处理', '运行中', '已完成', '已拒绝']) {
       expect(screen.getByRole('region', { name: group })).toBeInTheDocument();
     }
-    expect(screen.getByText('需要审核')).toBeInTheDocument();
+    expect(screen.getByText('历史待处理')).toBeInTheDocument();
     // Daemon values stay byte-verbatim.
     expect(screen.getByText('JOB-0005')).toBeInTheDocument();
     expect(screen.getByText('senior_dev')).toBeInTheDocument();
@@ -188,14 +188,14 @@ describe('Jobs list i18n', () => {
     expect(card).not.toBeNull();
     const requests = await countRequests(async () => {
       await switchLocale('en');
-      expect(screen.getByRole('heading', { name: 'Commands awaiting a decision' })).toBeInTheDocument();
-      expect(screen.getByText('1 job needs you')).toBeInTheDocument();
-      expect(screen.getByRole('region', { name: 'Awaiting your approval' })).toBeInTheDocument();
-      expect(screen.getByText('needs review')).toBeInTheDocument();
+      expect(screen.getByRole('heading', { name: 'Jobs and execution history' })).toBeInTheDocument();
+      expect(screen.getByText('1 legacy pending job needs disposition')).toBeInTheDocument();
+      expect(screen.getByRole('region', { name: 'Pending' })).toBeInTheDocument();
+      expect(screen.getByText('legacy pending')).toBeInTheDocument();
       expect(screen.getByText('JOB-0005').closest('a')).toBe(card);
       await switchLocale('zh-CN');
       expect(screen.getByText('JOB-0005').closest('a')).toBe(card);
-      expect(screen.getByText('1 个作业需要你处理')).toBeInTheDocument();
+      expect(screen.getByText('1 个历史待处理作业需要处置')).toBeInTheDocument();
     });
     expect(requests).toEqual([]);
   });
@@ -204,7 +204,7 @@ describe('Jobs list i18n', () => {
     stubList({ jobs: [] });
     const { unmount } = mount(`/orgs/${SLUG}/jobs`, 'zh-CN');
     expect(await screen.findByText('暂无作业。')).toBeInTheDocument();
-    expect(screen.getByText('队列已清空 · 没有等你处理的事项')).toBeInTheDocument();
+    expect(screen.getByText('没有需要处置的历史待处理作业')).toBeInTheDocument();
     unmount();
 
     stubList({ error: true });
@@ -249,7 +249,7 @@ describe('Job detail i18n', () => {
       }),
     );
     const view = mount(`/orgs/${SLUG}/jobs/${JOB.id}`, locale);
-    const heading = await screen.findByRole('heading', { name: locale === 'en' ? 'If approved' : '若批准' });
+    const heading = await screen.findByRole('heading', { name: locale === 'en' ? 'Waiting on this job' : '等待此作业' });
     expect(heading.closest('section')).toHaveTextContent(locale === 'en' ? 'Loading blocked tasks…' : '正在加载被阻塞的任务…');
     await act(async () => { release(); });
     expect(await screen.findByText(locale === 'en' ? 'No tasks are currently blocked on this job.' : '当前没有任务被此作业阻塞。')).toBeInTheDocument();
@@ -266,15 +266,16 @@ describe('Job detail i18n', () => {
     expect(await screen.findByRole('heading', { name: 'Clean up stale Docker images' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: '← 返回 TASK-0042' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '拒绝' })).toBeInTheDocument();
-    const approve = screen.getByRole('button', { name: '批准并运行' });
-    expect(screen.getByText('原样命令 · 将完全按此运行')).toBeInTheDocument();
+    const reject = screen.getByRole('button', { name: '拒绝' });
+    expect(screen.queryByRole('button', { name: '批准并运行' })).not.toBeInTheDocument();
+    expect(screen.getByText('已存储命令 · 保留原文')).toBeInTheDocument();
     expect(screen.getByText('命令')).toBeInTheDocument();
     expect(await screen.findByText('当前没有任务被此作业阻塞。')).toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: '若批准' })).toBeInTheDocument();
-    expect(screen.getByText('已标记待审核')).toBeInTheDocument();
-    expect(screen.getByText('此操作需要把关 — 请使用上方的“批准并运行”。')).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: '等待此作业' })).toBeInTheDocument();
+    expect(screen.getByText('历史待处理')).toBeInTheDocument();
+    expect(screen.getByText('历史待处理作业 — 不会运行。')).toBeInTheDocument();
     const rail = screen.getByRole('complementary');
-    for (const label of ['请求者', '任务', '创建时间', '执行', '解释器', '最长运行时间', '持久运行', '需要审核']) {
+    for (const label of ['请求者', '任务', '创建时间', '执行', '解释器', '最长运行时间', '持久运行', '历史审核标记']) {
       expect(within(rail).getByText(label)).toBeInTheDocument();
     }
     expect(within(rail).getByText('300 秒')).toBeInTheDocument();
@@ -289,13 +290,14 @@ describe('Job detail i18n', () => {
 
     const requests = await countRequests(async () => {
       await switchLocale('en');
-      expect(screen.getByRole('button', { name: 'Approve & run' })).toBe(approve);
-      expect(screen.getByText('Verbatim command · runs exactly this')).toBeInTheDocument();
-      expect(screen.getByRole('heading', { name: 'If approved' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Reject' })).toBe(reject);
+      expect(screen.queryByRole('button', { name: 'Approve & run' })).not.toBeInTheDocument();
+      expect(screen.getByText('Stored command · verbatim')).toBeInTheDocument();
+      expect(screen.getByRole('heading', { name: 'Waiting on this job' })).toBeInTheDocument();
       expect(within(rail).getByText('300s')).toBeInTheDocument();
       expect(screen.getByRole('link', { name: '← Back to TASK-0042' })).toBeInTheDocument();
       await switchLocale('zh-CN');
-      expect(screen.getByRole('button', { name: '批准并运行' })).toBe(approve);
+      expect(screen.getByRole('button', { name: '拒绝' })).toBe(reject);
     });
     expect(requests).toEqual([]);
   });
@@ -337,37 +339,8 @@ describe('Job detail i18n', () => {
 });
 
 describe('Job dialogs i18n', () => {
-  test('Run dialog: zh-CN chrome; the typed draft keeps node, value and focus across switches with zero requests', async () => {
-    stubDetail(job({ cwd_hint: 'repos/app' }));
-    mount(`/orgs/${SLUG}/jobs/JOB-0001`, 'zh-CN');
-    const user = userEvent.setup();
-    await user.click(await screen.findByRole('button', { name: '批准并运行' }));
-
-    const cwd = await screen.findByLabelText('覆盖工作目录');
-    const dialog = dialogOwning(cwd);
-    const close = within(dialog).getByRole('button', { name: '关闭' });
-    expect(within(dialog).getByRole('heading', { name: '批准并运行 JOB-0001' })).toBeInTheDocument();
-    expect(within(dialog).getByText('（bash · cwd 提示：repos/app）')).toBeInTheDocument();
-    expect(within(dialog).getByLabelText('超时（秒）')).toHaveValue(300);
-    expect(within(dialog).getByRole('button', { name: '取消' })).toBeInTheDocument();
-    await user.type(cwd, 'repos/other');
-
-    const requests = await countRequests(async () => {
-      await switchLocale('en');
-      expect(within(dialog).getByRole('heading', { name: 'Approve & run JOB-0001' })).toBeInTheDocument();
-      expect(screen.getByLabelText('Working directory override')).toBe(cwd);
-      expect(within(dialog).getByRole('button', { name: 'Close' })).toBe(close);
-      await switchLocale('zh-CN');
-      expect(within(dialog).getByRole('button', { name: '关闭' })).toBe(close);
-    });
-    expect(requests).toEqual([]);
-    expect(screen.getByLabelText('覆盖工作目录')).toBe(cwd);
-    expect(cwd).toHaveValue('repos/other');
-    expect(document.activeElement).toBe(cwd);
-  });
-
   type Case = { name: string; status: number; body: Record<string, unknown>; zh: string; en: string };
-  const RUN_CASES: Case[] = [
+  const REJECT_CASES: Case[] = [
     {
       name: 'recognized code maps to catalog copy',
       status: 409,
@@ -393,29 +366,30 @@ describe('Job dialogs i18n', () => {
       name: 'empty code with a non-string detail falls back',
       status: 500,
       body: { detail: { code: '' } },
-      zh: '运行失败。',
-      en: 'Run failed.',
+      zh: '拒绝失败。',
+      en: 'Reject failed.',
     },
     {
       name: 'blank string detail falls back',
       status: 500,
       body: { detail: '   ' },
-      zh: '运行失败。',
-      en: 'Run failed.',
+      zh: '拒绝失败。',
+      en: 'Reject failed.',
     },
   ];
 
-  test.each(RUN_CASES)('Run dialog diagnostic boundary: $name', async ({ status, body, zh, en }) => {
+  test.each(REJECT_CASES)('Reject dialog diagnostic boundary: $name', async ({ status, body, zh, en }) => {
     stubDetail(JOB);
     server.use(
-      http.post(`/api/v1/orgs/${SLUG}/jobs/JOB-0001/run`, () => HttpResponse.json(body, { status })),
+      http.post(`/api/v1/orgs/${SLUG}/jobs/JOB-0001/reject`, () => HttpResponse.json(body, { status })),
     );
     mount(`/orgs/${SLUG}/jobs/JOB-0001`, 'zh-CN');
     const user = userEvent.setup();
-    await user.click(await screen.findByRole('button', { name: '批准并运行' }));
-    const cwd = await screen.findByLabelText('覆盖工作目录');
-    const dialog = dialogOwning(cwd);
-    await user.click(within(dialog).getByRole('button', { name: '批准并运行' }));
+    await user.click(await screen.findByRole('button', { name: '拒绝' }));
+    const reason = await screen.findByLabelText('原因');
+    const dialog = dialogOwning(reason);
+    await user.type(reason, 'Explicit disposition');
+    await user.click(within(dialog).getByRole('button', { name: '拒绝' }));
 
     const error = await within(dialog).findByText(zh);
     expect(error.textContent).toBe(zh);

@@ -1,4 +1,5 @@
 import { IdentityName } from '@/shared/identities/IdentityName';
+import { useTranslation } from '@/hooks/i18n';
 import { useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import {
@@ -12,7 +13,6 @@ import { useJob, useJobsRoutes, useStopJob } from '@/hooks/jobs';
 import { cn } from '@/lib/utils';
 import type { JobStatus } from '@/lib/api/types';
 import { RejectJobDialog } from './RejectJobDialog';
-import { RunJobDialog } from './RunJobDialog';
 import { OutputPanel } from './OutputPanel';
 
 // Mirrors STATUS_CLASS from JobsPage — keep in sync until a shared
@@ -38,13 +38,14 @@ function JobStatusBadge({ status }: { status: JobStatus }): JSX.Element {
   );
 }
 
-type OpenDialog = 'reject' | 'run' | null;
+type OpenDialog = 'reject' | null;
 
 interface JobDetailPaneProps {
   jobId: string;
 }
 
 export function JobDetailPane({ jobId }: JobDetailPaneProps): JSX.Element {
+  const { t } = useTranslation();
   const navigate = useNavigate();
   const routes = useJobsRoutes();
   const query = useJob(jobId);
@@ -99,13 +100,13 @@ export function JobDetailPane({ jobId }: JobDetailPaneProps): JSX.Element {
                 {job.persistent && (
                   <>
                     <span>·</span>
-                    <span className="tracking-wider uppercase">persistent</span>
+                    <span className="tracking-wider uppercase">{t('jobs.rail.persistent')}</span>
                   </>
                 )}
                 {job.review_required && (
                   <>
                     <span>·</span>
-                    <span className="tracking-wider uppercase">review</span>
+                    <span className="tracking-wider uppercase">{t('jobs.rail.reviewRequired')}</span>
                   </>
                 )}
                 {job.created_at && (
@@ -152,20 +153,18 @@ export function JobDetailPane({ jobId }: JobDetailPaneProps): JSX.Element {
                   </pre>
                 </div>
 
+                {job.status === 'pending' && job.review_required && (
+                  <p className="text-text-muted text-sm">{t('jobs.gated.title')}</p>
+                )}
+
                 {/* 4. Action bar — pending or running */}
                 {job.status === 'pending' && (
                   <div className="flex gap-3">
                     <Button
-                      variant="default"
-                      onClick={() => setOpenDialog('run')}
-                    >
-                      Run
-                    </Button>
-                    <Button
                       variant="secondary"
                       onClick={() => setOpenDialog('reject')}
                     >
-                      Reject
+                      {t('jobs.action.reject')}
                     </Button>
                   </div>
                 )}
@@ -178,7 +177,7 @@ export function JobDetailPane({ jobId }: JobDetailPaneProps): JSX.Element {
                         onClick={onStop}
                         disabled={stop.isPending}
                       >
-                        {stop.isPending ? 'Stopping…' : 'Stop'}
+                        {stop.isPending ? t('jobs.action.stopping') : t('jobs.action.stop')}
                       </Button>
                     </div>
                     {stopError && (
@@ -224,14 +223,6 @@ export function JobDetailPane({ jobId }: JobDetailPaneProps): JSX.Element {
         />
       )}
 
-      {/* Run dialog — mounted outside the Drawer so z-index stacks correctly */}
-      {openDialog === 'run' && job && (
-        <RunJobDialog
-          job={job}
-          open
-          onClose={() => setOpenDialog(null)}
-        />
-      )}
     </>
   );
 }

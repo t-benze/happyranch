@@ -12,6 +12,8 @@ so it has no web mirror.
 """
 from __future__ import annotations
 
+from runtime.orchestrator.team_move import DeferredTeamMove
+
 import os
 import tempfile
 from datetime import datetime, timezone
@@ -87,6 +89,8 @@ def _write_wake_transcript(root: Path, wh: WorkHourRecord, *, summary: str, spaw
         with os.fdopen(fd, "wb") as f:
             f.write(body.encode("utf-8"))
         os.replace(tmp_name, target)
+    except DeferredTeamMove:
+        raise
     except Exception:
         if os.path.exists(tmp_name):
             os.unlink(tmp_name)
@@ -214,6 +218,8 @@ async def spawn_work_hour(
                     assigned_agent=agent,
                 ))
                 created.append(task_id)
+        except DeferredTeamMove:
+            raise
         except Exception as exc:  # pragma: no cover - exercised via monkeypatch in tests
             partial_error = f"partial_spawn: {exc}"
 

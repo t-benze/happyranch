@@ -40,7 +40,7 @@ def _save(state: RegistryState) -> None:
     paths.runtimes_file().write_text(yaml.dump(payload, default_flow_style=False))
 
 
-def register(path: Path) -> None:
+def register(path: Path) -> dict[str, str]:
     """Add *path* to the registry and make it active.
 
     Raises ``ValueError`` if *path* is not a valid runtime directory.
@@ -48,20 +48,30 @@ def register(path: Path) -> None:
     resolved = Path(path).resolve()
     RuntimeDir.load(resolved)  # raises if marker missing
     state = load()
+    from runtime.orchestrator.team_move_startup import require_runtime_reader, refuse_runtime_detach
+    if state.active is not None and state.active != resolved:
+        refuse_runtime_detach(RuntimeDir.load(state.active))
+    diagnostics = require_runtime_reader(RuntimeDir.load(resolved))
     if resolved not in state.registered:
         state.registered.append(resolved)
     state.active = resolved
     _save(state)
+    return diagnostics
 
 
-def activate(path: Path) -> None:
+def activate(path: Path) -> dict[str, str]:
     """Set *path* as the active runtime.
 
     Raises ``ValueError`` if *path* isn't already registered.
     """
     resolved = Path(path).resolve()
     state = load()
+    from runtime.orchestrator.team_move_startup import require_runtime_reader, refuse_runtime_detach
+    if state.active is not None and state.active != resolved:
+        refuse_runtime_detach(RuntimeDir.load(state.active))
+    diagnostics = require_runtime_reader(RuntimeDir.load(resolved))
     if resolved not in state.registered:
         raise ValueError(f"{resolved} is not in the registry; call register() first")
     state.active = resolved
     _save(state)
+    return diagnostics

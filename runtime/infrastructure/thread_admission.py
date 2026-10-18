@@ -42,6 +42,8 @@ class ThreadLifecycle(Closed):
     preparation_id: ID
     phase: Literal["initial", "fallback", "nudge"] = "initial"
     boundary: Literal["host", "provider"] = "host"
+    # Old missing facts remain readable, never a new retry initialization grant.
+    retry_initialized: bool | None = None
     ordinal: Annotated[int, Field(ge=0, le=64)] = 0
     schedule: Annotated[tuple[Annotated[float, Field(ge=0, le=86400)], ...], Field(max_length=64)] = ()
     attempts: Annotated[tuple[ThreadAttempt, ...], Field(max_length=64)] = ()
@@ -53,6 +55,12 @@ class ThreadLifecycle(Closed):
     def validate_state(self) -> ThreadLifecycle:
         if type(self.version) is not int or self.ordinal > len(self.schedule):
             raise ValueError("thread lifecycle retry/version bound")
+        if self.retry_initialized is False and (self.schedule or self.ordinal
+                or any(a.phase == self.phase for a in self.attempts)):
+            raise ValueError("uninitialized thread retry evidence")
+        if self.retry_initialized is not None and any(a.phase == self.phase
+                and (a.boundary != self.boundary or a.ordinal > self.ordinal) for a in self.attempts):
+            raise ValueError("thread attempt budget owner")
         if len({a.attempt_id for a in self.attempts}) != len(self.attempts):
             raise ValueError("duplicate thread attempt")
         if any(a.launched and a.no_launch_deferred for a in self.attempts):
@@ -100,7 +108,7 @@ class ThreadAdmissionStore:
                     raise ValueError("invocation owner")
                 if prior is not None:
                     self._validate_append(prior, state)
-                elif (state.attempts or state.phase != "initial" or state.ordinal or state.schedule
+                elif (state.retry_initialized is True or state.attempts or state.phase != "initial" or state.ordinal or state.schedule
                         or state.deferred or state.producer_settled or state.failed_cleanup):
                     raise ValueError("thread initial preparation evidence missing")
                 prior = state
@@ -111,9 +119,23 @@ class ThreadAdmissionStore:
 
     @staticmethod
     def _validate_append(prior: ThreadLifecycle, current: ThreadLifecycle) -> None:
+        if (prior.retry_initialized is None) != (current.retry_initialized is None):
+            raise ValueError("thread historical retry fact replaced")
         if current.phase != prior.phase:
             if prior.phase != "initial" or current.phase not in {"fallback", "nudge"} or current.ordinal != 0:
                 raise ValueError("thread phase changed outside finite fallback/nudge")
+            if current.retry_initialized is not None and (current.retry_initialized is not False or current.schedule):
+                raise ValueError("thread new phase initialization missing")
+        elif prior.retry_initialized is not None or current.retry_initialized is not None:
+            if (prior.retry_initialized is None
+                    or (prior.retry_initialized is not False and prior.retry_initialized != current.retry_initialized)
+                    or current.retry_initialized is None
+                    or (current.retry_initialized is False and prior.boundary != current.boundary)
+                    or (prior.retry_initialized is False and current.retry_initialized is True
+                        and (current.ordinal != 0 or current.attempts != prior.attempts))
+                    or (prior.retry_initialized is True and (prior.schedule != current.schedule or prior.boundary != current.boundary))
+                    or not prior.ordinal <= current.ordinal <= prior.ordinal + 1):
+                raise ValueError("thread retry initialization/budget changed")
         elif prior.schedule and (current.schedule != prior.schedule or current.boundary != prior.boundary
                 or current.ordinal < prior.ordinal or current.ordinal > prior.ordinal + 1):
             raise ValueError("thread retry budget/ordinal changed")
@@ -157,6 +179,9 @@ class ThreadAdmissionStore:
             self._validate_append(prior, state)
             if prior == state:
                 return
+        elif (state.retry_initialized is not False or state.attempts or state.phase != "initial"
+                or state.ordinal or state.schedule or state.deferred or state.producer_settled or state.failed_cleanup):
+            raise ValueError("thread initial preparation evidence missing")
         payload = json.loads(raw)
         # AuditMixin writes json.dumps(payload), including ASCII escaping and
         # spaces. Bound and validate those ACTUAL durable bytes before INSERT,

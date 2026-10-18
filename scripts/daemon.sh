@@ -132,7 +132,7 @@ cmd_start() {
 
     # No live PID remains, so an old port file cannot describe this launch.
     rm -f "$PORT_FILE"
-    nohup uv run python -m runtime.daemon >> "$LOG_FILE" 2>&1 &
+    nohup uv run python -m runtime.daemon --reader-guarded-start=online-team-move@3 >> "$LOG_FILE" 2>&1 &
     bg_pid=$!
 
     # uv currently remains as $bg_pid and waits for its Python child. If that

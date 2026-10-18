@@ -1,9 +1,174 @@
 ---
 name: jobs
-description: Run a script in the background or request founder review; manage the result.
+description: Run an authorized script in the background; inspect its actual result.
 ---
 
+
+## Integrated team-move F candidate handoff (THR296seq135)
+
+Founder-controlled `teams move capability/preview/apply/show/recover` now has
+public service/CLI source. F proposes APPLY_AVAILABLE=True with actual native
+apply AND recovery readiness gates; whole-feature independent acceptance and
+manager guarded merge remain required. Skills/agents gain no execution or
+ambient-bearer self-admission authority. Manage-agent retains team/role; transfers use the
+separate admitted founder operation. Preview uses only the pure native planner,
+not materializers/resets/reservations. Exact normalized client bytes/key are
+privately fsynced before POST, including exact saved-file reuse/apply reads;
+a complete prior failed-save file requires fresh descriptor/byte validation,
+file fsync/close and containing-directory fsync/close. Partial/changed bytes
+refuse without overwrite/new key; same-UID limitations remain. Preserve key on
+transport loss and use same-key
+show, never automatic second apply. HTTP202/CLI3 is in-flight, saved COMPLETE
+readback/release alone permits apply200/CLI0; refusal/repair is1, parser2.
+Show is read-only; recover explicitly binds SAME ID/revision and native prior
+owner/process proof/CAS. Durable daemon tasks survive client disconnect; shutdown
+reaps them before DB close without clearing holds. Diagnostic-org read/recovery
+uses strict native owners, closes before positive normal attachment and clears
+only after successful native map insertion. Native dedup redelivery follows.
+Show/recover diagnostics distinguish strict saved bounded code/owner IDs and
+original/latest recovery/publisher identities from current native census and
+publisher owner observations. Diagnostic-only reads require no ordinary attachment
+or preview; unavailable ownership stays unknown. Async failure/secondary close
+or attachment facts are safe process-local observations, never durable evidence.
+Resolve named dependencies before explicit SAME operation/target/revision recovery;
+no automatic retry or TTL takeover. Both show GET forms declare202/CLI3 in-flight.
+D staging/history/leases, C1-C3 uncertainty/EMPTY budgets and actual callbacks
+remain. Earlier unavailable-E statements below describe historical checkpoints.
+Current contract: docs/superpowers/specs/2026-10-14-online-team-move.md and
+engineering-owned docs/runbooks/online-team-move.md. F candidate source,
+independent acceptance/merge, separately authorized release loading and exact
+Founder live operation are distinct. Shared bearer does not prove human presence. Behavior
+UNEXECUTED, integration INCLUDING callback SKIPPED24342, units RETIRED; no new
+cases/campaign, live operation, deployment or cleanup authority follows.
+
+
+F native release preparation runs through `OrgState.load`: strict read-only move
+discovery precedes naming preflight, generic compatibility writes, roster
+validation, publication and producer admission. After complete native workflow
+validation, the DB-owned `install_team_move_schema` transaction validates exact
+existing layout/history/org identity, refuses held/unknown state, installs only
+the literal ONE table if absent, and validates before COMMIT. Repeated compatible
+attachment is idempotent. Generic Database/runtime-audit, capability/preview/show
+and restricted diagnostic recovery never install or repair it. Source delivery
+does not call it on production: separately authorized compatible release loading
+through the supported launcher performs native preparation; Founder assembles
+no files, SQL or offline manifest. Missing schema/owners are engineering release
+dependencies. Even an empty installed table requires reader@3. An absent optional
+layout remains compatible with generic/older readers; source rollback cannot
+undo durable state or grant a downgrade.
+
+F also freezes C2 thread retry initialization explicitly, including EMPTY
+budgets. New initial/fallback/nudge phase initialization is distinct from a
+frozen zero budget; deferral/reentry cannot replenish it. Old missing facts keep
+their original history interpretation but refuse ambiguous new retry/reentry
+with `team_move_thread_retry_initialization_unknown`; no history is backfilled.
+Updated shell/Mac launchers require `online-team-move@3` (reads old @1/@2), so
+earlier supported parsers refuse before startup. Already-running old daemons,
+obsolete launchers and unchecked old interpreters remain outside that guard.
+All behavioral/installation/recovery/launcher observations remain UNEXECUTED.
+
+
+Historical task attribution is separate from current launch eligibility. The
+complete parent/child/revisit/chain/fanout/workflow closure retains task team keys,
+recorded participants and permanent IDs, including retired actors authenticated
+by the existing strict naming owner or native INTEGER task/result/SID attribution.
+It never resolves settled history through today's manager or requires re-enrollment.
+Unknown identity/graph facts remain actionable census blockers without discarding
+collected inventory; dependent sessions/jobs/recovery callbacks/workflows remain
+joined even for terminal tasks. New execution still requires a current executable
+owner. No historical record, team, callback or binding is rewritten.
+
+The SAME INTEGER thread invocation/agent/SID preparation owner spans native
+materialization, integrity, repository refresh and launch-spec/cache preparation,
+including helper-internal omissions and caught failures. Such uncertainty appends
+the existing sticky `failed_cleanup` fact BEFORE ordinary failure settlement;
+backend preparation/cleanup and native workspace/cache failures retain ownership.
+Later success/callback/terminal state cannot erase it. Serializer, audit COMMIT,
+strict history reader, restart/reentry and census preserve that fact, independently
+of frozen EMPTY/nonempty retries. Ordinary stale-claim/agent/breaker or missing
+launch-seam refusals before effects retain their native no-effect disposition;
+returned failure alone never proves compensation. No new schema/journal/backfill
+or generic producer identity is introduced. All behavior remains UNEXECUTED.
+
+Ordinary tasks carry their SAME native TaskInvocation/task/agent/runtime SID
+through materialization, integrity (including retries), package omissions,
+repository refresh, attachment writes/cleanup, task scratch and builtin/custom
+cache/workspace setup. Safe deferred ownership becomes durably `prepared` before
+preparation resumes; this never clears existing uncertainty.
+Preparation failure sets the existing local reservation cleanup flag BEFORE the
+fallible strict Pause save/COMMIT, then retains `execution_unknown`/`unknown` in
+the admitted journal. Terminal/callback/quiescent later attempts and safe unrelated
+worktree cleanup cannot clear it. Settlement persists that fact before release;
+failed saves retain local ownership and original plus persistence errors.
+Restart treats unclosed task `prepared` entries as unknown, including terminal
+rows and prepared recovery/retry owners; absence of first launch is no proof of
+preparation cleanup. Unknown deferred entries cannot authorize a fresh launch.
+Native pre-effect source/artifact validation, repo-scan and missing launch-seam refusals
+retain their no-effect disposition. Existing retry/recovery IDs, frozen budgets,
+INTEGER callbacks and authority-v2 are preserved. No new field/journal, history
+backfill, compensation or clearance writer is introduced. Behavior UNEXECUTED.
+
+## D private operation and startup holds (THR296seq135)
+
+The corrected reader is online-team-move@3 (also reads old @1/@2 records); supported
+launchers pass --reader-guarded-start=online-team-move@3 and reject earlier D
+readers. Per-org open/identity/SQLite errors remain diagnostic-only and survive
+startup/switch readback. Restricted recovery preserves the original error on
+close failure; standalone close failures retain native classification and holds.
+Recovery reconciles only pre-recorded operation staging
+intent/acquired identity/terminal disposition in existing audits. Unknown acquired
+identity or cleanup stays held even after owner-finished; no glob deletion or
+legacy evidence adoption is allowed. Native discovery and publication capture
+run outside durable profile/publication mutation leases, with revision/epoch/CAS
+revalidation before mutation and at final release. This grants no skill execution,
+cleanup, activation, live operation or behavioral-proof authority.
+
+Global/rebind/claim/retry/synchronization profile writers retain diagnostic roots
+and refuse without diagnostic filesystem/DB acquisition while leased, even with
+EMPTY dependencies.
+Adapter removal reports the retained EMPTY-dependency diagnostic refusal as
+HTTP409 with `detail.code`; its bounded `ProfileCoordinatorError` translation
+preserves unrelated exceptions and native removal/audit/compensation.
+Native startup/attachment performs positive inspection
+outside leases. Matching attachment revalidates its actual already-open DB owner
+in the short segment; only successful attachment clears its diagnostic. Other
+roots, failed attachment, current holds and malformed history stay held. D's
+own-operation/native-identity exception also checks EMPTY dependencies. Public
+recovery/reattachment is source-wired by E and gated on actual native owners by F; no skill authority is granted.
+
+
+D supplies private canonical/context/reset/profile/publication/recovery source.
+E supplies public API/CLI source; F proposes reviewed source enablement with
+separate actual apply/recovery readiness gates;
+no skill or agent may invoke the private owner or use ambient bearer credentials
+to self-admit a move. Manage-agent still cannot transfer teams. New startup
+schema-owner discovery precedes compatibility writers and partial membership;
+unknown/unresolved state keeps that org diagnostic-only and its durable holds.
+Only admitted bounded same-operation recovery can reconcile exact owned images
+and native owner evidence; no timeout, missing tracker or source rollback releases
+it. Updated launchers require the guarded reader protocol; old running daemons
+and arbitrary direct old interpreters remain outside that protection. Source
+and static checks do not prove behavior. No activation/restart/live move, new
+tests/campaign, callback fabrication or cleanup authority follows. Earlier C3
+checkpoint text below records that slice only; current D disposition is in
+`docs/superpowers/specs/2026-10-14-online-team-move.md`. SAME13 observations stay;
+behavior/recovery UNEXECUTED, integration INCLUDING callback SKIPPED24342,
+Python units RETIRED. Native permission/execution enforcement is unchanged.
+
+
+
 # jobs
+
+Native C3 preparation failure or ordinary process return never proves file,
+package or process cleanup. Unknown ownership remains in retained audit census.
+New retry budgets explicitly freeze even an empty schedule; missing legacy facts
+cannot authorize replenishment/reentry. Schedule runtime SID is pinned through
+real preparation/spec/execution and is distinct from provider resume identity.
+Custom-skill authority validates before reservations; only explicit native
+validation/rollback/temporary-cleanup evidence can settle a refused writer.
+No history deletion, automatic recovery, apply or execution authority follows.
+
+An online team-move hold defers new affected job creation/automatic launch under its native task/session/job owner. Pending/running jobs, actual wait/resume callbacks and unknown process/remote-workspace cleanup block the move. A safe already-admitted no-launch deferral keeps its exact runner and submission; do not approve/reject/stop or resubmit it to clear a hold. Terminal job status alone is not process-tree quiescence. No move/apply authority follows; behavior remains UNEXECUTED.
 
 ## THR-247 recovery-turn exception
 
@@ -12,7 +177,7 @@ may only observe an already-owned task job, including its actual wait result,
 for the recovery report. A normal resumed turn is not a recovery turn and uses
 the ordinary rules below.
 
-You want to run a script that either takes longer than your session can wait for, doesn't return at all (a dev server, a watcher), or needs permissions you don't have. Submit a job, fill in the form, and the framework handles the rest.
+You want to run a script that either takes longer than your session can wait for, doesn't return at all (a dev server, a watcher), or needs an authorized daemon operation. Obtain any required authorization in an existing thread BEFORE submitting; job admission does not authorize contents or grant executor permissions.
 
 ## When to use
 
@@ -20,7 +185,7 @@ Three signals you should reach for jobs instead of running the command inline:
 
 1. **The command doesn't return.** Dev servers, log watchers, polling loops, things you want running while you do other work.
 2. **The command takes too long.** A build, a backup, a long migration that would consume the rest of your session.
-3. **The command needs permissions you don't have.** A `gh`, `aws`, `stripe`, `ssh`, or `sudo` invocation your `allow_rules` block — submit with `review_required=true` and the founder will run it for you.
+3. **An authorized one-off operation needs the daemon.** Classify an executor refusal, obtain the exact content authorization in a thread first, then submit from a genuine ordinary task session. Do not use jobs to evade a refusal or product policy.
 
 Do NOT use jobs for one-shot, fast, in-sandbox commands. Run those inline — `bash` is still the right tool. Jobs add audit overhead and only pay off for the three signals above.
 
@@ -48,13 +213,12 @@ durable job boundary.
 
 ## Classify the failure before requesting a job
 
-A skill step can fail for several different reasons. Only one of them is a
-permission refusal, and only that one is fixed by asking for a reviewed job.
+A skill step can fail for several different reasons. Only one is a permission refusal. Record it and obtain authorization in a thread before any supported job submission.
 Classify first:
 
 | Observed failure | Signal | Permission refusal? | Correct action |
 | --- | --- | --- | --- |
-| **Executor permission refusal** | The command is refused/denied by the executor's permission or sandbox decision (for example an unlisted leading binary under `allow_rules`, or a sandbox denial) — not a missing program | **Yes** | Record redacted evidence; submit one reviewed bounded job (below) |
+| **Executor permission refusal** | The command is refused/denied by the executor's permission or sandbox decision (for example an unlisted leading binary under `allow_rules`, or a sandbox denial) — not a missing program | **Yes** | Record evidence; obtain bounded thread authorization first |
 | Binary not found | Shell "command not found" / exit 127 | No | Install or use an available tool; do not request permissions |
 | Authentication / credential | The program runs and returns 401/403, an auth prompt, or "no credentials" | No | Route through the existing credential/operator workflow; do not request shell permissions |
 | Network / service unreachable | DNS/timeout/connection refused from a runnable program | No | Report the dependency; do not request permissions |
@@ -68,51 +232,19 @@ scope that would unblock it. Pause that one operation. Do not evade the decision
 with an executor switch, a skill-level grant, wildcard expansion, gate
 suppression, or an unrelated credential request.
 
-## Request one blocked operation (reviewed, bounded, task-bound job)
+## Authorize a blocked operation before submission
 
-For a one-off or rare blocked operation, submit a reviewed job from a **normal
-active task session** (`task_id` + `session_id` from that session). Write the
-payload and submit it on a single line. `cwd_hint` is a **relative** path: the
-daemon resolves it under the workspace root and passes it to the runner as the
-process working directory, so the script must **not** `cd` again.
+For a one-off executor refusal, preserve the skill/version, exact command/cwd,
+redacted refusal and narrow requested scope in the existing task artifact.
+Obtain any required Founder authorization in a thread BEFORE submission. Do
+not submit first to solicit approval: there is no job approval queue. A missing
+binary, credentials, network failure or denied product policy needs its own
+existing resolution; a job supplies no permission or credential grant.
 
-```json
-{
-  "task_id": "<active TASK id>",
-  "session_id": "<active session id>",
-  "title": "Run one blocked deployment command for skill X",
-  "script": "./deploy.sh --check\n",
-  "interpreter": "bash",
-  "cwd_hint": "repos/<repo>",
-  "rationale": "Skill <slug>@<version> step N is refused by the executor permission layer. Minimum requested operation: ./deploy.sh --check in repos/<repo>. Full refusal evidence and the skill step are in output/<task>/permission-request.md (secrets redacted). This authorizes only this command; it does not change agent permissions.",
-  "review_required": true,
-  "persistent": false,
-  "max_runtime_seconds": 300
-}
-```
-
-```bash
-happyranch jobs submit --org <slug> --from-file /tmp/job-permission-request.json
-```
-
-Rules grounded in the serving code:
-
-- `task_id` + `session_id` must come from that active task session. The daemon
-  rejects a non-active task (`400 task_not_active`), a stale session
-  (`409 session_mismatch`), a completion-recovery session
-  (`403 recovery_purpose_forbidden`) and a missing reviewed rationale
-  (`400 rationale_required`).
-- `title`, `script` and `interpreter` are required; `rationale` is required
-  whenever `review_required=true`.
-- `cwd_hint` must be relative — no leading `/` and no `..` (`422 invalid_cwd_hint`).
-  `max_runtime_seconds` is 1..86400; `persistent` is independent of
-  `review_required`.
-- Put the skill id/version, scope and evidence context in the supported
-  `rationale`, or reference an artifact. Do not invent request fields.
-- A submitted reviewed job stays `pending` until the founder approves-and-runs
-  or rejects it.
-- The reviewed job authorizes **only that command**. Approval never grants a
-  lasting permission and never guarantees success.
+Once authorized, use the form below from a normal active task session. The
+thread invocation token is never a job session ID. Keep `cwd_hint` relative to
+the workspace; do not `cd` a second time. `rationale` is optional context and
+may cite the existing authorization artifact; no new token/field is required.
 
 ## The form
 
@@ -143,34 +275,34 @@ You fill in a JSON payload with these fields:
 `max_output_bytes` is an internal record/runner field, not a supported public
 input. A configurable submission override remains unimplemented design intent.
 
-### The two policy flags
+### Admission and persistence
 
-**`review_required`** — set to `true` when:
+Omit deprecated `review_required` or set it to false. Parsed true returns
+`422 review_required_removed` before allocation; the CLI refuses it locally
+with exit2. Never flip true and retry. Obtain any required authorization in a
+thread before submitting. Old clients that require rationale locally may
+upgrade or supply rationale with false mode. A new client cannot change an old
+server's policy; compatible source must be delivered and separately deployed.
 
-- Your script uses credentials your agent doesn't have (`aws`, `stripe`, `ssh`, `sudo`).
-- The leading binary of any line isn't in your `allow_rules`.
-- The script mutates external state in ways you couldn't roll back (`gh pr close`, `git push --force`, anything destructive).
-- You're uncertain about whether the founder would want to review it. **When in doubt, request review.**
+`persistent=false` defaults to300 seconds; `persistent=true` defaults to no
+runtime cap. Explicit `max_runtime_seconds`1..86400 overrides either. Persistence
+is no permission grant: task termination, stop and daemon shutdown still apply.
 
-`rationale` is required when `review_required=true` — the founder needs context to approve.
+HTTP201 / CLI exit0 means admission only, not script success. Automatic launch
+may defer while a root is held or its owner is unavailable. Inspect returned
+status/deferred code, actual terminal reason, exit code and output.
 
-**`persistent`** — set to `true` when:
+Legacy `review_required=true` pending rows remain unchanged and will not run.
+The `/run` endpoint is a nonexecuting410 `job_manual_run_removed` tombstone;
+`jobs run` and `scripts run` exit2 locally. Inspect history and explicitly reject
+one pending ID with a reason if it should close; never mass dispose or resubmit.
 
-- Your script doesn't return on its own (`npm run dev`, `tail -f`, polling loops).
-- You expect to check on it across multiple bash calls in this session.
-
-If `persistent=false`, the job has a default 300-second timeout. Override with `max_runtime_seconds` if you need longer.
-
-If `persistent=true`, the job has no timeout by default. It runs until you stop it, the task transitions terminal, or the daemon shuts down. You can still set `max_runtime_seconds` as a safety cap.
-
-The two flags are independent. All four combinations are valid:
-
-| review_required | persistent | meaning |
-|--|--|--|
-| false | false | Auto-run, one-shot — fire and forget a backup, then check `wait`. |
-| false | true | Auto-run, long-running — dev server, watcher. |
-| true | false | Founder reviews and runs a bounded command — the old "script request" flow. |
-| true | true | Founder reviews and runs a long-running process — rare; use when oversight matters more than speed. |
+Initial cwd/interpreter preflight errors allocate no row. A genuine later loss
+may atomically settle an authenticated, never-launched false pending job as
+failed/spawn_failed, NULL start/exit, actual finish and bounded diagnostic, with
+submitting-agent failure audit and postcommit wake. Holds, unavailable owners,
+lost CAS and unknown launches are preserved. An error for a committed failed job
+identifies its job_id/status; inspect it, do not print success or silently retry.
 
 ## How to submit
 
@@ -200,9 +332,7 @@ Safe push-only publish job example:
 
 ## After submitting — waiting on jobs
 
-When you need to wait for jobs to finish before proceeding (either
-`review_required=true` waiting for founder approval, or `review_required=false`
-jobs you can't move forward without), submit your block via `report-completion`
+When you need an admitted job to finish before proceeding, submit your block via `report-completion`
 with `status=blocked` and `waiting_on_job_ids` populated:
 
 ```json
@@ -323,7 +453,7 @@ Before reporting your task complete, stop any of your own jobs you no longer nee
 - `422 empty_<field>` — required field missing or whitespace-only. Check and resubmit.
 - `422` from validator — auth binding malformed (e.g., supplied both `task_id+session_id` AND `task_id`, or supplied `task_id` without `session_id`).
 - `422 unknown_interpreter` — `interpreter` not in the allowed set.
-- `400 rationale_required` — submitted `review_required=true` without a `rationale`.
+- `422 review_required_removed` — obsolete true mode; obtain thread authorization before submission, omit/set false on a fresh authorized request. No automatic retry.
 - `422 script_too_large` — script body exceeded 64 KB.
 - `422 invalid_cwd_hint` — `cwd_hint` is absolute or contains `..`.
 - `400 task_not_active` — the referenced task is not pending/in-progress.
@@ -331,11 +461,48 @@ Before reporting your task complete, stop any of your own jobs you no longer nee
 - `404 not_found` / `404 unknown_task` — referenced id doesn't exist.
 - `409 session_mismatch` — daemon spawned a newer session for this `(task_id, agent)`. Exit immediately.
 
-Retry once after 1 second on any non-listed error.
+Do not automatically retry job submission or flip policy fields. Reconcile the actual ID/side effects and resolve the error before any fresh authorized submission.
 
 
 ## Root task Pause outcomes
 
-Task-root Pause may leave an authorized submitted job Pending. Founder approval/run and deferred automatic launch are gated at the actual origin root; rejection/stop remain available. Only an ordinary-purpose actual running session (including a normal v2-admitted manager session) captured by that pause generation has the unreviewed auto-run exception, subject to fresh exact task/agent/SID validation. A submission ID, tracker binding or host lease is not running evidence. Preserve truthful pending/terminal receipts; never describe deferral as a PASS or grant broader authority.
+Task-root Pause may leave an authorized submitted job Pending. Automatic launch is gated at the actual origin root; rejection/stop remain available. Manual run is retired410 even after Resume. Only an ordinary-purpose actual running session (including a normal v2-admitted manager session) captured by that pause generation has the unreviewed auto-run exception, subject to fresh exact task/agent/SID validation. A submission ID, tracker binding or host lease is not running evidence. Preserve truthful pending/terminal receipts; never describe deferral as a PASS or grant broader authority.
 
-Pause capture reconciles current tracker bindings and durable real-running evidence at the serialized control COMMIT. A pre-request snapshot grants no exception; new bindings are considered, ended/replaced bindings are excluded, and duplicate Pause never renews capture. Every actual job run still revalidates current ordinary purpose, exact task/agent/SID and the held generation; founder approval/run never uses this exception.
+Pause capture reconciles current tracker bindings and durable real-running evidence at the serialized control COMMIT. A pre-request snapshot grants no exception; new bindings are considered, ended/replaced bindings are excluded, and duplicate Pause never renews capture. Every actual job run still revalidates current ordinary purpose, exact task/agent/SID and the held generation; legacy true rows never use this exception.
+
+C3 writer disposition follows the actual authority/profile interval through
+native naming reconciliation and explicit leading validation. Stale rename or
+prompt CAS may settle only after successful native rollback/reconciliation;
+unfenced status alone proves nothing. Caught reconciliation/publication/clone
+failure, cancellation and partial effects retain unknown ownership. Skill scratch
+cleanup requires no-follow lstat ENOENT; surviving entries, inspection errors and
+prior uncertainty stay unknown. Cleanup causes are retained; existing unknown
+history is never cleared. These are source accounting rules, not behavioral
+verification or new execution/activation authority.
+
+
+Current-main C3 composition preserves automatic job admission: omitted/false
+review_required executes through native owner checks; true refuses before allocation,
+legacy true pending is inert, and /run remains a tombstone. Authenticated later
+prerequisite loss rechecks move/causal ownership in the native Pause transaction
+before its failed-before-launch CAS, audit/journal COMMIT and genuine wake. Only
+that exact completed no-launch refusal may settle; partial scratch/environment,
+output or process effects and earlier uncertainty remain in producer history.
+Naming keeps INSTALL-only N-SAC-1 structural admission and actual install-diagnostic
+provenance alongside SAME native disposition, rollback and reconciliation rules;
+no removed whole-release naming fingerprint is restored.
+
+The scheduled daemon disk worker reserves a global native writer per admitted
+org before spawn, through supervision/reap/report. Held/unowned orgs defer with
+bounded codes in the existing summary/audit; other admitted orgs continue. On-mode
+child admission and prune re-read the actual parent's active global writer ID
+through strict append-only history and validate the optional move layout/hold.
+An installed layout with missing/unknown ownership refuses before mutation; absent
+layout preserves native behavior. Missing/incomplete effect closure, interruption
+and partial mutation retain unknown writer evidence; a clean later provider result
+cannot erase it. The common1800-second window includes reservation admission.
+Off/default dry_run, metadata/process/age/containment safeguards and manual dry-run
+remain; no cleanup/activation authority follows. These source changes have no
+behavioral/migration/recovery proof; integration INCLUDING callback SKIPPED24342,
+Python units RETIRED. That C3 checkpoint had no COMPLETE writer; current D/E/F
+source and independent gates are described above. No live capability follows.

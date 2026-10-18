@@ -1,5 +1,6 @@
 import { render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
+import corpus from '../../../../protocol/thread-mention-corpus.json';
 import { Markdown } from './Markdown';
 import mermaid from 'mermaid';
 
@@ -57,5 +58,39 @@ describe('Markdown / Mermaid', () => {
       expect(screen.getByText(/flowchart LR; BAD/)).toBe(raw);
     }
     expect(vi.mocked(mermaid.render).mock.calls.length).toBe(calls);
+  });
+});
+
+// C10/C21: real ReactMarkdown source mapping; syntax marks only, never delivery proof.
+describe('thread-only source syntax styling', () => {
+  it.each([
+    ['@Current @Current', ['@Current','@Current']],
+    ['😀 @Current', ['@Current']],
+    ['`@Former`\n> @Former\n\\@Former', []],
+    ['*@Current* [@Other](https://example.invalid/)', ['@Other']],
+    ['@Cur&#114;ent', []],
+    ['> @Former\n@Current', []], // renderer merges raw lines; exact text mapping unavailable
+    ['> @Former\n\n@Current', ['@Current']],
+    ['```\n@Current', []],
+    ['    > @Current', []],
+  ])('styles proven raw occurrences in %s', (body, marks) => {
+    const view = render(<Markdown body={body as string} threadMentions />);
+    expect([...view.container.querySelectorAll('[data-thread-mention]')].map(n=>n.textContent)).toEqual(marks);
+    expect(view.container.querySelector('[data-thread-mention] a')).toBeNull();
+    view.rerender(<Markdown body={body as string} />);
+    expect(view.container.querySelector('[data-thread-mention]')).toBeNull();
+  });
+});
+
+// Every shared raw input crosses the shipping opt-in renderer. Container/plain
+// fallback is deliberate; marks may only contain a token present in raw ranges.
+describe('shared corpus render conservation',()=>{
+  it.each(corpus.cases)('$id never invents a decoded mention',row=>{
+    const view=render(<Markdown body={row.input} threadMentions />);
+    const tokens=new Set(row.expected_ranges.map(r=>'@'+r.token));
+    for(const mark of view.container.querySelectorAll('[data-thread-mention]')) {
+      expect(tokens.has(mark.textContent!)).toBe(true);
+      expect(mark.closest('code,pre')).toBeNull();
+    }
   });
 });

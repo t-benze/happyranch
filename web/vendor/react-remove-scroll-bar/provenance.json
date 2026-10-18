@@ -1,0 +1,55 @@
+{
+  "commit": "8ca9ba5ea52de03308fe8ced94f7b159a44d28ff",
+  "tree": "9cfbe07b80d8854bfd82b40649fba78c13804ff4",
+  "files": [
+    {
+      "path": "src/index.ts",
+      "size": 345,
+      "git_blob": "888f312acc5cb6f01a66e8ae53e064dcd9ee4b76",
+      "sha256": "46c5f7a742c3838959d33077733e634aad9c5cfc4041bcd38dba5f7cf3e05200"
+    },
+    {
+      "path": "src/constants.ts",
+      "size": 383,
+      "git_blob": "ae51ad09478d07eef8ce6c52d66444e468d83aca",
+      "sha256": "f597b4036280caca4cc58d3476ffc02dc5c16564090229e6685e98b80a8e2a33"
+    },
+    {
+      "path": "src/utils.ts",
+      "size": 1098,
+      "git_blob": "a8ab29ab1914696a488be9aeefc62e837f755356",
+      "sha256": "c7d2d318bca380ff6a13ed35d1264cdfac9d9bc9389802f7bcacae24611865d1"
+    },
+    {
+      "path": "src/component.tsx",
+      "size": 2920,
+      "git_blob": "2864b76f2d5c84e9c96d190aa858cc0d10b72ede",
+      "sha256": "9cf7f1768847ee331747101493a5ed7860199f730fd814e85f37f05368e56b55"
+    },
+    {
+      "path": "constants/package.json",
+      "size": 234,
+      "git_blob": "4c2e814ae917dd42a066a07b8470712fc467b417",
+      "sha256": "9b557c166960d4a096abc83259b8787a4072516f666856f8cf51656e38ed904b"
+    },
+    {
+      "path": "package.json",
+      "size": 2221,
+      "git_blob": "ca37f53a5e895e8237b4479e4165ab9518489c9a",
+      "sha256": "484ad46c8cc261e168d7e2602bbb70b80f8d10307b7de91d99485da28c350a03"
+    },
+    {
+      "path": "tsconfig.json",
+      "size": 716,
+      "git_blob": "bf9ce798643b0094c2302ebb171b76bd8cd66fdd",
+      "sha256": "e51de516f983a3acd974f56239876b422cd77aa3b32b858075ac4363a99e6cfc"
+    },
+    {
+      "path": "LICENSE",
+      "size": 1093,
+      "git_blob": "7c08c3990396ecefd90f99ff5d9a34f26f5b5616",
+      "sha256": "a79aae0c0f21990d9d963bb3c5a79cdcea9a46f8523ba55c58d7fe776b6ebc84"
+    }
+  ],
+  "repository": "https://github.com/theKashey/react-remove-scroll-bar"
+}

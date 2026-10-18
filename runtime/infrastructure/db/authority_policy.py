@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from runtime.infrastructure.producer_admission import native_owner_uncommitted
+
 import hashlib
 import json
 import sqlite3
@@ -131,6 +133,9 @@ class AuthorityPolicyMixin:
         # Rebuild from a deep primitive snapshot so post-validation mutation,
         # including a nested value smuggled into a typed field, cannot bypass
         # canonical semantic identity validation at the durable boundary.
+        admission = native_owner_uncommitted(self)
+        if admission is not None:
+            admission.check_uncommitted(teams=(release.team,))
         release = AuthorityPolicyRelease.model_validate(
             release.model_dump(mode="python", round_trip=True, warnings=False)
         )
@@ -170,6 +175,9 @@ class AuthorityPolicyMixin:
         request_digest: str,
     ) -> AuthorityPolicyRelease:
         """Resolve replay, then append a release and closed audit atomically."""
+        admission = native_owner_uncommitted(self)
+        if admission is not None:
+            admission.check_uncommitted(teams=(release.team,))
         if not isinstance(request_id, str) or not request_id.strip() or len(request_id) > 128:
             raise ValueError("request_id must be a non-empty string of at most 128 characters")
         validate_authority_digest(request_digest, "request_digest")
@@ -380,6 +388,9 @@ class AuthorityPolicyMixin:
         # Rebuild from a deep primitive snapshot without generating a seal.
         # Missing, malformed, or mismatched receipts fail before BEGIN, even
         # when a caller bypassed Pydantic's assignment guard.
+        admission = native_owner_uncommitted(self)
+        if admission is not None:
+            admission.check_uncommitted(teams=(activation.team,))
         activation = AuthorityPolicyActivation.model_validate(
             activation.model_dump(mode="python", round_trip=True, warnings=False)
         )
@@ -467,6 +478,9 @@ class AuthorityPolicyMixin:
         request_digest: str,
     ) -> AuthorityPolicyActivation:
         """Server-construct and atomically append a CAS activation plus audit."""
+        admission = native_owner_uncommitted(self)
+        if admission is not None:
+            admission.check_uncommitted(teams=(team,))
         self._conn.execute("BEGIN IMMEDIATE")
         try:
             duplicate = self._conn.execute(
@@ -1548,6 +1562,9 @@ class AuthorityPolicyMixin:
                     )
                 self._authority_commit(nested)
                 return selector
+            admission = native_owner_uncommitted(self)
+            if admission is not None:
+                admission.check_uncommitted(teams=(team,))
             history_count = self._conn.execute(
                 "SELECT COUNT(*) AS n FROM authority_policy_active_selector_history WHERE team=?",
                 (team,),
@@ -1673,6 +1690,9 @@ class AuthorityPolicyMixin:
             if isinstance(request, AuthorityPolicyV2PairedControlRequest) else request
         )
         team = request.team
+        admission = native_owner_uncommitted(self)
+        if admission is not None:
+            admission.check_uncommitted(teams=(team,))
         create_digest = request.create_request_digest()
         self._conn.execute("BEGIN IMMEDIATE")
         try:
@@ -1805,6 +1825,9 @@ class AuthorityPolicyMixin:
             if isinstance(request, AuthorityPolicyV2ActivationControlRequest) else request
         )
         team = request.team
+        admission = native_owner_uncommitted(self)
+        if admission is not None:
+            admission.check_uncommitted(teams=(team,))
         request_digest = request.request_digest()
         self._conn.execute("BEGIN IMMEDIATE")
         try:
@@ -1943,6 +1966,9 @@ class AuthorityPolicyMixin:
             if isinstance(request, AuthorityPolicyLegacyActivationRequest) else request
         )
         team = request.team
+        admission = native_owner_uncommitted(self)
+        if admission is not None:
+            admission.check_uncommitted(teams=(team,))
         request_digest = request.request_digest()
         self._conn.execute("BEGIN IMMEDIATE")
         try:
@@ -2048,6 +2074,9 @@ class AuthorityPolicyMixin:
             if isinstance(request, AuthorityPolicyLegacyReactivationRequest) else request
         )
         team = request.team
+        admission = native_owner_uncommitted(self)
+        if admission is not None:
+            admission.check_uncommitted(teams=(team,))
         request_digest = request.request_digest()
         self._conn.execute("BEGIN IMMEDIATE")
         try:

@@ -10,6 +10,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -59,6 +61,15 @@ def _build_authority_evaluator():
     return None
 
 
+class _OrgBusyError(RuntimeError):
+    """Process-local lifetime refusal, mapped by the existing unload route."""
+
+    def __init__(self, code: str, *, task_ids: list[str] | None = None) -> None:
+        super().__init__(code)
+        self.code = code
+        self.task_ids = task_ids
+
+
 @dataclass
 class OrgState:
     slug: str
@@ -80,6 +91,7 @@ class OrgState:
     memory_collection_unavailable: str | None = field(init=False, default=None)
     naming_readiness: str = field(init=False, default="unavailable")
     naming_diagnostic: str | None = field(init=False, default="naming_not_initialized")
+    naming_install_diagnostic: str | None = field(init=False, default=None)
     sessions: SessionTracker = field(default_factory=SessionTracker)
     db_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     kb_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
@@ -99,6 +111,33 @@ class OrgState:
     # live OrgState (daemon process), never per request and never from an OS
     # boot identifier.  It is an ownership marker, not a credential.
     authority_v2_origin_boot_id: str = field(default_factory=lambda: str(uuid.uuid4()))
+
+    # Event-loop-only: admission and detach/close contain no await. This tracks
+    # actual runner callers through native finish, not durable owner clearance.
+    _runner_admission_closed: bool = field(init=False, default=False, repr=False)
+    _runner_tasks: set[asyncio.Task] = field(init=False, default_factory=set, repr=False)
+
+    @contextmanager
+    def _runner_lifetime(self) -> Iterator[bool]:
+        if self._runner_admission_closed:
+            # A queue consumer may still hold this old OrgState after detach.
+            # Refuse before it can reserve an owner or touch the closed DB.
+            yield False
+            return
+        task = asyncio.current_task()
+        if task is None:
+            raise RuntimeError("org runner requires an asyncio task")
+        registered = task not in self._runner_tasks
+        self._runner_tasks.add(task)
+        try:
+            yield True
+        finally:
+            if registered:
+                self._runner_tasks.remove(task)
+
+    def _assert_runners_idle(self) -> None:
+        if self._runner_tasks:
+            raise _OrgBusyError("active_runners_in_flight")
 
     _TERMINAL_STATUS_TO_EVENT = {
         TaskStatus.COMPLETED: "task_complete",
@@ -270,6 +309,8 @@ class OrgState:
     @classmethod
     def load(cls, *, slug: str, root: Path, settings: Settings) -> "OrgState":
         paths = OrgPaths(root=root)
+        from runtime.orchestrator.team_move_startup import before_org_attachment
+        before_org_attachment(root, slug)
         from runtime.identities.schema import preflight
         naming_preflight = preflight(paths.db_path, org_slug=slug)
         db = Database(paths.db_path)
@@ -277,6 +318,12 @@ class OrgState:
             install_or_recover(db, expected_org_slug=slug)
             with db._lock:
                 layout = validate_workflow_schema(db._conn, expected_org_slug=slug)
+            # Native org release preparation, after strict early move discovery
+            # and complete workflow validation, before any roster/publication or
+            # producer attachment. Generic Database and diagnostic recovery never
+            # install this extension. An existing hold/unknown layout refuses.
+            from runtime.infrastructure.team_move_store import install_team_move_schema
+            install_team_move_schema(db, org_slug=slug)
             if layout == "F":
                 logger.warning("org %r: %s", slug, draft_migration_guidance(
                     org_slug=slug, runtime_root=str(root.parent.parent),
@@ -345,8 +392,8 @@ class OrgState:
             state.naming_diagnostic = naming_preflight
             # Cold load has no concurrent route coroutine. Capture/install is
             # outside short authority/profile leases, after baseline admission.
-            with state.workflow_authority.writer_interval(publisher="identity_names_load"):
-                refresh_names(state, install=True)
+            with state.workflow_authority.writer_interval(publisher="identity_names_load") as interval:
+                refresh_names(state, install=True, writer=interval.native_disposition)
             # U2A publishes/reconciles the org authority generation before the
             # state is returned. Failure remains fail-closed in the workflow
             # pointer but does not detach the org or alter legacy task/chain
@@ -365,4 +412,6 @@ class OrgState:
             raise
 
     def close(self) -> None:
+        self._assert_runners_idle()
+        self._runner_admission_closed = True
         self.db.close()

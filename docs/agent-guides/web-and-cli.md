@@ -64,6 +64,190 @@ Fresh FULL independent review and same-final-head scoped SOURCE QA return to
 SAME sole ROOT10693. No setup-only merge or complete K2b acceptance is claimed.
 
 
+
+## Integrated online team-move F candidate — THR296seq135 / TASK11345
+
+The integrated F candidate supplies founder-controlled service/CLI source with
+`APPLY_AVAILABLE=True` and empty `NOT_INTEGRATED`. This candidate still needs
+independent whole-feature review, same-final-head SOURCE/POLICY/STATIC QA and
+manager guarded merge. Unmerged source is not accepted or activated capability.
+The actual daemon service independently checks schema, native org/coordinator,
+profile, host/tracker, naming and current authority before advertising apply.
+Explicit recovery uses the SAME native owner gates while allowing a diagnostic
+org/fenced publisher; `recover_available` and `recovery_incomplete_reasons` are
+separate from apply readiness. Neither projection certifies quiescence. Unknowns
+refuse with actionable reasons; no flag/private bypass/acceptance marker exists.
+Preview and saved-state reads retain the existing bearer + `_require_human`
+boundary, whose shared identity-less secret does not prove human presence.
+
+F native release preparation runs through `OrgState.load`: strict read-only move
+discovery precedes naming preflight, generic compatibility writes, roster
+validation, publication and producer admission. After complete native workflow
+validation, the DB-owned `install_team_move_schema` transaction validates exact
+existing layout/history/org identity, refuses held/unknown state, installs only
+the literal ONE table if absent, and validates before COMMIT. Repeated compatible
+attachment is idempotent. Generic Database/runtime-audit, capability/preview/show
+and restricted diagnostic recovery never install or repair it. Source delivery
+does not call it on production: separately authorized compatible release loading
+through the supported launcher performs native preparation; Founder assembles
+no files, SQL or offline manifest. Missing schema/owners are engineering release
+dependencies. Even an empty installed table requires reader@3. An absent optional
+layout remains compatible with generic/older readers; source rollback cannot
+undo durable state or grant a downgrade.
+
+F also freezes C2 thread retry initialization explicitly, including EMPTY
+budgets. New initial/fallback/nudge phase initialization is distinct from a
+frozen zero budget; deferral/reentry cannot replenish it. Old missing facts keep
+their original history interpretation but refuse ambiguous new retry/reentry
+with `team_move_thread_retry_initialization_unknown`; no history is backfilled.
+Updated shell/Mac launchers require `online-team-move@3` (reads old @1/@2), so
+earlier supported parsers refuse before startup. Already-running old daemons,
+obsolete launchers and unchecked old interpreters remain outside that guard.
+All behavioral/installation/recovery/launcher observations remain UNEXECUTED.
+Agents must not self-authorize with ambient credentials. Manage-agent retains
+team/role and cannot transfer agents.
+
+Historical task attribution is separate from current launch eligibility. The
+complete parent/child/revisit/chain/fanout/workflow closure retains task team keys,
+recorded participants and permanent IDs, including retired actors authenticated
+by the existing strict naming owner or native INTEGER task/result/SID attribution.
+It never resolves settled history through today's manager or requires re-enrollment.
+Unknown identity/graph facts remain actionable census blockers without discarding
+collected inventory; dependent sessions/jobs/recovery callbacks/workflows remain
+joined even for terminal tasks. New execution still requires a current executable
+owner. No historical record, team, callback or binding is rewritten.
+
+The SAME INTEGER thread invocation/agent/SID preparation owner spans native
+materialization, integrity, repository refresh and launch-spec/cache preparation,
+including helper-internal omissions and caught failures. Such uncertainty appends
+the existing sticky `failed_cleanup` fact BEFORE ordinary failure settlement;
+backend preparation/cleanup and native workspace/cache failures retain ownership.
+Later success/callback/terminal state cannot erase it. Serializer, audit COMMIT,
+strict history reader, restart/reentry and census preserve that fact, independently
+of frozen EMPTY/nonempty retries. Ordinary stale-claim/agent/breaker or missing
+launch-seam refusals before effects retain their native no-effect disposition;
+returned failure alone never proves compensation. No new schema/journal/backfill
+or generic producer identity is introduced. All behavior remains UNEXECUTED.
+
+Ordinary tasks carry their SAME native TaskInvocation/task/agent/runtime SID
+through materialization, integrity (including retries), package omissions,
+repository refresh, attachment writes/cleanup, task scratch and builtin/custom
+cache/workspace setup. Safe deferred ownership becomes durably `prepared` before
+preparation resumes; this never clears existing uncertainty.
+Preparation failure sets the existing local reservation cleanup flag BEFORE the
+fallible strict Pause save/COMMIT, then retains `execution_unknown`/`unknown` in
+the admitted journal. Terminal/callback/quiescent later attempts and safe unrelated
+worktree cleanup cannot clear it. Settlement persists that fact before release;
+failed saves retain local ownership and original plus persistence errors.
+Restart treats unclosed task `prepared` entries as unknown, including terminal
+rows and prepared recovery/retry owners; absence of first launch is no proof of
+preparation cleanup. Unknown deferred entries cannot authorize a fresh launch.
+Native pre-effect source/artifact validation, repo-scan and missing launch-seam refusals
+retain their no-effect disposition. Repository refresh also refuses before pull
+on detached HEAD or missing/unusable/unreadable upstream; skipped repos stay false
+and warn of stale source. Every executed pull failure/timeout/exception retains
+uncertainty, including dirty/non-fast-forward and recursive partial effects;
+equal HEAD/branch/porcelain summaries never prove no effects. Read-only upstream
+lookup is admission only, not a remote-state lock. All observations/pulls share
+one 30-second batch deadline; exhausted/unattempted siblings stay false. Thread/dream/
+wake/Todo await off-loop refresh under the SAME native preparation-effects scope,
+joining its worker before cancellation propagates and settlement runs. Timeout
+never certifies process-tree quiescence; existing unknown owners remain sticky.
+The four async runner entrypoints retain a private org lifetime through native
+finish (including failure), beyond the refresh Future. Org unload refuses active
+runners and fences detached instances against late starts. Runtime registration
+(including the same root) and /runtime/use preflight ALL old orgs for tasks,
+runners and team-move holds before any close or registration/activation effect.
+Shutdown refuses runtime replacement before construction; idle replacement closes
+and fences every retired instance before publishing new OrgStates. A busy later
+org leaves earlier orgs open, with busy refusals mapped to409. Shutdown stops runner
+and attachment admission, then joins cancelled workers and native finish before
+DB close; repeated cancellation during that join cannot skip it. No timeout
+establishes quiescence, and failed persistence retains native uncertainty.
+Existing retry/recovery IDs, frozen budgets,
+INTEGER callbacks and authority-v2 are preserved. No new persisted field/journal, history
+backfill, compensation or clearance writer is introduced. Behavior UNEXECUTED.
+
+Preview resolves native current names/IDs, rejects former/unknown names, uses
+only D's pure native planner and returns exact founder-only diff/digests,
+context/permission/skill deltas, complete blockers/owners, drain candidates and
+org-wide publication impact. It reserves nothing. Internal canonical images
+stay private; never copy these admitted diffs to shared artifacts/logs.
+Only already-running captured threads can drain (at most30s); pending tasks,
+paused roots/children/jobs/workflows/remote/cleanup uncertainty remain blockers.
+`can_drain_threads` identifies candidate turns, not clearance of hard blockers.
+
+The client saves its exact normalized envelope and stable key privately before
+POST. Fresh saves, identical-save reuse and apply reads all establish the same
+positive custody boundary: pinned no-follow private directory/file descriptors,
+exact canonical bytes and stable inode/type/mode/ownership, file fsync/successful
+close, then bottom-up containing-directory fsync/successful close. Existing
+complete bytes after a failed save proceed only after this boundary succeeds;
+partial/changed bytes remain preserved and refuse without overwrite/new key.
+The CLI prints the key and retains it on uncertainty. Same-UID races remain a
+cooperative-storage limitation, not an OS isolation guarantee.
+Apply transport loss performs one same-key GET, never a second POST/new key.
+HTTP202/CLI3 means accepted/in-flight; only saved COMPLETE/readback/release yields
+apply HTTP200/CLI0. Refusal/repair is CLI1; local argument validation is2.
+Show never advances/writes. Explicit recover uses the same ID/expected revision,
+native previous-owner/process-identity proof and CAS, with no TTL takeover.
+New-key already-satisfied verification requires a prior genuine COMPLETE plus
+full current native context/role/authority/census verification; no alias row,
+reset, publication or invented receipt is written.
+
+The daemon owns/reaps bounded tasks across client disconnect and before shutdown
+DB close; timeout/cancellation never erases committed holds. Diagnostic-only orgs
+have strict read-only saved-state access outside OrgDep and use D's restricted
+native recovery owner. Close that context before positive ordinary attachment;
+only successful native discovery/revalidation/map insertion clears diagnostics,
+then real deduplicating owners redeliver.
+Saved `diagnostic` retains the strict code/at-most64 safe owner IDs and original
+history; it is a bounded refusal record, never a complete current census.
+`saved_owners` derives original and latest recovery owner and original publisher
+from strict decision/progress. `current_observation` separately reads native
+blocker kind/ID/owner/remedy and current publisher/recovery/file-phase owners;
+unknown facts stay null/unavailable, with no idle certificate. Diagnostic-only
+orgs use a read-only restricted native context, without attachment or mutating
+preview. Missing trackers remain unknown. `service_diagnostic` carries safe
+asynchronous failure facts and secondary close/reattachment codes, explicitly
+process-local/non-durable; restart loss never erases saved IDs/diagnostics.
+Prior-owner proof/CAS still governs recovery. Native census refusal saves bounded
+IDs only through the existing strict repair transition after that proof; show
+never writes. Resolve the named native dependencies before explicit SAME-key,
+SAME-target recovery at the newly observed revision, without retry/takeover.
+Both GET by-key and GET by-ID declare202 while the daemon-owned task runs; private
+no-store/Location and CLI3 remain, with200 reserved for saved completed readback.
+
+Org unload/runtime switch refuse active
+owners/holds. D staging/history/inode/ENOENT cleanup, all-eight-site outside-lease
+discovery, C1-C3 sticky uncertainty/EMPTY budgets, INTEGER callbacks/v2 and native
+permissions remain intact. No new table/column, auth, permission or hook changes.
+
+Follow [the online runbook](../runbooks/online-team-move.md) for the engineering-owned
+F acceptance/enablement, separately authorized release loading and exact live
+Founder operation/readback handoff. Source delivery is not activation or behavior.
+SAME13 four answers remain; all absent HTTP/CLI/migration/recovery/race/cleanup/
+startup/launcher/downgrade/callback/live observations UNEXECUTED; integration
+INCLUDING callback SKIPPED24342, Python units RETIRED. No new cases or campaign.
+
+
+## Jobs — automatic admission (THR309seq1)
+
+Both detail surfaces omit callable Run/Approve actions, dialogs and providers;
+pending retains explicit one-ID reasoned Reject, running retains Stop/output,
+and historical review fields remain readable. Lists count only legacy
+pending+true disposition backlog; the dashboard retains pending_review_jobs's
+actual query/count, inspection links and truthful attention/empty state.
+The old /run route is nonexecuting410 after auth/model/unknown/hold/nonpending
+precedence; jobs run and scripts run exit2 locally. New submit omitted/false
+uses automatic admission, optional rationale; parsed true refuses422 before
+allocation (new CLI exit2), never flip/retry. Obtain required authorization in
+a thread BEFORE submission. Old CLI may need upgrading or rationale for false;
+new clients cannot change old-daemon policy. Admission is not script success:
+retain status/reason/output and natural completed/nonzero. Served OpenAPI uses
+the supported non-test scripts/generate_openapi_snapshot.py; browser
+classification excludes the compatibility tombstone. [Current jobs contract](../superpowers/specs/2026-05-26-jobs-design.md).
+
 ## CLI human names and fresh prompt context
 
 The naming CLI provides `identities list/resolve/rename` using the
@@ -84,10 +268,23 @@ owners retain eligibility/authorization. Human task/thread/enrollment/Todo/dream
 wake output enriches IDs with explicitly current labels; raw JSON, callback
 actors, session proofs, automated targets and historical bodies remain canonical.
 
+
+New-message body admission excludes email/word interiors, escaped tokens and
+supported inline/fenced code; ASCII quoted prose remains eligible; explicit blockquote lines are literal. Literal-only
+bodies perform no body naming lookup. Genuine body aliases fail closed on service
+failure, including empty explicit recipients and per-token unavailability. Known
+actual canonical IDs retain owner checks; ID-shaped aliases supply no evidence.
+Observed Former refusal precedes later chunk failures. en/zh-CN service wording
+asks for retry or a known intended-recipient ID, with no body rewrite, automatic
+retry/send or locale-triggered effect. Historical messages/delivery and release
+measurement keep their original interpretation. The exact finite scanner contract
+is in the current identity-names core spec (THR293seq174).
+
 Before CLI-managed send/reply or multipart/shared compose uploads, preflight
 recognized former body tokens and compose recipients. Forward validates final
-quoted+note text. Quoted and email-interior matches follow the unchanged parser;
-unknown body text stays intact. Preflight is a read, not a reservation across
+quoted+note text. ASCII quoted prose remains eligible; explicit blockquote lines are literal; email/word interiors,
+escaped tokens and supported code remain literal. Unknown/ineligible body intentions follow the THR310 caller policy below; raw text stays intact.
+Preflight is a read, not a reservation across
 HTTP uploads/sends. A rename between requests can leave an independent upload
 before the server refuses the message; no rollback/protocol/journal is added.
 
@@ -101,6 +298,23 @@ merge remain required. Source publication authorizes no deployment.
 See the [current naming contract](../superpowers/specs/2026-10-09-identity-names-core.md).
 
 ## Naming v1 core, API and routing source
+
+Naming install alone uses N-SAC-1 transaction-time structural admission over the
+selected org DB, actual task/audit dependencies, closed naming interactions and
+unchanged complete workflow/Pause/move validators. Global workflow/legacy
+references retain their strict contract; naming readiness grants no authority.
+Reads and ordinary non-install refreshes never invoke admission or install names.
+
+`GET /api/v1/orgs/{slug}/identities` and `happyranch identities list --json`
+expose additive `naming_diagnostic`: null for ready rows, otherwise a finite
+captured naming category. Unknown, malformed or missing captured codes fall back
+to `naming_database_unavailable` when any row is unavailable, including a fresh
+metadata-read failure with a stale null diagnostic. The response never exposes
+raw exception text, paths or SQL. Older servers may omit the field: absence is
+UNKNOWN, never readiness. Canonical roster, definition revisions and existing
+read/auth errors retain their behavior; GET never reconciles or installs names.
+This category is an observation, not proof of a serving source SHA or root cause.
+Source publication does not establish restored naming or authorize live recovery.
 
 The bounded API source mounts four existing-org-prefix endpoints: GET
 `/identities`, POST `/identities/resolve`, PUT `/agents/{agent_id}/addressable-name`
@@ -681,7 +895,7 @@ delegate to it, and `formatCount` takes an optional locale (omitting it keeps
 the legacy host-default behaviour). An unexpected catalog gap renders the
 English message with English plural grammar, never a raw key.
 
-**W5a copy repair:** the mounted Jobs Run/Reject, Settings Capacity/Organization, Tasks Cancel/Revisit/Resolve, Threads Archive/Invite/RemoveParticipant and shared NewThread dialogs pass the existing `common.close` label to their built-in close control. Their actions and focus-return behavior are unchanged. `Markdown` accepts optional `mermaidLoadingLabel`, and `MessageBubble.labels.mermaidLoading` forwards it. KB, Task detail/recall, Threads supply `common.mermaidLoading`; omitted props retain “Rendering diagram…”. A private Markdown-local context carries only that string to the stable code renderer. Suspense remains per Mermaid block, and changing locale preserves loaded diagrams without another render. Authored Markdown/code and raw Mermaid failure source stay verbatim, including text equal to either loading label. Coverage markers remain inventory; W5a rendering acceptance requires the finite mounted-state/browser evidence. W5a finite mounted coverage is accepted (PR993); W5b enables full browser resolution and bilingual availability copy. Desktop N0/N1 remain deferred. Pending-import assertions live in the isolated Markdown.loading.test.tsx file; Markdown.test.tsx SVG/error cases use an independent lazy-module instance so filters and file order do not depend on releasing another test’s import.
+**W5a copy repair:** the mounted Jobs Reject, Settings Capacity/Organization, Tasks Cancel/Revisit/Resolve, Threads Archive/Invite/RemoveParticipant and shared NewThread dialogs pass the existing `common.close` label to their built-in close control. Their actions and focus-return behavior are unchanged. `Markdown` accepts optional `mermaidLoadingLabel`, and `MessageBubble.labels.mermaidLoading` forwards it. KB, Task detail/recall, Threads supply `common.mermaidLoading`; omitted props retain “Rendering diagram…”. A private Markdown-local context carries only that string to the stable code renderer. Suspense remains per Mermaid block, and changing locale preserves loaded diagrams without another render. Authored Markdown/code and raw Mermaid failure source stay verbatim, including text equal to either loading label. Coverage markers remain inventory; W5a rendering acceptance requires the finite mounted-state/browser evidence. W5a finite mounted coverage is accepted (PR993); W5b enables full browser resolution and bilingual availability copy. Desktop N0/N1 remain deferred. Pending-import assertions live in the isolated Markdown.loading.test.tsx file; Markdown.test.tsx SVG/error cases use an independent lazy-module instance so filters and file order do not depend on releasing another test’s import.
 **W5a Work Hours reachability:** the agent-detail reconciliation heading and local edit controls wrap within the page, including long raw agent/team names. The reconciliation and overview roster tables keep every column, value and provenance cell in a localized, named, keyboard-focusable horizontal scroll region; focus the region and use the arrow keys to reach the rightmost columns. Shared Button/AppShell and editor/action semantics are unchanged. The earlier 390px document-width checks did not establish child/control or column reachability: historical clipping captures remain failed evidence. The affected ordinary-build browser case is `web/scripts/w4a-browser-evidence.mjs --slice work-hours-reachability`, checking actual control bounds, readable headings and keyboard access to the final column in en/zh-CN at 390/1440, with mounted editor/draft/focus/navigation preservation. W5a finite coverage was independently reviewed, QA-verified and manager-accepted with PR993; W5b enables full browser locale resolution. Historical evidence keeps its original source/build identity. The tier editor now stacks field rows below the small-screen breakpoint, bounds grid children and field/control groups, wraps resets/day controls and full raw title/provenance/selected-timezone text, and allows the existing dialog to scroll vertically. Desktop retains the row hierarchy. Editor child and text-range bounds must be measured against actual dialog content and viewport after scrolling, with pointer hit testing and a real Tab cycle; page/table bounds alone do not establish editor readability. The affected browser cases include all three tiers, windowed/continuous and impact stages, long raw values, both locales at390/1440, and both-direction node/focus/selection/draft preservation with zero locale HTTP. Actual Save/PUT, reset-null and verbatim422 contracts remain owned by TierEditorDialog.test.tsx and work-hours.i18n.test.tsx; screenshots alone do not prove writes.
 
 
@@ -1399,6 +1613,14 @@ Stored seals checkpoint counters only: `census_integrity` explicitly reports
 `census_not_reconciled` with `census_valid=false`. Exhaustive integrity is a
 bounded internal zero-write validation with live semantic bookends; neither a
 stored seal nor a valid source census establishes collection health.
+
+The seq428 closed failed-before-exposure class retains exact failed invocations
+in all attempted/persisted census counts and seals but never shown/natural
+session denominators. Complete task/result/audit evidence and stable serving
+bookends must establish the strict raised/false/false/INTEGER0/null/null terminal,
+actual failed lifecycle and exhaustive no-exposure/no-callback/no-credit tuple.
+Missing/contradictory evidence and all-failure populations refuse. See the
+corrective memory spec; this supplies no installed B/C or epoch acceptance.
 G1 authority additionally reads exact admitted roles/results, original finite
 plan/tasks, owned jobs/full outputs and operation history at stable bookends.
 Its server admission, locked commit and serving checks use the existing
@@ -1437,6 +1659,16 @@ Task pages follow `(created_at, id)` descending; the last ID remains the transpo
 cursor resolved by the server. No-epoch diagnostic reads filter unrelated audit
 actions without changing the100000-row bound. Accepted epochs retain complete
 unfiltered task/result/job/audit acquisition, original outputs and serving bookends.
+
+Canonical CLI task sweeps and HTTP list/detail/two-capture comparisons share one
+semantic task projection. It excludes only valid rendering timestamps at
+`pause.observed_at`, `pause.blockers[*].observed_at` and `child_wait.observed_at`.
+Malformed timestamps/structures, unknown fields and every other `observed_at`
+remain evidence. Raw acquired records remain intact. Task lifecycle/owner/SID/
+lineage/content, pause/wait states, result/job bytes, roles and all serving
+counts/digests/seals/errors/generations remain compared. Real serving movement
+(including generation53->54, seal312201->312222 and terminal6->7) refuses;
+timestamp equality cannot retroactively qualify an earlier moving capture.
 Events at or after that cutoff are excluded. Backdated/content/role drift,
 cursor/schema errors, HTTP/decoder/timeout or SELECT failures refuse with
 `acquisition_unavailable`; CLI writes only that category to stderr and exits1,
@@ -1451,7 +1683,23 @@ validation. Audit IDs order retirement even at tied timestamps. Any credited
 read or search after end, terminal or a later natural same-task start closes
 eligibility while valid earlier credits remain. Missing/ambiguous evidence yields
 unknown/null hard-zero fields; absent kinds say `no_observed_population`, never
-PASS. D-only reporting cannot repair A's unresolved live-foreign SID attribution.
+PASS. Per-kind pull-through remains diagnostic only, without new thresholds.
+Memory get/search credit trusts the supplied live SID matching the live
+org/agent context and derives the task from that context. Deliberately supplying
+another same-agent task's live SID credits that selected session. This known
+observational trust limit is not authentication or hostile-caller proof; D
+does not establish actual caller identity.
+
+Founder THR-091 seq401 declined `caller_task_id`, imposed no new API requirement
+and made explicit foreign-live-SID rejection non-gating. A is scoped accepted
+on completed JOB-4624's resume, retry, overlap, ended, absent, lifecycle-join
+and cleanup results without rerun. The original JOB-4624 exit1/raw FAIL and
+TASK-11402 QA REVISE remain unchanged historical evidence under the prior
+criterion. Ended/absent selectors must still remain uncredited and
+POST-retirement read/search credit must remain zero; earlier legitimate active
+reads remain valid. Restart, source merge and this documentation do not accept
+B, C or an epoch, or change original admission/current full health, immutable
+epoch and frozen observation requirements.
 
 Structural returned-data corruption produces the full empty-metrics error object
 (null first event, days0, empty aggregate/by_agent/by_role/read_counts, explicit
@@ -1956,7 +2204,12 @@ cannot rename. A displayed human label provides no authentication proof.
 Provider-aware naming hooks share one org-scoped identity list/query. Successful
 rename/readback refreshes identity metadata, preserving canonical IDs, settings
 and unrelated drafts. Current labels display Name · ID (ID alone when equal or
-unavailable); historical IDs, links, keys, owner/filter/recipient values and
+unavailable). Bounded Founder exception (THR293seq236): the Sidebar account row
+and thread list/detail/message-author/participant-rail sites show the Founder's
+ready current name alone with matching avatar initials, else the canonical
+`founder` ID (unnamed, loading, unavailable, error or another org still loading);
+agents and every other label keep Name · ID. Historical IDs, links, keys,
+owner/filter/recipient values and
 stored message text remain canonical/literal. Metadata follows existing focus/
 reconnect behavior and bounded 30-second polling; availability is never a global
 gate for established ID operations. Editor drafts are scoped by org/kind/ID and
@@ -1977,8 +2230,9 @@ source; the existing task agent filter is the relevant selector. Prospective
 invite resolve omits `thread_id` because that optional scope means existing
 participants; the actual invite endpoint retains final action eligibility.
 Recognized former body/recipient tokens stop UI-managed associated attachment
-uploads when caught by separate preflight. Unknown body @text remains literal,
-including the existing quoted/email token parser behavior. This read is not a
+uploads when caught by separate preflight. Body intentions follow the THR310 caller policy below,
+with ASCII quotes eligible, explicit blockquote lines literal and email/code/escaped tokens excluded. This read
+is not a
 reservation: final server admission may reject after an intervening rename, and
 already-completed uploads are not claimed rolled back. New en/zh-CN text uses
 existing controls/tokens. The naming browser adapter captures 390×844/1440×900
@@ -2820,3 +3074,93 @@ nonforce push and manager guarded merge remain. Python units RETIRED; integratio
 INCLUDING callback SKIPPED24342; SQL/parser/product/security/protected/executable
 proof UNEXECUTED/FOUNDER-WAIVED139429/430. Root retains K2a2–K6, real-agent/two-org/
 override/backup-copy operational acceptance. No live action or trial renewal.
+
+## Literal text and recipient intentions (THR310 seq3/13)
+
+All Founder-authenticated writes, including an unbound agent-launched CLI, reject
+unknown/nonparticipant body intentions with422 and eligible current-name/ID guidance.
+Genuine Former anywhere in To/body retains409 before body422; unknown explicit To
+retains404 and unresolved aliases retain503 under naming failure. Preserve native
+structural/auth/binding/lifecycle/file errors. To alone selects participants (plus
+a genuine agent composer). BODY suggestions are eligible selected prospective
+agents in a new thread, current participants in an existing one; Founder is human,
+never an agent participant or BODY suggestion. Manual `@founder` remains valid.
+
+Validated agent writers retain compatibility; CLI stderr describes ignored tokens
+and canonical narrowed targets or conditional fallback: recipients minus speaker
+outside an exchange, frozen cohort intersect recipients minus speaker inside one,
+possibly empty. Prior catch-up is independent; pending_replies proves neither
+audience nor storage/launches. Direct agent API/internal authors receive no warning
+channel (accepted limitation). Complete valid JSON-only bindings count for CLI
+warning/upload attribution; partial/invalid bindings retain native refusal. No
+response warning field/header/auth change or preflight reservation is introduced.
+Founder-only suppresses new selection while preserving obligations/prior catch-up;
+Founder+unknown differs, and self-only/quote-only use ordinary conditional fallback.
+
+Only start, finite whitespace, or `(` `[` `{` ASCII single/double quote opens an
+unescaped ASCII token. Explicit physical lines with0–3 ASCII spaces then `>` are
+literal; unprefixed lazy continuation and four-space indentation are outside this
+quote rule. Top-level unclosed fences mask to EOF; quoted ticks/fences cannot own
+later notes. The precise finite whitespace/code grammar and examples are in the
+identity-names core spec's THR310 section; this is not a full Markdown parser.
+Nonblank authored bodies remain exact through storage, including controls,
+indentation, CRLF/bare CR and trailing whitespace. The existing strip emptiness
+predicate and attachment-only null outcomes remain; subjects/history are unchanged.
+
+Forwarders quote every physical source line/header/blank/marker. Generated source
+separators may become LF; notes remain verbatim, including CLI note-file newlines.
+CLI's fully serialized quoted excerpt is at most4096 UTF8 bytes, metadata/prefixes/
+newlines/marker included; separator and note excluded. Reserve the quoted marker
+and retain the longest valid source prefix. Web retains its last-message selection
+and size policy. Raw occurrence ranges keep duplicates; admission spellings dedup.
+Insertion replaces only the prefix through caret, preserving suffix/spaces/focus.
+Thread-body rendering styles only proven exact raw intervals, noninteractively;
+ambiguous transformations stay plain, code/Mermaid stay undecorated, task/KB defaults
+and historical delivery stay unchanged. No render-time naming or recipient inference.
+Shared data is protocol/thread-mention-corpus.json (51 lexical +13 write-path rows).
+Public-unexposed mentions_json, authentic debt/outage and genuine task/dream/callback
+proof require actual evidence and cannot be inferred from static/mock checks.
+
+Thread detail stacks its conversation/composer and properties below the medium
+breakpoint. The transcript has bounded scrolling; all properties and participant
+controls remain reachable in the detail scroll area. At desktop widths the
+properties retain their fixed rail. Resize and locale changes preserve the mounted
+composer, draft, attachments and selection; neither action submits a message.
+
+## Private team-move D source and launcher protocol
+
+D supplies internal preview/operation/recovery owners. E now mounts the founder
+service/CLI; F proposes source enablement with actual native readiness gates.
+Updated shell and Mac bundled/dev launchers pass `--reader-guarded-start=online-team-move@3`; older
+supported argparse readers reject that protocol before startup. Runtime switch
+and registration preserve unresolved holds instead of detaching their org. Early
+schema-owner discovery keeps an unresolved/unknown org diagnostic-only before
+compatibility writers or producer recovery; unrelated orgs can attach. Direct old
+interpreters, obsolete launchers and already-running old daemons remain outside
+this cooperative guard. Source rollback cannot undo durable decisions. No restart,
+activation, preview against the live roster or live move was executed. SAME13
+behavior/migration/recovery/launcher outcomes remain UNEXECUTED; integration
+INCLUDING callback SKIPPED24342 and Python units RETIRED. See the current D section
+of the approved online-team-move spec. The earlier D @2 protocol covered durable operation
+staging ownership and per-org acquisition containment. Earlier diagnostics survive
+register/switch/state adoption. Restricted recovery retains the original error
+when close also fails; standalone close failures stay classified and held.
+
+Global/rebind/claim/retry/synchronization profile writers retain diagnostic roots
+and refuse without diagnostic filesystem/DB acquisition while leased, even with
+EMPTY dependencies.
+Adapter removal reports the retained EMPTY-dependency diagnostic refusal as
+HTTP409 with `detail.code`; its bounded `ProfileCoordinatorError` translation
+preserves unrelated exceptions and native removal/audit/compensation.
+Native startup/attachment performs positive inspection
+outside leases. Matching attachment revalidates its actual already-open DB owner
+in the short segment; only successful attachment clears its diagnostic. Other
+roots, failed attachment, current holds and malformed history stay held. D's
+own-operation/native-identity exception also checks EMPTY dependencies. Public
+recovery/reattachment is wired by E and uses F's actual native readiness gates.
+Failed open or raced loss never establishes fresh
+absence. Discovery/publication capture runs outside durable mutation leases, with
+native capture revalidation in the final DB leaf. Unknown staging cleanup stays
+held through recovery and owner-finished. Old records remain readable; legacy
+canonical-stage ownership gaps remain held. Source/static acceptance is not behavioral
+acceptance or a feature-completion claim.

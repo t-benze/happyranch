@@ -1,4 +1,4 @@
-import { useIdentityOptions, usePreflightAddresses, namingAddressError } from '@/hooks/identities';
+import { useIdentityOptions, useKnownAgentIds, usePreflightAddresses, namingAddressError } from '@/hooks/identities';
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { Paperclip, X } from 'lucide-react';
 import {
@@ -57,10 +57,16 @@ export function NewThreadDialog({ open, onClose, prefill, onCreated, agents = []
   const { t } = useTranslation();
   const slug = useOrgSlug();
   const compose = useComposeThread();
-  const identityOptions = useIdentityOptions(agents, true);
+  const recipientIdentityOptions = useIdentityOptions(agents, true);
   const preflight = usePreflightAddresses();
+  const knownAgentIds = useKnownAgentIds(agents);
   const [subject, setSubject] = useState('');
   const [recipientsRaw, setRecipientsRaw] = useState('');
+  const selectedAddresses = new Set(recipientsRaw.split(',').map(a => a.trim().replace(/^@/, '').toLowerCase()));
+  const selectedIds = new Set(recipientIdentityOptions.filter(option => option.kind === 'agent'
+    && (selectedAddresses.has(option.name.toLowerCase()) || selectedAddresses.has((option.addressable_name ?? option.name).toLowerCase()))).map(option => option.name));
+  const bodyIdentityOptions = useIdentityOptions(agents.filter(agent => selectedIds.has(agent.name)));
+
   const [body, setBody] = useState('');
   const [pendingAttachments, setPendingAttachments] = useState<PendingAttachment[]>([]);
   // Locale-neutral error descriptor (key/params or raw diagnostic), rendered
@@ -152,7 +158,7 @@ export function NewThreadDialog({ open, onClose, prefill, onCreated, agents = []
     setUploading(true);
     let failedUpload: PendingAttachment | null = null;
     try {
-      const resolved = await preflight.mutateAsync({ slug: capturedSlug, context: 'thread_recipient', recipients, body, canonicalAgentIds: agents.map((a) => a.name), allowFounder: true });
+      const resolved = await preflight.mutateAsync({ slug: capturedSlug, context: 'thread_recipient', recipients, body, canonicalAgentIds: knownAgentIds, allowFounder: true });
       const refs: ThreadAttachmentRef[] = [];
       // Run-owned snapshot; every read below uses this copy. Selection ids
       // restart on a fresh dialog (`nsel-1`), so reading the shared maps after
@@ -228,7 +234,7 @@ export function NewThreadDialog({ open, onClose, prefill, onCreated, agents = []
     } finally {
       if (isCurrent()) setUploading(false);
     }
-  }, [subject, recipientsRaw, body, pendingAttachments, prefill, compose, slug, onCreated, onClose, preflight, agents]);
+  }, [subject, recipientsRaw, body, pendingAttachments, prefill, compose, slug, onCreated, onClose, preflight, knownAgentIds]);
 
   const handleReflection = useCallback(async () => {
     if (submittingRef.current) return;
@@ -247,7 +253,7 @@ export function NewThreadDialog({ open, onClose, prefill, onCreated, agents = []
 
     setUploading(true);
     try {
-      const resolved = await preflight.mutateAsync({ slug: capturedSlug, context: 'thread_recipient', recipients: [agentName], canonicalAgentIds: agents.map((a) => a.name) });
+      const resolved = await preflight.mutateAsync({ slug: capturedSlug, context: 'thread_recipient', recipients: [agentName], canonicalAgentIds: knownAgentIds });
       if (!isCurrent()) return;
       const result = await compose.mutateAsync({
         subject: `Reflection - ${agentName}`,
@@ -268,7 +274,7 @@ export function NewThreadDialog({ open, onClose, prefill, onCreated, agents = []
     } finally {
       if (isCurrent()) setUploading(false);
     }
-  }, [reflection, compose, onCreated, onClose, slug, preflight, agents]);
+  }, [reflection, compose, onCreated, onClose, slug, preflight, knownAgentIds]);
 
   // The dialog's OWN run state owns pending presentation for the whole
   // upload+compose (and Reflection) lifecycle. The surviving mutation
@@ -307,7 +313,7 @@ export function NewThreadDialog({ open, onClose, prefill, onCreated, agents = []
               id={recipientsId}
               value={recipientsRaw}
               onChange={setRecipientsRaw}
-              agents={identityOptions}
+              agents={recipientIdentityOptions}
               disabled={inFlight}
               placeholder="agent_a, agent_b"
               mentionListLabel={t('threads.newThread.mentionList')}
@@ -318,7 +324,7 @@ export function NewThreadDialog({ open, onClose, prefill, onCreated, agents = []
               id={bodyId}
               value={body}
               onChange={setBody}
-              agents={identityOptions}
+              agents={bodyIdentityOptions}
               mentionListLabel={t('threads.newThread.mentionList')}
               onSubmit={() => { if (!submittingRef.current) submit(); }}
               disabled={inFlight}

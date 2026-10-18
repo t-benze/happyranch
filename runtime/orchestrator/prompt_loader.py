@@ -12,6 +12,7 @@ import tempfile
 from pathlib import Path
 
 from runtime.orchestrator._paths import OrgPaths
+from runtime.orchestrator.canonical_roster import coherent_paths_reader
 from runtime.orchestrator.agent_def import (
     AgentDef,
     AgentParseError,
@@ -74,6 +75,7 @@ def load_agent_with_revision(
     return snapshot[:2] if snapshot is not None else None
 
 
+@coherent_paths_reader
 def load_agent_snapshot(
     paths: OrgPaths, name: str,
 ) -> tuple[AgentDef, str, bytes] | None:
@@ -101,6 +103,7 @@ def agent_revision(paths: OrgPaths, name: str) -> str | None:
     return loaded[1] if loaded is not None else None
 
 
+@coherent_paths_reader
 def load_pending_agent(paths: OrgPaths, name: str) -> AgentDef | None:
     path = _agent_path(paths, name, pending=True)
     if not path.exists():
@@ -124,11 +127,13 @@ def _list_dir(directory: Path) -> list[AgentDef]:
     return out
 
 
+@coherent_paths_reader
 def list_agents(paths: OrgPaths) -> list[AgentDef]:
     """All active agents under <runtime>/org/agents/ (excluding _pending/)."""
     return _list_dir(paths.agents_dir)
 
 
+@coherent_paths_reader
 def list_pending(paths: OrgPaths) -> list[AgentDef]:
     return _list_dir(paths.pending_agents_dir)
 

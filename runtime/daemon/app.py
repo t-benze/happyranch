@@ -34,6 +34,7 @@ from runtime.daemon.routes import (
     skills,
     tasks,
     teams,
+    team_moves,
     threads,
     tokens,
     usage,
@@ -167,8 +168,8 @@ async def _lifespan(app: FastAPI):
             from runtime.identities.registry import refresh_names
             # The compatibility batch/profile reconciliation has released its
             # leases; startup has not exposed any route writers yet.
-            with org.workflow_authority.writer_interval(publisher="identity_names_compatibility"):
-                refresh_names(org)
+            with org.workflow_authority.writer_interval(publisher="identity_names_compatibility") as interval:
+                refresh_names(org, writer=interval.native_disposition)
         # THR-106: one-shot skill-id rename hr:review -> hr:reflection in the
         # persisted org/config.yaml skills eligibility section (allow + deny,
         # org/team/agent scope). Sentinel-gated (.hr_review_renamed).
@@ -242,6 +243,20 @@ async def _lifespan(app: FastAPI):
                 org.orchestrator, _task_id,
                 trigger="startup_recovery", triggering_job_id=None,
             )
+
+    # A durable D receipt can precede notification delivery when a daemon dies.
+    # Reuse real deduplicating producers after wiring; no reset/republication or
+    # synthesized callback. Diagnostic/held orgs never enter this runnable set.
+    from runtime.infrastructure.team_move_store import validate_team_move_schema
+    from runtime.orchestrator.team_move_operation import TeamMoveOperation
+    for org in state.orgs.values():
+        with org.db._lock:
+            installed = validate_team_move_schema(org.db._conn, org_slug=org.slug)
+            completed_move = installed and org.db._conn.execute(
+                "SELECT 1 FROM team_move_operations WHERE phase='complete' LIMIT 1"
+            ).fetchone() is not None
+        if completed_move and state.profile_coordinator is not None:
+            await TeamMoveOperation(org, state.profile_coordinator).redeliver()
 
     from runtime.orchestrator.task_pause import discover_pause_work
     for org in state.orgs.values():
@@ -320,6 +335,8 @@ async def _lifespan(app: FastAPI):
 
     from runtime.daemon.zombie_reaper import zombie_reaper_loop
     zombie_reaper_task = asyncio.create_task(zombie_reaper_loop(state))
+    from runtime.daemon.disk_sweeper import disk_sweeper_loop
+    disk_sweeper_task = asyncio.create_task(disk_sweeper_loop(state))
     from runtime.daemon.exchange_reaper import exchange_reaper_loop
     exchange_reaper_task = asyncio.create_task(exchange_reaper_loop(state))
     from runtime.daemon.direct_connect_projection_sweep import direct_connect_projection_sweep_loop
@@ -373,6 +390,13 @@ async def _lifespan(app: FastAPI):
     try:
         yield
     finally:
+        # Fence runner starts (including stale OrgState references) and new org
+        # attachment before the first shutdown await. Native owners remain live
+        # through worker completion, effects unwind and their final settlement.
+        state._stop_runner_admission()
+        # HTTP disconnect never owns these tasks. Reap the bounded operation
+        # owners before host shutdown or any org DB can close; retain holds.
+        await state.team_move_service.close()
         # ── Host-session drain (THR-207 Slice A real-caller wiring) ──
         # Stop admission, cancel queued, and finish every owned attempt with a
         # durable SHUTDOWN winner BEFORE the producer workers are cancelled, so
@@ -392,18 +416,31 @@ async def _lifespan(app: FastAPI):
             await asyncio.gather(*_dashboard_tasks, return_exceptions=True)
         for org in state.orgs.values():
             await org.dashboard_projection.reap_scheduler()
-        for t in thread_worker_tasks:
-            t.cancel()
-        thread_breaker_scheduler_task.cancel()
-        dream_scheduler_task.cancel()
-        for t in dream_worker_tasks:
-            t.cancel()
-        work_hours_scheduler_task.cancel()
-        for t in wake_worker_tasks:
-            t.cancel()
-        schedule_scheduler_task.cancel()
-        for t in schedule_worker_tasks:
-            t.cancel()
+        runner_tasks = set(
+            thread_worker_tasks + dream_worker_tasks + wake_worker_tasks + schedule_worker_tasks
+            + [thread_breaker_scheduler_task, dream_scheduler_task,
+               work_hours_scheduler_task, schedule_scheduler_task]
+        )
+        for org in state.orgs.values():
+            runner_tasks.update(org._runner_tasks)
+        for task in runner_tasks:
+            task.cancel()
+        # Shield the join itself against repeated shutdown cancellation. The
+        # refresh helper joins its private executor Future; these callers also
+        # have to finish their native finally blocks before any DB can close.
+        runners_done = asyncio.gather(*runner_tasks, return_exceptions=True)
+        shutdown_cancellation = None
+        while True:
+            try:
+                await asyncio.shield(runners_done)
+                break
+            except asyncio.CancelledError as exc:
+                shutdown_cancellation = shutdown_cancellation or exc
+        for outcome in runners_done.result():
+            if isinstance(outcome, BaseException) and not isinstance(outcome, asyncio.CancelledError):
+                logger.error("Native runner shutdown failed: %r", outcome)
+        disk_sweeper_task.cancel()
+        await asyncio.gather(disk_sweeper_task, return_exceptions=True)
         zombie_reaper_task.cancel()
         direct_connect_projection_sweep_task.cancel()
         workspace_cleanup_scheduler_task.cancel()
@@ -414,6 +451,8 @@ async def _lifespan(app: FastAPI):
         from runtime.daemon.jobs_runner import terminate_all_inflight
         await terminate_all_inflight(grace_seconds=5)
         await state.close_all()
+        if shutdown_cancellation is not None:
+            raise shutdown_cancellation
 
 
 async def metrics_timing_middleware(request: Request, call_next):
@@ -472,6 +511,7 @@ def create_app(state: DaemonState) -> FastAPI:
     app.include_router(identities.router, prefix="/api/v1/orgs/{slug}", tags=["identities"])
     app.include_router(authority_policy.router, prefix="/api/v1/orgs/{slug}", tags=["authority-policy"])
     app.include_router(teams.router, prefix="/api/v1/orgs/{slug}")
+    app.include_router(team_moves.router, prefix="/api/v1/orgs/{slug}", tags=["team-moves"])
     app.include_router(audit.router, prefix="/api/v1/orgs/{slug}")
     app.include_router(tokens.router, prefix="/api/v1/orgs/{slug}")
     app.include_router(usage.router, prefix="/api/v1/orgs/{slug}", tags=["usage"])

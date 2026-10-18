@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from runtime.infrastructure.producer_admission import native_owner_uncommitted
+
 from runtime.infrastructure.db._shared import _synchronized
 from runtime.models import TaskStatus
 
@@ -28,6 +30,9 @@ class JobsMixin:
         self._conn.commit()
 
     def _insert_job_uncommitted(self, r: "JobRecord") -> None:
+        admission = native_owner_uncommitted(self)
+        if admission is not None:
+            admission.check_job_uncommitted(r)
         self._conn.execute(
             """INSERT INTO jobs (
                 id, task_id, agent_name, title, rationale, script_text,
@@ -351,6 +356,11 @@ class JobsMixin:
         stdout_path: str,
         stderr_path: str,
     ) -> bool:
+        admission = native_owner_uncommitted(self)
+        if admission is not None:
+            record = self.get_job(job_id)
+            if record is not None:
+                admission.check_job_uncommitted(record)
         cur = self._conn.execute(
             "UPDATE jobs SET "
             "status='running', reviewed_by=?, reviewed_at=?, started_at=?, "
@@ -360,6 +370,32 @@ class JobsMixin:
              stdout_path, stderr_path, job_id),
         )
         return cur.rowcount == 1
+
+    def _fail_unlaunched_job_uncommitted(
+        self, job_id: str, *, task_id: str, agent: str,
+        finished_at: str, diagnostic: str,
+    ) -> bool:
+        """CAS for authenticated preflight loss, inside the caller's Pause writer.
+
+        Caller holds the DB/session/root ownership locks, authenticates the full
+        immutable submission and proves exactly one pending, never-launched journal
+        entry. Audit and journal settlement commit in that same transaction.
+        This never weakens the separate running-only terminal writer.
+        """
+        admission = native_owner_uncommitted(self)
+        if admission is not None:
+            record = self.get_job(job_id)
+            if record is not None:
+                admission.check_job_uncommitted(record)
+        cursor = self._conn.execute(
+            "UPDATE jobs SET status='failed', reason='spawn_failed', exit_code=NULL, "
+            "finished_at=?, duration_ms=0, stderr_head=? "
+            "WHERE id=? AND task_id=? AND agent_name=? AND review_required=0 "
+            "AND status='pending' AND started_at IS NULL AND finished_at IS NULL "
+            "AND exit_code IS NULL AND stdout_path IS NULL AND stderr_path IS NULL",
+            (finished_at, diagnostic[:4096], job_id, task_id, agent),
+        )
+        return cursor.rowcount == 1
 
     @_synchronized
     def transition_job_to_terminal(
@@ -400,7 +436,9 @@ class JobsMixin:
         rows = self._conn.execute(
             "SELECT id FROM jobs WHERE status='running'"
         ).fetchall()
-        ids = [r["id"] for r in rows]
+        admission = native_owner_uncommitted(self)
+        ids = [r['id'] for r in rows if admission is None or not admission.preserve_uncommitted(
+            'job', r['id'], self.get_job(r['id']).agent_name)]
         if not ids:
             return []
         self._conn.executemany(

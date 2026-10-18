@@ -16,9 +16,11 @@ push, release, workflow_call or repository_dispatch entry. `run.py` and
 branch or checkout/source mismatch before launching scenarios. Actions metadata
 validation is not protection against a hostile runner forging its environment.
 
-Python3.12/3.13/3.14 baseline and TERM3.12/INT3.14 launcher diagnostics feed
-`Daily Product E2E Health`, outside required merge checks. First scheduled run
-is PENDING. Historical TASK10532/run38035241095 on `afb46cbb6` retains both
+Founder THR291seq171/172 selects exactly56 variants EACH on Python3.12/3.14
+and TERM3.12/INT3.14 launcher diagnostics. Product Python support remains unchanged. Exactly four execution directories,
+`e2e-3.12`, `e2e-3.14`, `e2e-cancel-TERM`, `e2e-cancel-INT`, feed
+`Daily Product E2E Health`, outside required merge checks. Scheduled runs38482572306 and38644465643 failed at their own sources;
+corrected behavior remains pending the existing daily lane. Historical TASK10532/run38035241095 on `afb46cbb6` retains both
 3.12/3.14 eight-case/23-variant baselines and TERM/INT cleanup; it is not fresh
 head/daily evidence. Engineering_manager owns ordinary task/thread triage;
 there are no retries, new notifications or promised response SLA.
@@ -49,28 +51,122 @@ never product serializers as expected-value generators.
 Lifecycle final-state readback uses a normal browser refresh after durable
 completion, waiting for real detail and Recall responses in the same browser
 session. The shipping detail/Recall queries do not poll while mounted; this
-case does not establish automatic live-view refresh. `Browser.response` declares
-SPA action versus new-document observation. Its native waiter accepts only a
-GET200 on the exact current origin/port and literal API path, main frame and
-an actual Request seen while armed. Goto/reload additionally bind the real
-top-level navigation request, expected main-frame commit and subsequent API
-request start; pre-commit/old outstanding requests and undeclared redirects
-cannot satisfy it. Paired detail/Recall observers share the public action and
-earlier deadline; Recall requires the semantic query tree=true regardless of
-parameter order, while roots retain shipping pagination. Body consumers opt
-into one native body/JSON capture before the original bounded scope returns;
-metadata-only consumers acquire no body requirement. Exact content/DOM
-assertions still run, without selecting a second candidate by content.
+case does not establish automatic live-view refresh.
 
-Arm/request/commit/selection/body-begin/end/error diagnostics are partial and
-unvalidated; available synthetic target JSON uses the existing sanitation
-context. Headers, storage, bootstrap bodies and arbitrary query values are
-excluded. Body/parse/action/close/crash/deadline failures propagate. Each scope
-removes only its own request/navigation listeners. Native waiter teardown stays
-library-owned: action-exception EventInfo cancellation does not prove immediate
-native listener removal before its finite timeout or existing browser close.
-E05 thread_view/thread_created freshness and Chinese PNG glyph limitations
-remain deferred; no extra collector, fetch, retry, sleep or transport is added.
+The accepted TASK11803 amendment (TASK11788 manager step4) selects a finite
+caller-owned cohort. Before arm, each caller declares immutable scenario facts,
+current boot/origin/document, action/destination and endpoint/query scopes.
+Actual main-frame GET Requests starting after arm and accepted destination/commit
+own their original Response, one private body read and successful requestfinished.
+Known prearm objects never become current. New-document observations require the
+unredirected native Request/commit; same-document initialization at the target is
+allowed, while another document or departure/return fails. Reused endpoints are
+allowed: a delayed producer starting a new read in the same unchanged declared
+state can qualify. This proves temporal fresh-original-read coverage; initiating
+React hook/click causation and complete future producer closure remain unproved.
+
+Readiness/content/absence assertions run while admission is OPEN. Provisional
+body loans stay private and memoized, without accepted records or case marks.
+The explicit caller checkpoint freezes a nonempty set at every endpoint. Every
+admitted member must independently match predeclared scenario expectations and
+agree with all peers, including unknown fields and array order. Failed, non200,
+conflicting, stale, redirected, incomplete or late members fail the entire group.
+After checkpoint, matching starts refuse through settlement. No first200,
+request count, quiet period or networkidle certifies closure. Earliest-start
+representatives become public only after all siblings' body/finish joins, owned
+task settlement and final synchronous guard/disposal/seal. Inner scope exit does
+not certify, detach or restore time. The original earliest absolute page/case/run
+bound covers action, readiness, bodies, finish, cleanup and guarded consumption.
+Local task cancellation is not server settlement; uncertainty poisons reuse and
+retains the first error and partial diagnostics under the existing containment.
+Each owned body completion retrieves its exception or cancellation, latches the
+first observed failure and wakes the group even while another member is pending.
+Guards and abort reconcile already-done tasks before queued callbacks run. Local
+abort detaches active wake callbacks and requests cancellation only for owned
+pending tasks. A consume-only callback records any eventual outcome without
+waking acceptance or driving native transport. This is best effort: if the
+original loop never advances again, pending tasks cannot settle locally; no
+cleanup budget or server-settlement proof follows. Secondary body/cleanup errors
+retain type-only partial diagnostics and cannot replace the first observed cause.
+Activity after disposal is outside this finite dispatcher-observed guarantee.
+
+All three ordinary roots sites (IDs1/18/19: open_task/e07_terminal/Pause held)
+retain the PR1107 complete decoded query exactly limit=["50"], including blank,
+repetition, fragment and strict parser behavior. Attention status=escalated cannot
+join. Recall requires exactly tree=["true"]; detail/jobs require an empty query;
+all reject fragments and use fixed parse-error categories without query text.
+Response admission repeats the query and original Request identity checks.
+Literal harness-only R/D/C/J shapes and independently supplied scenario facts
+reject equal-wrong bodies, malformed UTF8/JSON, duplicate keys and nonfinite JSON.
+Private comparison copies omit only independently validated UTC observation
+stamps at D.pause/R.tasks[i].pause (including identical blocker stamps) and
+D.task.child_wait/R.tasks[i].child_wait. Delegated-parent child_wait identity,
+phase, legal state and known waiting_children/pending_children requirements stay
+mandatory; an undeclared delegated row refuses stamp comparison. Null is required
+elsewhere. Unknown fields, durable timestamps,
+heartbeat/results/audit/work_status and all raw/exported bodies remain intact.
+No cross-transition comparison or recursive timestamp stripping is used. E07's
+three terminal tree selections now use the actual complete same-phase tree URL
+and snapshot, preserving recursive equality, children and independent freeze,
+HTTP-index, cancellation, control and ledger assertions.
+
+The27-site source census classifies exactly16 shared transport sites
+1/4/5/6/7/8/10/11/15/16/18/19/22/23/24/25, including all seven original public-body
+sites8/10/15/16/18/22/24 and nine private-body sites. Six DOM-only sites2/3
+(open_task detail/Recall),20/21 (Pause root-link),26/27 (Pause terminal) retain
+exact URL, scenario briefs/state/outcomes, child identity/order, localized
+controls and old/alien absence checks within the removed pairs' original bounds.
+At those six sites we deliberately relinquish fresh HTTP, method/query/status,
+original Response/body/finish ownership and failed/conflicting/duplicate
+background-request coverage. DOM content is visible navigation evidence. Later
+reload/API/DB evidence does not prove the removed click transport. Cached-return
+passive target-org path200 provenance remains weaker; the same populated
+alpha-beta-alpha journey, full31s expiry, fresh detail AND Recall observation,
+render/alien checks and completion reload are preserved separately. No accepted
+HTTP record is fabricated for a DOM site.
+
+Native sites9/12/13/14/17 (Reject, thread list/detail/messages, Cancel) retain
+their original predicates/passive sinks and weaker start/query/ownership limits;
+they receive no shared-cohort credit. Pause's unchanged overview URL-family sink
+latches forbidden-overview-read on arrival and remains live through all roots
+body/finish settlement. A final synchronous empty assertion precedes its local
+detach/seal. Arrival after completed disposal remains unobserved. Dashboard503
+and original native error/cleanup evidence remain distinct.
+
+These are source contracts, not runtime outcomes. A01–A16 remain the accepted
+four-answer case record in TASK11803; task/PR evidence attributes any isolated
+actual-callable synthetic controls separately from browser behavior. Historical
+run39069788195 remains daily FAIL (four completed marks/E02 partial/51 incomplete
+per version); TERM/INT prove launcher diagnostics only. Corrected behavior, all
+browser/DOM equivalence, sanitation/screenshots, timing/roughly100MiB fit and
+protected12 mutations/repetitions remain UNEXECUTED or unproved. General
+integration INCLUDING actual callback is SKIPPED24342; Python units RETIRED.
+No behavioral/test-authoring/full-reset PASS follows from source/static checks.
+Daily19UTC,56 EACH3.12/3.14,TERM3.12/INT3.14,four artifacts and every original
+scenario/command/containment/cleanup/evidence bound remain unchanged. Abrupt R,
+wider E04 cap/Stop and other held work remain held; no new execution is granted.
+
+Terminal stop admits only the healthy pinned owner/standard loop with positive
+existing work. It invokes synchronous context exit once under one absolute S.
+Expiry is sticky and leaves exactly one queued call_soon successor, preserving
+cooperative enforcement across advancing dispatcher/transport/asyncgen phases.
+Finally deactivates before canceling its handle, with no second exit/loop drive.
+Healthy pre-S completion can succeed; expiry always fails, even after normal
+return. Unsupported/poisoned/exhausted states refuse before exit. Scheduler
+registration failure and nonadvancing synchronous work have no proven local
+phase-spanning/hard-preemption bound. Local stop does not prove process absence;
+only the unchanged outer Owned receipts establish it.
+
+Controller preserves the first error before cleanup/export, requests observer
+stop, and atomically stages small complete sanitized marks/trace before optional
+native teardown and bulky evidence. Resource attempts independently retain
+secondary failures. Observer stop is not termination: join uses only positive
+existing work (at most1s), and full stable prefix snapshots report cutoff,
+liveness/error/join state and partial status. Nonterminal cancellation_hold keeps
+its observer live. Exhausted work grants no join/flush/relay/daemon/native reserve.
+Full valid redaction context is mandatory; unavailable context withholds unsafe
+output. Genuine E07 witness bytes/digests, sibling evidence and final assertions
+remain. No partial/missing data becomes absence or PASS.
 
 The independent populated
 alpha-beta-alpha cache case never reloads during org switching. The return
@@ -265,9 +361,9 @@ loss in the baseline do not establish restart/recovery. No merge or deployment f
 successful run. Deletion PR1024 is merged at
 `5e87e778c6968338a12bd5cd65d461e5699836be`; this lane preserves that deletion and
 all current product/Web/shared assets. The current schedule-only baseline covers
-Python3.12/3.13/3.14, with TERM3.12/INT3.14 launcher diagnostics at 19:00 UTC /
-03:00 Asia/Shanghai from immutable default-branch source. First daily execution
-is PENDING. Historical TASK10532/run38035241095 at `afb46cbb6` supplies only the
+Python3.12/3.14, with TERM3.12/INT3.14 launcher diagnostics at 19:00 UTC /
+03:00 Asia/Shanghai from immutable default-branch source. Historical scheduled
+executions failed; corrected behavior is pending. Historical TASK10532/run38035241095 at `afb46cbb6` supplies only the
 3.12/3.14 baseline and launcher cleanup, not current-head or daily evidence.
 
 ## Cadence delivery and remaining test-authoring evidence (THR-291 seq69)
@@ -313,7 +409,7 @@ joins, comprehensive sanitation, complete Pause/product acceptance or full
 runtime/roughly100MiB suffix fit. Independent full review and same-head SCOPED
 STATIC QA remain required with Source Boundary Lint/Web Lint(Node24), normal
 hooks and manager guarded merge. Corrected behavior awaits the existing daily
-19UTC default-source Python3.12/3.13/3.14 evidence. General AND actual CLI callback
+19UTC default-source Python3.12/3.14 evidence. General AND actual CLI callback
 integration remain SKIPPED THR243seq42; Python units remain RETIRED. All56
 variants/39 starts and budgets480/240/720/60/120/900 stay unchanged. THR291seq119
 abrupt R andseq126 E04 cap/persistent Stop implementation/acceptance remain HELD.
@@ -437,6 +533,40 @@ registry/shared stub, dependency, cadence/cap or cleanup-machinery changes.
 
 ## E04 jobs prefix (TASK-10686 / THR-291)
 
+Current source amendment TASK11543 / FounderTHR309seq1 and manager THR311seq2:
+**SOURCE ONLY / behavior UNEXECUTED**. The six case identities, order, counts,
+allowances and strong independent terminal/audit/process/wake oracles remain.
+The historical `E04.approve-exit0` ID now observes omitted/false automatic
+admission with actual case_manager `job_auto_started` and terminal actor; no
+browser run mutation. Each owned script is observed through its existing
+socket immediately after submission, remains running through S1, then is
+released/observed as before. Pair's other job is running, not pending. Natural
+completed/nonzero and timeout caps/results remain exact. Both detail states
+must have no Run/Approve controls; individual Reject and running Stop stay real.
+
+`E04.reject` deliberately FAILS CLOSED through the existing prerequisite/error
+reporting. Missing prerequisite: an authorized legacy pending reviewed-job
+fixture with genuine eligible waiter provenance. New true422 is not rejection
+coverage; never convert that case to false or drop its original no-launch,
+individual reject and wake assertions. Aggregate explicitly refuses a missing
+fixture record; no historical approval-mode receipt proves automatic mode.
+This correction adds no fixture/provider/controller/oracle infrastructure or
+execution authority. Later variants remain authored but unreached while this
+prerequisite is absent. Rejection/wake and source fit remain MISSING/UNEXECUTED,
+not a waiver, test-authoring PASS or behavioral acceptance. Matrix3.12/3.14,
+daily schedule and E04 cap/persistent-Stop/abrupt-R holds remain unchanged.
+
+Four answers for changed E04 assertions: observable = real automatic running
+row/provenance, no-run browser, actual completed0/completed7/timeout outcomes
+and all-terminal wake; credible regression = keep hidden run call, founder
+start audit for auto, or normalize nonzero; nearest coverage = existing six
+E04 journeys/independent aggregate and focused Web owners (Web cannot prove
+backend process/wake); test-only production seam = NONE. Red/green, keeper,
+mutation/restoration and repetitions are UNEXECUTED/MISSING; no ad hoc daily
+run is authorized. The rejection branch retains historical expectations below
+solely until an independently authorized genuine fixture exists.
+
+
 The daily controller now runs the unchanged baseline23, then Pause19, then
 `jobs.exercise`'s six serial variants: **48 authored variants**. E04 source
 reuses accepted design SHA256
@@ -466,12 +596,12 @@ Each credible mutation is an unexecuted sensitivity proposal, not authorization.
 
 | Named case / contract and action → literal oracle | Credible regression | Nearest coverage and missing seam |
 | --- | --- | --- |
-| `E04.approve-exit0`: provider CLI submits review-required cap30, blocks/exits/parks; real browser Approve & run after S1 settlement; owned script released after running readback → completed/0/NULL, exact E04_OK streams, founder audits; natural live S2 reads then final callback/exit/done. | Premature run before review; lost terminal wake. | Baseline task completion does not submit or run a job. |
-| `E04.reject`: same real submit/block, browser Reason=E04_REJECTED_BY_REVIEW → rejected/reviewer founder, all execution fields NULL, no sentinel/peer/files at submit/park/dialog/final drain; one truthful natural S2/done. | Rejection runs script or omits wake. | Baseline has no rejection; empty output alone cannot prove no launch. |
+| `E04.approve-exit0`: provider CLI submits false cap30 and observes automatic owned running; blocks/exits/parks; browser verifies no-run after S1 settlement; owned script released after running readback → completed/0/NULL, exact E04_OK streams, submitting-agent auto-start/terminal audits; natural live S2 reads then final callback/exit/done. | Hidden manual start requirement, wrong start actor or lost terminal wake. | Baseline task completion does not submit or run a job. |
+| `E04.reject`: MISSING legacy fixture/genuine waiter (fails closed); retained historical oracle: real submit/block, browser Reason=E04_REJECTED_BY_REVIEW → rejected/reviewer founder, all execution fields NULL, no sentinel/peer/files at submit/park/dialog/final drain; one truthful natural S2/done. | Rejection runs script or omits wake. | Baseline has no rejection; empty output alone cannot prove no launch. |
 | `E04.completed-exit7`: real cap30 Python exits7 → completed/7/NULL, exact E04_EXIT7 streams, completed audit; CLI/receipt/browser and final summary explicitly preserve nonzero. | Normalize exit7 to0 or label natural nonzero failed. | Ordinary provider exits do not cover job runner return codes. |
 | `E04.failed-timeout`: real cap5 direct script ignores TERM and is never controller-released → product timeout/KILL, failed/timeout/-9, exact streams, duration5–17s, PID/start gone, empty PGID and socket EOF before outer cleanup, one natural S2. | Omit cap forwarding, discard reason, or accept terminal row without process closure. | Launcher TERM/INT diagnoses harness cleanup, not product job timeout. |
-| `E04.two-jobs-A-first`: A completed0 while B remains pending across durable/audit/CLI/browser and two +0 settled checkpoints; B then completed7 → one S2, both literal outcomes, two results/count2, no third provider. | Coordinated all→any producer/admission predicate or lost claim fence. | Single-job wake and ordinary child joins do not cover job fan-in. |
-| `E04.two-jobs-B-first`: B completed7 first, A pending through the same checkpoints, then A completed0 → identical final truth with reverse triggering-job ID. | Asymmetric terminal ordering, premature wake or duplicate return. | A-first alone cannot establish order symmetry. |
+| `E04.two-jobs-A-first`: A completed0 while B remains running across durable/audit/CLI/browser and two +0 settled checkpoints; B then completed7 → one S2, both literal outcomes, two results/count2, no third provider. | Coordinated all→any producer/admission predicate or lost claim fence. | Single-job wake and ordinary child joins do not cover job fan-in. |
+| `E04.two-jobs-B-first`: B completed7 first, A running through the same checkpoints, then A completed0 → identical final truth with reverse triggering-job ID. | Asymmetric terminal ordering, premature wake or duplicate return. | A-first alone cannot establish order symmetry. |
 
 `provider.jobs_command` invokes the bound CLI as a genuine provider child,
 using the real issued task/session. S1's final CLI action is blocked callback;
@@ -541,7 +671,7 @@ Evidence/control authoring records (all four answers; production seam NO):
 | Named fixture/control or consumer | Contract / assertion mapping | Credible regression; nearest coverage/gap |
 | --- | --- | --- |
 | Provider jobs protocol + wrapper child witness | `jobs_command`/`provider_cli` order absolute child/exchange deadlines with one-second receipt delivery room, append partial timeout evidence before refusal, bind actual child PID/parent/argv/source/SID and enforce block/final last-CLI rule. | Equal caller/child timeouts lose streams/identity; controller impersonation or post-final CLI. Exit-only provider lacks these command/evidence boundaries; persistence and sensitivity are unexecuted. |
-| Owned submitted-script socket/sentinel | `pending`/`run_script` bind exact script/token/job to SO_PEERCRED, E2E_ROOT, PID/start/PGID, natural EOF/closure and untruncated streams. | Launch before approval, wrong peer, controller substituting timeout; baseline provider socket is a different process family. |
+| Owned submitted-script socket/sentinel | `pending`/`run_script` bind exact script/token/job to SO_PEERCRED, E2E_ROOT, PID/start/PGID, natural EOF/closure and untruncated streams. | Wrong automatic launch owner/peer, controller substituting timeout; baseline provider socket is a different process family. |
 | Passive observer + boot/window records | `anchor`, passive Pause archive hooks, unchanged baseline/Pause boundary assertions and `aggregate.validate_e04` recompute A0→9→12/B0→6→18, serial+1/+1 and pair+0, full tails/counters and observed source identities. | Missing/reset/evicted window, extra attempt without provider, duplicate summaries deduplicated, receipt-before-S1/after-S2 confusion; old aggregate only checked metadata. |
 | Browser jobs fixture (O1–O7) | `Browser.response` binds armed Request/document scope and captures opt-in JSON inside the original deadline; `job_action` captures actual unchanged-cap body, status, dialog-open no-launch; `job_terminal`/`jobs_waiting` read fresh shipping detail, output, Recall and screenshots. | Wrong dialog/action, stale outcome or exit7 laundered; existing Browser covers only ordinary tasks. |
 | Actual-content daily aggregate (J1.b/J1.c) | `validate_e04` independently reconstructs genuine result/start SIDs, closed semantic completion/defaults, exact live/final lifecycle and full retained history; reads observations and browser events, resolves records and screenshots, recomputes source/boot/counter/CLI/job/audit/process/result joins, five method/path/query/HTTP200/body/stdout/durable read joins, source-timed live-S2/blocked-S1 chronology and exact human-show first header; rejects empty/hash-only/disagreeing content. | Discovery-only/error/contradictory job wire, missing live S2, title masquerading as status or forged PASS/count-only content; metadata controls cannot validate these joins. Dedicated synthetic E04 aggregate fixtures are not authored or executed; sensitivity remains MISSING. |
@@ -574,9 +704,9 @@ Delivery verification is SOURCE/CONFIGURATION/STATIC ONLY. New cases, controls,
 assertion sensitivity, timing fit, cleanup/sanitation, all protected12 deliberate
 mutations, RED/restoration/GREEN and repetitions remain **MISSING/UNEXECUTED**.
 No harness/product/provider/browser/job execution or new aggregate control run
-is authorized here. First daily remains PENDING per TASK10555/JOB4257 owner;
+is authorized here. Historical daily failures were observed; corrected daily behavior is pending;
 that collector is untouched. General integration SKIPPED THR243seq42; Python
-units RETIRED. Daily19UTC, Python3.12/3.13/3.14 plus TERM3.12/INT3.14 and only
+units RETIRED. Daily19UTC, Python3.12/3.14 plus TERM3.12/INT3.14 and only
 Source Boundary Lint/Web Lint(Node24) merge contexts remain. No deployment,
 Jenkins, compatibility/authentic-memory PASS, E05 or program completion follows.
 
@@ -632,7 +762,7 @@ or loss, and false unchanged-state evidence. Every one has NO production-only
 seam. These are external fixture/source assertions, with sensitivity unexecuted.
 
 Controller observations and scenario references flow through unchanged run.py
-result merge/sanitized export into the existing five artifact directories.
+result merge/sanitized export into the four execution artifact directories.
 `aggregate.validate_e04` validates the original30-provider checkpoint from its
 actual retained witness prefix; `validate_e05` independently opens the E05 browser
 artifact and actual observations, recomputing literal messages, claims, denials,
@@ -673,7 +803,7 @@ remain MISSING/UNEXECUTED. Protected12 deliberate defects, RED/restoration/GREEN
 and repetitions remain unauthorized/unexecuted. No full test-authoring PASS.
 C18/N8/D25/final4 share the existing480 scenario allowance clipped by original720;
 cleanup60/export120 and hard900/target600 are unchanged. Arithmetic is not fit
-proof. Daily19UTC source binding and all five cells/artifacts remain unchanged.
+proof. Daily19UTC source binding and all four execution artifacts remain unchanged.
 General integration is SKIPPED; Python units are RETIRED. TASK10555 owns the
 first-daily collector and Pause acceptance. Later cancellation/late-callback/
 restart coverage and eventual daily acceptance remain root-owned and unproven.
@@ -705,7 +835,7 @@ upstream response are distinct; no killed CLI response/exit is fabricated.
 | Cascade browser, SQL/public frames and receipt assertions | Two cancelled tasks, exact shared timestamp/note/two founder audits; P result retained, W result absent; real terminal UI; one active cancelled receipt, no queued cancellation | Wrong cascade/status, lost result, result race overwrite, surviving child or parent resume | Original53 and launcher interruption do not cancel a live public product tree | Real create/delegate, CancelTaskDialog/cancel route, run-step/host containment, read-only SQL and public detail/recall/tree/list |
 | Terminal-unchanged and command ledger | Actual P and identified completed-baseline cancel commands exit1 with exact409 and human message; full relevant content unchanged | Duplicate audit/timestamp/result mutation or wrong guard | Callback replay and Pause refusals are different routes | Shipping `happyranch cancel` and public cancel route |
 | Delayed CLI, provider/relay/socket fixtures and unchanged window | Original real W POST forwarded after cancel/closure; exact409; full1s fresh observations, <=50ms interval, no extra admission/result/consumption/revisit/peer | Copied SID masquerades as issuer, pre-forward leak, wrong auth denial, late resume or result | Existing committed-response loss delays a response, not an issued request | Genuine executable provider/CLI, loopback HTTP, task-active fence, host metrics and coherent SQL |
-| Prefix/export/aggregate consumers | Exact53 prefix, genuine E05 byte/record offset, entire suffix classification; raw/observations/scenario/result agree; independent actual-content recomputation | Dropped evidence field, count-only PASS, accepted unaccounted callback, truncated prefix | Former aggregate assumed final37 and whole E05 witness equality | Existing five daily artifacts and source-bound independent aggregate |
+| Prefix/export/aggregate consumers | Exact53 prefix, genuine E05 byte/record offset, entire suffix classification; raw/observations/scenario/result agree; independent actual-content recomputation | Dropped evidence field, count-only PASS, accepted unaccounted callback, truncated prefix | Former aggregate assumed final37 and whole E05 witness equality | Four daily execution artifacts and source-bound independent aggregate |
 | Sanitation/partial process records | Retained bearer and E05 contexts redact whole captures before clipping; unknown context/caps refuse full-content claims; launch evidence survives client death | Secret fragments on timeout/EOF/signal or fabricated posthumous return | Prior synchronous success receipt cannot describe a killed CLI | Private launch receipt, real Popen/socket streams and existing unsafe-export refusal |
 
 R1–R5 correction contracts (TASK10778):
@@ -746,16 +876,16 @@ C partitions16+12+8+6+8=50 use fixed absolute ends clipped by original C/scenari
 ends. The shared scenario remains min(entry+480,original+720), other commands
 and interruptions240, cleanup60/export120, hard900/target600/hosted15min.
 375+50=425 is unmeasured arithmetic. No borrowed reserve or shortened1s window.
-Daily19UTC/default-branch Ubuntu Python3.12/3.13/3.14 and TERM3.12/INT3.14,
-five seven-day artifacts and lint-only merge gates remain unchanged.
+Daily19UTC/default-branch Ubuntu Python3.12/3.14 and TERM3.12/INT3.14,
+four seven-day execution artifacts and lint-only merge gates remain unchanged.
 
 Source-observed successful live cancel-CLI printing mismatch (`killed` has
 agent/task_id but cmd_cancel reads pid) remains unresolved and unexecuted;
 positive cancellation uses the shipping browser. Retained CLI terminal-refusal
 branches do not reach that print. E04 output-cap/persistent-stop, R/full
 unchanged-bound disposition and all daily behavioral acceptance remain with
-root TASK10680. TASK10555 retains first-daily/Pause acceptance; first daily is
-PENDING per owner. Authored, independently reviewed, merged, executed and
+root TASK10680. TASK10555 retains first-daily/Pause acceptance; historical daily runs failed;
+corrected behavior is pending. Authored, independently reviewed, merged, executed and
 accepted are separate milestones; this is not completion of the reset.
 
 ## E07 restart hold restoration — TASK-10804
@@ -791,8 +921,8 @@ the active daily path and unproven; this correction does not release it.
 
 Scheduling returns to `D=min(scenarios entry+480, original run start+720)`
 with C capped at50 and its original16/28/36/42/50 partitions. There is no
-D−150 admission, R75 or separate final25 reservation. Normal close follows
-the original browser/proxy/provider-observer/daemon order within D, retaining
+D−150 admission, R75 or separate final25 reservation. Terminal close requests observer stop and stages small evidence before
+independent browser/proxy/provider/daemon attempts within D, retaining
 the daemon's at-most20s wait, at-most1s observer/late-transport joins and
 at-most3s ordinary relay joins. Other commands
 and interruption remain240, cleanup60/export120/hard900/target600/hosted15min.
@@ -808,9 +938,9 @@ The aggregate checks each generated E04 end against its actual case and the
 serialized scenario deadline, with no R allocation oracle. Browser.response
 uses min(effective end at entry, entry monotonic + stored main-page cap)
 (initial15, E04 at-most10, C at-most4) for action, nested native wait, opt-in
-body retrieval/UTF8 JSON parsing and late-return checks. The existing main-thread
-bounded/setitimer enforces the same end even for body(), which has no per-call
-timeout; no exit/body deadline is renewed.
+body retrieval/UTF8 JSON parsing and late-return checks. The original body RPC uses an owned bounded native task; explicit Python
+phases enforce decoding/parsing with the same absolute timer owner. Short
+SIGALRM never enters that native dispatch; no exit/body deadline is renewed.
 E05's thread page retains10 and provider release retains its caller's at-most5.
 The E04 task/Recall inner_text cap remains10. Full31s cache, both Pause windows,
 all full1s/at-most50ms C observations, genuine callbacks and literal content
@@ -859,7 +989,7 @@ closure/fit proof is MISSING/UNEXECUTED; dedicated controls UNAUTHORED.
 Protected12/RED-restoration-GREEN/repetitions remain unauthorized/unexecuted.
 General AND actual CLI callback integration remain SKIPPED THR243seq42;
 Python units RETIRED. Daily19UTC/default immutable source/Ubuntu/Python
-3.12,3.13,3.14 plus TERM3.12/INT3.14 and five7day artifacts remain unchanged.
+3.12,3.14 plus TERM3.12/INT3.14 and four7day execution artifacts remain unchanged.
 TASK10555/JOB4257/Pause ownership is untouched; first-daily status requires its
 owner's actual source-bound evidence. No extra collection/run/retry/schedule/
 notification, production/schema/auth/permission change, deployment or Jenkins

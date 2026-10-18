@@ -1,0 +1,16 @@
+[
+  {
+    "component": "Go runtime",
+    "version": "go1.27.1",
+    "source": "https://raw.githubusercontent.com/golang/go/go1.27.1/LICENSE",
+    "file": "go-LICENSE",
+    "sha256": "911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad"
+  },
+  {
+    "component": "Go runtime",
+    "version": "go1.27.1",
+    "source": "https://raw.githubusercontent.com/golang/go/go1.27.1/PATENTS",
+    "file": "go-PATENTS",
+    "sha256": "96f408bfae65bf137fc2525d3ecb030271c50c1e90799f87abf8846d8dd505cc"
+  }
+]

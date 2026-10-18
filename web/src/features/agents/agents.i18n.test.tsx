@@ -74,7 +74,8 @@ describe('THR296 human roster query states', () => {
     );
     mount(locale, `/orgs/${SLUG}/agents`);
     expect(await screen.findByText(translate(locale, 'agents.empty.title'))).toBeInTheDocument();
-    expect(screen.queryByText('founder', { exact: true })).not.toBeInTheDocument();
+    // Page content only: the shell account row legitimately shows the canonical founder fallback.
+    expect(screen.queryAllByText('founder', { exact: true }).filter((el) => !el.closest('aside[role="navigation"]'))).toHaveLength(0);
     fireEvent.click(screen.getByRole('button', { name: translate(locale, 'agents.empty.cta') }));
     const dialog = await screen.findByRole('dialog');
     expect(within(dialog).getByRole('combobox', { name: translate(locale, 'agents.add.team') })).toBeInTheDocument();

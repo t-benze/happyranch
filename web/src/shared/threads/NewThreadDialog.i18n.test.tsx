@@ -305,3 +305,31 @@ describe('NewThreadDialog i18n (THR-118 W3a)', () => {
     expect(composeBodies).toHaveLength(0);
   });
 });
+
+describe('NewThreadDialog naming service failure — mocked HTTP', () => {
+  test.each(['503','per-token'] as const)('%s keeps bilingual body/file/focus/selection without uploads or locale effects', async (failure) => {
+    server.use(http.post('/api/v1/orgs/alpha/identities/resolve', async ({request}) => {
+      const body=await request.json() as {addresses:string[]};
+      return failure==='503' ? HttpResponse.json({detail:{code:'naming_unavailable'}},{status:503})
+        : HttpResponse.json({resolutions:body.addresses.map(address=>({address,status:'naming_unavailable',identity:null,eligible:false}))});
+    }));
+    const user=userEvent.setup(); renderDialog('en');
+    await user.type(screen.getByLabelText(EN.subject),'Keep subject');
+    await user.type(screen.getByLabelText(EN.recipients),'agent_a');
+    const body=screen.getByLabelText(EN.body) as HTMLTextAreaElement;
+    const literal='email@Former `@Former` plus @Current';
+    await user.type(body,literal);
+    await user.upload(screen.getByLabelText(EN.attach),new File(['proof'],'proof.txt',{type:'text/plain'}));
+    await user.click(screen.getByRole('button',{name:EN.send}));
+    await waitFor(()=>expect(screen.getByRole('alert')).toHaveTextContent('Naming service is unavailable. Current-name addressing cannot be checked.'));
+    expect(uploads).toEqual([]); expect(composeBodies).toEqual([]);
+    body.focus(); body.setSelectionRange(2,8);
+    const ledger=recordRequests();
+    await switchTo('zh-CN');
+    expect(screen.getByRole('alert')).toHaveTextContent('名称服务不可用，无法核验当前名称寻址');
+    expect(screen.getByLabelText(ZH.body)).toBe(body); expect(body).toHaveValue(literal);
+    expect(body).toHaveFocus(); expect([body.selectionStart,body.selectionEnd]).toEqual([2,8]);
+    expect(screen.getByText('proof.txt')).toBeInTheDocument();
+    expect(ledger).toEqual([]); expect(uploads).toEqual([]); expect(composeBodies).toEqual([]);
+  });
+});

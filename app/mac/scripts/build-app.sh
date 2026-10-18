@@ -4,10 +4,15 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd -P)"
 VERIFY="$SCRIPT_DIR/verify-release.sh"
+ASSETS="$SCRIPT_DIR/asset_evidence.py"
+FREEZER="$SCRIPT_DIR/freezer_evidence.py"
+WEB="$SCRIPT_DIR/web_evidence.py"
+WEB_TOOL_ORIGINALS=""
 VERSION="" BUILD="" SOURCE_SHA="" SOURCE_TREE="" ARCH="" OUTPUT=""
 while [ "$#" -gt 0 ]; do
     [ "$#" -ge 2 ] || { echo 'RELEASE_ARGUMENT_MISSING' >&2; exit 2; }
     case "$1" in
+        --web-tool-originals) [ -z "$WEB_TOOL_ORIGINALS" ] || exit 2; WEB_TOOL_ORIGINALS="$2" ;;
         --version) [ -z "$VERSION" ] || exit 2; VERSION="$2" ;;
         --build) [ -z "$BUILD" ] || exit 2; BUILD="$2" ;;
         --source-sha) [ -z "$SOURCE_SHA" ] || exit 2; SOURCE_SHA="$2" ;;
@@ -18,6 +23,7 @@ while [ "$#" -gt 0 ]; do
     esac
     shift 2
 done
+[ -n "$WEB_TOOL_ORIGINALS" ] && [[ "$WEB_TOOL_ORIGINALS" = /* ]] || { echo WEB_TOOL_ORIGINALS_REQUIRED >&2; exit 2; }
 # All platform-independent validation precedes tools, writes and build effects.
 PREFLIGHT="$(bash "$VERIFY" preflight --source "$REPO_ROOT" --version "$VERSION" \
     --build "$BUILD" --source-sha "$SOURCE_SHA" --source-tree "$SOURCE_TREE" \
@@ -27,6 +33,7 @@ PREFLIGHT="$(bash "$VERIFY" preflight --source "$REPO_ROOT" --version "$VERSION"
 for tool in go swift uv npm node xcrun iconutil ditto ar nm otool lipo file; do
     command -v "$tool" >/dev/null || { echo "BUILD_TOOL_MISSING: $tool" >&2; exit 1; }
 done
+ICONUTIL_PATH="$(command -v iconutil)"
 [ "$(node -p 'process.versions.node.split(".")[0]')" = 24 ] || { echo NODE24_REQUIRED >&2; exit 1; }
 [ "$(go env GOHOSTARCH)" = arm64 ] || { echo GO_HOST_ARCH_MISMATCH >&2; exit 1; }
 # Atomic mkdir reserves only a previously absent destination. Failures preserve
@@ -44,6 +51,13 @@ finish() {
     local code=$?
     if [ "$code" -ne 0 ]; then
         printf 'BUILD_FAILED stage=%s exit=%s run=%s\n' "$STAGE" "$code" "$RUN_ID"
+        # Preserve original process status even when custody persistence fails.
+        if [ -n "${FREEZER_CONTEXT:-}" ]; then
+            python3 "$FREEZER" fail "${ASSET_ARGS[@]}" --freezer-context-sha256 "$FREEZER_CONTEXT" --original-exit "$code" || printf 'FREEZER_FAILURE_PERSISTENCE_FAILED\n' >&2
+        fi
+        if [ -n "${WEB_CALLER:-}" ]; then
+            python3 "$WEB" fail --caller "$WEB_CALLER" --original-exit "$code" || printf 'WEB_FAILURE_PERSISTENCE_FAILED\n' >&2
+        fi
         # Evidence errors must never replace the original build exit.
         python3 - "$OUTPUT" "$STAGE" "$code" "$RUN_ID" "$SOURCE_SHA" "$SOURCE_TREE" "$VERSION" "$BUILD" "$ARCH" "${INSPECTION_STAGE:-not-started}" <<'PYFAIL' || printf 'DIAGNOSTIC_COLLECTION_FAILED\n' >&2
 import gzip, hashlib, json, os, stat, sys
@@ -57,12 +71,14 @@ inputs = [(name, 'diagnostics/' + name, kind) for name, kind in (
     ('go-modules.json', 'json-stream'), ('swift-link.map', 'text'),
     ('swift-bin-path.txt', 'text'), ('swift-release.sha256', 'text'),
     ('resources.json', 'json'), ('license-mapping.json', 'json'),
+    ('manifest-notices.json', 'json'),
     ('web-attribution.json', 'json'), ('native.json', 'json'),
     ('native-nm.txt', 'text'), ('native-members.json', 'json'),
     ('catalog.json', 'json'), ('trust.json', 'json'), ('licenses.json', 'json'))]
 inputs += [(name, 'scratch/freeze-work/' + src, kind) for name, src, kind in (
     ('analysis.json', 'analysis.json', 'json'),
     ('python-toolchain.json', 'python-toolchain.json', 'json'),
+    ('python-distributions.json', 'python-distributions.json', 'json'),
     ('freeze-license-mapping.json', 'license-mapping.json', 'json'),
     ('daemon-analysis.toc', 'daemon/Analysis-00.toc', 'text'),
     ('cli-analysis.toc', 'daemon/Analysis-01.toc', 'text'),
@@ -191,13 +207,13 @@ manifest = {**summary, 'inspection_stages': {name: ('REACHED' if i <= reached el
             'complete_files': sum(r['complete'] for r in rows),
             'partial_or_missing_files': sum(not r['complete'] for r in rows),
             'bulk_read_bytes': read_bytes, 'bulk_stored_bytes': stored_bytes,
-            'caps': {'input_files': 50, 'output_files': 102,
+            'caps': {'input_files': 52, 'output_files': 106,
                      'input_per_file': FILE_READ, 'input_total': TOTAL_READ,
                      'stored_per_file': FILE_STORED, 'stored_total': TOTAL_STORED,
                      'critical_per_file': CRITICAL, 'critical_files': 3,
                      'metadata_total': 131072},
             'scope': 'AVAILABLE_ALLOWLISTED_EVIDENCE_ONLY_NOT_RELEASE_CLOSURE'}
-assert len(rows) == 50
+assert len(rows) == 52
 encoded = encode(manifest)
 # Fixed field names and short dispositions bound all sidecars and this index.
 assert len(encoded) + sum(len(encode(r)) for r in rows) < 131072
@@ -234,6 +250,20 @@ export MACOSX_DEPLOYMENT_TARGET=14.0 GOOS=darwin GOARCH=arm64 CGO_ENABLED=1
     npm --version
     df -h "$OUTPUT"
 } > "$OUTPUT/diagnostics/toolchains.txt"
+ICONSET="$OUTPUT/scratch/AppIcon.iconset"
+ASSET_ARGS=(--source "$REPO_ROOT" --exported-source "$SOURCE" --dist "$SOURCE/web/dist"
+    --app "$APP" --output-dir "$OUTPUT" --evidence-dir "$OUTPUT/diagnostics" --iconset "$ICONSET"
+    --source-sha "$SOURCE_SHA" --source-tree "$SOURCE_TREE" --version "$VERSION" --build "$BUILD"
+    --arch "$ARCH" --run-id "$RUN_ID")
+# Successful synchronous tokens are invocation-held expectations; never recover
+# them from candidate diagnostics or the legacy mapping. No eval or fallback.
+asset_field() { python3 "$ASSETS" token-field --token "$1" --field "$2"; }
+ASSET_START_TOKEN="$(python3 "$ASSETS" begin "${ASSET_ARGS[@]}" --iconutil-path "$ICONUTIL_PATH" \
+    --toolchains-path "$OUTPUT/diagnostics/toolchains.txt")"
+ASSET_CONTEXT="$(asset_field "$ASSET_START_TOKEN" context)"
+ASSET_SOURCE="$(asset_field "$ASSET_START_TOKEN" source)"
+ASSET_TOOLCHAINS="$(asset_field "$ASSET_START_TOKEN" toolchains_sha256)"
+ASSET_ICONUTIL="$(asset_field "$ASSET_START_TOKEN" iconutil_sha256)"
 STAGE=go
 cd "$PROJECT/tsnet-bridge"
 # Fresh archive in an exported immutable tree, readonly existing module graph.
@@ -246,14 +276,67 @@ ar -t libtsnet.a > "$OUTPUT/diagnostics/go-members.txt"
 nm -m libtsnet.a > "$OUTPUT/diagnostics/go-symbols.txt"
 STAGE=freeze
 cd "$SOURCE"
+# Verify the committed local wheel before the unchanged frozen sync.
+FREEZER_START="$(python3 "$FREEZER" begin "${ASSET_ARGS[@]}" --asset-context-sha256 "$ASSET_CONTEXT" --toolchains-sha256 "$ASSET_TOOLCHAINS")"
+freezer_field() { python3 "$FREEZER" token-field --token "$1" --field "$2"; }
+FREEZER_CONTEXT="$(freezer_field "$FREEZER_START" context)"
+export HAPPYRANCH_FREEZER_CALLER
+HAPPYRANCH_FREEZER_CALLER="$(freezer_field "$FREEZER_START" caller)"
 bash packaging/build_daemon.sh --dist-dir "$OUTPUT/scratch/freeze-dist" --work-dir "$OUTPUT/scratch/freeze-work"
+FREEZER_RETURN="$(python3 "$FREEZER" accept "${ASSET_ARGS[@]}" --freezer-context-sha256 "$FREEZER_CONTEXT")"
+FREEZER_INPUTS="$(freezer_field "$FREEZER_RETURN" inputs)"
+FREEZER_OUTPUT="$(freezer_field "$FREEZER_RETURN" output)"
+FREEZER_ARGS=(--freezer-context-sha256 "$FREEZER_CONTEXT" --freezer-inputs-sha256 "$FREEZER_INPUTS" --freezer-output-sha256 "$FREEZER_OUTPUT")
 cp "$OUTPUT/scratch/freeze-work/analysis.json" "$OUTPUT/diagnostics/analysis.json"
 cp "$OUTPUT/scratch/freeze-work/python-toolchain.json" "$OUTPUT/diagnostics/python-toolchain.json"
 STAGE=web
 cd "$SOURCE/web"
-npm ci
-# Emitted source maps are build evidence; they are not copied into the app.
-npm run build -- --sourcemap
+# Ordinary package executable modes are required by authenticated preparation.
+# Keep the parent mask and the already-created output/scratch/source private.
+(
+    umask 022
+    npm ci
+)
+# Direct caller identity, never recovered from a candidate receipt. Preparation
+# happens after ordinary postinstall and before tsc/Vite/config consumes tools.
+# Preparation also excludes native loader alternatives and resolution shadows.
+WEB_CALLER="$(python3 - "$SOURCE_SHA" "$SOURCE_TREE" "$VERSION" "$BUILD" "$ARCH" "$REPO_ROOT" "$SOURCE" "$APP" "$OUTPUT" "$ICONSET" "$RUN_ID" "$ASSET_CONTEXT" "$ASSET_SOURCE" "$ASSET_TOOLCHAINS" "$WEB_TOOL_ORIGINALS" <<'PYWEB'
+import json, sys
+from pathlib import Path
+sha,tree,version,build,arch,repo,source,app,output,iconset,run,context,source_token,tools,originals=sys.argv[1:]
+print(json.dumps({'candidate':dict(source_sha=sha,source_tree=tree,version=version,build=build,arch=arch),
+ 'roots':dict(repo=repo,exported_source=source,dist=source+'/web/dist',app=app,output=output,evidence_dir=output+'/diagnostics',iconset=iconset),
+ 'run_id':run,'venue':'native','asset_context_sha256':context,'asset_source_sha256':source_token,'toolchains_sha256':tools,'originals':originals},sort_keys=True,separators=(',',':')))
+PYWEB
+)"
+web_field() { python3 "$WEB" token-field --token "$1" --field "$2"; }
+WEB_PREP_TOKEN="$(python3 "$WEB" prepare --caller "$WEB_CALLER")"
+WEB_PREPARATION="$(web_field "$WEB_PREP_TOKEN" record_sha256)"
+WEB_CONTEXT_TOKEN="$(python3 "$WEB" begin --caller "$WEB_CALLER" --preparation "$WEB_PREPARATION" --completion-leaf web-completion.jsonl)"
+WEB_CONTEXT="$(web_field "$WEB_CONTEXT_TOKEN" record_sha256)"
+export HAPPYRANCH_WEB_CALLER="$WEB_CALLER" HAPPYRANCH_WEB_CONTEXT="$WEB_CONTEXT" HAPPYRANCH_WEB_PREPARATION="$WEB_PREPARATION"
+export HAPPYRANCH_WEB_HELPER="$WEB" HAPPYRANCH_WEB_PYTHON
+HAPPYRANCH_WEB_PYTHON="$(command -v python3)"
+# Emitted source maps are evidence; only the existing app-copy strips them.
+python3 "$ASSETS" check-public "${ASSET_ARGS[@]}" --asset-context-sha256 "$ASSET_CONTEXT" --asset-source-sha256 "$ASSET_SOURCE"
+# The helper exclusively writes the admitted fixed leaf after genuine publish.
+# Preserve the actual lifecycle status; a postbuild failure defeats a valid marker.
+export HAPPYRANCH_WEB_COMPLETION_LEAF=web-completion.jsonl
+if npm run build -- --sourcemap; then
+    WEB_NPM_STATUS=0
+else
+    WEB_NPM_STATUS=$?
+fi
+unset HAPPYRANCH_WEB_CALLER HAPPYRANCH_WEB_CONTEXT HAPPYRANCH_WEB_PREPARATION HAPPYRANCH_WEB_HELPER HAPPYRANCH_WEB_PYTHON HAPPYRANCH_WEB_COMPLETION_LEAF
+if [ "$WEB_NPM_STATUS" -ne 0 ]; then
+    exit "$WEB_NPM_STATUS"
+fi
+WEB_BUILD_TOKEN="$(python3 "$WEB" accept-build --caller "$WEB_CALLER" --context "$WEB_CONTEXT" --preparation "$WEB_PREPARATION" --completion-leaf web-completion.jsonl)"
+WEB_BUILD="$(web_field "$WEB_BUILD_TOKEN" record_sha256)"
+ASSET_DIST_TOKEN="$(python3 "$ASSETS" observe-dist "${ASSET_ARGS[@]}" --asset-context-sha256 "$ASSET_CONTEXT" --asset-source-sha256 "$ASSET_SOURCE")"
+ASSET_DIST="$(asset_field "$ASSET_DIST_TOKEN" sha256)"
+WEB_DIST_TOKEN="$(python3 "$WEB" seal-dist --caller "$WEB_CALLER" --context "$WEB_CONTEXT" --preparation "$WEB_PREPARATION" --build "$WEB_BUILD" --asset-dist "$ASSET_DIST")"
+WEB_DIST="$(web_field "$WEB_DIST_TOKEN" record_sha256)"
 STAGE=swift
 cd "$PROJECT"
 LINK_MAP="$OUTPUT/diagnostics/swift-link.map"
@@ -265,10 +348,14 @@ STAGE=assembly
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/web" "$APP/Contents/Resources/licenses"
 cp "$BIN_DIR/HappyRanchApp" "$APP/Contents/MacOS/HappyRanch"
 shasum -a 256 "$BIN_DIR/HappyRanchApp" "$APP/Contents/MacOS/HappyRanch" > "$OUTPUT/diagnostics/swift-release.sha256"
+python3 "$FREEZER" before-copy "${ASSET_ARGS[@]}" "${FREEZER_ARGS[@]}"
 cp -R "$OUTPUT/scratch/freeze-dist/happyranch-daemon" "$APP/Contents/Resources/daemon"
+python3 "$ASSETS" check-dist "${ASSET_ARGS[@]}" --asset-context-sha256 "$ASSET_CONTEXT" --asset-dist-sha256 "$ASSET_DIST"
 cp -R "$SOURCE/web/dist" "$APP/Contents/Resources/web/dist"
 # Keep web source-map graph outside shipped web; remove only fresh copied maps.
 find "$APP/Contents/Resources/web/dist" -name '*.map' -type f -delete
+ASSET_APP_TOKEN="$(python3 "$ASSETS" observe-app "${ASSET_ARGS[@]}" --asset-context-sha256 "$ASSET_CONTEXT" --asset-dist-sha256 "$ASSET_DIST")"
+ASSET_APP="$(asset_field "$ASSET_APP_TOKEN" sha256)"
 cp "$SOURCE/LICENSE" "$APP/Contents/Resources/licenses/LICENSE"
 chmod 644 "$APP/Contents/Resources/licenses/LICENSE"
 for executable in happyranch-daemon happyranch; do
@@ -293,15 +380,12 @@ for src in files:
         raise SystemExit(f'RESOURCE_MISSING: {src.relative_to(source)}: {dest}')
     os.chmod(dest, stat.S_IMODE(src.stat().st_mode))
 PYMODES
+FREEZER_COPY_TOKEN="$(python3 "$FREEZER" copy "${ASSET_ARGS[@]}" "${FREEZER_ARGS[@]}")"
+FREEZER_COPY="$(freezer_field "$FREEZER_COPY_TOKEN" sha256)"
 STAGE=icon
-ICONSET="$OUTPUT/scratch/AppIcon.iconset"
-mkdir "$ICONSET"
-for size in 16 32 128 256 512; do
-    double=$((size * 2))
-    cp "$PROJECT/Resources/AppIcon.appiconset/icon_${size}.png" "$ICONSET/icon_${size}x${size}.png"
-    cp "$PROJECT/Resources/AppIcon.appiconset/icon_${double}.png" "$ICONSET/icon_${size}x${size}@2x.png"
-done
-iconutil -c icns -o "$APP/Contents/Resources/AppIcon.icns" "$ICONSET"
+ASSET_ICON_TOKEN="$(python3 "$ASSETS" icon "${ASSET_ARGS[@]}" --asset-context-sha256 "$ASSET_CONTEXT" \
+    --iconutil-path "$ICONUTIL_PATH" --iconutil-sha256 "$ASSET_ICONUTIL")"
+ASSET_ICON="$(asset_field "$ASSET_ICON_TOKEN" sha256)"
 STAGE=plist
 python3 - "$PROJECT/scripts/Info.plist" "$APP/Contents/Info.plist" "$VERSION" "$BUILD" "$SOURCE_SHA" "$SOURCE_TREE" "$ARCH" <<'PY'
 import plistlib, sys
@@ -317,10 +401,10 @@ PY
 STAGE=notices
 cp -R "$OUTPUT/scratch/freeze-work/notices" "$APP/Contents/Resources/licenses/python"
 cp "$SOURCE/packaging/THIRD_PARTY_NOTICES.md" "$APP/Contents/Resources/licenses/THIRD_PARTY_NOTICES.md"
-python3 - "$SOURCE" "$APP" "$OUTPUT" <<'PYNOTICES'
+ASSET_NOTICES_TOKEN="$(python3 - "$SOURCE" "$APP" "$OUTPUT" "$ASSETS" "$REPO_ROOT" "$RUN_ID" "$SOURCE_SHA" "$SOURCE_TREE" "$VERSION" "$BUILD" "$ARCH" "$ASSET_CONTEXT" "$ASSET_APP" "$WEB" "$WEB_CALLER" "$WEB_CONTEXT" "$WEB_PREPARATION" "$WEB_BUILD" "$WEB_DIST" <<'PYNOTICES'
 import hashlib, json, os, re, shutil, stat, sys
 from pathlib import Path
-source, app, output = map(Path, sys.argv[1:])
+source, app, output = map(Path, sys.argv[1:4])
 notice_data = source / 'packaging/notice-data'
 notice_helpers = __import__('runpy').run_path(str(notice_data / 'retained_notices.py'))
 mapping = json.loads((output / 'scratch/freeze-work/license-mapping.json').read_text())
@@ -355,7 +439,7 @@ def emitted_source_sha256(path, root):
 def notice_candidates(root):
     # Include unsafe entries too: a notice-named FIFO/directory is not absence.
     return [p for p in sorted(root.iterdir()) if
-            any(n in p.name.lower() for n in ('license', 'notice', 'copying', 'copyright'))]
+            any(n in p.name.lower() for n in ('license', 'notice', 'copying', 'copyright', 'patents'))]
 def texts(name, version, root, layer, inclusion):
     notices = []; prepared = []
     try:
@@ -586,18 +670,41 @@ for root, row in sorted(packages.items()):
     except (OSError, ValueError, RuntimeError) as exc:
         for inclusion in row['inputs']:
             unresolved(inclusion, str(exc) if isinstance(exc, ValueError) else 'notice retention failed: ' + type(exc).__name__)
-# Always preserve the legal closure gaps from the frozen input mapping.
-mapping['closure_complete'] = False
+# Manifest standard: retain original observations without a per-byte closure claim.
+mapping['source_tree'] = sys.argv[8]
+mapping['go_root'] = str(goroot)
+mapping['go_version'] = __import__('subprocess').check_output(['go', 'env', 'GOVERSION'], text=True).strip()
+mapping['go_originals'] = [str(p) for p in notice_candidates(goroot)]
 (output / 'diagnostics/web-attribution.json').write_text(json.dumps(web_diagnostics, indent=2) + '\n')
 license = app / 'Contents/Resources/licenses/LICENSE'
 components.append({'component': 'HappyRanch first-party code and 29 source resources',
                    'disposition': 'RETAINED_TEXT', 'scope': 'pinned source and assembly',
                    'notices': [{'source': str(source / 'LICENSE'), 'sha256': sha(license),
                                 'destination': 'Contents/Resources/licenses/LICENSE'}]})
-# Actual extraction/chunk/SDK and attribution reconciliation requires the native
-# owner. Retain explicit gaps; a dependency list cannot set closure_complete.
+# Preserve actual asset/web original-source and integrity observations.
+asset = __import__('runpy').run_path(sys.argv[4])
+candidate = asset['Candidate'](*sys.argv[7:12])
+paths = asset['Paths'](Path(sys.argv[5]), source, source / 'web/dist', app, output,
+                       output / 'diagnostics', output / 'scratch/AppIcon.iconset')
+font_rows, font_token = asset['retain_font_notices'](candidate, paths, sys.argv[6], sys.argv[12], sys.argv[13])
+components.extend(font_rows)
+web_custody = __import__('runpy').run_path(sys.argv[14])
+@web_custody['web_bounded']
+def append_generated():
+    session = web_custody['Session'](web_custody['parse'](sys.argv[15].encode(), 256*1024))
+    return web_custody['retain_web_notices'](session, sys.argv[16], sys.argv[17], sys.argv[18], sys.argv[19], sys.argv[13], components)
+web_rows, web_notice_token = append_generated()
+components.extend(web_rows)
 (output / 'diagnostics/license-mapping.json').write_text(json.dumps(mapping, indent=2) + '\n')
+# The token leaves this caller only after the observation mapping is written.
+print(json.dumps({'asset':font_token,'web':web_notice_token},separators=(',',':')))
 PYNOTICES
+)"
+python3 "$SOURCE/app/mac/scripts/manifest_notices.py" collect --source "$SOURCE" --app "$APP" \
+    --output "$OUTPUT" --mapping "$OUTPUT/diagnostics/license-mapping.json" > "$OUTPUT/diagnostics/manifest-notices.json"
+WEB_NOTICES="$(web_field "$(web_field "$ASSET_NOTICES_TOKEN" web)" record_sha256)"
+ASSET_NOTICES="$(asset_field "$(web_field "$ASSET_NOTICES_TOKEN" asset)" sha256)"
+WEB_ARGS=(--web-tool-originals "$WEB_TOOL_ORIGINALS" --web-caller "$WEB_CALLER" --web-context-sha256 "$WEB_CONTEXT" --web-preparation-sha256 "$WEB_PREPARATION" --web-build-sha256 "$WEB_BUILD" --web-dist-sha256 "$WEB_DIST" --web-notices-sha256 "$WEB_NOTICES")
 STAGE=verification
 INSPECTION_STAGE=resources
 bash "$VERIFY" resources --app "$APP" > "$OUTPUT/diagnostics/resources.json"
@@ -626,20 +733,21 @@ for i, argv in enumerate(commands):
 PY
 INSPECTION_STAGE=catalog
 bash "$VERIFY" catalog --app "$APP" --list-json "$OUTPUT/diagnostics/cli-5.stdout" --validate-json "$OUTPUT/diagnostics/cli-6.stdout" > "$OUTPUT/diagnostics/catalog.json"
-# The freezer retains real installed notice texts and Analysis mappings. Other
-# compiled layers remain named gaps until their actual inclusion is reconciled.
-# Refuse complete-release inventory on missing/unresolved notices. Preserve
+# Verify complete resolved inventory membership and all original text associations.
+# Refuse archive creation for concrete missing or mismatched owners/texts. Preserve
 # all diagnostic evidence and staged app for the owner; no success ZIP/upload.
 INSPECTION_STAGE=trust
 bash "$VERIFY" trust --app "$APP" > "$OUTPUT/diagnostics/trust.json"
 INSPECTION_STAGE=licenses
-bash "$VERIFY" licenses --app "$APP" --mapping "$OUTPUT/diagnostics/license-mapping.json" > "$OUTPUT/diagnostics/licenses.json"
+bash "$VERIFY" licenses "${ASSET_ARGS[@]}" --mapping "$OUTPUT/diagnostics/license-mapping.json" \
+    --asset-context-sha256 "$ASSET_CONTEXT" --toolchains-sha256 "$ASSET_TOOLCHAINS" \
+    --iconutil-path "$ICONUTIL_PATH" --iconutil-sha256 "$ASSET_ICONUTIL" \
+    --asset-source-sha256 "$ASSET_SOURCE" --asset-dist-sha256 "$ASSET_DIST" --asset-app-sha256 "$ASSET_APP" \
+    --asset-icon-sha256 "$ASSET_ICON" --asset-notices-sha256 "$ASSET_NOTICES" \
+    "${FREEZER_ARGS[@]}" --freezer-copy-sha256 "$FREEZER_COPY" "${WEB_ARGS[@]}" > "$OUTPUT/diagnostics/licenses.json"
 STAGE=archive
 ZIP="$OUTPUT/HappyRanch-${VERSION}-${BUILD}-${ARCH}.zip"
-ditto -c -k --keepParent "$APP" "$ZIP"
-bash "$VERIFY" archive --app "$APP" --archive "$ZIP" --run-id "$RUN_ID" > "$OUTPUT/diagnostics/inner-zip.json"
-bash "$VERIFY" reconcile --archive "$ZIP" --receipt "$OUTPUT/diagnostics/inner-zip.json" \
-    --version "$VERSION" --build "$BUILD" --source-sha "$SOURCE_SHA" --source-tree "$SOURCE_TREE" --arch "$ARCH" --run-id "$RUN_ID" > "$OUTPUT/diagnostics/reconciliation.json"
+bash "$SCRIPT_DIR/archive-app.sh" "$APP" "$OUTPUT" "$VERSION" "$BUILD" "$SOURCE_SHA" "$SOURCE_TREE" "$ARCH" "$RUN_ID"
 # Recheck the actual source before any success finalization. The output still
 # exists, so use the read-only Git observations rather than new-path admission.
 test "$(git -C "$REPO_ROOT" rev-parse HEAD)" = "$SOURCE_SHA"

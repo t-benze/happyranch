@@ -1,5 +1,12 @@
 # Dashboard overhaul — design spec
 
+Current job-backlog amendment (THR309seq1): `pending_review_jobs` retains its
+actual pending+true query/count/shape as legacy disposition backlog. New omitted/false
+submissions enter automatic admission; true refuses before allocation. Jobs
+link to history and individual reject, without approve/run controls. No backlog
+row is silently executed or discarded; attention/empty counts stay accurate.
+
+
 **Status:** Draft for review · 2026-05-30
 **Supersedes:** `2026-05-19-web-dashboard-design.md` (the original four-card layout)
 **Scope:** Replace the web Dashboard surface (`/orgs/{slug}/dashboard`) per the design consultation in chat1–chat3 of the design-overhaul bundle. P0 of the priority list in `Design Review.html §05`.
@@ -200,8 +207,8 @@ Replaces the current four-card composition. Single `useDashboardSummary()` call.
 - **Context strip** (top) — `{date · org_age_days · spend_today · agents_active_now}`. Plain divs and text utility classes; no new pattern.
 - **Today panel** — `Heartbeat` (local component) + `NarrativeParagraph` (local component) + counter row
 - **Waiting on you panel** — escalation rows retain their inline continue action;
-  pending review-required jobs appear in the same queue with a link to the
-  canonical Job Detail approval surface. The dashboard does not gain
+  legacy pending review-required jobs appear in the same queue with a link to the
+  canonical Job Detail history/disposition surface. The dashboard does not gain
   approve/reject authority. The existing `EmptyState` renders only when both
   sources are empty.
 - **Org pulse panel** — `OrgPulseTable` (local component) using the new `Sparkline` pattern
@@ -292,7 +299,7 @@ allowing both Tasks and Dashboard to consume it. Out of scope here.
 | Narrative sentence | `NarrativeCounts` formatted into prose with semantic spans | yes — only counted facts; no "ran hot", "all on PR-review", or "median Wednesday" allowed |
 | Counter row (5 stats) | `NarrativeCounts` fields, one-to-one | yes |
 | Escalation question text | escalation audit-row payload, verbatim | yes |
-| Pending job id/title/link | current `jobs` rows with `status='pending'` and `review_required=true` | yes — link delegates approval/rejection to Job Detail |
+| Pending job id/title/link | current `jobs` rows with `status='pending'` and `review_required=true` | yes — link delegates inspection/explicit rejection to Job Detail |
 | Active by team count | `tasks.status='in_progress' GROUP BY team` | yes |
 | Recent activity row | `audit_log` row, untransformed event_kind | yes |
 | Updates "KB +1" | KB store filesystem (entries with `created_at` this week) | yes |

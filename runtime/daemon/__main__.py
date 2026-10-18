@@ -546,6 +546,7 @@ def _publish_v2_generations_on_startup(org, queue: TaskQueue) -> None:
 
 def _build_state(settings: Settings) -> DaemonState:
     reg = runtimes.load()
+    move_diagnostics = {}
     if reg.active is None:
         # Auto-provision a default runtime on first launch so the daemon
         # never starts idle unless the provisioning itself fails.
@@ -555,12 +556,12 @@ def _build_state(settings: Settings) -> DaemonState:
         if reg.registered:
             target = reg.registered[0]
             logger.info("no active runtime — activating existing registered runtime: %s", target)
-            runtimes.activate(target)
+            move_diagnostics.update(runtimes.activate(target))
         else:
             default_path = paths.daemon_home() / "runtime"
             logger.info("no active runtime — auto-provisioning default runtime at %s", default_path)
             RuntimeDir.init(default_path)
-            runtimes.register(default_path)
+            move_diagnostics.update(runtimes.register(default_path))
         reg = runtimes.load()
         if reg.active is None:
             # Defensive: if provisioning still yields no active runtime,
@@ -569,7 +570,7 @@ def _build_state(settings: Settings) -> DaemonState:
             logger.error("runtime auto-provision failed — starting in idle mode")
             return DaemonState.idle(settings)
     runtime = RuntimeDir.load(reg.active)
-    state = DaemonState.from_runtime(runtime, settings)
+    state = DaemonState.from_runtime(runtime, settings, move_diagnostics=move_diagnostics)
     for org in state.orgs.values():
         # THR-229 checkpoint C3d4b: bind the REAL owning-process boot marker
         # (the existing ``authority_v2_origin_boot_id``) and the existing
@@ -788,6 +789,9 @@ def _build_parser() -> argparse.ArgumentParser:
             "and requires a fresh explicit invocation for retry."
         ),
     )
+    parser.add_argument("--reader-guarded-start", nargs="?", const="online-team-move@1",
+        choices=("online-team-move@1", "online-team-move@2", "online-team-move@3"),
+        help="Supported launcher reader-capability protocol; incompatible older parsers refuse before startup.")
     return parser
 
 

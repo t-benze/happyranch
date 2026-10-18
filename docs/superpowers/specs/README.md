@@ -1,5 +1,7 @@
 # Superpowers Specs Index
 
+Current THR307 contract: [`2026-10-15-nightly-disk-sweeper.md`](2026-10-15-nightly-disk-sweeper.md).
+
 Current combined naming contract: [`2026-10-09-identity-names-core.md`](2026-10-09-identity-names-core.md). Core/API/routing, CLI/prompt and UI/types are published in open PR1021. THR293seq34/35 requires twelve readable E2E scenarios. The current spec attributes completed maker receipts and correction evidence to their actual sources. Independent review/behavioral QA and guarded merge remain separate; mock-backed checks do not establish daemon/DB/browser acceptance.
 
 This directory is append-only design history. Specs capture intent, alternatives, and decisions at the time they were written; they are not automatically updated when the implementation evolves.
@@ -24,8 +26,9 @@ For current behavior, use these sources before old specs:
   THR-291 seq40 supersedes Python unit execution/keeper requirements in all current
   specs. Historical test paths describe past evidence, not executable gates.
   Product contracts and acceptance obligations remain unchanged. Standalone E2E
-  source/case/matrix policy is in `e2e/README.md` and `docs/local-ci.md`; actual
-  first daily execution remains PENDING. THR-291 seq69 supersedes contrary
+  source/case/matrix policy is in `e2e/README.md` and `docs/local-ci.md`; historical
+  scheduled runs38482572306/38644465643 failed; corrected behavior remains pending
+  on the existing daily3.12/3.14 lane with four execution artifacts. THR-291 seq69 supersedes contrary
   automatic test/build merge-gate text: only Source Boundary Lint and Web Lint
   (Node24) are required. Daily19:00UTC E2E is outside merge; manual Docs/lab and
   retained source do not imply automatic execution. Observed protection has empty

@@ -350,46 +350,50 @@ def _prepare_workspace_cache_dirs(workspace: Path) -> dict[str, str]:
         expected[parts] = (stat_result.st_dev, stat_result.st_ino)
         return child_fd
 
+    from runtime.orchestrator.thread_move import thread_preparation_effects
     try:
+        root_fd = os.open(workspace_root, directory_flags)
+    except OSError as exc:
+        raise WorkspaceStorageError(
+            "cannot prepare workspace-owned cache storage: workspace is unavailable"
+        ) from exc
+    opened_fds.append(root_fd)
+    # Only this native effect interval belongs to cleanup disposition. The
+    # leading workspace/root validation above has made no filesystem changes.
+    with thread_preparation_effects():
         try:
-            root_fd = os.open(workspace_root, directory_flags)
-        except OSError as exc:
-            raise WorkspaceStorageError(
-                "cannot prepare workspace-owned cache storage: workspace is unavailable"
-            ) from exc
-        opened_fds.append(root_fd)
-        happyranch_fd = open_component(root_fd, ".happyranch", (".happyranch",))
-        cache_fd = open_component(
-            happyranch_fd, "cache", (".happyranch", "cache")
-        )
-        for dirname in _WORKSPACE_CACHE_ENV_DIRS.values():
-            open_component(
-                cache_fd, dirname, (".happyranch", "cache", dirname)
+            happyranch_fd = open_component(root_fd, ".happyranch", (".happyranch",))
+            cache_fd = open_component(
+                happyranch_fd, "cache", (".happyranch", "cache")
             )
+            for dirname in _WORKSPACE_CACHE_ENV_DIRS.values():
+                open_component(
+                    cache_fd, dirname, (".happyranch", "cache", dirname)
+                )
 
-        # Re-open every path from the canonical root.  If a same-UID process
-        # swapped any component during preparation, its inode no longer
-        # matches the fd used for creation and the launch fails closed.
-        for parts, expected_identity in expected.items():
-            verification_fds: list[int] = []
-            parent_fd = root_fd
-            try:
-                for part in parts:
-                    parent_fd = os.open(part, directory_flags, dir_fd=parent_fd)
-                    verification_fds.append(parent_fd)
-                observed = os.fstat(parent_fd)
-                if (observed.st_dev, observed.st_ino) != expected_identity:
-                    raise OSError("component identity changed")
-            except OSError as exc:
-                raise WorkspaceStorageError(
-                    f"unsafe workspace-owned cache path component: {'/'.join(parts)}"
-                ) from exc
-            finally:
-                for fd in reversed(verification_fds):
-                    os.close(fd)
-    finally:
-        for fd in reversed(opened_fds):
-            os.close(fd)
+            # Re-open every path from the canonical root.  If a same-UID process
+            # swapped any component during preparation, its inode no longer
+            # matches the fd used for creation and the launch fails closed.
+            for parts, expected_identity in expected.items():
+                verification_fds: list[int] = []
+                parent_fd = root_fd
+                try:
+                    for part in parts:
+                        parent_fd = os.open(part, directory_flags, dir_fd=parent_fd)
+                        verification_fds.append(parent_fd)
+                    observed = os.fstat(parent_fd)
+                    if (observed.st_dev, observed.st_ino) != expected_identity:
+                        raise OSError("component identity changed")
+                except OSError as exc:
+                    raise WorkspaceStorageError(
+                        f"unsafe workspace-owned cache path component: {'/'.join(parts)}"
+                    ) from exc
+                finally:
+                    for fd in reversed(verification_fds):
+                        os.close(fd)
+        finally:
+            for fd in reversed(opened_fds):
+                os.close(fd)
 
     cache_root = workspace_root / ".happyranch" / "cache"
     return {
@@ -1024,7 +1028,9 @@ def _run_command(
     schedule for the uncontained path (empty tuple = no internal retry).
     """
     sid = session_id or f"sess-{uuid.uuid4().hex}"
-    workspace.mkdir(parents=True, exist_ok=True)
+    from runtime.orchestrator.thread_move import thread_preparation_effects
+    with thread_preparation_effects():
+        workspace.mkdir(parents=True, exist_ok=True)
 
     def _launch() -> ExecutorResult:
         nonlocal cmd, input_text, recovery_deadline_monotonic
@@ -1126,7 +1132,8 @@ def _run_command(
                             failure_category="pre_launch",
                         )
             from runtime.orchestrator.thread_move import current_thread_preparation
-            thread_owner = current_thread_preparation()
+            from runtime.orchestrator.producer_move import current_producer_preparation
+            thread_owner = current_thread_preparation() or current_producer_preparation()
             if thread_owner is not None:
                 thread_owner.before_selflaunch()
             try:
@@ -1207,7 +1214,8 @@ def _run_command(
             if invocation is not None:
                 invocation.direct_terminal()
             from runtime.orchestrator.thread_move import current_thread_preparation
-            thread_owner = current_thread_preparation()
+            from runtime.orchestrator.producer_move import current_producer_preparation
+            thread_owner = current_thread_preparation() or current_producer_preparation()
             if thread_owner is not None:
                 thread_owner.direct_terminal()
         full_stdout = stdout or ""
@@ -2290,7 +2298,9 @@ class CustomAdapterExecutor:
         # Acquires a per-provider slot, honors inter-launch spacing, and
         # on a detected rate limit releases the slot, sleeps the backoff,
         # and re-launches.
-        workspace.mkdir(parents=True, exist_ok=True)
+        from runtime.orchestrator.thread_move import thread_preparation_effects
+        with thread_preparation_effects():
+            workspace.mkdir(parents=True, exist_ok=True)
 
         def _launch() -> ExecutorResult:
             nonlocal input_json
@@ -2362,7 +2372,8 @@ class CustomAdapterExecutor:
                     input_json = adapter_input.model_dump_json()
 
                 from runtime.orchestrator.thread_move import current_thread_preparation
-                thread_owner = current_thread_preparation()
+                from runtime.orchestrator.producer_move import current_producer_preparation
+                thread_owner = current_thread_preparation() or current_producer_preparation()
                 if thread_owner is not None:
                     thread_owner.before_selflaunch()
                 try:
@@ -2424,7 +2435,8 @@ class CustomAdapterExecutor:
                 if invocation is not None:
                     invocation.direct_terminal()
                 from runtime.orchestrator.thread_move import current_thread_preparation
-                thread_owner = current_thread_preparation()
+                from runtime.orchestrator.producer_move import current_producer_preparation
+                thread_owner = current_thread_preparation() or current_producer_preparation()
                 if thread_owner is not None:
                     thread_owner.direct_terminal()
             full_stdout = stdout or ""

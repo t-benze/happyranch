@@ -157,6 +157,9 @@ def validate_e04(row: dict, observations: dict, browser: list[dict], directory: 
           "scenario/observation disagreement or observer failure")
     starts, commands = observations["starts"], observations["provider_commands"]
     durable, observer = observations["durable"], observations["provider_observer"]
+    missing_legacy = [r for d in durable for r in d.get("jobs_cases", [])
+                      if r.get("variant") == "E04.reject" and "missing_prerequisite" in r]
+    check(not missing_legacy, "E04.reject MISSING authorized legacy pending reviewed-job fixture with genuine eligible waiter provenance; rejection/wake UNEXECUTED")
     check(len(starts) == 39 and len({s["session"] for s in starts[:30]}) == 30, "retained30 genuine prefix providers;39 C composition")
     check(len(observer) >= 2 and all(0 < b["at"] - a["at"] <= 1 for a, b in zip(observer, observer[1:])),
           "continuous provider observer interval")
@@ -304,13 +307,14 @@ def validate_e04(row: dict, observations: dict, browser: list[dict], directory: 
             status = "rejected" if code is None else "failed" if code == -9 else "completed"
             check((raw["id"], raw["task_id"], raw["agent_name"], raw["status"], raw["exit_code"], raw["reason"])
                   == (job["id"], task, "case_manager", status, code, "timeout" if code == -9 else None), "literal job outcome")
-            check(raw["reviewed_by"] == "founder" and raw["reviewed_at"] is not None and raw["max_runtime_seconds"] == (5 if code == -9 else 30)
-                  and raw["review_required"] == 1 and raw["persistent"] == 0 and raw["script_text"] == job["script"]
+            check(raw["reviewed_by"] == ("founder" if code is None else "case_manager") and raw["reviewed_at"] is not None and raw["max_runtime_seconds"] == (5 if code == -9 else 30)
+                  and raw["review_required"] == (1 if code is None else 0) and raw["persistent"] == 0 and raw["script_text"] == job["script"]
                   and hashlib.sha256(job["script"].encode()).hexdigest() == job["script_sha256"], "submitted script/cap/review join")
             submitted = json.loads(job["submit"]["stdout"])
-            check(submitted["id"] == job["id"] and submitted["status"] == "pending"
+            check(submitted["id"] == job["id"] and submitted["status"] == ("pending" if code is None else "running")
                   and submitted["authentication"] == dict(task_id=task, session_id=first["session"])
-                  and job["submit"]["payload"]["script"] == raw["script_text"], "actual returned ID and provider submit")
+                  and job["submit"]["payload"]["script"] == raw["script_text"]
+                  and job["submit"]["payload"]["review_required"] is (code is None), "actual returned ID and provider submit")
             submit_wire = [w for w in job["submit"]["wire"] if w["method"] == "POST" and w["path"] == "/api/v1/orgs/alpha/jobs/submit"]
             check(len(submit_wire) == 1 and submit_wire[0]["status"] == 201 and submit_wire[0]["response"] == submitted, "real submit201")
             check(len(job["pending"]) == (4 if index >= 4 and job is jobs[1] else 3) and job["pending"][0]["at"] < checkpoints[1]["entered"]
@@ -320,15 +324,34 @@ def validate_e04(row: dict, observations: dict, browser: list[dict], directory: 
                   and job["effective_end"] == record["deadline"]
                   and ("end = " + repr(job["effective_end"])) in job["script"], "actual generated job absolute end")
             for pending in job["pending"]:
-                check(pending["row"]["status"] == "pending" and pending["sentinel_absent"] is True and pending["peer_pending"] is False
-                      and len(pending["files_absent"]) == 2 and all(pending["files_absent"].values())
-                      and [a["action"] for a in pending["audit"]] == ["job_submitted"]
-                      and all(pending["row"][k] is None for k in ("started_at", "finished_at", "reviewed_at", "exit_code", "stdout_path", "stderr_path")),
-                      "pending no launch/file/audit evidence")
+                if code is None:
+                    check(pending["row"]["status"] == "pending" and pending["sentinel_absent"] is True and pending["peer_pending"] is False
+                          and len(pending["files_absent"]) == 2 and all(pending["files_absent"].values())
+                          and [a["action"] for a in pending["audit"]] == ["job_submitted"]
+                          and all(pending["row"][k] is None for k in ("started_at", "finished_at", "reviewed_at", "exit_code", "stdout_path", "stderr_path")),
+                          "historical pending no launch/file/audit evidence")
+                else:
+                    check(pending["row"]["status"] == "running" and pending["sentinel_absent"] is False
+                          and pending["peer_pending"] is False and len(pending["files_absent"]) == 2
+                          and not any(pending["files_absent"].values())
+                          and pending["row"]["started_at"] and pending["row"]["reviewed_at"]
+                          and pending["row"]["reviewed_by"] == "case_manager"
+                          and all(pending["row"][k] is None for k in ("finished_at", "exit_code", "reason"))
+                          and [a["action"] for a in pending["audit"]] == ["job_submitted", "job_auto_started"]
+                          and all(a["agent"] == "case_manager" for a in pending["audit"]),
+                          "automatic running witness and genuine agent start, not success")
             action = job["action"]
-            check(action["at"] > checkpoints[1]["finished"] and action["request"] == ({"reason": "E04_REJECTED_BY_REVIEW"} if code is None else {})
-                  and action["status"] == (200 if code is None else 202)
-                  and dict(event="job-action", **action) in browser, "actual browser action after settled S1")
+            check(action["at"] > checkpoints[1]["finished"] and action["no_run_controls"] is True
+                  and action["method"] == ("POST" if code is None else "GET")
+                  and action["path"] == f"/api/v1/orgs/alpha/jobs/{job['id']}" + ("/reject" if code is None else "")
+                  and action["request"] == ({"reason": "E04_REJECTED_BY_REVIEW"} if code is None else None)
+                  and action["status"] == 200 and action["response"]["id"] == job["id"]
+                  and action["response"]["status"] == ("rejected" if code is None else "running")
+                  and dict(event="job-action", **action) in browser, "actual browser no-run observation or historical individual rejection")
+            if code is not None:
+                check(any(e.get("event") == "job-read" and e["at"] <= action["at"]
+                          and all(e[key] == action[key] for key in ("path", "method", "status", "response"))
+                          for e in browser), "automatic UI observation joins the actual native read")
             check(job["browser"]["body"]["status"] == status and job["browser"]["body"]["exit_code"] == code, "browser literal outcome")
             image = job["browser"]["screenshot"]
             check(Path(image).name == image and (directory / image).is_file() and (directory / image).stat().st_size > 0, "actual outcome screenshot")
@@ -406,8 +429,8 @@ def validate_e04(row: dict, observations: dict, browser: list[dict], directory: 
                         check("Reject reason: E04_REJECTED_BY_REVIEW" in lines, "human show rejection reason")
             audits = job["oracle"]["audits"]
             terminal = "job_rejected" if code is None else "job_run_failed" if code == -9 else "job_run_completed"
-            check([a["action"] for a in audits] == (["job_submitted", terminal] if code is None else ["job_submitted", "job_run_started", terminal])
-                  and audits[0]["agent"] == "case_manager" and all(a["agent"] == "founder" for a in audits[1:])
+            check([a["action"] for a in audits] == (["job_submitted", terminal] if code is None else ["job_submitted", "job_auto_started", terminal])
+                  and audits[0]["agent"] == "case_manager" and all(a["agent"] == ("founder" if code is None else "case_manager") for a in audits[1:])
                   and all(json.loads(a["payload"])["script_request_id"] == job["id"] for a in audits), "literal job audit links/actors")
             payload = json.loads(audits[-1]["payload"])
             if code is None:
@@ -1465,9 +1488,9 @@ def validate_e07(row: dict, observations: dict, directory: Path) -> None:
           and cancel["child_view"]["detail"]["task"]["block_kind"] is None, "rendered current waiting/running tree")
     for view,task,name in zip(case["views"][:2],(P,W),("e07-parent.png","e07-child.png")):
         check(dict(event="detail-reload",**view) in events and view["url"].endswith(f"/orgs/alpha/tasks/{task}")
-              and view["detail_url"].endswith(f"/api/v1/orgs/alpha/tasks/{task}") and view["recall_url"] == view["detail_url"]+"/recall"
+              and view["detail_url"].endswith(f"/api/v1/orgs/alpha/tasks/{task}") and view["recall_url"] == view["detail_url"]+"/recall?tree=true"
               and view["detail_method"] == view["recall_method"] == "GET" and view["detail_status"] == view["recall_status"] == 200
-              and e07_detail_state(view["detail"]) == e07_detail_state(freeze["public"][task][""]) and view["recall"] == freeze["public"][task]["/recall"]
+              and e07_detail_state(view["detail"]) == e07_detail_state(freeze["public"][task][""]) and view["recall"] == freeze["public"][task]["/recall?tree=true"]
               and view["cancel_disabled"] is True and view["cancel_title"] == "Cannot cancel a cancelled task"
               and view["badges"] and all(x == "cancelled" for x in view["badges"]) and "cancelled" in view["text"]
               and view["screenshot"] == name and (directory/name).read_bytes().startswith(b"\x89PNG\r\n\x1a\n"), "actual terminal detail/reload/literal badge/disabled control")
@@ -1515,6 +1538,8 @@ def main() -> int:
             if (directory / "result.json").is_file():
                 result = json.loads((directory / "result.json").read_text())
                 rows.append(result)
+                if result.get("python") != version or result.get("exercise") != "baseline":
+                    health["errors"].append(f"e2e-{version}: directory/interpreter/exercise mismatch")
                 try:
                     validate_e04(result, json.loads((directory / "observations.json").read_text()),
                                  json.loads((directory / "browser-events.json").read_text()), directory)

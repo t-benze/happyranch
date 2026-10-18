@@ -513,41 +513,46 @@ class CollectionObserver:
         )
         return tuple(row)
 
-    def _rows(self) -> list[dict]:
+    def _rows(self) -> dict:
+        """Exhaust all audit, task and result evidence under revision bookends.
+
+        Each SELECT holds only its existing short Database read lock. A cap,
+        failed read or any intervening mutation refuses the entire capture.
+        No action/tuple filter may turn missing exposure or lifecycle into proof.
+        """
         revision = self._read_revision()
-        upper = revision[2]
-        cursor, acquired = 0, 0
-        candidates: list[dict] = []
-        actions = {f"memory_runtime_{phase}" for phase in PHASES}
-        actions.update(("memory_collection_seal", "session_start", "memory_digest_impression"))
-        while cursor < upper:
-            limit = min(CENSUS_READ_PAGE_ROWS, MAX_CENSUS_READ_ROWS - acquired + 1)
-            raw = self.db.fetch_all_readonly(
-                "SELECT id, task_id, agent, action, payload FROM audit_log "
-                "WHERE id>? AND id<=? ORDER BY id LIMIT ?", (cursor, upper, limit),
+        tables: dict[str, list[dict]] = {}
+        for table in ("audit_log", "tasks", "task_results"):
+            expected, upper = self.db.fetch_one_readonly(
+                f"SELECT (SELECT count(*) FROM {table}), (SELECT max(id) FROM {table})"
             )
-            acquired += len(raw)
-            if acquired > MAX_CENSUS_READ_ROWS:
+            if expected > MAX_CENSUS_READ_ROWS:
                 raise CensusReadUnavailable("census_read_work_limit")
-            if not raw:
-                break
-            cursor = raw[-1]["id"]
-            # Decode outside the shared Database lock. Counts/digests reject
-            # malformed/missing current-boot rows; no lost row is reconstructed.
-            for row in raw:
-                if row["action"] not in actions:
-                    continue
-                payload = json.loads(row["payload"] or "null")
-                if isinstance(payload, dict):
-                    candidates.append({**dict(row), "payload": payload})
+            cursor = "" if table == "tasks" else 0
+            rows = []
+            while True:
+                limit = min(CENSUS_READ_PAGE_ROWS, MAX_CENSUS_READ_ROWS - len(rows) + 1)
+                raw = self.db.fetch_all_readonly(
+                    f"SELECT * FROM {table} WHERE id>? AND id<=? ORDER BY id LIMIT ?", (cursor, upper, limit),
+                )
+                if len(rows) + len(raw) > MAX_CENSUS_READ_ROWS:
+                    raise CensusReadUnavailable("census_read_work_limit")
+                if not raw:
+                    break
+                page = [dict(row) for row in raw]
+                ids = [row["id"] for row in page]
+                if ids != sorted(set(ids)) or ids[0] <= cursor:
+                    raise CensusReadUnavailable("census_read_order")
+                rows.extend(page)
+                cursor = ids[-1]
+            if len(rows) != expected or (rows and rows[-1]["id"] != upper):
+                raise CensusReadUnavailable("census_read_incomplete")
+            tables[table] = rows
         if self._read_revision() != revision:
             raise CensusReadUnavailable("census_read_moving")
-        identities = {(row["task_id"], row["agent"], row["payload"].get("session_id"))
-                      for row in candidates if row["action"] == "memory_runtime_identity"
-                      and row["payload"].get("boot_id") == self.boot_id}
-        return [row for row in candidates if row["payload"].get("boot_id") == self.boot_id
-                or (row["action"] in ("session_start", "memory_digest_impression")
-                    and (row["task_id"], row["agent"], row["payload"].get("session_id")) in identities)]
+        for row in tables["audit_log"]:
+            row["payload"] = _strict_json(row["payload"]) if isinstance(row["payload"], str) else row["payload"]
+        return tables
 
     def validate(self) -> dict:
         """Zero-write, one bounded capture; moving/in-flight facts fail closed."""
@@ -555,7 +560,8 @@ class CollectionObserver:
         if snapshot["writer_active"] or snapshot["pending_observations"]:
             return _result(["observation_pending"], {})
         try:
-            integrity = validate_census(snapshot, self._rows())
+            evidence = self._rows()
+            integrity = validate_census(snapshot, evidence["audit_log"], evidence=evidence)
             closing = self.snapshot()
             # Compare all semantic facts, including sticky errors and seal
             # progress that need not change the observation generation. No
@@ -598,7 +604,177 @@ def _result(problems: list[str], discrepancies: dict) -> dict:
             "collection_decision": "insufficient_instrumentation", "thresholds_met": False}
 
 
-def validate_census(snapshot: dict, rows: list[dict], *, require_seal: bool = True) -> dict:
+def _failed_before_exposure(snapshot: dict, phases: dict, rows: list[dict], evidence: dict | None) -> bool:
+    """Closed seq428 class; phase absence alone is never exhaustive evidence.
+
+    Callers must supply their complete, bounded, revision/bookend-checked capture.
+    A missing capture is deliberately distinct from a successfully read empty
+    result table. The normal exposure path remains the default for all others.
+    """
+    from runtime.infrastructure.memory_telemetry_report import aware_utc
+    try:
+        if (evidence is None or evidence["audit_log"] != rows
+                or not isinstance(evidence["tasks"], list) or not isinstance(evidence["task_results"], list)
+                or any(len(phases[name]) != (1 if name in {"intent", "identity", "terminal"} else 0) for name in PHASES)):
+            return False
+        intent, identity, terminal = (phases[name][0] for name in ("intent", "identity", "terminal"))
+        common = {"contract_version", "org", "root", "boot_id", "ordinal", "generation", "task_id", "agent", "session_id"}
+        fields = [common | {"entered_at", "recovery"},
+                  common | {"executor", "model", "parent_task_id", "task_type", "population", "parent_known", "invocation_purpose"},
+                  common | {"outcome", "success", "returncode", "expectation_known", "binding_known", "launched_callbacks"}]
+        p, i, t = (row["payload"] for row in (intent, identity, terminal))
+        sid, tid, agent = i["session_id"], intent["task_id"], intent["agent"]
+        if (not isinstance(sid, str) or not sid.startswith("sess-") or not sid[5:]
+                or not isinstance(agent, str) or not agent.strip()):
+            return False
+        _identifier(tid, "TASK")
+        for row, required in zip((intent, identity, terminal), fields):
+            body = _closed(row["payload"], required)
+            if (type(row["id"]) is not int or row["id"] <= 0
+                    or type(body["contract_version"]) is not int or body["contract_version"] != 1
+                    or type(body["ordinal"]) is not int or body["ordinal"] <= 0
+                    or type(body["generation"]) is not int or body["generation"] <= 0
+                    or any(body[name] != snapshot[name] for name in ("org", "root", "boot_id"))
+                    or row["task_id"] != tid or row["agent"] != agent
+                    or body["task_id"] != tid or body["agent"] != agent
+                    or body["ordinal"] != p["ordinal"]):
+                return False
+        if (p["session_id"] is not None or t["session_id"] != sid
+                or not intent["id"] < identity["id"] < terminal["id"]
+                or not p["generation"] < i["generation"] < t["generation"]
+                or not aware_utc(p["entered_at"]) <= aware_utc(intent["timestamp"]) <= aware_utc(identity["timestamp"]) <= aware_utc(terminal["timestamp"])
+                or t["outcome"] != "raised" or t["expectation_known"] is not False or t["binding_known"] is not False
+                or type(t["launched_callbacks"]) is not int or t["launched_callbacks"] != 0
+                or t["success"] is not None or t["returncode"] is not None
+                or type(p["recovery"]) is not bool or i["parent_known"] is not True
+                or i["task_type"] not in {"task", "subtask"}
+                or not isinstance(i["executor"], str) or not i["executor"].strip()
+                or (i["model"] is not None and (not isinstance(i["model"], str) or not i["model"].strip()))):
+            return False
+        parent = i["parent_task_id"]
+        population = "recovery" if p["recovery"] else "child" if parent is not None else "root"
+        purpose = "unattributed" if p["recovery"] else "manager_decision" if i["task_type"] == "task" else "worker_execution"
+        if i["population"] != population or i["invocation_purpose"] != purpose or parent == tid:
+            return False
+        tasks = evidence["tasks"]
+        ids = [task["id"] for task in tasks]
+        if len(set(ids)) != len(ids):
+            return False
+        ancestors, cursor = {tid}, parent
+        by_task = {task["id"]: task for task in tasks}
+        while cursor is not None:
+            _identifier(cursor, "TASK")
+            if cursor in ancestors or cursor not in by_task:
+                return False
+            ancestors.add(cursor)
+            cursor = by_task[cursor]["parent_task_id"]
+        task = _one([task for task in tasks if task["id"] == tid], "failed_task_missing")
+        if (task["status"] != "failed" or task["assigned_agent"] != agent
+                or task["task_type"] != i["task_type"] or task["parent_task_id"] != parent
+                or task["cancelled_at"] is not None or task["block_kind"] is not None
+                or (task["current_session_id"] is not None
+                    and (not isinstance(task["current_session_id"], str) or not task["current_session_id"].strip()))
+                or not aware_utc(task["created_at"]) <= aware_utc(intent["timestamp"])
+                or not aware_utc(terminal["timestamp"]) <= aware_utc(task["completed_at"])):
+            return False
+        # Pre-binding SID assignment is not a persisted task binding. A prior
+        # SID on that task neither supplies nor removes evidence for this SID.
+        for result in evidence["task_results"]:
+            if result["session_id"] == sid:
+                return False
+            if result["task_id"] == tid:
+                if (not isinstance(result["session_id"], str) or not result["session_id"].strip()
+                        or not isinstance(result["agent"], str) or not result["agent"].strip()
+                        or result["session_id"] == sid):
+                    return False
+        for row in rows:
+            body, action = row["payload"], row["action"]
+            if not isinstance(body, dict):
+                if row["task_id"] == tid and action in {"session_start", "memory_digest_impression", "memory_read", "memory_search"}:
+                    return False
+                continue
+            if (action.startswith("memory_runtime_") and body.get("boot_id") == snapshot["boot_id"]
+                    and body.get("ordinal") == p["ordinal"] and row not in (intent, identity, terminal)):
+                return False
+            # The SID is invocation-local; another boot/ordinal cannot borrow
+            # it, and a mismatched outer/inner task or agent is contradictory.
+            if body.get("session_id") == sid and row not in (identity, terminal):
+                return False
+            if action in {"session_start", "memory_digest_impression", "memory_read", "memory_search"}:
+                owner = body.get("task_id") if action == "memory_read" else row["task_id"]
+                if (owner == tid and row["agent"] == agent
+                        and (not isinstance(body.get("session_id"), str) or not body["session_id"].strip())):
+                    return False
+        return True
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return False
+
+
+_RENDER_TIMESTAMP = "1970-01-01T00:00:00+00:00"
+
+
+def semantic_task_projection(task: dict) -> str:
+    """Compare exact task semantics, excluding only three rendering-time paths.
+
+    Malformed structures and unknown fields are preserved. No recursive name
+    filtering: an observed_at anywhere else remains significant evidence.
+    Raw acquired records are never changed by this comparison projection.
+    """
+    projected = copy.deepcopy(task)
+    for name in ("pause", "child_wait"):
+        value = projected.get(name)
+        if isinstance(value, dict):
+            stamp = value.get("observed_at")
+            # Malformed timestamps remain evidence instead of disappearing.
+            if isinstance(stamp, str):
+                from runtime.infrastructure.memory_telemetry_report import aware_utc
+                try:
+                    aware_utc(stamp)
+                except (TypeError, ValueError, OverflowError):
+                    pass
+                else:
+                    value["observed_at"] = _RENDER_TIMESTAMP
+    pause = projected.get("pause")
+    if isinstance(pause, dict) and isinstance(pause.get("blockers"), list):
+        for blocker in pause["blockers"]:
+            if isinstance(blocker, dict) and isinstance(blocker.get("observed_at"), str):
+                from runtime.infrastructure.memory_telemetry_report import aware_utc
+                try:
+                    aware_utc(blocker["observed_at"])
+                except (TypeError, ValueError, OverflowError):
+                    pass
+                else:
+                    blocker["observed_at"] = _RENDER_TIMESTAMP
+    # Canonical JSON preserves scalar types (False/0/0.0 are different), unlike
+    # Python mapping equality. The replacement itself is a valid timestamp, so
+    # no malformed raw timestamp can collide with a normalized valid one.
+    return json.dumps(projected, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
+
+
+def _semantic_evidence_projection(tables: dict) -> str:
+    return json.dumps({**tables, "tasks": [semantic_task_projection(task) for task in tables["tasks"]]},
+                      sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
+
+
+def validate_census(snapshot: dict, rows: list[dict], *, require_seal: bool = True,
+                    evidence: dict | None = None) -> dict:
+    """Malformed or incomplete evidence refuses without yielding a partial census."""
+    try:
+        _check_serving_snapshot(snapshot)
+        ids = [row["id"] for row in rows]
+        if (len(rows) > MAX_CENSUS_READ_ROWS or snapshot["assigned_intents"] > MAX_CENSUS_READ_ROWS
+                or snapshot["generation"] > MAX_CENSUS_READ_ROWS
+                or any(type(value) is not int or value <= 0 for value in ids) or ids != sorted(set(ids))
+                or type(snapshot["writer_active"]) is not bool
+                or type(snapshot["pending_observations"]) is not int or snapshot["pending_observations"] < 0):
+            return _result(["census_evidence_invalid"], {})
+        return _validate_census(snapshot, rows, require_seal=require_seal, evidence=evidence)
+    except (KeyError, TypeError, ValueError, OverflowError, AttributeError, IdentityUnavailable):
+        return _result(["census_evidence_invalid"], {})
+
+
+def _validate_census(snapshot: dict, rows: list[dict], *, require_seal: bool,
+                     evidence: dict | None) -> dict:
     """Reconcile independent live counts/digests with durable phase/start/exposure rows.
 
     This is census integrity only. Unknown/zero/pending populations cannot pass;
@@ -617,6 +793,8 @@ def validate_census(snapshot: dict, rows: list[dict], *, require_seal: bool = Tr
         problems.append("observation_error")
     if snapshot["active_preparations"]:
         problems.append("preparation_pending")
+    if snapshot.get("writer_active") or snapshot.get("pending_observations"):
+        problems.append("observation_pending")
     for phase, phase_rows in phases.items():
         digest = EMPTY_DIGEST
         for row in phase_rows:
@@ -627,7 +805,20 @@ def validate_census(snapshot: dict, rows: list[dict], *, require_seal: bool = Tr
         if (len(phase_rows) != counts["attempted"] or counts["persisted"] != counts["attempted"]
                 or digest != digests["attempted"] or digest != digests["persisted"]):
             problems.append(f"{phase}_count_or_digest")
+    ordered_phases = [row for row in own if row["action"] in {f"memory_runtime_{phase}" for phase in PHASES}]
+    if (any(type(row["payload"].get("generation")) is not int for row in ordered_phases)
+            or [row["payload"].get("generation") for row in ordered_phases] != list(range(1, snapshot["generation"] + 1))):
+        problems.append("phase_generation_order")
     intents = phases["intent"]
+    if snapshot["intent_digest"] != snapshot["phase_digests"]["intent"]["attempted"]:
+        problems.append("intent_digest")
+    if any(type(row["payload"].get("ordinal")) is not int for row in own
+           if row["action"].startswith("memory_runtime_")):
+        problems.append("ordinal_type")
+    if any(row["payload"].get(key) != snapshot[key] for row in own
+           if row["action"].startswith("memory_runtime_") or row["action"] == "memory_collection_seal"
+           for key in ("org", "root")):
+        problems.append("census_context")
     if [row["payload"]["ordinal"] for row in intents] != list(range(1, n + 1)):
         problems.append("ordinal_set")
     # Exact digests above authenticate all metadata to this live observer. These
@@ -638,6 +829,8 @@ def validate_census(snapshot: dict, rows: list[dict], *, require_seal: bool = Tr
             ordinal = row["payload"]["ordinal"]
             group = by_ordinal.setdefault(ordinal, {name: [] for name in PHASES})
             group[phase].append(row)
+    if set(by_ordinal) != set(range(1, n + 1)):
+        problems.append("phase_ordinal_set")
     starts_by_tuple: dict[tuple, list[dict]] = {}
     impressions_by_tuple: dict[tuple, list[dict]] = {}
     for row in rows:
@@ -646,10 +839,18 @@ def validate_census(snapshot: dict, rows: list[dict], *, require_seal: bool = Tr
         key = (row["task_id"], row["agent"], row["payload"].get("session_id"))
         target = starts_by_tuple if row["action"] == "session_start" else impressions_by_tuple
         target.setdefault(key, []).append(row)
+    closed_failures = []
+    qualifying = 0
     for intent in intents:
         ordinal = intent["payload"]["ordinal"]
         selected = by_ordinal[ordinal]
         identities, expectations = selected["identity"], selected["expectation"]
+        if not expectations or any(row["payload"].get("expectation_known") is False for row in selected["terminal"]):
+            if require_seal and _failed_before_exposure(snapshot, selected, rows, evidence):
+                closed_failures.append(ordinal)
+            else:
+                problems.append(f"unknown_preparation:{ordinal}")
+            continue
         if len(identities) != 1 or len(expectations) != 1:
             problems.append(f"unknown_preparation:{ordinal}")
             continue
@@ -667,6 +868,9 @@ def validate_census(snapshot: dict, rows: list[dict], *, require_seal: bool = Tr
         key = (intent["task_id"], intent["agent"], sid)
         starts = starts_by_tuple.get(key, [])
         impressions = impressions_by_tuple.get(key, [])
+        if (population in {"root", "child"} and identity.get("invocation_purpose") in {"manager_decision", "worker_execution"}
+                and len(starts) == 1 and len(selected["binding"]) == 1):
+            qualifying += 1
         # A preparation is not complete until its trusted binding exists. Do
         # not treat an in-flight phase boundary as a proven dropped start.
         if len(selected["binding"]) != 1:
@@ -694,14 +898,27 @@ def validate_census(snapshot: dict, rows: list[dict], *, require_seal: bool = Tr
     if require_seal:
         seals = [row for row in own if row["action"] == "memory_collection_seal"]
         digest = EMPTY_DIGEST
-        for row in seals:
+        for index, row in enumerate(seals):
+            body = row["payload"]
+            if (type(body.get("seal_attempts")) is not int or type(body.get("seal_persisted")) is not int
+                    or body["seal_attempts"] != index + 1 or body["seal_persisted"] != index
+                    or body.get("seal_digest") != digest):
+                problems.append("seal_history")
             digest = _advance(digest, _projection(row))
         if (len(seals) != snapshot["seal_attempts"] or len(seals) != snapshot["seal_persisted"]
                 or digest != snapshot["seal_digest"] or not seals
                 or seals[-1]["id"] != snapshot["latest_seal_audit_id"]
                 or seals[-1]["payload"]["generation"] != snapshot["generation"]):
             problems.append("seal_count_or_digest")
-    return _result(problems, discrepancies)
+    # Tuple shape alone is not the closed class when global authentication or
+    # acquisition facts failed. Keep the attempted rows/counts, without claiming
+    # a proved exclusion. All-failure populations still report their proved
+    # class but remain insufficient for lack of ordinary qualifying sessions.
+    if problems:
+        closed_failures = []
+    if n and not qualifying:
+        problems.append("zero_qualifying_population")
+    return {**_result(problems, discrepancies), "closed_failed_before_exposure": closed_failures}
 
 
 # Fixed work limits on the serving GET. No tree walk, provider invocation,
@@ -840,7 +1057,8 @@ def loaded_identity(org: Any) -> dict:
                  CollectionObserver._record, CollectionObserver._persist, CollectionObserver._seal,
                  _identity_bytes, _identity_file_hash, _hash_metadata, _code_projection, _find_code, _serving_snapshot,
                  _serving_revision, _check_serving_snapshot, _now, serving_observation, loaded_identity]
-    from runtime.infrastructure.memory_telemetry_report import reduce_report, reduce_collection_report, _session_diagnostics
+    from runtime.infrastructure.memory_telemetry_report import reduce_report, reduce_collection_report, _session_diagnostics, aware_utc
+    from runtime.orchestrator.run_step import _run_step_body
     from runtime.infrastructure.audit_logger import AuditLogger
     from cli.commands.learning import cmd_memory_report, _compute_report, _print_report, _paginate, _report_projection, _fetch_agent_roles
     functions.extend([org.orchestrator._log_step_result, org.memory_collection.reconcile_acceptance,
@@ -851,9 +1069,12 @@ def loaded_identity(org: Any) -> dict:
                       Database._retry_escalation_edge, Database._retry_dispatch_edge,
                       parse_acceptance, normalize_own_reference, _identity_schema, _closed, _strict_json, _identifier, _sha256, _reference,
                       collection_record_projection, collection_control_head, collection_logical_key, equivalent_collection_control, _decoded_tables,
-                      _one, _decision, _exact_role_result, _approved_probe_plan, _validate_job, _resolve_probe_slots,
+                      _one, _decision, _exact_role_result, _approved_probe_plan, _validate_job_continuation, _validate_job, _resolve_probe_slots,
                       _validate_probe_operations, _census_from_view, validate_acceptance_evidence, _view_projection,
                       _referenced_probe_jobs, _local_job_outputs, _registered_cohort, validate_epoch_candidate, prepare_acceptance, reconcile_acceptance, acquire_collection_report,
+                      CollectionObserver._rows, CollectionObserver.validate, validate_census, _validate_census, _failed_before_exposure,
+                      semantic_task_projection, _semantic_evidence_projection, aware_utc, _run_step_body,
+                      _result, _advance, _projection, CollectionObserver._read_revision,
                       _collection_pages, _http_collection_capture, acquire_http_collection_report,
                       current_epoch_references, reduce_report, reduce_collection_report, _session_diagnostics, AuditLogger.compute_memory_telemetry_report,
                       cmd_memory_report, _compute_report, _print_report, _paginate, _report_projection, _fetch_agent_roles])
@@ -1252,8 +1473,141 @@ def _approved_probe_plan(data: dict, candidate: dict, qa_task: dict, qa_result: 
 
 
 HEALTH_DEFINITION_SHA256 = hashlib.sha256(
-    b'H-v1:complete-intent-and-expectation-census;zero-false-credit;per-path-root-child:2/4/2;admission-age<=48h-at-final-commit;original-epoch-current-health;installed-identity;no-stitching'
+    b'H-v1:complete-intent-and-expectation-census;closed-failed-before-exposure:THR091seq428;zero-false-credit;per-path-root-child:2/4/2;admission-age<=48h-at-final-commit;original-epoch-current-health;installed-identity;no-stitching'
 ).hexdigest()
+
+
+def _validate_job_continuation(data: dict, job: dict, submitted: dict, finished: dict,
+                               original: dict, qa_result: dict, qa_task: dict) -> None:
+    """Authenticate one ordinary owned-job wait, never retry/recovery ancestry.
+
+    The resume audit has no SID. Its unique blocked result/event and the two
+    contiguous real invocation/start tuples supply the causal join instead.
+    Identity preparation can precede or follow the resume audit; launch cannot.
+    """
+    from runtime.infrastructure.memory_telemetry_report import aware_utc
+    category = "acceptance_job_continuation"
+    end = aware_utc(qa_result["created_at"])
+    beginning = aware_utc(original["timestamp"])
+    own = [row for row in data["audit_log"] if row["task_id"] == qa_task["id"]]
+    current = _one([row for row in own if row["action"] == "memory_runtime_identity"
+                    and row["payload"].get("session_id") == qa_result["session_id"]], category)
+    identities = [original, current]
+    sids = [row["payload"].get("session_id") for row in identities]
+    if (any(not isinstance(sid, str) or not sid for sid in sids) or sids[0] == sids[1]
+            or submitted["payload"].get("submit_session_id") != sids[0]
+            or qa_result["session_id"] != sids[1]):
+        raise AcceptanceUnavailable(category)
+    starts = []
+    for identity, sid in zip(identities, sids):
+        # Global tuple uniqueness catches duplicate/conflicting evidence outside
+        # the selected time window too. Same-task foreign actors are not ignored.
+        _one([row for row in data["audit_log"] if row["task_id"] == qa_task["id"]
+              and row["action"] == "memory_runtime_identity" and row["payload"].get("session_id") == sid], category)
+        start = _one([row for row in data["audit_log"] if row["task_id"] == qa_task["id"]
+                      and row["action"] == "session_start" and row["payload"].get("session_id") == sid], category)
+        facts = identity["payload"]
+        if (identity["agent"] != qa_result["agent"] or start["agent"] != qa_result["agent"]
+                or facts.get("task_id") != qa_task["id"] or facts.get("agent") != qa_result["agent"]
+                or facts.get("population") != "child" or facts.get("parent_known") is not True
+                or facts.get("parent_task_id") != qa_task["parent_task_id"]
+                or facts.get("task_type") != "subtask" or qa_task["task_type"] != "subtask"
+                or facts.get("invocation_purpose") != "worker_execution"
+                or any(facts.get(key) != current["payload"].get(key)
+                       or start["payload"].get(key) != facts.get(key)
+                       for key in ("executor", "model", "invocation_purpose"))
+                or identity["id"] >= start["id"]
+                or not (aware_utc(qa_task["created_at"]) <= aware_utc(identity["timestamp"])
+                        <= aware_utc(start["timestamp"]) <= end)):
+            raise AcceptanceUnavailable(category)
+        starts.append(start)
+
+    def chain_rows(rows: list[dict], first_id: int, last_id: int, time_key: str) -> list[dict]:
+        # IDs are comparable only within this one table. Establish the interval
+        # before consulting timestamps, so misdated intervening rows cannot hide.
+        selected = []
+        for row in rows:
+            in_ids = first_id <= row["id"] <= last_id
+            try:
+                timestamp = aware_utc(row.get(time_key))
+            except (TypeError, ValueError) as exc:
+                raise AcceptanceUnavailable(category) from exc
+            in_time = beginning <= timestamp <= end
+            if in_ids and not in_time:
+                raise AcceptanceUnavailable(category)
+            # Keep time-overlapping evidence too, including contradictory events
+            # after the current start. Earlier history/later callbacks outside
+            # both intervals do not belong to this continuation.
+            if in_ids or in_time:
+                selected.append(row)
+        return selected
+
+    own = chain_rows(own, original["id"], starts[1]["id"], "timestamp")
+    if sorted([row for row in own if row["action"] == "memory_runtime_identity"],
+              key=lambda row: row["id"]) != identities:
+        raise AcceptanceUnavailable(category)
+    if (sorted([row for row in own if row["action"] == "session_start"], key=lambda row: row["id"]) != starts
+            or starts[0]["id"] >= submitted["id"]
+            or not (aware_utc(starts[0]["timestamp"]) <= aware_utc(job["created_at"])
+                    <= aware_utc(submitted["timestamp"]))):
+        raise AcceptanceUnavailable(category)
+    results = [row for row in data["task_results"] if row["task_id"] == qa_task["id"]]
+    blocked = _one([row for row in results if row["session_id"] == sids[0]], category)
+    results = chain_rows(results, blocked["id"], qa_result["id"], "created_at")
+    if (len(results) != 2 or qa_result not in results or blocked["id"] >= qa_result["id"]
+            or blocked["agent"] != qa_result["agent"] or blocked["status"] != "blocked"
+            or blocked["decision_json"] is not None):
+        raise AcceptanceUnavailable(category)
+    waiting = blocked.get("waiting_on_job_ids")
+    waiting = _strict_json(waiting) if isinstance(waiting, str) else waiting
+    if (not isinstance(waiting, list) or not waiting or len(waiting) > MAX_CENSUS_READ_ROWS
+            or any(not isinstance(jid, str) for jid in waiting)
+            or len(set(waiting)) != len(waiting) or job["id"] not in waiting):
+        raise AcceptanceUnavailable(category)
+    for jid in waiting:
+        _identifier(jid, "JOB")
+    reported_wait = waiting
+    waiting = sorted(waiting)
+    lifecycle = [row for row in own if row["action"] in {
+        "completion_report", "task_blocked_on_jobs", "task_resumed_from_jobs"}]
+    callback = _one([row for row in lifecycle if row["action"] == "completion_report"], category)
+    block = _one([row for row in lifecycle if row["action"] == "task_blocked_on_jobs"], category)
+    resume = _one([row for row in lifecycle if row["action"] == "task_resumed_from_jobs"], category)
+    report, resumed = callback["payload"], resume["payload"]
+    if (callback["agent"] != qa_result["agent"] or report.get("task_id") != qa_task["id"]
+            or report.get("agent") != qa_result["agent"] or report.get("status") != "blocked"
+            or report.get("output_summary") != blocked["output_summary"]
+            or report.get("waiting_on_job_ids") != reported_wait
+            or block["agent"] != qa_result["agent"] or block["payload"].get("agent") != qa_result["agent"]
+            or block["payload"].get("blocking_job_ids") != waiting
+            or resume["agent"] != "orchestrator" or resumed.get("blocking_job_ids") != waiting
+            or resumed.get("trigger") not in {"block_submit", "job_terminal"}
+            or (resumed.get("trigger") == "block_submit" and resumed.get("triggering_job_id") is not None)
+            or (resumed.get("trigger") == "job_terminal" and resumed.get("triggering_job_id") not in waiting)
+            or not isinstance(resumed.get("job_outcomes"), dict) or set(resumed["job_outcomes"]) != set(waiting)
+            or not (submitted["id"] < callback["id"] < block["id"] < resume["id"] < starts[1]["id"])
+            or not (block["id"] < current["id"] and finished["id"] < current["id"]
+                    and finished["id"] < resume["id"])
+            or not (aware_utc(submitted["timestamp"]) <= aware_utc(blocked["created_at"])
+                    <= aware_utc(callback["timestamp"]) <= aware_utc(block["timestamp"])
+                    <= aware_utc(current["timestamp"]))
+            or not (aware_utc(block["timestamp"]) <= aware_utc(resume["timestamp"])
+                    <= aware_utc(starts[1]["timestamp"]))
+            or aware_utc(finished["timestamp"]) > aware_utc(current["timestamp"])
+            or aware_utc(finished["timestamp"]) > aware_utc(resume["timestamp"])):
+        raise AcceptanceUnavailable(category)
+    jobs_by_id: dict[str, list[dict]] = {}
+    for row in data["jobs"]:
+        jobs_by_id.setdefault(row["id"], []).append(row)
+    for jid in waiting:
+        owned = _one(jobs_by_id.get(jid, []), category)
+        if (owned["task_id"] != qa_task["id"] or owned["agent_name"] != qa_result["agent"]
+                or owned["status"] not in {"completed", "failed", "rejected"}
+                or resumed["job_outcomes"][jid] != owned["status"]
+                or not (aware_utc(owned["created_at"])
+                        <= aware_utc(owned["reviewed_at"] if owned["status"] == "rejected" else owned["finished_at"])
+                        <= aware_utc(resume["timestamp"]))):
+            raise AcceptanceUnavailable(category)
 
 
 def _validate_job(data: dict, receipt: dict, qa_result: dict, qa_task: dict, plan: dict, output: dict) -> tuple[dict, dict]:
@@ -1280,11 +1634,15 @@ def _validate_job(data: dict, receipt: dict, qa_result: dict, qa_task: dict, pla
     if not sessions:
         raise AcceptanceUnavailable("acceptance_job_session")
     latest_session = max(sessions, key=lambda row: row["id"])
-    if (latest_session["payload"].get("session_id") != qa_result["session_id"]
-            or any(row["action"] == "memory_runtime_identity" and row["task_id"] == qa_task["id"]
-                   and row["agent"] == qa_result["agent"] and row["payload"].get("session_id") != qa_result["session_id"]
+    if ("submit_session_id" in submitted["payload"]
+            and submitted["payload"]["submit_session_id"] != latest_session["payload"].get("session_id")):
+        raise AcceptanceUnavailable("acceptance_job_session")
+    if latest_session["payload"].get("session_id") != qa_result["session_id"]:
+        _validate_job_continuation(data, job, submitted, finished, latest_session, qa_result, qa_task)
+    elif any(row["action"] == "memory_runtime_identity" and row["task_id"] == qa_task["id"]
+                   and (row["agent"] != qa_result["agent"] or row["payload"].get("session_id") != qa_result["session_id"])
                    and aware_utc(submitted["timestamp"]) <= aware_utc(row["timestamp"]) <= aware_utc(qa_result["created_at"])
-                   for row in data["audit_log"])):
+                   for row in data["audit_log"]):
         raise AcceptanceUnavailable("acceptance_job_session")
     if any(row["task_id"] != qa_task["id"] for row in (submitted, started, finished)) or submitted["agent"] != qa_result["agent"]:
         raise AcceptanceUnavailable("acceptance_job_owner")
@@ -1465,26 +1823,34 @@ def _validate_probe_operations(data: dict, receipt: dict, transcript: dict, view
     return set(selected)
 
 
-def _census_from_view(view: dict, rows: list[dict]) -> dict:
+def _census_from_view(view: dict, rows: list[dict], *, evidence: dict | None = None) -> dict:
+    # The successful current serving view already checked pending writers and
+    # preparations. Historical seal snapshots describe their own write instant.
+    if view["observation_error"] is not None or view["data_through"] is None or view["active_preparations"]:
+        raise AcceptanceUnavailable("acceptance_observation_unavailable")
     own = [row for row in rows if isinstance(row["payload"], dict) and row["payload"].get("boot_id") == view["boot_id"]]
     seals = [row for row in own if row["action"] == "memory_collection_seal"]
     last = _one([row for row in seals if row["id"] == view["latest_seal_audit_id"]], "acceptance_current_seal")
     digest = EMPTY_DIGEST
     for index, row in enumerate(seals):
         body = row["payload"]
-        if body["seal_attempts"] != index + 1 or body["seal_persisted"] != index or body["seal_digest"] != digest:
+        if (type(body["seal_attempts"]) is not int or type(body["seal_persisted"]) is not int
+                or body["seal_attempts"] != index + 1 or body["seal_persisted"] != index or body["seal_digest"] != digest):
             raise AcceptanceUnavailable("acceptance_seal_history")
         digest = _advance(digest, _projection(row))
+    if (last["payload"]["root"] != view["installed_identity"]["org_root"]
+            or any(last["payload"][key] != view[key] for key in (
+                "org", "boot_id", "generation", "assigned_intents", "intent_digest", "phase_counts", "phase_digests"))):
+        raise AcceptanceUnavailable("acceptance_seal_serving_mismatch")
     snapshot = {**last["payload"], **{key: view[key] for key in (
         "org", "boot_id", "generation", "assigned_intents", "intent_digest", "phase_counts",
         "phase_digests", "active_preparations", "observation_error", "latest_seal_audit_id")},
-        "seal_attempts": len(seals), "seal_persisted": len(seals), "seal_digest": digest}
-    identities = {(row["task_id"], row["agent"], row["payload"].get("session_id")) for row in own if row["action"] == "memory_runtime_identity"}
-    census_rows = own + [row for row in rows if row["action"] in {"session_start", "memory_digest_impression"}
-                        and (row["task_id"], row["agent"], row["payload"].get("session_id")) in identities]
-    if not validate_census(snapshot, census_rows)["census_valid"]:
+        "seal_attempts": len(seals), "seal_persisted": len(seals), "seal_digest": digest,
+        "writer_active": False, "pending_observations": 0}
+    integrity = validate_census(snapshot, rows, evidence=evidence)
+    if not integrity["census_valid"]:
         raise AcceptanceUnavailable("acceptance_census")
-    return snapshot
+    return {**snapshot, "closed_failed_before_exposure": integrity["closed_failed_before_exposure"]}
 
 
 def validate_acceptance_evidence(tables: dict, result_id: int, view: dict, outputs: dict, *, current_time: datetime,
@@ -1530,7 +1896,7 @@ def validate_acceptance_evidence(tables: dict, result_id: int, view: dict, outpu
             or candidate["cohort"] != view["installed_identity"]["cohort"]
             or candidate["release_manifest_sha256"] != _hash_metadata(view["installed_identity"]["files"])):
         raise AcceptanceUnavailable("acceptance_installed_identity")
-    snapshot = _census_from_view(view, data["audit_log"])
+    snapshot = _census_from_view(view, data["audit_log"], evidence=data)
     plan = _approved_probe_plan(data, candidate, qa_task, qa_result, view)
     if any(slot[kind]["agent"] == qa_result["agent"] for slot in plan["slots"] for kind in ("root", "child")):
         raise AcceptanceUnavailable("acceptance_maker_independence")
@@ -1809,7 +2175,9 @@ def _http_collection_capture(client: Any, org: str) -> tuple[dict, dict, dict]:
         detail = get(f"tasks/{task_id}")
         current = detail.get("task")
         if (not isinstance(current, dict) or current.get("task_id") != task_id
-                or any(current.get(key) != value for key, value in task.items() if key not in {"id", "pause"})
+                or semantic_task_projection(task) != semantic_task_projection(
+                    {"id": task_id, **{key: value for key, value in current.items() if key != "task_id"},
+                     "pause": detail.get("pause")})
                 or not isinstance(detail.get("results"), list)):
             raise ReportAcquisitionUnavailable()
         for result in detail["results"]:
@@ -1842,7 +2210,8 @@ def acquire_http_collection_report(client: Any, org: str, *, current_time: datet
     try:
         opening = _http_collection_capture(client, org)
         closing = _http_collection_capture(client, org)
-        if opening[0] != closing[0] or opening[2] != closing[2] or _view_projection(opening[1]) != _view_projection(closing[1]):
+        if (_semantic_evidence_projection(opening[0]) != _semantic_evidence_projection(closing[0])
+                or opening[2] != closing[2] or _view_projection(opening[1]) != _view_projection(closing[1])):
             raise ReportAcquisitionUnavailable()
         cutoff = aware_utc(current_time) if current_time is not None else aware_utc(opening[1]["data_through"] or opening[1]["sampled_at"])
         return *opening, cutoff

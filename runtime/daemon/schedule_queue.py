@@ -24,15 +24,25 @@ class ScheduleJob:
 class ScheduleQueue:
     def __init__(self) -> None:
         self._q: asyncio.Queue[ScheduleJob] = asyncio.Queue()
+        self._owned: set[tuple[str, str]] = set()
 
     async def put(self, job: ScheduleJob) -> None:
-        await self._q.put(job)
+        key = (job.org_slug, job.schedule_id)
+        if key not in self._owned:
+            self._owned.add(key)
+            self._q.put_nowait(job)
 
     def put_nowait(self, job: ScheduleJob) -> None:
         """Enqueue without a running event loop. Safe because the queue is
         unbounded (never raises QueueFull); used by the synchronous scheduling
         path so it never has to spin up/tear down a process-global loop."""
-        self._q.put_nowait(job)
+        key = (job.org_slug, job.schedule_id)
+        if key not in self._owned:
+            self._owned.add(key)
+            self._q.put_nowait(job)
+
+    def release(self, job):
+        self._owned.discard((job.org_slug, job.schedule_id))
 
     async def get(self) -> ScheduleJob:
         return await self._q.get()
@@ -64,4 +74,6 @@ async def schedule_worker_loop(state, settings: Settings) -> None:
                 logger.exception(
                     "schedule_worker_loop: schedule %s crashed", job.schedule_id,
                 )
+            finally:
+                org.schedule_queue.release(job)
         await asyncio.sleep(0.05)

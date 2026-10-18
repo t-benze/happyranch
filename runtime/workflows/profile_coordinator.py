@@ -13,6 +13,8 @@ remain outside this cooperative guarantee.
 """
 from __future__ import annotations
 
+from runtime.orchestrator.producer_move import native_writer
+
 import fcntl
 import hashlib
 import json
@@ -25,6 +27,9 @@ import uuid
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import ExitStack, asynccontextmanager, contextmanager
 from dataclasses import asdict, dataclass
+from contextvars import ContextVar
+
+_move_batch_owner = ContextVar("profile_move_batch_owner", default=None)
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -111,8 +116,8 @@ def _dependency_profile(executor: str) -> str | None:
 class _ConsumerWriterInterval(_SupportedWriterInterval):
     """Own lifecycle dependency changes alongside the existing canonical fence."""
 
-    def __init__(self, coordinator, *, org, publisher, consumer, executor, preserve):
-        super().__init__(org.workflow_authority, publisher=publisher)
+    def __init__(self, coordinator, *, org, publisher, consumer, executor, preserve, native_disposition):
+        super().__init__(org.workflow_authority, publisher=publisher, native_disposition=native_disposition)
         self.profiles = coordinator
         self.org = org
         self.consumer = consumer
@@ -276,12 +281,12 @@ class ProfileCoordinator:
     def dependency_writer(self, profile_names: Sequence[str]) -> Iterator[None]:
         """Serialize a supported consumer rebind before its org writer gate."""
         with self._profile_leases(profile_names, wait=True) as names:
-            for name in names:
+            for name in names or (None,):
                 self._assert_no_active_operation(name)
             yield
 
     @asynccontextmanager
-    async def consumer_writer(self, *, org, publisher, consumer, executor=None, preserve=False):
+    async def consumer_writer(self, *, org, publisher, consumer, executor=None, preserve=False, teams=()):
         """Serialize async roster writers without leasing scans or awaited work.
 
         The coroutine serialization lock is never acquired by global profile
@@ -289,28 +294,32 @@ class ProfileCoordinator:
         leases before the org publisher gate. Publication/compensation capture
         runs only after that segment has released all profile leases.
         """
-        org.workflow_authority._profile_coordinator = self
-        async with org.workflow_authority._async_writer_lock:
-            interval = _ConsumerWriterInterval(
-                self, org=org, publisher=publisher, consumer=consumer,
-                executor=executor, preserve=preserve,
-            )
-            try:
-                yield interval
-            except BaseException:
-                if interval.fenced:
-                    org.workflow_authority.publish_after_supported_change(
-                        publisher=f"{publisher}:compensation",
-                        fence_journal_id=interval.fence_journal_id,
-                        publisher_invocation=interval.publisher_invocation,
-                    )
-                raise
-            else:
-                if interval.fenced:
-                    org.workflow_authority.publish_after_supported_change(
-                        publisher=publisher, fence_journal_id=interval.fence_journal_id,
-                        publisher_invocation=interval.publisher_invocation,
-                    )
+        with native_writer(org.db, publisher=publisher, agents=(consumer,), teams=teams) as disposition:
+            org.workflow_authority._profile_coordinator = self
+            async with org.workflow_authority._async_writer_lock:
+                interval = _ConsumerWriterInterval(
+                    self, org=org, publisher=publisher, consumer=consumer,
+                    executor=executor, preserve=preserve,
+                    native_disposition=disposition,
+                )
+                try:
+                    yield interval
+                except BaseException:
+                    if interval.fenced:
+                        if not org.workflow_authority.publish_after_supported_change(
+                            publisher=f"{publisher}:compensation",
+                            fence_journal_id=interval.fence_journal_id,
+                            publisher_invocation=interval.publisher_invocation,
+                        ):
+                            disposition.uncertain = True
+                    raise
+                else:
+                    if interval.fenced:
+                        if not org.workflow_authority.publish_after_supported_change(
+                            publisher=publisher, fence_journal_id=interval.fence_journal_id,
+                            publisher_invocation=interval.publisher_invocation,
+                        ):
+                            disposition.uncertain = True
 
     def validate_requirements(self, definitions, projection) -> None:
         desired = {
@@ -413,7 +422,34 @@ class ProfileCoordinator:
                 members.append(slug)
         return tuple(members)
 
-    def _assert_no_active_operation(self, profile_name: str) -> None:
+    def _assert_no_active_operation(
+        self, profile_name: str | None, *, move_org=None, attaching_org=None,
+    ) -> None:
+        """Check native DB owners only; diagnostic discovery owns no leases.
+
+        Ordinary writers retain diagnostic holds until successful native org
+        attachment. Its already-open DB is revalidated here before mutation;
+        only add_org removes the diagnostic after joining the shared org map.
+        A None profile still checks diagnostics for EMPTY dependency sets.
+        """
+        diagnostics = getattr(self, "_move_diagnostic_orgs", {})
+        admitted = _move_batch_owner.get()
+        for slug, root in tuple(diagnostics.items()):
+            owner = move_org if move_org is not None else attaching_org
+            if owner is None or slug != owner.slug or root != owner.root:
+                raise ProfileCoordinatorError("profile_team_move_diagnostic_org_held")
+            # Discovery/strict path resolution/open/close already belong to the
+            # outside-lease startup/attachment owner. Never reacquire a DB or
+            # erase a diagnostic based on absence observed by a profile writer.
+            with owner.db._lock:
+                row = owner.db._team_move_coordinator.active_uncommitted()
+            if move_org is not None:
+                if row is None or admitted != (slug, row["operation_id"]):
+                    raise ProfileCoordinatorError("profile_team_move_diagnostic_org_held")
+            elif row is not None:
+                raise ProfileCoordinatorError("profile_team_move_diagnostic_org_held")
+        if profile_name is None:
+            return
         for org in self.orgs.values():
             with org.db._lock:
                 row = org.db._conn.execute(
@@ -492,7 +528,8 @@ class ProfileCoordinator:
         operations: Sequence[_ProfileOperation],
         *,
         coordinator_invocation: str,
-    ) -> None:
+    ) -> bool:
+        released = True
         for operation in operations:
             for slug in operation.members:
                 org = self.orgs[slug]
@@ -504,6 +541,7 @@ class ProfileCoordinator:
                             (operation.profile_name, coordinator_invocation),
                         )
                 except Exception:
+                    released = False
                     # This row is diagnostic only; the kernel flock is the
                     # ownership authority and is still released by the outer
                     # context. Startup will overwrite a stale diagnostic row.
@@ -512,6 +550,7 @@ class ProfileCoordinator:
                         slug,
                         operation.profile_name,
                     )
+        return released
 
     def _apply_store_state(
         self,
@@ -625,6 +664,7 @@ class ProfileCoordinator:
         for slug in sorted(expected_fenced):
             org = self.orgs[slug]
             if not self._closure_coherent(org):
+                all_published = False
                 continue
             try:
                 org.workflow_authority.publish_profile_change(
@@ -650,8 +690,9 @@ class ProfileCoordinator:
         bindings: dict[str, ProfileFenceBinding],
         publisher: str,
         mutation_succeeded: bool,
-    ) -> None:
+    ) -> bool:
         fenced = set(bindings)
+        all_resolved = True
         changed_operations: list[_ProfileOperation] = []
         unchanged_operations: list[_ProfileOperation] = []
         for operation in operations:
@@ -665,6 +706,7 @@ class ProfileCoordinator:
                 self._apply_store_state(operation, effective)
                 publishable = self._apply_registry_state(operation, effective)
                 if not publishable:
+                    all_resolved = False
                     self._set_operation_state(
                         operation,
                         "forward_recovery_required",
@@ -691,6 +733,7 @@ class ProfileCoordinator:
                     )
             for operation in unchanged_operations:
                 self._set_operation_state(operation, "aborted")
+        return republished and all_resolved
 
     @contextmanager
     def _operation_with_leases_held(
@@ -720,59 +763,85 @@ class ProfileCoordinator:
                 active = org.workflow_authority._active_journal(org.db._conn, org.workflow_authority.namespace)
             if active is not None and not str(active["publisher_invocation"]).startswith("profile-coordinator:"):
                 raise ProfileCoordinatorError("profile_consumer_changed")
-        for operation in operations:
-            self._insert_operation_rows(
-                operation,
-                coordinator_invocation=coordinator_invocation,
-            )
-        bindings: dict[str, ProfileFenceBinding] = {}
-        with ExitStack() as org_stack:
-            for slug in members:
-                bindings[slug] = org_stack.enter_context(
-                    self.orgs[slug].workflow_authority.profile_change_interval(
-                        reason=f"profile:{','.join(names)}:{publisher}",
-                        coordinator_invocation=coordinator_invocation,
-                    )
-                )
-            for operation in operations:
-                self._set_operation_state(operation, "fenced")
+        with ExitStack() as move_writers:
+            dispositions = []
             try:
-                yield
-            except BaseException:
-                try:
-                    self._finalize(
-                        operations=operations,
-                        bindings=bindings,
-                        publisher=publisher,
-                        mutation_succeeded=False,
-                    )
-                except Exception:
-                    logger.exception(
-                        "profile compensation publication deferred publisher=%s",
-                        publisher,
-                    )
+                for slug in members:
+                    dispositions.append(move_writers.enter_context(native_writer(self.orgs[slug].db,
+                        publisher=f'profile:{publisher}')))
+            except Exception as exc:
+                # Earlier acquired reservations have not entered any profile
+                # operation/fence/body. Only those completed reservations may
+                # settle; a failing reservation retains its own native evidence.
+                for disposition in dispositions:
+                    disposition.no_effect_error = exc
                 raise
-            else:
-                try:
-                    self._finalize(
-                        operations=operations,
-                        bindings=bindings,
-                        publisher=publisher,
-                        mutation_succeeded=True,
-                    )
-                except Exception:
-                    # The existing writer already committed. Preserve its
-                    # response contract while the durable operation/fence
-                    # remains discoverable for cold forward recovery.
-                    logger.exception(
-                        "profile post-commit publication deferred publisher=%s",
-                        publisher,
-                    )
-            finally:
-                self._release_diagnostic_leases(
-                    operations,
+            for operation in operations:
+                self._insert_operation_rows(
+                    operation,
                     coordinator_invocation=coordinator_invocation,
                 )
+            bindings: dict[str, ProfileFenceBinding] = {}
+            with ExitStack() as org_stack:
+                for slug in members:
+                    bindings[slug] = org_stack.enter_context(
+                        self.orgs[slug].workflow_authority.profile_change_interval(
+                            reason=f"profile:{','.join(names)}:{publisher}",
+                            coordinator_invocation=coordinator_invocation,
+                        )
+                    )
+                for operation in operations:
+                    self._set_operation_state(operation, "fenced")
+                try:
+                    yield
+                except BaseException:
+                    try:
+                        reconciled = self._finalize(
+                            operations=operations,
+                            bindings=bindings,
+                            publisher=publisher,
+                            mutation_succeeded=False,
+                        )
+                        if not reconciled:
+                            for disposition in dispositions:
+                                disposition.uncertain = True
+                    except Exception:
+                        for disposition in dispositions:
+                            disposition.uncertain = True
+                        logger.exception(
+                            "profile compensation publication deferred publisher=%s",
+                            publisher,
+                        )
+                    raise
+                else:
+                    try:
+                        reconciled = self._finalize(
+                            operations=operations,
+                            bindings=bindings,
+                            publisher=publisher,
+                            mutation_succeeded=True,
+                        )
+                        if not reconciled:
+                            for disposition in dispositions:
+                                disposition.uncertain = True
+                    except Exception:
+                        for disposition in dispositions:
+                            disposition.uncertain = True
+                        # The existing writer already committed. Preserve its
+                        # response contract while the durable operation/fence
+                        # remains discoverable for cold forward recovery.
+                        logger.exception(
+                            "profile post-commit publication deferred publisher=%s",
+                            publisher,
+                        )
+                finally:
+                    released = self._release_diagnostic_leases(
+                        operations,
+                        coordinator_invocation=coordinator_invocation,
+                    )
+                    if not released:
+                        for disposition in dispositions:
+                            disposition.uncertain = True
 
     @contextmanager
     def operation(
@@ -786,11 +855,11 @@ class ProfileCoordinator:
         if operation_kind not in {"register", "rebind", "remove"}:
             raise ProfileCoordinatorError("profile_operation_kind_invalid")
         with self._profile_leases(profile_names, wait=False) as names:
+            for name in names or (None,):
+                self._assert_no_active_operation(name)
             if not names:
                 yield
                 return
-            for name in names:
-                self._assert_no_active_operation(name)
             with self._operation_with_leases_held(
                 names,
                 operation_kind=operation_kind,
@@ -818,11 +887,11 @@ class ProfileCoordinator:
         if operation_kind not in {"register", "rebind", "remove"}:
             raise ProfileCoordinatorError("profile_operation_kind_invalid")
         with self._profile_leases(profile_names, wait=True) as names:
+            for name in names or (None,):
+                self._assert_no_active_operation(name)
             if not names:
                 yield True
                 return
-            for name in names:
-                self._assert_no_active_operation(name)
             if terminal_check():
                 yield False
                 return
@@ -1061,7 +1130,7 @@ class ProfileCoordinator:
     def _synchronize_captured(self, captured, *, publish):
         profile_names = sorted({name for _, _, capture in captured for name in capture.profile_names})
         with self._profile_leases(profile_names, wait=True) as names:
-            for name in names:
+            for name in names or (None,):
                 self._assert_no_active_operation(name)
             changed = set()
             for slug, org, capture in captured:
@@ -1100,8 +1169,8 @@ class ProfileCoordinator:
         capture = self._capture_org_dependencies(org, attachment=True)
         desired, revision, snapshot = capture.desired, capture.revision, capture.snapshot
         with self._profile_leases(capture.profile_names, wait=True) as names:
-            for name in names:
-                self._assert_no_active_operation(name)
+            for name in names or (None,):
+                self._assert_no_active_operation(name, attaching_org=org)
             with org.workflow_authority._publisher_lock:
                 owner = f"profile-dependency-validation:{uuid.uuid4().hex}"
                 org.workflow_authority._acquire_lease(owner)
@@ -1404,6 +1473,9 @@ class ProfileCoordinator:
 
     def reconcile_startup(self) -> None:
         """Recover interrupted work, then publish current exact dependencies."""
+        if getattr(self, "_move_diagnostic_orgs", None):
+            logger.warning("profile startup reconciliation deferred: diagnostic team-move org remains held")
+            return
         for invocation, names in sorted(self._discover_operation_groups().items()):
             self._recover_group(invocation, sorted(names))
         changed = self.synchronize_all_dependencies(publish=False)
@@ -1416,3 +1488,94 @@ class ProfileCoordinator:
                 # either completed it or intentionally left the org fenced.
                 continue
             self._publish_dependency_change(org)
+
+    @asynccontextmanager
+    async def consumer_batch_writer(self, *, org, operation_id):
+        """ONE D-owned interval for the exact two unchanged executor consumers.
+
+        The operation row itself is the durable native writer: emitting a C3
+        writer whose failed tail becomes immutable unknown would prevent the
+        forward-recovery operation from reconciling its OWN known partial work.
+        No other native writer's history is adopted/cleared. The ordinary C3 hold
+        still refuses every conflicting writer. Empty dependency sets are real.
+        """
+        from runtime.infrastructure.team_move_store import MoveRequest, _decode
+        move = org.db._team_move_coordinator
+        row = move.store.read()
+        if row is None or row["operation_id"] != operation_id:
+            raise ProfileCoordinatorError("profile_move_owner_required")
+        request = _decode(MoveRequest, row["request_bytes"])
+        import base64
+        from runtime.orchestrator.agent_def import parse_agent_text
+        definitions = tuple(parse_agent_text(base64.b64decode(image.before_base64).decode().replace("\r\n", "\n"),
+            expected_name=agent) for agent, image in zip(request.affected_agents, request.files[:2]))
+        names = tuple(sorted({name for definition in definitions if (name := _dependency_profile(definition.executor)) is not None}))
+        org.workflow_authority._profile_coordinator = self
+        async with org.workflow_authority._async_writer_lock:
+            interval = _MoveBatchInterval(self, org, operation_id, definitions, names)
+            yield interval
+            # Deliberately no automatic compensation or publication on exit.
+            # D owns the immutable decision and exact SAME publication journal.
+
+
+@dataclass(frozen=True)
+class _MoveBatchCapture:
+    operation_revision: int
+    roster_revision: tuple
+    dependency_mirror: tuple
+    database_changes: tuple[int, int]
+    writer_epoch: int
+
+
+class _MoveBatchInterval:
+    def __init__(self, profiles, org, operation_id, definitions, names):
+        self.profiles, self.org, self.operation_id = profiles, org, operation_id
+        self.definitions, self.names = definitions, names
+
+    def _observation(self):
+        """Only native DB/revision/epoch facts; safe in a short DB-only leaf."""
+        db = self.org.db
+        move = db._team_move_coordinator
+        with db._lock:
+            row = move.active_uncommitted()
+            if row is None or row["operation_id"] != self.operation_id:
+                raise ProfileCoordinatorError("profile_move_owner_required")
+            return _MoveBatchCapture(row["state_revision"], self.profiles._roster_revision(self.org)[:2],
+                self.profiles._dependency_mirror_snapshot(self.org),
+                (db._conn.total_changes, db._conn.execute("PRAGMA data_version").fetchone()[0]),
+                move.producers.writer_epoch)
+
+    def capture(self):
+        """Complete native discovery before any profile/publication lease."""
+        before = self._observation()
+        current = tuple(prompt_loader.load_agent(OrgPaths(self.org.root), d.name) for d in self.definitions)
+        if any(actual is None or (actual.executor, actual.model, actual.reasoning_effort, actual.allow_rules, actual.repos)
+                != (original.executor, original.model, original.reasoning_effort, original.allow_rules, original.repos)
+                for original, actual in zip(self.definitions, current)):
+            raise ProfileCoordinatorError("profile_move_consumer_changed")
+        projection = self.org.workflow_authority._profile_projection()
+        from runtime.workflows.authority import _agent_projection
+        definitions = [_agent_projection(d, status="active") for d in prompt_loader.list_agents(OrgPaths(self.org.root))]
+        self.profiles.validate_requirements(definitions, projection)
+        if not self.profiles._closure_coherent(self.org):
+            raise ProfileCoordinatorError("profile_dependency_incoherent")
+        self.revalidate(before)
+        return before
+
+    def revalidate(self, capture):
+        if self._observation() != capture:
+            raise ProfileCoordinatorError("profile_move_capture_changed")
+
+    @contextmanager
+    def segment(self, capture):
+        """Only synchronous mutation; no discovery/census/publication capture."""
+        token = _move_batch_owner.set((self.org.slug, self.operation_id))
+        try:
+            with self.profiles._profile_leases(self.names, wait=True):
+                for name in self.names or (None,):
+                    self.profiles._assert_no_active_operation(name, move_org=self.org)
+                with self.org.workflow_authority._publisher_lock:
+                    self.revalidate(capture)
+                    yield
+        finally:
+            _move_batch_owner.reset(token)

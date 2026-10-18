@@ -167,7 +167,8 @@ class ProviderThrottle:
             from runtime.orchestrator.task_pause import current_invocation
             invocation = current_invocation()
             from runtime.orchestrator.thread_move import current_thread_preparation
-            thread_owner = current_thread_preparation()
+            from runtime.orchestrator.producer_move import current_producer_preparation
+            thread_owner = current_thread_preparation() or current_producer_preparation()
             first_attempt = 0
             if invocation is not None and backoff_seconds != ():
                 with invocation.store.db._lock:

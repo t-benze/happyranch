@@ -13,6 +13,9 @@ that transitions the row.
 """
 from __future__ import annotations
 
+from runtime.orchestrator.team_move import DeferredTeamMove
+from runtime.orchestrator.producer_move import producer_preparation_effects
+
 import asyncio
 import time
 import uuid
@@ -44,7 +47,7 @@ from runtime.orchestrator.org_config import (
 from runtime.orchestrator.workspace_adapters import (
     format_repo_refresh_note,
     materialize_workspace_skills,
-    refresh_workspace_repos,
+    refresh_workspace_repos_async,
     validate_workspace_skills_integrity,
     SystemContractMaterializationError,
 )
@@ -126,13 +129,14 @@ endpoint creates the root tasks on your own team, targeted to you as executor.
 """
 
 
-async def run_wake(
+async def _run_wake(
     *,
     org_state,
     work_hour_id: str,
     settings: Settings = global_settings,
     executor_factory: Callable | None = None,
     host_supervisor: HostSessionSupervisor | None = None,
+    _move_owner=None,
 ) -> None:
     """Run one working-hours wake session.
 
@@ -145,13 +149,14 @@ async def run_wake(
     """
     store = org_state.db.work_hours
     record = store.get(work_hour_id)
-    if record is None or record.status != WorkHourStatus.PENDING:
+    if record is None or (record.status != WorkHourStatus.PENDING and not (_move_owner is not None and record.status == WorkHourStatus.RUNNING)):
         return
 
     paths = OrgPaths(root=org_state.root)
     agent_def = load_agent(paths, record.agent_name)
     now = datetime.now(timezone.utc)
-    store.update(work_hour_id, status=WorkHourStatus.RUNNING, started_at=now)
+    if record.status == WorkHourStatus.PENDING:
+        store.update(work_hour_id, status=WorkHourStatus.RUNNING, started_at=now)
     AuditLogger(org_state.db).log_work_hour_started(work_hour_id, record.agent_name)
 
     if agent_def is None:
@@ -182,7 +187,7 @@ async def run_wake(
 
     parsed = parse_routines(agent_def.system_prompt)
     workspace = org_state.root / "workspaces" / record.agent_name
-    session_id = f"sess-{uuid.uuid4().hex}"
+    session_id = _move_owner.session_id if _move_owner is not None else f"sess-{uuid.uuid4().hex}"
     try:
         org_config = load_org_config(paths)
     except Exception:
@@ -196,28 +201,31 @@ async def run_wake(
     # FAIL-CLOSED: a materialization error must persist a terminal failure
     # and return BEFORE executor spawn (REVISE TASK-2829).
     try:
-        skills_root = settings.project_root / "runtime" / "skills"
-        expected_specs = materialize_workspace_skills(
-            workspace, settings,
-            slug=org_state.slug,
-            context="wake",
-            provider=_prov,
-            agent_name=record.agent_name,
-            team=agent_def.team,
-            skills_root=skills_root,
-            org_root=org_state.root,
-            db=org_state.db,
-            session_id=session_id,
-        )
+        with producer_preparation_effects(_move_owner):
+            skills_root = settings.project_root / "runtime" / "skills"
+            expected_specs = materialize_workspace_skills(
+                workspace, settings,
+                slug=org_state.slug,
+                context="wake",
+                provider=_prov,
+                agent_name=record.agent_name,
+                team=agent_def.team,
+                skills_root=skills_root,
+                org_root=org_state.root,
+                db=org_state.db,
+                session_id=session_id,
+            )
 
-        # ── Pre-launch integrity validation ─────────────────────
-        validate_workspace_skills_integrity(
-            workspace, expected_specs,
-            settings=settings,
-            db=org_state.db,
-            agent_name=record.agent_name,
-            task_id=work_hour_id,
-        )
+            # ── Pre-launch integrity validation ─────────────────────
+            validate_workspace_skills_integrity(
+                workspace, expected_specs,
+                settings=settings,
+                db=org_state.db,
+                agent_name=record.agent_name,
+                task_id=work_hour_id,
+            )
+    except DeferredTeamMove:
+        raise
     except Exception as e:
         store.update(
             work_hour_id, status=WorkHourStatus.FAILED,
@@ -232,21 +240,24 @@ async def run_wake(
 
     # THR-103: fast-forward-refresh every cloned repo so the agent has
     # fresh code regardless of executor (claude/codex/opencode/pi).
-    # Must run BEFORE the executor subprocess starts. Failure is non-
-    # blocking: offline / dirty / non-ff / timeout are swallowed.
-    repo_refresh_results = refresh_workspace_repos(workspace)
+    # Await the joined offload BEFORE executor launch, inside the SAME native
+    # effects scope. Failed/skipped refreshes warn of stale source; executed
+    # failures retain uncertainty. Cancellation waits for worker completion.
+    with producer_preparation_effects(_move_owner):
+        repo_refresh_results = await refresh_workspace_repos_async(workspace)
 
     repo_refresh_note = format_repo_refresh_note(repo_refresh_results)
 
     # ── Per-retry launch validator ───────────────────────────────
     def _pre_launch_validator():
-        validate_workspace_skills_integrity(
-            workspace, expected_specs,
-            settings=settings,
-            db=org_state.db,
-            agent_name=record.agent_name,
-            task_id=work_hour_id,
-        )
+        with producer_preparation_effects(_move_owner):
+            validate_workspace_skills_integrity(
+                workspace, expected_specs,
+                settings=settings,
+                db=org_state.db,
+                agent_name=record.agent_name,
+                task_id=work_hour_id,
+            )
 
     from runtime.orchestrator.active_authority_policy import resolve_active_team_policy_section
     from runtime.orchestrator.authority_policy_store import AuthorityPolicyStore
@@ -281,6 +292,11 @@ async def run_wake(
         executor_factory(executor_name, settings, paths) if executor_factory
         else _build_executor_for_provider(executor_name, settings, paths)
     )
+
+    from runtime.orchestrator.producer_move import bind_producer_executor
+    if _move_owner is not None:
+        _move_owner.executor, _move_owner.model = executor_name, model_name
+    executor = bind_producer_executor(executor, _move_owner)
 
     # ── D7B: CustomAdapterExecutor invocation context ──────────────────
     if hasattr(executor, 'set_invocation_context'):
@@ -327,14 +343,17 @@ async def run_wake(
             )
             return
         try:
-            launch_spec = spec_builder(
-                workspace=workspace,
-                prompt=prompt,
-                session_id=session_id,
-                model=model_name, reasoning_effort=reasoning_effort,
-                org_slug=org_state.slug,
-                timeout_seconds=settings.session_timeout_seconds,
-            )
+            with producer_preparation_effects(_move_owner):
+                launch_spec = spec_builder(
+                    workspace=workspace,
+                    prompt=prompt,
+                    session_id=session_id,
+                    model=model_name, reasoning_effort=reasoning_effort,
+                    org_slug=org_state.slug,
+                    timeout_seconds=settings.session_timeout_seconds,
+                )
+        except DeferredTeamMove:
+            raise
         except Exception as exc:
             store.update(
                 work_hour_id, status=WorkHourStatus.FAILED,
@@ -382,14 +401,17 @@ async def run_wake(
                 AdmissionRequest(
                     org=org_state.slug,
                     invocation_kind="wake",
+                    move_reservation=_move_owner,
+                    on_started=(lambda _pid: _move_owner.on_started()) if _move_owner is not None else None,
                     agent_id=record.agent_name,
                     logical_id=work_hour_id,
                     executor_profile=executor_name,
-                    enqueued_at=time.monotonic(),
+                    enqueued_at=_move_owner.enqueued_at if _move_owner is not None else time.monotonic(),
                 ),
                 launch_spec=launch_spec,
                 launch_body=_launch_body,
                 pre_launch_validator=_pre_launch_validator,
+                final_prelaunch_validator=_move_owner,
             ),
         )
         if outcome.terminal_reason in (TerminalReason.SHUTDOWN, TerminalReason.CANCELLED):
@@ -460,3 +482,17 @@ async def run_wake(
     AuditLogger(org_state.db).log_work_hour_failed(
         work_hour_id, record.agent_name, reason=error,
     )
+
+
+async def run_wake(
+    *, org_state, work_hour_id: str, settings: Settings = global_settings,
+    executor_factory: Callable | None = None,
+    host_supervisor: HostSessionSupervisor | None = None,
+) -> None:
+    with org_state._runner_lifetime() as admitted:
+        if not admitted:
+            return
+        from runtime.orchestrator.producer_move import run_native_producer
+        await run_native_producer(org_state, 'wake', work_hour_id, lambda owner: _run_wake(
+            org_state=org_state, work_hour_id=work_hour_id, settings=settings,
+            executor_factory=executor_factory, host_supervisor=host_supervisor, _move_owner=owner))
