@@ -1,6 +1,6 @@
 """Exact additive J definitions and closed per-family coding admission.
 
-K2b admits only complete Founder setup histories on independently recognized J.
+K2b admits complete setup/import/mapping/nonallocating source histories on J.
 Each later producer must ship its own complete readers. No schema installation,
 repository resolution or current authority is provided by this module.
 """
@@ -338,8 +338,19 @@ def _validate_coding_data(conn: sqlite3.Connection, *, layout: str,
         from runtime.workflows._coding_release_history import read_release_import
         imported = read_release_import(conn, expected_org_slug=expected_org_slug)
         from runtime.workflows.coding_mapping_history import _read_mapping_storage
+        from runtime.workflows._coding_mapping_admission import _MappingCaptures
+        from runtime.workflows._coding_source_admission import source_storage
+        captures = _MappingCaptures(conn, expected_org_slug, budget)
         mappings, mapping_rows = _read_mapping_storage(conn, expected_org_slug=expected_org_slug,
-                                                       budget=budget, setups=setups)
+                                                       budget=budget, setups=setups, captures=captures)
+        _, source_rows = source_storage(conn, expected_org_slug, budget, setups, captures, mappings)
+        for table, entries in source_rows.items():
+            index = mapping_rows.setdefault(table, {})
+            for key, value in entries.items():
+                budget.step()
+                if key in index and index[key] != value:
+                    raise ValueError('workflow_coding_source_row_conflict')
+                index[key] = value
         if mappings is not None and imported is None:
             raise ValueError('workflow_coding_mapping_release_missing')
     for table in CODING_TABLES:
@@ -367,7 +378,7 @@ def _validate_coding_data(conn: sqlite3.Connection, *, layout: str,
             'workflow_template_versions', 'workflow_template_identity_versions',
             'workflow_template_publish_operations', 'workflow_admission_records')
         native_mapping = mappings is not None and table in (
-            'workflow_coding_mappings', 'workflow_admission_records', 'audit_log')
+            'workflow_coding_mappings', 'workflow_admission_records', 'audit_log', 'workflow_authorization_revisions')
         if native_setup or native_import or native_mapping:
             selected_columns = columns
         if not selected_columns:
@@ -384,6 +395,8 @@ def _validate_coding_data(conn: sqlite3.Connection, *, layout: str,
             types = {
                 'workflow_coding_mappings': (('text',), ('text',), ('text',), ('integer',),
                     ('text',), ('text',), ('text',), ('blob',), ('text',), ('text',)),
+                'workflow_authorization_revisions': (('text',), ('text',), ('integer',), ('blob',),
+                    ('text',), ('text',), ('text',)),
                 'workflow_admission_records': (('text',), ('text',), ('integer',), ('text',), ('text',)),
                 'audit_log': (('integer',), ('text',), ('text',), ('text',), ('null', 'text'), ('text',)),
             }.get(table)

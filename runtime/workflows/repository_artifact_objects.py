@@ -796,6 +796,43 @@ def _build_resolution(*, paths: OrgPaths, binding: RepositoryBinding,
                 raise WorkflowRepositoryError('storage_unavailable', private_storage=str(private)) from None
 
 
+def _verify_base_in_child(*, paths, binding, adoption, proof, base, configured_origin, private, deadline):
+    """Same adopted object engine; no selected-head content leaves this owner."""
+    budget = _Budget(deadline)
+    retain = False
+    try:
+        _match_adoption(binding, adoption, proof)
+        _oid(base, proof.object_format)
+        private.chmod(0o700)
+        (private / 'objects' / 'pack').mkdir(mode=0o700, parents=True)
+        (private / 'objects' / 'info').mkdir(mode=0o700)
+        (private / 'refs').mkdir(mode=0o700)
+        _write(private / 'HEAD', b'ref: refs/heads/unselected\n', budget)
+        config = b'[core]\nrepositoryformatversion = ' + (b'0' if proof.object_format == 'sha1' else b'1')
+        config += b'\nbare = true\n'
+        if proof.object_format == 'sha256':
+            config += b'[extensions]\nobjectformat = sha256\n'
+        _write(private / 'config', config, budget)
+        with _store(paths, binding, proof, configured_origin, budget) as objects:
+            _copy(objects, private / 'objects', proof.object_format, budget)
+        # Existing reader validates real full-OID commit/tree objects under
+        # exactly the same finite supported-content and subprocess bounds.
+        _Objects(private, proof.object_format, budget).tree(base)
+        with _store(paths, binding, proof, configured_origin, budget):
+            pass
+        budget.check()
+    except WorkflowRepositoryError as error:
+        retain = error.execution_unknown
+        raise
+    finally:
+        if not retain:
+            try:
+                budget.check()
+                shutil.rmtree(private)
+            except BaseException:
+                raise WorkflowRepositoryError('storage_unavailable', private_storage=str(private)) from None
+
+
 def _reader_child() -> None:
     """One private owner handles all copy/inflation/Git/tree work within D5s."""
     if len(sys.argv) != 4 or sys.argv[1] != '--reader-child':
@@ -810,18 +847,30 @@ def _reader_child() -> None:
         if len(raw) > 1048576:
             raise WorkflowRepositoryError('content_bounds')
         command = json.loads(raw.decode('utf8'), object_pairs_hook=_pairs)
-        if (type(command) is not dict or set(command) !=
-                {'org_root', 'binding', 'adoption', 'proof', 'descriptor', 'configured_origin'}
+        source = type(command) is dict and 'source_base' in command
+        expected = {'org_root', 'binding', 'adoption', 'proof', 'configured_origin',
+                    'source_base' if source else 'descriptor'}
+        if (type(command) is not dict or set(command) != expected
                 or _canonical(command) != raw or type(command['org_root']) is not str
                 or type(command['configured_origin']) is not str):
             raise WorkflowRepositoryError('storage_corrupt')
-        resolution = _build_resolution(paths=OrgPaths(root=Path(command['org_root'])),
-            binding=RepositoryBinding.model_validate(command['binding']),
-            adoption=RepositoryAdoption.model_validate(command['adoption']),
-            proof=RepositoryAdoptionProof.model_validate(command['proof']),
-            descriptor=CodeChangeDescriptor.model_validate(command['descriptor']),
-            configured_origin=command['configured_origin'], private_directory=Path(sys.argv[2]), deadline=deadline)
-        result = dict(ok=resolution.model_dump())
+        if source:
+            from runtime.workflows.coding_saved_records import CodingRepositoryBinding
+            _verify_base_in_child(paths=OrgPaths(root=Path(command['org_root'])),
+                binding=CodingRepositoryBinding.model_validate(command['binding']),
+                adoption=RepositoryAdoption.model_validate(command['adoption']),
+                proof=RepositoryAdoptionProof.model_validate(command['proof']),
+                base=command['source_base'], configured_origin=command['configured_origin'],
+                private=Path(sys.argv[2]), deadline=deadline)
+            result = dict(source_base=command['source_base'])
+        else:
+            resolution = _build_resolution(paths=OrgPaths(root=Path(command['org_root'])),
+                binding=RepositoryBinding.model_validate(command['binding']),
+                adoption=RepositoryAdoption.model_validate(command['adoption']),
+                proof=RepositoryAdoptionProof.model_validate(command['proof']),
+                descriptor=CodeChangeDescriptor.model_validate(command['descriptor']),
+                configured_origin=command['configured_origin'], private_directory=Path(sys.argv[2]), deadline=deadline)
+            result = dict(ok=resolution.model_dump())
     except WorkflowRepositoryError as error:
         result = dict(error=error.code, execution_unknown=error.execution_unknown,
                       process_id=error.process_id, private_storage=sys.argv[2])
@@ -836,16 +885,22 @@ def _reader_child() -> None:
 
 def _resolve_objects(*, paths: OrgPaths, binding: RepositoryBinding,
                      adoption: RepositoryAdoption, proof: RepositoryAdoptionProof,
-                     descriptor: CodeChangeDescriptor, configured_origin: str) -> RepositoryResolution:
+                     descriptor: CodeChangeDescriptor | None, configured_origin: str,
+                     _source_base: str | None = None, _deadline: float | None = None) -> RepositoryResolution | None:
     """Unmounted internal mechanics, supervised across *all* work, not just Git.
 
     These parameters are server-selected, not public path/URL/proof inputs.
     K2b's real capability admission remains a necessary unavailable dependency.
     """
-    budget = _Budget()
-    command = _canonical(dict(org_root=str(paths.root), binding=binding.model_dump(),
-        adoption=adoption.model_dump(), proof=proof.model_dump(), descriptor=descriptor.model_dump(),
-        configured_origin=configured_origin))
+    budget = _Budget(_deadline)
+    value = dict(org_root=str(paths.root), binding=binding.model_dump(), adoption=adoption.model_dump(),
+                 proof=proof.model_dump(), configured_origin=configured_origin)
+    if _source_base is None:
+        value['descriptor'] = descriptor.model_dump()
+    else:
+        _oid(_source_base, proof.object_format)
+        value['source_base'] = _source_base
+    command = _canonical(value)
     if len(command) > 1048576:
         raise WorkflowRepositoryError('content_bounds')
     private = None
@@ -904,8 +959,9 @@ def _resolve_objects(*, paths: OrgPaths, binding: RepositoryBinding,
         answer = json.loads(bytes(output).decode('utf8'), object_pairs_hook=_pairs)
         if type(answer) is not dict or _canonical(answer) != bytes(output):
             raise ValueError('invalid_worker_reply')
-        if set(answer) == {'ok'}:
-            resolution = RepositoryResolution.model_validate(answer['ok'])
+        source_answer = _source_base is not None and set(answer) == {'source_base'} and answer['source_base'] == _source_base
+        if source_answer or (_source_base is None and set(answer) == {'ok'}):
+            resolution = None if source_answer else RepositoryResolution.model_validate(answer['ok'])
             try:
                 os.lstat(private)
             except FileNotFoundError:
@@ -1076,3 +1132,11 @@ def _observe_adoption(*, paths: OrgPaths, org_slug: str, store_owner: str,
             store_identity=dict(repo_device=stats[0].st_dev, repo_inode=stats[0].st_ino,
                 git_device=stats[1].st_dev, git_inode=stats[1].st_ino,
                 objects_device=stats[2].st_dev, objects_inode=stats[2].st_ino, config_digest=_digest(config)))
+
+
+def _verify_source_base(*, paths, binding, adoption, proof, base, configured_origin, budget):
+    """Private source producer only: real fixed-base check, no object disclosure."""
+    budget.check()
+    _resolve_objects(paths=paths, binding=binding, adoption=adoption, proof=proof,
+        descriptor=None, configured_origin=configured_origin, _source_base=base, _deadline=budget.deadline)
+    budget.check()

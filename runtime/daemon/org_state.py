@@ -41,6 +41,7 @@ from runtime.orchestrator.org_validation import validate_team_membership
 from runtime.orchestrator.teams import TeamsRegistry
 from runtime.workflows.authority import WorkflowAuthorityCoordinator
 from runtime.workflows.coding_mapping import CodingMappingStore
+from runtime.workflows.coding_source import CodingSourceStore
 from runtime.workflows.coding_setup import CodingSetupStore
 from runtime.workflows.coding_release_import import CodingReleaseImportStore
 from runtime.workflows.activation import WorkflowActivationStore
@@ -83,6 +84,7 @@ class OrgState:
     workflow_authority: WorkflowAuthorityCoordinator = field(init=False)
     workflow_activations: WorkflowActivationStore = field(init=False)
     workflow_coding_mapping: CodingMappingStore = field(init=False)
+    workflow_coding_source: CodingSourceStore = field(init=False)
     workflow_coding_setup: CodingSetupStore = field(init=False)
     workflow_coding_release_import: CodingReleaseImportStore = field(init=False)
     workflow_drafts: WorkflowDraftDispatcher = field(init=False)
@@ -182,6 +184,7 @@ class OrgState:
         )
         self.workflow_activations = WorkflowActivationStore(self)
         self.workflow_coding_mapping = CodingMappingStore(self)
+        self.workflow_coding_source = CodingSourceStore(self)
         self.workflow_coding_setup = CodingSetupStore(self)
         self.workflow_coding_release_import = CodingReleaseImportStore(self)
         self.workflow_drafts = WorkflowDraftDispatcher(self)

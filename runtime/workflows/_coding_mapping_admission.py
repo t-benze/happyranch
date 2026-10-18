@@ -18,7 +18,7 @@ from runtime.workflows.coding_source_history import (
 )
 
 _CAPTURE_SQL = _projection(_AUDIT_COLUMNS, _AUDIT_TYPES, 'audit_log',
-    "WHERE action='coding_source_admission' AND id>=? ORDER BY id LIMIT ?")
+    "WHERE action IN ('coding_source_admission','coding_source_operation') AND id>=? ORDER BY id LIMIT ?")
 
 
 def native_owner(org, principal, conn):
@@ -87,11 +87,12 @@ def _encode_record(record):
         for c in record.columns])
 
 
-def capture_body(org, principal, conn, *, admission_id, mapping_id, raw, now, max_revise_rounds):
+def capture_body(org, principal, conn, *, admission_id, mapping_id, raw, now, max_revise_rounds,
+                 native_table='workflow_coding_mappings'):
     issuer, chain, start, owner = native_owner(org, principal, conn)
     task = chain[0]
     return dict(format='workflow-coding-source-admission@1', phase='source', org_slug=org.slug,
-        source_admission_id=admission_id, native_owner=dict(table='workflow_coding_mappings', id=mapping_id),
+        source_admission_id=admission_id, native_owner=dict(table=native_table, id=mapping_id),
         command_bytes_base64=base64.b64encode(raw).decode('ascii'), task_record=_encode_record(task),
         ancestor_records=[_encode_record(row) for row in chain[1:]],
         session_start_audit_id=start._value('id'), result=None, callback_admission_audit_id=None,
@@ -110,13 +111,23 @@ class _MappingCaptures:
         self.loaded = False
         self.by_admission, self.by_mapping, self.admission_uses = {}, {}, {}
         self.tasks, self.starts = {}, {}
+        self.operations = {}
+        self.all_captures = []
 
     def load(self):
         if self.loaded:
             return
         owners = set()
         for audit in _inventory(self.conn, _CAPTURE_SQL, (), _AUDIT_COLUMNS, _AUDIT_TYPES, self.budget):
+            if audit._text('action') == 'coding_source_operation':
+                from runtime.workflows._coding_source_admission import decode_operation
+                operation = decode_operation(audit, self.org_slug, self.budget)
+                key = (operation['principal'], operation['command']['operation_key'])
+                _check(key not in self.operations)
+                self.operations[key] = (operation, audit)
+                continue
             capture = _decode_capture(audit, self.org_slug, self.budget)
+            self.all_captures.append(capture)
             owner = (capture.phase, capture.native_owner.table, capture.native_owner.id)
             _check(owner not in owners)
             owners.add(owner)

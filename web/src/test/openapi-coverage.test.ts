@@ -84,6 +84,17 @@ describe('openapi coverage', () => {
     expect(INCLUDED_PATHS.has('POST /api/v1/orgs/{slug}/workflows/reviews/stages')).toBe(false);
   });
 
+  test('K2b nonallocating source endpoints stay outside the browser', () => {
+    const routes = [
+      ['POST /api/v1/orgs/{slug}/workflows/coding/sources', 'Agent-only current manager nonallocating source mint/refinement; no browser or remote grant'],
+      ['GET /api/v1/orgs/{slug}/workflows/coding/sources/{authorization_id}', 'Agent-only same-source selected metadata; no browser or remote grant'],
+    ];
+    for (const [route, reason] of routes) {
+      expect(EXCLUDED_PATHS.get(route)).toBe(reason);
+      expect(INCLUDED_PATHS.has(route)).toBe(false);
+    }
+  });
+
   test('K2b mapping endpoints require the current agent manager outside the browser', () => {
     for (const [method, description] of [
       ['POST', 'publication/adoption'], ['GET', 'selected metadata'],

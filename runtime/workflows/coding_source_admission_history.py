@@ -13,7 +13,7 @@ import sqlite3
 from dataclasses import dataclass
 
 from runtime.workflows._coding_source_capture import (
-    OriginalSourceCapture, _decode_capture, _same_record,
+    OriginalSourceCapture, _same_record,
 )
 from runtime.workflows.coding_authority_history import CodingAuthorityHistoryError, _Budget
 from runtime.workflows.coding_capability_history import (
@@ -105,9 +105,10 @@ def _first_boundary(callback: OriginalSourceCapture, source: OriginalSourceCaptu
         _same_record(c0, c1, first_boundary=True)
 
 
-def _read(conn: sqlite3.Connection, org_slug: str, authorization_id: str) -> CodingSourceAdmissionHistory:
-    budget = _Budget()
-    native = _source_records(conn, org_slug, authorization_id, budget=budget)
+def _read(conn: sqlite3.Connection, org_slug: str, authorization_id: str, *,
+          budget=None, setups=None, inventory=None) -> CodingSourceAdmissionHistory:
+    budget = budget if budget is not None else _Budget()
+    native = _source_records(conn, org_slug, authorization_id, budget=budget, setups=setups)
     initial_row = native.capability_history.capabilities[0]
     initial = json.loads(initial_row.authority_bytes)
     # The initial source admission is already independently joined to ALL five
@@ -120,8 +121,12 @@ def _read(conn: sqlite3.Connection, org_slug: str, authorization_id: str) -> Cod
     admissions = set()
     allocating_results = set()
     selected = None
-    for audit in _inventory(conn, _CAPTURE_SQL, (), _AUDIT_COLUMNS, _AUDIT_TYPES, budget):
-        capture = _decode_capture(audit, org_slug, budget)
+    if inventory is None:
+        from runtime.workflows._coding_mapping_admission import _MappingCaptures
+        inventory = _MappingCaptures(conn, org_slug, budget)
+    inventory.load()
+    for capture in inventory.all_captures:
+        budget.step()
         owner_key = (capture.phase, capture.native_owner.table, capture.native_owner.id)
         _check(owner_key not in owners)
         owners.add(owner_key)

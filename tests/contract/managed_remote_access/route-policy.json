@@ -188,6 +188,14 @@
         "POST /api/v1/orgs/{slug}/workflows/coding/mappings",
         "GET /api/v1/orgs/{slug}/workflows/coding/mappings"
       ]
+    },
+    {
+      "id": "coding_source_cli_only",
+      "description": "Nonallocating source mint/refinement and same-source metadata use genuine current agent transport only; no remote or browser grant.",
+      "examples": [
+        "POST /api/v1/orgs/{slug}/workflows/coding/sources",
+        "GET /api/v1/orgs/{slug}/workflows/coding/sources/{authorization_id}"
+      ]
     }
   ],
   "allow": [

@@ -1,5 +1,65 @@
 # Features And Invariants
 
+<!-- K2b source producer checkpoint: TASK11918 -->
+**Nonallocating coding source producer — ROOT10693, Founder139562/559/329/595/606.**
+Agent-only loopback POST `/workflows/coding/sources?session_id=CURRENT` and
+GET `/workflows/coding/sources/{authorization_id}?session_id=CURRENT` use the
+existing current manager transport, without bearer fallback or browser/remote
+reachability. CLI `workflows coding source-mint --org ORG --session-id CURRENT
+--from-file ABS --json` and `source-show AUTHORIZATION --org ORG --session-id
+CURRENT --json` preserve one original file/key, with no automatic retry.
+Canonical bounded64KiB `workflow-coding-source-command@1` is exactly
+`{format,operation_key,parent_id,mapping:{id,generation,digest},action,work}`;
+work exactly `{repository_id,store_owner,object_format,base,paths,commands}`.
+Only import-release-coding, publish-coding-mapping and adopt-local-store source
+actions mint here, within the current reusable U and all narrower parent edges.
+Server derives genuine current task/principal/team/SID/manager_decision,
+ordinary invocation/Pause/move/complete ancestry, callback absence and original
+limits. Native owners and executor enforcement are composed unchanged.
+The exact selected mapping/adopted store, source_rule/base_rule, executable
+manager repository policy and action/path/argv intersections precede private
+object work. Existing supervised adopted-store object machinery verifies the
+fixed full base outside writers under one deadline; it returns no repository
+content. Fresh native ALL27/ancestry/current policy checks repeat after awaits
+and in the atomic writer. No timestamp exemption or counter refill applies.
+A genuine immutable source P and its complete OWN five-column admission mint
+atomically. Exactly one ORIGINAL source-phase capture retains all original27
+source/ancestor/native session-start/invocation/counter/limit bytes; NULL result
+and claim mean zero callback/carrier/task/run/stage allocation. Same-owner source
+refinements obtain distinct own admissions while retaining the original
+source_admission_id and capture. P/U/capture encodings and F–J DDL stay unchanged.
+Private audit action coding_source_operation stores closed
+`workflow-coding-source-operation@1 {format,org_slug,principal,authorization_id,
+admission_id,session_id,command_bytes_base64,command_digest,created_at}` per mint.
+This D1 operation metadata preserves each complete command/key/principal for
+byte replay; it grants nothing and cannot replace an original capture.
+Replay finds original bytes before fresh CAS/object work, returns original
+identities/current disposition and never recaptures, reissues or restores grants.
+Closed unsigned `workflow-coding-source-receipt@1` is exactly
+`{format,authorization_id,admission_id,source_admission_id,operation_key,
+request_digest,replayed,current:{state,reason}}`; current is active/inactive/revoked,
+with a reason only for revoked. Changed same-key bytes conflict.
+Mixed setup/import/mapping/P cold consumers share bounded native source/mapping
+capture/operation inventory and the enclosing row/byte/step budget. Full positive
+native-row equalities and unknown/orphan/duplicate refusal cover schema(data=False),
+OrgState reopen, recovery and drain; ordinary nonmapping watermark behavior stays.
+Source expected_head remains NULL/own-development-output@1: it grants no arbitrary
+head disclosure, review, QA, CI or merge. K1.resolve remains unavailable because
+no genuine exact-subject read entitlement is produced here. Allocating source
+callback/C0, run C1/C2, native heartbeat and attempt/control/effect producers remain
+K3 and later units, not fabricated subjects/results/grants. Agent release import
+and source-to-action use remain separate from these mint metadata operations.
+This is an incomplete SAME DRAFT PR1083 source checkpoint, never a delivered
+coding engine, operational grant, deployment or merge. Independent FULL review,
+same-final-head scoped SOURCE QA and literal lint/static gates remain required.
+Runtime/security/rollback guarantees remain UNVERIFIED, engineering_manager-owned
+before operational acceptance. Python units RETIRED; integration INCLUDING callback
+SKIPPED24342; SQL/parser/product/timing/security/negative/mutation/red-green/repetition/
+native/build/E2E/protected/executable-QA/test-authoring proof
+UNEXECUTED/FOUNDER-WAIVED139429/430. No live setup/adoption/grant/assignment follows.
+<!-- /K2b source producer checkpoint: TASK11918 -->
+
+
 ## K2b mapping publication/adoption checkpoint — ROOT10693 step70
 
 SAME incomplete OPEN DRAFT PR1083 now includes the explicit nonallocating

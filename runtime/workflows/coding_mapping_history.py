@@ -80,11 +80,11 @@ def _check(condition: bool) -> None:
 def _history(conn: sqlite3.Connection, org_slug: str,
              mapping_id: str, *, budget: _Budget | None = None,
              setups: _SetupHistoryReader | None = None,
-             expected_rows: dict | None = None) -> CodingMappingHistory:
+             expected_rows: dict | None = None, captures=None) -> CodingMappingHistory:
     budget = budget if budget is not None else _Budget()
     setups = setups if setups is not None else _SetupHistoryReader(conn, org_slug, budget)
     from runtime.workflows._coding_mapping_admission import _MappingCaptures, audit_values, mapping_capture
-    captures = _MappingCaptures(conn, org_slug, budget)
+    captures = captures if captures is not None else _MappingCaptures(conn, org_slug, budget)
     inventory: list[tuple[tuple, tuple[str, ...], bytes, dict]] = []
     identities: set[str] = set()
     generations: set[int] = set()
@@ -216,7 +216,7 @@ def read_mapping_history(conn: sqlite3.Connection, *, expected_org_slug: str,
 
 
 def _read_mapping_storage(conn: sqlite3.Connection, *, expected_org_slug: str,
-                          budget: _Budget, setups: _SetupHistoryReader | None = None
+                          budget: _Budget, setups: _SetupHistoryReader | None = None, captures=None
                           ) -> tuple[CodingMappingHistory | None, dict]:
     """Private complete-history/expected-row composition; no nested budget reset."""
     try:
@@ -244,7 +244,7 @@ def _read_mapping_storage(conn: sqlite3.Connection, *, expected_org_slug: str,
         _token(row[0])
         expected = {}
         history = _history(conn, expected_org_slug, row[0], budget=budget,
-                           setups=setups, expected_rows=expected)
+                           setups=setups, expected_rows=expected, captures=captures)
         return history, expected
     except (sqlite3.Error, CodingSavedRecordError, CodingAuthorityHistoryError,
             ValueError, TypeError, KeyError, UnicodeError, RecursionError, OverflowError):

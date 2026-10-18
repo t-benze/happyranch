@@ -187,3 +187,92 @@ async def coding_mapping(request: Request, org: OrgDep, session_id: str) -> dict
         raise HTTPException(409, detail={'code': 'coding_mapping_authority_unavailable'}) from None
     except (ValueError, OSError, sqlite3.Error):
         raise HTTPException(409, detail={'code': 'coding_mapping_admission_unavailable'}) from None
+
+
+from runtime.workflows.coding_source import SourceCommand, SourceReceipt
+
+
+def _source_command_schema():
+    schema = SourceCommand.model_json_schema()
+    definitions = schema.pop('$defs', {})
+    def inline(value):
+        if isinstance(value, dict):
+            if '$ref' in value:
+                return inline(definitions[value['$ref'].rsplit('/', 1)[-1]])
+            return {key: inline(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [inline(item) for item in value]
+        return value
+    return inline(schema)
+
+
+@mapping_router.post('/workflows/coding/sources', response_model=SourceReceipt,
+    responses={201: {'description': 'New nonallocating source capability'}, **_RESPONSES},
+    openapi_extra={'requestBody': {'required': True, 'content': {'application/json': {'schema': _source_command_schema()}}}})
+async def mint_coding_source(request: Request, org: OrgDep, session_id: str) -> dict:
+    return await _coding_source(request, org, session_id, None)
+
+
+@mapping_router.get('/workflows/coding/sources/{authorization_id}', response_model=SourceReceipt, responses=_RESPONSES)
+async def get_coding_source(authorization_id: str, request: Request, org: OrgDep, session_id: str) -> dict:
+    return await _coding_source(request, org, session_id, authorization_id)
+
+
+async def _coding_source(request, org, session_id, authorization_id):
+    from runtime.workflows.coding_source import CodingSourceError
+    from runtime.workflows.templates import WorkflowTemplateError
+    from runtime.infrastructure.task_pause_controls import PauseControlError
+    from runtime.orchestrator.task_pause import DeferredRootPause
+    from runtime.orchestrator.team_move import DeferredTeamMove
+    if 'authorization' in request.headers:
+        raise HTTPException(403, detail={'code': 'bearer_not_accepted'})
+    if list(request.query_params.multi_items()) != [('session_id', session_id)] or not session_id or (request.method == 'POST' and authorization_id is not None):
+        raise HTTPException(422, detail={'code': 'coding_source_invalid_request'})
+    context = org.sessions.get_context_by_session(session_id)
+    if context is None or context[0] != org.slug:
+        raise HTTPException(403, detail={'code': 'coding_source_manager_required'})
+    _, task_id, agent = context
+    try:
+        async with org.teams_lock:
+            teams = org.teams.teams_for_manager(agent)
+            if len(teams) != 1:
+                raise CodingSourceError('coding_source_manager_required')
+            team = teams[0]
+            def revalidate():
+                state = request.app.state.daemon
+                if (state.is_idle or state.orgs.get(org.slug) is not org
+                        or org.sessions.get_context_by_session(session_id) != context
+                        or org.sessions.get_active(task_id, agent) != session_id
+                        or org.sessions.is_recovery_session(task_id, agent, session_id)
+                        or org.teams.teams_for_manager(agent) != (team,)):
+                    raise CodingSourceError('coding_source_manager_revoked')
+            principal = WorkflowTemplatePrincipal.agent(org_slug=org.slug, agent_name=agent,
+                team_slug=team, task_id=task_id, session_id=session_id, revalidate=revalidate)
+            revalidate()
+            if request.method == 'GET':
+                async for chunk in request.stream():
+                    if chunk:
+                        raise CodingSourceError('coding_source_invalid_request')
+                result = await org.workflow_coding_source.get(principal=principal, authorization_id=authorization_id)
+            else:
+                if request.headers.get('content-type', '').split(';', 1)[0].strip().lower() != 'application/json':
+                    raise CodingSourceError('coding_source_invalid_request')
+                raw = bytearray()
+                async for chunk in request.stream():
+                    if len(raw) + len(chunk) > 65536:
+                        raise CodingSourceError('coding_source_invalid_request')
+                    raw.extend(chunk)
+                revalidate()
+                result = await org.workflow_coding_source.mint(principal=principal, raw=bytes(raw))
+            from fastapi.responses import JSONResponse
+            return JSONResponse(result, status_code=201 if request.method == 'POST' and not result['replayed'] else 200)
+    except CodingSourceError as exc:
+        status = (422 if exc.code == 'coding_source_invalid_request' else
+                  404 if exc.code == 'coding_source_not_found' else
+                  403 if any(word in exc.code for word in ('revoked', 'manager_required')) else 409)
+        raise HTTPException(status, detail={'code': exc.code}) from None
+    except (WorkflowAuthorityError, ProfileCoordinatorError, WorkflowTemplateError,
+            PauseControlError, DeferredRootPause, DeferredTeamMove):
+        raise HTTPException(409, detail={'code': 'coding_source_authority_unavailable'}) from None
+    except (ValueError, OSError, sqlite3.Error):
+        raise HTTPException(409, detail={'code': 'coding_source_admission_unavailable'}) from None

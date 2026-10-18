@@ -232,6 +232,8 @@
     "POST /api/v1/orgs/{slug}/workflows/release-templates/coding/1/import": "Founder-only CLI fixed release import/receipt; no browser or remote grant",
     "GET /api/v1/orgs/{slug}/workflows/release-templates/coding/1/import": "Founder-only CLI fixed release import/receipt; no browser or remote grant",
     "POST /api/v1/orgs/{slug}/workflows/coding/mappings": "Agent-only current manager mapping publication/adoption; no browser or remote grant",
-    "GET /api/v1/orgs/{slug}/workflows/coding/mappings": "Agent-only current manager mapping selected metadata; no browser or remote grant"
+    "GET /api/v1/orgs/{slug}/workflows/coding/mappings": "Agent-only current manager mapping selected metadata; no browser or remote grant",
+    "POST /api/v1/orgs/{slug}/workflows/coding/sources": "Agent-only current manager nonallocating source mint/refinement; no browser or remote grant",
+    "GET /api/v1/orgs/{slug}/workflows/coding/sources/{authorization_id}": "Agent-only same-source selected metadata; no browser or remote grant"
   }
 }

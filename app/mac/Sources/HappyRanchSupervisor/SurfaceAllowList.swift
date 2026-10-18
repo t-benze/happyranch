@@ -104,6 +104,8 @@ public struct SurfaceAllowList: Sendable {
             // Founder coding setup is CLI-only; no remote/browser grant.
             ("POST", "/workflows/release-templates/coding/1/import"),
             ("GET", "/workflows/release-templates/coding/1/import"),
+            ("POST", "/workflows/coding/sources"),
+            ("GET", "/workflows/coding/sources/*"),
             ("POST", "/workflows/coding/mappings"),
             ("GET", "/workflows/coding/mappings"),
             ("POST", "/workflows/coding/capabilities"),
@@ -254,6 +256,18 @@ public struct SurfaceAllowList: Sendable {
     ///   - rawPath: The original raw path from the request.
     /// - Returns: `true` if the request is allowed, `false` if it is denied.
     public func isAllowed(method: String, path: String, rawPath: String) -> Bool {
+        if method == "POST", deniedMethods.contains("POST /workflows/coding/sources"),
+           [rawPath, path].contains(where: { Self.stageDenialCandidate($0) == "/workflows/coding/sources" }) {
+            return false
+        }
+        if method == "GET", deniedMethods.contains("GET /workflows/coding/sources/*"),
+           [rawPath, path].contains(where: {
+               let parts = Self.stageDenialCandidate($0).split(separator: "/", omittingEmptySubsequences: false)
+               return parts.count == 5 && parts[0].isEmpty && parts[1] == "workflows"
+                   && parts[2] == "coding" && parts[3] == "sources" && !parts[4].isEmpty
+           }) {
+            return false
+        }
         if ["POST", "GET"].contains(method),
            deniedMethods.contains("\(method) /workflows/release-templates/coding/1/import"),
            [rawPath, path].contains(where: {

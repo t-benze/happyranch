@@ -982,3 +982,26 @@ def read_saved_capability(raw: bytes, *, expected_org_slug: str) -> SavedCodingR
     _org(expected_org_slug)
     _capability(_json(raw, VALUE_LIMIT), expected_org_slug, _Ancestry())
     return SavedCodingRecord(raw)
+
+
+def read_saved_source_command(raw: bytes, *, expected_org_slug: str) -> SavedCodingRecord:
+    """D1 nonallocating selectors only; no supplied capability/proof/actor."""
+    _org(expected_org_slug)
+    _check(type(raw) is bytes and len(raw) <= 65536)
+    command = _closed(_json(raw, COMMAND_LIMIT), 'format operation_key parent_id mapping action work')
+    _check(command['format'] == 'workflow-coding-source-command@1')
+    _operation(command['operation_key'])
+    _token(command['parent_id'])
+    _check(command['action'] in ('import-release-coding', 'publish-coding-mapping', 'adopt-local-store'))
+    mapping = _closed(command['mapping'], 'id generation digest')
+    _token(mapping['id'])
+    _integer(mapping['generation'], 1)
+    _digest(mapping['digest'])
+    work = _closed(command['work'], 'repository_id store_owner object_format base paths commands')
+    _repository(work['repository_id'])
+    _component(work['store_owner'])
+    _check(work['store_owner'] != 'founder' and work['object_format'] in ('sha1', 'sha256'))
+    _oid(work['base'], work['object_format'])
+    _paths(work['paths'])
+    _commands(work['commands'])
+    return SavedCodingRecord(raw)
