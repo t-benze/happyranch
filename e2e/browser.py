@@ -8,7 +8,9 @@ import json
 import re
 import threading
 import time
-from contextlib import ExitStack, contextmanager
+from contextlib import contextmanager
+from copy import deepcopy
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
 from urllib.parse import SplitResult, parse_qs, urlsplit
 
@@ -16,7 +18,6 @@ import greenlet
 from pyee import EventEmitter
 from playwright._impl._errors import Error
 from playwright._impl._sync_base import mapping
-from playwright._impl._waiter import Waiter
 from playwright.sync_api import expect, sync_playwright
 
 from oracles import require
@@ -25,53 +26,299 @@ if TYPE_CHECKING:
     from controller import Controller
 
 
+def _json_image(value: Any) -> str:
+    """Type-sensitive JSON equality; arrays and all unknown fields survive."""
+    return json.dumps(value, sort_keys=True, ensure_ascii=True, allow_nan=False, separators=(",", ":"))
+
+
+def _strict_json(raw: bytes) -> Any:
+    def pairs(items: list) -> dict:
+        result = {}
+        for key, value in items:
+            require(key not in result, "duplicate-json-key")
+            result[key] = value
+        return result
+    def constant(_value: str) -> Any:
+        raise Error("nonfinite-json")
+    try:
+        return json.loads(raw.decode("utf-8"), object_pairs_hook=pairs, parse_constant=constant)
+    except (ValueError, UnicodeError):
+        raise Error("invalid-original-json") from None
+
+
+def _fields(value: Any, strings: str = "", nullable: str = "", integers: str = "",
+            booleans: str = "") -> None:
+    require(type(value) is dict, "object-shape")
+    for key in strings.split():
+        require(key in value and type(value[key]) is str, "string-field-shape")
+    for key in nullable.split():
+        require(key in value and (value[key] is None or type(value[key]) is str), "nullable-field-shape")
+    for key in integers.split():
+        require(key in value and type(value[key]) is int, "integer-field-shape")
+    for key in booleans.split():
+        require(key in value and type(value[key]) is bool, "boolean-field-shape")
+
+
+def _utc_stamp(value: Any) -> None:
+    require(type(value) is str and "T" in value, "observation-stamp-shape")
+    try:
+        stamp = datetime.fromisoformat(value)
+    except ValueError:
+        raise Error("observation-stamp-invalid") from None
+    require(stamp.tzinfo is not None and stamp.utcoffset() == timedelta(0), "observation-stamp-utc")
+
+
+def _pause_copy(value: Any) -> dict:
+    _fields(value, "org_slug root_task_id lifecycle_status control_state observed_at",
+            "paused_at resumed_at", "generation", "held effective_hold evidence_complete")
+    _utc_stamp(value["observed_at"])
+    require(type(value.get("blockers")) is list, "pause-blockers-shape")
+    copy = deepcopy(value)
+    for blocker in copy["blockers"]:
+        require(type(blocker) is dict and blocker.get("observed_at") == copy["observed_at"],
+                "pause-blocker-stamp")
+        del blocker["observed_at"]
+    del copy["observed_at"]
+    return copy
+
+
+def _task_copy(value: Any, expected: dict | None = None) -> dict:
+    _fields(value, "task_id status team task_type brief created_at updated_at",
+            "assigned_agent parent_task_id revisit_of_task_id dispatched_from_thread_id block_kind "
+            "blocked_on_job_ids active_chain active_fanout note final_output_dir completed_at cancelled_at "
+            "last_heartbeat current_session_id zombie_flagged_at", "orchestration_step_count revision_count")
+    require("session_timeout_seconds" in value and (value["session_timeout_seconds"] is None
+            or type(value["session_timeout_seconds"]) is int), "task-timeout-shape")
+    if expected is not None:
+        require(all(key in value and _json_image(value[key]) == _json_image(want)
+                    for key, want in expected.items() if key != "child_wait_state"), "scenario-task-core")
+    require("child_wait" in value, "child-wait-slot")
+    wait = value["child_wait"]
+    copy = deepcopy(value)
+    if value["status"] == "in_progress" and value["block_kind"] == "delegated":
+        require(expected is not None and all(key in expected for key in (
+            "task_id", "brief", "status", "parent_task_id", "assigned_agent", "block_kind")),
+            "declared-delegated-task-identity")
+        _fields(wait, "state observed_at")
+        require(wait["state"] in {"waiting_children", "pending_children", "child_results_received",
+                                  "continuation_pending", "unavailable"}, "child-wait-state")
+        _utc_stamp(wait["observed_at"])
+        if expected and "child_wait_state" in expected:
+            require(wait["state"] == expected["child_wait_state"], "scenario-child-wait-state")
+        del copy["child_wait"]["observed_at"]
+    else:
+        require(wait is None, "child-wait-nullability")
+    return copy
+
+
+def _recall_shape(value: Any, seen: set | None = None) -> None:
+    _fields(value, "task_id brief status created_at",
+            "parent_task_id revisit_of_task_id assigned_agent completed_at output_summary output_dir verdict")
+    seen = set() if seen is None else seen
+    require(value["task_id"] not in seen and type(value.get("children")) is list, "recursive-recall-identity")
+    seen.add(value["task_id"])
+    for child in value["children"]:
+        _recall_shape(child, seen)
+
+
+def _body_image(body: Any, family: str, expected: dict) -> str:
+    """Literal harness predicates, independent scenario E, then narrow comparison copy."""
+    require(type(expected) is dict and type(expected.get("task" if family != "J" else "job")) is dict,
+            "predeclared-scenario-expectation")
+    require(type(body) is dict, "response-object")
+    copy = deepcopy(body)
+    if family == "J":
+        _fields(body, "id task_id agent_name title rationale script_text interpreter status created_at",
+                "cwd_hint stdout_head stderr_head stdout_path stderr_path started_at finished_at reviewed_at "
+                "reviewed_by reject_reason cwd_resolved reason", booleans="review_required persistent")
+        for key in ("exit_code", "duration_ms", "max_runtime_seconds", "max_output_bytes"):
+            require(key in body and (body[key] is None or type(body[key]) is int), "job-integer-shape")
+        require(all(key in body and _json_image(body[key]) == _json_image(want)
+                    for key, want in expected["job"].items()), "scenario-job-core")
+    elif family == "C":
+        _recall_shape(body)
+        def check(node: dict, want: dict) -> None:
+            require(all(key in node and _json_image(node[key]) == _json_image(value)
+                        for key, value in want.items() if key != "children"), "scenario-recall-core")
+            require(len(node["children"]) == len(want["children"]), "scenario-recall-children")
+            for child, target in zip(node["children"], want["children"]):
+                check(child, target)
+        check(body, expected["recall"])
+    elif family == "D":
+        copy["task"] = _task_copy(body.get("task"), expected["task"])
+        for key in ("results", "audit_log", "revisit_chain", "direct_revisits"):
+            require(type(body.get(key)) is list, "detail-array-shape")
+        require(all(type(x) is str for x in body["revisit_chain"]), "revisit-chain-shape")
+        for key in ("predecessor_prior_status", "superseded_by_task_id"):
+            require(key in body and (body[key] is None or type(body[key]) is str), "detail-nullable-shape")
+        for key in ("blocked_on_jobs", "active_chain", "escalation_reason", "work_status"):
+            require(key in body and (body[key] is None or type(body[key]) is
+                    (list if key == "blocked_on_jobs" else dict)), "detail-projection-shape")
+        if body["blocked_on_jobs"] is not None:
+            for job in body["blocked_on_jobs"]:
+                _fields(job, "job_id status")
+        for key, want in expected.get("detail", {}).items():
+            require(key in body and _json_image(body[key]) == _json_image(want), "scenario-detail-core")
+        copy["pause"] = _pause_copy(body.get("pause"))
+        if "result_ids" in expected:
+            require([r["id"] for r in body["results"]] == expected["result_ids"], "scenario-result-identities")
+    else:
+        require(family == "R" and type(body.get("tasks")) is list and "next_cursor" in body
+                and body["next_cursor"] is None, "small-synthetic-roots-page")
+        seen = set()
+        for index, row in enumerate(body["tasks"]):
+            require(type(row) is dict and row.get("task_id") not in seen and row.get("parent_task_id") is None,
+                    "unique-root-identity")
+            seen.add(row["task_id"])
+            target = expected["task"] if row["task_id"] == expected["task"]["task_id"] else None
+            copy["tasks"][index] = _task_copy(row, target)
+            _fields(row, "severity_rollup")
+            if target is not None:
+                require(row["severity_rollup"] == expected["task"]["status"], "scenario-root-severity")
+            require(type(row.get("direct_revisits")) is list, "root-revisits-shape")
+            copy["tasks"][index]["pause"] = _pause_copy(row.get("pause"))
+        require(expected["task"]["task_id"] in seen, "scenario-root-present")
+    if family in {"D", "R"} and "pause" in expected:
+        projection = body["pause"] if family == "D" else next(
+            row["pause"] for row in body["tasks"] if row["task_id"] == expected["task"]["task_id"])
+        require(all(key in projection and _json_image(projection[key]) == _json_image(want)
+                    for key, want in expected["pause"].items()), "scenario-hold-core")
+    if family in {"D", "R"} and "blocker_task" in expected:
+        require(any(blocker.get("task_id") == expected["blocker_task"]
+                    and blocker.get("kind") == "task_session" for blocker in projection["blockers"]),
+                "scenario-running-worker-blocker")
+    if family == "D" and "detail_snapshot" in expected:
+        independent = {key: value for key, value in expected.items() if key != "detail_snapshot"}
+        require(_json_image(copy) == _body_image(expected["detail_snapshot"], "D", independent),
+                "complete-terminal-detail-snapshot")
+    for forbidden in expected.get("forbidden", ()):
+        require(forbidden not in _json_image(body), "scenario-alien-absence")
+    return _json_image(copy)
+
+
+class _ObservationGroup:
+    """One finite caller checkpoint, one final acceptance owner, one absolute D."""
+    def __init__(self, browser: Browser, expected: dict, mode: str, document: str) -> None:
+        self.browser = browser
+        self.expected = deepcopy(expected)  # Before arm, never supplied by a browser body.
+        self.mode, self.document = mode, document
+        self.base = browser.base
+        self.boot = getattr(browser.controller, "daemon", None)
+        self.end = min(browser.controller.effective_end(), time.monotonic()+browser.page_timeout)
+        self.scopes: list[_ResponseObservation] = []
+        self.state = "OPEN"
+        self.failure: BaseException | None = None
+        self.changed = asyncio.Event()
+        self.tasks: list[Any] = []
+        self.final_checks: list[Any] = []
+        self.disposals: list[Any] = []
+
+    def fail(self, reason: str) -> None:
+        if self.failure is None:
+            self.failure = Error(reason)
+        self.changed.set()
+
+    def guard(self) -> None:
+        if self.failure is not None:
+            raise self.failure
+        require(self.browser.base == self.base and getattr(self.browser.controller, "daemon", None) is self.boot
+                and time.monotonic() < self.end
+                and not self.browser.poisoned, "group-current-bound")
+        require(all(scope.current() for scope in self.scopes), "group-document-lineage")
+
+    def checkpoint(self, site: str) -> None:
+        self.guard()
+        require(self.state == "OPEN" and self.scopes and all(s.requests for s in self.scopes),
+                "nonempty-open-cohorts")
+        self.state = "FROZEN"
+        for scope in self.scopes:
+            scope.note("checkpoint", site=site)
+
+    def wait(self, ready: Any) -> None:
+        async def wait() -> None:
+            while not ready():
+                self.guard()
+                self.changed.clear()
+                await asyncio.wait_for(self.changed.wait(), timeout=max(0, self.end-time.monotonic()))
+            self.guard()
+        self.browser._drive(wait(), self.end)
+        self.guard()
+
+    def finalize(self) -> None:
+        require(self.state == "FROZEN", "explicit-caller-checkpoint")
+        self.state = "SETTLING"
+        for scope in self.scopes:
+            for member in scope.requests.values():
+                scope.consume(member)
+                self.wait(lambda member=member: member["finished"])
+                scope.consume(member)
+        self.guard()
+        self.state = "FINALIZING"
+        # All body RPCs and bridge wakeups have settled. This final check,
+        # local detach and seal do not yield to the native dispatcher.
+        require(all(t.done() and not t.cancelled() and t.exception() is None for t in self.tasks),
+                "owned-body-tasks-settled")
+        for scope in self.scopes:
+            for member in scope.requests.values():
+                member["wake_active"] = False
+                member["body_task"].remove_done_callback(member["wake"])
+        for scope in self.scopes:
+            if scope.capture_json:
+                scope.trace["body"] = json.loads(self.browser.controller.sanitize(
+                    json.dumps(next(iter(scope.requests.values()))["json"])))
+        for check in self.final_checks:
+            check()
+        for dispose in self.disposals:
+            dispose()
+        self.guard()
+        for scope in self.scopes:
+            scope.note("local-cleanup", aborted=False, tasks=[])
+            scope.trace["validation"] = "validated"
+        self.browser._scopes.clear()
+        self.state = "FINALIZED"
+
+
 class _ResponseObservation:
-    """Own one real Waiter, Request set and optional original response body."""
-    def __init__(self, browser: Browser, path: str, mode: str, document: str,
-                 capture_json: bool, tree: bool, ordinary_roots: bool) -> None:
-        self.browser, self.path, self.mode = browser, path, mode
-        self.target, self.start_url = browser.base + document, browser._url
-        self.lineage = browser._lineage if mode == "action" else None
-        self.reached = self.start_url == self.target if mode == "action" else False
+    """Actual Request-indexed originals; scope exit never accepts or detaches."""
+    def __init__(self, group: _ObservationGroup, path: str, capture_json: bool,
+                 tree: bool, ordinary_roots: bool) -> None:
+        browser = group.browser
+        self.group, self.browser, self.path = group, browser, path
+        self.mode, self.document = group.mode, group.document
+        self.target, self.start_url = browser.base + self.document, browser._url
+        self.lineage = browser._lineage if self.mode == "action" else None
+        self.reached = self.start_url == self.target if self.mode == "action" else False
         self.navigation: Any = None
         self.commit: int | None = None
-        self.requests: dict[Any, int] = {}
-        self.response: Any = None
-        self.waiter: Any = None
-        self.tasks: list[Any] = []
-        self.listeners: list[tuple[Any, str, Any]] = []
-        self.aborted = False
+        self.requests: dict[Any, dict] = {}
         self.invalid = False
-        self._json: Any = None
-        self.captured = False
-        self.trace = dict(event="response-observation", path=path, mode=mode, document=document,
-                          tree=tree, capture_json=capture_json, deadline=browser._group_end,
+        self.aborted = False
+        self.capture_json = capture_json
+        self.family = "R" if ordinary_roots else "C" if tree else "J" if "/jobs/" in path else "D"
+        self.image: str | None = None
+        self.trace = dict(event="response-observation", path=path, mode=self.mode, document=self.document,
+                          tree=tree, capture_json=capture_json, deadline=group.end,
                           validation="partial/unvalidated", steps=[])
-        self.tree = tree
-        self.ordinary_roots = ordinary_roots
         if ordinary_roots:
             self.trace["query_contract"] = "ordinary-roots-limit50"
         browser.events.append(self.trace)
 
     def note(self, event: str, **metadata: Any) -> None:
         self.trace["steps"].append(dict(event=event, sequence=self.browser._sequence,
-                                        at=time.monotonic(), **metadata))
+                                       at=time.monotonic(), **metadata))
 
     def query_matches(self, parsed: SplitResult, request_sequence: int | None) -> bool:
-        if not self.ordinary_roots:
-            return True
+        contract = {"R": {"limit": ["50"]}, "C": {"tree": ["true"]}, "D": {}, "J": {}}[self.family]
         try:
-            # Complete semantic identity: retain blank and repeated values.
-            matches = (not parsed.fragment and
-                       parse_qs(parsed.query, keep_blank_values=True, errors="strict",
-                                strict_parsing=True) == {"limit": ["50"]})
+            matches = not parsed.fragment and parse_qs(parsed.query, keep_blank_values=True,
+                                                       errors="strict", strict_parsing=True) == contract
         except (ValueError, UnicodeError):
-            self.note("query-match", request_sequence=request_sequence, contract="ordinary-roots-limit50",
-                      matches=False, reason="invalid-query")
-            raise Error("invalid ordinary roots query") from None
-        self.note("query-match", request_sequence=request_sequence, contract="ordinary-roots-limit50",
-                  matches=matches, reason=("invalid-query" if parsed.fragment else
-                                           "ordinary-root-page" if matches else "other-query"))
+            self.note("query-match", request_sequence=request_sequence, matches=False, reason="invalid-query")
+            raise Error("invalid ordinary roots query" if self.family == "R" else "invalid observation query") from None
+        self.note("query-match", request_sequence=request_sequence,
+                  contract="ordinary-roots-limit50" if self.family == "R" else self.family,
+                  matches=matches, reason="invalid-query" if parsed.fragment else
+                  "ordinary-root-page" if matches and self.family == "R" else "exact-query" if matches else "other-query")
         return matches
 
     def current(self) -> bool:
@@ -81,67 +328,66 @@ class _ResponseObservation:
                 and b._url == self.target and b.page.url == self.target
                 and self.lineage.redirected_from is None and self.lineage.redirected_to is None)
 
+    def consume(self, member: dict) -> Any:
+        self.group.wait(lambda: member["body_task"] is not None and member["body_task"].done())
+        if "json" not in member:
+            with self.browser.controller.phase(self.group.end):
+                task = member["body_task"]
+                require(not task.cancelled(), "original-body-cancelled")
+                try:
+                    raw = base64.b64decode(task.result(), validate=True)
+                except (ValueError, UnicodeError):
+                    raise Error("invalid-original-body") from None
+                body = _strict_json(raw)
+                image = _body_image(body, self.family, self.group.expected)
+                require(self.image is None or self.image == image, "conflicting-original-bodies")
+                self.image = image
+                member["json"] = body
+                diagnostic = dict(request_sequence=member["sequence"], sha256=hashlib.sha256(raw).hexdigest())
+                if self.capture_json:
+                    diagnostic["body"] = json.loads(self.browser.controller.sanitize(json.dumps(body)))
+                self.trace.setdefault("bodies", []).append(diagnostic)
+                self.note("body-end", request_sequence=member["sequence"])
+        self.group.guard()
+        response = member["response"]
+        request = response.request
+        parsed, base = urlsplit(response.url), urlsplit(self.browser.base)
+        require(request in self.requests and self.requests[request] is member and response.status == 200
+                and request.method == "GET" and request.frame is self.browser.page.main_frame._impl_obj
+                and request.redirected_from is None and request.redirected_to is None
+                and (parsed.scheme, parsed.netloc, parsed.path) == (base.scheme, base.netloc, self.path)
+                and self.query_matches(parsed, member["sequence"]), "original-member-recheck")
+        return member["json"]
+
+    def provisional_json(self) -> Any:
+        require(self.group.state == "OPEN", "open-provisional-loan")
+        self.group.wait(lambda: bool(self.requests))
+        return self.consume(next(iter(self.requests.values())))
+
     @property
     def value(self) -> Any:
-        require(self.current() and self.response is not None, "current original native response")
-        return mapping.from_impl(self.response)
+        self.group.guard()
+        require(self.group.state == "FINALIZED", "whole-group-sealed-response")
+        return mapping.from_impl(next(iter(self.requests.values()))["response"])
 
     @property
     def captured_json(self) -> Any:
-        require(self.captured and self.current() and time.monotonic() < self.trace["deadline"],
-                "response JSON exposed in its original document/bound")
-        return self._json
-
-    def arm(self) -> None:
-        page = self.browser.page._impl_obj
-        # Pinned Playwright1.58.0 Page._expect_event, with an explicit owner.
-        self.waiter = Waiter(page, "page.expect_event(response)")
-        self.waiter.reject_on_timeout(self.browser._left() * 1000, "response absolute deadline")
-        self.tasks.extend(self.waiter._pending_tasks)
-        self.waiter.reject_on_event(page, "crash", Error("Page crashed"))
-        self.waiter.reject_on_event(page, "close", lambda: page._close_error_with_reason())
-        self.waiter.wait_for_event(page, "response", lambda response: response is self.response)
-        self.listeners.extend(self.waiter._registered_listeners)
-        self.note("arm")
-
-    def shorten(self) -> None:
-        self.trace["deadline"] = self.browser._group_end
-        if self.waiter is None or self.waiter.result().done():
-            return
-        for task in self.waiter._pending_tasks:
-            if not task.done() and not task.cancelling():
-                task.cancel()
-        self.waiter.reject_on_timeout(self.browser._left() * 1000, "response group absolute deadline")
-        self.tasks = list(self.waiter._pending_tasks)
-        self.trace["deadline"] = self.browser._group_end
+        self.group.guard()
+        require(self.capture_json and self.group.state == "FINALIZED", "whole-group-sealed-json")
+        return next(iter(self.requests.values()))["json"]
 
     def detach(self, abort: bool = False) -> None:
         self.aborted |= abort
-        if self.waiter is None:
-            return
-        def local(stage: str, action: Any) -> None:
-            try:
-                action()
-            except BaseException as exc:
-                self.browser.controller.record_error(stage, exc)
-                self.browser.poisoned = True
-        self.tasks = list(self.waiter._pending_tasks)
-        for task in self.tasks:
-            if not task.done() and not task.cancelling():
-                local("response-timer-cancel", task.cancel)
-        # Pinned local emitter removal: no ChannelOwner unsubscribe/send on
-        # poison. Each listener is attempted independently, once if present.
-        self.listeners = list(self.waiter._registered_listeners)
-        for emitter, event, listener in self.listeners:
-            local("response-listener-detach", lambda emitter=emitter, event=event, listener=listener:
-                  self.browser._detach(emitter, event, listener))
-        result = self.waiter.result()
-        if abort and not result.done():
-            local("response-result-abort", lambda: result.set_exception(Error("response scope aborted")))
-        if result.done() and not result.cancelled():
-            local("response-result-consume", result.exception)
-        self.note("local-cleanup", aborted=self.aborted,
-                  tasks=[dict(done=t.done(), cancelled=t.cancelled()) for t in self.tasks])
+        if abort:
+            for member in self.requests.values():
+                if "wake" in member:
+                    member["wake_active"] = False
+                    member["body_task"].remove_done_callback(member["wake"])
+            for task in self.group.tasks:
+                if not task.done() and not task.cancelling():
+                    task.cancel()
+            self.note("local-cleanup", aborted=True,
+                      tasks=[dict(done=t.done(), cancelled=t.cancelled()) for t in self.group.tasks])
 
 
 class Browser:
@@ -150,6 +396,7 @@ class Browser:
         self.events: list[dict] = []
         self.poisoned = False
         self._scopes: list[_ResponseObservation] = []
+        self._group: _ObservationGroup | None = None
         self._group_end = float("inf")
         self._bridge_active = False
         self._stop_attempted = False
@@ -181,6 +428,8 @@ class Browser:
         for emitter, event, listener in (
             (self.page._impl_obj, "request", self._request),
             (self.page._impl_obj, "response", self._response),
+            (self.page._impl_obj, "requestfinished", self._finished),
+            (self.page._impl_obj, "requestfailed", self._failed),
             (self.page.main_frame._impl_obj._channel, "navigated", self._navigated),
             (self.page._impl_obj, "close", self._closed),
             (self.page._impl_obj, "crash", self._closed),
@@ -204,14 +453,18 @@ class Browser:
             self.controller.record_error("native-page-close/crash", Error("page closed/crashed during observation"))
             for scope in self._scopes:
                 scope.invalid = True
-            # The already-owned native Waiter reject path completes while this
-            # healthy dispatcher is running. The caller then poisons locally.
+                scope.group.fail("page-closed/crashed")
+            # The live group latch wakes its owner; the caller then poisons
+            # locally without reusing uncertain native transport.
 
     def poison(self, error: BaseException) -> None:
         self.controller.record_error("native-observation", error)
         if not self.poisoned:
             self.events.append(dict(event="native-unavailable", reason=type(error).__name__, at=time.monotonic()))
         self.poisoned = True
+        if self._group is not None and self._group.failure is None:
+            self._group.failure = error
+            self._group.changed.set()
         for scope in reversed(self._scopes):
             scope.detach(abort=True)
         for emitter, event, listener in self._tracker_listeners:
@@ -242,13 +495,16 @@ class Browser:
                     continue
                 query_matches = scope.query_matches(parsed, self._sequence)
                 eligible = (query_matches and main and request.method == "GET" and scope.current()
-                            and request.redirected_from is None and request.redirected_to is None
-                            and (not scope.tree or parse_qs(parsed.query, keep_blank_values=True).get("tree") == ["true"]))
+                            and request.redirected_from is None and request.redirected_to is None)
                 if eligible:
-                    if scope.requests:
-                        scope.invalid = True
-                        scope.note("ambiguous-request")
-                    scope.requests[request] = self._sequence
+                    if scope.group.state != "OPEN":
+                        scope.group.fail("late-request")
+                    elif request in scope.requests:
+                        scope.group.fail("duplicate-request-start")
+                    else:
+                        scope.requests[request] = dict(sequence=self._sequence, response=None,
+                                                      body_task=None, finished=False)
+                        scope.group.changed.set()
                 scope.note("request-start", main_frame=main, method=request.method, eligible=eligible,
                            commit=scope.commit)
         except BaseException as exc:
@@ -303,26 +559,52 @@ class Browser:
         try:
             self._sequence += 1
             parsed, base = urlsplit(response.url), urlsplit(self.base)
-            # Preserve dashboard503 and other actual responses separately.
             self.events.append(dict(event="response", path=parsed.path, status=response.status))
             for scope in self._scopes:
-                if (parsed.scheme, parsed.netloc, parsed.path) != (base.scheme, base.netloc, scope.path):
-                    continue
                 request = response.request
-                query_matches = scope.query_matches(parsed, scope.requests.get(request))
-                eligible = (query_matches and request in scope.requests and scope.current() and request.method == "GET"
-                            and request.frame is self.page.main_frame._impl_obj and response.status == 200
-                            and request.redirected_from is None and request.redirected_to is None)
-                scope.note("selected" if eligible else "ineligible-response", method=request.method,
-                           status=response.status, request_sequence=scope.requests.get(request), commit=scope.commit)
-                if eligible:
-                    if scope.response is not None:
-                        scope.invalid = True
-                        scope.note("ambiguous-response")
-                    else:
-                        scope.response = response
+                if request not in scope.requests:
+                    continue  # A prearm/unadmitted object never becomes a member.
+                member = scope.requests[request]
+                valid = ((parsed.scheme, parsed.netloc, parsed.path) == (base.scheme, base.netloc, scope.path)
+                         and scope.query_matches(parsed, member["sequence"]) and scope.current()
+                         and request.method == "GET" and request.frame is self.page.main_frame._impl_obj
+                         and response.status == 200 and request.redirected_from is None
+                         and request.redirected_to is None and member["response"] is None)
+                scope.note("selected" if valid else "ineligible-response", status=response.status,
+                           method=request.method, request_sequence=member["sequence"])
+                if not valid:
+                    scope.group.fail("invalid-original-response")
+                else:
+                    member["response"] = response
+                    task = self._loop.create_task(response._channel.send("body", None))
+                    member["body_task"] = task
+                    scope.group.tasks.append(task)
+                    def wake(_task: Any, member: dict = member, group: _ObservationGroup = scope.group) -> None:
+                        if member["wake_active"]:
+                            group.changed.set()
+                    member["wake"], member["wake_active"] = wake, True
+                    task.add_done_callback(wake)
+                    scope.note("body-begin", request_sequence=member["sequence"])
+                scope.group.changed.set()
         except BaseException as exc:
             self.poison(exc)
+
+    def _finished(self, request: Any) -> None:
+        self._sequence += 1
+        for scope in self._scopes:
+            if request in scope.requests:
+                if request.redirected_from is not None or request.redirected_to is not None:
+                    scope.group.fail("redirected-member")
+                scope.requests[request]["finished"] = True
+                scope.note("request-finished", request_sequence=scope.requests[request]["sequence"])
+                scope.group.changed.set()
+
+    def _failed(self, request: Any) -> None:
+        self._sequence += 1
+        for scope in self._scopes:
+            if request in scope.requests:
+                scope.group.fail("request-failed")
+                scope.note("request-failed", request_sequence=scope.requests[request]["sequence"])
 
     def _left(self) -> float:
         end = min(self._group_end, self.controller.effective_end())
@@ -386,17 +668,6 @@ class Browser:
                                         callbacks_pending=len(self._connection._callbacks)))
         return self._drive(owned(), end)
 
-    def _settle(self, scope: _ResponseObservation) -> None:
-        pending = {task for task in scope.tasks if not task.done()}
-        if pending:
-            async def settle() -> None:
-                _, unsettled = await asyncio.wait(pending, timeout=max(0, self._group_end-time.monotonic()))
-                require(not unsettled, "owned Waiter timer cancellation settled")
-            self._drive(settle(), self._group_end)
-        for task in scope.tasks:
-            if task.done() and not task.cancelled():
-                require(task.exception() is None, "native Waiter timer failure")
-
     def set_page_timeout(self, cap: float) -> None:
         # Preserve the actual page default, including an already clipped cap,
         # for later callers sharing this page (Pause and retained task views).
@@ -405,91 +676,61 @@ class Browser:
         self.controller.remaining()
 
     @contextmanager
-    def response(self, path: str, *, mode: str = "action", document: str | None = None,
-                 capture_json: bool = False, tree: bool = False, ordinary_roots: bool = False) -> Any:
+    def observation_group(self, expected: dict, *, mode: str, document: str) -> Any:
         c = self.controller
-        end = min(c.effective_end(), time.monotonic()+self.page_timeout, self._group_end)
-        outer = not self._scopes
-        self._group_end = end
-        c.observation_end = end
-        observation = None
+        require(self._group is None and not self._scopes, "one-outer-observation-owner")
+        require(mode in {"action", "new-document"} and document.startswith("/orgs/")
+                and urlsplit(document).path == document and not urlsplit(document).query
+                and not urlsplit(document).fragment and expected, "literal-predeclared-group")
+        self._healthy()
+        if mode == "action":
+            source, base = urlsplit(self._url), urlsplit(self.base)
+            require(self._lineage is not None and self._url == self.page.url
+                    and (source.scheme, source.netloc) == (base.scheme, base.netloc)
+                    and source.path.startswith("/orgs/") and not source.query and not source.fragment,
+                    "action-current-document")
+        group = self._group = _ObservationGroup(self, expected, mode, document)
+        self._group_end = c.observation_end = group.end
         try:
-            with c.phase(end):
-                self._healthy()
-                require(mode in {"action", "new-document"} and isinstance(document, str)
-                        and document.startswith("/orgs/") and urlsplit(document).path == document
-                        and not urlsplit(document).query and not urlsplit(document).fragment,
-                        "literal caller-declared document destination for both modes")
-                require(path.startswith("/api/v1/orgs/") and urlsplit(path).path == path
-                        and not urlsplit(path).query and not urlsplit(path).fragment, "literal API observation path")
-                observation = _ResponseObservation(self, path, mode, document, capture_json, tree, ordinary_roots)
-                if self._scopes:
-                    parent = self._scopes[-1]
-                    require((parent.target, parent.mode, parent.start_url, parent.lineage) ==
-                            (observation.target, mode, observation.start_url, observation.lineage),
-                            "nested observations share one document transition")
-                if mode == "action":
-                    source, base = urlsplit(self._url), urlsplit(self.base)
-                    require(self._lineage is not None and self._url == self.page.url
-                            and (source.scheme, source.netloc) == (base.scheme, base.netloc)
-                            and source.path.startswith("/orgs/") and not source.query and not source.fragment,
-                            "action starts from authenticated current-origin native document lineage")
-                for scope in self._scopes:
-                    scope.shorten()
-                self._scopes.append(observation)
-                observation.arm()
-            with c.phase(end, native=True):
-                yield observation  # Only the audited finite native action sites.
-            async def selected() -> Any:
-                result = observation.waiter.result()
-                done, _ = await asyncio.wait({result}, timeout=max(0, self._group_end-time.monotonic()))
-                if not done:
-                    raise TimeoutError("response absolute deadline")
-                return result.result()
-            native = self._drive(selected(), self._group_end)
-            with c.phase(self._group_end):
-                require(native is observation.response and observation.current(), "selected current Request/Response lineage")
-            if capture_json:
-                observation.note("body-begin")
-                # Original selected Response channel, one RPC, no inline decode
-                # in dispatcher and no alternative body or response selection.
-                binary = self._native(lambda: native._channel.send("body", None), self._group_end)
-                with c.phase(self._group_end):
-                    require(observation.current(), "body completed in selected current document")
-                    raw = base64.b64decode(binary, validate=True)
-                    body = json.loads(raw.decode("utf-8"))
-                    observation.trace["body"] = json.loads(c.sanitize(json.dumps(body)))
-                    require(observation.current(), "parsed body retains selected document/destination")
-                    observation._json, observation.captured = body, True
-                    observation.note("body-end")
-            with c.phase(self._group_end):
-                require(observation.current(), "response final document/destination")
-                observation.detach()
-            require(not self.poisoned, "local native cleanup completed")
-            self._settle(observation)
-            with c.phase(self._group_end):
-                require(observation.current(), "response current after timer settlement")
-                observation.trace["validation"] = "validated"
+            with c.phase(group.end, native=True):
+                yield group
+            group.finalize()
         except BaseException as exc:
-            if observation is not None:
-                observation.note("observation-error", error=type(exc).__name__)
+            group.state = "REFUSED"
+            for scope in group.scopes:
+                scope.note("observation-error", error=type(exc).__name__)
             self.poison(exc)
             raise
         finally:
-            if observation is not None and observation in self._scopes:
-                observation.detach(abort=self.poisoned)
-                self._scopes.remove(observation)
-            if outer:
-                self._group_end = float("inf")
-                if hasattr(c, "observation_end"):
-                    del c.observation_end
-                c._timer_sync()
+            if group.state != "FINALIZED":
+                for dispose in group.disposals:
+                    c._attempt("group-local-detach", dispose, blocking=False)
+                self._scopes.clear()
+            self._group = None
+            self._group_end = float("inf")
+            del c.observation_end
+            c._timer_sync()
 
-    def open_task(self, org: str, task: str, brief: str, *, switch: bool = False,
-                  cached_recall: bool = False, alien: str | None = None) -> None:
+    @contextmanager
+    def response(self, path: str, *, capture_json: bool = False, tree: bool = False,
+                 ordinary_roots: bool = False) -> Any:
+        group = self._group
+        require(group is not None and group.state == "OPEN", "registered-outer-group")
+        require(path.startswith("/api/v1/orgs/") and urlsplit(path).path == path
+                and not urlsplit(path).query and not urlsplit(path).fragment, "literal-api-path")
+        require(not any(s.path == path for s in group.scopes), "distinct-endpoint-scope")
+        scope = _ResponseObservation(group, path, capture_json, tree, ordinary_roots)
+        group.scopes.append(scope)
+        self._scopes.append(scope)
+        scope.note("arm")
+        yield scope  # Inner lexical exit has no acceptance/cleanup authority.
+
+    def open_task(self, org: str, task: str, brief: str, *, expected: dict, ready: Any = None,
+                  switch: bool = False, cached_recall: bool = False, alien: str | None = None) -> None:
         roots = f"/api/v1/orgs/{org}/tasks/roots"
-        with self.response(roots, mode="action" if switch else "new-document",
-                           document=f"/orgs/{org}/tasks", ordinary_roots=True):
+        with (self.observation_group(expected, mode="action" if switch else "new-document",
+                                     document=f"/orgs/{org}/tasks") as group,
+              self.response(roots, ordinary_roots=True)):
             if switch:
                 self.page.get_by_role("combobox", name="Active org", exact=True).click(timeout=self.controller.remaining(self.page_timeout)*1000)
                 self.controller.remaining()
@@ -498,41 +739,52 @@ class Browser:
             else:
                 self.page.goto(f"{self.base}/orgs/{org}/tasks", timeout=self.controller.remaining(self.page_timeout)*1000)
                 self.controller.remaining()
-        main = self.page.get_by_role("main")
-        expect(main.get_by_text(brief, exact=False).first).to_be_visible(timeout=self.controller.remaining(5)*1000)
-        self.controller.remaining()
-        if alien:
-            expect(main.get_by_text(alien, exact=False)).to_have_count(0, timeout=self.controller.remaining(5)*1000)
+            main = self.page.get_by_role("main")
+            expect(main.get_by_text(brief, exact=False).first).to_be_visible(timeout=self.controller.remaining(5)*1000)
             self.controller.remaining()
-            other = "beta" if org == "alpha" else "alpha"
-            expect(main.locator(f'a[href^="/orgs/{other}/tasks/"]')).to_have_count(0, timeout=self.controller.remaining(5)*1000)
+            if alien:
+                expect(main.get_by_text(alien, exact=False)).to_have_count(0, timeout=self.controller.remaining(5)*1000)
+                self.controller.remaining()
+                other = "beta" if org == "alpha" else "alpha"
+                expect(main.locator(f'a[href^="/orgs/{other}/tasks/"]')).to_have_count(0, timeout=self.controller.remaining(5)*1000)
+                self.controller.remaining()
+            link = main.locator(f'a[href="/orgs/{org}/tasks/{task}"]').first
+            expect(link).to_be_visible(timeout=self.controller.remaining(5)*1000)
             self.controller.remaining()
-        link = main.locator(f'a[href="/orgs/{org}/tasks/{task}"]').first
-        expect(link).to_be_visible(timeout=self.controller.remaining(5)*1000)
-        self.controller.remaining()
-        detail_path = f"/api/v1/orgs/{org}/tasks/{task}"
-        recall_path = detail_path + "/recall"
-        with ExitStack() as responses:
+            require(self.page.url == self.base+f"/orgs/{org}/tasks", "exact-task-list-url")
+            group.checkpoint("1")
+        # IDs2/3 deliberately provide DOM evidence only. Preserve the old
+        # pair's one absolute bound; cached-return passive provenance is weaker.
+        end = min(self.controller.effective_end(), time.monotonic()+self.page_timeout)
+        with self.controller.bounded(end), self.controller.phase(end, native=True):
             if cached_recall:
-                # The explicit round-trip return may reuse the real response
-                # previously observed in this context. Rendering is asserted by
-                # completed(), before a separate fresh-HTTP revisit below.
-                for path in (detail_path, recall_path):
+                for path in (f"/api/v1/orgs/{org}/tasks/{task}", f"/api/v1/orgs/{org}/tasks/{task}/recall"):
                     require(any(row.get("event") == "response" and row.get("path") == path
                                 and row.get("status") == 200 for row in self.events),
                             "cached detail/Recall has target-org real HTTP provenance", path)
                 self.events.append(dict(event="navigation", action="cached-return", org=org, task=task))
-            else:
-                responses.enter_context(self.response(detail_path, mode="action", document=f"/orgs/{org}/tasks/{task}"))
-                responses.enter_context(self.response(recall_path, mode="action", document=f"/orgs/{org}/tasks/{task}", tree=True))
             link.click(timeout=self.controller.remaining(self.page_timeout)*1000)
             self.controller.remaining()
-        expect(main.get_by_text(brief, exact=False).first).to_be_visible(timeout=self.controller.remaining(5)*1000)
-        self.controller.remaining()
+            expect(self.page).to_have_url(self.base+f"/orgs/{org}/tasks/{task}", timeout=self.controller.remaining(5)*1000)
+            self.controller.remaining()
+            expect(main.get_by_text(brief, exact=False).first).to_be_visible(timeout=self.controller.remaining(5)*1000)
+            self.controller.remaining()
+            if ready is not None:
+                ready()
+            else:
+                require(expected["task"]["status"] == "in_progress", "terminal-dom-readiness-required")
+                expect(main.locator("h1").get_by_text("in_progress", exact=False).first).to_be_visible(timeout=self.controller.remaining(5)*1000)
+                self.controller.remaining()
+                heading = main.get_by_role("heading", name="Recall tree", exact=True)
+                expect(heading).to_be_visible(timeout=self.controller.remaining(5)*1000)
+                self.controller.remaining()
+                expect(heading.locator("..").locator(f'a[href="/orgs/{org}/tasks/{task}"]')).to_be_visible(timeout=self.controller.remaining(5)*1000)
+                self.controller.remaining()
+                for text in expected["absent"]:
+                    expect(main.get_by_text(text, exact=False)).to_have_count(0, timeout=self.controller.remaining(5)*1000)
+                    self.controller.remaining()
 
-    def revisit_after_cache_expiry(self, org: str, task: str) -> None:
-        # AppProvider's shipping staleTime is 30s. Keep this same populated
-        # context and navigate normally; never evict cache or change its clock.
+    def revisit_after_cache_expiry(self, org: str, task: str, *, expected: dict, ready: Any) -> None:
         require(self.controller.remaining(32) >= 31, "cache revisit fits action budget")
         begin = time.monotonic()
         main = self.page.get_by_role("main")
@@ -542,28 +794,38 @@ class Browser:
         self.controller.remaining()
         self.events.append(dict(event="navigation", action="cache-expired-revisit", org=org, task=task))
         with (
-            self.response(f"/api/v1/orgs/{org}/tasks/{task}", mode="action", document=f"/orgs/{org}/tasks/{task}"),
-            self.response(f"/api/v1/orgs/{org}/tasks/{task}/recall", mode="action", document=f"/orgs/{org}/tasks/{task}", tree=True),
+            self.observation_group(expected, mode="action", document=f"/orgs/{org}/tasks/{task}") as group,
+            self.response(f"/api/v1/orgs/{org}/tasks/{task}"),
+            self.response(f"/api/v1/orgs/{org}/tasks/{task}/recall", tree=True),
         ):
             main.locator(f'a[href="/orgs/{org}/tasks/{task}"]').first.click(timeout=self.controller.remaining(self.page_timeout)*1000)
             self.controller.remaining()
+            ready()
+            group.checkpoint("4/5")
         self.controller.phases.append(dict(name="browser-cache-revisit", seconds=time.monotonic() - begin))
 
     def completed(self, org: str, task: str, brief: str, summary: str, *, child: str | None = None,
                   child_summary: str | None = None, alien: str | None = None, shot: str,
-                  refresh: bool = False) -> None:
+                  refresh: bool = False, expected: dict | None = None) -> None:
         if refresh:
             # Task/Recall queries do not poll while mounted. A normal user
             # refresh observes final state through the real browser transport;
             # this makes no claim about automatic live-view invalidation.
             require(self.page.url == f"{self.base}/orgs/{org}/tasks/{task}", "refresh owns expected task")
             self.events.append(dict(event="navigation", action="reload", org=org, task=task))
+            require(expected is not None, "completion-reload-expectation")
             with (
-                self.response(f"/api/v1/orgs/{org}/tasks/{task}", mode="new-document", document=f"/orgs/{org}/tasks/{task}"),
-                self.response(f"/api/v1/orgs/{org}/tasks/{task}/recall", mode="new-document", document=f"/orgs/{org}/tasks/{task}", tree=True),
+                self.observation_group(expected, mode="new-document", document=f"/orgs/{org}/tasks/{task}") as group,
+                self.response(f"/api/v1/orgs/{org}/tasks/{task}"),
+                self.response(f"/api/v1/orgs/{org}/tasks/{task}/recall", tree=True),
             ):
                 self.page.reload(timeout=self.controller.remaining(self.page_timeout)*1000)
                 self.controller.remaining()
+                self.completed(org, task, brief, summary, child=child, child_summary=child_summary,
+                               alien=alien, shot=shot, expected=expected)
+                group.checkpoint("6/7")
+            return
+        require(self.page.url == f"{self.base}/orgs/{org}/tasks/{task}", "exact-terminal-task-url")
         main = self.page.get_by_role("main")
         expect(main.get_by_text(brief, exact=False).first).to_be_visible(timeout=self.controller.remaining(5)*1000)
         self.controller.remaining()
@@ -589,6 +851,15 @@ class Browser:
             self.controller.remaining()
             expect(recall.get_by_text("completed", exact=True)).to_have_count(2, timeout=self.controller.remaining(5)*1000)
             self.controller.remaining()
+        want_hrefs = [f"/orgs/{org}/tasks/{task}"]
+        if child:
+            want_hrefs.append(f"/orgs/{org}/tasks/{child}")
+        links = recall.locator(f'a[href^="/orgs/{org}/tasks/"]')
+        expect(links).to_have_count(len(want_hrefs), timeout=self.controller.remaining(5)*1000)
+        self.controller.remaining()
+        for index, href in enumerate(want_hrefs):
+            expect(links.nth(index)).to_have_attribute("href", href, timeout=self.controller.remaining(5)*1000)
+            self.controller.remaining()
         if alien:
             expect(main.get_by_text(alien, exact=False)).to_have_count(0, timeout=self.controller.remaining(5)*1000)
             self.controller.remaining()
@@ -599,26 +870,36 @@ class Browser:
         self.controller.remaining()
         require(not any(row["event"] == "pageerror" for row in self.events), "built-browser JavaScript error", self.events)
 
-    def job_open(self, job: str, status: str) -> dict:
+    def job_open(self, job: str, status: str, *, expected: dict, ready: Any = None) -> dict:
         self.set_page_timeout(10)
         path = f"/api/v1/orgs/alpha/jobs/{job}"
-        with self.response(path, mode="new-document", document=f"/orgs/alpha/jobs/{job}", capture_json=True) as response:
+        with (self.observation_group(expected, mode="new-document", document=f"/orgs/alpha/jobs/{job}") as group,
+              self.response(path, capture_json=True) as response):
             self.page.goto(f"{self.base}/orgs/alpha/jobs/{job}", timeout=self.controller.remaining(10)*1000)
             self.controller.remaining()
-        body = response.captured_json
-        require(body["id"] == job and body["status"] == status, "fresh browser job state", body)
-        expect(self.page.get_by_role("main").get_by_text(status, exact=True).first).to_be_visible(timeout=self.controller.remaining(5)*1000)
-        self.controller.remaining()
-        for label in ("Approve & run", "Run"):
-            expect(self.page.get_by_role("main").get_by_role("button", name=label, exact=True)).to_have_count(0, timeout=self.controller.remaining(5)*1000)
+            require(self.page.url == f"{self.base}/orgs/alpha/jobs/{job}", "exact-job-url")
+            expect(self.page.get_by_role("main").get_by_text(status, exact=True).first).to_be_visible(timeout=self.controller.remaining(5)*1000)
             self.controller.remaining()
-        self.events.append(dict(event="job-read", path=urlsplit(response.value.url).path,
-                                method=response.value.request.method, status=response.value.status,
-                                response=body, at=time.monotonic()))
-        return body
+            for label in ("Approve & run", "Run"):
+                expect(self.page.get_by_role("main").get_by_role("button", name=label, exact=True)).to_have_count(0, timeout=self.controller.remaining(5)*1000)
+                self.controller.remaining()
+            if ready is not None:
+                ready()
+            group.checkpoint("8")
+        with self.controller.phase(group.end):
+            body = response.captured_json
+            require(body["id"] == job and body["status"] == status, "fresh browser job state")
+            self.events.append(dict(event="job-read", path=urlsplit(response.value.url).path,
+                                    method=response.value.request.method, status=response.value.status,
+                                    response=body, at=time.monotonic()))
+            return body
 
-    def job_action(self, job: str, cap: int, pending_check: Any, *, reject: bool = False) -> dict:
-        body = self.job_open(job, "pending" if reject else "running")
+    def job_action(self, job: str, cap: int, pending_check: Any, *, expected: dict, reject: bool = False) -> dict:
+        def ready() -> None:
+            if not reject:
+                expect(self.page.get_by_role("main").get_by_role("button", name="Stop", exact=True)).to_be_visible(timeout=self.controller.remaining(5)*1000)
+                self.controller.remaining()
+        body = self.job_open(job, "pending" if reject else "running", expected=expected, ready=ready)
         main = self.page.get_by_role("main")
         for label in ("Approve & run", "Run"):
             expect(main.get_by_role("button", name=label, exact=True)).to_have_count(0, timeout=self.controller.remaining(5)*1000)
@@ -653,54 +934,64 @@ class Browser:
         self.events.append(dict(event="job-action", **record))
         return record
 
-    def job_terminal(self, job: str, status: str, exit_code: int | None, out: str, err: str) -> dict:
-        body = self.job_open(job, status)
-        main = self.page.get_by_role("main")
-        if status == "rejected":
-            expect(main.get_by_text("E04_REJECTED_BY_REVIEW", exact=True)).to_be_visible(timeout=self.controller.remaining(5)*1000)
-            self.controller.remaining()
-            expect(main.get_by_role("heading", name="Output", exact=True)).to_have_count(0, timeout=self.controller.remaining(5)*1000)
-            self.controller.remaining()
-        else:
-            label = main.get_by_text("Exit code", exact=True)
-            expect(label).to_be_visible(timeout=self.controller.remaining(5)*1000)
-            self.controller.remaining()
-            expect(label.locator("..").get_by_text(str(exit_code), exact=True)).to_be_visible(timeout=self.controller.remaining(5)*1000)
-            self.controller.remaining()
-            for stream, content in (("stdout", out), ("stderr", err)):
-                heading = main.get_by_role("heading", name=stream, exact=True)
-                expect(heading.locator("..").locator("pre")).to_have_text(content, timeout=self.controller.remaining(5)*1000)
+    def job_terminal(self, job: str, status: str, exit_code: int | None, out: str, err: str, *, expected: dict) -> dict:
+        def ready() -> None:
+            main = self.page.get_by_role("main")
+            if status == "rejected":
+                expect(main.get_by_text("E04_REJECTED_BY_REVIEW", exact=True)).to_be_visible(timeout=self.controller.remaining(5)*1000)
                 self.controller.remaining()
-            if status == "failed":
-                expect(main.get_by_text("timeout", exact=True)).to_be_visible(timeout=self.controller.remaining(5)*1000)
+                expect(main.get_by_role("heading", name="Output", exact=True)).to_have_count(0, timeout=self.controller.remaining(5)*1000)
                 self.controller.remaining()
-        expect(main.get_by_role("button", name="Approve & run", exact=True)).to_have_count(0, timeout=self.controller.remaining(5)*1000)
-        self.controller.remaining()
-        expect(main.get_by_role("button", name="Reject", exact=True)).to_have_count(0, timeout=self.controller.remaining(5)*1000)
-        self.controller.remaining()
-        self.page.screenshot(path=str(self.controller.root / "raw" / f"e04-{job}.png"), full_page=True, timeout=self.controller.remaining(10)*1000)
-        self.controller.remaining()
-        result = dict(body=body, text=main.inner_text(timeout=self.controller.remaining(10)*1000), screenshot=f"e04-{job}.png", at=time.monotonic())
-        self.controller.remaining()
-        return result
+            else:
+                label = main.get_by_text("Exit code", exact=True)
+                expect(label).to_be_visible(timeout=self.controller.remaining(5)*1000)
+                self.controller.remaining()
+                expect(label.locator("..").get_by_text(str(exit_code), exact=True)).to_be_visible(timeout=self.controller.remaining(5)*1000)
+                self.controller.remaining()
+                for stream, content in (("stdout", out), ("stderr", err)):
+                    heading = main.get_by_role("heading", name=stream, exact=True)
+                    expect(heading.locator("..").locator("pre")).to_have_text(content, timeout=self.controller.remaining(5)*1000)
+                    self.controller.remaining()
+                if status == "failed":
+                    expect(main.get_by_text("timeout", exact=True)).to_be_visible(timeout=self.controller.remaining(5)*1000)
+                    self.controller.remaining()
+            expect(main.get_by_role("button", name="Approve & run", exact=True)).to_have_count(0, timeout=self.controller.remaining(5)*1000)
+            self.controller.remaining()
+            expect(main.get_by_role("button", name="Reject", exact=True)).to_have_count(0, timeout=self.controller.remaining(5)*1000)
+            self.controller.remaining()
+            self.page.screenshot(path=str(self.controller.root / "raw" / f"e04-{job}.png"), full_page=True, timeout=self.controller.remaining(10)*1000)
+            self.controller.remaining()
+            pending["text"] = main.inner_text(timeout=self.controller.remaining(10)*1000)
+            self.controller.remaining()
+        pending: dict = {}
+        end = min(self.controller.effective_end(), time.monotonic()+10, time.monotonic()+self.page_timeout)
+        with self.controller.bounded(end):
+            body = self.job_open(job, status, expected=expected, ready=ready)
+            with self.controller.phase(end):
+                return dict(body=body, text=pending["text"], screenshot=f"e04-{job}.png", at=time.monotonic())
 
-    def jobs_waiting(self, task: str, ids: list[str]) -> dict:
+    def jobs_waiting(self, task: str, ids: list[str], *, expected: dict) -> dict:
         path = f"/api/v1/orgs/alpha/tasks/{task}"
         with (
-            self.response(path, mode="new-document", document=f"/orgs/alpha/tasks/{task}", capture_json=True) as response,
-            self.response(path + "/recall", mode="new-document", document=f"/orgs/alpha/tasks/{task}", tree=True),
+            self.observation_group(expected, mode="new-document", document=f"/orgs/alpha/tasks/{task}") as group,
+            self.response(path, capture_json=True) as response,
+            self.response(path + "/recall", tree=True),
         ):
             self.page.goto(f"{self.base}/orgs/alpha/tasks/{task}", timeout=self.controller.remaining(10)*1000)
             self.controller.remaining()
-        main = self.page.get_by_role("main")
-        expect(main.get_by_text("waiting on jobs", exact=False).first).to_be_visible(timeout=self.controller.remaining(5)*1000)
-        self.controller.remaining()
-        for job in ids:
-            expect(main.get_by_text(job, exact=False).first).to_be_visible(timeout=self.controller.remaining(5)*1000)
+            main = self.page.get_by_role("main")
+            expect(main.get_by_text("waiting on jobs", exact=False).first).to_be_visible(timeout=self.controller.remaining(5)*1000)
             self.controller.remaining()
-        result = dict(body=response.captured_json, text=main.inner_text(timeout=self.controller.remaining(10)*1000), at=time.monotonic())
-        self.controller.remaining()
-        return result
+            for job in ids:
+                expect(main.get_by_text(job, exact=False).first).to_be_visible(timeout=self.controller.remaining(5)*1000)
+                self.controller.remaining()
+            text = main.inner_text(timeout=self.controller.remaining(10)*1000)
+            self.controller.remaining()
+            group.checkpoint("10/11")
+        with self.controller.phase(group.end):
+            result = dict(body=response.captured_json, text=text, at=time.monotonic())
+            self.controller.remaining()
+            return result
 
     def open_threads_context(self, port: int) -> None:
         self.thread_base = f"http://127.0.0.1:{port}"
@@ -870,7 +1161,7 @@ class Browser:
                 self.controller._atomic_json(self.controller.root / "raw/e05-browser-events.json", list(self.thread_events))
 
 
-    def e07_detail(self, task: str, status: str, shot: str | None = None) -> dict:
+    def e07_detail(self, task: str, status: str, shot: str | None = None, *, expected: dict) -> dict:
         c = self.controller
         self.set_page_timeout(4)
         self.page.set_default_navigation_timeout(c.remaining(4) * 1000)
@@ -880,43 +1171,50 @@ class Browser:
         self.controller.remaining()
         # Real reload and real responses even if a previous React cache exists.
         with (
-            self.response(path, mode="new-document", document=f"/orgs/alpha/tasks/{task}", capture_json=True) as detail,
-            self.response(path + "/recall", mode="new-document", document=f"/orgs/alpha/tasks/{task}", capture_json=True, tree=True) as recall,
+            self.observation_group(expected, mode="new-document", document=f"/orgs/alpha/tasks/{task}") as group,
+            self.response(path, capture_json=True) as detail,
+            self.response(path + "/recall", capture_json=True, tree=True) as recall,
         ):
             self.page.reload(timeout=c.remaining(4)*1000)
             self.controller.remaining()
-        main = self.page.get_by_role("main")
-        expect(main.locator("h1").get_by_text(status, exact=False).first).to_be_visible(timeout=c.remaining(4)*1000)
-        self.controller.remaining()
-        cancel = main.get_by_role("button", name="Cancel", exact=True)
-        if status in {"cancelled", "completed"}:
-            expect(cancel).to_be_disabled(timeout=c.remaining(4)*1000)
+            main = self.page.get_by_role("main")
+            expect(main.locator("h1").get_by_text(status, exact=False).first).to_be_visible(timeout=c.remaining(4)*1000)
             self.controller.remaining()
-            expect(cancel).to_have_attribute("title", f"Cannot cancel a {status} task", timeout=c.remaining(4)*1000)
+            cancel = main.get_by_role("button", name="Cancel", exact=True)
+            if status in {"cancelled", "completed"}:
+                expect(cancel).to_be_disabled(timeout=c.remaining(4)*1000)
+                self.controller.remaining()
+                expect(cancel).to_have_attribute("title", f"Cannot cancel a {status} task", timeout=c.remaining(4)*1000)
+                self.controller.remaining()
+            else:
+                expect(cancel).to_be_enabled(timeout=c.remaining(4)*1000)
+                self.controller.remaining()
+            record = dict(task=task, url=self.page.url, detail=detail.provisional_json(),
+                          recall=recall.provisional_json(), text=main.inner_text(timeout=self.controller.remaining(4)*1000),
+                          cancel_disabled=cancel.is_disabled(timeout=self.controller.remaining(4)*1000), cancel_title=cancel.get_attribute("title", timeout=self.controller.remaining(4)*1000),
+                          badges=self._native(lambda: main.get_by_text(status,exact=True)._impl_obj.all_text_contents(), group.end), at=time.monotonic())
             self.controller.remaining()
-        else:
-            expect(cancel).to_be_enabled(timeout=c.remaining(4)*1000)
-            self.controller.remaining()
-        record = dict(task=task, url=self.page.url, detail_url=detail.value.url, detail=detail.captured_json,
-                      detail_method=detail.value.request.method, detail_status=detail.value.status,
-                      recall_url=recall.value.url, recall=recall.captured_json, recall_status=recall.value.status,
-                      recall_method=recall.value.request.method, text=main.inner_text(timeout=self.controller.remaining(4)*1000),
-                      cancel_disabled=cancel.is_disabled(timeout=self.controller.remaining(4)*1000), cancel_title=cancel.get_attribute("title", timeout=self.controller.remaining(4)*1000),
-                      badges=main.get_by_text(status,exact=True).all_text_contents(), at=time.monotonic())
-        self.controller.remaining()
-        if shot:
-            self.page.screenshot(path=str(c.root / "raw" / shot),full_page=True,timeout=c.remaining(4)*1000)
-            self.controller.remaining()
-            record["screenshot"] = shot
-        c.e07.setdefault("browser_events",[]).append(dict(event="detail-reload",**record))
-        require(record["detail"]["task"]["task_id"] == task and record["detail"]["task"]["status"] == status,
-                "E07 current actual browser response",record)
-        return record
+            if shot:
+                self.page.screenshot(path=str(c.root / "raw" / shot),full_page=True,timeout=c.remaining(4)*1000)
+                self.controller.remaining()
+                record["screenshot"] = shot
+            require(record["detail"]["task"]["task_id"] == task and record["detail"]["task"]["status"] == status,
+                    "E07 current actual browser response")
+            group.checkpoint("15/16")
+        with c.phase(group.end):
+            record.update(detail_url=detail.value.url, detail=detail.captured_json,
+                          detail_method=detail.value.request.method, detail_status=detail.value.status,
+                          recall_url=recall.value.url, recall=recall.captured_json,
+                          recall_method=recall.value.request.method, recall_status=recall.value.status)
+            c.e07.setdefault("browser_events",[]).append(dict(event="detail-reload",**record))
+            require(record["detail"]["task"]["task_id"] == task and record["detail"]["task"]["status"] == status,
+                    "E07 current actual browser response",record)
+            return record
 
-    def e07_cancel(self, parent: str, child: str) -> dict:
+    def e07_cancel(self, parent: str, child: str, *, expected: dict) -> dict:
         c = self.controller
-        child_view = self.e07_detail(child,"in_progress")
-        parent_view = self.e07_detail(parent,"in_progress")
+        child_view = self.e07_detail(child,"in_progress", expected=expected[child])
+        parent_view = self.e07_detail(parent,"in_progress", expected=expected[parent])
         require("waiting on subtasks" in parent_view["text"] and child_view["detail"]["task"]["block_kind"] is None,
                 "E07 waiting parent and running child rendered")
         self.page.get_by_role("main").get_by_role("button",name="Cancel",exact=True).click(timeout=c.remaining(4)*1000)
@@ -952,31 +1250,34 @@ class Browser:
         finally:
             self.page.remove_listener("request",capture)
 
-    def e07_terminal(self, parent: str, child: str) -> list[dict]:
+    def e07_terminal(self, parent: str, child: str, *, expected: dict) -> list[dict]:
         c = self.controller
-        views = [self.e07_detail(parent,"cancelled","e07-parent.png"),self.e07_detail(child,"cancelled","e07-child.png")]
+        views = [self.e07_detail(parent,"cancelled","e07-parent.png", expected=expected[parent]),self.e07_detail(child,"cancelled","e07-child.png", expected=expected[child])]
         path = "/api/v1/orgs/alpha/tasks/roots"
         self.page.goto(self.base+"/orgs/alpha/tasks",timeout=c.remaining(4)*1000)
         self.controller.remaining()
-        with self.response(path, mode="new-document", document="/orgs/alpha/tasks",
-                           capture_json=True, ordinary_roots=True) as roots:
+        with (self.observation_group(expected[parent], mode="new-document", document="/orgs/alpha/tasks") as group,
+              self.response(path, capture_json=True, ordinary_roots=True) as roots):
             self.page.reload(timeout=c.remaining(4)*1000)
             self.controller.remaining()
-        main = self.page.get_by_role("main")
-        expect(main.get_by_text("Cancelled",exact=True).first).to_be_visible(timeout=c.remaining(4)*1000)
-        self.controller.remaining()
-        link = main.locator(f'a[href="/orgs/alpha/tasks/{parent}"]').first
-        expect(link).to_be_visible(timeout=c.remaining(4)*1000)
-        self.controller.remaining()
-        self.page.screenshot(path=str(c.root/"raw/e07-list.png"),full_page=True,timeout=c.remaining(4)*1000)
-        self.controller.remaining()
-        record = dict(url=self.page.url,roots_url=roots.value.url,roots=roots.captured_json,method=roots.value.request.method,
-                      status=roots.value.status,text=main.inner_text(timeout=self.controller.remaining(4)*1000),parent_href=link.get_attribute("href", timeout=self.controller.remaining(4)*1000),
-                      screenshot="e07-list.png",at=time.monotonic())
-        self.controller.remaining()
-        c.e07.setdefault("browser_events",[]).append(dict(event="list-reload",**record))
-        views.append(record)
-        return views
+            main = self.page.get_by_role("main")
+            expect(main.get_by_text("Cancelled",exact=True).first).to_be_visible(timeout=c.remaining(4)*1000)
+            self.controller.remaining()
+            link = main.locator(f'a[href="/orgs/alpha/tasks/{parent}"]').first
+            expect(link).to_be_visible(timeout=c.remaining(4)*1000)
+            self.controller.remaining()
+            self.page.screenshot(path=str(c.root/"raw/e07-list.png"),full_page=True,timeout=c.remaining(4)*1000)
+            self.controller.remaining()
+            record = dict(url=self.page.url, text=main.inner_text(timeout=self.controller.remaining(4)*1000),parent_href=link.get_attribute("href", timeout=self.controller.remaining(4)*1000),
+                          screenshot="e07-list.png",at=time.monotonic())
+            self.controller.remaining()
+            group.checkpoint("18")
+        with c.phase(group.end):
+            record.update(roots_url=roots.value.url, roots=roots.captured_json,
+                          method=roots.value.request.method, status=roots.value.status)
+            c.e07.setdefault("browser_events",[]).append(dict(event="list-reload",**record))
+            views.append(record)
+            return views
 
 
     def _terminal_stop(self) -> None:

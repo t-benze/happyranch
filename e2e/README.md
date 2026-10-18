@@ -51,62 +51,91 @@ never product serializers as expected-value generators.
 Lifecycle final-state readback uses a normal browser refresh after durable
 completion, waiting for real detail and Recall responses in the same browser
 session. The shipping detail/Recall queries do not poll while mounted; this
-case does not establish automatic live-view refresh. `Browser.response` requires
-an exact caller-declared destination for both SPA actions and new documents.
-The persistent raw native main-frame tracker joins the actual unredirected
-navigation Request to its `newDocument.request` commit. Same-document router
-initialization at that destination preserves this lineage; reload, a second
-document, an intermediate/wrong destination or departure/return invalidates the
-scope. SPA actions permit only the declared source-to-target transition in that
-same document. Request eligibility is fixed at its real start after arm, accepted
-commit and target transition. Prearm/precommit/source-route requests cannot gain
-eligibility later. Main-frame GET200, exact origin/port/API path and Recall's
-semantic tree=true remain required. Unrelated dashboard503 stays observable;
-its cause and the historical extra navigation's cause remain unestablished.
+case does not establish automatic live-view refresh.
 
-All three ordinary roots observers (`open_task`, Pause's `held`, and
-`e07_terminal`) declare `ordinary_roots=True`. Before admitting an actual
-Request, the complete semantic query must equal `limit=["50"]`, retaining
-blank and duplicate values. Missing/blank/wrong/duplicate limits, extra filters,
-pagination and unknown keys do not qualify. An observed nonempty fragment also
-does not qualify; this does not imply browsers transmit fragments over HTTP.
-The independent `status=escalated` attention request remains observable but
-cannot enter the ordinary Request set or create ambiguity there. Response
-admission rechecks the same query while retaining actual Request membership.
-Malformed query parsing fails through the existing poison/cleanup path with a
-fixed error, never raw parser text. Other endpoint contracts, including Recall
-`tree=true`, keep their existing defaults.
+The accepted TASK11803 amendment (TASK11788 manager step4) selects a finite
+caller-owned cohort. Before arm, each caller declares immutable scenario facts,
+current boot/origin/document, action/destination and endpoint/query scopes.
+Actual main-frame GET Requests starting after arm and accepted destination/commit
+own their original Response, one private body read and successful requestfinished.
+Known prearm objects never become current. New-document observations require the
+unredirected native Request/commit; same-document initialization at the target is
+allowed, while another document or departure/return fails. Reused endpoints are
+allowed: a delayed producer starting a new read in the same unchanged declared
+state can qualify. This proves temporal fresh-original-read coverage; initiating
+React hook/click causation and complete future producer closure remain unproved.
 
-Each scope owns its pinned native Waiter/result/listeners and timeout tasks.
-Nested scopes retain the earliest absolute group end even after inner exit;
-they share lineage/end, with distinct actual Request/Response identities. A
-second qualifying request/response is ambiguous, never selected by body content.
-Capture reads the original selected Response channel body exactly once through
-a bounded same-loop task. Base64/UTF8/JSON parsing, sanitation and final lineage
-checks run in an explicit Python phase before that same end. Metadata-only
-observations remain body-free; no refetch/cache substitute or synthetic identity
-is used. Existing E04/E05/E07 POST predicates and content oracles are excluded;
-shared GET repair does not establish their acceptance.
+Readiness/content/absence assertions run while admission is OPEN. Provisional
+body loans stay private and memoized, without accepted records or case marks.
+The explicit caller checkpoint freezes a nonempty set at every endpoint. Every
+admitted member must independently match predeclared scenario expectations and
+agree with all peers, including unknown fields and array order. Failed, non200,
+conflicting, stale, redirected, incomplete or late members fail the entire group.
+After checkpoint, matching starts refuse through settlement. No first200,
+request count, quiet period or networkidle certifies closure. Earliest-start
+representatives become public only after all siblings' body/finish joins, owned
+task settlement and final synchronous guard/disposal/seal. Inner scope exit does
+not certify, detach or restore time. The original earliest absolute page/case/run
+bound covers action, readiness, bodies, finish, cleanup and guarded consumption.
+Local task cancellation is not server settlement; uncertainty poisons reuse and
+retains the first error and partial diagnostics under the existing containment.
+Activity after disposal is outside this finite dispatcher-observed guarantee.
 
-Only the local root bridge task owns a scoped caller-wakeup callback, detached
-on unwind. Waiter/result/listener/timer cleanup is explicit and local on poison;
-there is no unbounded cancellation gather. Cancellation is not server settlement.
-Action/body/timeout/close/crash/interruption failure aborts all enclosing scopes
-and forbids dispatcher reuse on uncertainty. Native phases suspend short Python
-SIGALRM; finite native timeouts/tasks retain the same absolute end. Explicit
-nested Python phases restore enforcement without restoring stale durations.
-Arm/request/raw commit/selection/body/error/cleanup diagnostics remain sanitized;
-partial traces do not establish acceptance. No headers, bootstrap, storage or
-arbitrary query secrets are collected. Cached alpha-return provenance/rendering
-and the separate genuine expired-cache revisit remain unchanged.
-The existing trace's roots `query-match` steps join the local Request sequence
-to the fixed `ordinary-roots-limit50` contract, Boolean match and fixed
-`ordinary-root-page` / `other-query` / `invalid-query` category. At response
-time an unadmitted Request has no eligible request sequence; its response cannot
-substitute for the selected original. No arbitrary query keys or values are
-logged. These diagnostics and source/static checks do not prove corrected
-browser behavior; Q1–Q7 runtime, negative/race/body/cleanup and protected
-mutation/repetition evidence remain UNEXECUTED pending authorized evidence.
+All three ordinary roots sites (IDs1/18/19: open_task/e07_terminal/Pause held)
+retain the PR1107 complete decoded query exactly limit=["50"], including blank,
+repetition, fragment and strict parser behavior. Attention status=escalated cannot
+join. Recall requires exactly tree=["true"]; detail/jobs require an empty query;
+all reject fragments and use fixed parse-error categories without query text.
+Response admission repeats the query and original Request identity checks.
+Literal harness-only R/D/C/J shapes and independently supplied scenario facts
+reject equal-wrong bodies, malformed UTF8/JSON, duplicate keys and nonfinite JSON.
+Private comparison copies omit only independently validated UTC observation
+stamps at D.pause/R.tasks[i].pause (including identical blocker stamps) and
+D.task.child_wait/R.tasks[i].child_wait. Delegated-parent child_wait identity,
+phase, legal state and known waiting_children/pending_children requirements stay
+mandatory; an undeclared delegated row refuses stamp comparison. Null is required
+elsewhere. Unknown fields, durable timestamps,
+heartbeat/results/audit/work_status and all raw/exported bodies remain intact.
+No cross-transition comparison or recursive timestamp stripping is used. E07's
+three terminal tree selections now use the actual complete same-phase tree URL
+and snapshot, preserving recursive equality, children and independent freeze,
+HTTP-index, cancellation, control and ledger assertions.
+
+The27-site source census classifies exactly16 shared transport sites
+1/4/5/6/7/8/10/11/15/16/18/19/22/23/24/25, including all seven original public-body
+sites8/10/15/16/18/22/24 and nine private-body sites. Six DOM-only sites2/3
+(open_task detail/Recall),20/21 (Pause root-link),26/27 (Pause terminal) retain
+exact URL, scenario briefs/state/outcomes, child identity/order, localized
+controls and old/alien absence checks within the removed pairs' original bounds.
+At those six sites we deliberately relinquish fresh HTTP, method/query/status,
+original Response/body/finish ownership and failed/conflicting/duplicate
+background-request coverage. DOM content is visible navigation evidence. Later
+reload/API/DB evidence does not prove the removed click transport. Cached-return
+passive target-org path200 provenance remains weaker; the same populated
+alpha-beta-alpha journey, full31s expiry, fresh detail AND Recall observation,
+render/alien checks and completion reload are preserved separately. No accepted
+HTTP record is fabricated for a DOM site.
+
+Native sites9/12/13/14/17 (Reject, thread list/detail/messages, Cancel) retain
+their original predicates/passive sinks and weaker start/query/ownership limits;
+they receive no shared-cohort credit. Pause's unchanged overview URL-family sink
+latches forbidden-overview-read on arrival and remains live through all roots
+body/finish settlement. A final synchronous empty assertion precedes its local
+detach/seal. Arrival after completed disposal remains unobserved. Dashboard503
+and original native error/cleanup evidence remain distinct.
+
+These are source contracts, not runtime outcomes. A01–A16 remain the accepted
+four-answer case record in TASK11803; task/PR evidence attributes any isolated
+actual-callable synthetic controls separately from browser behavior. Historical
+run39069788195 remains daily FAIL (four completed marks/E02 partial/51 incomplete
+per version); TERM/INT prove launcher diagnostics only. Corrected behavior, all
+browser/DOM equivalence, sanitation/screenshots, timing/roughly100MiB fit and
+protected12 mutations/repetitions remain UNEXECUTED or unproved. General
+integration INCLUDING actual callback is SKIPPED24342; Python units RETIRED.
+No behavioral/test-authoring/full-reset PASS follows from source/static checks.
+Daily19UTC,56 EACH3.12/3.14,TERM3.12/INT3.14,four artifacts and every original
+scenario/command/containment/cleanup/evidence bound remain unchanged. Abrupt R,
+wider E04 cap/Stop and other held work remain held; no new execution is granted.
 
 Terminal stop admits only the healthy pinned owner/standard loop with positive
 existing work. It invokes synchronous context exit once under one absolute S.
