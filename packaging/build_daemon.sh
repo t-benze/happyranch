@@ -155,7 +155,8 @@ Path(sys.argv[1]).write_text(json.dumps(info, indent=2) + '\n')
 if sys.platform != 'darwin' or platform.machine() != 'arm64' or not (3, 12) <= sys.version_info[:2] <= (3, 14):
     raise SystemExit('FREEZE_PYTHON_PLATFORM_UNSUPPORTED: ' + json.dumps(info))
 PYTOOL
-uv run "${UV_PROJECT_ARGS[@]}" --no-sync --no-env-file pyinstaller packaging/daemon.spec --clean --noconfirm --distpath "$DIST" --workpath "$WORK"
+# Use the same venv command as the receipt, independent of console-script shebangs.
+uv run "${UV_PROJECT_ARGS[@]}" --no-sync --no-env-file python -I -m PyInstaller packaging/daemon.spec --clean --noconfirm --distpath "$DIST" --workpath "$WORK"
 for name in happyranch-daemon happyranch; do
     test -x "$DIST/happyranch-daemon/$name" || { echo "FROZEN_EXECUTABLE_MISSING: $name" >&2; exit 1; }
 done

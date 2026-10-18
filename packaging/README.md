@@ -54,7 +54,8 @@ selected-base and managed-only/no-download arguments, with
 `UV_PROJECT_ENVIRONMENT` fixed to exported-source/.venv. Both runs disable
 dotenv loading. The four-field `python-toolchain.json` still records the actual
 venv executable/version/platform/machine, with prefix/base and executable
-agreement checked before PyInstaller. The vendored Darwin wheel and frozen
+agreement checked before PyInstaller. The freeze run uses the same venv
+`python -I` command via `-m PyInstaller`, avoiding console-script shebang aliases. The vendored Darwin wheel and frozen
 lock are unchanged; sync/run keep project source configuration enabled.
 
 Both build entries refuse inherited `UV_*` controls before their first uv
