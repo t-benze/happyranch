@@ -545,8 +545,8 @@ def cmd_workflow_coding_release_import(args: argparse.Namespace) -> None:
             with Path(absolute).open('rb') as source:
                 raw = source.read(COMMAND_LIMIT + 1)
             command = parse_import_command(raw)
-        with _client() as client:
-            slug = _resolve_org(args.org, _available_orgs(client))
+        with _founder_client() as client:
+            slug = resolve_org_slug(args_org=args.org, available=_shared._fetch_available_orgs(client))
             path = f'/api/v1/orgs/{slug}/workflows/release-templates/coding/1/import'
             if raw is None:
                 response = client.get(path)
