@@ -60,6 +60,7 @@ export function createFeatureFlagsFixture(settings, org) {
         try { row.body = raw ? JSON.parse(raw) : null; } catch { row.body = { unparsed: raw }; }
         if (path !== writePath || request.method !== 'PUT') {
           row.unexpected = true;
+          row.status = 405;
           json(response, 405, { detail: 'feature-flags slice: unexpected write' });
           return;
         }
@@ -98,6 +99,35 @@ export async function runFeatureFlagsCases(h, { org, expectProfile, buildLog, di
   const settingsWrites = (rows) => rows.filter((row) => row.path === `/api/v1/orgs/${org}/settings/org` && row.method !== 'GET');
   const shared = (rows) => [...new Set(rows.filter((row) => row.method === 'GET' && !isFeature(row)).map((row) => row.path))].sort();
   const brief = (row) => ({ method: row.method, path: row.path, search: row.search, ...(row.body !== undefined ? { body: row.body } : {}), ...(row.status ? { status: row.status } : {}), ...(row.unexpected ? { unexpected: true } : {}) });
+  const settingsWritePath = `/api/v1/orgs/${org}/settings/org`;
+  /** Key-order-independent form for body comparison. */
+  const canon = (value) => (Array.isArray(value) ? value.map(canon)
+    : value && typeof value === 'object' ? Object.fromEntries(Object.keys(value).sort().map((key) => [key, canon(value[key])]))
+    : value);
+  /** The general Organization patch expected from the fixture's stored org plus the typed timeout (never read back from the request). */
+  const generalPatch = (stored, timeout) => ({
+    session_timeout_seconds: timeout,
+    dreaming: {
+      enabled: stored.dreaming.enabled,
+      schedule: { time: stored.dreaming.schedule.time, timezone: stored.dreaming.schedule.timezone },
+      catch_up_on_startup: stored.dreaming.catch_up_on_startup,
+      agents: { mode: stored.dreaming.agents.mode, include: [...stored.dreaming.agents.include], exclude: [...stored.dreaming.agents.exclude] },
+    },
+    threads: { enabled: stored.threads.enabled, invocation_timeout_seconds: stored.threads.invocation_timeout_seconds },
+  });
+  /**
+   * The complete non-GET set of a phase: every row finished, none unexpected, and
+   * exactly the allowed method/path/search/status/body list (count included).
+   * Failed, unexpected and unfinished rows stay visible in the check output.
+   */
+  function checkWrites(id, phase, rows, allowed) {
+    const nonGet = writes(rows);
+    check(`${id} ${phase}: unfinished non-GET rows`, nonGet.filter((row) => row.body === undefined || row.status === undefined).map(brief), []);
+    check(`${id} ${phase}: unexpected non-GET rows`, nonGet.filter((row) => row.unexpected).map(brief), []);
+    check(`${id} ${phase}: complete non-GET set (${allowed.length} allowed)`,
+      nonGet.map((row) => canon({ method: row.method, path: row.path, search: row.search, status: row.status ?? null, body: row.body ?? null })),
+      allowed.map((row) => canon({ method: 'PUT', path: settingsWritePath, search: '', ...row })));
+  }
   /** Bounded observation window after a positive settle, then wait for in-flight bodies. */
   async function observe(from) {
     await pause(600);
@@ -245,8 +275,7 @@ export async function runFeatureFlagsCases(h, { org, expectProfile, buildLog, di
       check(`${id} save settled (save bar cleared, no error)`, await waitTrue(page, `!${button(tr('en', 'settings.organization.saveBar.save'))} && !document.body.textContent.includes('Save failed')`, 'save settle'), true);
       const rows = await observe(from);
       const put = settingsWrites(rows);
-      check(`${id} exactly one settings write`, put.length, 1);
-      check(`${id} write is PUT 200`, put.map((row) => [row.method, row.status]), [['PUT', 200]]);
+      checkWrites(id, 'save', rows, [{ status: 200, body: generalPatch(fixture.initial.org, 90) }]);
       check(`${id} body keys (general patch only)`, Object.keys(put[0]?.body || {}).sort(), ['dreaming', 'session_timeout_seconds', 'threads']);
       check(`${id} body session_timeout_seconds`, put[0]?.body?.session_timeout_seconds, 90);
       check(`${id} no working_hours in the body`, 'working_hours' in (put[0]?.body || {}), false);
@@ -263,7 +292,8 @@ export async function runFeatureFlagsCases(h, { org, expectProfile, buildLog, di
       check(`${id} readback settled`, await waitTrue(page, settingsReady('en'), 'readback settle'), true);
       check(`${id} readback timeout field`, await evaluate(page, `document.querySelector('input[type="number"][min="1"]').value`), '90');
       const all = await observe(from);
-      check(`${id} readback: still exactly one write`, settingsWrites(all).length, 1);
+      checkWrites(id, 'save+readback', all, [{ status: 200, body: generalPatch(fixture.initial.org, 90) }]);
+      check(`${id} save+readback: feature-specific requests (incl. GET /work-hours*)`, all.filter(isFeature).map(brief), []);
       check(`${id} stored working_hours preserved (fixture evidence only)`, fixture.state.org.working_hours, fixture.initial.org.working_hours);
       await capture(page, `${id}-readback`, meta({ locale: 'en', viewport: '1440x900', state: 'readback' }));
       await closePage(page);
@@ -284,13 +314,19 @@ export async function runFeatureFlagsCases(h, { org, expectProfile, buildLog, di
       const failure = tr('en', 'settings.organization.saveFailed', { detail: 'API 422' });
       check(`${id} localized failure shown`, await waitTrue(page, textIn(failure), 'save failure'), true);
       const rows = await observe(from);
-      check(`${id} exactly one PUT answered 422`, settingsWrites(rows).map((row) => [row.method, row.status]), [['PUT', 422]]);
+      checkWrites(id, 'save', rows, [{ status: 422, body: generalPatch(fixture.initial.org, 90) }]);
+      check(`${id} no working_hours in the body`, settingsWrites(rows).map((row) => 'working_hours' in (row.body || {})), [false]);
+      check(`${id} save: feature-specific requests`, rows.filter(isFeature).map(brief), []);
       check(`${id} raw fixture detail is not the general owner's copy`, await evaluate(page, textIn(FIXTURE_DETAIL)), false);
       check(`${id} stored state unchanged`, fixture.state, fixture.initial);
       await capture(page, id, meta({ locale: 'en', viewport: '1440x900', state: 'save-error' }));
       current(h).unsavedPromptOnReload = await reload(page);
       check(`${id} readback settled`, await waitTrue(page, settingsReady('en'), 'readback'), true);
       check(`${id} readback timeout still unset`, await evaluate(page, `document.querySelector('input[type="number"][min="1"]').value`), '');
+      const all = await observe(from);
+      checkWrites(id, 'save+readback', all, [{ status: 422, body: generalPatch(fixture.initial.org, 90) }]);
+      check(`${id} save+readback: feature-specific requests (incl. GET /work-hours*)`, all.filter(isFeature).map(brief), []);
+      check(`${id} readback: stored state unchanged`, fixture.state, fixture.initial);
       await closePage(page);
       endCase();
     }
@@ -324,16 +360,14 @@ export async function runFeatureFlagsCases(h, { org, expectProfile, buildLog, di
       await clickSrc(page, switchSel);
       check(`${id} saved banner`, await waitTrue(page, textIn(tr('en', 'settings.organization.workHoursSaved')), 'wh banner'), true);
       const rows = await observe(from);
-      const put = settingsWrites(rows);
-      check(`${id} exactly one PUT 200`, put.map((row) => [row.method, row.status]), [['PUT', 200]]);
-      check(`${id} body is working_hours.enabled only`, put[0]?.body, { working_hours: { enabled: true } });
+      checkWrites(id, 'save', rows, [{ status: 200, body: { working_hours: { enabled: true } } }]);
       check(`${id} no confirmation dialog on enable`, await evaluate(page, `Boolean(${openDialog})`), false);
       await reload(page);
       check(`${id} readback switch checked`, await waitTrue(page, `${switchSel}?.getAttribute('aria-checked') === 'true'`, 'readback'), true);
       const { enabled: _enabled, ...schedules } = fixture.state.org.working_hours;
       const { enabled: _initial, ...initialSchedules } = fixture.initial.org.working_hours;
       check(`${id} schedules preserved (fixture evidence only)`, schedules, initialSchedules);
-      check(`${id} readback: still one write`, settingsWrites(await observe(from)).length, 1);
+      checkWrites(id, 'save+readback', await observe(from), [{ status: 200, body: { working_hours: { enabled: true } } }]);
       await capture(page, id, meta({ locale: 'en', viewport: '1440x900', state: 'switch-enabled-readback' }));
       await closePage(page);
       endCase();
@@ -365,10 +399,7 @@ export async function runFeatureFlagsCases(h, { org, expectProfile, buildLog, di
       // dialog leaves focus on <body> (identical on the pre-flag base build).
       current(h).focusAfterClose = focused;
       const rows = await observe(from);
-      const put = settingsWrites(rows);
-      check(`${id} exactly one PUT 200`, put.map((row) => [row.method, row.status]), [['PUT', 200]]);
-      check(`${id} body keys`, [Object.keys(put[0]?.body || {}), Object.keys(put[0]?.body?.working_hours || {})], [['working_hours'], ['agents']]);
-      check(`${id} agents patch`, put[0]?.body?.working_hours?.agents, { mode: 'all', include: [], exclude: ['support_bot', 'dev_agent'] });
+      checkWrites(id, 'save', rows, [{ status: 200, body: { working_hours: { agents: { mode: 'all', include: [], exclude: ['support_bot', 'dev_agent'] } } } }]);
       await capture(page, id, meta({ locale, viewport: '390x844', state: 'eligibility-saved' }));
       await closePage(page);
       endCase();
@@ -388,7 +419,7 @@ export async function runFeatureFlagsCases(h, { org, expectProfile, buildLog, di
       await clickSrc(page, button(tr('en', 'settings.organization.disableDialog.confirm'), openDialog));
       check(`${id} Work Hours alert shows the raw detail`, await waitTrue(page, `[...document.querySelectorAll('[role="alert"]')].some(a => a.textContent === ${quote(FIXTURE_DETAIL)})`, 'wh alert'), true);
       const rows = await observe(from);
-      check(`${id} exactly one PUT answered 422`, settingsWrites(rows).map((row) => [row.method, row.status, row.body]), [['PUT', 422, { working_hours: { enabled: false } }]]);
+      checkWrites(id, 'save', rows, [{ status: 422, body: { working_hours: { enabled: false } } }]);
       check(`${id} switch remains on`, await evaluate(page, `${switchSel}?.getAttribute('aria-checked')`), 'true');
       check(`${id} stored state unchanged`, fixture.state, fixture.initial);
       await capture(page, id, meta({ locale: 'en', viewport: '1440x900', state: 'wh-save-error' }));
