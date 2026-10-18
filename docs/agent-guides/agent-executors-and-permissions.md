@@ -433,7 +433,9 @@ reset/audit helper, while preserving thread delivery and breaker continuity.
 > Test-policy update (THR-291 seq40): former Python unit tests and unit-only
 > fixtures referenced in historical implementation evidence below are retired.
 > THR-291 seq69: merge CI/default/all/pre-push are lint/static only; normal hooks
-> remain enabled. Daily-only E2E at19:00UTC is separate, first scheduled run PENDING.
+> remain enabled. Daily E2E at19:00UTC is separate; THR291seq247 additionally
+> allocates ONE reviewed main-only dispatch under TASK-11897. This entry grants
+> no standing execution authority; actual health remains separately observed.
 > Retained platform/callback sources are not automatic merge gates. See
 > [coverage gaps](../python-test-reset.md) and [current lanes](../local-ci.md).
 

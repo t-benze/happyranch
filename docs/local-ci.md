@@ -16,14 +16,24 @@ Independent full code review and scoped QA remain mandatory. Static checks
 cannot establish lifecycle, callback, browser or platform correctness;
 behavioral regressions can be detected only later when their coverage executes.
 
-Fresh Product E2E runs **schedule only**, `0 19 * * *` (19:00 UTC / 03:00
-Asia/Shanghai), on default-branch immutable `github.sha`. Baseline Python
-3.12/3.14 and existing TERM3.12/INT3.14 launcher diagnostics feed
-`Daily Product E2E Health`. It is never a merge check. No local E2E alias,
-manual/PR/push/release dispatch, auto-retry or extra schedule is supported.
+Fresh Product E2E keeps the daily `0 19 * * *` schedule (19:00 UTC /
+03:00 Asia/Shanghai) on immutable default-branch `github.sha`. Founder
+THR291seq247 additionally authorizes **ONE** immediate full main execution under
+sole root TASK-11897 through the reviewed `workflow_dispatch` entry. Manual
+admission requires actual `refs/heads/main`, default branch `main`, and matching
+repository/workflow/run/source identity. This entry is not standing execution
+authority. Baseline56 variants EACH Python3.12/3.14 plus TERM3.12/INT3.14 retain
+exactly four execution artifacts and the original bounds. `Daily Product E2E
+Health` remains outside merge checks and reports the actual event, run/attempt,
+SHA and checkout tree; manual receipts are never labeled scheduled.
+There is no local E2E alias, PR/push/release/workflow_call/repository_dispatch
+entry, automatic retry, extra schedule or SLA. Admission, lint and scoped QA
+success do not establish product execution success. The root owns the one
+actual dispatch after independent review/scoped QA, both final-head lints,
+guarded merge and an exact-main receipt.
 Scheduled historical runs38482572306 and38644465643 were observed and failed
 at their own immutable sources. Corrected behavior remains **PENDING** until
-the existing daily default-source lane executes the repair; historical3.13
+an authorized main run executes the repair; historical3.13
 failures and all-six-cell evidence remain unchanged. Prior first-slice receipts remain
 historical evidence at their own source, not daily/final-head verification.
 Engineering_manager owns daily failure/missing-evidence triage through existing
@@ -48,7 +58,7 @@ scripts/local_ci.sh all           # default: boundary lint + Web static checks
 scripts/local_ci.sh web           # colour scan + ESLint + typecheck, Node24
 scripts/local_ci.sh boundary-lint # source-only lint + bounded synthetic validation
 scripts/local_ci.sh python        # RETIRED exit2
-scripts/local_ci.sh e2e           # REFUSED exit2: daily schedule-only
+scripts/local_ci.sh e2e           # REFUSED exit2: hosted admission only
 scripts/local_ci.sh help
 # Optional retained Web source, separately selected outside merge CI:
 (cd web && npx vitest run)
@@ -227,7 +237,9 @@ settlement allowance); no cross-run polling service, automatic retry or maker
 launch. Missing artifacts, results or cleanup remain missing evidence.
 
 This finite QA venue is separate from lint/static merge CI, general integration
-(**SKIPPED THR243seq42**) and schedule-only daily Product E2E. The earlier maker
+(**SKIPPED THR243seq42**) and Product E2E's daily 19:00 UTC schedule plus main-only
+`workflow_dispatch` entry. Founder THR291seq247 allocates ONE manual full run to
+sole root TASK-11897; local E2E remains refused. The earlier maker
 27-case exit0 is historical evidence without adequate venue qualification; it is
 not independent hosted proof. Exact synthetic producer-positive and dependent
 race/replay/crash/causal/repetition proof remain **UNPROVEN THR299seq11**. Native
@@ -279,7 +291,9 @@ The former `pr1022-roster-selected` PR entry is superseded by merged
 PR1025/THR291seq69; it is absent from current CI. Normal publication now starts
 lint/static checks only. The retained feature/platform/original callback sources
 are not automatic merge gates; missing behavioral proof remains missing.
-Product E2E runs only on its daily default-branch schedule. Python units and
+Product E2E retains its daily default-branch 19:00 UTC schedule plus main-only
+`workflow_dispatch`, with ONE manual run allocated to root TASK-11897 under
+Founder THR291seq247 and no local E2E target. Python units and
 their gate remain RETIRED; broad integration remains SKIPPED THR243seq42.
 The live daemon host cannot execute integration, even through jobs.
 
@@ -907,8 +921,9 @@ Merged PR1025 (`d88ba446`) supersedes the historical PR1022 feature-shard and
 behavioral merge-check configuration under THR-291 seq69. PR/main checks are now
 lint/static only; retained C1–C10/platform/callback sources are not automatic
 merge requirements. Product E2E runs daily from default-branch source at 19:00 UTC;
-scheduled historical runs38482572306/38644465643 failed; corrected behavior remains pending. No PR/manual/ad hoc
-execution, causal/repetition allocation or held M proof follows. Historical
+scheduled historical runs38482572306/38644465643 failed; corrected behavior remains pending.
+The current single manual allocation is described above; no PR/ad hoc execution,
+causal/repetition allocation or held M proof follows. Historical
 feature failures, in-flight run38104839795 and all held proof remain authentic;
 source inspection, scoped QA and independent review cannot claim behavioral PASS.
 
