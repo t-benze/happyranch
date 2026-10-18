@@ -1250,7 +1250,7 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
 
 def _run_step_owned(orch: "Orchestrator", task_id: str, metadata: dict | None = None) -> None:
     from runtime.orchestrator.task_pause import (
-        TaskInvocation, DeferredRootPause, _invocation, eligible, deferred_invocation,
+        TaskInvocation, DeferredRootPause, _invocation, eligible, deferred_invocation, adopt_deferred_invocation,
     )
     from runtime.infrastructure.task_pause_controls import PauseControlError
     from runtime.orchestrator.team_move import DeferredTeamMove
@@ -1280,9 +1280,10 @@ def _run_step_owned(orch: "Orchestrator", task_id: str, metadata: dict | None = 
         owner="v2" if isinstance(metadata, dict) and "authority_v2_generation" in metadata else "ordinary",
         metadata=metadata or {})
     try:
-        deferred = deferred_invocation(orch, task, metadata)
+        deferred = deferred_invocation(orch, task, metadata, adopt=False)
         if deferred is not None:
             invocation = deferred
+            adopt_deferred_invocation(invocation)
         else:
             if not eligible(orch, task):
                 return

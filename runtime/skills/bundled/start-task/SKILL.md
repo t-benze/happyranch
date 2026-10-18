@@ -578,7 +578,11 @@ the first safe cause and exact reserved SID/attempt; a reservation is not a runn
 session. Failure never certifies cleanup or permits clearing unknown owners, replaying
 callbacks, resetting chains or retrying consumed failures. Intentional holds/waits and
 stale ownership do not consume this allowance. Resolve the evidenced preparation or
-storage cause through the existing owner before an explicit supported retry. Source
+storage cause through the existing owner before an explicit supported retry. A new
+retry/recovery refusal is distinct from its previous genuine launch. Deferred adoption
+refusals retain the authenticated original owner; unclaimed recovery uses its original
+SID and existing claim exclusions. Prior unknown evidence and callback/cancel/hold
+winners survive both boundaries. Source
 publication/merge does not establish that the running daemon contains the correction.
 
 ## Root task Pause outcomes

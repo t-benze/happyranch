@@ -61,7 +61,7 @@ def _logical_owner(invocation) -> str:
     return hashlib.sha256(json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
-def _current(invocation) -> bool:
+def _current(invocation, *, refusal: bool = False) -> bool:
     from runtime.orchestrator.task_pause import fingerprint, eligible
     db = invocation.orch._db
     task = db.get_task(invocation.task.id)
@@ -74,8 +74,49 @@ def _current(invocation) -> bool:
                 or task.assigned_agent != invocation.agent or task.current_session_id != invocation.session_id
                 or task.orchestration_step_count != invocation.task.orchestration_step_count + (invocation.owner != "recovery")):
             return False
+    elif invocation.owner == "recovery":
+        # A genuine unclaimed recovery is in_progress on its ORIGINAL SID;
+        # ordinary pending/carrier eligibility deliberately does not admit it.
+        from runtime.orchestrator.task_pause import _unclaimed_recovery_current, _authenticate_deferred_v2
+        store = invocation.store
+        row = store.row_uncommitted(store.root_uncommitted(task.id)["id"])
+        entry = invocation._entry(row)
+        proof = entry["context"].get("recovery_return")
+        if (fingerprint(task) != fingerprint(invocation.task)
+                or task.status != TaskStatus.IN_PROGRESS or task.block_kind is not None
+                or task.assigned_agent != invocation.agent or entry["owner"] != "recovery"
+                or entry["session_id"] != invocation.session_id or entry["fingerprint"] != fingerprint(task)
+                or entry["owner_identity"] != invocation.metadata
+                or proof is None or proof["origin_session_id"] != task.current_session_id
+                or proof["recovery_session_id"] != invocation.session_id
+                or len([e for e in row["journal"]["entries"] if e["task_id"] == task.id
+                        and e["owner"] != "job" and not e["context"].get("producer_settled")]) != 1
+                or not _unclaimed_recovery_current(store, entry)):
+            return False
+        if "authority_v2_generation" in entry["owner_identity"]:
+            _authenticate_deferred_v2(store, entry)
     elif fingerprint(task) != fingerprint(invocation.task) or not eligible(invocation.orch, task):
         return False
+    store = getattr(db, "_task_pause_store", None)
+    if store is not None:
+        # A hold arriving after the failed write still wins over accounting.
+        from runtime.infrastructure.task_pause_controls import PauseControlError
+        from runtime.orchestrator.task_pause import DeferredRootPause, deferred_invocation, _same_deferred_owner
+        from runtime.orchestrator.team_move import DeferredTeamMove
+        try:
+            if refusal:
+                store.held_uncommitted(task.id)
+                invocation.orch._team_moves.check_task_uncommitted(task)
+            if getattr(invocation, "deferred_adoption_pending", False):
+                current = deferred_invocation(invocation.orch, task, invocation.metadata, adopt=False)
+                if current is None or not _same_deferred_owner(invocation, current):
+                    return False
+        except (DeferredRootPause, DeferredTeamMove):
+            return False
+        except PauseControlError as exc:
+            if exc.detail["code"] == "root_paused":
+                return False
+            raise
     if task.parent_task_id is None:
         # Consume the existing native classification; never infer a generation
         # from metadata alone or change its admission/settlement semantics.
@@ -126,7 +167,7 @@ def settle_refusal(invocation, exc: Exception, *, prepared: bool) -> bool:
         return False
     db = invocation.orch._db
     with db._lock:
-        if not _current(invocation):
+        if not _current(invocation, refusal=True):
             return False
         if db._conn.in_transaction:
             raise RuntimeError("launch_refusal_persistence_unavailable") from exc
@@ -170,7 +211,7 @@ def settle_refusal(invocation, exc: Exception, *, prepared: bool) -> bool:
                 "and resolve preparation/storage failure before an explicit manager retry")
     # Recheck the winner inside _fail; slow terminal effects stay outside
     # the ledger lock. Audit COMMIT by itself never proves terminal failure.
-    _fail(invocation.orch, invocation.task.id, note=note, current_owner=lambda: _current(invocation))
+    _fail(invocation.orch, invocation.task.id, note=note, current_owner=lambda: _current(invocation, refusal=True))
     with db._lock:
         current = db.get_task(invocation.task.id)
         failed = current is not None and current.status == TaskStatus.FAILED and current.note == note

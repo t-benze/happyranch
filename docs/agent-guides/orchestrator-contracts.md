@@ -4158,6 +4158,15 @@ allowance. Current-owner and authentic callback fences precede evidence and are
 rechecked inside failure transition; later continuations have separate keys.
 Terminal deferred owners are not republished, even when unknown evidence remains.
 
+Each new retry or recovery launch boundary resets only local launch attribution
+before fallible initialization; a previous positive PID cannot mask a new refusal.
+Original launch/unknown evidence remains intact. Deferred owners are authenticated
+read-only before adoption writes, then revalidated under the native writer. Refusals
+retain the durable original SID/agent/generation/continuation; no fallback SID counts
+for that owner. An unclaimed recovery uses its exact original-SID journal proof and
+existing claim exclusions, never ordinary pending/carrier eligibility. Callback,
+current-owner, cancellation and intentional hold winners still exclude accounting.
+
 The first preparation cause is kept separately from the final Pause/cleanup error:
 bounded stage, exception class/stable Pause code and source locations only. An
 executed pull adds a safe repo identifier, fixed operation and return code or
