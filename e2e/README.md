@@ -79,6 +79,15 @@ not certify, detach or restore time. The original earliest absolute page/case/ru
 bound covers action, readiness, bodies, finish, cleanup and guarded consumption.
 Local task cancellation is not server settlement; uncertainty poisons reuse and
 retains the first error and partial diagnostics under the existing containment.
+Each owned body completion retrieves its exception or cancellation, latches the
+first observed failure and wakes the group even while another member is pending.
+Guards and abort reconcile already-done tasks before queued callbacks run. Local
+abort detaches active wake callbacks and requests cancellation only for owned
+pending tasks. A consume-only callback records any eventual outcome without
+waking acceptance or driving native transport. This is best effort: if the
+original loop never advances again, pending tasks cannot settle locally; no
+cleanup budget or server-settlement proof follows. Secondary body/cleanup errors
+retain type-only partial diagnostics and cannot replace the first observed cause.
 Activity after disposal is outside this finite dispatcher-observed guarantee.
 
 All three ordinary roots sites (IDs1/18/19: open_task/e07_terminal/Pause held)

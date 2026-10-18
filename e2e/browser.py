@@ -219,6 +219,10 @@ class _ObservationGroup:
         self.changed.set()
 
     def guard(self) -> None:
+        # A task can be done before its queued completion callback is delivered.
+        for scope in self.scopes:
+            for member in scope.requests.values():
+                scope.observe_body(member)
         if self.failure is not None:
             raise self.failure
         require(self.browser.base == self.base and getattr(self.browser.controller, "daemon", None) is self.boot
@@ -376,14 +380,45 @@ class _ResponseObservation:
         require(self.capture_json and self.group.state == "FINALIZED", "whole-group-sealed-json")
         return next(iter(self.requests.values()))["json"]
 
+    def observe_body(self, member: dict, *, notify: bool = True) -> None:
+        """Retrieve each original outcome once, including after local abort."""
+        task = member["body_task"]
+        if task is None or not task.done() or "body_outcome" in member:
+            return
+        cancelled = task.cancelled()
+        error = Error("original-body-cancelled") if cancelled else task.exception()
+        member["body_outcome"] = "cancelled" if cancelled else "error" if error is not None else "success"
+        self.note("body-settled", request_sequence=member["sequence"], outcome=member["body_outcome"],
+                  error=type(error).__name__ if error is not None else None)
+        active = notify and not self.aborted
+        if error is not None:
+            if active:
+                if self.group.failure is None:
+                    self.group.failure = error
+                self.browser.controller.record_error("original-body-primary", self.group.failure)
+            # Abort-induced cancellation is local cleanup, not another failure.
+            if active or not cancelled:
+                self.browser.controller.record_error("original-body-outcome", error)
+        if active:
+            self.group.changed.set()
+
     def detach(self, abort: bool = False) -> None:
         self.aborted |= abort
         if abort:
             for member in self.requests.values():
+                task = member["body_task"]
+                if task is None:
+                    continue
                 if "wake" in member:
                     member["wake_active"] = False
-                    member["body_task"].remove_done_callback(member["wake"])
-            for task in self.group.tasks:
+                    task.remove_done_callback(member["wake"])
+                if task.done():
+                    self.observe_body(member, notify=False)
+                elif not member.get("cleanup_attached"):
+                    # Consume eventual outcomes only: no owner wake, acceptance,
+                    # dispatcher drive, gather or new time budget after poison.
+                    member["cleanup_attached"] = True
+                    task.add_done_callback(lambda _task, member=member: self.observe_body(member, notify=False))
                 if not task.done() and not task.cancelling():
                     task.cancel()
             self.note("local-cleanup", aborted=True,
@@ -458,7 +493,16 @@ class Browser:
             # locally without reusing uncertain native transport.
 
     def poison(self, error: BaseException) -> None:
+        incoming = error
+        if self._group is not None:
+            for scope in self._group.scopes:
+                for member in scope.requests.values():
+                    scope.observe_body(member)
+            if self._group.failure is not None:
+                error = self._group.failure
         self.controller.record_error("native-observation", error)
+        if incoming is not error:
+            self.controller.record_error("native-observation-secondary", incoming)
         if not self.poisoned:
             self.events.append(dict(event="native-unavailable", reason=type(error).__name__, at=time.monotonic()))
         self.poisoned = True
@@ -579,9 +623,9 @@ class Browser:
                     task = self._loop.create_task(response._channel.send("body", None))
                     member["body_task"] = task
                     scope.group.tasks.append(task)
-                    def wake(_task: Any, member: dict = member, group: _ObservationGroup = scope.group) -> None:
+                    def wake(_task: Any, member: dict = member, scope: _ResponseObservation = scope) -> None:
                         if member["wake_active"]:
-                            group.changed.set()
+                            scope.observe_body(member)
                     member["wake"], member["wake_active"] = wake, True
                     task.add_done_callback(wake)
                     scope.note("body-begin", request_sequence=member["sequence"])
@@ -696,10 +740,18 @@ class Browser:
                 yield group
             group.finalize()
         except BaseException as exc:
+            # Reconcile already-done tasks even if the owner unwinds before
+            # queued completion callbacks run. An observed first failure wins.
+            for scope in group.scopes:
+                for member in scope.requests.values():
+                    scope.observe_body(member)
+            error = group.failure if group.failure is not None else exc
             group.state = "REFUSED"
             for scope in group.scopes:
-                scope.note("observation-error", error=type(exc).__name__)
-            self.poison(exc)
+                scope.note("observation-error", error=type(error).__name__)
+            self.poison(error)
+            if error is not exc:
+                raise error from exc
             raise
         finally:
             if group.state != "FINALIZED":
