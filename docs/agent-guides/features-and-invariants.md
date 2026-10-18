@@ -318,7 +318,10 @@ Captured actual running turns alone may settle under WAITING; no drain label
 admits new work. Queue dedup spans queued/in-flight work, typed deferrals release
 notification ownership, and complete durable runnable discovery/redelivery keeps
 pending tokens/ranges/probe/catchup obligations intact. Native thread recovery
-and raw reapers preserve held/C2-owned history. Participant/session writes
+and raw reapers preserve held/C2-owned history. A pending receipt whose
+producer settled without deferral or unknown cleanup and has no live owner
+takes ordinary daemon_restart recovery; a shutdown cancellation after every
+attempt settled quiescent records no failed_cleanup. Participant/session writes
 cooperate during future forward reset; messages remain admissible. The bounded
 thread census/drain and post-release seams are available to D, whose complete
 startup/containment/operation/old-reader closure remains absent. No public apply

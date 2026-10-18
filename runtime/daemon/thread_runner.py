@@ -14,6 +14,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from runtime.config import (
     Settings,
@@ -946,6 +947,17 @@ def _qualifying_breaker_failure(result: ExecutorResult | None) -> str | None:
     return None
 
 
+def _attempts_settled_quiescent(owner: Any) -> bool:
+    """True when every recorded attempt launched and settled quiescent."""
+    state = owner.state
+    return bool(
+        not owner.attempt_open
+        and not state.failed_cleanup
+        and state.attempts
+        and all(a.launched and a.settled and a.quiescent for a in state.attempts)
+    )
+
+
 async def run_invocation(
     *, org_state, invocation_token: str, settings: Settings,
     host_supervisor: HostSessionSupervisor | None = None,
@@ -969,6 +981,13 @@ async def run_invocation(
                 settings=settings, host_supervisor=host_supervisor, move_owner=owner)
     except DeferredTeamMove:
         deferred = True
+        raise
+    except asyncio.CancelledError:
+        # Shutdown can cancel the runner after its provider attempt already
+        # settled quiescent (e.g. during post-turn bookkeeping). That is not
+        # cleanup uncertainty. Cancellation before any launch, or with an open,
+        # unsettled or non-quiescent attempt, still retains it.
+        failed = not _attempts_settled_quiescent(owner)
         raise
     except BaseException:
         failed = True

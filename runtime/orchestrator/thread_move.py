@@ -533,10 +533,21 @@ class ThreadMoveAdmission:
                 return blockers  # D owns deadline refusal/forward decision.
             await asyncio.sleep(min(0.05, max(0.0, deadline - time.monotonic())))
 
+    def _settled_without_owner(self, inv: Any, state: Any) -> bool:
+        # The producer finished with certain cleanup and no deferral, and no
+        # live owner remains (e.g. its runner was cancelled by shutdown after
+        # the provider attempt settled quiescent). Nothing owns the pending
+        # receipt any more, so ordinary pre-C2 restart recovery applies.
+        return bool(state.producer_settled and not state.deferred and not state.unknown
+            and state.retry_initialized is not None and inv.id not in self.live)
+
     def preserve_recovery_uncommitted(self, inv: Any) -> bool:
         # Ordinary pre-C2 restart rules remain when no C2 state/hold exists.
         # Held/uncertain evidence is NEVER reaped/rekeyed to claim clearance.
-        return self.held_uncommitted(inv.agent_name) is not None or self.store.read_uncommitted(inv) is not None
+        if self.held_uncommitted(inv.agent_name) is not None:
+            return True
+        state = self.store.read_uncommitted(inv)
+        return state is not None and not self._settled_without_owner(inv, state)
 
     def preserve_pair_uncommitted(self, thread_id: str, agent_id: str) -> bool:
         if self.held_uncommitted(agent_id) is not None:
@@ -545,7 +556,11 @@ class ThreadMoveAdmission:
                 (thread_id, agent_id)):
             inv = self.db._row_to_invocation(raw)
             state = self.store.read_uncommitted(inv)
-            if state is not None and (inv.status is ThreadInvocationStatus.PENDING or state.unknown or not state.producer_settled):
+            if state is None:
+                continue
+            if inv.status is ThreadInvocationStatus.PENDING and self._settled_without_owner(inv, state):
+                continue
+            if inv.status is ThreadInvocationStatus.PENDING or state.unknown or not state.producer_settled:
                 return True
         return False
 
