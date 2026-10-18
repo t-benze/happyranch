@@ -319,9 +319,38 @@ def exercise(c: Controller) -> None:
         c.mark(f"Pause.child-{action}-denied", denied)
     duplicate = control(c, "pause", root, 1, changed=False)
     c.mark("Pause.pause-idempotent", duplicate)
+    def browser_expected(before: dict, child_id: str, hold_state: str) -> dict:
+        # Reuse this already-required read-only state frame before arming.
+        rows = before["stores"]["alpha"]["tasks"]
+        by_id = {row["id"]: row for row in rows}
+        def core(task_id: str) -> dict:
+            row = by_id[task_id]
+            value = {key: row[key] for key in ("brief", "team", "status", "parent_task_id", "assigned_agent",
+                                               "block_kind", "current_session_id", "note")}
+            value["task_id"] = task_id
+            if task_id == root:
+                value["child_wait_state"] = "waiting_children" if hold_state == "pausing" else "pending_children"
+            return value
+        def recall(task_id: str) -> dict:
+            row = by_id[task_id]
+            # Source get_children orders creation time; retain this actual order.
+            children = sorted((r for r in rows if r["parent_task_id"] == task_id), key=lambda r: r["created_at"])
+            return dict(task_id=task_id, brief=row["brief"], parent_task_id=row["parent_task_id"],
+                        assigned_agent=row["assigned_agent"], status=row["status"], output_summary=row["note"],
+                        children=[recall(r["id"]) for r in children])
+        hold = dict(org_slug="alpha", root_task_id=root, generation=1, held=True,
+                    effective_hold=True, control_state=hold_state)
+        if hold_state == "paused":
+            hold.update(evidence_complete=True, blockers=[])
+        result = {name: dict(task=core(task_id), recall=recall(task_id),
+                             pause=dict(hold, lifecycle_status=by_id[task_id]["status"]))
+                  for name, task_id in (("root", root), ("child", child_id))}
+        if hold_state == "pausing":
+            result["root"]["blocker_task"] = worker["task"]
+        return result
     for locale in ("en", "zh-CN"):
         before = state(c)
-        evidence = ui.held(root, worker["task"], "pausing", locale)
+        evidence = ui.held(root, worker["task"], "pausing", locale, expected=browser_expected(before, worker["task"], "pausing"))
         require(state(c) == before, "live browser readback/locale is read-only")
         c.mark("Pause.browser-pausing-" + ("en" if locale == "en" else "zh"), evidence)
     c.mark("Pause.overview-readonly", overview(c, root, "pausing"))
@@ -364,7 +393,7 @@ def exercise(c: Controller) -> None:
     c.mark("Pause.drained-restart", dict(restart=restart, no_launch=bounded, projection=p))
     for locale in ("en", "zh-CN"):
         before = state(c)
-        evidence = ui.held(root, pending, "paused", locale)
+        evidence = ui.held(root, pending, "paused", locale, expected=browser_expected(before, pending, "paused"))
         require(state(c) == before, "post-restart browser/reload reads preserve state")
         c.mark("Pause.browser-paused-" + ("en" if locale == "en" else "zh"), evidence)
     overview(c, root, "paused")
@@ -386,7 +415,7 @@ def exercise(c: Controller) -> None:
     require(c.stores["alpha"].result(payloads[1]) == worker_finish["result"], "original worker result byte equality after restart/Resume")
     host(c, "post-restart-first-chain-2", 2)
     c.mark("Pause.restart-final", closure)
-    ui.terminal(root)
+    ui.terminal(root, closure=closure)
     for action in ("pause", "resume"):
         control(c, action, root, 4, error=dict(code="task_terminal", root_task_id=root))
     c.mark("Pause.terminal-denied", dict(root=root, generation=4, status=detail(c, root)["task"]["status"]))

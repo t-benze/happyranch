@@ -11,7 +11,7 @@ from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel
 
 from runtime.daemon.auth import require_token
-from runtime.daemon.org_state import OrgState
+from runtime.daemon.org_state import OrgState, _OrgBusyError
 from runtime.daemon.state import DaemonState
 from runtime.infrastructure.database import Database
 from runtime.infrastructure.workflow_schema import initialize_complete_org_schema
@@ -243,5 +243,11 @@ async def unload_org(slug: str, request: Request) -> dict:
                 "task_ids": in_flight,
             },
         )
-    await state.remove_org(slug)
+    try:
+        await state.remove_org(slug)
+    except _OrgBusyError as exc:
+        detail = {"code": exc.code, "slug": slug}
+        if exc.task_ids is not None:
+            detail["task_ids"] = exc.task_ids
+        raise HTTPException(status_code=409, detail=detail) from exc
     return {"slug": slug, "unloaded": True}

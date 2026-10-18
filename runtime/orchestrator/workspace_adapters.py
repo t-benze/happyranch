@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
 import shutil
 import subprocess
 import threading
+import time
 from contextlib import contextmanager
+from contextvars import copy_context
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -1790,26 +1793,87 @@ class PersistentWorkspaceSetup:
         )
 
 
-def refresh_workspace_repos(workspace: Path) -> dict[str, bool]:
-    """Fast-forward-refresh every cloned repo under ``workspace/repos/``.
+# One budget for the complete batch, not a fresh allowance per probe/repo.
+_REPO_REFRESH_SECONDS = 30.0
 
-    Called by the orchestrator on EVERY session spawn, before the executor
-    subprocess starts, so all executors (claude, codex, opencode, pi) get
-    fresh repo state (THR-103). This replaces the Claude-only PreToolUse
-    settings hook that previously ran the same pull.
 
-    Failure semantics: NEVER raises and never blocks a spawn. Offline,
-    dirty-tree, non-fast-forward, or conflicted pulls exit non-zero, which
-    ``subprocess.run`` without ``check=True`` does not raise for — the
-    returncode is recorded in the returned mapping. Hung fetches are bounded
-    by a per-repo 30s timeout; one repo's failure does not stop its siblings.
+def _repo_refresh_git(
+    repo_dir: Path, arguments: list[str], *, deadline: float,
+    cancel_requested: threading.Event | None,
+) -> subprocess.CompletedProcess[bytes] | None:
+    """None means no command was started; a raised timeout is not that proof."""
+    remaining = deadline - time.monotonic()
+    if remaining <= 0 or (cancel_requested is not None and cancel_requested.is_set()):
+        return None
+    return subprocess.run(
+        ["git", "--no-optional-locks", *arguments], cwd=str(repo_dir),
+        capture_output=True, timeout=remaining,
+    )
 
-    Only already-cloned repos are refreshed (``detect_repo_names`` filters to
-    dirs with a ``.git``); first-time cloning stays in the bootstrap path
-    (``context_builder.clone_repo``). The returned mapping records whether
-    each detected repo fast-forwarded cleanly; scan failures return an empty
-    mapping.
+
+def _repo_refresh_can_pull(
+    repo_dir: Path, *, deadline: float, cancel_requested: threading.Event | None,
+) -> bool:
+    """Read-only admission only. A refusal skips pull, never certifies freshness.
+
+    In particular ls-remote catches a configured branch deleted upstream even
+    when the local remote-tracking ref still exists. Its positive result is
+    NOT a lock on remote/local state: every subsequent executed failure stays
+    uncertain regardless of this check or any checkout/status summaries.
     """
+    def observe(arguments: list[str]) -> bytes | None:
+        result = _repo_refresh_git(repo_dir, arguments, deadline=deadline,
+                                   cancel_requested=cancel_requested)
+        if result is None or result.returncode != 0:
+            return None
+        return result.stdout.removesuffix(b"\n")
+
+    try:
+        branch_ref = observe(["symbolic-ref", "--quiet", "HEAD"])
+        if branch_ref is None or not branch_ref.startswith(b"refs/heads/"):
+            return False
+        branch = branch_ref[len(b"refs/heads/"):].decode("utf8")
+        remote = observe(["config", "--get-all", f"branch.{branch}.remote"])
+        merge = observe(["config", "--get-all", f"branch.{branch}.merge"])
+        if (not remote or not merge or b"\n" in remote or b"\n" in merge
+                or not merge.startswith(b"refs/heads/")):
+            return False
+        if observe(["rev-parse", "--verify", "--quiet", "@{upstream}"]) is None:
+            return False
+        upstream = observe(["ls-remote", "--exit-code", "--refs", "--",
+                            remote.decode("utf8"), merge.decode("utf8")])
+        # Require one exact advertised ref; no stderr-based classification.
+        return (upstream is not None and b"\n" not in upstream
+                and upstream.partition(b"\t")[0] != b""
+                and upstream.partition(b"\t")[2] == merge)
+    except (subprocess.SubprocessError, OSError, UnicodeError, ValueError) as exc:
+        logger.debug("repo refresh: pre-pull admission refused for %s: %s", repo_dir, exc)
+        return False
+
+
+def refresh_workspace_repos(
+    workspace: Path, *, _deadline: float | None = None,
+    _cancel_requested: threading.Event | None = None,
+) -> dict[str, bool]:
+    """Best-effort refresh of already-cloned repos before executor launch.
+
+    All read-only admission checks and pulls share ONE 30-second monotonic
+    batch deadline, including scan time. Each subprocess gets only what is
+    left; expired/cancelled and otherwise refused siblings return false without
+    starting a pull. A failed repo may leave budget for later siblings. Scan,
+    process creation/reap and native evidence persistence are synchronous OS/DB
+    operations, not hard real-time bounds. Async runners use the joined offload
+    below so none of these waits occupies their shared event loop.
+
+    Detached/unusable/missing/unreadable upstream checks refuse BEFORE pull.
+    Any executed pull failure/exception/timeout retains native failed_cleanup;
+    parent HEAD/branch/porcelain equality cannot establish absence of effects,
+    especially with recursive submodules. Timeout is no process-tree quiescence
+    claim. Existing unknown reservations are never cleared. Expected Git errors
+    are best-effort; native evidence errors and cancellation still propagate.
+    False results always retain the stale-source prompt warning.
+    """
+    deadline = time.monotonic() + _REPO_REFRESH_SECONDS if _deadline is None else _deadline
     try:
         repo_names = PersistentWorkspaceSetup.detect_repo_names(workspace)
     except OSError as exc:
@@ -1821,14 +1885,14 @@ def refresh_workspace_repos(workspace: Path) -> dict[str, bool]:
     preparation = current_thread_preparation() or current_producer_preparation() or current_invocation()
     results: dict[str, bool] = {}
     for name in repo_names:
+        results[name] = False
         repo_dir = workspace / "repos" / name
+        if not _repo_refresh_can_pull(repo_dir, deadline=deadline,
+                                      cancel_requested=_cancel_requested):
+            continue
         try:
-            result = subprocess.run(
-                ["git", "pull", "--ff-only"],
-                cwd=str(repo_dir),
-                capture_output=True,
-                timeout=30,
-            )
+            result = _repo_refresh_git(repo_dir, ["pull", "--ff-only"],
+                                       deadline=deadline, cancel_requested=_cancel_requested)
         except BaseException as exc:
             if preparation is not None:
                 try:
@@ -1836,14 +1900,60 @@ def refresh_workspace_repos(workspace: Path) -> dict[str, bool]:
                 except BaseException as evidence:
                     exc.add_note(f"repository preparation evidence failed: {evidence!r}")
                     raise exc from evidence
-            if not isinstance(exc, (subprocess.TimeoutExpired, subprocess.SubprocessError, OSError)):
+            if not isinstance(exc, (subprocess.SubprocessError, OSError)):
                 raise
-            logger.info("repo refresh: git pull skipped for %s: %s", repo_dir, exc)
-            results[name] = False
+            logger.info("repo refresh: git pull failed for %s: %s", repo_dir, exc)
         else:
-            results[name] = result.returncode == 0
-            if result.returncode != 0 and preparation is not None:
-                preparation.failed_cleanup()
+            # None is an affirmative refusal before invoking pull. Every
+            # executed nonzero exit is uncertain, even with equal summaries.
+            if result is not None:
+                results[name] = result.returncode == 0
+                if result.returncode != 0 and preparation is not None:
+                    preparation.failed_cleanup()
+    return results
+
+
+async def refresh_workspace_repos_async(workspace: Path) -> dict[str, bool]:
+    """Offload with the caller's ContextVars and join before owner settlement.
+
+    Match the existing owned cleanup shield/join pattern. Cancelling an offload
+    await alone does not stop its worker. Keep the caller's preparation-effects scope
+    open through actual worker completion, including repeated cancellation.
+    Stop admitting further Git commands and then propagate cancellation; an
+    active command retains the original batch deadline and uncertainty rules.
+    Executor-queue time also consumes that deadline.
+    """
+    cancel_requested = threading.Event()
+    deadline = time.monotonic() + _REPO_REFRESH_SECONDS
+    context = copy_context()
+
+    def refresh() -> dict[str, bool]:
+        return refresh_workspace_repos(workspace, _deadline=deadline,
+                                       _cancel_requested=cancel_requested)
+
+    # A private executor Future, rather than a separately cancellable asyncio
+    # Task, also avoids all-task shutdown cancelling a to_thread task while its
+    # actual thread is still running. Only shielded awaits observe this future.
+    worker = asyncio.get_running_loop().run_in_executor(None, context.run, refresh)
+    cancellation: asyncio.CancelledError | None = None
+    while True:
+        try:
+            results = await asyncio.shield(worker)
+            break
+        except asyncio.CancelledError as exc:
+            # A completed worker may itself raise CancelledError. Do not
+            # re-await that same completed failure indefinitely.
+            if worker.done():
+                raise cancellation or exc
+            cancellation = cancellation or exc
+            cancel_requested.set()
+        except BaseException as exc:
+            if cancellation is not None:
+                cancellation.add_note(f"repository refresh worker failed: {exc!r}")
+                raise cancellation from exc
+            raise
+    if cancellation is not None:
+        raise cancellation
     return results
 
 

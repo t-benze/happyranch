@@ -395,7 +395,21 @@ def exercise(c: Controller) -> None:
         save(c)
 
         phase("cancel-and-close",28)
-        c.e07["browser_cancel"] = c.browser.e07_cancel(P,W)
+        def browser_expected(snapshot: dict) -> dict:
+            result = {}
+            for task in (P, W):
+                detail = snapshot["public"][task][""]
+                core = {key: detail["task"][key] for key in (
+                    "task_id", "brief", "team", "status", "parent_task_id", "assigned_agent",
+                    "block_kind", "current_session_id", "note")}
+                if core["status"] == "in_progress" and task == P:
+                    core["child_wait_state"] = "waiting_children"
+                result[task] = dict(task=core, recall=snapshot["public"][task]["/recall?tree=true"],
+                                    result_ids=[row["id"] for row in detail["results"]])
+                if core["status"] == "cancelled":
+                    result[task]["detail_snapshot"] = detail
+            return result
+        c.e07["browser_cancel"] = c.browser.e07_cancel(P,W, expected=browser_expected(second))
         def closed() -> dict | None:
             observed = closure(c,tree,held["launch"]["child"])
             c.e07.setdefault("closure_samples",[]).append(observed)
@@ -448,10 +462,10 @@ def exercise(c: Controller) -> None:
         connection.close()
 
         phase("terminal-ui-and-refusals",36)
-        c.e07["views"] = c.browser.e07_terminal(P,W)
+        c.e07["views"] = c.browser.e07_terminal(P,W, expected=browser_expected(freeze))
         for view, task in zip(c.e07["views"][:2], (P,W)):
             require(detail_content(view["detail"]) == detail_content(freeze["public"][task][""])
-                    and view["recall"] == freeze["public"][task]["/recall"], "C complete browser terminal content")
+                    and view["recall"] == freeze["public"][task]["/recall?tree=true"], "C complete browser terminal content")
         complete = next(t for t in baseline["sql"]["alpha"]["tables"]["tasks"] if t["parent_task_id"] is None and t["status"] == "completed")
         c.e07["completed_target"] = complete
         c.e07["refusals"] = [terminal_cli(c,P,"cancelled","E07_DUPLICATE"), terminal_cli(c,complete["id"],"completed","E07_TERMINAL")]

@@ -10,6 +10,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -58,6 +60,15 @@ def _build_authority_evaluator():
     return None
 
 
+class _OrgBusyError(RuntimeError):
+    """Process-local lifetime refusal, mapped by the existing unload route."""
+
+    def __init__(self, code: str, *, task_ids: list[str] | None = None) -> None:
+        super().__init__(code)
+        self.code = code
+        self.task_ids = task_ids
+
+
 @dataclass
 class OrgState:
     slug: str
@@ -98,6 +109,33 @@ class OrgState:
     # live OrgState (daemon process), never per request and never from an OS
     # boot identifier.  It is an ownership marker, not a credential.
     authority_v2_origin_boot_id: str = field(default_factory=lambda: str(uuid.uuid4()))
+
+    # Event-loop-only: admission and detach/close contain no await. This tracks
+    # actual runner callers through native finish, not durable owner clearance.
+    _runner_admission_closed: bool = field(init=False, default=False, repr=False)
+    _runner_tasks: set[asyncio.Task] = field(init=False, default_factory=set, repr=False)
+
+    @contextmanager
+    def _runner_lifetime(self) -> Iterator[bool]:
+        if self._runner_admission_closed:
+            # A queue consumer may still hold this old OrgState after detach.
+            # Refuse before it can reserve an owner or touch the closed DB.
+            yield False
+            return
+        task = asyncio.current_task()
+        if task is None:
+            raise RuntimeError("org runner requires an asyncio task")
+        registered = task not in self._runner_tasks
+        self._runner_tasks.add(task)
+        try:
+            yield True
+        finally:
+            if registered:
+                self._runner_tasks.remove(task)
+
+    def _assert_runners_idle(self) -> None:
+        if self._runner_tasks:
+            raise _OrgBusyError("active_runners_in_flight")
 
     _TERMINAL_STATUS_TO_EVENT = {
         TaskStatus.COMPLETED: "task_complete",
@@ -371,4 +409,6 @@ class OrgState:
             raise
 
     def close(self) -> None:
+        self._assert_runners_idle()
+        self._runner_admission_closed = True
         self.db.close()

@@ -108,7 +108,11 @@ def journey(c: Controller, *, lost: bool) -> None:
     task = c.create("alpha", prefix + "_ROOT")
     m1 = c.start("alpha", task, "case_manager")
     if not lost:
-        c.browser.open_task("alpha", task, "ALPHA_ROOT")
+        c.browser.open_task("alpha", task, "ALPHA_ROOT", expected=dict(
+            task=dict(task_id=task, brief="ALPHA_ROOT", team="engineering", status="in_progress",
+                      parent_task_id=None, assigned_agent="case_manager", block_kind=None,
+                      current_session_id=m1["session"]),
+            absent=["ALPHA_ROOT_SENTINEL", "ALPHA_CHILD_SENTINEL", "ALPHA_CHILD_OUTCOME"]))
     delegate = {"action": "delegate", "agent": "case_worker", "prompt": prefix + "_CHILD_SENTINEL"}
     first = c.payload(m1, prefix + "_DELEGATE_RESULT", delegate)
     if lost:
@@ -149,17 +153,22 @@ def journey(c: Controller, *, lost: bool) -> None:
     c.finish("alpha", task)
     require(c.stores["alpha"].result(first) == original, "original M1 row retained through terminal consumption")
     compare_public(c, "alpha", task, [first, worker_payload, final], [m1, worker, m2], worker["task"])
+    closure = c.durable[-1]
+    expected = dict(task={key: closure["public"]["task"][key] for key in (
+        "task_id", "brief", "team", "status", "parent_task_id", "assigned_agent", "block_kind", "current_session_id", "note")},
+        recall=closure["recall"], result_ids=[row["id"] for row in closure["public"]["results"]],
+        detail=dict(blocked_on_jobs=None))
     if not lost:
         c.browser.completed("alpha", task, "ALPHA_ROOT", "ALPHA_ROOT_SENTINEL", child=worker["task"],
-                            child_summary="ALPHA_CHILD_OUTCOME", shot="lifecycle", refresh=True)
+                            child_summary="ALPHA_CHILD_OUTCOME", shot="lifecycle", refresh=True, expected=expected)
         c.mark("E02.lifecycle-browser")
         terminal = dict(code="task_not_active", task_id=task, status="completed", cancelled=False)
         deny(c, "E06.literal-terminal", "alpha", final, 409, terminal)
         deny(c, "E06.changed-terminal", "alpha", changed, 409, terminal)
     else:
-        c.browser.open_task("alpha", task, "LOSS_ROOT")
-        c.browser.completed("alpha", task, "LOSS_ROOT", "LOSS_ROOT_SENTINEL", child=worker["task"],
-                            child_summary="LOSS_CHILD_OUTCOME", shot="response-loss")
+        c.browser.open_task("alpha", task, "LOSS_ROOT", expected=expected, ready=lambda:
+            c.browser.completed("alpha", task, "LOSS_ROOT", "LOSS_ROOT_SENTINEL", child=worker["task"],
+                                child_summary="LOSS_CHILD_OUTCOME", shot="response-loss"))
         c.mark("E06.committed-response-lost", dict(first=first_record, replay=replay))
 
 
@@ -178,16 +187,21 @@ def exercise(c: Controller) -> None:
     c.mark("E03.bearer-post-valid")
     for index, (org, task) in enumerate((("alpha", alpha), ("beta", beta), ("alpha", alpha))):
         alien = ("BETA" if org == "alpha" else "ALPHA") + "_COLLISION"
+        closure = next(row for row in c.durable if row.get("org") == org and row.get("root") == task
+                       and "public" in row)
+        expected = dict(task={key: closure["public"]["task"][key] for key in (
+            "task_id", "brief", "team", "status", "parent_task_id", "assigned_agent", "block_kind", "current_session_id", "note")},
+            recall=closure["recall"], result_ids=[r["id"] for r in closure["public"]["results"]], forbidden=[alien])
         c.browser.open_task(org, task, org.upper() + "_COLLISION", switch=index > 0,
-                            cached_recall=index == 2, alien=alien)
-        c.browser.completed(org, task, org.upper() + "_COLLISION", org.upper() + "_COLLISION_OUTCOME",
-                            alien=alien, shot=f"org-switch-{index}")
+                            cached_recall=index == 2, alien=alien, expected=expected, ready=lambda:
+            c.browser.completed(org, task, org.upper() + "_COLLISION", org.upper() + "_COLLISION_OUTCOME",
+                                alien=alien, shot=f"org-switch-{index}"))
         if index == 2:
             # First prove the populated-cache return, then also preserve the
             # accepted fresh target-org HTTP + rendered-content oracle.
-            c.browser.revisit_after_cache_expiry(org, task)
-            c.browser.completed(org, task, "ALPHA_COLLISION", "ALPHA_COLLISION_OUTCOME",
-                                alien=alien, shot="org-switch-return-revalidated")
+            c.browser.revisit_after_cache_expiry(org, task, expected=expected, ready=lambda:
+                c.browser.completed(org, task, "ALPHA_COLLISION", "ALPHA_COLLISION_OUTCOME",
+                                    alien=alien, shot="org-switch-return-revalidated"))
         c.mark(("E03.browser-alpha", "E03.browser-beta", "E03.browser-alpha-return")[index])
     require(len(c.starts) == 9, "exact whole-run launch count", c.starts)
     for org, tasks, results in (("alpha", 6, 8), ("beta", 1, 1)):

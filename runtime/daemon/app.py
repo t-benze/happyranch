@@ -389,6 +389,10 @@ async def _lifespan(app: FastAPI):
     try:
         yield
     finally:
+        # Fence runner starts (including stale OrgState references) and new org
+        # attachment before the first shutdown await. Native owners remain live
+        # through worker completion, effects unwind and their final settlement.
+        state._stop_runner_admission()
         # HTTP disconnect never owns these tasks. Reap the bounded operation
         # owners before host shutdown or any org DB can close; retain holds.
         await state.team_move_service.close()
@@ -411,18 +415,29 @@ async def _lifespan(app: FastAPI):
             await asyncio.gather(*_dashboard_tasks, return_exceptions=True)
         for org in state.orgs.values():
             await org.dashboard_projection.reap_scheduler()
-        for t in thread_worker_tasks:
-            t.cancel()
-        thread_breaker_scheduler_task.cancel()
-        dream_scheduler_task.cancel()
-        for t in dream_worker_tasks:
-            t.cancel()
-        work_hours_scheduler_task.cancel()
-        for t in wake_worker_tasks:
-            t.cancel()
-        schedule_scheduler_task.cancel()
-        for t in schedule_worker_tasks:
-            t.cancel()
+        runner_tasks = set(
+            thread_worker_tasks + dream_worker_tasks + wake_worker_tasks + schedule_worker_tasks
+            + [thread_breaker_scheduler_task, dream_scheduler_task,
+               work_hours_scheduler_task, schedule_scheduler_task]
+        )
+        for org in state.orgs.values():
+            runner_tasks.update(org._runner_tasks)
+        for task in runner_tasks:
+            task.cancel()
+        # Shield the join itself against repeated shutdown cancellation. The
+        # refresh helper joins its private executor Future; these callers also
+        # have to finish their native finally blocks before any DB can close.
+        runners_done = asyncio.gather(*runner_tasks, return_exceptions=True)
+        shutdown_cancellation = None
+        while True:
+            try:
+                await asyncio.shield(runners_done)
+                break
+            except asyncio.CancelledError as exc:
+                shutdown_cancellation = shutdown_cancellation or exc
+        for outcome in runners_done.result():
+            if isinstance(outcome, BaseException) and not isinstance(outcome, asyncio.CancelledError):
+                logger.error("Native runner shutdown failed: %r", outcome)
         disk_sweeper_task.cancel()
         await asyncio.gather(disk_sweeper_task, return_exceptions=True)
         zombie_reaper_task.cancel()
@@ -435,6 +450,8 @@ async def _lifespan(app: FastAPI):
         from runtime.daemon.jobs_runner import terminate_all_inflight
         await terminate_all_inflight(grace_seconds=5)
         await state.close_all()
+        if shutdown_cancellation is not None:
+            raise shutdown_cancellation
 
 
 async def metrics_timing_middleware(request: Request, call_next):
