@@ -1822,6 +1822,7 @@ def refresh_workspace_repos(workspace: Path) -> dict[str, bool]:
     results: dict[str, bool] = {}
     for name in repo_names:
         repo_dir = workspace / "repos" / name
+        before = _repo_refresh_state(repo_dir) if preparation is not None else None
         try:
             result = subprocess.run(
                 ["git", "pull", "--ff-only"],
@@ -1842,9 +1843,35 @@ def refresh_workspace_repos(workspace: Path) -> dict[str, bool]:
             results[name] = False
         else:
             results[name] = result.returncode == 0
-            if result.returncode != 0 and preparation is not None:
+            # A refused pull (detached HEAD, dirty tree, non-fast-forward) is
+            # an ordinary no-effect outcome. Only retain cleanup uncertainty
+            # when the checkout's HEAD/branch/tracked state cannot be shown
+            # unchanged; fetched remote-tracking refs are not workspace effects.
+            if (result.returncode != 0 and preparation is not None
+                    and (before is None or _repo_refresh_state(repo_dir) != before)):
                 preparation.failed_cleanup()
     return results
+
+
+def _repo_refresh_state(repo_dir: Path) -> tuple[bytes, bytes, bytes] | None:
+    """Observe HEAD, branch and tracked status without taking optional locks."""
+    commands = (
+        ["git", "rev-parse", "--verify", "HEAD"],
+        ["git", "symbolic-ref", "-q", "HEAD"],
+        ["git", "--no-optional-locks", "status", "--porcelain=v1", "-z",
+         "--untracked-files=no", "--ignore-submodules=none"],
+    )
+    state: list[bytes] = []
+    for index, command in enumerate(commands):
+        try:
+            observed = subprocess.run(command, cwd=str(repo_dir), capture_output=True, timeout=30)
+        except (subprocess.SubprocessError, OSError):
+            return None
+        # symbolic-ref exits 1 for a detached HEAD; that is a valid observation.
+        if observed.returncode != 0 and not (index == 1 and observed.returncode == 1):
+            return None
+        state.append(observed.returncode.to_bytes(1, "big") + observed.stdout)
+    return state[0], state[1], state[2]
 
 
 def format_repo_refresh_note(results: dict[str, bool]) -> str:
