@@ -582,7 +582,9 @@ storage cause through the existing owner before an explicit supported retry. A n
 retry/recovery refusal is distinct from its previous genuine launch. Deferred adoption
 refusals retain the authenticated original owner; unclaimed recovery uses its original
 SID and existing claim exclusions. Prior unknown evidence and callback/cancel/hold
-winners survive both boundaries. Source
+winners survive both boundaries. Human-team failed-recovery history treats the
+exact native launch/refusal audit action as informational, retaining selected
+result/session/worker/team, replay and foreign-history fences. Source
 publication/merge does not establish that the running daemon contains the correction.
 
 ## Root task Pause outcomes

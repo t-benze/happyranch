@@ -12,6 +12,11 @@ journal fields. Reconstruction/redelivery does not reset this count. A genuine
 positive-PID native launch callback records a zero-count boundary before fallible
 phase persistence. A reserved SID and memory telemetry never prove launch.
 
+Human-team failed-recovery history treats this exact launch/refusal audit action
+as informational. It neither selects a result nor grants recovery authority;
+selected result/session/worker/team and replay fences still apply, and unrelated
+or unknown causal actions still refuse before terminal or parent effects.
+
 An actual refusal after durable preparation fails earlier: the existing outer
 settlement makes an unclosed preparation unknown, and unknown owners cannot safely
 be adopted for another launch. FAILED with `launch_refused` uses normal failure,
@@ -2085,7 +2090,9 @@ observations: `memory_added`, `memory_digest_impression`, `memory_search`,
 `memory_runtime_binding`, `memory_runtime_launched`, `memory_runtime_terminal`,
 and `memory_collection_seal`. Agent-scoped memory read/update/promotion/lifecycle
 rows are outside this task history; collection acceptance/invalidation controls
-are not informational recovery exemptions. Unknown actions, including a
+are not informational recovery exemptions. The exact native launch/refusal
+observation `task_native_launch_boundary` is also informational; it does not
+select or consume the recovery result. Unknown actions, including a
 dictionary-payload `memory_unrecognized_transition`, refuse as
 `ambiguous_history` before failure, review, marker, job or parent effects.
 Selected result/session/owner, review ordering and replay fences are unchanged.

@@ -2812,6 +2812,11 @@ journal fields. Reconstruction/redelivery does not reset this count. A genuine
 positive-PID native launch callback records a zero-count boundary before fallible
 phase persistence. A reserved SID and memory telemetry never prove launch.
 
+Human-team failed-recovery history treats this exact launch/refusal audit action
+as informational. It neither selects a result nor grants recovery authority;
+selected result/session/worker/team and replay fences still apply, and unrelated
+or unknown causal actions still refuse before terminal or parent effects.
+
 An actual refusal after durable preparation fails earlier: the existing outer
 settlement makes an unclosed preparation unknown, and unknown owners cannot safely
 be adopted for another launch. FAILED with `launch_refused` uses normal failure,
