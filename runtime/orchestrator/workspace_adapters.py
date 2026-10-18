@@ -1895,6 +1895,8 @@ def refresh_workspace_repos(
                                        deadline=deadline, cancel_requested=_cancel_requested)
         except BaseException as exc:
             if preparation is not None:
+                if preparation is current_invocation():
+                    preparation.record_preparation_cause("repository_pull", exc, repo=name)
                 try:
                     preparation.failed_cleanup()
                 except BaseException as evidence:
@@ -1909,6 +1911,8 @@ def refresh_workspace_repos(
             if result is not None:
                 results[name] = result.returncode == 0
                 if result.returncode != 0 and preparation is not None:
+                    if preparation is current_invocation():
+                        preparation.record_preparation_cause("repository_pull", repo=name, returncode=result.returncode)
                     preparation.failed_cleanup()
     return results
 

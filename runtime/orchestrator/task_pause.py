@@ -147,6 +147,9 @@ class TaskInvocation:
     prompt_reader: Callable[[], str] | None = None
     workflow_dispatcher: Any = None
     move_reservation: Any = None
+    refusal_attempt_id: str = field(default_factory=lambda: uuid.uuid4().hex)
+    launch_observed: bool = False
+    preparation_cause: dict | None = None
 
     @property
     def store(self) -> TaskPauseStore:
@@ -188,6 +191,11 @@ class TaskInvocation:
             entry.update(facts)
             self.store.save_journal_uncommitted(row)
 
+    def record_preparation_cause(self, stage: str, exc: BaseException | None = None, **facts: Any) -> None:
+        if self.preparation_cause is None:
+            from runtime.orchestrator.launch_refusals import safe_cause
+            self.preparation_cause = safe_cause(stage, exc, **facts)
+
     def failed_cleanup(self) -> None:
         # Sticky local ownership precedes any fallible journal/COMMIT. A caught
         # save failure or rollback must never permit clean terminal release.
@@ -218,6 +226,7 @@ class TaskInvocation:
         try:
             yield
         except BaseException as exc:
+            self.record_preparation_cause("native_preparation", exc)
             try:
                 self.failed_cleanup()
             except BaseException as evidence:
@@ -515,6 +524,8 @@ class TaskInvocation:
                 entry["started_at"] = entry["captured_generation"] = None
             self.store.save_journal_uncommitted(row)
         self.attempt_committed = False
+        self.launch_observed = False
+        self.refusal_attempt_id = uuid.uuid4().hex
         return dict(entry["retry"])
 
     def host_terminal(self, outcome: Any) -> None:
@@ -548,6 +559,11 @@ class TaskInvocation:
 
     def started(self, pid: int) -> None:
         if pid > 0:
+            # Local launch fact precedes fallible storage: an audit/phase save
+            # failure after Popen must never be counted as a launch refusal.
+            self.launch_observed = True
+            from runtime.orchestrator.launch_refusals import record_started
+            record_started(self)
             self.phase("running", started_at=now())
 
     def close(self) -> None:
@@ -874,6 +890,9 @@ async def discover_pause_work(org: Any, queue: Any) -> None:
             and e["phase"] in {"retry_deferred", "recovery_deferred"}}
         if held:
             for entry in deferred_callbacks.values():
+                task = org.db.get_task(entry["task_id"])
+                if task is None or task.cancelled_at is not None or task.status.value in {"completed", "failed", "cancelled", "superseded"}:
+                    continue
                 sid = (entry["context"]["recovery_return"]["origin_session_id"]
                        if entry["phase"] == "recovery_deferred" else entry["session_id"])
                 result = org.db.get_latest_task_result(entry["task_id"], entry["agent"], sid)
@@ -891,6 +910,10 @@ async def discover_pause_work(org: Any, queue: Any) -> None:
                         and e["phase"] in {"retry_deferred", "recovery_deferred"}}
             for (task_id,) in task_rows:
                 task = org.db.get_task(task_id)
+                # Retain unknown evidence, but terminal owners cannot launch
+                # or replay consumed callbacks through the deferred branch.
+                if task is None or task.cancelled_at is not None or task.status.value in {"completed", "failed", "cancelled", "superseded"}:
+                    continue
                 if task_id in deferred:
                     entry = deferred[task_id]
                     if "authority_v2_generation" in entry["owner_identity"]:

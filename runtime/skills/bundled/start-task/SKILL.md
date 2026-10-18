@@ -568,6 +568,19 @@ are not covered by that rail — are documented in the **manage-agent** skill an
 `docs/agent-guides/agent-executors-and-permissions.md`.
 
 
+## Native launch-refusal outcomes
+
+Ordinary native prelaunch refusals have a durable maximum of three consecutive
+attempts per logical continuation; an unclosed durable preparation can fail earlier
+because unknown ownership prevents safe retry. A `launch_refused` FAILED task uses
+normal manager/parent handling. Inspect its `task_native_launch_boundary` audits for
+the first safe cause and exact reserved SID/attempt; a reservation is not a running
+session. Failure never certifies cleanup or permits clearing unknown owners, replaying
+callbacks, resetting chains or retrying consumed failures. Intentional holds/waits and
+stale ownership do not consume this allowance. Resolve the evidenced preparation or
+storage cause through the existing owner before an explicit supported retry. Source
+publication/merge does not establish that the running daemon contains the correction.
+
 ## Root task Pause outcomes
 
 A root Pause holds future task execution, not your already running callback. Complete truthful progress/completion for your original task/session and preserve real job evidence. A held-root deferred invocation is not an execution failure, and Resume grants no new session, step, budget or permission. Only the server-captured ordinary-purpose actual running session (including a normal v2-admitted manager session) may auto-run its already-authorized unreviewed jobs while held; recovery sessions retain their existing purpose restrictions.

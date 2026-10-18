@@ -2800,3 +2800,35 @@ remain; no cleanup/activation authority follows. These source changes have no
 behavioral/migration/recovery proof; integration INCLUDING callback SKIPPED24342,
 Python units RETIRED. That C3 checkpoint had no COMPLETE writer; current D/E/F
 source and independent gates are described above. No live capability follows.
+
+### Bounded ordinary native launch refusals (THR-315)
+
+Actual non-hold refusals before durable preparation allow at most THREE consecutive
+attempts for the same logical task continuation. Existing audit rows
+`task_native_launch_boundary` retain the original fingerprint/owner/agent/generation
+key, actual reserved SID, invocation and attempt identities, cumulative count and
+first safe cause; the latest three bounded payloads suffice without new schema or
+journal fields. Reconstruction/redelivery does not reset this count. A genuine
+positive-PID native launch callback records a zero-count boundary before fallible
+phase persistence. A reserved SID and memory telemetry never prove launch.
+
+An actual refusal after durable preparation fails earlier: the existing outer
+settlement makes an unclosed preparation unknown, and unknown owners cannot safely
+be adopted for another launch. FAILED with `launch_refused` uses normal failure,
+parent enqueue and thread followup; it never clears `failed_cleanup`, unknown
+journal/process evidence, retry lineage or worktree guards. Existing smaller host,
+provider and recovery ceilings remain. Intentional Pause/team-move deferral,
+child/job/capacity/backoff waits, shutdown and stale/current-owner loss consume no
+allowance. Current-owner and authentic callback fences precede evidence and are
+rechecked inside failure transition; later continuations have separate keys.
+Terminal deferred owners are not republished, even when unknown evidence remains.
+
+The first preparation cause is kept separately from the final Pause/cleanup error:
+bounded stage, exception class/stable Pause code and source locations only. An
+executed pull adds a safe repo identifier, fixed operation and return code or
+exception class. Skipped pre-pull admission remains a stale-source warning and
+creates no pull-failure cause. No exception messages, output, argv, URLs, environment
+or locals enter this evidence. An audit/storage save failure remains an explicit
+persistence limitation, not a durable count or terminal-success claim. No new timer,
+service, automatic successor or permission follows. Source/scoped verification is
+separate from deployment, running-code identity and operational acceptance.
