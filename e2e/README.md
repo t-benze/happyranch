@@ -1065,7 +1065,15 @@ Body-owned controls retain exact English/Chinese labels and character counts,
 Recall's 240/detail's 600 thresholds, complete expanded content and identical
 recollapsed previews. Native calls still require visible owned bodies, blocks,
 headers, links, labels and controls and check the controller's remaining time
-after synchronous operations. Existing action/group/checkpoint deadlines,
+after synchronous operations. Before each one-shot snapshot (including after
+expand/recollapse), bounded native auto-wait requires the exact list link and
+its direct title, the own detail section's direct prose, or the Recall section's
+direct root header link and expected own Brief/Outcome prose. The independent
+roots/Recall queries can still be pending when main, URL or Recall heading is
+ready. TaskRecallTree mounts the entire tree from one resolved recallNode;
+a descendant link cannot satisfy root readiness. Strict final validation still
+refuses malformed content, extra/wrong owners and incorrect recursive trees.
+Existing action/group/checkpoint deadlines,
 cache expiry 31s, org return, reloads and six accepted DOM-only sites are
 unchanged. No baseline variant, product renderer or transport comparison is
 changed.
@@ -1075,7 +1083,10 @@ fresh disposable jsdom fixtures, then the actual validators loaded from the
 candidate AST. They cover generated/plain content, wrong ownership/tenant,
 recursive statuses/order/links, malformed shapes and bilingual short/long,
 full/recollapsed snapshots. These controls establish structural sensitivity
-only. Native Playwright bridging, React clicks, CSS visibility/layout/timing,
+only. Additional AST-loaded actual-bridge controls with narrow Playwright
+doubles establish readiness/extraction order and remaining/deadline handling
+under simulation; they do not establish native auto-wait timing or visibility.
+Native Playwright bridging, React clicks, CSS visibility/layout/timing,
 built bundle, sanitizer/export/screenshots and full Product E2E sensitivity
 remain UNVERIFIED until actual evidence. Fixture transitions are not React
 interaction proof or protected deliberate-defect proof.

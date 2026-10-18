@@ -980,11 +980,35 @@ class Browser:
             url += '/' + expected['task']
         expect(self.page).to_have_url(url, timeout=c.remaining(5)*1000)
         c.remaining()
-        if surface != 'list':
+        # main/URL/headings can precede the independent roots/Recall query.
+        # Wait on the exact data owner before the one-shot strict snapshot.
+        href = f"/orgs/{expected['org']}/tasks/{expected['task']}"
+        if surface == 'list':
+            row = main.locator(f'a[href="{href}"]')
+            expect(row).to_be_visible(timeout=c.remaining(5)*1000)
+            c.remaining()
+            expect(row.locator(':scope > div > span.text-task-title')).to_be_visible(timeout=c.remaining(5)*1000)
+            c.remaining()
+        else:
             label = ({'detail': 'Brief', 'recall': 'Recall tree'} if locale == 'en' else
                      {'detail': '简报', 'recall': '回溯树'})[surface]
-            expect(main.get_by_role('heading', name=label, exact=True)).to_be_visible(timeout=c.remaining(5)*1000)
+            heading = main.get_by_role('heading', name=label, exact=True)
+            expect(heading).to_be_visible(timeout=c.remaining(5)*1000)
             c.remaining()
+            section = heading.locator('..')
+            if surface == 'detail':
+                expect(section.locator(':scope > div > .gl-prose')).to_be_visible(timeout=c.remaining(5)*1000)
+                c.remaining()
+            else:
+                root = section.locator(':scope > div')
+                expect(root.locator(f':scope > div:first-child > a[href="{href}"]')).to_be_visible(timeout=c.remaining(5)*1000)
+                c.remaining()
+                # TaskRecallTree mounts the whole tree from one recallNode;
+                # descendants cannot stand in for this root or its own bodies.
+                for key, wrapper in (('brief', 'mt-1'), ('output_summary', 'mt-2')):
+                    if expected['node'].get(key):
+                        expect(root.locator(f':scope > div.{wrapper} > div > .gl-prose')).to_be_visible(timeout=c.remaining(5)*1000)
+                        c.remaining()
         observed = main.evaluate(_RENDERED_DOM, {key: expected.get(key, 'en') for key in
                                                ('org', 'task', 'surface', 'locale')},
                                  timeout=c.remaining(5)*1000)
