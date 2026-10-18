@@ -1898,14 +1898,17 @@ def _resolve_probe_slots(data: dict, plan: dict, receipts: list[dict], jobs: dic
         receipt = _one([row for row in receipts if row["path"] == slot["path"]], "acceptance_slot_path")
         job, transcript = jobs[receipt["job_id"]], transcripts[receipt["job_id"]]
         original = slot["root"]
+        # Ancestor-only rows deliberately carry graph facts, not unrelated
+        # historical bodies. The independently enumerated job-window candidate
+        # population is fully acquired; a graph-only ancestor is not a slot.
         roots = [row for row in data["tasks"] if row["parent_task_id"] is None
-                 and row["brief"] == original["brief"] and row["assigned_agent"] == original["agent"]
+                 and row.get("brief") == original["brief"] and row["assigned_agent"] == original["agent"]
                  and row["team"] == original["team"]
                  and aware_utc(job["started_at"]) <= aware_utc(row["created_at"]) <= aware_utc(job["finished_at"])]
         root = _one(roots, "acceptance_root_slot_ambiguous")
         child_template = slot["child"]
         child = _one([row for row in data["tasks"] if row["parent_task_id"] == root["id"]
-                      and row["brief"] == child_template["brief"] and row["assigned_agent"] == child_template["agent"]
+                      and row.get("brief") == child_template["brief"] and row["assigned_agent"] == child_template["agent"]
                       and row["team"] == child_template["team"]], "acceptance_child_slot_ambiguous")
         parent_decisions = []
         for result in data["task_results"]:
