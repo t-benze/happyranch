@@ -983,38 +983,80 @@ class Database(
         return self._conn.execute(sql, params).fetchall()
 
     @contextmanager
-    def _memory_collection_read_budget(self):
-        """Bound lock admission/hold and SQLite VM work, never scan-by-LIMIT.
+    def _memory_collection_read_budget(self, *, publication: bool = False):
+        """Bound selected reads, including their transitive SQL and decoding.
 
-        Caller owns no observer callback or file/network work in this scope.
-        Nested selected rereads share the outer transition's original deadline.
-        The DB RLock excludes other users while the connection handler is set.
+        Enter BEFORE any coherent/synchronized lock. Nested readers share the
+        original work/deadline; no callback, file or network I/O belongs here.
+        SQLite VM sampling and cooperative checks are not hard wall/RSS bounds.
         """
-        from runtime.infrastructure.memory_collection import CensusReadUnavailable
+        from runtime.infrastructure.memory_collection import (
+            CensusReadUnavailable, MAX_CENSUS_READ_ROWS, MAX_CENSUS_READ_BYTES,
+            MAX_CENSUS_ROW_BYTES,
+        )
         if not self._lock.acquire(timeout=0.5):
             raise CensusReadUnavailable("census_database_busy")
         nested = getattr(self, "_collection_read_deadline", None) is not None
+        old_factory = self._conn.row_factory
+        old_length = old_timeout = None
         try:
             if not nested:
                 self._collection_read_deadline = _time.monotonic() + 3.0
-                work = 0
-                def progress():
+                old_timeout = self._conn.execute("PRAGMA busy_timeout").fetchone()[0]
+                self._conn.execute("PRAGMA busy_timeout=100")
+                old_length = self._conn.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, MAX_CENSUS_ROW_BYTES)
+                work = rows = size = 0
+
+                def progress() -> int:
                     nonlocal work
                     work += 1000
                     return int(work > 50_000_000 or _time.monotonic() > self._collection_read_deadline)
+
+                def bounded_row(cursor: sqlite3.Cursor, values: tuple) -> object:
+                    nonlocal rows, size
+                    # SQLite's length limit rejects huge TEXT/BLOB/records before
+                    # Python allocation. Charge every fetched row before caller
+                    # JSON/Pydantic decoding, including nested projections.
+                    amount = sum(len(v.encode("utf-8")) if isinstance(v, str)
+                                 else len(v) if isinstance(v, bytes) else 8 for v in values)
+                    rows += 1
+                    size += amount
+                    if (amount > MAX_CENSUS_ROW_BYTES or rows > MAX_CENSUS_READ_ROWS
+                            or size > MAX_CENSUS_READ_BYTES):
+                        raise CensusReadUnavailable("census_database_size_limit")
+                    if _time.monotonic() > self._collection_read_deadline:
+                        raise CensusReadUnavailable("census_database_deadline")
+                    return old_factory(cursor, values) if old_factory else values
+
+                self._conn.row_factory = bounded_row
                 self._conn.set_progress_handler(progress, 1000)
             if _time.monotonic() > self._collection_read_deadline:
                 raise CensusReadUnavailable("census_database_deadline")
             yield
+            # Publication checks immediately BEFORE COMMIT. Do not turn a
+            # successful COMMIT into an apparent no-write read refusal here.
+            if not publication and _time.monotonic() > self._collection_read_deadline:
+                raise CensusReadUnavailable("census_database_deadline")
+        except sqlite3.DataError as exc:
+            raise CensusReadUnavailable("census_database_size_limit") from exc
         except sqlite3.OperationalError as exc:
             if str(exc) == "interrupted":
                 raise CensusReadUnavailable("census_database_scan_limit") from exc
+            if str(exc) in {"database is locked", "database table is locked"}:
+                raise CensusReadUnavailable("census_database_busy") from exc
             raise
         finally:
-            if not nested:
-                self._conn.set_progress_handler(None, 0)
-                self._collection_read_deadline = None
-            self._lock.release()
+            try:
+                if not nested:
+                    self._conn.set_progress_handler(None, 0)
+                    self._conn.row_factory = old_factory
+                    if old_length is not None:
+                        self._conn.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, old_length)
+                    if old_timeout is not None:
+                        self._conn.execute(f"PRAGMA busy_timeout={int(old_timeout)}")
+                    self._collection_read_deadline = None
+            finally:
+                self._lock.release()
 
     def read_memory_collection_evidence(self, *, view: dict | None = None, result_row_id: int | None = None) -> dict:
         """Select boot activity and its genuine reference closure, read-only.
@@ -1132,7 +1174,7 @@ class Database(
             payload = {"boot_id": prepared["view"]["boot_id"],
                        "base_assigned_intents": prepared["view"]["assigned_intents"],
                        "accepted_at": candidate["published_at"], "projection": candidate}
-            with org.memory_collection._lock, self._memory_collection_read_budget():
+            with org.memory_collection._lock, self._memory_collection_read_budget(publication=True):
                 current_observer = org.memory_collection._snapshot()
                 if any(current_observer[key] != prepared["view"][key] for key in (
                     "boot_id", "generation", "assigned_intents", "phase_counts", "phase_digests", "observation_error")):
@@ -1208,7 +1250,6 @@ class Database(
                     raise
 
 
-    @_synchronized
     def query_audit_logs(
         self,
         task_id: str | None = None,
@@ -1229,75 +1270,76 @@ class Database(
         encoding the (timestamp, id) of the last row in the prior page.
         ``next_cursor`` is ``None`` exactly when the result set is exhausted.
         """
-        import base64
+        with self._memory_collection_read_budget():
+            import base64
 
-        clauses: list[str] = []
-        params: list[object] = []
+            clauses: list[str] = []
+            params: list[object] = []
 
-        # Decode cursor into a keyset filter (rows BEFORE the cursor anchor)
-        if cursor is not None:
-            cursor_ts, cursor_id = _decode_cursor(cursor)
-            clauses.append(
-                "(timestamp < ? OR (timestamp = ? AND id < ?))"
-            )
-            params.extend([cursor_ts, cursor_ts, cursor_id])
+            # Decode cursor into a keyset filter (rows BEFORE the cursor anchor)
+            if cursor is not None:
+                cursor_ts, cursor_id = _decode_cursor(cursor)
+                clauses.append(
+                    "(timestamp < ? OR (timestamp = ? AND id < ?))"
+                )
+                params.extend([cursor_ts, cursor_ts, cursor_id])
 
-        if task_id is not None:
-            clauses.append("task_id = ?")
-            params.append(task_id)
-        if agent is not None:
-            clauses.append("agent = ?")
-            params.append(agent)
-        if action is not None:
-            clauses.append("action = ?")
-            params.append(action)
-        if since is not None:
-            clauses.append("timestamp >= ?")
-            params.append(since)
+            if task_id is not None:
+                clauses.append("task_id = ?")
+                params.append(task_id)
+            if agent is not None:
+                clauses.append("agent = ?")
+                params.append(agent)
+            if action is not None:
+                clauses.append("action = ?")
+                params.append(action)
+            if since is not None:
+                clauses.append("timestamp >= ?")
+                params.append(since)
 
-        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+            where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
 
-        # Defensive guard: non-positive limit short-circuits to empty result.
-        # Without this, limit=0 returns next_cursor anchored to a row that was
-        # never returned, and limit<0 produces an IndexError on result[limit-1].
-        if limit is not None and limit <= 0:
-            return [], None
+            # Defensive guard: non-positive limit short-circuits to empty result.
+            # Without this, limit=0 returns next_cursor anchored to a row that was
+            # never returned, and limit<0 produces an IndexError on result[limit-1].
+            if limit is not None and limit <= 0:
+                return [], None
 
-        if limit is not None:
-            # Fetch limit+1 to detect whether another page exists
-            sql = (
-                f"SELECT * FROM audit_log {where} "
-                f"ORDER BY timestamp DESC, id DESC LIMIT ?"
-            )
-            params.append(limit + 1)
-        else:
-            sql = f"SELECT * FROM audit_log {where} ORDER BY timestamp DESC, id DESC"
+            if limit is not None:
+                # Fetch limit+1 to detect whether another page exists
+                sql = (
+                    f"SELECT * FROM audit_log {where} "
+                    f"ORDER BY timestamp DESC, id DESC LIMIT ?"
+                )
+                params.append(limit + 1)
+            else:
+                sql = f"SELECT * FROM audit_log {where} ORDER BY timestamp DESC, id DESC"
 
-        db_cursor = self._conn.execute(sql, tuple(params))
-        rows = db_cursor.fetchall()
+            db_cursor = self._conn.execute(sql, tuple(params))
+            rows = db_cursor.fetchall()
 
-        result: list[dict] = []
-        for row in rows:
-            d = dict(row)
-            if d.get("payload"):
-                d["payload"] = json.loads(d["payload"])
-            result.append(d)
+            result: list[dict] = []
+            for row in rows:
+                d = dict(row)
+                if d.get("payload"):
+                    d["payload"] = json.loads(d["payload"])
+                result.append(d)
 
-        next_cursor: str | None = None
-        if limit is not None and len(result) > limit:
-            # The extra row tells us there is a next page.
-            # Encode the (timestamp, id) of the last actual-page row as next_cursor.
-            last_of_page = result[limit - 1]
-            next_cursor = _encode_cursor(
-                last_of_page["timestamp"], last_of_page["id"]
-            )
-            # Trim to exactly the requested page size
-            result = result[:limit]
+            next_cursor: str | None = None
+            if limit is not None and len(result) > limit:
+                # The extra row tells us there is a next page.
+                # Encode the (timestamp, id) of the last actual-page row as next_cursor.
+                last_of_page = result[limit - 1]
+                next_cursor = _encode_cursor(
+                    last_of_page["timestamp"], last_of_page["id"]
+                )
+                # Trim to exactly the requested page size
+                result = result[:limit]
 
-        # Re-sort ascending so callers see chronological (oldest-first) order.
-        result.sort(key=lambda d: d["id"])
+            # Re-sort ascending so callers see chronological (oldest-first) order.
+            result.sort(key=lambda d: d["id"])
 
-        return result, next_cursor
+            return result, next_cursor
 
     # --- Task Results ---
 

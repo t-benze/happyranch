@@ -1709,8 +1709,8 @@ PR1084's supplied-liveSID trust limit; same-owner contradictions still refuse.
 Observer, native/HTTP, both report front doors, preparation and locked reread use
 one selector and recompute membership at closing/commit, including new relevant
 controls/results/retries. No-epoch diagnostics remain CLOSED. Finite work,
-transport, SQLite VM and cooperative lock refusal plus public-server scan/RSS
-limitations are documented in the corrective memory spec; limits never validate
+transport, guarded public-server/native SQLite VM and cooperative lock refusal
+plus scan-measurement/RSS limitations are documented in the corrective memory spec; limits never validate
 a prefix or repair producer errors. Full bounded selected audit/task/result
 evidence, independent counts/digests/seals and stable semantic bookends are required; missing/unknown/duplicate/contradictory,
 pending/moving/error or all-failure evidence refuses. Normal exposed/in-flight

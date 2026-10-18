@@ -3164,7 +3164,9 @@ Missing required evidence and related contradictions refuse. Closing and locked
 publication reads recompute membership, including later controls/results/retries,
 with coherent native snapshots and full semantic serving/evidence comparison.
 The corrective memory spec defines finite encoded-work, transport, SQLite VM and
-cooperative lock deadlines and their public-server scan/RSS limitations. Limits
+cooperative lock deadlines on public/native reads and their scan-measurement/RSS
+limitations. The private guard precedes coherent/synchronized lock admission;
+nested reads share its original budget and restore connection settings. Limits
 never authorize a prefix, clear a sticky error or change producer behavior.
 
 The seal-action audit GET reads the actual serving OrgState through its

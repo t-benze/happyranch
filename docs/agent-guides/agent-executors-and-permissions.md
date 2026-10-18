@@ -679,7 +679,8 @@ retry, QA/job and control dependencies, including current activity with preboot
 retired SIDs. It removes unrelated global same-SID searches under PR1084's known
 supplied-liveSID limit; related contradictions still refuse. Closing/atomic reads
 recompute membership, never only prepared IDs. The corrective memory spec states
-finite work/transport/SQL/lock refusal and public-server/RSS limitations. No
+finite work/transport/SQL/lock refusal, including guarded existing public reads,
+and scan-measurement/RSS limitations. No
 reader acquires execution, writer-repair, health or collection authority.
 
 The seq428 closed failed-before-exposure census class requires complete bounded

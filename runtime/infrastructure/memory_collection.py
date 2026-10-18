@@ -515,11 +515,12 @@ class CollectionObserver:
         # Same-connection mutations advance total_changes(); other connections'
         # commits advance data_version. The audit PK bounds pagination without
         # a JSON predicate or a lock spanning the complete history acquisition.
-        row = self.db.fetch_one_readonly(
-            "SELECT total_changes(), data_version, "
-            "(SELECT coalesce(max(id), 0) FROM audit_log) FROM pragma_data_version"
-        )
-        return tuple(row)
+        with self.db._memory_collection_read_budget():
+            row = self.db.fetch_one_readonly(
+                "SELECT total_changes(), data_version, "
+                "(SELECT coalesce(max(id), 0) FROM audit_log) FROM pragma_data_version"
+            )
+            return tuple(row)
 
     def _rows(self, snapshot: dict | None = None) -> dict:
         """Read the SAME activity/reference scope used by reports and admission."""
@@ -1282,6 +1283,19 @@ def loaded_identity(org: Any) -> dict:
                       _collection_pages, _http_collection_capture, acquire_http_collection_report,
                       current_epoch_references, reduce_report, reduce_collection_report, _session_diagnostics, AuditLogger.compute_memory_telemetry_report,
                       cmd_memory_report, _compute_report, _print_report, _fetch_agent_roles])
+    # Existing public acquisition routes and their actual nested read consumers
+    # must be loaded from the same source as the native selected reader.
+    from runtime.daemon.routes import audit as audit_routes, tasks as task_routes, jobs as job_routes
+    from runtime.orchestrator.task_wait_readers import derive_child_wait
+    functions.extend([Database.query_audit_logs, inspect.unwrap(Database.get_task),
+                      inspect.unwrap(Database.list_tasks), inspect.unwrap(Database.get_task_results),
+                      inspect.unwrap(Database.get_audit_logs), inspect.unwrap(Database.get_escalation_episode_audit_tail),
+                      inspect.unwrap(Database.get_direct_revisits), inspect.unwrap(Database.walk_revisit_chain),
+                      inspect.unwrap(Database.get_recall_payload), inspect.unwrap(Database.get_job), Database._row_to_job,
+                      audit_routes.list_audit, audit_routes._enrich_thread_dream_origin,
+                      task_routes.list_tasks, task_routes.get_task, task_routes.recall_task,
+                      task_routes._recall_node, task_routes._task_to_dict, task_routes._pause_projection, derive_child_wait,
+                      job_routes.get_job_route, job_routes.get_job_output, job_routes._read_job_output_payload])
     code_rows = []
     compiled: dict[str, CodeType] = {}
     def fingerprint(function: Any) -> None:
@@ -2241,7 +2255,8 @@ def prepare_acceptance(org: Any, result_id: int) -> dict:
     # Ordinary callbacks are not collection candidates. Inspect their exact
     # keyed carrier before source/file/census acquisition; the admitted carrier
     # and complete membership are still reread during preparation and commit.
-    carrier = org.db.fetch_one_readonly("SELECT output_summary FROM task_results WHERE id=?", (result_id,))
+    with org.db._memory_collection_read_budget():
+        carrier = org.db.fetch_one_readonly("SELECT output_summary FROM task_results WHERE id=?", (result_id,))
     parsed = parse_acceptance(carrier["output_summary"]) if carrier is not None else None
     if parsed is None or parsed["kind"] != "manager_acceptance":
         raise AcceptanceUnavailable("acceptance_manager_carrier")

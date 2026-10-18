@@ -1527,6 +1527,13 @@ counts/digests/seals/errors/generations remain compared. Real serving movement
 (including generation53->54, seal312201->312222 and terminal6->7) refuses;
 timestamp equality cannot retroactively qualify an earlier moving capture.
 
+Existing public audit/task list/detail/default recall and keyed job reads use
+finite scan/row/byte/decode and lock budgets before their coherent read views;
+exhaustion refuses with HTTP503. Job output/receipt reads retain totals and
+truncation while reading only the requested bytes outside DB locks. These are
+cooperative finite-work limits, not hard RSS/wall-time guarantees; see the
+corrective memory spec for exact values and prepared-output custody limits.
+
 Backend and canonical CLI JSON/text share the report core and seq480 selector:
 current boot/epoch activity, including unknown attribution and current calls on
 preboot retired SIDs, plus genuine referenced lifecycle/ancestry/retry, QA/job and

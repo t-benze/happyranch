@@ -1594,8 +1594,10 @@ including new controls/results/retries. No-epoch output stays CLOSED and exclude
 historical proof rows from current natural denominators. Unrelated global SID
 sharing remains the PR1084 known supplied-liveSID trust limit; same-owner
 contradictions still refuse. The corrective spec documents finite encoded-work,
-transport, SQL and cooperative lock limits, including existing public-server
-scan and hard-RSS limitations. Acquisition refusal prints no partial report.
+transport, SQL and cooperative lock limits on existing public/native readers,
+including sampled-scan and hard-RSS limitations. HTTP503 reports exhausted work;
+job-output and receipt reads allocate only each requested stream prefix while
+retaining original totals/truncation and missing-file semantics. Acquisition refusal prints no partial report.
 
 Canonical CLI task sweeps and HTTP list/detail/two-capture comparisons share one
 semantic task projection. It excludes only valid rendering timestamps at

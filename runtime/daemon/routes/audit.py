@@ -11,6 +11,7 @@ from fastapi import APIRouter, HTTPException, Query
 from runtime.daemon.auth import require_token
 from runtime.daemon.routes._org_dep import OrgDep
 from runtime.infrastructure.database import _decode_cursor
+from runtime.infrastructure.memory_collection import CensusReadUnavailable
 
 router = APIRouter(dependencies=[require_token()])
 
@@ -89,16 +90,20 @@ def list_audit(
         except ValueError:
             raise HTTPException(status_code=422, detail="Invalid cursor")
 
-    entries, next_cursor = org.db.query_audit_logs(
-        task_id=task_id,
-        agent=agent,
-        action=action,
-        since=since,
-        limit=limit,
-        cursor=cursor,
-    )
-    if include_thread_origin:
-        entries = _enrich_thread_dream_origin(entries, org.db)
+    try:
+        with org.db._memory_collection_read_budget(), org.db.coherent_read_view():
+            entries, next_cursor = org.db.query_audit_logs(
+                task_id=task_id,
+                agent=agent,
+                action=action,
+                since=since,
+                limit=limit,
+                cursor=cursor,
+            )
+            if include_thread_origin:
+                entries = _enrich_thread_dream_origin(entries, org.db)
+    except CensusReadUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     response = {"entries": entries, "next_cursor": next_cursor}
     if action == "memory_collection_seal":
         response["memory_collection_observation"] = org.memory_collection_observation()

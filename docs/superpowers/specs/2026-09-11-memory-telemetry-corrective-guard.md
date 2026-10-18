@@ -307,10 +307,25 @@ remaining acquisition budget; client refusal does not cancel an already-running
 server query. Native SELECT/publication use 0.5-second DB-lock admission,
 50000000 SQLite VM instructions and a three-second cooperative lock deadline;
 publication checks the deadline again before commit. SQLite progress interrupts
-SQL, not Python/OS scheduling. Public /audit and task-detail server queries keep
-their existing implementation: the native scan guard does not bound that server
-work. Selected LIMIT/encoded bytes are not scanned-row or hard RSS guarantees.
-No schema/index/writer/new endpoint or response envelope is added.
+SQL, not Python/OS scheduling. The same private budget encloses existing public
+/audit (including optional enrichment), task list/detail/default recall and
+keyed job/output acquisition BEFORE coherent/synchronized lock admission. Each
+guarded server read shares nested scan/deadline work, caps SQLite busy waits at
+100ms, rejects SQLite values/records over 4 MiB before Python allocation, and
+charges at most 100000 fetched rows/64 MiB raw UTF8/scalar bytes before caller
+JSON/model decoding. Native selection additionally charges encoded work above.
+Resource exhaustion returns ordinary HTTP503, never a successful empty page.
+Connection row factory, length limit, busy timeout and the private progress
+handler are restored on exit; read views preserve caller transaction ownership.
+The atomic writer still rolls back failed locked rereads and checks the deadline
+before commit. Job output/receipt readers open each stream after releasing DB
+locks, read at most max_bytes (up to10 MiB), and preserve original byte totals,
+UTF8 replacement, truncation and missing-file semantics. Collection validation
+independently refuses missing/incomplete/replaced/truncated output; commit uses
+the already prepared validated bytes without file I/O under its DB lock.
+Selected LIMIT/byte counts and sampled VM instructions are not SQL rows-examined
+or hard RSS/wall-time guarantees. No schema/index/writer/new endpoint or response
+envelope is added.
 
 HTTP uses only existing /audit since/action/task filters and keyed task details,
 ancestry recall, direct revisits and job/output reads. Positively referenced

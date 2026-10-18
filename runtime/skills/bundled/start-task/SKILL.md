@@ -142,6 +142,12 @@ logs/screenshots/review packets to Shared Artifacts as an ownership workaround.
       ```
    4. If the brief does not reference prior work, skip step 3. Do not pull history speculatively.
 
+   Existing audit/task/job acquisition refuses exhausted scan/lock/row/byte work
+   with a non-success response. Never treat that as an empty completed census or
+   retry with a caller-selected subset. Output totals/truncation remain evidence;
+   missing/incomplete streams refuse collection validation. Cooperative budgets
+   and practical measurements do not certify hard RSS or wall time.
+
    Memory telemetry reports are observation-only. Valid collection requires
    independently admitted G1 role/job/probe evidence and current serving health;
    source fixtures, a summary tag, merge/deploy, or raw sample counts do not start
