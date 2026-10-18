@@ -23,6 +23,25 @@ while [ "$#" -gt 0 ]; do
     esac
     shift 2
 done
+# Refuse inherited uv selection/source/mirror/catalog/cache modes, including
+# future UV_* controls, before ANY uv invocation. Cache alone is replaced below.
+# Never include environment values in a refusal.
+python3 -I - "$OUTPUT/scratch/source/.venv" <<'PYENV'
+import os, sys
+allowed = {'UV_CACHE_DIR', 'UV_OFFLINE', 'UV_PYTHON_DOWNLOADS', 'UV_NO_PROGRESS'}
+if any(key.startswith('UV_') and key not in allowed for key in os.environ):
+    raise SystemExit('FREEZE_UV_ENV_CONFLICT: unset inherited UV_* controls (except cache/offline/downloads/progress)')
+if 'VIRTUAL_ENV' in os.environ and os.environ['VIRTUAL_ENV'] != sys.argv[1]:
+    raise SystemExit('FREEZE_VIRTUAL_ENV_CONFLICT: unset VIRTUAL_ENV; only exported-source/.venv is supported')
+if any(key.startswith('PYTHON') for key in os.environ):
+    raise SystemExit('FREEZE_PYTHON_ENV_CONFLICT: unset inherited PYTHON* controls')
+# A fresh installation requires downloads. Do not override a prohibition or
+# turn an unknown/invalid control into permission to use the network.
+if os.environ.get('UV_OFFLINE', 'false').lower() not in ('false', '0'):
+    raise SystemExit('FREEZE_DOWNLOADS_PROHIBITED: offline mode cannot populate a fresh private installation')
+if os.environ.get('UV_PYTHON_DOWNLOADS', 'automatic') != 'automatic':
+    raise SystemExit('FREEZE_DOWNLOADS_PROHIBITED: fresh private installation requires permitted Python downloads')
+PYENV
 [ -n "$WEB_TOOL_ORIGINALS" ] && [[ "$WEB_TOOL_ORIGINALS" = /* ]] || { echo WEB_TOOL_ORIGINALS_REQUIRED >&2; exit 2; }
 # All platform-independent validation precedes tools, writes and build effects.
 PREFLIGHT="$(bash "$VERIFY" preflight --source "$REPO_ROOT" --version "$VERSION" \
@@ -236,7 +255,22 @@ export npm_config_cache="$OUTPUT/scratch/npm-cache"
 export CLANG_MODULE_CACHE_PATH="$OUTPUT/scratch/clang-cache"
 export GOTOOLCHAIN=local
 export GOCACHE="$OUTPUT/scratch/go-cache" GOMODCACHE="$OUTPUT/scratch/go-modules"
-mkdir "$TMPDIR" "$GOCACHE" "$GOMODCACHE"
+# Reserve and validate wrapper temp/cache before the early uv version read.
+python3 -I - "$OUTPUT" "$SCRIPT_DIR" <<'PYTEMP'
+import os, stat, sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[2])
+from asset_evidence import open_root
+output = Path(sys.argv[1])
+with open_root(output / 'scratch', output, True) as scratch:
+    for name in ('tmp', 'uv-cache'):
+        scratch.verify()
+        os.mkdir(name, mode=0o700, dir_fd=scratch.fd)
+        with open_root(output / 'scratch' / name, output, True) as child:
+            if stat.S_IMODE(os.fstat(child.fd).st_mode) != 0o700 or os.listdir(child.fd):
+                raise SystemExit('RELEASE_TEMP_CACHE_NOT_PRIVATE_EMPTY')
+PYTEMP
+mkdir "$GOCACHE" "$GOMODCACHE"
 export MACOSX_DEPLOYMENT_TARGET=14.0 GOOS=darwin GOARCH=arm64 CGO_ENABLED=1
 {
     uname -a
@@ -245,7 +279,7 @@ export MACOSX_DEPLOYMENT_TARGET=14.0 GOOS=darwin GOARCH=arm64 CGO_ENABLED=1
     swift --version
     go version
     go env GOOS GOARCH GOHOSTARCH CGO_ENABLED GOTOOLCHAIN
-    uv --version
+    uv --no-config --version
     node --version
     npm --version
     df -h "$OUTPUT"
