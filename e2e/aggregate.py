@@ -1488,9 +1488,9 @@ def validate_e07(row: dict, observations: dict, directory: Path) -> None:
           and cancel["child_view"]["detail"]["task"]["block_kind"] is None, "rendered current waiting/running tree")
     for view,task,name in zip(case["views"][:2],(P,W),("e07-parent.png","e07-child.png")):
         check(dict(event="detail-reload",**view) in events and view["url"].endswith(f"/orgs/alpha/tasks/{task}")
-              and view["detail_url"].endswith(f"/api/v1/orgs/alpha/tasks/{task}") and view["recall_url"] == view["detail_url"]+"/recall"
+              and view["detail_url"].endswith(f"/api/v1/orgs/alpha/tasks/{task}") and view["recall_url"] == view["detail_url"]+"/recall?tree=true"
               and view["detail_method"] == view["recall_method"] == "GET" and view["detail_status"] == view["recall_status"] == 200
-              and e07_detail_state(view["detail"]) == e07_detail_state(freeze["public"][task][""]) and view["recall"] == freeze["public"][task]["/recall"]
+              and e07_detail_state(view["detail"]) == e07_detail_state(freeze["public"][task][""]) and view["recall"] == freeze["public"][task]["/recall?tree=true"]
               and view["cancel_disabled"] is True and view["cancel_title"] == "Cannot cancel a cancelled task"
               and view["badges"] and all(x == "cancelled" for x in view["badges"]) and "cancelled" in view["text"]
               and view["screenshot"] == name and (directory/name).read_bytes().startswith(b"\x89PNG\r\n\x1a\n"), "actual terminal detail/reload/literal badge/disabled control")

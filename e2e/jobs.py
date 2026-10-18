@@ -224,12 +224,20 @@ def observe_running(c: Controller, task: str, job: dict, server: socket.socket) 
     return connection, stream
 
 
+def browser_job_expected(job: dict, row: dict) -> dict:
+    # Durable SQLite Booleans are INTEGER; assert the declared submission's
+    # actual JSON Boolean fields independently rather than coercing a response.
+    core = {key: value for key, value in row.items() if key not in {"review_required", "persistent"}}
+    core.update(review_required=job["code"] is None, persistent=False)
+    return dict(job=core)
+
+
 def run_script(c: Controller, task: str, job: dict, server: socket.socket,
                handle: tuple[socket.socket, BinaryIO]) -> None:
     connection, stream = handle
     pid, start = job["peer"]["pid"], job["peer"]["start"]
-    job["action"] = c.browser.job_action(job["id"], job["cap"], lambda: pending(c, task, job, server))
-    job["running_browser"] = c.browser.job_open(job["id"], "running")
+    job["action"] = c.browser.job_action(job["id"], job["cap"], lambda: pending(c, task, job, server), expected=browser_job_expected(job, job["running"]))
+    job["running_browser"] = c.browser.job_open(job["id"], "running", expected=browser_job_expected(job, job["running"]))
     require(identity(pid) == start, "script live through running browser read")
     if job["code"] != -9:
         connection.settimeout(c.remaining(3))
@@ -465,14 +473,25 @@ def exercise(c: Controller) -> None:
             record["anchors"].append(s1)
             for job in record["jobs"]:
                 pending(c, task, job, server)
-            record["waiting_browser"] = c.browser.jobs_waiting(task, ids)
+            def waiting_expected(snapshot: dict) -> dict:
+                row = snapshot["tasks"][0]
+                core = dict(task_id=task, brief=variant, team="engineering", status="in_progress",
+                            parent_task_id=None, assigned_agent="case_manager", block_kind="blocked_on_job",
+                            current_session_id=first["session"])
+                jobs_by_id = {job["id"]: job for job in snapshot["jobs"]}
+                ordered = json.loads(row["blocked_on_job_ids"])
+                return dict(task=core, result_ids=[r["id"] for r in snapshot["results"]],
+                            detail=dict(blocked_on_jobs=[dict(job_id=jid, status=jobs_by_id[jid]["status"]) for jid in ordered]),
+                            recall=dict(task_id=task, parent_task_id=None, assigned_agent="case_manager", brief=variant,
+                                        status="in_progress", output_summary="waiting for genuine IDs", children=[]))
+            record["waiting_browser"] = c.browser.jobs_waiting(task, ids, expected=waiting_expected(record["parked"]))
             for offset, job in enumerate(record["jobs"]):
                 if job["code"] is None:
-                    job["action"] = c.browser.job_action(job["id"], job["cap"], lambda: pending(c, task, job, server), reject=True)
+                    job["action"] = c.browser.job_action(job["id"], job["cap"], lambda: pending(c, task, job, server), reject=True, expected=browser_job_expected(job, job["pending"][-1]["row"]))
                 else:
                     run_script(c, task, job, server, handles[job["id"]])
                 terminal_oracle(c, task, job)
-                job["browser"] = c.browser.job_terminal(job["id"], job["oracle"]["row"]["status"], job["code"], job["out"], job["err"])
+                job["browser"] = c.browser.job_terminal(job["id"], job["oracle"]["row"]["status"], job["code"], job["out"], job["err"], expected=browser_job_expected(job, job["oracle"]["row"]))
                 if len(record["jobs"]) == 2 and offset == 0:
                     record["first_terminal"] = c.stores["alpha"].jobs_parked(task, first["session"], ids)
                     require(record["first_terminal"] is not None, "pair first terminal does not resume")
@@ -481,7 +500,7 @@ def exercise(c: Controller) -> None:
                     require(command.returncode == 0 and all(j in command.stdout for j in ids) and "Blocked on jobs:" in command.stdout,
                             "actual CLI waiting pair", command.stdout)
                     record["first_terminal_cli"] = c.commands[-1]
-                    record["first_terminal_browser"] = c.browser.jobs_waiting(task, ids)
+                    record["first_terminal_browser"] = c.browser.jobs_waiting(task, ids, expected=waiting_expected(record["first_terminal"]))
                     record["anchors"].append(anchor(c, variant + ":first-terminal", 7 + 2 * index, s1))
                     record["anchors"].append(anchor(c, variant + ":pre-second-action", 7 + 2 * index, s1))
             second = c.start("alpha", task, "case_manager")
@@ -531,8 +550,12 @@ def exercise(c: Controller) -> None:
             final_task(c, task, record["starts"], record["jobs"], summary, record)
             previous = anchor(c, variant + ":final", 8 + 2 * index, s1)
             record["anchors"].append(previous)
-            c.browser.open_task("alpha", task, variant)
-            c.browser.completed("alpha", task, variant, summary, shot="e04-task-" + str(index))
+            final_row = record["final_snapshot"]["tasks"][0]
+            expected = dict(task=dict(task_id=task, brief=variant, team="engineering", status="completed",
+                parent_task_id=None, assigned_agent="case_manager", block_kind=None,
+                current_session_id=second["session"], note=final_row["note"]))
+            c.browser.open_task("alpha", task, variant, expected=expected, ready=lambda:
+                c.browser.completed("alpha", task, variant, summary, shot="e04-task-" + str(index)))
             record["task_browser"] = dict(text=c.browser.page.get_by_role("main").inner_text(timeout=c.remaining(c.browser.page_timeout)*1000),
                                           screenshot=f"e04-task-{index}.png", at=time.monotonic())
             c.remaining()
