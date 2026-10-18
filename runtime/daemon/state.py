@@ -15,7 +15,7 @@ from runtime.daemon.direct_connect_store import DirectConnectAuthorityStore
 from runtime.daemon.host_session_store import HostSessionStore
 from runtime.daemon.metrics import MetricsRegistry
 from runtime.daemon.metrics_store import MetricsStore
-from runtime.daemon.org_state import OrgState
+from runtime.daemon.org_state import OrgState, _OrgBusyError
 from runtime.daemon.queue import TaskQueue
 from runtime.daemon.registration_token import RegistrationTokenStore
 from runtime.orchestrator.org_validation import OrgConsistencyError
@@ -64,6 +64,13 @@ class DaemonState:
     # has loaded, then reconciled before the DaemonState is returned.
     profile_coordinator: ProfileCoordinator | None = None
     team_move_service: TeamMoveService = field(init=False, repr=False)
+    _runner_shutdown: bool = field(init=False, default=False, repr=False)
+
+    def _stop_runner_admission(self) -> None:
+        # No await: fence both existing OrgState references and later add_org.
+        self._runner_shutdown = True
+        for org in self.orgs.values():
+            org._runner_admission_closed = True
 
     @classmethod
     def idle(cls, settings: Settings) -> "DaemonState":
@@ -250,6 +257,8 @@ class DaemonState:
         ``_attach_org_runtime_wiring`` only runs over orgs present at boot).
         """
         async with self.orgs_lock:
+            if self._runner_shutdown:
+                raise _OrgBusyError("daemon_shutting_down")
             if slug in self.orgs:
                 return self.orgs[slug]
             assert self.runtime is not None
@@ -337,13 +346,24 @@ class DaemonState:
             if current is not None and current.db._team_move_coordinator.store.read() is not None:
                 from runtime.infrastructure.team_move_store import TeamMoveError
                 raise TeamMoveError("team_move_runtime_detach_held")
-            org = self.orgs.pop(slug, None)
-            if org is not None:
-                org.close()
+            if current is not None:
+                # Renew the route's task check after acquiring orgs_lock. Keep
+                # busy checks, admission fencing, close and detach synchronous
+                # so a late runner either registers first or sees closed admission.
+                in_flight = current.db.get_nonterminal_task_ids()
+                if in_flight:
+                    raise _OrgBusyError("active_tasks_in_flight", task_ids=in_flight)
+                current.close()
+                self.orgs.pop(slug)
 
     async def close_all(self) -> None:
+        self._stop_runner_admission()
         await self.team_move_service.close()
         async with self.orgs_lock:
+            # Fail before any close if an unexpected caller still owns an org.
+            # Lifespan joins the actual runners; cancellation is not that proof.
+            for org in self.orgs.values():
+                org._assert_runners_idle()
             for org in self.orgs.values():
                 org.close()
             self.orgs.clear()

@@ -45,7 +45,7 @@ from runtime.orchestrator.org_config import (
 from runtime.orchestrator.workspace_adapters import (
     format_repo_refresh_note,
     materialize_workspace_skills,
-    refresh_workspace_repos,
+    refresh_workspace_repos_async,
     validate_workspace_skills_integrity,
 )
 from runtime.skills.system_contracts import SessionContext
@@ -279,10 +279,11 @@ async def _run_schedule(
 
     # THR-103: fast-forward-refresh every cloned repo so the agent has
     # fresh code regardless of executor (claude/codex/opencode/pi).
-    # Must run BEFORE the executor subprocess starts. Failure is non-
-    # blocking: offline / dirty / non-ff / timeout are swallowed.
+    # Await the joined offload BEFORE executor launch, inside the SAME native
+    # effects scope. Failed/skipped refreshes warn of stale source; executed
+    # failures retain uncertainty. Cancellation waits for worker completion.
     with producer_preparation_effects(_move_owner):
-        repo_refresh_results = refresh_workspace_repos(workspace)
+        repo_refresh_results = await refresh_workspace_repos_async(workspace)
 
     repo_refresh_note = format_repo_refresh_note(repo_refresh_results)
 
@@ -509,7 +510,10 @@ async def run_schedule(
     executor_factory: Callable | None = None,
     host_supervisor: HostSessionSupervisor | None = None,
 ) -> None:
-    from runtime.orchestrator.producer_move import run_native_producer
-    await run_native_producer(org_state, 'schedule', schedule_id, lambda owner: _run_schedule(
-        org_state=org_state, schedule_id=schedule_id, settings=settings,
-        executor_factory=executor_factory, host_supervisor=host_supervisor, _move_owner=owner))
+    with org_state._runner_lifetime() as admitted:
+        if not admitted:
+            return
+        from runtime.orchestrator.producer_move import run_native_producer
+        await run_native_producer(org_state, 'schedule', schedule_id, lambda owner: _run_schedule(
+            org_state=org_state, schedule_id=schedule_id, settings=settings,
+            executor_factory=executor_factory, host_supervisor=host_supervisor, _move_owner=owner))

@@ -78,8 +78,29 @@ Restart treats unclosed task `prepared` entries as unknown, including terminal
 rows and prepared recovery/retry owners; absence of first launch is no proof of
 preparation cleanup. Unknown deferred entries cannot authorize a fresh launch.
 Native pre-effect source/artifact validation, repo-scan and missing launch-seam refusals
-retain their no-effect disposition. Existing retry/recovery IDs, frozen budgets,
-INTEGER callbacks and authority-v2 are preserved. No new field/journal, history
+retain their no-effect disposition. Repository refresh also refuses before pull
+on detached HEAD or missing/unusable/unreadable upstream; skipped repos stay false
+and warn of stale source. Every executed pull failure/timeout/exception retains
+uncertainty, including dirty/non-fast-forward and recursive partial effects;
+equal HEAD/branch/porcelain summaries never prove no effects. Read-only upstream
+lookup is admission only, not a remote-state lock. All observations/pulls share
+one 30-second batch deadline; exhausted/unattempted siblings stay false. Thread/dream/
+wake/Todo await off-loop refresh under the SAME native preparation-effects scope,
+joining its worker before cancellation propagates and settlement runs. Timeout
+never certifies process-tree quiescence; existing unknown owners remain sticky.
+The four async runner entrypoints retain a private org lifetime through native
+finish (including failure), beyond the refresh Future. Org unload refuses active
+runners and fences detached instances against late starts. Runtime registration
+(including the same root) and /runtime/use preflight ALL old orgs for tasks,
+runners and team-move holds before any close or registration/activation effect.
+Shutdown refuses runtime replacement before construction; idle replacement closes
+and fences every retired instance before publishing new OrgStates. A busy later
+org leaves earlier orgs open, with busy refusals mapped to409. Shutdown stops runner
+and attachment admission, then joins cancelled workers and native finish before
+DB close; repeated cancellation during that join cannot skip it. No timeout
+establishes quiescence, and failed persistence retains native uncertainty.
+Existing retry/recovery IDs, frozen budgets,
+INTEGER callbacks and authority-v2 are preserved. No new persisted field/journal, history
 backfill, compensation or clearance writer is introduced. Behavior UNEXECUTED.
 
 Preview resolves native current names/IDs, rejects former/unknown names, uses
