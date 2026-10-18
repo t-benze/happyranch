@@ -144,36 +144,58 @@ with open_root(source, source, True), open_root(install, install, True), open_ro
         raise SystemExit('FREEZE_MANAGED_PYTHON_UNSAFE')
 PYSELECT
 # Verify the selected executable before sync; this is not the venv receipt.
-MANAGED_PREFIX="$("$MANAGED_PYTHON" -I - "$UV_PYTHON_INSTALL_DIR" <<'PYBASE'
-import sys
+MANAGED_PREFIX="$("$MANAGED_PYTHON" -I - "$UV_PYTHON_INSTALL_DIR" "$REPO_ROOT" "$MANAGED_PYTHON" <<'PYBASE'
+import sys, sysconfig
 from pathlib import Path
-root = Path(sys.argv[1])
-if (sys.implementation.name != 'cpython' or sys.version_info[:3] != (3, 12, 10)
-        or not Path(sys.executable).resolve().is_relative_to(root)
-        or not Path(sys.base_prefix).resolve().is_relative_to(root)
-        or sys.prefix != sys.base_prefix):
-    raise SystemExit('FREEZE_MANAGED_PYTHON_MISMATCH')
-print(Path(sys.base_prefix).resolve())
+source = Path(sys.argv[2])
+sys.path.insert(0, str(source / 'app/mac/scripts'))
+from asset_evidence import absolute, open_root
+root, base_exe = absolute(sys.argv[1]), absolute(sys.argv[3])
+prefix, base_prefix = absolute(sys.prefix), absolute(sys.base_prefix)
+stdlib = absolute(sysconfig.get_path('stdlib'))
+# Admit every raw root before physical executable comparisons. Equal resolved
+# paths never excuse directory aliases, even for duplicate prefix/base roles.
+with (open_root(root, root, True), open_root(prefix, root, True),
+      open_root(base_prefix, root, True), open_root(stdlib, base_prefix, True)):
+    if (sys.implementation.name != 'cpython' or sys.version_info[:3] != (3, 12, 10)
+            or Path(sys.executable).resolve() != base_exe
+            or not base_exe.is_relative_to(base_prefix)
+            or prefix != base_prefix):
+        raise SystemExit('FREEZE_MANAGED_PYTHON_MISMATCH')
+# Context exit rechecks held ancestry before this becomes the raw expectation.
+print(base_prefix)
 PYBASE
 )"
-# Bind every project consumer to the same absolute source/environment and base.
+# Keep the patch-bearing request for fixed venv creation semantics; the separately
+# admitted concrete executable and raw prefix remain identity expectations.
 UV_PROJECT_ARGS=(--project "$REPO_ROOT" --directory "$REPO_ROOT"
-    --python "$MANAGED_PYTHON" --managed-python --no-python-downloads)
+    --python "$PYTHON_REQUEST" --managed-python --no-python-downloads)
 uv sync "${UV_PROJECT_ARGS[@]}" --group build --frozen
-uv run "${UV_PROJECT_ARGS[@]}" --no-sync --no-env-file python -I - "$WORK/python-toolchain.json" "$REPO_ROOT/.venv" "$MANAGED_PYTHON" "$MANAGED_PREFIX" <<'PYTOOL'
-import json, platform, sys
+uv run "${UV_PROJECT_ARGS[@]}" --no-sync --no-env-file python -I - "$WORK/python-toolchain.json" "$REPO_ROOT/.venv" "$MANAGED_PYTHON" "$MANAGED_PREFIX" "$REPO_ROOT" "$UV_PYTHON_INSTALL_DIR" <<'PYTOOL'
+import json, platform, sys, sysconfig
 from pathlib import Path
+source = Path(sys.argv[5])
+sys.path.insert(0, str(source / 'app/mac/scripts'))
+from asset_evidence import absolute, open_root
 info = {'executable': sys.executable, 'version': sys.version, 'platform': sys.platform,
         'machine': platform.machine()}
-venv, base_exe, base_prefix = map(Path, sys.argv[2:])
-if (Path(sys.prefix) != venv or Path(sys.executable) != venv / 'bin/python'
-        or Path(sys.executable).resolve() != base_exe
-        or Path(sys.base_prefix).resolve() != base_prefix
-        or sys.implementation.name != 'cpython' or sys.version_info[:3] != (3, 12, 10)):
-    raise SystemExit('FREEZE_PROJECT_PYTHON_MISMATCH')
+venv, base_exe, expected_base = map(absolute, sys.argv[2:5])
+install = absolute(sys.argv[6])
+prefix, base_prefix = absolute(sys.prefix), absolute(sys.base_prefix)
+stdlib = absolute(sysconfig.get_path('stdlib'))
+with (open_root(source, source, True), open_root(install, install, True),
+      open_root(prefix, source, True), open_root(base_prefix, install, True),
+      open_root(stdlib, base_prefix, True)):
+    if (prefix != venv or base_prefix != expected_base
+            or Path(sys.executable) != venv / 'bin/python'
+            or Path(sys.executable).resolve() != base_exe
+            or sys.implementation.name != 'cpython' or sys.version_info[:3] != (3, 12, 10)):
+        raise SystemExit('FREEZE_PROJECT_PYTHON_MISMATCH')
+    if sys.platform != 'darwin' or platform.machine() != 'arm64' or not (3, 12) <= sys.version_info[:2] <= (3, 14):
+        raise SystemExit('FREEZE_PYTHON_PLATFORM_UNSUPPORTED: ' + json.dumps(info))
+# All acceptance and ancestry exit rechecks precede a successful receipt.
+# Executable leaf links remain separately checked by freezer executable_alias.
 Path(sys.argv[1]).write_text(json.dumps(info, indent=2) + '\n')
-if sys.platform != 'darwin' or platform.machine() != 'arm64' or not (3, 12) <= sys.version_info[:2] <= (3, 14):
-    raise SystemExit('FREEZE_PYTHON_PLATFORM_UNSUPPORTED: ' + json.dumps(info))
 PYTOOL
 # Use the same venv command as the receipt, independent of console-script shebangs.
 uv run "${UV_PROJECT_ARGS[@]}" --no-sync --no-env-file python -I -m PyInstaller packaging/daemon.spec --clean --noconfirm --distpath "$DIST" --workpath "$WORK"
