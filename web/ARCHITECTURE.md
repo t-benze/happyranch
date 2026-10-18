@@ -92,6 +92,99 @@ imports are static declarations and are covered. Runtime `import()` expressions
 are intentionally excluded because they are non-static loading; ordinary lint,
 typecheck, build, and tests still cover their syntax and resolution.
 
+## Build-time UI flags (THR-305)
+
+Unfinished UI is hidden from release builds by named booleans fixed at build
+or dev-server start. They control **UI visibility only**: they are not
+authorization, they do not stop backend behaviour (the daemon scheduler, API,
+CLI and stored settings are unchanged, including orgs that already enabled
+Work Hours), and hidden code may still be present in the bundle and source maps.
+
+| File | Role |
+| --- | --- |
+| `config/features.registry.json` | Every flag with `purpose`, `owner`, `removal_condition` |
+| `config/features.development.json` | Complete development profile (`work_hours_ui: true`, `kb_compose_ui: false`) |
+| `config/features.production.json` | Complete production profile (every flag `false`) |
+| `config/features.local.example.json` | Example for the optional, gitignored `config/features.local.json` |
+| `src/config/features.ts` | The ONLY consumer module: `import { features } from '@/config/features'` |
+
+`vite.config.ts` picks the profile once per invocation and resolves
+`@happyranch/feature-flags` with `resolve.alias` only. It adds no `define`,
+injected env, plugin or config-time import, because the Mac packaging custody
+validator pins those. Profiles are read with `fs`, so they are not config
+dependencies.
+
+| Command | Profile |
+| --- | --- |
+| `npm run build`, `npm run build -- --sourcemap`, `scripts/build_web.sh`, Mac `build-app.sh`, any direct `vite build`, `build-storybook` | **production**: the checked-in production file only |
+| `npm run build:local [-- --outDir <dir>]` | **local** |
+| `npm run dev` (and Storybook dev) | **local** |
+| Vitest (`npm test`, `npm run test:write-path`) | **test** |
+| `npm run preview` | none: serves the existing `dist/` |
+
+- **local** = development defaults, then `config/features.local.json`, then an
+  explicit `VITE_ENABLE_KB_COMPOSE`.
+- **test** = development defaults, then an explicit `VITE_ENABLE_KB_COMPOSE`.
+  The local file is ignored and named in the log.
+- **production** never reads the local file or `VITE_ENABLE_KB_COMPOSE`. If
+  either is present it is listed as `ignored:` in the log, and its value is
+  never used. Vite mode, `NODE_ENV`, `VITEST` and any ambient env cannot select
+  local for a build.
+- Only `npm run build:local` selects local for a build. Its script sets a
+  process marker AND requires `npm_lifecycle_event=build:local`. Any other
+  marker or lifecycle combination fails with `[features] unsupported selector`.
+
+`VITE_ENABLE_KB_COMPOSE` is a compatibility input for `kb_compose_ui` only. It
+is read through Vite's `loadEnv`: process env first, then `.env.[mode].local`,
+`.env.[mode]`, `.env.local`, `.env`. The locked Vite also loads `.env.local` in
+mode `test`. Only the literal `true` or `false` is accepted; empty or unset
+means no opinion. **Any other value now fails startup.** Previously, values such
+as `1`, `TRUE` or `yes` silently meant off. Plain `npm test` is deterministic
+only when no compatibility value comes from the process env or a `.env*` file.
+
+Each evaluation prints one line, for example
+`[features] profile=local sources=development,features.local.json work_hours_ui=false(features.local.json) kb_compose_ui=false(development)`.
+These failures stop the build or startup with a `[features] …` message naming
+the file and key or value class:
+
+- a missing or unreadable file, bad JSON, or a non-object root;
+- an unknown flag, a missing flag, or a non-boolean value;
+- incomplete registry metadata;
+- a malformed local file when local is selected.
+
+The local and test profiles are written once to a content-addressed snapshot
+under `.feature-flags/` (gitignored). Values never change while a dev server
+runs: restart `npm run dev` after editing `config/features.local.json`, and
+rebuild for a build. Vite itself restarts the dev server when a `.env*` file
+changes, and that restart counts as a new startup.
+
+`work_hours_ui` gates the whole Work Hours UI:
+
+- the Sidebar item and the AppBar title;
+- the `work-hours`, `work-hours?view=wakes` and `work-hours/:agent` routes and
+  the legacy `schedule` redirect (when off, these URLs reach the existing
+  not-found route and no Work Hours page mounts);
+- the Organization Settings operating block: heading, explanatory link, saved
+  and error feedback, switch, eligibility summary and editor, and the
+  disable-confirm dialog.
+
+Organization hooks stay unconditional, and the general Save never sends
+`working_hours`. `kb_compose_ui` gates KB Compose.
+
+To add a flag, add a registry entry with all three metadata fields, add the key
+to BOTH profiles (production `false` until release), and read it only through
+`@/config/features`. To retire a flag, delete its reads, its registry entry and
+both profile keys in one change.
+
+Browser evidence for the profiles: `node scripts/w4a-browser-evidence.mjs
+--slice feature-flags --dist <dist> --expect-profile
+production|local|local-wh-off --build-log <that build's log>`. Harness slices
+that exercise Work Hours need a `build:local` dist.
+
+Native Mac packaging custody of the production JSON module has only been
+source-reviewed (UNVERIFIED natively; owner engineering_manager). Ordinary WEB
+sourcemap builds succeed.
+
 ## Internationalization (i18n)
 
 The AppBar language selector beside the theme toggle is a controlled consumer

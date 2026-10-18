@@ -1623,6 +1623,14 @@ scripts/build_web.sh
 happyranch web [--no-open]
 ```
 
+`scripts/build_web.sh` builds the SPA with the production build-time UI flag
+profile (`web/config/features.production.json`), which hides unfinished UI
+such as Work Hours. The flags change UI visibility only: daemon settings,
+scheduler, API and CLI behavior do not depend on them. Local overrides
+(`web/config/features.local.json`) apply only to `npm run dev`,
+`npm run build:local` and, for the KB compatibility input, tests. See
+`web/ARCHITECTURE.md` § Build-time UI flags.
+
 `scripts/daemon.sh start` removes a stale port file, launches the daemon, and
 waits up to `HAPPYRANCH_DAEMON_START_TIMEOUT` seconds (default `30`, positive
 integers only) for `GET /api/v1/health` to answer on the configured bind host.

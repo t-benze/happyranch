@@ -202,3 +202,13 @@ error, never successful-empty. Retry refreshes search and list metadata. Clearin
 search restores the list immediately, and old query settlements cannot replace
 the current query. Narrow 390px clipping remains an existing desktop-only
 limitation; shared App/Drawer layout is unchanged.
+
+---
+
+**Amendment 2026-10-18 (THR-305, current).** The Compose gate described above
+is now the build-time flag `kb_compose_ui` (default `false` in every profile),
+read from `web/src/config/features.ts`. `VITE_ENABLE_KB_COMPOSE` remains a
+local/test compatibility input, read through Vite `loadEnv`. It accepts only
+the literal `true`/`false` (empty/unset = no opinion; other values now fail
+startup) and is ignored by production builds. `npm run test:write-path` still
+enables it. See `web/ARCHITECTURE.md` § Build-time UI flags.

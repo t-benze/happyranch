@@ -93,7 +93,7 @@ New specs should include a short status block near the top:
 | `2026-05-18-web-app-complete-feature-set-design.md` | historical | Web roadmap/background; current routes live in `web/src/routes.tsx`. |
 | `2026-05-19-web-audit-design.md` | implemented | Current audit UI/API in `web/src/features/audit/` and `runtime/daemon/routes/audit.py`. |
 | `2026-05-19-web-dashboard-design.md` | implemented | Current dashboard UI/API in `web/src/features/dashboard/` and dashboard routes. |
-| `2026-05-19-web-kb-surface-design.md` | implemented | Current KB UI/API in `web/src/features/kb/` and KB routes. |
+| `2026-05-19-web-kb-surface-design.md` | implemented | Current KB UI/API in `web/src/features/kb/` and KB routes. THR-305 amendment: Compose is gated by the build-time flag `kb_compose_ui` (`web/ARCHITECTURE.md` § Build-time UI flags). |
 | `2026-05-19-web-polish-design.md` | historical | Visual/product polish history. |
 | `2026-05-19-web-talks-design.md` | removed | Talks UI/API removed with the talk surface (THR-023). |
 | `2026-05-20-agent-initiated-threads-design.md` | implemented | Current thread compose-as-agent route and thread skill. |
@@ -120,7 +120,7 @@ New specs should include a short status block near the top:
 | `2026-06-09-thread-file-attachments-design.md` | proposed | Artifact-backed thread attachment design; pending implementation. |
 | `2026-06-10-assistant-self-registration-design.md` | retired | THR-294 removed feature routes, CLI, dock, settings and bootstrap. Original design retained as history; legacy files remain inert. |
 | `2026-06-10-kb-view-tracking-design.md` | implemented | Agent-CLI KB view tracking; implemented in `runtime/daemon/routes/kb.py`, `runtime/infrastructure/database.py`, `cli/commands/kb.py`. Caller-signal mechanism in KB `kb-view-tracking-caller-signal`. |
-| `2026-06-10-working-hours-design.md` | implemented | Per-agent working-hours wake mechanism; implemented in `runtime/daemon/wake_runner.py`, `work_hours_scheduler.py`, `wake_queue.py`, `runtime/infrastructure/work_hours_store.py`, and `runtime/daemon/routes/work_hours.py`. |
+| `2026-06-10-working-hours-design.md` | implemented | Per-agent working-hours wake mechanism; implemented in `runtime/daemon/wake_runner.py`, `work_hours_scheduler.py`, `wake_queue.py`, `runtime/infrastructure/work_hours_store.py`, and `runtime/daemon/routes/work_hours.py`. THR-305 amendment: the web UI is behind the build-time flag `work_hours_ui` (off in production builds; daemon behavior unchanged). |
 | `2026-06-30-pr-ci-waiter-guarded-merge-design.md` | implemented | PR CI waiter and guarded merge engine design; contract in `docs/agent-guides/orchestrator-contracts.md` and `docs/agent-guides/`. Implementation: `runtime/daemon/pr_ci_waiter.py`, `runtime/daemon/pr_ci_merge.py`, `tests/daemon/test_pr_ci_waiter_gh.py`, `tests/daemon/test_pr_ci_merge_gh.py`. |
 | `2026-08-22-linux-canonical-store-design.md` | current | Linux same-owner canonical skill-store and launch support; current contracts in `docs/agent-guides/agent-executors-and-permissions.md`, `runtime/skills/bundled/`, and the executor guide. Its in-spec `protocol/05b-agent-runtime.md` Current Source is retired historical text. |
 | `2026-08-24-host-resource-concurrency.md` | current | Capability-based host-session supervisor (admission + lifecycle core, Slice A); governing spec for THR-207 / TASK-5584. Current contracts: `runtime/orchestrator/host_supervisor.py`, `runtime/platform/session_backend.py`. |
