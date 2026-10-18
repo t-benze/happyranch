@@ -428,7 +428,8 @@ def _bounded_observation(argv: list[str], *, seconds: float, cap: int, data: byt
 
     def defer_cancel(signum: int, _frame: Any) -> None:
         nonlocal cancelled
-        # Do not throw between fork/exec and assigning the Popen cleanup handle.
+        # Keep this nonthrowing for the ENTIRE owned lifetime, including the
+        # first instruction of cleanup. Read checkpoints propagate cancellation.
         cancelled = cancelled or signum
 
     def read() -> tuple[bytes, str]:
@@ -447,10 +448,14 @@ def _bounded_observation(argv: list[str], *, seconds: float, cap: int, data: byt
                 os.set_blocking(process.stdin.fileno(), False)
                 selector.register(process.stdin, selectors.EVENT_WRITE)
             while selector.get_map():
+                if cancelled:
+                    raise SystemExit(128 + cancelled)
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     return b"", "timeout"
-                for key, _ in selector.select(remaining):
+                for key, _ in selector.select(min(remaining, 0.05)):
+                    if cancelled:
+                        raise SystemExit(128 + cancelled)
                     if time.monotonic() >= deadline:
                         return b"", "timeout"
                     if key.fileobj is process.stdin:
@@ -475,13 +480,17 @@ def _bounded_observation(argv: list[str], *, seconds: float, cap: int, data: byt
                         return b"", "truncated"
                     if key.fileobj is process.stdout:
                         output.extend(chunk)
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                return b"", "timeout"
-            try:
-                status = process.wait(timeout=remaining)
-            except subprocess.TimeoutExpired:
-                return b"", "timeout"
+            while True:
+                if cancelled:
+                    raise SystemExit(128 + cancelled)
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return b"", "timeout"
+                try:
+                    status = process.wait(timeout=min(remaining, 0.05))
+                    break
+                except subprocess.TimeoutExpired:
+                    continue
             if time.monotonic() >= deadline:
                 return b"", "timeout"
             if status != 0:
@@ -500,9 +509,6 @@ def _bounded_observation(argv: list[str], *, seconds: float, cap: int, data: byt
             process = subprocess.Popen(argv, stdin=subprocess.PIPE if data is not None else subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
         except OSError:
             result = (b"", "launch_failure")
-        finally:
-            for item, handler in handlers.items():
-                signal.signal(item, handler)
         if cancelled:
             raise SystemExit(128 + cancelled)
         if process is not None:
@@ -512,15 +518,13 @@ def _bounded_observation(argv: list[str], *, seconds: float, cap: int, data: byt
     finally:
         cleaned = True
         try:
-            # A first signal during this transition still enters the inner
-            # finally. During cleanup, record cancellation without throwing;
-            # even a first signal here must prevent an observed result.
-            for item in signals:
-                signal.signal(item, defer_cancel)
-        finally:
+            # The launch/read handlers are still nonthrowing here: no handler
+            # switch or unprotected transition can abandon an acquired handle.
             try:
                 if process is not None:
                     cleaned = _terminate_observation(process)
+            except OSError:
+                cleaned = False
             finally:
                 if process is not None:
                     for pipe in (process.stdin, process.stdout, process.stderr):
@@ -529,8 +533,10 @@ def _bounded_observation(argv: list[str], *, seconds: float, cap: int, data: byt
                                 pipe.close()
                             except OSError:
                                 cleaned = False
-                for item, handler in handlers.items():
-                    signal.signal(item, handler)
+        finally:
+            # Restore only after termination/reap and every pipe-close attempt.
+            for item, handler in handlers.items():
+                signal.signal(item, handler)
     if cancelled:
         raise SystemExit(128 + cancelled)
     return result if cleaned else (b"", "query_error")
@@ -1047,23 +1053,34 @@ def capture_connector_journal(boot: str | None, since: int | None, until: int | 
             "--output=json", "--all", "--no-pager",
             "--output-fields=MESSAGE,_SYSTEMD_UNIT,_BOOT_ID,_SYSTEMD_INVOCATION_ID,_PID,__REALTIME_TIMESTAMP,__MONOTONIC_TIMESTAMP,__CURSOR",
             "--grep=^connector_supervisor "]
-    try:
-        process = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                                   stderr=subprocess.DEVNULL, start_new_session=True)
-    except OSError:
-        result["losses"] = ["launch_failure"]
-        return result
-    try:
+    process = None
+    cancelled = 0
+    signals = (signal.SIGHUP, signal.SIGINT, signal.SIGTERM)
+    handlers = {item: signal.getsignal(item) for item in signals}
+
+    def defer_cancel(signum: int, _frame: Any) -> None:
+        nonlocal cancelled
+        # Neither launch-handle acquisition nor entry into/finalization of
+        # cleanup may be unwound by a first or repeated catchable signal.
+        cancelled = cancelled or signum
+
+    def read() -> None:
+        nonlocal total, pending
+        assert process is not None
         assert process.stdout is not None
         with selectors.DefaultSelector() as selector:
             os.set_blocking(process.stdout.fileno(), False)
             selector.register(process.stdout, selectors.EVENT_READ)
             while selector.get_map():
+                if cancelled:
+                    raise SystemExit(128 + cancelled)
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     losses.add("timeout")
                     break
-                for key, _ in selector.select(remaining):
+                for key, _ in selector.select(min(remaining, 0.05)):
+                    if cancelled:
+                        raise SystemExit(128 + cancelled)
                     if time.monotonic() >= deadline:
                         losses.add("timeout")
                         break
@@ -1093,41 +1110,62 @@ def capture_connector_journal(boot: str | None, since: int | None, until: int | 
             if not selector.get_map():
                 if pending:
                     losses.add("parse_loss")
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    losses.add("timeout")
-                else:
+                while True:
+                    if cancelled:
+                        raise SystemExit(128 + cancelled)
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        losses.add("timeout")
+                        break
                     try:
-                        status = process.wait(timeout=remaining)
+                        status = process.wait(timeout=min(remaining, 0.05))
                         # grep's no-match exit1 is not independently trusted as
                         # empty: query failure must remain explicit.
                         if status != 0:
                             losses.add("query_error")
                         if time.monotonic() >= deadline:
                             losses.add("timeout")
+                        break
                     except subprocess.TimeoutExpired:
-                        losses.add("timeout")
+                        continue
                 result["tail_complete"] = not losses
+
+    try:
+        for item in signals:
+            signal.signal(item, defer_cancel)
+        if cancelled:
+            raise SystemExit(128 + cancelled)
+        try:
+            process = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                       stderr=subprocess.DEVNULL, start_new_session=True)
+        except OSError:
+            losses.add("launch_failure")
+        if cancelled:
+            raise SystemExit(128 + cancelled)
+        if process is not None:
+            read()
     except (OSError, ValueError):
         losses.add("query_error")
     finally:
-        # The first interruption still propagates, but repeated catchable
-        # signals cannot interrupt the one bounded owned-child reap.
-        signal.signal(signal.SIGTERM, signal.SIG_IGN)
-        signal.signal(signal.SIGINT, signal.SIG_IGN)
-        if not _terminate_observation(process):
-            losses.add("reap_unconfirmed")
-        if process.poll() is None:
-            losses.add("reap_unconfirmed")
         try:
-            # A group child still present after the bounded reap is loss,
-            # including a child reaped here after the owner deadline.
-            os.waitpid(-process.pid, os.WNOHANG)
-            losses.add("reap_unconfirmed")
-        except ChildProcessError:
-            pass
-        if process.stdout is not None:
-            process.stdout.close()
+            # Leave the same nonthrowing handlers installed through the whole
+            # bounded TERM/KILL/leader/adopted-child reap and pipe closure.
+            try:
+                if process is not None and not _terminate_observation(process):
+                    losses.add("reap_unconfirmed")
+            except OSError:
+                losses.add("reap_unconfirmed")
+            finally:
+                if process is not None and process.stdout is not None:
+                    try:
+                        process.stdout.close()
+                    except OSError:
+                        losses.add("reap_unconfirmed")
+        finally:
+            for item, handler in handlers.items():
+                signal.signal(item, handler)
+    if cancelled:
+        raise SystemExit(128 + cancelled)
     # Original-invocation pin is deliberately unavailable, even when some
     # trusted window labels survive exit. A later restart cannot become original.
     result["losses"] = sorted(losses) or ["observed" if events else "empty"]

@@ -190,7 +190,7 @@ identity/loss details. Historical seq464 allocation is consumed; current seq498 
 | D05 process gone | Pre-start window+boot captured; journal labels survive MainPID0, or replacement PID/invocation | Window-attributed events retained by invocation; original pin unavailable; live gates remain null | Replacement diagnose/process attributed to original; vanished PID suppresses journal |
 | D06 identity loss | Journal worker; wrong/missing unit/boot/invocation/PID/time/cursor; duplicate/noncanonical fields, generation/sequence drift | No bad event; parse/attribution loss explicit, original null/window_only | Bad label joins timeline, fabricated original or missing loss |
 | D07 noise/oversize/tail | Arbitrary/sensitive lines, huge frame, raw/frame/event/byte cap at journal read/project seam | Exact grammar filters before retention; journal slot precedes live scan; partial events with lost tail | Sensitive prose or extra bytes/records retained; live/noise exhausts causal slot |
-| D08 capture failure/reap | Both imported text/Stop observers and existing capture CLI: absent subreaper/readback or required UID0; launch/query/parse/write failure, timeout/cap, pipe-holding group descendant, HUP/INT/TERM during spawn/read/reap, signaling/wait/deadline failure; original exit37 and later cleanup | Owner failure launches no query (launch_failure); direct same-UID query group receives TERM/KILL and adopted children are reaped; unconfirmed cleanup discards output (query_error, or connector-journal reap_unconfirmed/tail false); cancellation remains nonzero, original37 and independent later teardown survive | Missing adoption/privileged cleanup owner, detached inner sudo, unconfirmed reap called observed, status replacement or skipped section; SOURCE/STATIC only; runtime/proof UNEXECUTED/SUSPENDED |
+| D08 capture failure/reap | Both imported text/Stop observers and existing capture CLI: absent subreaper/readback or required UID0; launch/query/parse/write failure, timeout/cap, pipe-holding group descendant, first/repeated HUP/INT/TERM before launch, during child-created/handle assignment, read/wait, cleanup entry, TERM/KILL/reap, pipe closure or handler restoration, signaling/wait/deadline failure; original exit37 and later cleanup | Owner failure launches no query (launch_failure); direct same-UID query group receives TERM/KILL and adopted children are reaped; unconfirmed cleanup discards bounded-query output (query_error) while connector-journal retains projected partial events with reap_unconfirmed/tail false; cancellation remains nonzero, original37 and independent later teardown survive | Missing adoption/privileged cleanup owner, detached inner sudo, unconfirmed reap called observed, status replacement or skipped section; SOURCE/STATIC only; runtime/proof UNEXECUTED/SUSPENDED |
 | D09 inactive before binding | final cleanup with inactive sidecar/PID0; bind_stop_instance then unchanged Stop/virtual_removed | virtual_stop_binding_unconfirmed; removal/aggregate refuse | Historical generic label claimed actual residue/removal or missing tuple accepted |
 | D10 real reachability | Same-instance Stop receipts/current peer; nc reaches target, or target/peer absent | Positive dial vetoes; missing target/current peer remains unconfirmed | Negative dial/dead peer/missing address accepted as removal |
 | D11 no storm | Repeated ctx.Done/stopChild loops with refused admission; duplicate states; normal healthy polls | One first, each distinct observation/consequence once; no per-poll healthy output | Unbounded labels, first repeats or healthy polling noise |
@@ -454,17 +454,32 @@ existing fixed launch_failure token before launch. The dedicated capture main
 uses the same initialization; its nonprivileged headscale queries retain their
 existing UID. Group membership alone never supplies adopted-child wait rights.
 
-Catchable HUP/INT/TERM during Popen is deferred until its cleanup handle exists;
-read/wait cancellation and all normal/error/cap exits enter the same bounded
-TERM/KILL, leader wait and adopted group-child waitpid cleanup. Signals during cleanup are recorded without interrupting it, and still refuse
-the observation after reap. Further signals cannot interrupt that cleanup. Success requires no remaining group, no waitable
-group child and a reaped leader within the existing one-second cleanup budget;
-signaling/wait/pipe-close failure or an unconfirmed deadline discards the payload
-and refuses as query_error. Cancellation still exits nonzero and never becomes
-an observation. The existing connector-journal consumer retains reap_unconfirmed
-and tail_complete=false on failed cleanup. Outer kill grace increases only from
-one to two seconds so it does not cut off that one-second owner cleanup; it is
-not a substitute for adoption/reaping. These finite read-only queries are not
+TASK11832's remaining R1 correction keeps nonthrowing HUP/INT/TERM recording
+installed continuously before Popen through cleanup and pipe-close attempts in
+both `_bounded_observation` and `capture_connector_journal`. No read/cleanup
+handler switch or transition can throw away the acquired handle. No-child
+launch failure remains launch_failure; cancellation before launch refuses and a
+signal during handle acquisition is acted on only after the handle is owned.
+Read/leader-wait checkpoints use at most50ms waits within the original absolute
+deadline; the signal recorder itself never throws. First/repeated cancellation
+at cleanup entry or during TERM/KILL, leader/adopted-child reap and pipe closure
+cannot unwind that cleanup. Original handlers are restored only after those
+attempts; recorded cancellation then exits nonzero, including after an otherwise
+successful query. Later signals use the restored caller handler after resources
+have already been handled. No cancelled observation can return success.
+
+Success requires no remaining group, no waitable group child and a reaped leader
+within the unchanged one-second cleanup budget. Signaling/wait/pipe-close failure
+or an unconfirmed deadline discards bounded-query payloads as query_error;
+connector-journal instead preserves its bounded projected partial events with
+reap_unconfirmed and tail_complete=false. Its redundant post-deadline wait/poll
+is removed: the shared termination result owns the complete reap decision.
+Streaming framing/byte/event/output caps, fixed losses and all original query,
+section and outer-watchdog budgets remain unchanged in this correction. The two
+inline observers retain their prior two-second kill grace; existing capture CLI
+watchdogs retain their own budgets. Watchdog expiry/SIGKILL and host scheduling
+are not completed-reap proof, and runtime cancellation/timing remains unverified.
+These finite read-only queries are not
 daemon launchers; arbitrary detached/UID-changing commands are outside this
 helper's query contract. SIGKILL/kernel stalls cannot provide cleanup proof.
 All runtime cancellation, descendant and cleanup results remain UNEXECUTED /
@@ -481,7 +496,7 @@ mutation, repetition and executable QA proof are **UNEXECUTED/SUSPENDED**.
 | H24/H25/H46 complete removal conjunction | Bind active PID/invocation/start/boot/time twice; stop; sync; query distinct canonical Stop1+2 receipts; MainPID0; same live peer before/after status; real nc fails | binding/sync/journal/mainpid/peer evidence plus failed probe and removal:complete; unrelated printable journal records allowed | Missing conjunction term, discarded query failure or stale proof; source/static now, hosted N3 later |
 | H50 successful dial veto | Same valid Stop/peer evidence, but real nc returns0 | probe:connected then removal:refused regardless of other successes | Receipts override real successful connection; source/static only |
 | H27/H35/H45/H46 receipt and binding refusal | At actual bind/query decoder, vary missing/duplicate/noncanonical receipt, PID/invocation/boot/time/cursor and changed binding independently | Fixed missing/changed, receipt_missing/receipt_duplicate/receipt_noncanonical, pid_mismatch/invocation_mismatch/boot_mismatch/timestamp_invalid/cursor_invalid; no completion | Stale, duplicated or normalized receipt admitted; source/static only |
-| H25/H45 acquisition loss | Owner/subreaper/readback/required UID unavailable (no launch), unconfirmed owned-group cleanup (query_error), sync/query launch unavailable, nonzero exit, timeout; malformed JSON/UTF8/constants/duplicate fields, binary arrays, truncated LF, raw/frame/count over cap | Fixed launch_failure/query_error/timeout/parse_loss/duplicate_field/binary_field/truncated/over_cap at the refusing check; no raw content or completion | Query errors treated as absence/success, unbounded buffering or failure prose leak; source/static only |
+| H25/H45 acquisition loss | Owner/subreaper/readback/required UID unavailable (no launch), first/repeated HUP/INT/TERM across launch-handle/read/cleanup/restore (nonzero, never observed), unconfirmed owned-group cleanup (query_error), sync/query launch unavailable, nonzero exit, timeout; malformed JSON/UTF8/constants/duplicate fields, binary arrays, truncated LF, raw/frame/count over cap | Fixed launch_failure/query_error/timeout/parse_loss/duplicate_field/binary_field/truncated/over_cap at the refusing check; no raw content or completion | Query errors treated as absence/success, unbounded buffering or failure prose leak; source/static only |
 | H24/H34 peer/probe loss | Missing target/executable/socket, missing peer binding, changed start ticks/node ID, failed/malformed/timed-out status; actual failed/timed-out nc with complete independent evidence | probe unavailable refuses; peer missing/changed/unavailable/parse_loss/query_error/timeout refuses; actual failed probe alone never passes and never proves remote refusal or listener survival | Missing observer or failed privilege launch admitted, failed dial alone used as removal proof; source/static only |
 | H40/H43/D09 original cause and teardown | Refuse any bound check in health-loss/barrier/readiness/shutdown, then enter independent final cleanup; also inject retention failure | Original caller failure/status retained; later fixed phase records remain distinct; remaining safe teardown attempts still run; missing final binding refuses | Later cleanup overwrites initiating cause, hides refusal or skips independent teardown; source/static only |
 | H22/S06 first finite update | Both CI boundaries: exact new before, after=head canonical/distinct, repo/head repo/PR/ref/base/event/attempt; vary each and subsequent unallocated update | Only first authorized update can reach build; wrong fields/old before/attempt2/manual/push/open/reopen and next before refuse; canonical after is enforced pre-build | Spent allocation renewed or slot2 silently opened; source/static only, no guard scenario executed |
