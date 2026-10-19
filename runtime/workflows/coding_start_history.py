@@ -345,10 +345,27 @@ def read_queued(conn: sqlite3.Connection, org: str, budget: _Budget, mappings: A
                 actual = list(rows(conn, table, budget, where=f'{key}=?', args=(expected[key],), maximum=2))
                 _check(len(actual) == 1 and same(actual[0], expected))
                 storage.add(table, expected)
+        # Reverse references are part of ownership too: a second legacy
+        # instance/context/binding/activation cannot alias these new pins just
+        # because its own scalar columns contain no coding discriminator.
+        for table, column, key in (
+            ('workflow_active_authorizations', 'authorization_revision_id', identity('authorization', instance)),
+            ('workflow_binding_snapshots', 'authorization_revision_id', identity('authorization', instance)),
+            ('workflow_contexts', 'binding_snapshot_id', identity('binding', instance)),
+            ('workflow_instances', 'binding_snapshot_id', identity('binding', instance)),
+            ('workflow_instances', 'context_id', identity('context', instance)),
+            ('workflow_activations', 'instance_id', instance),
+            ('workflow_active_activations', 'activation_id', identity('activation', instance)),
+            ('workflow_activation_operations', 'activation_id', identity('activation', instance)),
+        ):
+            actual = list(rows(conn, table, budget, where=f'{column}=?', args=(key,), maximum=2))
+            _check(same(actual, expected_pins[table]))
         for task_id, expected in after_tasks.items():
             actual = list(rows(conn, 'tasks', budget, where='id=?', args=(task_id,), maximum=1))
             _check(len(actual) == 1 and same(actual[0], expected))
             storage.add('tasks', expected)
+            roots = list(rows(conn, 'workflow_instances', budget, where='root_task_id=?', args=(task_id,), maximum=2))
+            _check(same(roots, expected_pins['workflow_instances'] if task_id == carrier_id else []))
         # No alternate dispatcher, result, submission, assignment or premature
         # downstream stage may share this closed queued graph.
         for table, column, keys in (
@@ -371,6 +388,8 @@ def read_queued(conn: sqlite3.Connection, org: str, budget: _Budget, mappings: A
             for key in keys:
                 budget.step()
                 _check(conn.execute(f'SELECT 1 FROM {table} WHERE {column}=? LIMIT 1', (key,)).fetchone() is None)
+        budget.step()
+        _check(conn.execute('SELECT 1 FROM tasks WHERE parent_task_id=? LIMIT 1', (leaf['id'],)).fetchone() is None)
         for child in rows(conn, 'tasks', budget, where='parent_task_id=?', args=(source['task_id'],)):
             _check(child['id'] == carrier_id or (child['status'] in ('completed', 'failed', 'cancelled', 'superseded')
                 and datetime.fromisoformat(child['created_at']) <= datetime.fromisoformat(payload['created_at'].replace('Z', '+00:00'))))

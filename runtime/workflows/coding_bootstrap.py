@@ -95,8 +95,15 @@ def initial_scope(*, org: str, instance: str, attempt: str, command: dict,
 
 
 def journal_rows(pins: dict) -> list:
-    return [dict(table=table, id=str(row.get('id', row.get('namespace', row.get('instance_id', row.get('activation_id'))))),
-                 record=encode_row(row)) for table, records in sorted(pins.items()) for row in records]
+    records = []
+    for table, values in sorted(pins.items()):
+        for row in values:
+            if table == 'workflow_activation_operations':
+                key = [row[name] for name in ('org_slug', 'principal', 'operation_key')]
+            else:
+                key = row.get('id', row.get('namespace', row.get('instance_id')))
+            records.append(dict(table=table, id=key, record=encode_row(row)))
+    return records
 
 
 def effective_bindings(instance: str, roles: dict) -> bytes:
