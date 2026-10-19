@@ -604,12 +604,13 @@ def compute_pending_review_jobs(db: Database) -> list[PendingReviewJobRow]:
 
 
 def _review_verdicts_since(
-    db: Database, *, start: datetime, end: datetime,
+    db: Database, *, selected_teams: set[str], start: datetime, end: datetime,
 ) -> list[tuple[str, str, bool]]:
-    """One audit_log scan for every pulse window: (team, timestamp, approved).
+    """One shared read for every pulse window: (team, timestamp, approved).
 
-    audit_log has no action index, so each query scans the whole table; the
-    pulse previously issued 14 such queries per team every refresh.
+    Filter team membership before decoding, preserving selected-row refusal.
+    Python membership keeps the fixed SQL parameter count for any registry size;
+    the query still materializes all joined review rows in the 84-day interval.
     """
     rows = db.fetch_all_readonly(
         "SELECT t.team AS team, a.timestamp AS timestamp, a.payload AS payload "
@@ -621,6 +622,8 @@ def _review_verdicts_since(
     )
     out: list[tuple[str, str, bool]] = []
     for r in rows:
+        if r["team"] not in selected_teams:
+            continue
         payload = json.loads(r["payload"] or "{}")
         approved = normalize_review_verdict(payload.get("verdict")) == "approve"
         out.append((r["team"], r["timestamp"], approved))
@@ -651,14 +654,21 @@ def compute_org_pulse_7d(db: Database, *, now: datetime, teams) -> list[TeamPuls
 
     `teams` duck-types TeamsRegistry: needs `.teams() -> list[str]` and
     `.manager_for_team(team) -> TeamManager(name, team, workers)`.
+    Capture the selected names once; an empty registry needs no audit read.
     """
+    team_names = list(teams.teams())
+    if not team_names:
+        return []
+
     week_now_start = now - timedelta(days=7)
     week_prior_start = now - timedelta(days=14)
     # Widest window is the 12-week sparkline; it covers the 7d/prior windows.
-    verdicts = _review_verdicts_since(db, start=now - timedelta(days=12 * 7), end=now)
+    verdicts = _review_verdicts_since(
+        db, selected_teams=set(team_names), start=now - timedelta(days=12 * 7), end=now,
+    )
 
     result: list[TeamPulse] = []
-    for team_name in teams.teams():
+    for team_name in team_names:
         mgr = teams.manager_for_team(team_name)
         # Current 7d
         approved_now, total_now = _acceptance_pct_for_window(
