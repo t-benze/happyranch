@@ -367,6 +367,17 @@ class TasksMixin:
         admission owns the lock, writer reservation and entire graph commit.
         """
         self._check_team_move_task_uncommitted(task)
+        self._insert_task_row_uncommitted(task)
+
+    def _insert_task_row_uncommitted(self, task: TaskRecord) -> None:
+        """Private row primitive for a prechecked, caller-owned graph writer.
+
+        Ordinary callers retain _insert_task_uncommitted's native move guard.
+        Coding prechecks its complete prospective graph before inserting pins,
+        so it never tries to classify a half-built cyclic workflow graph.
+        """
+        if not self._conn.in_transaction:
+            raise RuntimeError('task row insertion requires an owned transaction')
         params = (
             task.id,
             task.status.value,
@@ -1089,8 +1100,14 @@ class TasksMixin:
             for row in cursor.fetchall()
         ]
 
+    def _guard_coding_task_mutation_uncommitted(self, task_id: str) -> None:
+        owner = getattr(self, '_workflow_coding_start', None)
+        if owner is not None:
+            owner.guard_native_mutation(task_id)
+
     @_synchronized
     def update_task(self, task_id: str, **fields: object) -> None:
+        self._guard_coding_task_mutation_uncommitted(task_id)
         allowed = {
             "status", "assigned_agent", "revision_count", "completed_at",
             "block_kind", "blocked_on_job_ids", "note", "orchestration_step_count",
@@ -1119,6 +1136,7 @@ class TasksMixin:
     def update_task_active_chain(self, task_id: str, active_chain: str | None) -> None:
         """Set or clear tasks.active_chain. Pass None to clear (chain finished,
         aborted, or never declared)."""
+        self._guard_coding_task_mutation_uncommitted(task_id)
         now = datetime.now(timezone.utc).isoformat()
         self._conn.execute(
             "UPDATE tasks SET active_chain = ?, updated_at = ? WHERE id = ?",
@@ -1130,6 +1148,7 @@ class TasksMixin:
     def update_task_active_fanout(self, task_id: str, active_fanout: str | None) -> None:
         """Set or clear tasks.active_fanout. Pass None to clear (fan-out join
         claimed or parent terminal)."""
+        self._guard_coding_task_mutation_uncommitted(task_id)
         now = datetime.now(timezone.utc).isoformat()
         self._conn.execute(
             "UPDATE tasks SET active_fanout = ?, updated_at = ? WHERE id = ?",
@@ -2038,6 +2057,7 @@ class TasksMixin:
         """Compose the original CAS in the caller's admission transaction."""
         if not self._conn.in_transaction:
             raise RuntimeError("task admission requires a writer transaction")
+        self._guard_coding_task_mutation_uncommitted(task_id)
         self._check_team_move_task_uncommitted(task_id)
         now = datetime.now(timezone.utc).isoformat()
         pending_generation = self._conn.execute(
@@ -2657,6 +2677,7 @@ class TasksMixin:
         self, *, task_id: str, agent: str, session_id: str, pid: int,
     ) -> bool:
         """Publish a PID only for the still-current invocation generation."""
+        self._guard_coding_task_mutation_uncommitted(task_id)
         cursor = self._conn.execute(
             """UPDATE tasks SET executor_pid = ?
                WHERE id = ? AND assigned_agent = ? AND current_session_id = ?

@@ -1007,6 +1007,8 @@ async def discover_pause_work(org: Any, queue: Any) -> None:
                         org.workflow_drafts.notify_queued(task_id, queue)
                     elif ownership.kind == "f5":
                         org.workflow_reviews.notify_queued(task_id, queue)
+                    elif ownership.kind.startswith('coding_'):
+                        continue  # Queued/structural coding has no K3a launcher.
                     elif ownership.kind == "legacy":
                         enqueue_task_generation_aware(org.orchestrator, queue, org.slug, task_id)
             for entry in entries:
@@ -1090,6 +1092,10 @@ def pause_overview(org: Any, *, limit: int, before: str | None) -> dict:
                     elif dispatch.kind not in {"absent", "retired"}:
                         runnable = False
                         projection["evidence_complete"] = False
+                elif ownership.kind.startswith('coding_'):
+                    # Complete saved ownership is known; downstream execution
+                    # is unavailable. It cannot become an ordinary runnable root.
+                    projection["evidence_complete"] = False
                 elif ownership.kind in ("draft", "f5") and ownership.state == "queued" and capture is not None:
                     try:
                         # This is a snapshot observation, never an admission

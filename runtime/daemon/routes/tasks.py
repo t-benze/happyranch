@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile, status
-from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 from sse_starlette.sse import EventSourceResponse
 
 from runtime.daemon.auth import require_token
@@ -26,6 +26,7 @@ from runtime.daemon.routes._org_dep import OrgDep
 from runtime.daemon.runner import enqueue_task
 from runtime.daemon.state import DaemonState
 from runtime.daemon.work_status import derive_work_status
+from runtime.workflows.coding_start_records import start_decision_schema
 from runtime.infrastructure.db.tasks import InvalidLineage, _RetryEvidenceRefusal
 from runtime.infrastructure.db.task_reconciliation import (
     SCOPE, HistoricalReceiptResponse, PreflightResponse, ReconcileFailedContinuationBody,
@@ -758,7 +759,10 @@ class CompletionBody(BaseModel):
     # Manager-only. Structured next-step decision; workers omit or pass null.
     # Must be a dict matching the NextStep schema if present — validated
     # on the orchestrator side when the parser runs.
-    decision: dict | None = None
+    decision: dict | None = Field(default=None, json_schema_extra={
+        'if': {'type': 'object', 'properties': {'action': {'const': 'workflow_start'}}, 'required': ['action']},
+        'then': start_decision_schema(),
+    })
     # Manager-only S6a semantic evidence. Kept raw at the HTTP boundary so a
     # malformed attempt can be reduced to a digest-only durable diagnostic;
     # raw invalid content is never persisted.
@@ -878,7 +882,7 @@ async def submit_completion(task_id: str, body: CompletionBody, org: OrgDep) -> 
     ownership = classify_task(org.db, task_id, org_slug=getattr(org, "slug", None))
     workflow_draft = ownership.kind in {"draft", "f5"}
     workflow_owner = (org.workflow_reviews if ownership.kind == "f5" else org.workflow_drafts) if workflow_draft else None
-    if ownership.kind not in {"legacy", "draft", "f5"}:
+    if ownership.kind not in {"legacy", "draft", "f5", "coding_source_waiting"}:
         raise HTTPException(status_code=409, detail={"code": "workflow_reconciliation_required"})
     draft_prior = org.db.get_latest_task_result(task_id, body.agent, body.session_id) if workflow_draft else None
     # Task-active gate runs BEFORE session ownership (see _require_task_active).
@@ -893,6 +897,16 @@ async def submit_completion(task_id: str, body: CompletionBody, org: OrgDep) -> 
         # Server-reserved carrier key: a client-injected value is never
         # authority and is discarded here.
         decision_payload.pop("_manager_self_evaluation", None)
+    if decision_payload is not None and decision_payload.get('action') == 'workflow_start':
+        from runtime.workflows.coding_start_records import CodingStartDecision
+        try:
+            CodingStartDecision.model_validate(decision_payload)
+        except ValueError:
+            raise HTTPException(status_code=422, detail={'code': 'coding_start_invalid_decision'}) from None
+        owner = org.db.get_task(task_id)
+        if (owner is None or owner.task_type != 'task' or owner.assigned_agent != body.agent
+                or org.teams.executable_manager_for_team(owner.team) != body.agent):
+            raise HTTPException(status_code=409, detail={'code': 'coding_start_manager_result_required'})
     v2_admission: dict | None = None
     mse_present = "manager_self_evaluation" in body.model_fields_set
     _teams = getattr(org, "teams", None)
@@ -973,6 +987,23 @@ async def submit_completion(task_id: str, body: CompletionBody, org: OrgDep) -> 
                     valid = False
                 if not valid:
                     raise HTTPException(status_code=409, detail={"code": "workflow_callback_payload_mismatch"})
+            if ownership.kind == 'coding_source_waiting':
+                from runtime.infrastructure.database import completion_result_payload_matches
+                from runtime.workflows.coding_start import queued_storage
+                with org.db._lock:
+                    saved = queued_storage(org.db._conn, org.slug)
+                    selected = saved.runs.get(ownership.intent_id)
+                    source = None if selected is None else selected['source']
+                    if (source is None or source['result']['id'] != prior['id']
+                            or (source['task_id'], source['principal'], source['session_id']) !=
+                               (task_id, body.agent, body.session_id)
+                            or not completion_result_payload_matches(prior,
+                                output_summary=body.output_summary, confidence_score=body.confidence,
+                                status=body.status, risks_flagged=body.risks_flagged, output_dir=body.output_dir,
+                                decision_json=_json.dumps(decision_payload) if decision_payload is not None else None,
+                                waiting_on_job_ids=body.waiting_on_job_ids or None, verdict=body.verdict,
+                                local_ci_json=_json.dumps(body.local_ci) if body.local_ci is not None else None)):
+                        raise HTTPException(status_code=409, detail={'code': 'coding_start_operation_conflict'})
             if v2_admission is None:
                 return {"ok": True}
             # Narrowed v2 retry seam: an exact transport retry is read-only
@@ -1158,6 +1189,16 @@ async def submit_completion(task_id: str, body: CompletionBody, org: OrgDep) -> 
             # The recovery ledger is the durable authority for a callback after a
             # clean provider omission.  In particular, a late callback from the
             # origin invocation must not overwrite a recovery claim.
+            if (ownership.kind == 'legacy' and decision_payload is not None
+                    and decision_payload.get('action') == 'workflow_start'):
+                from runtime.workflows.coding_start import CodingStartError, require_ready
+                try:
+                    require_ready()
+                except CodingStartError as exc:
+                    # Refuse before persisting a fresh unsupported start result,
+                    # including on I; never poison old/native history or spend
+                    # the genuine manager's result-action claim while disabled.
+                    raise HTTPException(status_code=409, detail={'code': exc.code}) from None
             if not org.db.admit_task_completion_callback(
                 task_id=task_id,
                 agent=body.agent,
@@ -2069,6 +2110,14 @@ async def cancel_task(
                 detail={"code": "task_already_terminal", "current_status": root.status.value},
             )
 
+        coding = getattr(org, 'workflow_coding_start', None)
+        if coding is not None:
+            from runtime.workflows.coding_start import CodingStartError
+            try:
+                coding.guard_cancellation(task_id, cascade=body.cascade)
+            except CodingStartError as exc:
+                raise HTTPException(status_code=409, detail={'code': exc.code}) from None
+
         # BFS subtree walk (cascade=True) or single-task (cascade=False). Only
         # non-terminal rows are collected — anything already COMPLETED/FAILED
         # stays untouched.  Also capture prior statuses so Phase 1 can route
@@ -2105,6 +2154,11 @@ async def cancel_task(
         pids_without_control: list[tuple[str, str, int]] = []
         audit = AuditLogger(org.db)
         async with org.db_lock:
+            if coding is not None:
+                try:
+                    coding.guard_cancellation(task_id, cascade=body.cascade)
+                except CodingStartError as exc:
+                    raise HTTPException(status_code=409, detail={'code': exc.code}) from None
             for tid in to_cancel:
                 # Path B: a founder cancel writes the dedicated terminal CANCELLED
                 # status (was FAILED + cancelled_at). cancelled_at is still set so

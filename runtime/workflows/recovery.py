@@ -11,7 +11,7 @@ from runtime.infrastructure.workflow_coding_schema import has_coding_schema_obje
 
 @dataclass(frozen=True)
 class WorkflowTaskOwnership:
-    kind: Literal["legacy", "draft", "f5", "reconciliation_required"]
+    kind: Literal["legacy", "draft", "f5", "coding_source_waiting", "coding_carrier", "coding_attempt", "reconciliation_required"]
     intent_id: str | None = None
     state: str | None = None
 
@@ -43,6 +43,12 @@ def classify_task(db: Any, task_id: str, *, org_slug: str | None) -> WorkflowTas
                 # No J means no setup family can be accepted, even if native
                 # coding metadata has no workflow root/draft/F5 alias.
                 validate_coding_data(conn, layout='recovery', expected_org_slug=org_slug)
+            if has_coding_schema_objects(conn):
+                from runtime.workflows.coding_start import queued_storage
+                saved = queued_storage(conn, org_slug)
+                if task_id in saved.owners:
+                    kind, instance = saved.owners[task_id]
+                    return WorkflowTaskOwnership(kind, instance, "queued")
             if not tables:
                 return WorkflowTaskOwnership("legacy")
             roots = conn.execute("SELECT id FROM workflow_instances WHERE root_task_id=?", (task_id,)).fetchall()

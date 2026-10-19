@@ -200,10 +200,9 @@ class CodingRoleStore:
                     if override not in mapping['eligible_replacements']['implementer']:
                         raise CodingRoleError('coding_role_override_revoked')
                     roles['implementer'] = override
-                # Complete storage validation refuses ALL coding runs/attempts/events
-                # in K2c. There are no coding contributors to omit or relabel here.
-                # K3 must compose its genuine per-work contributor history before
-                # admitting its first writer; this read allocates no work or grant.
+                # Complete central storage now admits only K3a queued bootstrap
+                # graphs. This independent selector allocates no work or grant;
+                # start owns and verifies its initial genuine contributor graph.
                 _roles(roles, {role: [] for role in ROLES})
                 selected_mapping = {**mapping, 'roles': roles,
                     'eligible_replacements': {role: [] for role in ROLES}}

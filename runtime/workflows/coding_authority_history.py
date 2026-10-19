@@ -157,7 +157,7 @@ class _Budget:
 def _bounded_rows(conn: sqlite3.Connection, table: str, columns: tuple[str, ...],
                   allowed: tuple[tuple[str, ...], ...], budget: _Budget, *,
                   where: str = '1', args: tuple = (), maximum: int = _CALL_ROW_LIMIT,
-                  with_rowid: bool = False) -> Iterator[tuple]:
+                  with_rowid: bool = False, value_limit: int = _VALUE_LIMIT) -> Iterator[tuple]:
     """Private trusted-schema composition; singleton keyset pages, no OFFSET.
 
     Every payload cell is withheld unless the WHOLE row fits its original
@@ -168,6 +168,7 @@ def _bounded_rows(conn: sqlite3.Connection, table: str, columns: tuple[str, ...]
     """
     def quote(name: str) -> str:
         return '"' + name.replace('"', '""') + '"'
+    _check(type(value_limit) is int and 0 < value_limit <= 16777216)
     names = tuple(map(quote, columns))
     _check(len(names) == len(allowed) and bool(names))
     size = '+'.join(f"CASE WHEN typeof({name}) IN ('text','blob') "
@@ -176,7 +177,7 @@ def _bounded_rows(conn: sqlite3.Connection, table: str, columns: tuple[str, ...]
     for name, choices in zip(names, allowed, strict=True):
         kinds = ','.join("'" + kind + "'" for kind in choices)
         gates.append(f"(typeof({name}) IN ({kinds}) AND (typeof({name}) NOT IN ('text','blob') "
-                     f"OR length(CAST({name} AS BLOB))<={_VALUE_LIMIT}))")
+                     f"OR length(CAST({name} AS BLOB))<={value_limit}))")
     valid = ' AND '.join(gates) + ' AND ? > 0 AND (' + size + ')<=?'
     query = ('WITH candidate AS (SELECT rowid AS _scan_rowid,' + ','.join(names)
              + ' FROM ' + quote(table) + ' WHERE (' + where
@@ -210,7 +211,7 @@ def _bounded_rows(conn: sqlite3.Connection, table: str, columns: tuple[str, ...]
                 if storage in ('text', 'blob'):
                     raw = value.encode('utf8') if storage == 'text' else value
                     budget.consumed += len(raw)
-                    _check(len(raw) <= _VALUE_LIMIT and budget.remaining_bytes >= 0)
+                    _check(len(raw) <= value_limit and budget.remaining_bytes >= 0)
                 elif storage == 'real':
                     _check(math.isfinite(value))
             yield (identity, *values, *types) if with_rowid else (*values, *types)

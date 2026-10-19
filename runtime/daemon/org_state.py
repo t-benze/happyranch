@@ -42,6 +42,7 @@ from runtime.orchestrator.teams import TeamsRegistry
 from runtime.workflows.authority import WorkflowAuthorityCoordinator
 from runtime.workflows.coding_release_import import CodingReleaseImportStore
 from runtime.workflows.coding_roles import CodingRoleStore
+from runtime.workflows.coding_start import CodingStartStore
 from runtime.workflows.activation import WorkflowActivationStore
 from runtime.workflows.draft_dispatch import WorkflowDraftDispatcher
 from runtime.workflows.submissions import WorkflowSubmissionStore
@@ -83,6 +84,7 @@ class OrgState:
     workflow_activations: WorkflowActivationStore = field(init=False)
     workflow_coding_release_import: CodingReleaseImportStore = field(init=False)
     workflow_coding_roles: CodingRoleStore = field(init=False)
+    workflow_coding_start: CodingStartStore = field(init=False)
     workflow_drafts: WorkflowDraftDispatcher = field(init=False)
     workflow_submissions: WorkflowSubmissionStore = field(init=False)
     workflow_revisions: WorkflowRevisionStore = field(init=False)
@@ -181,6 +183,8 @@ class OrgState:
         self.workflow_activations = WorkflowActivationStore(self)
         self.workflow_coding_release_import = CodingReleaseImportStore(self)
         self.workflow_coding_roles = CodingRoleStore(self)
+        self.workflow_coding_start = CodingStartStore(self)
+        self.db._workflow_coding_start = self.workflow_coding_start
         self.workflow_drafts = WorkflowDraftDispatcher(self)
         self.workflow_submissions = WorkflowSubmissionStore(self)
         self.workflow_revisions = WorkflowRevisionStore(self)
@@ -188,6 +192,7 @@ class OrgState:
         self.workflow_review_receipts = WorkflowReviewReceiptStore(self)
         self.workflow_repository_artifacts = WorkflowRepositoryArtifactService()
         if self.orchestrator is not None:
+            self.orchestrator._workflow_coding_start = self.workflow_coding_start
             self.orchestrator._workflow_drafts = self.workflow_drafts
             self.orchestrator._workflow_submissions = self.workflow_submissions
             self.orchestrator._workflow_reviews = self.workflow_reviews
