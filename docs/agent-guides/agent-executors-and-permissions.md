@@ -1224,7 +1224,21 @@ management reads/writes, not registration):
 
 ## Executor Notes
 
-All executors converge on `executors._run_command`, which runs every launch under the **per-provider throttle** (`runtime/orchestrator/throttle.py`, issue #85): a `threading.BoundedSemaphore` ceiling per provider string, an inter-launch spacing gate, and slot-releasing 429 backoff. Each executor passes its own `provider` string (the profile name — `"claude"`, `"codex"`, `"opencode"`, `"pi"`, or a custom profile name) and an optional `on_throttle_event` audit callback. The throttle never touches the permission surface — it is purely a launch-timing wrapper. See [runtime-and-configuration.md → Executor Throttle](./runtime-and-configuration.md#executor-throttle) and `docs/adr/0001-per-provider-executor-throttle.md`.
+Contained builtin and custom-envelope communication shares the host supervisor
+lifecycle. Under THR307seq117, its process-group backend uses the factory-wired
+1s sampler, retained authenticated identities and a fresh checked terminal
+observation. Each group signal needs a matching original or previously
+observed live same-group witness; unrelated current group members confer no
+ownership. Unreadable, partial or capped evidence remains unknown and closes
+admission. In-flight sampling settles before finish/publication/release; finish
+waits the direct Popen even when a pre-bind terminal winner skips communication.
+Known escaped survivors remain visible. Unobserved between-sample escapes,
+arbitrary escaped-group cleanup, grandchild reaping, uncontained fallback and
+daemon-crash cleanup remain outside that guarantee. Linux retains kernel
+provenance; Linux fixture results establish neither genuine macOS behavior nor
+historical process ownership. No permission, sandbox or credential rule changes.
+
+Built-in executors converge on `executors._run_command`, which runs every launch under the **per-provider throttle** (`runtime/orchestrator/throttle.py`, issue #85): a `threading.BoundedSemaphore` ceiling per provider string, an inter-launch spacing gate, and slot-releasing 429 backoff. Each executor passes its own `provider` string (the profile name — `"claude"`, `"codex"`, `"opencode"`, `"pi"`, or a custom profile name) and an optional `on_throttle_event` audit callback. The throttle never touches the permission surface — it is purely a launch-timing wrapper. See [runtime-and-configuration.md → Executor Throttle](./runtime-and-configuration.md#executor-throttle) and `docs/adr/0001-per-provider-executor-throttle.md`.
 
 Codex: `CodexExecutor.run` passes `-c sandbox_workspace_write.network_access=true` on every invocation. The workspace-write sandbox blocks localhost by default, which would prevent `happyranch report-completion` callbacks to `127.0.0.1`.
 

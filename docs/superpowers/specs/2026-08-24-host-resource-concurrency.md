@@ -232,17 +232,27 @@ concurrency (1 worker) and row lifecycle.
   exists; otherwise it is `unavailable` — never a fabricated zero.
   Session scopes apply **no resource limits** in Slice B (no approved limit
   values); the probe proves the enforcement machinery itself.
-- `runtime/platform/macos_process_group.py` — the honestly capped macOS
-  backend: process-group launch (`start_new_session`), TERM/KILL bounded
-  cleanup, group-ownership proof before signaling (a reused group number
-  with no verified member is never signaled), identity-safe escaped-
-  descendant survivor census (a child that `setsid`s away is censused, never
-  falsely claimed clean), sampled-provenance receipt peaks. `finish` runs
-  its **own fresh final identity-safe descendant census** (never the last
-  periodic snapshot) so an escaped descendant created after the last sample
-  is detected by the shipping finish seam; a census/measurement exception
-  propagates as explicit failure evidence that blocks admission — it never
-  collapses into an empty clean group.
+- `runtime/platform/macos_process_group.py` — the honestly capped
+  process-group backend (also eligible on Linux when systemd is unavailable).
+  THR307seq117 corrects its production sampler wiring and per-attempt ownership:
+  the default factory selects its existing sampler at the existing1s cadence;
+  samples retain authenticated `(pid,start)` history and merge a fresh terminal
+  observation. Every TERM/KILL requires a currently matching original root or
+  previously authenticated live witness in the captured group. Fresh numeric
+  group members cannot authenticate themselves. Checked observation distinguishes
+  disappearance/death/reuse from unreadable/partial/capped uncertainty; the latter
+  raises cleanup/measurement failure and closes admission, preserving the primary
+  provider reason. History is at most1024 identities, each observation at most4096
+  rows with a cooperative1s allowance; exhaustion refuses without eviction of
+  live/unknown ownership. These are not hard wall-time/RSS bounds. A required
+  in-flight sample settles before finish/publication/release and cannot recreate
+  retired tokens or mutate terminal evidence. Finish explicitly waits/reaps its
+  direct Popen even when the pre-bind terminal gate skips communicate; it claims
+  no arbitrary grandchild wait. Known escaped live survivors remain in receipts
+  and residue; an escape never observed while lineage/group ownership was intact
+  can still be missed between samples. No arbitrary escaped-group signaling,
+  daemon-crash cleanup, genuine macOS/libproc parity or historical incident
+  ownership is established by Linux disposable verification.
 - `runtime/platform/backend_factory.py` — the single capability-probe
   selection point: healthy Linux systemd/cgroup-v2 probe selects the Linux
   backend; otherwise a healthy process-group/census probe selects the macOS
@@ -320,7 +330,10 @@ Portable sampling runs at a bounded interval; cadence and inter-sample gaps
 are recorded; sampled values are never labeled authoritative. Provenance
 distinguishes `kernel` (cgroup/job counters), `sampled` (portable sampler),
 and `unavailable`. The supervisor collects samples and hands them to the
-backend at finish time; the backend merges them into the receipt.
+backend at finish time; the backend merges them into the receipt. The default
+factory wires the process-group backend’s own history sampler. Its in-flight
+read and sample sink serialize with finish; no late sample/error changes
+finalized evidence. Linux kernel-counter production/provenance stays unchanged.
 
 The supervisor retains a **cardinality-bounded** sample history per attempt
 (dropping the oldest past the bound) so the bounded receipt's serialized

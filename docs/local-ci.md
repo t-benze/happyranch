@@ -51,6 +51,48 @@ run is authorized by this cadence change.
 
 See [coverage gaps](python-test-reset.md) and [the case record](../e2e/README.md).
 
+## Focused disposable session lifecycle verification (THR307seq117)
+
+Only a current manager allocation under ROOT11948 authorizes this standalone
+venue; it is outside automatic CI, general integration and Product E2E. Use an
+ordinary Linux owned job, effective Python3.14 with active runtime dependencies,
+a fresh absolute directory in the actual task’s runtime task-tmp, and a concise
+output receipt. `--source-root` selects the immutable reviewed source; the same
+candidate verifier observes the registered baseline worktree.
+
+```bash
+python scripts/verify_session_lifecycle.py --mode candidate \
+  --source-root /absolute/guarded-worktree \
+  --scratch-root /absolute/runtime/task-tmp/TASK-ID \
+  --output /absolute/workspace/output/TASK-ID/candidate.json
+# baseline: same script, --mode baseline, --source-root registered design29d743a worktree
+```
+
+One baseline comparison runs C1-escaped-known/C3-reused-identity only (90s total),
+then one candidate pass runs the twelve accepted variants (390s total). Readiness
+proves process-local subreaper SET/GET plus exact P/Q adoption and specific wait
+before orphan cases. F remains driver/reaper; controlled W provides independent
+bounded rescue. Limits: eight fixture processes including F,32 threads,1024
+observer events,1MiB output,64MiB scratch;20s action plus10s cleanup per variant,
+readiness15s and final15s reserve, global rescue by375s. C5’s two fault inputs share
+one action budget. Record backend evidence before separately labeled fixture
+rescue; an outer timeout never proves cleanup. Any unsafe residual stops later
+cases. Supported jobs accept explicit runtime caps up to86400s; the containing
+job must include setup, both bounded variants, cleanup and local static checks.
+Do not detach helpers or wait/poll a long job in the submitting session.
+
+Wrappers observe the real factory-selected `backend.sample`, its existing
+`LinuxProcReader.read_all` dependency after session capture, and low-level stat
+open/scandir inputs through `read_all_checked`; the private `_CHECKED_ROW_LIMIT`
+is reduced to8 only for row9 injection. No retired units/helpers or production
+test seam is used. Synthetic PID reuse proves signal selection only; synthetic
+S/J/B sentinels do not prove real SessionTracker/Jobs APIs, native journal
+settlement, kernel PID reuse, genuine macOS/systemd or real-provider behavior.
+Historical JOB4890/JOB4891 remain failed/incomplete with ownership UNPROVEN.
+Baseline setup failure is environment failure, never RED; missing assertions,
+failed cleanup and unexecuted cases stay explicit, never behavioral or
+test-authoring PASS. Independent same-head review/QA remains required.
+
 ## Commands and retained lanes
 
 ```bash

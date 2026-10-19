@@ -889,6 +889,7 @@ class _AttemptContext:
         self._monotonic = monotonic
         self._lock = threading.Lock()
         self._cond = threading.Condition(self._lock)
+        self._sample_lock = threading.Lock()
         self._terminal_reason: TerminalReason | None = None
         self._error: str | None = None
         self._cleanup_error: str | None = None
@@ -1004,6 +1005,23 @@ class _AttemptContext:
 
     # ── sampling sink ─────────────────────────────────────────────
 
+    def sample_once(self, sampler, running: RunningHandle) -> bool:
+        """Settle an in-flight sample before terminal evidence is frozen.
+
+        Finish shares this lock. No late value/error can change the evidence
+        after finish or release, even when the sampler's bounded join expires.
+        """
+        with self._sample_lock:
+            with self._lock:
+                if self._finish_done:
+                    return False
+            try:
+                self.add_sample(sampler(running))
+            except Exception:
+                self.note_sample_error()
+                return False
+            return True
+
     def add_sample(self, sample: ResourceSample) -> None:
         """Retain one bounded sample; the oldest is dropped at capacity.
 
@@ -1065,6 +1083,12 @@ class _AttemptContext:
         the primary terminal reason is preserved separately). Concurrent
         callers (finish/cancel race) wait for the in-flight finish and see
         the same receipt."""
+        with self._sample_lock:
+            return self._finish_after_sample(backend, grace_seconds)
+
+    def _finish_after_sample(
+        self, backend: SessionBackend, grace_seconds: float | None
+    ) -> Receipt | None:
         grace = self._grace_seconds if grace_seconds is None else grace_seconds
         with self._cond:
             if self._finish_done:
@@ -1179,13 +1203,8 @@ class _Sampler:
 
     def _loop(self) -> None:
         while not self._stop.is_set():
-            try:
-                sample = self._sampler(self._running)
-            except Exception:
-                self._ctx.note_sample_error()
-                # A broken sampler must not spin forever — stop sampling.
+            if not self._ctx.sample_once(self._sampler, self._running):
                 return
-            self._ctx.add_sample(sample)
             self._stop.wait(self._interval)
 
 
@@ -1900,12 +1919,17 @@ def build_default_host_supervisor(
     """
     from runtime.platform.backend_factory import session_backend_for_wired_producer
 
+    selected = backend or session_backend_for_wired_producer()
     return HostSessionSupervisor(
-        backend=backend or session_backend_for_wired_producer(),
+        backend=selected,
         policy=policy or canary_policy(),
         publisher=publisher or _log_bounded_receipt,
         max_retry_attempts=max_retry_attempts,
         backoff_seconds=backoff_seconds,
+        # Wire the process-group owner's identity history, not a separate
+        # descendant-only sampler. Linux retains its existing kernel counters
+        # and their provenance; passthrough still claims no measurement.
+        sampler=selected.sample if getattr(selected, "name", None) == "macos-process-group" else None,
     )
 
 
