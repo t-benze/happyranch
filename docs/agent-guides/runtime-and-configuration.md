@@ -51,6 +51,15 @@ heartbeat/PID/result/terminal bridge, so unsupported mutation/drift refuses.
 The existing native task row primitive is used only after complete prospective
 move checks; ordinary task insertion retains its original guard.
 
+The saved reader independently checks these original native start predicates:
+The captured invocation has no uncertainty, including producer-settled uncertainty,
+and its brief fingerprint equals SHA256 of the exact frozen source brief UTF8.
+The frozen source has neither a completed_at nor a zombie_flagged_at marker.
+Native journal shape and internally consistent pin digests alone do not prove
+original validity. Running/count/identity checks use original frozen evidence;
+later native journal phase or current authority is not substituted for that
+admission. This correction adds no native lifecycle writer or execution proof.
+
 Complete mixed historical and queued readers share the enclosing row/raw-byte/
 step budget, including schema(data=False), cold/reopen, templates, activation and
 context pins, recovery and cutover drain. No schema DDL/reference changes, startup

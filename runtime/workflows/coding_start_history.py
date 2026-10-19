@@ -198,6 +198,7 @@ def read_queued(conn: sqlite3.Connection, org: str, budget: _Budget, mappings: A
         _check(source_before['status'] == 'in_progress' and source_before['task_type'] == 'task'
                and source_before['assigned_agent'] == source['principal']
                and source_before['current_session_id'] == source['session_id'])
+        _check(source_before['completed_at'] is None and source_before['zombie_flagged_at'] is None)
         for key in ('block_kind', 'active_chain', 'active_fanout', 'blocked_on_job_ids', 'cancelled_at'):
             _check(source_before[key] is None)
         expected_source = {**source_before, 'block_kind': 'delegated', 'note': 'coding-owned:' + instance,
@@ -298,6 +299,10 @@ def read_queued(conn: sqlite3.Connection, org: str, budget: _Budget, mappings: A
         from runtime.infrastructure.task_pause_controls import decode_journal
         entry = invocation['entry']
         decode_journal(_canonical(dict(version=1, entries=[entry])).decode('utf8'))
+        # Validate original admission against the frozen source, independently
+        # of reconstructed pins or today's mutable native invocation lifecycle.
+        _check(not entry['context'].get('execution_unknown'))
+        _check(entry['fingerprint']['brief_digest'] == _hash(source_before['brief'].encode('utf8')))
         _check(entry['id'] == invocation['id'] and entry['owner'] == invocation['owner']
                and entry['task_id'] == source['task_id'] and entry['session_id'] == source['session_id']
                and entry['agent'] == source['principal'] and entry['phase'] == 'running'
