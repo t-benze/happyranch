@@ -64,14 +64,14 @@ class QueuedAttempt(Closed):
     id: Token
     task_id: Token
     stage: Literal['development']
-    state: Literal['queued']
+    state: Literal['queued', 'claimed', 'running', 'uncertain', 'blocked', 'failed', 'completed']
     principal: Token
 
 
 class QueuedEvent(Closed):
     id: Token
-    kind: Literal['run_started']
-    event_seq: Annotated[StrictInt, Field(ge=1, le=1)]
+    kind: Literal['run_started', 'session_bound', 'launch_reserved', 'launch_observed', 'callback_recorded', 'terminal_recorded', 'cleanup_settled', 'held', 'host_reconciled']
+    event_seq: Annotated[StrictInt, Field(ge=1, le=4096)]
 
 
 class CodingRunReceipt(Closed):
@@ -80,12 +80,12 @@ class CodingRunReceipt(Closed):
     release: Release
     mapping: MappingPin
     effective_roles: Roles
-    cas_version: Annotated[StrictInt, Field(ge=1, le=1)]
+    cas_version: Annotated[StrictInt, Field(ge=1, le=4096)]
     current_revision: Annotated[StrictInt, Field(ge=0, le=0)]
     target_revision: Annotated[StrictInt, Field(ge=1, le=1)]
-    state: Literal['development']
+    state: Literal['development', 'held']
     current_attempt: QueuedAttempt
-    history: list[QueuedEvent] = Field(min_length=1, max_length=1)
+    history: list[QueuedEvent] = Field(min_length=1, max_length=4096)
     closeout: None
     readiness: CodingReadiness
 

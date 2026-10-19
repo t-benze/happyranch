@@ -48,8 +48,10 @@ class Dispatcher:
             return False
         from runtime.workflows.recovery import classify_task
         ownership = classify_task(org.db, task_id, org_slug=slug)
+        if ownership.kind == 'coding_attempt':
+            return org.workflow_coding_dispatch.queue_admission_allowed(task_id)
         if ownership.kind.startswith('coding_') or ownership.kind == 'reconciliation_required':
-            return False  # K3a owns queued/structural rows, with no launcher.
+            return False
         move = org.orchestrator._team_moves
         try:
             with move.gate, org.db._lock:
@@ -59,7 +61,18 @@ class Dispatcher:
             return False
         return True
 
-    def heartbeat(self, slug: str, task_id: str) -> None:
+    def worker_started(self, slug: str, task_id: str) -> object:
+        try:
+            coding = self._state.get_org(slug).workflow_coding_dispatch
+        except KeyError:
+            return None
+        return coding, coding.queue_started(task_id)
+
+    def worker_finished(self, slug: str, task_id: str, owner: object) -> None:
+        coding, identity = owner
+        coding.queue_finished(task_id, identity)
+
+    def heartbeat(self, slug: str, task_id: str, queue_owner: object = None) -> None:
         """Stamp ``tasks.last_heartbeat`` on the per-org DB.
 
         Called periodically by the queue's heartbeat coroutine while
@@ -72,7 +85,12 @@ class Dispatcher:
             return
         from runtime.workflows.recovery import classify_task
         owner = classify_task(org.db, task_id, org_slug=slug)
+        if owner.kind in ('coding_source_waiting', 'coding_attempt'):
+            if queue_owner is None or queue_owner[0] is not org.workflow_coding_dispatch:
+                return
+            org.workflow_coding_dispatch.heartbeat(task_id, queue_owner[1])
+            return
         if owner.kind.startswith('coding_') or owner.kind == 'reconciliation_required':
-            return  # Draft/F5 retain their existing heartbeat path.
+            return
         now = datetime.now(timezone.utc).isoformat()
         org.db.update_task(task_id, last_heartbeat=now)

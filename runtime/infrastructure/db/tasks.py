@@ -1105,6 +1105,32 @@ class TasksMixin:
         if owner is not None:
             owner.guard_native_mutation(task_id)
 
+    def claim_coding_step_uncommitted(self, *, task_id: str, before: dict) -> None:
+        """Coding final native owner joins one caller-owned admission transaction."""
+        from runtime.workflows.coding_saved_records import _check
+        from runtime.workflows.coding_source_history import _TASK_COLUMNS
+        _check(self._conn.in_transaction and before['id'] == task_id and before['status'] == 'pending'
+               and before['block_kind'] is None and before['cancelled_at'] is None
+               and before['current_session_id'] is None and before['orchestration_step_count'] == 0)
+        self._check_team_move_task_uncommitted(task_id)
+        _check(self._conn.execute("SELECT 1 FROM authority_policy_v2_root_dispatch WHERE root_task_id=? AND state='pending'", (task_id,)).fetchone() is None)
+        where = ' AND '.join('"' + name + '" IS ?' for name in _TASK_COLUMNS)
+        changed = self._conn.execute('UPDATE tasks SET status=?,orchestration_step_count=? WHERE ' + where,
+            ('in_progress', before['orchestration_step_count'] + 1, *(before[k] for k in _TASK_COLUMNS)))
+        _check(changed.rowcount == 1)
+
+    def record_coding_heartbeat_uncommitted(self, *, task_id: str, before: dict, after: dict, payload: dict) -> None:
+        """Actual native two-clock writer and its fixed audit commit together."""
+        from runtime.workflows.coding_saved_records import _check
+        from runtime.workflows.coding_start_history import same
+        _check(self._conn.in_transaction and before['id'] == task_id and after['id'] == task_id
+               and same(after, {**before, 'updated_at': payload['observed_at'], 'last_heartbeat': payload['observed_at']}))
+        self._conn.execute('UPDATE tasks SET updated_at=?,last_heartbeat=? WHERE id=?',
+                           (after['updated_at'], after['last_heartbeat'], task_id))
+        audit_id = self.insert_audit_log_uncommitted(task_id, 'orchestrator', 'coding_task_heartbeat', payload)
+        from runtime.workflows.coding_saved_records import _canonical
+        self._conn.execute('UPDATE audit_log SET payload=? WHERE id=?', (_canonical(payload).decode('utf8'), audit_id))
+
     @_synchronized
     def update_task(self, task_id: str, **fields: object) -> None:
         self._guard_coding_task_mutation_uncommitted(task_id)
@@ -2677,6 +2703,12 @@ class TasksMixin:
         self, *, task_id: str, agent: str, session_id: str, pid: int,
     ) -> bool:
         """Publish a PID only for the still-current invocation generation."""
+        coding = getattr(self, '_workflow_coding_dispatch', None)
+        if coding is not None:
+            from runtime.workflows.recovery import classify_task
+            owner = classify_task(self, task_id, org_slug=coding.org.slug)
+            if owner.kind == 'coding_attempt':
+                return coding.record_pid(task_id=task_id, agent=agent, session_id=session_id, pid=pid)
         self._guard_coding_task_mutation_uncommitted(task_id)
         cursor = self._conn.execute(
             """UPDATE tasks SET executor_pid = ?

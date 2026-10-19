@@ -156,6 +156,9 @@ class TaskInvocation:
         return self.orch._db._task_pause_store
 
     def prepare(self) -> None:
+        if self.owner == "coding":
+            from runtime.workflows.coding_start import require_ready
+            require_ready()
         with self.store.writer(self.task.id, admission=True) as (root, row):
             self.store.held_uncommitted(self.task.id)
             self.orch._team_moves.check_task_uncommitted(self.task)
@@ -175,6 +178,9 @@ class TaskInvocation:
             self.store.save_journal_uncommitted(row)
         with self.store.db._lock:
             self.store._live[self.identity] = self
+            coding = getattr(self.orch, "_workflow_coding_dispatch", None)
+            if coding is not None:
+                coding.bind_queue_invocation(self)
 
     def _entry(self, row: dict) -> dict:
         entries = [e for e in row["journal"]["entries"] if e["id"] == self.identity]
@@ -279,7 +285,7 @@ class TaskInvocation:
             settled = db._settle_v2_continuation_generation_uncommitted(**arguments, now_dt=datetime.now(timezone.utc))
             if settled.status not in {"settled", "already_settled_exact"}:
                 raise DeferredRootPause("v2 settlement refused")
-        elif self.owner == "draft":
+        elif self.owner in ("draft", "coding"):
             dispatcher = self.workflow_dispatcher or self.orch._workflow_drafts
             dispatcher._claim_launch_uncommitted(self)
         elif self.owner == "ordinary":
@@ -308,10 +314,12 @@ class TaskInvocation:
         entry["context"]["audit_ids"] = audit_ids
         if self.admission_effects is not None:
             self.admission_effects()
+        if self.owner == "coding":
+            self.workflow_dispatcher._session_bound_uncommitted(self)
         return recovery_deadline
 
     def commit(self, ctx: Any = None) -> bool:
-        if self.owner == "draft":
+        if self.owner in ("draft", "coding"):
             drafts = self.workflow_dispatcher or self.orch._workflow_drafts
             return drafts._on_loop(drafts._commit_pause_launch(self, ctx))
         return self._commit_local(ctx)
@@ -376,6 +384,11 @@ class TaskInvocation:
                 entry["phase"] = "possible_launch"
                 entry["captured_generation"] = None
                 self.store.save_journal_uncommitted(row)
+                if self.owner == "coding":
+                    # Close both native events, their actual admission record
+                    # and the final saved journal before this SAME COMMIT.
+                    from runtime.infrastructure.workflow_schema import validate_workflow_schema
+                    validate_workflow_schema(self.store.db._conn, expected_org_slug=self.store.org_slug)
                 won = True
             if self.publish_binding is not None:
                 cancelled_binding = self.publish_binding()
@@ -493,6 +506,8 @@ class TaskInvocation:
                       backoff: float = 0.0, schedule: tuple[float, ...] | None = None,
                       enqueued_at: str | None = None) -> dict:
         """Retain the original retry budget; every actual retry arbitrates again."""
+        if self.owner == "coding" and ordinal:
+            raise PauseControlError("pause_control_unavailable")
         self._begin_launch_attempt()
         if boundary == "host" and ordinal and self.unsettled:
             raise PauseControlError("pause_control_unavailable")
@@ -537,6 +552,8 @@ class TaskInvocation:
         return dict(entry["retry"])
 
     def host_terminal(self, outcome: Any) -> None:
+        from runtime.workflows.coding_dispatch import terminal_observation
+        self.native_terminal_observation = terminal_observation(outcome)
         if outcome is not None and outcome.cleanup_error is not None:
             # Failed native backend cleanup can precede first commitment. The
             # current backends' prepare methods only validate/reserve opaque
@@ -574,37 +591,32 @@ class TaskInvocation:
             record_started(self)
             self.phase("running", started_at=now())
 
-    def close(self) -> None:
-        with self.store.db._lock:
-            row = self.store.row_uncommitted(self.store.root_uncommitted(self.task.id)["id"])
-            unknown = self._entry(row)["context"].get("execution_unknown", False)
+    def close(self) -> dict:
+        # Read sticky uncertainty and commit its disposition under the SAME
+        # native writer. A later read/removal gap cannot erase new uncertainty.
+        with self.store.writer(self.task.id) as (_, row):
+            entry = self._entry(row)
             reservation = self.move_reservation
             move_unknown = reservation is not None and (reservation.cleanup_failed
                 or (reservation.possible_launch and not reservation.quiescent))
-            unknown |= move_unknown
-        if self.unsettled or unknown:
-            with self.store.writer(self.task.id) as (_, row):
-                entry = self._entry(row)
+            unknown = entry["context"].get("execution_unknown", False) or entry["phase"] == "unknown" or move_unknown
+            if self.unsettled or unknown:
                 if move_unknown:
-                    # Preserve failed callback/abandon cleanup in the existing
-                    # durable unknown-tree journal; restart cannot erase it.
                     entry["context"]["execution_unknown"] = True
                 entry["phase"] = "unknown"
                 entry["started_at"] = entry["captured_generation"] = None
                 task = self.orch._db.get_task(self.task.id)
-                # A finished direct producer may have genuinely settled its
-                # callback/decision. Its unknown descendant tree remains a
-                # drain blocker, but does not impersonate a live step owner.
                 if (not self.unsettled and unknown and task is not None
                         and (task.status != TaskStatus.IN_PROGRESS or task.block_kind is not None
                              or task.current_session_id != self.session_id)):
                     entry["context"]["producer_settled"] = True
-                self.store.save_journal_uncommitted(row)
-            return
-        with self.store.writer(self.task.id) as (_, row):
-            if row is not None:
+                removed = False
+            else:
                 row["journal"]["entries"] = [e for e in row["journal"]["entries"] if e["id"] != self.identity]
-                self.store.save_journal_uncommitted(row)
+                removed = True
+            final = deepcopy(entry)
+            self.store.save_journal_uncommitted(row)
+        return dict(removed=removed, invocation=final)
 
 
 def assert_origin_unheld(org: Any, task_id: str) -> None:
@@ -656,6 +668,9 @@ def _deferred_invocation_uncommitted(orch: Any, task: TaskRecord, metadata: dict
     if len(entries) != 1 or entries[0]["phase"] not in {"retry_deferred", "recovery_deferred"}:
         raise DeferredRootPause("invocation already owned")
     entry = entries[0]
+    if entry["owner"] == "coding":
+        # K3 control/recovery remains unavailable; never adopt as ordinary.
+        raise DeferredRootPause("coding_native_recovery_unavailable")
     f = entry["fingerprint"]
     if (task.parent_task_id != f["parent"]
             or hashlib.sha256(task.brief.encode()).hexdigest() != f["brief_digest"]
@@ -790,6 +805,8 @@ def settle_live(invocation: TaskInvocation, *, failed: bool = False, cleanup: An
     """Close durable attribution only after reconcile and actual outer cleanup."""
     original_error = sys.exception()
     reservation = invocation.move_reservation
+    native_entry = None
+    close_disposition = None
     if failed and reservation is not None:
         reservation.failed_cleanup()
     try:
@@ -821,12 +838,14 @@ def settle_live(invocation: TaskInvocation, *, failed: bool = False, cleanup: An
                     invocation.task.id, invocation.session_id, invocation.identity, facts)
         with invocation.store.db._lock:
             row = invocation.store.row_uncommitted(invocation.store.root_uncommitted(invocation.task.id)["id"])
-            phase = invocation._entry(row)["phase"]
+            native_entry = deepcopy(invocation._entry(row))
+            phase = native_entry["phase"]
         # Genuine deferred retries/recovery keep their exact owner for the
         # existing redelivery owner. Failure must first become durable unknown.
         if (failed or (reservation is not None and reservation.cleanup_failed)
                 or phase not in {"retry_deferred", "recovery_deferred"}):
-            invocation.close()
+            close_disposition = invocation.close()
+            native_entry = close_disposition["invocation"]
     except BaseException as exc:
         failed = True
         if reservation is not None:
@@ -841,7 +860,40 @@ def settle_live(invocation: TaskInvocation, *, failed: bool = False, cleanup: An
             "task %s session %s owner %s Pause tail settlement failed; original error preserved",
             invocation.task.id, invocation.session_id, invocation.identity)
     finally:
-        invocation.orch._team_moves.release_task(invocation, failed=failed)
+        tail_error = sys.exception() or original_error
+        release_disposition = None
+        try:
+            # Observe the actual final release, under its native ownership.
+            # Absence alone is insufficient: close must also have committed
+            # the positive removal of this exact original native owner.
+            with invocation.store.db._lock:
+                owned = (reservation is not None and
+                    invocation.orch._team_moves._reservations.get(reservation.owner_id) is reservation)
+                invocation.orch._team_moves.release_task(invocation, failed=failed)
+                if reservation is not None:
+                    release_disposition = dict(owner_id=reservation.owner_id, task_id=reservation.task_id,
+                        agent=reservation.identity.agent_id, session_id=reservation.session_id,
+                        owner_live=reservation.owner_live, cleanup_failed=reservation.cleanup_failed,
+                        possible_launch=reservation.possible_launch, quiescent=reservation.quiescent,
+                        removed=owned and invocation.orch._team_moves._reservations.get(reservation.owner_id) is None)
+        except BaseException as exc:
+            failed = True
+            if tail_error is None:
+                raise
+            tail_error.add_note(f"Move tail release failed for {invocation.identity}: {exc!r}")
+            logging.getLogger(__name__).exception("move tail release failed; original error preserved")
+        finally:
+            active_error = sys.exception() or tail_error
+            coding = getattr(invocation.orch, "_workflow_coding_dispatch", None)
+            if coding is not None:
+                try:
+                    coding.outer_settled(invocation, failed=failed, cleanup=cleanup, native_entry=native_entry,
+                        close_disposition=close_disposition, release_disposition=release_disposition)
+                except BaseException as exc:
+                    if active_error is None:
+                        raise
+                    active_error.add_note(f"Coding tail observation failed for {invocation.identity}: {exc!r}")
+                    logging.getLogger(__name__).exception("coding tail observation failed; original error preserved")
 
 
 def pause_deferred_owner(db: Any, task_id: str) -> bool:
@@ -1007,8 +1059,10 @@ async def discover_pause_work(org: Any, queue: Any) -> None:
                         org.workflow_drafts.notify_queued(task_id, queue)
                     elif ownership.kind == "f5":
                         org.workflow_reviews.notify_queued(task_id, queue)
+                    elif ownership.kind == 'coding_attempt':
+                        org.workflow_coding_dispatch.notify_queued(task_id, queue)
                     elif ownership.kind.startswith('coding_'):
-                        continue  # Queued/structural coding has no K3a launcher.
+                        continue
                     elif ownership.kind == "legacy":
                         enqueue_task_generation_aware(org.orchestrator, queue, org.slug, task_id)
             for entry in entries:
