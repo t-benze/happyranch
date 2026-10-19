@@ -172,14 +172,20 @@ class TaskQueue:
             if admission is not None and not admission(slug, task_id, metadata):
                 self._queue.task_done()
                 continue
-            started = getattr(dispatcher, "worker_started", None)
-            owner = started(slug, task_id) if started is not None else None
-            hb = asyncio.create_task(self._heartbeat(dispatcher, slug, task_id, owner))
+            owner = hb = start_future = run_future = None
             t0 = time.monotonic()
             try:
-                await loop.run_in_executor(
+                started = getattr(dispatcher, "worker_started", None)
+                # Native preparation may take the root/move/DB gates. Finish
+                # it off-loop before even the first null-task-SID heartbeat.
+                if started is not None:
+                    start_future = loop.run_in_executor(None, started, slug, task_id)
+                    owner = await asyncio.shield(start_future)
+                hb = asyncio.create_task(self._heartbeat(dispatcher, slug, task_id, owner))
+                run_future = loop.run_in_executor(
                     None, dispatcher.run_step, slug, task_id, metadata,
                 )
+                await asyncio.shield(run_future)
             except Exception:
                 logger.exception(
                     "run_step %s/%s raised — continuing", slug, task_id,
@@ -188,13 +194,37 @@ class TaskQueue:
                 duration = time.monotonic() - t0
                 if self._metrics_registry is not None:
                     self._metrics_registry.record_loop_tick("run_step_worker", 0, duration)
-                hb.cancel()
-                try:
-                    await hb
-                except asyncio.CancelledError:
-                    pass
+                if hb is not None:
+                    hb.cancel()
+                    try:
+                        await hb
+                    except asyncio.CancelledError:
+                        pass
                 if owner is not None:
-                    dispatcher.worker_finished(slug, task_id, owner)
+                    if run_future is not None and not run_future.done():
+                        # Queue cancellation cannot settle a still-running
+                        # native thread. Retire only after its genuine return.
+                        def retire_running(future, worker_slug=slug, worker_task=task_id, worker_owner=owner):
+                            try:
+                                future.result()
+                            except BaseException:
+                                logger.exception("cancelled worker %s/%s returned with failure", worker_slug, worker_task)
+                            finally:
+                                dispatcher.worker_finished(worker_slug, worker_task, worker_owner)
+                        run_future.add_done_callback(retire_running)
+                    else:
+                        dispatcher.worker_finished(slug, task_id, owner)
+                elif start_future is not None:
+                    # Cancellation cannot abandon native preparation still
+                    # completing off-loop. Retire the SAME eventual owner.
+                    def retire_started(future, worker_slug=slug, worker_task=task_id):
+                        try:
+                            late_owner = future.result()
+                            if late_owner is not None:
+                                dispatcher.worker_finished(worker_slug, worker_task, late_owner)
+                        except BaseException:
+                            logger.exception("queue preparation/retirement for %s/%s failed", worker_slug, worker_task)
+                    start_future.add_done_callback(retire_started)
                 self._queue.task_done()
 
     def start_workers(self, dispatcher: _Dispatcher, n: int = 6) -> None:

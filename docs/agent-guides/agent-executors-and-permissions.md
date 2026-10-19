@@ -1642,3 +1642,45 @@ native-build/E2E/protected/executable/test-authoring proof is UNEXECUTED /
 FOUNDER-WAIVED139429/430. K3 control/recovery and K4–K6 plus actual agent/two-org/
 override/backup-copy acceptance stay ROOT10693-owned. No live operation follows.
 <!-- /K3b native development: TASK12023 / ROOT10693 step91 -->
+
+<!-- K3b four-finding correction: TASK12029 / ROOT10693 step92 -->
+The K3b correction separates fresh launch from the original admitted owner's
+callback. Once enabled by the still-missing whole-engine prerequisites, a genuine
+running owner may submit its first full INTEGER callback after root Pause;
+cancellation, foreign identity, stale ownership or revoked current authority
+still refuse. Launch hold/capacity/session-list checks are not callback admission.
+Exact historical callback replay is read-only, including while readiness is false.
+Fresh callbacks and all coding launch entrypoints remain unconditionally disabled.
+
+Bootstrap run_started stays literal event@1 and retains its original authority A.
+Native lifecycle event@2/internal-command@2 adds a closed native-admission@1
+observation at session_bound and callback_recorded: the actual full authority B
+capture/publication, original native invocation/Pause, bounded causal task/move
+closure, effective bindings, original limits and launch-only capacity facts.
+Independent saved/native/current/cold/schema(data=False)/recovery/drain readers
+reconstruct source-time predicates; today's roster or the unchanged bootstrap
+capture cannot substitute for original dispatch or callback admission. Unsupported
+old native events/heartbeats lacking these proofs refuse without rewriting bytes.
+
+Before the first coding heartbeat, the actual queue worker prepares its real
+TaskInvocation. Heartbeat@2 carries that native entry's invocation/claim and native
+Pause admission generation; current task SID may still be null. The same identity
+survives real SID binding and worker retirement. No synthetic claim is replaced;
+ordinary duplicate delivery retains native ownership and teardown semantics.
+
+Native cleanup consumes the actual committed close disposition and final move
+release observation. Every development cleanup independently joins original
+invocation/claim/task/agent/SID/owner/fingerprint and sticky uncertainty. Null,
+foreign, unknown, missing close, failed save/release or retained unknown journals
+cannot certify safe settlement. Positive removal requires owned close evidence;
+missing-owner gaps retain the original owner and uncertainty. Ordinary close,
+deferred ownership and exception ordering remain native; no host protocol or
+persistence mechanism is added. F–J/Pause DDL and references remain unchanged.
+
+These are disabled source corrections. Runtime case results remain MISSING;
+Python units RETIRED, integration INCLUDING callback SKIPPED24342. Behavioral,
+security/race/rollback/negative/mutation/red-green/repetition/native-build/E2E/
+protected/executable-QA/test-authoring proof UNEXECUTED/FOUNDER-WAIVED139429/430.
+Fresh FULL independent review then same-final-head scoped SOURCE QA return to
+ROOT10693; K3 controls/recovery/K4–K6 and operational acceptance remain root-owned.
+<!-- /K3b four-finding correction: TASK12029 / ROOT10693 step92 -->

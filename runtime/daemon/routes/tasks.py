@@ -11,7 +11,7 @@ import signal
 import sqlite3
 import uuid
 from collections.abc import Callable
-from contextlib import ExitStack, contextmanager
+from contextlib import ExitStack, contextmanager, nullcontext
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -1163,62 +1163,72 @@ async def submit_completion(task_id: str, body: CompletionBody, org: OrgDep) -> 
             )
     local_ci_json = _json.dumps(local_ci.model_dump()) if local_ci is not None else None
     decision_json = _json.dumps(decision_payload) if decision_payload is not None else None
-    async with org.db_lock:
-        current_ownership = classify_task(org.db, task_id, org_slug=getattr(org, "slug", None))
-        if current_ownership.kind != ownership.kind:
-            raise HTTPException(status_code=409, detail={"code": "workflow_reconciliation_required"})
-        # The pre-await guards above give callers stable error ordering.  They
-        # are not admission authority: cancellation or a newer generation can
-        # land while this callback waits for the shared DB lock.
-        if not workflow_draft or org.db.get_latest_task_result(task_id, body.agent, body.session_id) is None:
-            _require_task_active(task_id, org.db.get_task(task_id))
-        # Do not await under this lease.  It bridges get_active() and the
-        # synchronized SQLite transaction, closing the old post-get_active
-        # generation-replacement gap without inverting the DB RLock.
-        with org.sessions.binding_lease(task_id, body.agent):
-            current = org.sessions.get_active(task_id, body.agent)
-            if current != body.session_id:
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail={"code": "unknown_session" if current is None else "session_mismatch",
-                            "task_id": task_id, "agent": body.agent},
-                )
-            recovery_deadline_monotonic = org.sessions.recovery_deadline_monotonic(
-                task_id, body.agent, body.session_id,
-            )
-            # The recovery ledger is the durable authority for a callback after a
-            # clean provider omission.  In particular, a late callback from the
-            # origin invocation must not overwrite a recovery claim.
-            if (ownership.kind == 'legacy' and decision_payload is not None
-                    and decision_payload.get('action') == 'workflow_start'):
-                from runtime.workflows.coding_start import CodingStartError, require_ready
-                try:
-                    require_ready()
-                except CodingStartError as exc:
-                    # Refuse before persisting a fresh unsupported start result,
-                    # including on I; never poison old/native history or spend
-                    # the genuine manager's result-action claim while disabled.
-                    raise HTTPException(status_code=409, detail={'code': exc.code}) from None
-            if not org.db.admit_task_completion_callback(
-                task_id=task_id,
-                agent=body.agent,
-                session_id=body.session_id,
-                status=body.status,
-                output_summary=body.output_summary,
-                decision_json=decision_json,
-                confidence_score=body.confidence,
-                risks_flagged=body.risks_flagged,
-                output_dir=body.output_dir,
-                waiting_on_job_ids=body.waiting_on_job_ids or None,
-                verdict=body.verdict,
-                local_ci_json=local_ci_json,
-                recovery_deadline_monotonic=recovery_deadline_monotonic,
-                v2_admission=v2_admission,
-            ):
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail={"code": "recovery_callback_not_admissible"},
-                )
+    from runtime.workflows.coding_start import CodingStartError
+    coding_owner = org.workflow_coding_dispatch if ownership.kind == 'coding_attempt' else None
+    try:
+        admission_context = coding_owner.callback_admission(task_id) if coding_owner is not None else nullcontext(None)
+        async with admission_context as coding_capture:
+            async with org.db_lock if coding_owner is None else nullcontext():
+                current_ownership = classify_task(org.db, task_id, org_slug=getattr(org, "slug", None))
+                if current_ownership.kind != ownership.kind:
+                    raise HTTPException(status_code=409, detail={"code": "workflow_reconciliation_required"})
+                # The pre-await guards above give callers stable error ordering.  They
+                # are not admission authority: cancellation or a newer generation can
+                # land while this callback waits for the shared DB lock.
+                if not workflow_draft or org.db.get_latest_task_result(task_id, body.agent, body.session_id) is None:
+                    _require_task_active(task_id, org.db.get_task(task_id))
+                # Do not await under this lease.  It bridges get_active() and the
+                # synchronized SQLite transaction, closing the old post-get_active
+                # generation-replacement gap without inverting the DB RLock.
+                with org.sessions.binding_lease(task_id, body.agent):
+                    current = org.sessions.get_active(task_id, body.agent)
+                    if current != body.session_id:
+                        raise HTTPException(
+                            status_code=status.HTTP_409_CONFLICT,
+                            detail={"code": "unknown_session" if current is None else "session_mismatch",
+                                    "task_id": task_id, "agent": body.agent},
+                        )
+                    recovery_deadline_monotonic = org.sessions.recovery_deadline_monotonic(
+                        task_id, body.agent, body.session_id,
+                    )
+                    # The recovery ledger is the durable authority for a callback after a
+                    # clean provider omission.  In particular, a late callback from the
+                    # origin invocation must not overwrite a recovery claim.
+                    if (ownership.kind == 'legacy' and decision_payload is not None
+                            and decision_payload.get('action') == 'workflow_start'):
+                        from runtime.workflows.coding_start import CodingStartError, require_ready
+                        try:
+                            require_ready()
+                        except CodingStartError as exc:
+                            # Refuse before persisting a fresh unsupported start result,
+                            # including on I; never poison old/native history or spend
+                            # the genuine manager's result-action claim while disabled.
+                            raise HTTPException(status_code=409, detail={'code': exc.code}) from None
+                    if not org.db.admit_task_completion_callback(
+                        task_id=task_id,
+                        agent=body.agent,
+                        session_id=body.session_id,
+                        status=body.status,
+                        output_summary=body.output_summary,
+                        decision_json=decision_json,
+                        confidence_score=body.confidence,
+                        risks_flagged=body.risks_flagged,
+                        output_dir=body.output_dir,
+                        waiting_on_job_ids=body.waiting_on_job_ids or None,
+                        verdict=body.verdict,
+                        local_ci_json=local_ci_json,
+                        recovery_deadline_monotonic=recovery_deadline_monotonic,
+                        v2_admission=v2_admission,
+                        coding_admission=coding_capture,
+                    ):
+                        raise HTTPException(
+                            status_code=status.HTTP_409_CONFLICT,
+                            detail={"code": "recovery_callback_not_admissible"},
+                        )
+    except CodingStartError as exc:
+        if coding_owner is None:
+            raise
+        raise HTTPException(status_code=409, detail={'code': exc.code}) from None
     # Generation-owned cleanup preserves a newer invocation that may have
     # replaced this callback while the route was awaiting its DB lock.
     if not workflow_draft:

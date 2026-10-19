@@ -10,7 +10,7 @@ import asyncio
 import base64
 import json
 import uuid
-from contextlib import contextmanager
+from contextlib import asynccontextmanager, contextmanager
 from copy import deepcopy
 from dataclasses import asdict
 from datetime import datetime, timezone
@@ -56,7 +56,6 @@ class CodingDispatcher:
     def __init__(self, org: Any) -> None:
         self.org, self.db = org, org.db
         self._queue_live: dict[str, dict] = {}
-        self._queue_generation = 0
         self.producer = 'coding-dispatcher:' + org.slug
 
     def _on_loop(self, coroutine: Any) -> Any:
@@ -99,38 +98,82 @@ class CodingDispatcher:
             return task_id == entry['attempt']['task_id'] and entry['attempt']['state'] == 'queued'
 
     def queue_started(self, task_id: str) -> dict:
-        # Called only by the actual native queue worker after its own admission.
-        # Every ordinary worker gets a lifetime too: an original source can
-        # become coding-owned during that SAME worker's result-action tail.
+        # The queue calls this before scheduling its first heartbeat. A coding
+        # worker owns the actual native preparation, not a generated stand-in.
+        from runtime.workflows.recovery import classify_task
+        from runtime.orchestrator.task_pause import TaskInvocation
         with self.db._lock:
-            self._queue_generation += 1
-            owner = dict(owner_id=uuid.uuid4().hex, queue_generation=self._queue_generation,
-                         claim_identity=uuid.uuid4().hex)
-            self._queue_live.setdefault(task_id, {})[owner['owner_id']] = owner
-            return owner
+            coding = classify_task(self.db, task_id, org_slug=self.org.slug).kind == 'coding_attempt'
+        if coding:
+            require_ready()  # Before creating a SID or preparing any owner.
+            with self.db._lock:
+                entry = self._entry(self.db._conn, task_id)
+                task = self.db.get_task(task_id)
+            invocation = TaskInvocation(self.org.orchestrator, task, task.assigned_agent,
+                self.org.orchestrator._build_session_id(), owner='coding')
+            invocation.workflow_dispatcher = self
+            invocation.coding_claim_token = uuid.uuid4().hex
+            invocation.draft_request_key = identity('host', entry['attempt']['id'], invocation.identity)
+            owner = dict(invocation=invocation, binding=None)
+        else:
+            owner = dict(invocation=None, binding=None)
+        with self.db._lock:
+            self._queue_live.setdefault(task_id, {})[id(owner)] = owner
+        if coding:
+            try:
+                invocation.prepare()
+            except BaseException as exc:
+                owner['invocation'] = None
+                self.queue_finished(task_id, owner)
+                if invocation.move_reservation is not None:
+                    # A failed prepare may already own a move reservation even
+                    # when the journal COMMIT or live publication failed.
+                    from runtime.orchestrator.task_pause import release_live
+                    try:
+                        release_live(invocation, failed=True)
+                    except BaseException as cleanup_error:
+                        exc.add_note(f'coding queue preparation settlement failed: {type(cleanup_error).__name__}')
+                raise
+        return owner
 
     def queue_finished(self, task_id: str, owner: dict) -> None:
         with self.db._lock:
             owners = self._queue_live.get(task_id, {})
-            _check(owners.get(owner['owner_id']) is owner)
-            owners.pop(owner['owner_id'])
+            _check(owners.get(id(owner)) is owner)
+            owners.pop(id(owner))
             if not owners:
                 self._queue_live.pop(task_id, None)
+        invocation = owner['invocation']
+        if invocation is not None:
+            # The route may have refused before dispatch adopted preparation.
+            # Its real queue owner still owes native close/release.
+            from runtime.orchestrator.task_pause import release_live
+            with self.db._lock:
+                live = invocation.store._live.get(invocation.identity) is invocation
+            if live:
+                release_live(invocation, failed=True)
 
     def bind_queue_invocation(self, invocation: Any) -> None:
-        # This is only an observation of the real queue owner. Ordinary duplicate
-        # deliveries retain their original native claim semantics and are not
-        # made ineligible merely because attribution is unavailable.
         with self.db._lock:
             owners = self._queue_live.get(invocation.task.id, {})
-            if len(owners) == 1:
-                owner = next(iter(owners.values()))
-                owner['claim_identity'] = invocation.identity
+            candidates = [o for o in owners.values() if o['invocation'] is invocation]
+            if not candidates and len(owners) == 1:
+                candidates = [next(iter(owners.values()))]
+            if len(candidates) != 1:
+                return  # Ordinary duplicate delivery keeps its native semantics.
+            owner = candidates[0]
+            row = invocation.store.row_uncommitted(invocation.store.root_uncommitted(invocation.task.id)['id'])
+            native = deepcopy(invocation._entry(row))
+            binding = dict(owner_id=native['id'], queue_generation=native['generation'],
+                           claim_identity=native['id'], native=native)
+            # A persisted heartbeat's claim can never be silently replaced.
+            _check(owner['binding'] is None or same(owner['binding'], binding))
+            owner['binding'] = binding
 
     def heartbeat(self, task_id: str, owner: dict | None) -> None:
         with self.db._lock:
             owners = self._queue_live.get(task_id, {})
-            _check(owner is not None and owners.get(owner['owner_id']) is owner)
+            _check(owner is not None and owners.get(id(owner)) is owner)
             with self._writer() as conn:
                 entry = self._entry(conn, task_id)
                 kind = ('source' if task_id == entry['source']['task_id'] else 'attempt'
@@ -138,13 +181,14 @@ class CodingDispatcher:
                 _check(kind is not None)
                 expected_claim = (entry['source']['result_claim']['owner_invocation_id'] if kind == 'source'
                     else entry['native']['claim']['invocation_id'] if entry['native']['claim'] is not None else None)
-                _check(expected_claim is None or owner['claim_identity'] == expected_claim)
+                binding = owner['binding']
+                _check(binding is not None and (expected_claim is None or binding['claim_identity'] == expected_claim))
                 anchor, digest, previous = entry['native']['anchors'][task_id]
                 before = entry['tasks'][task_id]
                 now = stamp()
                 after = {**before, 'updated_at': now, 'last_heartbeat': now}
-                payload = dict(format='workflow-coding-task-heartbeat@1', instance_id=entry['run']['instance_id'],
-                    task_id=task_id, queue_owner=dict(kind=kind, **owner), session_id=before['current_session_id'],
+                payload = dict(format='workflow-coding-task-heartbeat@2', instance_id=entry['run']['instance_id'],
+                    task_id=task_id, queue_owner=dict(kind=kind, **deepcopy(binding)), session_id=before['current_session_id'],
                     previous_audit_id=previous, anchor_event_id=anchor, anchor_task_digest=digest,
                     before_record=encode_row(before), after_record=encode_row(after), observed_at=now)
                 self.db.record_coding_heartbeat_uncommitted(task_id=task_id, before=before, after=after, payload=payload)
@@ -155,17 +199,18 @@ class CodingDispatcher:
 
     def dispatch(self, task_id: str) -> None:
         require_ready()  # Direct owned routing cannot bypass native queue denial.
-        from runtime.orchestrator.task_pause import TaskInvocation, _invocation, release_live
+        from runtime.orchestrator.task_pause import _invocation, release_live, fingerprint
         with self.db._lock:
             entry = self._entry(self.db._conn, task_id)
             _check(entry['attempt']['task_id'] == task_id and entry['attempt']['state'] == 'queued')
             task = self.db.get_task(task_id)
-        invocation = TaskInvocation(self.org.orchestrator, task, task.assigned_agent,
-                                    self.org.orchestrator._build_session_id(), owner='coding')
-        invocation.workflow_dispatcher = self
-        invocation.coding_claim_token = uuid.uuid4().hex
-        invocation.draft_request_key = identity('host', entry['attempt']['id'], invocation.identity)
-        invocation.prepare()
+        with self.db._lock:
+            owners = [o for o in self._queue_live.get(task_id, {}).values()
+                      if o['invocation'] is not None and o['binding'] is not None]
+            _check(len(owners) == 1)
+            invocation = owners[0]['invocation']
+            _check(invocation is invocation.store._live.get(invocation.identity)
+                   and invocation.task.id == task_id and fingerprint(invocation.task) == fingerprint(task))
         token = _invocation.set(invocation)
         failed = False
         try:
@@ -193,10 +238,12 @@ class CodingDispatcher:
                entry['source']['budgets']['max_revise_rounds'])
         return policies
 
-    def _eligible(self, conn: Any, entry: dict, invocation: Any, capture: Any, sessions: tuple) -> None:
+    def _eligible(self, conn: Any, entry: dict, invocation: Any, capture: Any, sessions: tuple,
+                  *, callback: bool = False) -> dict:
         from runtime.workflows._coding_role_records import configuration
         from runtime.workflows.coding_start_records import effective_mapping
         from runtime.workflows.activation import author_capacity_blocked
+        from runtime.workflows.coding_bootstrap import effective_bindings
         from runtime.workflows.coding_mapping_history import read_mapping_storage
         _check(not self.org._runner_admission_closed and invocation.orch is self.org.orchestrator
                and invocation.owner == 'coding' and invocation.workflow_dispatcher is self
@@ -219,13 +266,120 @@ class CodingDispatcher:
         for task in entry['tasks'].values():
             self.db._check_team_move_task_uncommitted(task['id'])
             _check(task['cancelled_at'] is None and task['zombie_flagged_at'] is None)
-        self.db._check_team_move_workflow_uncommitted(binding_bytes=entry['binding']['binding_bytes'])
-        invocation.store.held_uncommitted(invocation.task.id)
-        if author_capacity_blocked(conn, author=invocation.agent, task_id=invocation.task.id, active_sessions=sessions):
+        self.db._check_team_move_workflow_uncommitted(binding_bytes=effective_bindings(entry['run']['instance_id'], entry['roles']))
+        if not callback:
+            invocation.store.held_uncommitted(invocation.task.id)
+        if not callback and author_capacity_blocked(conn, author=invocation.agent, task_id=invocation.task.id, active_sessions=sessions):
             raise CodingStartError('coding_capacity_unavailable')
         _check(entry['attempt']['revision'] == 1 and entry['attempt']['attempt_sequence'] == 1
                and entry['source']['budgets']['coding_attempt_limit'] >= 1
-               and entry['run']['cas_version'] + 2 <= entry['source']['budgets']['coding_event_limit'])
+               and entry['run']['cas_version'] + (1 if callback else 2) <= entry['source']['budgets']['coding_event_limit'])
+        return self._admission_observation(conn, entry, invocation, capture, sessions, callback=callback)
+
+    def _admission_observation(self, conn: Any, entry: dict, invocation: Any, capture: Any,
+                               sessions: tuple, *, callback: bool) -> dict:
+        from runtime.workflows._coding_import_support import _capture
+        from runtime.workflows.coding_bootstrap import effective_bindings
+        _check(len(sessions) <= 1024)
+        budget = _Budget()
+        root = invocation.store.root_uncommitted(invocation.task.id)
+        pause = invocation.store.row_uncommitted(root['id'])
+        native = deepcopy(invocation._entry(pause))
+        # Bound the complete causal move closure, including retained revisits.
+        pending, closure = [invocation.task.id], {}
+        while pending:
+            key = pending.pop()
+            if key in closure:
+                continue
+            _check(len(closure) < 512)
+            found = list(rows(conn, 'tasks', budget, where='id=?', args=(key,), maximum=1))
+            _check(len(found) == 1)
+            task = found[0]
+            closure[key] = task
+            pending.extend(r['id'] for r in rows(conn, 'tasks', budget,
+                where='parent_task_id=? OR revisit_of_task_id=?', args=(key, key), maximum=512))
+            pending.extend(task[k] for k in ('parent_task_id', 'revisit_of_task_id') if task[k] is not None)
+        bindings = []
+        for row in rows(conn, 'workflow_instances', budget):
+            linked = row['root_task_id'] in closure or any(r['task_id'] in closure for r in
+                rows(conn, 'workflow_instance_tasks', budget, where='instance_id=?', args=(row['id'],)))
+            if linked:
+                bound = list(rows(conn, 'workflow_binding_snapshots', budget, where='id=?',
+                    args=(row['binding_snapshot_id'],), maximum=1))
+                _check(len(bound) == 1)
+                bindings.append(dict(instance_id=row['id'], binding=encode_row(bound[0])))
+        current, seen = closure[invocation.task.id], set()
+        while True:
+            _check(current['id'] not in seen and len(seen) < 23
+                   and current['team'] == entry['roles']['agent_manager']['team']
+                   and current['cancelled_at'] is None and current['zombie_flagged_at'] is None
+                   and current['status'] not in ('completed', 'failed', 'cancelled', 'superseded'))
+            seen.add(current['id'])
+            if current['parent_task_id'] is None:
+                _check(current['id'] == entry['source']['root_ancestor_id'])
+                break
+            current = closure[current['parent_task_id']]
+        capacity = None if callback else dict(sessions=[list(v) for v in sessions],
+            tasks=[encode_row(r) for r in rows(conn, 'tasks', budget,
+                where="assigned_agent=? AND status='in_progress' AND block_kind IS NULL AND cancelled_at IS NULL AND current_session_id IS NOT NULL AND id<>?",
+                args=(invocation.agent, invocation.task.id))],
+            work_hours=[encode_row(r) for r in rows(conn, 'work_hours', budget,
+                where="agent_name=? AND status='running'", args=(invocation.agent,))])
+        if callback:
+            claim = entry['native']['claim']
+            task = entry['tasks'][invocation.task.id]
+            _check(invocation.admitted and invocation.attempt_committed
+                   and claim is not None and claim['invocation_id'] == native['id'] == invocation.identity
+                   and native['owner'] == 'coding' and native['fingerprint'] == claim['task_fingerprint']
+                   and native['generation'] == claim['pause_generation']
+                   and native['session_id'] == task['current_session_id'] == invocation.session_id
+                   and task['status'] == 'in_progress' and task['block_kind'] is None
+                   and task['orchestration_step_count'] == native['fingerprint']['count'] + 1
+                   and native['phase'] in ('possible_launch', 'running', 'result_processing')
+                   and not native['context'].get('execution_unknown'))
+        # Frozen config was checked outside each awaited boundary by _policies.
+        # Do not read files while owning this synchronous native writer.
+        result = dict(format='workflow-coding-native-admission@1', phase='callback' if callback else 'launch',
+            authority=_capture(capture, identity('native-admission', entry['attempt']['id'],
+                invocation.identity, entry['run']['cas_version']), _canonical(entry['command'])),
+            manager_teams=list(self.org.teams.teams_for_manager(entry['source']['principal'])),
+            tasks=[encode_row(closure[k]) for k in sorted(closure)], bindings=bindings,
+            pause=encode_row({k: v for k, v in pause.items() if k != 'journal'}), invocation=native,
+            move=None if (move := invocation.orch._team_moves.active_uncommitted()) is None else encode_row(move),
+            capacity=capacity, max_revise_rounds=entry['source']['budgets']['max_revise_rounds'],
+            effective_bindings_base64=base64.b64encode(effective_bindings(entry['run']['instance_id'], entry['roles'])).decode('ascii'))
+        pin = result['authority']['pin']
+        result['record'] = dict(id=result['authority']['admission_record_id'], namespace=pin['namespace'],
+            generation=pin['generation'], request_digest=_hash(_canonical(entry['command'])),
+            admitted_by='service:' + self.producer)
+        _check(len(_canonical(result)) <= 4194304)
+        _check(conn.in_transaction)
+        conn.execute('INSERT INTO workflow_admission_records VALUES (?,?,?,?,?)', tuple(result['record'][k]
+            for k in ('id', 'namespace', 'generation', 'request_digest', 'admitted_by')))
+        return result
+
+    @asynccontextmanager
+    async def callback_admission(self, task_id: str):
+        with self.db._lock:
+            entry = self._entry(self.db._conn, task_id)
+        if entry['native']['callback'] is not None:
+            # Still-tracked exact transport retries are read-only too. The
+            # synchronized DB writer compares all bytes before returning.
+            async with self.org.db_lock:
+                yield None
+            return
+        require_ready()
+        capture = self.org.workflow_authority.capture_admission()
+        self._policies(entry)
+        async with self.org.workflow_authority._async_writer_lock:
+            self._policies(entry)
+            async with self.org.teams_lock:
+                self._policies(entry)
+                async with self.org.db_lock:
+                    self._policies(entry)
+                    with self.org.workflow_authority._admission_ownership(capture):
+                        # No awaits are permitted in the route's yielded block.
+                        yield capture
 
     async def _commit_pause_launch(self, invocation: Any, ctx: Any) -> bool:
         require_ready()  # Alternate native TaskInvocation.commit remains closed.
@@ -248,7 +402,7 @@ class CodingDispatcher:
         require_ready()
         conn = self.db._conn
         entry = self._entry(conn, invocation.task.id)
-        self._eligible(conn, entry, invocation, invocation.coding_capture, invocation.coding_sessions)
+        invocation.coding_launch_admission = self._eligible(conn, entry, invocation, invocation.coding_capture, invocation.coding_sessions)
         _check(entry['attempt']['state'] == 'queued' and not invocation.admitted)
         invocation.coding_before = entry
         row = invocation._entry(invocation.store.row_uncommitted(entry['source']['root_ancestor_id']))
@@ -281,10 +435,12 @@ class CodingDispatcher:
         native = deepcopy(matches[0]) if len(matches) == 1 else deepcopy(getattr(invocation, 'coding_settled_entry', None))
         with self.db._lock:
             candidates = [owner for owner in self._queue_live.get(invocation.task.id, {}).values()
-                          if owner['claim_identity'] == invocation.identity]
-            queue_owner = deepcopy(candidates[0]) if len(candidates) == 1 else None
-        observation = dict(facts=facts, invocation=native, queue_owner=queue_owner)
-        command = dict(format='workflow-coding-internal-command@1', kind=kind,
+                          if owner['binding'] is not None and owner['binding']['claim_identity'] == invocation.identity]
+            queue_owner = deepcopy(candidates[0]['binding']) if len(candidates) == 1 else None
+        observation = dict(facts=facts, invocation=native, queue_owner=queue_owner,
+            admission=(invocation.coding_launch_admission if kind == 'session_bound' else
+                       invocation.coding_callback_admission if kind == 'callback_recorded' else None))
+        command = dict(format='workflow-coding-internal-command@2', kind=kind,
             source_event_ids=[previous['id']], source_event_digests=[previous['event_digest']],
             subject=None, producer_identity=producer, observation=observation)
         instance = entry['run']['instance_id']
@@ -300,7 +456,7 @@ class CodingDispatcher:
         after['tasks'] = [dict(id=k, record=encode_row(dict(conn.execute('SELECT * FROM tasks WHERE id=?', (k,)).fetchone())))
                           for k in sorted(entry['tasks'])]
         operation = dict(org_slug=self.org.slug, principal=principal, key=key, request_digest=_hash(_canonical(command)))
-        body = dict(format='workflow-coding-event@1', id=event_id, instance_id=instance,
+        body = dict(format='workflow-coding-event@2', id=event_id, instance_id=instance,
             event_seq=previous['event_seq'] + 1, event_kind=kind, attempt_id=attempt['id'], operation=operation,
             previous_digest=previous['event_digest'], before=before, after=after,
             evidence=dict(kind=kind, command=command, origin=dict(kind='service', principal=invocation.agent,
@@ -397,7 +553,7 @@ class CodingDispatcher:
                 observation_digest=_hash(raw), recovery_owner=entry['native']['claim']['owner']), invocation=invocation)
         return True
 
-    def callback_uncommitted(self, *, task_id: str, agent: str, session_id: str, payload: dict) -> bool:
+    def callback_uncommitted(self, *, task_id: str, agent: str, session_id: str, payload: dict, capture: Any) -> bool:
         from runtime.infrastructure.database import completion_result_payload_matches
         conn = self.db._conn
         entry = self._entry(conn, task_id)
@@ -415,7 +571,8 @@ class CodingDispatcher:
         if len(invocations) != 1:
             return False
         invocation = invocations[0]
-        self._eligible(conn, entry, invocation, invocation.coding_capture, invocation.coding_sessions)
+        require_ready()
+        invocation.coding_callback_admission = self._eligible(conn, entry, invocation, capture, (), callback=True)
         self.db._insert_task_result(task_id=task_id, agent=agent, session_id=session_id, **payload)
         result_id = conn.execute('SELECT last_insert_rowid()').fetchone()[0]
         result = dict(conn.execute('SELECT * FROM task_results WHERE id=?', (result_id,)).fetchone())
@@ -470,7 +627,8 @@ class CodingDispatcher:
             if transitions:
                 _root_worktree_batch(self.org.orchestrator, transitions, teardown_incomplete=failed)
 
-    def outer_settled(self, invocation: Any, *, failed: bool, cleanup: Any, native_entry: dict | None) -> None:
+    def outer_settled(self, invocation: Any, *, failed: bool, cleanup: Any, native_entry: dict | None,
+                      close_disposition: dict | None, release_disposition: dict | None) -> None:
         # Called by the native settle_live finally owner after tracker, task tail,
         # root worktree batch and native close/release. No absence is a witness.
         with self.db._lock:
@@ -498,14 +656,32 @@ class CodingDispatcher:
                     required_owner=producer, required_action='original_owner_reconciliation'),
                     invocation=invocation, run_changes=dict(state='held'))
                 return
+            if native_entry is None:
+                invocation.coding_settled_entry = None
+                self._append(conn, entry, 'held', dict(reason='coding_native_close_unavailable',
+                    owner_event_ids=[entry['native']['history'][-1]['id']], resume_state='development',
+                    required_owner=invocation.identity if source else entry['native']['claim']['owner'],
+                    required_action='original_owner_reconciliation'), invocation=invocation,
+                    run_changes=dict(state='held'))
+                return
+            _check(native_entry['id'] == invocation.identity and native_entry['task_id'] == invocation.task.id
+                   and native_entry['agent'] == invocation.agent and native_entry['session_id'] == invocation.session_id
+                   and native_entry['owner'] == invocation.owner)
             safe = (not failed and cleanup is not None and cleanup.kind == 'safe'
                     and not cleanup.processes and not invocation.unsettled
-                    and native_entry is not None and not native_entry['context'].get('execution_unknown'))
+                    and native_entry is not None and not native_entry['context'].get('execution_unknown')
+                    and native_entry['phase'] != 'unknown'
+                    and close_disposition is not None and close_disposition['removed'] is True
+                    and release_disposition is not None and release_disposition['removed'] is True
+                    and release_disposition['owner_id'] == invocation.identity
+                    and not release_disposition['owner_live'] and not release_disposition['cleanup_failed']
+                    and (not release_disposition['possible_launch'] or release_disposition['quiescent']))
             tracker_clear = self.org.sessions.get_active(invocation.task.id, invocation.agent) is None
             safe = safe and tracker_clear
             disposition = dict(kind='safe' if safe else 'unknown', reason='native_outer_settlement',
                 processes=[] if cleanup is None else list(cleanup.processes), invocation=native_entry,
                 terminal=getattr(invocation, 'native_terminal_observation', None), tracker_clear=tracker_clear,
+                close=close_disposition, release=release_disposition,
                 reconciliation_complete=not failed, task_tail_complete=cleanup is not None,
                 root_worktree_batch_complete=cleanup is not None and cleanup.kind == 'safe', settle_live_complete=not failed)
             raw = _canonical(disposition)

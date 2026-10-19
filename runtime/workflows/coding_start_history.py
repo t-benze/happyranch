@@ -374,7 +374,9 @@ def read_queued(conn: sqlite3.Connection, org: str, budget: _Budget, mappings: A
             _check(same(actual, expected_pins[table]))
         from runtime.workflows.coding_native_history import read_native
         native = read_native(conn, org, budget, storage, start=event, events=selected[1:],
-            tasks=after_tasks, source=source, roles=roles, authority=evidence['authority'])
+            tasks=after_tasks, source=source, roles=roles, authority=evidence['authority'],
+            command_value=command, mapping=mapping, source_invocation=entry,
+            source_ancestors=[decode_row(r) for r in native_source['ancestors']])
         _check(same(native['run'], actual_run) and same(native['attempt'], actual_attempt))
         after_tasks = native['tasks']
         run, attempt = actual_run, actual_attempt

@@ -31,7 +31,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 from pydantic import ValidationError
 
@@ -1443,6 +1443,7 @@ class Database(
         verdict: str | None = None, local_ci_json: str | None = None,
         recovery_deadline_monotonic: float | None = None,
         v2_admission: dict | None = None,
+        coding_admission: Any = None,
     ) -> bool:
         """Atomically admit, persist, and ledger-accept one completion callback.
 
@@ -1469,7 +1470,7 @@ class Database(
                                risks_flagged=risks_flagged, output_dir=output_dir, decision_json=decision_json,
                                waiting_on_job_ids=waiting_on_job_ids, verdict=verdict, local_ci_json=local_ci_json)
                 if coding is None or v2_admission is not None or not coding.callback_uncommitted(
-                        task_id=task_id, agent=agent, session_id=session_id, payload=payload):
+                        task_id=task_id, agent=agent, session_id=session_id, payload=payload, capture=coding_admission):
                     self._conn.rollback()
                     return False
                 from runtime.infrastructure.workflow_schema import validate_workflow_schema

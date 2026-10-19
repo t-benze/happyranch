@@ -586,37 +586,32 @@ class TaskInvocation:
             record_started(self)
             self.phase("running", started_at=now())
 
-    def close(self) -> None:
-        with self.store.db._lock:
-            row = self.store.row_uncommitted(self.store.root_uncommitted(self.task.id)["id"])
-            unknown = self._entry(row)["context"].get("execution_unknown", False)
+    def close(self) -> dict:
+        # Read sticky uncertainty and commit its disposition under the SAME
+        # native writer. A later read/removal gap cannot erase new uncertainty.
+        with self.store.writer(self.task.id) as (_, row):
+            entry = self._entry(row)
             reservation = self.move_reservation
             move_unknown = reservation is not None and (reservation.cleanup_failed
                 or (reservation.possible_launch and not reservation.quiescent))
-            unknown |= move_unknown
-        if self.unsettled or unknown:
-            with self.store.writer(self.task.id) as (_, row):
-                entry = self._entry(row)
+            unknown = entry["context"].get("execution_unknown", False) or entry["phase"] == "unknown" or move_unknown
+            if self.unsettled or unknown:
                 if move_unknown:
-                    # Preserve failed callback/abandon cleanup in the existing
-                    # durable unknown-tree journal; restart cannot erase it.
                     entry["context"]["execution_unknown"] = True
                 entry["phase"] = "unknown"
                 entry["started_at"] = entry["captured_generation"] = None
                 task = self.orch._db.get_task(self.task.id)
-                # A finished direct producer may have genuinely settled its
-                # callback/decision. Its unknown descendant tree remains a
-                # drain blocker, but does not impersonate a live step owner.
                 if (not self.unsettled and unknown and task is not None
                         and (task.status != TaskStatus.IN_PROGRESS or task.block_kind is not None
                              or task.current_session_id != self.session_id)):
                     entry["context"]["producer_settled"] = True
-                self.store.save_journal_uncommitted(row)
-            return
-        with self.store.writer(self.task.id) as (_, row):
-            if row is not None:
+                removed = False
+            else:
                 row["journal"]["entries"] = [e for e in row["journal"]["entries"] if e["id"] != self.identity]
-                self.store.save_journal_uncommitted(row)
+                removed = True
+            final = deepcopy(entry)
+            self.store.save_journal_uncommitted(row)
+        return dict(removed=removed, invocation=final)
 
 
 def assert_origin_unheld(org: Any, task_id: str) -> None:
@@ -806,6 +801,7 @@ def settle_live(invocation: TaskInvocation, *, failed: bool = False, cleanup: An
     original_error = sys.exception()
     reservation = invocation.move_reservation
     native_entry = None
+    close_disposition = None
     if failed and reservation is not None:
         reservation.failed_cleanup()
     try:
@@ -843,7 +839,8 @@ def settle_live(invocation: TaskInvocation, *, failed: bool = False, cleanup: An
         # existing redelivery owner. Failure must first become durable unknown.
         if (failed or (reservation is not None and reservation.cleanup_failed)
                 or phase not in {"retry_deferred", "recovery_deferred"}):
-            invocation.close()
+            close_disposition = invocation.close()
+            native_entry = close_disposition["invocation"]
     except BaseException as exc:
         failed = True
         if reservation is not None:
@@ -858,10 +855,40 @@ def settle_live(invocation: TaskInvocation, *, failed: bool = False, cleanup: An
             "task %s session %s owner %s Pause tail settlement failed; original error preserved",
             invocation.task.id, invocation.session_id, invocation.identity)
     finally:
-        invocation.orch._team_moves.release_task(invocation, failed=failed)
-        coding = getattr(invocation.orch, "_workflow_coding_dispatch", None)
-        if coding is not None:
-            coding.outer_settled(invocation, failed=failed, cleanup=cleanup, native_entry=native_entry)
+        tail_error = sys.exception() or original_error
+        release_disposition = None
+        try:
+            # Observe the actual final release, under its native ownership.
+            # Absence alone is insufficient: close must also have committed
+            # the positive removal of this exact original native owner.
+            with invocation.store.db._lock:
+                owned = (reservation is not None and
+                    invocation.orch._team_moves._reservations.get(reservation.owner_id) is reservation)
+                invocation.orch._team_moves.release_task(invocation, failed=failed)
+                if reservation is not None:
+                    release_disposition = dict(owner_id=reservation.owner_id, task_id=reservation.task_id,
+                        agent=reservation.identity.agent_id, session_id=reservation.session_id,
+                        owner_live=reservation.owner_live, cleanup_failed=reservation.cleanup_failed,
+                        possible_launch=reservation.possible_launch, quiescent=reservation.quiescent,
+                        removed=owned and invocation.orch._team_moves._reservations.get(reservation.owner_id) is None)
+        except BaseException as exc:
+            failed = True
+            if tail_error is None:
+                raise
+            tail_error.add_note(f"Move tail release failed for {invocation.identity}: {exc!r}")
+            logging.getLogger(__name__).exception("move tail release failed; original error preserved")
+        finally:
+            active_error = sys.exception() or tail_error
+            coding = getattr(invocation.orch, "_workflow_coding_dispatch", None)
+            if coding is not None:
+                try:
+                    coding.outer_settled(invocation, failed=failed, cleanup=cleanup, native_entry=native_entry,
+                        close_disposition=close_disposition, release_disposition=release_disposition)
+                except BaseException as exc:
+                    if active_error is None:
+                        raise
+                    active_error.add_note(f"Coding tail observation failed for {invocation.identity}: {exc!r}")
+                    logging.getLogger(__name__).exception("coding tail observation failed; original error preserved")
 
 
 def pause_deferred_owner(db: Any, task_id: str) -> bool:
