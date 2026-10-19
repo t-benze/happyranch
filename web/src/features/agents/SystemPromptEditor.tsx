@@ -138,7 +138,7 @@ export function SystemPromptEditor({ slug, agentName, agent, loading, failed, em
         className="text-text-secondary flex items-center gap-2 text-xs font-medium">
         {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}{t('agents.field.systemPrompt')}
       </button>
-      {!base && <Button ref={editButton} size="sm" variant="ghost" disabled={!available || pending} onClick={beginEdit}>
+      {!base && <Button ref={editButton} size="sm" disabled={!available || pending} onClick={beginEdit}>
         {t('agents.prompt.edit')}
       </Button>}
     </div>
