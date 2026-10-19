@@ -134,7 +134,7 @@ def _admission(conn: Any, org: str, budget: Any, value: Any, *, callback: bool,
     pin = authority['pin']
     expected_record = dict(id=authority['admission_record_id'], namespace=pin['namespace'],
         generation=pin['generation'], request_digest=_hash(grant), admitted_by='service:coding-dispatcher:' + org)
-    _check(value['record'] == expected_record)
+    _check(same(value['record'], expected_record))
     _capture_admission(conn, expected_record, authority, budget)
     storage.add('workflow_admission_records', expected_record)
     snapshot = _json(base64.b64decode(authority['snapshot_bytes_base64'], validate=True), 1048576)
@@ -174,7 +174,8 @@ def _admission(conn: Any, org: str, budget: Any, value: Any, *, callback: bool,
     for task in closure.values():
         for key in ('parent_task_id', 'revisit_of_task_id'):
             _check(task[key] is None or task[key] in closure)
-    pause = decode_row(value['pause'])
+    pause = _closed(decode_row(value['pause']), 'root_task_id schema_version held generation paused_at resumed_at updated_at actor release_pending_generation admission_journal_json')
+    _check(type(pause['schema_version']) is int)
     _check(pause['root_task_id'] == source['root_ancestor_id'] and pause['schema_version'] == 1)
     _integer(pause['generation']); _integer(pause['held'])
     _check(pause['held'] in (0, 1) and pause['held'] == pause['generation'] % 2
@@ -537,7 +538,7 @@ def read_native(conn: Any, org: str, budget: Any, storage: Any, *, start: dict,
                     and all(disposition[name] is True for name in ('tracker_clear', 'reconciliation_complete',
                         'task_tail_complete', 'root_worktree_batch_complete', 'settle_live_complete'))
                     and not facts['execution_unknown'] and facts['settlement_error'] is None
-                    and native['phase'] != 'unknown' and not native['context'].get('execution_unknown')
+                    and native['phase'] == 'result_processing' and not native['context'].get('execution_unknown')
                     and close is not None and close['removed'] is True
                     and release is not None and release['removed'] is True
                     and not release['owner_live'] and not release['cleanup_failed']
@@ -597,7 +598,7 @@ def read_native(conn: Any, org: str, budget: Any, storage: Any, *, start: dict,
     _check(state['claim'] is None or state['host'] is not None)
     tasks, pending = fold_heartbeats(conn, org, budget, storage, tasks, anchors)
     state.update(run=run, attempt=attempt, tasks=tasks, anchors=anchors, pending_observations=pending,
-                 queue_owner=storage.heartbeat_owners.get(leaf))
+                 queue_owner=storage.heartbeat_owners.get(leaf), source_invocation=source_invocation)
     return state
 
 
@@ -620,7 +621,11 @@ def validate_native_journals(conn: Any, org: str, budget: Any, storage: Any) -> 
             state = entry['native']
             source_id = entry['source']['result_claim']['owner_invocation_id']
             original = [n for n in journal['entries'] if n['id'] == source_id]
-            if original and (original[0]['phase'] == 'unknown' or original[0]['context'].get('execution_unknown')):
+            if original:
+                for key in ('id', 'org', 'root_task_id', 'task_id', 'agent', 'session_id', 'owner', 'owner_identity', 'fingerprint', 'generation'):
+                    _check(original[0][key] == state['source_invocation'][key])
+                # A positive owned close removed this exact entry. Any retained
+                # owner contradicts it; unknown must never be hidden by safe J.
                 _check(not state['source_settled'])
         coding = [entry for entry in journal['entries'] if entry['owner'] == 'coding']
         if not coding:
@@ -657,8 +662,7 @@ def validate_native_journals(conn: Any, org: str, budget: Any, storage: Any) -> 
                 _check(native['id'] == claim['invocation_id'] and native['session_id'] == attempt['session_id']
                        and native['fingerprint'] == claim['task_fingerprint']
                        and native['generation'] == claim['pause_generation'])
-                if native['task_id'] in uncertain:
-                    _check(not (state['cleanup_recorded'] and state['cleanup']))
+                _check(not (state['cleanup_recorded'] and state['cleanup']))
         storage.add('task_pause_controls', row)
     for entry in storage.runs.values():
         state = entry['native']

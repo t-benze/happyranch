@@ -670,7 +670,7 @@ class CodingDispatcher:
             safe = (not failed and cleanup is not None and cleanup.kind == 'safe'
                     and not cleanup.processes and not invocation.unsettled
                     and native_entry is not None and not native_entry['context'].get('execution_unknown')
-                    and native_entry['phase'] != 'unknown'
+                    and native_entry['phase'] == 'result_processing'
                     and close_disposition is not None and close_disposition['removed'] is True
                     and release_disposition is not None and release_disposition['removed'] is True
                     and release_disposition['owner_id'] == invocation.identity
