@@ -59,7 +59,7 @@ def read_admission(conn: Any, org: str, budget: Any, storage: Any, value: Any, *
     from runtime.workflows.coding_start_records import effective_mapping
 
     value = _closed(value, 'format authority record manager_teams tasks pause capacity '
-                    'max_revise_rounds effective_bindings_base64')
+                    'max_revise_rounds effective_bindings_base64 bindings move')
     _check(value['format'] == 'workflow-coding-control-admission@1')
     grant, _ = _capture(value['authority'], org, _Ancestry())
     _check(grant == _canonical(command))
@@ -83,7 +83,10 @@ def read_admission(conn: Any, org: str, budget: Any, storage: Any, value: Any, *
         row = _row(encoded)
         _check(row['id'] not in closure)
         closure[row['id']] = row
-    _check(set(closure) == set(tasks) | {r['id'] for r in ancestors})
+    _check((set(tasks) | {r['id'] for r in ancestors}) <= set(closure))
+    for row in closure.values():
+        budget.step()
+        _check(all(row[name] is None or row[name] in closure for name in ('parent_task_id', 'revisit_of_task_id')))
     for key, task in tasks.items():
         _check(same(task, closure[key]) and task['cancelled_at'] is None and task['zombie_flagged_at'] is None)
     for row in ancestors:
@@ -120,6 +123,45 @@ def read_admission(conn: Any, org: str, budget: Any, storage: Any, value: Any, *
            and tasks[source['task_id']]['orchestration_step_count'] == limits['source_step']
            and tasks[source['task_id']]['revision_count'] == limits['source_revision']
            and (not limits['max_revise_rounds'] or limits['source_revision'] < limits['max_revise_rounds']))
+    _check(type(value['bindings']) is list and len(value['bindings']) <= 512)
+    if value['move'] is not None:
+        from runtime.infrastructure.team_move_store import MoveRequest, _decode
+        from runtime.workflows.coding_start_history import rows
+        move = decode_row(value['move'])
+        request = _decode(MoveRequest, move['request_bytes'])
+        actual = list(rows(conn, 'team_move_operations', budget, where='operation_id=?',
+                           args=(move['operation_id'],), maximum=1))
+        _check(len(actual) == 1 and actual[0]['request_bytes'] == move['request_bytes']
+               and actual[0]['request_digest'] == move['request_digest'] == _hash(move['request_bytes'])
+               and request.org_slug == org and move['active_slot'] == 1)
+        affected = set(request.affected_agents)
+
+        def referenced(item: Any) -> bool:
+            budget.step()
+            if type(item) is dict:
+                return (any(item.get(k) in affected for k in ('agent', 'manager_agent', 'principal')
+                            if type(item.get(k)) is str) or item.get('team') == request.source_team
+                        or any(referenced(v) for v in item.values()))
+            return type(item) is list and any(referenced(v) for v in item)
+
+        _check(not referenced(roles))
+        for task in closure.values():
+            budget.step()
+            _check(task['team'] != request.source_team and task['assigned_agent'] not in affected)
+            if task['assigned_agent'] is None and task['status'] not in ('completed', 'failed', 'cancelled', 'superseded'):
+                team = next(t for t in snapshot['teams'] if t['name'] == task['team'])
+                manager = team['manager']
+                _check((manager if type(manager) is str else manager['principal']) not in affected)
+            for name in ('active_chain', 'active_fanout'):
+                if task[name] is not None:
+                    _check(not referenced(_json(task[name].encode('utf8'), 1048576)))
+        for bound in value['bindings']:
+            budget.step()
+            _closed(bound, 'instance_id binding')
+            binding = decode_row(bound['binding'])
+            _check(_hash(binding['binding_bytes']) == binding['binding_digest'])
+            payload = _json(binding['binding_bytes'], 1048576)
+            _check(not referenced(roles if bound['instance_id'] == instance else payload))
     return value['authority']
 
 

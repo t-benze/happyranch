@@ -82,6 +82,34 @@ class CodingControlQueue:
             task = found[0]
             tasks[task['id']] = task
         _check(task['id'] == entry['source']['root_ancestor_id'])
+        # Capture the same complete causal move closure the native owner
+        # checks, including retained siblings/revisits and linked bindings.
+        pending = list(tasks)
+        while pending:
+            key = pending.pop()
+            selected = list(rows(conn, 'tasks', budget, where='id=?', args=(key,), maximum=1))
+            _check(len(selected) == 1 and len(tasks) <= 512)
+            selected_task = selected[0]
+            for related in rows(conn, 'tasks', budget,
+                    where='parent_task_id=? OR revisit_of_task_id=?', args=(key, key), maximum=512):
+                if related['id'] not in tasks:
+                    tasks[related['id']] = related
+                    pending.append(related['id'])
+            for parent in (selected_task['parent_task_id'], selected_task['revisit_of_task_id']):
+                if parent is not None and parent not in tasks:
+                    found = list(rows(conn, 'tasks', budget, where='id=?', args=(parent,), maximum=1))
+                    _check(len(found) == 1)
+                    tasks[parent] = found[0]
+                    pending.append(parent)
+        bindings = []
+        for related in rows(conn, 'workflow_instances', budget):
+            linked = related['root_task_id'] in tasks or any(r['task_id'] in tasks for r in rows(
+                conn, 'workflow_instance_tasks', budget, where='instance_id=?', args=(related['id'],)))
+            if linked:
+                bound = list(rows(conn, 'workflow_binding_snapshots', budget, where='id=?',
+                    args=(related['binding_snapshot_id'],), maximum=1))
+                _check(len(bound) == 1)
+                bindings.append(dict(instance_id=related['id'], binding=encode_row(bound[0])))
         limits, source = entry['source']['budgets'], entry['tasks'][entry['source']['task_id']]
         _check(source['orchestration_step_count'] == limits['source_step']
                and source['revision_count'] == limits['source_revision']
@@ -97,7 +125,8 @@ class CodingControlQueue:
             args=(entry['source']['root_ancestor_id'],), maximum=1))
         value = dict(format='workflow-coding-control-admission@1', authority=current, record=record,
             manager_teams=list(self.org.teams.teams_for_manager(entry['source']['principal'])),
-            tasks=[encode_row(r) for _, r in sorted(tasks.items())], pause=encode_row(pause),
+            tasks=[encode_row(r) for _, r in sorted(tasks.items())], pause=encode_row(pause), bindings=bindings,
+            move=None if (move := self.org.orchestrator._team_moves.active_uncommitted()) is None else encode_row(move),
             capacity=dict(sessions=[list(s) for s in sessions], tasks=[encode_row(r) for r in rows(conn, 'tasks', budget,
                 where="assigned_agent=? AND status='in_progress' AND block_kind IS NULL AND cancelled_at IS NULL AND current_session_id IS NOT NULL",
                 args=(manager,))], work_hours=[encode_row(r) for r in rows(conn, 'work_hours', budget,
