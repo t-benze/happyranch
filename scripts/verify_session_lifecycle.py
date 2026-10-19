@@ -839,7 +839,8 @@ class BackendObserver:
 
 
 def run_case(v, case, api, fault=None):
-    from runtime.orchestrator.executors import CustomAdapterExecutor, _run_command
+    from runtime.orchestrator.executors import CustomAdapterExecutor, ExecutorResult, _run_command
+    from runtime.orchestrator.host_supervisor import LaunchResult, TerminalReason
     v.begin_case(case, fault)
     backend = api.backend()
     observer = BackendObserver(v, backend, case)
@@ -1208,8 +1209,20 @@ def run_case(v, case, api, fault=None):
                     require(outcome.terminal_reason.value == "cancelled", "cancel winner lost")
                     require(any(s["signal"] == signal.SIGKILL for s in observer.signal_attempts), "KILL escalation missing")
                 if case == "C2-timeout-pipe":
-                    require(outcome.terminal_reason.value == "timeout" and outcome.payload.failure_category == "provider_timeout",
+                    require(outcome.terminal_reason is TerminalReason.TIMEOUT,
+                            "real pipe-holder terminal timeout lost")
+                    launch_result = outcome.payload
+                    require(isinstance(launch_result, LaunchResult), "timeout outcome lacks LaunchResult")
+                    require(launch_result.timed_out is True and launch_result.success is False,
+                            "timeout LaunchResult flags lost")
+                    executor_result = launch_result.payload
+                    require(isinstance(executor_result, ExecutorResult), "timeout LaunchResult lacks ExecutorResult")
+                    require(executor_result.failure_category == "provider_timeout" and executor_result.success is False,
                             "real pipe-holder communicate timeout lost")
+                    record["timeout_result"] = {
+                        "timed_out": launch_result.timed_out, "launch_success": launch_result.success,
+                        "failure_category": executor_result.failure_category, "executor_success": executor_result.success,
+                    }
                 if case == "C3-root-gone":
                     require(any(e["kind"] == "finish_enter" and e["root_returncode"] is not None for e in evidence),
                             "root was not already waited before finish")

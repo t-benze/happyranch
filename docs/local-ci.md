@@ -96,9 +96,12 @@ descendants holding stdout, then starts the real2s
 communicator timeout; existing5s drain,5s TERM/2s KILL and up to2s sampler stop
 fit the original20s action allowance. Exit observation supplies no reap proof:
 production communication/backend owns the direct wait. F independently requires
-root disappearance and wait/terminal/release ordering before acceptance. Rescue
-joins actual production workers before any fixture waits, within the original
-cleanup bound. Setup/assertion failure retains observed identities, actual
+root disappearance and wait/terminal/release ordering before acceptance. C2 also
+requires terminal TIMEOUT, a typed LaunchResult with timed_out true and success
+false, and its typed ExecutorResult payload with failure_category provider_timeout
+and success false, retained in timeout_result. Rescue joins actual production
+workers before any fixture waits, within the original cleanup bound.
+Setup/assertion failure retains observed identities, actual
 outcome or explicit absence and terminal events before rescue, plus separately
 labeled actual final settlement/outcome; rescue never supplies case PASS.
 Supported jobs accept explicit runtime caps up to86400s; the containing
