@@ -603,25 +603,46 @@ def compute_pending_review_jobs(db: Database) -> list[PendingReviewJobRow]:
     ]
 
 
-def _acceptance_pct_for_window(
-    db: Database, *, team: str, start: datetime, end: datetime,
-) -> tuple[int, int]:
-    """Return (approved_count, total_count) of review_verdict rows in window
-    where the reviewed task belonged to `team`."""
+def _review_verdicts_since(
+    db: Database, *, start: datetime, end: datetime,
+) -> list[tuple[str, str, bool]]:
+    """One audit_log scan for every pulse window: (team, timestamp, approved).
+
+    audit_log has no action index, so each query scans the whole table; the
+    pulse previously issued 14 such queries per team every refresh.
+    """
     rows = db.fetch_all_readonly(
-        "SELECT a.payload FROM audit_log a "
+        "SELECT t.team AS team, a.timestamp AS timestamp, a.payload AS payload "
+        "FROM audit_log a "
         "JOIN tasks t ON t.id = a.task_id "
         "WHERE a.action = 'review_verdict' "
-        "  AND t.team = ? "
         "  AND a.timestamp >= ? AND a.timestamp < ?",
-        (team, start.isoformat(), end.isoformat()),
+        (start.isoformat(), end.isoformat()),
     )
-    approved = 0
-    total = len(rows)
+    out: list[tuple[str, str, bool]] = []
     for r in rows:
         payload = json.loads(r["payload"] or "{}")
-        if normalize_review_verdict(payload.get("verdict")) == "approve":
-            approved += 1
+        approved = normalize_review_verdict(payload.get("verdict")) == "approve"
+        out.append((r["team"], r["timestamp"], approved))
+    return out
+
+
+def _acceptance_pct_for_window(
+    verdicts: list[tuple[str, str, bool]], *, team: str, start: datetime, end: datetime,
+) -> tuple[int, int]:
+    """Return (approved_count, total_count) of review_verdict rows in window
+    where the reviewed task belonged to `team`.
+
+    Same half-open string comparison on ISO timestamps as the SQL it replaces.
+    """
+    lo, hi = start.isoformat(), end.isoformat()
+    approved = 0
+    total = 0
+    for row_team, timestamp, is_approved in verdicts:
+        if row_team == team and lo <= timestamp < hi:
+            total += 1
+            if is_approved:
+                approved += 1
     return approved, total
 
 
@@ -633,17 +654,19 @@ def compute_org_pulse_7d(db: Database, *, now: datetime, teams) -> list[TeamPuls
     """
     week_now_start = now - timedelta(days=7)
     week_prior_start = now - timedelta(days=14)
+    # Widest window is the 12-week sparkline; it covers the 7d/prior windows.
+    verdicts = _review_verdicts_since(db, start=now - timedelta(days=12 * 7), end=now)
 
     result: list[TeamPulse] = []
     for team_name in teams.teams():
         mgr = teams.manager_for_team(team_name)
         # Current 7d
         approved_now, total_now = _acceptance_pct_for_window(
-            db, team=team_name, start=week_now_start, end=now,
+            verdicts, team=team_name, start=week_now_start, end=now,
         )
         # Prior 7d (for trend delta)
         approved_prior, total_prior = _acceptance_pct_for_window(
-            db, team=team_name, start=week_prior_start, end=week_now_start,
+            verdicts, team=team_name, start=week_prior_start, end=week_now_start,
         )
         acceptance = int(round(100 * approved_now / total_now)) if total_now else 0
         prior_acc = int(round(100 * approved_prior / total_prior)) if total_prior else 0
@@ -655,7 +678,7 @@ def compute_org_pulse_7d(db: Database, *, now: datetime, teams) -> list[TeamPuls
             w_start = now - timedelta(days=i * 7)
             w_end = now - timedelta(days=(i - 1) * 7)
             approved, total = _acceptance_pct_for_window(
-                db, team=team_name, start=w_start, end=w_end,
+                verdicts, team=team_name, start=w_start, end=w_end,
             )
             sparkline.append(approved / total if total else 0.0)
 

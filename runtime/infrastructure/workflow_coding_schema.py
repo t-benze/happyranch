@@ -305,17 +305,24 @@ def validate_coding_data(conn: sqlite3.Connection, *, layout: str,
     # Own a coherent snapshot only when the caller has none. Central callers
     # have already recognized the complete schema; no recursive schema read.
     owned = not conn.in_transaction
+    # A snapshot we open ourselves holds no uncommitted rows of ours, so the
+    # audit rows it verified are committed; advance only after it ends.
+    advances: list[tuple[tuple[int, int], int]] | None = [] if owned else None
     if owned:
         conn.execute('BEGIN')
     try:
-        _validate_coding_data(conn, layout=layout, expected_org_slug=expected_org_slug)
+        _validate_coding_data(conn, layout=layout, expected_org_slug=expected_org_slug,
+                              advances=advances)
     finally:
         if owned:
             conn.rollback()
+    for file_key, last_id in advances or ():
+        _advance_audit_log_watermark(conn, file_key, last_id)
 
 
 def _validate_coding_data(conn: sqlite3.Connection, *, layout: str,
-                          expected_org_slug: str | None) -> None:
+                          expected_org_slug: str | None,
+                          advances: list[tuple[tuple[int, int], int]] | None = None) -> None:
     """Positive setup/import/mapping/queued closure; refuse unsupported coding families.
 
     No ID skip-list or trusted flag: each supported native row is compared in
@@ -481,7 +488,10 @@ def _validate_coding_data(conn: sqlite3.Connection, *, layout: str,
                                             budget=budget if bounded_coding else None)
             last_id = rowid
         if file_key is not None:
-            _advance_audit_log_watermark(conn, file_key, last_id)
+            if advances is not None:
+                advances.append((file_key, last_id))  # applied after the owned snapshot ends
+            else:
+                _advance_audit_log_watermark(conn, file_key, last_id)
 
 
 # audit_log is insert-only at runtime (AUTOINCREMENT id; only the one-time
