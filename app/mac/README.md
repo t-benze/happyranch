@@ -232,6 +232,35 @@ fix, successful build, app or launch acceptance follows from the diagnostic.
 Every root still requires the original ancestry, ownership, mode, no-follow and
 identity checks, including repeated equal process roots before admission deduplication.
 
+Native-tool selection, alias and snapshot refusals can additionally carry one
+best-effort `NATIVE_TOOL_CONTEXT ` exception note with compact ASCII JSON (at
+most 1024 bytes including the prefix). It names the literal tool role, operation
+(`selection`, `executable_alias` or `native_snapshot`), selected and terminal
+paths, and separate path truncation flags. Each path is null when unknown or at
+most 192 serialized ASCII characters including quotes; truncation keeps whole
+Unicode codepoints/escapes plus `...`. The terminal comes from the snapshot's
+actual resolution, then from the actual opened subject at a pre-read refusal.
+Earlier selection/alias/root/open failures leave unknown fields null.
+
+Only a refusal at the regular-file pre-read admission checks supplies
+`observation=opened_before_admission`, full octal `mode`, octal `type_bits`,
+file `type`, `uid` and `nlink`, taken from that operation's existing same-descriptor
+`fstat`. Before that observation, and for post-read instability, all descriptor
+fields remain null. There is no diagnostic stat, reopen, payload read, native
+command or changed tool selection. Formatting or note attachment failure can
+leave the note absent; the same original exception, nonzero exit and descriptor
+cleanup remain controlling. Existing `DIRECTORY_CONTEXT` notes are preserved.
+
+Native notes are stderr/traceback evidence only. `str(error)` and `Session.fail`
+do not persist notes in failure records, and successful records, schemas, roots
+and tokens carry no diagnostic context. Existing tee/build.log and allowlisted
+failure collectors can carry the note, but whole-file caps can omit logs: the
+wrapper collector permits 8 MiB per input/32 MiB total read and 2 MiB per stored
+file/8 MiB total stored. Actual hosted log/artifact propagation, runtime bounds,
+descriptor/race/negative behavior and final native consumers remain unverified.
+This diagnostic establishes no tool execution identity, successful build or app
+acceptance; existing vendor-consistent literal codesign/PATH selection remains.
+
 The shared freezer overrides inherited `PYINSTALLER_CONFIG_DIR` with a fresh,
 validated cache under this run's freeze work path before invoking build tools.
 PyInstaller `--clean` therefore stays within the invocation's allocations,
