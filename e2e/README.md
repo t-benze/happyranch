@@ -1040,7 +1040,7 @@ notification, production/schema/auth/permission change, deployment or Jenkins
 work is authorized. Root TASK10680 remains INCOMPLETE and alone owns renewed
 independent full review, scoped static QA, hold assessment and guarded merge.
 
-### Owned rendered task bodies (THR-291 / TASK-11919)
+### Owned rendered task bodies (THR-291 / TASK-11958)
 
 `Browser.rendered` is a shared test-side observer used by ordinary task and
 Pause readback. List checks bind the exact org/task row to its explicitly
@@ -1051,6 +1051,19 @@ recursive children, preorder and complete link inventory. The root summary
 remains required through its own Recall Outcome; detail has no separate
 Outcome section. Correct text in a sibling, descendant, other section or org
 cannot satisfy an own-body assertion.
+
+The observer requires one structural outer AppShell `main` (`main:not(main main)`).
+On the list, it additionally requires one TasksPage inner `main` directly under
+the shell's route-root div. Detail/Recall instead require the content column
+inside ContentWrap's two div wrappers. Native readiness and the actual extractor
+use these same owners; returned paths, visibility and expand/recollapse clicks
+all stay relative to the outer shell. List locators are rebound after navigation.
+Missing/duplicate owners or matching content only in shell chrome refuse.
+E07 terminal list reload binds the unique exact parent href and its own first
+direct status column's literal `cancelled` badge, never child severity rollup,
+another row or chrome. Its text comes from the route list alone. The seven
+original four-second operation caps, roots response/group and checkpoint18
+sequence remain unchanged.
 
 The finite body contract admits the audited plain paragraphs and the exact
 prior-worker context generated for Pause's reviewer. That context renders as
@@ -1086,15 +1099,22 @@ full/recollapsed snapshots. These controls establish structural sensitivity
 only. Additional AST-loaded actual-bridge controls with narrow Playwright
 doubles establish readiness/extraction order and remaining/deadline handling
 under simulation; they do not establish native auto-wait timing or visibility.
+Affected shell controls use realistic two-main lists, two-div detail/Recall
+wrappers and primary-status/title/lineage ownership. Scripted list/detail/Pause,
+cache and E07 caller controls establish wiring only, not native orchestration.
 Native Playwright bridging, React clicks, CSS visibility/layout/timing,
 built bundle, sanitizer/export/screenshots and full Product E2E sensitivity
 remain UNVERIFIED until actual evidence. Fixture transitions are not React
 interaction proof or protected deliberate-defect proof.
 
 Historical run39133417299 remains 33 PASS +1 partial/error +22 unreached EACH
-Python 3.12/3.14; its one manual allocation is consumed. No corrected daily or
+Python 3.12/3.14; its one manual allocation is consumed. Scheduled run39166770569
+at source29d743a2 remains 4 PASS +1 partial/failed E02 +51 unreached EACH: the
+earliest failure expected one page-wide main but observed two on the list.
+E07 and corrected Markdown success remain natively unreached/unverified.
+No historical result transfers to this repair. No corrected daily or
 overall test-authoring/product PASS follows. Protected12/repetitions remain
 UNEXECUTED/unauthorized; integration INCLUDING actual CLI callback is SKIPPED
 THR243seq42, and Python units remain RETIRED. Required automation stays
 lint/static only; independent full review, same-head scoped QA and manager
-guarded merge remain with ROOT TASK-11919. No second E2E execution is released.
+guarded merge remain with sole ROOT TASK-11958. No second E2E execution is released.
