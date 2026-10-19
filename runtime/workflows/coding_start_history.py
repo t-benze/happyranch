@@ -7,10 +7,14 @@ from __future__ import annotations
 
 import base64
 import json
+import sqlite3
+import struct
+from typing import Any, Iterator
 from dataclasses import dataclass, field
+from datetime import datetime
 
 from runtime.workflows._coding_role_records import RECORD_FORMAT, configuration
-from runtime.workflows.coding_authority_history import _bounded_rows, _decoded
+from runtime.workflows.coding_authority_history import _Budget, _bounded_rows, _capture_admission, _decoded
 from runtime.workflows.coding_bootstrap import (
     decode_row, encode_row, identity, initial_scope, journal_rows, pinned_rows, task_brief,
 )
@@ -18,7 +22,7 @@ from runtime.workflows.coding_saved_records import (
     _Ancestry, _canonical, _capture, _check, _closed, _hash, _integer, _json, _roles, _timestamp, _token,
 )
 from runtime.workflows.coding_source_history import (
-    _RESULT_COLUMNS, _RESULT_TYPES, _TASK_COLUMNS, _TASK_TYPES, _session_start, _task,
+    _RESULT_TYPES, _TASK_COLUMNS, _TASK_TYPES, _session_start, _task,
 )
 from runtime.workflows.coding_start_records import effective_mapping, parse_decision, parse_native_decision
 
@@ -29,10 +33,10 @@ PIN_TABLES = (
     'workflow_activations', 'workflow_active_activations', 'workflow_activation_operations',
     'workflow_admission_records',
 )
-J_TABLES = ('workflow_coding_runs', 'workflow_coding_attempts', 'workflow_coding_events')
 
 
-def rows(conn, table, budget, *, where='1', args=(), maximum=8192):
+def rows(conn: sqlite3.Connection, table: str, budget: _Budget, *,
+         where: str = '1', args: tuple = (), maximum: int = 8192) -> Iterator[dict]:
     columns = tuple(row[1] for row in conn.execute(f'PRAGMA table_xinfo("{table}")'))
     allowed = (_TASK_TYPES if table == 'tasks' else _RESULT_TYPES if table == 'task_results'
                else (('text', 'blob', 'integer', 'real', 'null'),) * len(columns))
@@ -42,7 +46,9 @@ def rows(conn, table, budget, *, where='1', args=(), maximum=8192):
         yield dict(zip(columns, row[:len(columns)], strict=True))
 
 
-def same(left, right):
+def same(left: Any, right: Any) -> bool:
+    if type(left) is float and type(right) is float:
+        return struct.pack('>d', left) == struct.pack('>d', right)
     return type(left) is type(right) and (
         left.keys() == right.keys() and all(same(left[k], right[k]) for k in left)
         if type(left) is dict else
@@ -50,7 +56,7 @@ def same(left, right):
         if type(left) is list else left == right)
 
 
-def claim_for(row, result_id):
+def claim_for(row: dict, result_id: int) -> dict:
     return dict(task_id=row['id'], assigned_agent=row['assigned_agent'], team=row['team'],
         current_session_id=row['current_session_id'], step=row['orchestration_step_count'],
         active_chain=row['active_chain'], active_fanout=row['active_fanout'], revision=row['revision_count'],
@@ -65,19 +71,19 @@ class QueuedStorage:
     owners: dict = field(default_factory=dict)
     callbacks: dict = field(default_factory=dict)
 
-    def add(self, table, row):
+    def add(self, table: str, row: dict) -> None:
         key = _canonical(encode_row(row))
         self.admitted.setdefault(table, set()).add(key)
 
-    def matches(self, table, row):
+    def matches(self, table: str, row: dict) -> bool:
         return _canonical(encode_row(row)) in self.admitted.get(table, ())
 
 
-def read_queued(conn, org, budget, mappings, imported):
+def read_queued(conn: sqlite3.Connection, org: str, budget: _Budget, mappings: Any, imported: Any) -> QueuedStorage:
     storage = QueuedStorage()
     # Native callbacks can exist before allocation. Authenticate each full row,
     # without consuming a claim or treating a command as permission.
-    for row in rows(conn, 'task_results', budget):
+    for row in rows(conn, 'task_results', budget, where='decision_json IS NOT NULL'):
         raw = row['decision_json']
         if raw is None:
             continue
@@ -99,7 +105,9 @@ def read_queued(conn, org, budget, mappings, imported):
         storage.add('task_results', row)
     if storage.callbacks:
         from runtime.orchestrator.orchestrator import completion_report_from_result_row
-        for audit in rows(conn, 'audit_log', budget, where="action='completion_report'"):
+        task_ids = tuple(sorted({r['task_id'] for r, _ in storage.callbacks.values()}))
+        selection = "action='completion_report' AND task_id IN (" + ','.join('?' for _ in task_ids) + ')'
+        for audit in rows(conn, 'audit_log', budget, where=selection, args=task_ids):
             if audit['payload'] is None:
                 continue
             try:
@@ -176,7 +184,7 @@ def read_queued(conn, org, budget, mappings, imported):
         _check(claim['action_fingerprint'] == _hash(callback['decision_json'].encode('utf8')))
         before = _closed(payload['before'], 'run attempts instances tasks rounds requests assignments')
         after = _closed(payload['after'], 'run attempts instances tasks rounds requests assignments')
-        _check(before['run'] is None and after['run'] == run)
+        _check(before['run'] is None and same(after['run'], run))
         for name in ('rounds', 'requests', 'assignments'):
             _check(before[name] == after[name] == [])
         _check(type(after['tasks']) is list and len(after['tasks']) == len(before['tasks']) == 3)
@@ -238,7 +246,31 @@ def read_queued(conn, org, budget, mappings, imported):
         _check(len(context_rows) == 1)
         frozen_context = decode_row(context_rows[0]['record'])
         context_value = _json(frozen_context['context_bytes'], 1048576)
-        native_source = _closed(context_value['native_source'], 'ancestors session_start invocation')
+        native_source = _closed(context_value['native_source'], 'ancestors session_start invocation checkpoints')
+        checkpoints = native_source['checkpoints']
+        _check(type(checkpoints) is list and 1 <= len(checkpoints) <= 5)
+        from runtime.workflows.coding_source_history import _timestamp as native_timestamp
+        baseline = None
+        for observed in checkpoints:
+            _closed(observed, 'source ancestors')
+            _check(type(observed['ancestors']) is list and len(observed['ancestors']) < 20)
+            records = [decode_row(observed['source']), *[decode_row(r) for r in observed['ancestors']]]
+            for record in records:
+                _check(set(record) == set(_TASK_COLUMNS))
+                native_timestamp(record['updated_at'])
+                native_timestamp(record['last_heartbeat'], nullable=True)
+            if baseline is not None:
+                _check(len(records) == len(baseline))
+                for old, new in zip(baseline, records, strict=True):
+                    # Pre-bootstrap native clocks are observations. Retain BOTH;
+                    # all other 25 fields must agree. No post-start overlay is
+                    # admitted without the later native writer/queue closure.
+                    for name in _TASK_COLUMNS:
+                        if name not in ('last_heartbeat', 'updated_at'):
+                            _check(same(old[name], new[name]))
+            baseline = records
+        _check(same(baseline[0], source_before)
+               and same(checkpoints[-1]['ancestors'], native_source['ancestors']))
         chain = [source_before]
         seen = {source['task_id']}
         _check(type(native_source['ancestors']) is list and len(native_source['ancestors']) < 20)
@@ -263,7 +295,9 @@ def read_queued(conn, org, budget, mappings, imported):
         _check(same(native_source['session_start'], actual_start))
         invocation = _closed(native_source['invocation'], 'id owner entry')
         _check(invocation['id'] == claim['owner_invocation_id'] and invocation['owner'] in ('ordinary', 'v2'))
+        from runtime.infrastructure.task_pause_controls import decode_journal
         entry = invocation['entry']
+        decode_journal(_canonical(dict(version=1, entries=[entry])).decode('utf8'))
         _check(entry['id'] == invocation['id'] and entry['owner'] == invocation['owner']
                and entry['task_id'] == source['task_id'] and entry['session_id'] == source['session_id']
                and entry['agent'] == source['principal'] and entry['phase'] == 'running'
@@ -286,6 +320,7 @@ def read_queued(conn, org, budget, mappings, imported):
             native_source=native_source, authority=evidence['authority'], mapping=mapping, roles=roles,
             template=template, carrier_id=carrier_id, instance_id=instance, created_at=payload['created_at'])
         _check(same(evidence['rows'], journal_rows(expected_pins)))
+        _capture_admission(conn, expected_pins['workflow_admission_records'][0], evidence['authority'], budget)
         scope = _canonical(initial_scope(org=org, instance=instance, attempt=attempt['id'], command=command,
                                         roles=roles, context=context))
         _check(same(attempt, dict(id=identity('attempt', instance, 1), instance_id=instance,
@@ -320,6 +355,14 @@ def read_queued(conn, org, budget, mappings, imported):
             ('workflow_draft_dispatch_intents', 'task_id', after_tasks),
             ('workflow_request_task_bridges', 'task_id', after_tasks),
             ('workflow_instance_tasks', 'instance_id', [instance]),
+            ('workflow_task_results', 'instance_id', [instance]),
+            ('workflow_current_assignments', 'instance_id', [instance]),
+            ('workflow_instance_contributors', 'instance_id', [instance]),
+            ('workflow_dispatch_operations', 'instance_id', [instance]),
+            ('workflow_operation_replays', 'instance_id', [instance]),
+            ('workflow_author_handoffs', 'instance_id', [instance]),
+            ('workflow_document_revision_operations', 'instance_id', [instance]),
+            ('workflow_dispatch_callbacks', 'task_id', after_tasks),
             ('workflow_submissions', 'instance_id', [instance]),
             ('workflow_rounds', 'instance_id', [instance]),
             ('workflow_events', 'instance_id', [instance]),
@@ -328,6 +371,9 @@ def read_queued(conn, org, budget, mappings, imported):
             for key in keys:
                 budget.step()
                 _check(conn.execute(f'SELECT 1 FROM {table} WHERE {column}=? LIMIT 1', (key,)).fetchone() is None)
+        for child in rows(conn, 'tasks', budget, where='parent_task_id=?', args=(source['task_id'],)):
+            _check(child['id'] == carrier_id or (child['status'] in ('completed', 'failed', 'cancelled', 'superseded')
+                and datetime.fromisoformat(child['created_at']) <= datetime.fromisoformat(payload['created_at'].replace('Z', '+00:00'))))
         _check([r['id'] for r in rows(conn, 'tasks', budget, where='parent_task_id=?',
                                     args=(carrier_id,), maximum=2)] == [leaf['id']])
         for table, row in (('workflow_coding_runs', run), ('workflow_coding_attempts', attempt), ('workflow_coding_events', event)):

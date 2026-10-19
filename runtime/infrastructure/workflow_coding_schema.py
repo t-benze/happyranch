@@ -1,7 +1,7 @@
 """Exact additive J definitions and closed per-family coding admission.
 
 K2b/K2c admit complete historical setup/import/mapping/source and agent-read
-role-default histories on unchanged J, including metadata-only schema reads.
+role-default histories and K3a queued starts on unchanged J, including metadata-only schema reads.
 Each later producer must ship its own complete readers. No schema installation,
 repository resolution or current authority is provided by this module.
 """
@@ -315,7 +315,7 @@ def validate_coding_data(conn: sqlite3.Connection, *, layout: str,
 
 def _validate_coding_data(conn: sqlite3.Connection, *, layout: str,
                           expected_org_slug: str | None) -> None:
-    """Positive setup/import/mapping closure; refuse unsupported coding families.
+    """Positive setup/import/mapping/queued closure; refuse unsupported coding families.
 
     No ID skip-list or trusted flag: each supported native row is compared in
     full, with native storage types, against the complete independently parsed
@@ -357,6 +357,7 @@ def _validate_coding_data(conn: sqlite3.Connection, *, layout: str,
             raise ValueError('workflow_coding_mapping_release_missing')
         from runtime.workflows.coding_start_history import read_queued
         queued = read_queued(conn, expected_org_slug, budget, mappings, imported)
+    bounded_coding = mappings is not None or bool(queued and (queued.runs or queued.callbacks))
     for table in CODING_TABLES:
         if table not in tables:
             if layout == 'J':
@@ -392,10 +393,10 @@ def _validate_coding_data(conn: sqlite3.Connection, *, layout: str,
         if not selected_columns:
             continue
         selected = ','.join('"' + column.replace('"', '""') + '"' for column in selected_columns)
-        file_key = _audit_log_file_key(conn) if table == 'audit_log' and mappings is None else None
+        file_key = _audit_log_file_key(conn) if table == 'audit_log' and not bounded_coding else None
         watermark = _audit_log_watermark(conn, file_key)
         last_id = watermark
-        if mappings is not None:
+        if bounded_coding:
             # Every selected cell, including ordinary audit scalars/payloads,
             # receives fresh type/per-value/remaining-byte gates before fetch.
             # The mapping path never trusts an audit watermark. Ordinary
@@ -438,7 +439,7 @@ def _validate_coding_data(conn: sqlite3.Connection, *, layout: str,
                 if table == 'workflow_coding_mappings':
                     raise ValueError('workflow_coding_mapping_row_mismatch')
             if imported is not None and native_import:
-                if mappings is not None:
+                if bounded_coding:
                     # Fixed six-row import comparison is also charged here.
                     for _, expected in imported.rows:
                         for _ in expected:
@@ -450,7 +451,7 @@ def _validate_coding_data(conn: sqlite3.Connection, *, layout: str,
                 # never an exemption based solely on namespace, ID or digest.
                 if table == 'workflow_authorization_revisions':
                     for entry in storage.issuances:
-                        if mappings is not None:
+                        if bounded_coding:
                             budget.step()
                         expected = dict(id=entry.authorization_id, namespace=entry.namespace,
                             revision=entry.revision, authority_bytes=entry.authority_bytes,
@@ -469,14 +470,14 @@ def _validate_coding_data(conn: sqlite3.Connection, *, layout: str,
                         and (data['namespace'], data['authorization_revision_id']) in storage.pointers):
                     continue
             for column, raw in zip(selected_columns, row, strict=True):
-                if mappings is not None:
+                if bounded_coding:
                     budget.step()  # scalar classification or one metadata decode
                 if column in scalar:
                     if _coding_scalar(column, raw):
                         raise ValueError(f'workflow_coding_data_unsupported: {table}.{column}; coding reader required')
                 else:
                     _refuse_coding_metadata(raw, location=f'{table}.{column}',
-                                            budget=budget if mappings is not None else None)
+                                            budget=budget if bounded_coding else None)
             last_id = rowid
         if file_key is not None:
             _advance_audit_log_watermark(conn, file_key, last_id)

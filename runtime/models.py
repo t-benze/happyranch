@@ -6,7 +6,7 @@ import re
 from datetime import datetime, timezone
 from enum import StrEnum
 
-from typing import Annotated, Literal, Mapping
+from typing import Annotated, Any, Literal, Mapping
 
 from pydantic import BaseModel, Field, StrictBool, StrictInt, StrictStr, field_validator, model_serializer, model_validator
 
@@ -287,12 +287,13 @@ class NextStep(BaseModel):
         if isinstance(value, dict) and value.get("action") == "workflow_start":
             from runtime.workflows.coding_start_records import CodingStartDecision
             return CodingStartDecision.model_validate(value).model_dump()
-        if isinstance(value, dict) and value.get("workflow") is not None:
-            raise ValueError("workflow is reserved for workflow_start")
+        if isinstance(value, dict) and "workflow" in value:
+            # Before this variant, workflow was an ignored legacy extra.
+            value = {key: item for key, item in value.items() if key != "workflow"}
         return value
 
     @model_serializer(mode="wrap")
-    def _closed_workflow_wire(self, handler):
+    def _closed_workflow_wire(self, handler: Any) -> dict:
         if self.action == "workflow_start":
             return {"action": self.action, "workflow": self.workflow}
         result = handler(self)

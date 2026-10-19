@@ -106,6 +106,20 @@ callbacks remain unsigned; do not claim a receipt, joined approval or another
 principal's signature. Report unavailable dependencies honestly. In every lane,
 retain this skill's FINAL report-completion action and current session binding.
 
+## Disabled coding-start composition (ROOT10693 / K3a)
+
+Only an independently authorized current decision-owning agent manager may
+compose the closed `{action:workflow_start,workflow:workflow-coding-start@1}`
+decision for its OWN genuine final callback. `happyranch workflows coding
+run-start --from-file ABS --emit-decision` validates canonical pins/work and
+prints that decision only; it allocates nothing. Preserve the original key/file.
+The actual result owner refuses unavailable downstream coding readiness before
+claim consumption/allocation; K3a remains disabled. A descriptor, mapping or
+printed decision supplies no repository access, execution, approval or merge
+permission. Queued carriers/attempts have no launcher or execution supplement in
+this slice; do not substitute legacy delegate/chain/F5 or invent a callback.
+The skill's final report-completion and exact current-session binding still apply.
+
 ## Steps
 
 Each attachment storage_key can be claimed by one task only, including within

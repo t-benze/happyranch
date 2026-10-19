@@ -1,4 +1,4 @@
-"""Unchanged task verdict, carrier and authenticated terminal-report readers.
+"""Task verdict, carrier and authenticated terminal-report readers.
 
 Shipping consumers and their patched globals remain in run_step.
 """
@@ -93,5 +93,11 @@ def _child_landed_terminal_report(orch: "Orchestrator", child: "TaskRecord"):
         child.id, child.assigned_agent, child.current_session_id,
     )
     if report is None or report.status != "completed":
+        return None
+    if report.decision is not None and report.decision.action == 'workflow_start':
+        # This genuine callback requests a coding start; it does not finish the
+        # source task, including while readiness refuses allocation. Its own
+        # waiting/closeout owner alone may release the source. Parent/Pause/
+        # summary readers must not mistake the transport result for terminality.
         return None
     return report

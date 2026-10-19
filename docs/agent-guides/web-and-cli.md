@@ -1,5 +1,94 @@
 # Web And CLI
 
+<!-- K3a result-owned queued bootstrap: TASK12003 / ROOT10693 step87 -->
+## Result-owned coding start and queued ownership (K3a)
+
+The new closed manager decision is exactly `{action:workflow_start,workflow:COMMAND}`.
+`COMMAND` is canonical `workflow-coding-start@1` with exactly
+`format,operation_key,release,mapping,work,implementer_override`; release and mapping
+are the existing exact pins. Work is exactly `brief,repository_id,object_format,base,paths`:
+nonempty brief at most16384 UTF8 bytes, full lowercase SHA1/SHA256 base, and1..64
+validated relative selectors. There is no developer head before genuine output.
+`happyranch workflows coding run-start --from-file ABS --emit-decision` validates
+and prints only this decision for the initiating manager's own final callback.
+It contacts no daemon and allocates nothing. No fresh HTTP allocation route exists.
+
+The actual callback and result-action entries select this family before v2
+spend/claim or ordinary decision effects. Fresh callback admission refuses before
+persisting an unsupported start result, including on legacy I. Its production owner refuses
+`coding_downstream_unavailable` before claim consumption or allocation. Readiness
+is always false in K3a; there is no caller/config readiness Boolean. Behind that
+boundary, the real single admission transaction validates the manager's own full
+INTEGER callback, actual ordinary-purpose TaskInvocation/SID and complete RetryClaim,
+current policy/Pause/move/ancestry, imported release, pinned role generation,
+implementer-only override, four current independent eligible principals, existing
+repository scopes, capacity and lower source limits. Existing v2 uncommitted
+spend/claim/ack methods keep their native evidence and CAS semantics inside that
+same graph transaction. A still-active historical v1 continuation envelope
+refuses as unavailable; its self-committing spender is never bypassed or composed
+inside bootstrap. No self-committing delegate or task helper is composed.
+
+Bootstrap inserts pinned authorization/binding/context/activation/instance, a
+structural nonexecutable carrier parented to the authentic source, one pending
+development leaf parented to the carrier, a queued attempt and `run_started`.
+Instance root is the carrier; Pause root remains the actual top source ancestor.
+CAS starts at1/current_revision0/target_revision1. Source waits delegated;
+its original parent/counters/SID remain. Immediate cyclic FKs use uncommitted null
+run pointers only until the real attempt/event are inserted and both pointers set.
+Full typed native/J/history/FK/schema closure precedes COMMIT. Failure rolls back
+all rows, pointers and claim writes; the prior genuine callback remains intact.
+Exact same-result/key/body replay returns original IDs without allocation/debit/
+append; changed source/result/command conflicts. No carrier result/session,
+assignment, submission, approval or receipt is manufactured.
+
+Agent-read authorization/binding/context and initial scope have explicit new @2
+encodings; old custody @1 bytes retain their own readers. Context pins original
+source/result/claim, authority/profile capture and all complete native checkpoint
+observations across waits. Pre-bootstrap native updated_at/last_heartbeat values
+are retained independently; every other25 task fields must agree. Saved queued
+rows compare all27 current native task fields exactly. K3a supplies no post-start
+heartbeat/PID/result/terminal bridge, so unsupported mutation/drift refuses.
+The existing native task row primitive is used only after complete prospective
+move checks; ordinary task insertion retains its original guard.
+
+Complete mixed historical and queued readers share the enclosing row/raw-byte/
+step budget, including schema(data=False), cold/reopen, templates, activation and
+context pins, recovery and cutover drain. No schema DDL/reference changes, startup
+upgrade, old-byte rewrite, custody Q/U/P issuance, R2 or daemon Git/object probe.
+Future event families and partial/orphan/foreign/dual-owner graphs refuse. Valid
+`coding_source_waiting`, `coding_carrier`, `coding_attempt` ownership cannot launch
+through queue, draft/F5, ordinary chain/fanout/recovery or parent wake. Pause/move
+rediscovery preserves this wait. Native cancellation of a selected queued graph
+is refused before mutation, including ancestor cascade and after the DB-lock wait;
+control/terminal writers remain later root-owned work. Initial selected move
+projection contains effective actual roles, not unselected replacement candidates.
+
+GET `/api/v1/orgs/{slug}/workflows/coding/runs/{instance_id}?session_id=CURRENT`
+and `workflows coding run-show INSTANCE --org ORG --session-id CURRENT --json`
+reuse current executable-manager loopback/session admission. Only the original
+source-manager principal may select metadata, before private run decoding;
+current mapping/effective-role authority is checked again. Closed
+`workflow-coding-run@1` exposes exactly
+`format,instance_id,release,mapping,effective_roles,cas_version,current_revision,target_revision,state,current_attempt,history,closeout,readiness`.
+Queued history has its sole `run_started` metadata; no private native proof,
+source callback, peer findings, repository content or execution grant is exposed.
+Bearer fallback and browser/remote reachability remain absent. Raw and normalized
+native GET candidates are denied independently using the existing one-decode
+algorithm before credential lookup/forwarding. Served schema and classification
+carry the same selected family; unrelated decisions keep legacy wire behavior.
+
+This is disabled SOURCE delivery only. Independent full review, same-final-head
+scoped SOURCE QA, normal commits/nonforce publication, local static all, literal
+hosted Source Boundary Lint + Web Lint(Node24), and manager guarded merge remain.
+Python units RETIRED; integration INCLUDING callback SKIPPED24342. SQL/parser/
+behavior/security/race/mutation/red-green/repetition/native-build/E2E/protected/
+executable-QA/test-authoring proof UNEXECUTED/FOUNDER-WAIVED139429/430, never PASS.
+Remaining K3 dispatch/native/control/supplements and K4–K6, genuine-agent revision/
+fresh review/QA/CI/merge, two actual org defaults/override and backup-copy acceptance
+remain on sole ROOT10693. No live migration/assignment/deploy/restart/enable/cutover.
+<!-- /K3a result-owned queued bootstrap: TASK12003 / ROOT10693 step87 -->
+
+
 <!-- Active coding contract: Founder THR139 seq640 / ROOT10693 step79 -->
 ## Active coding contract — agent-read subjects (seq640)
 

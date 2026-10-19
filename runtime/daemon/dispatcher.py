@@ -71,10 +71,8 @@ class Dispatcher:
         except KeyError:
             return
         from runtime.workflows.recovery import classify_task
-        if classify_task(org.db, task_id, org_slug=slug).kind != 'legacy':
-            # Draft/F5 retain their existing heartbeat path.
-            owner = classify_task(org.db, task_id, org_slug=slug)
-            if owner.kind.startswith('coding_') or owner.kind == 'reconciliation_required':
-                return
+        owner = classify_task(org.db, task_id, org_slug=slug)
+        if owner.kind.startswith('coding_') or owner.kind == 'reconciliation_required':
+            return  # Draft/F5 retain their existing heartbeat path.
         now = datetime.now(timezone.utc).isoformat()
         org.db.update_task(task_id, last_heartbeat=now)

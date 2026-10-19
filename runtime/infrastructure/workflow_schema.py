@@ -1,7 +1,7 @@
 """Installed U1A workflow schema and compatibility boundary.
 
 F is the unchanged inert version-one foundation. Existing OrgState.load installs
-only F and validates complete F/E/G/H/I/J (empty coding only); explicit new-org creation initializes I.
+only F and validates complete F/E/G/H/I/J (including closed queued coding); explicit new-org creation initializes I.
 The explicit operator scripts alone upgrade existing F/E. Generic Database construction,
 including runtime-audit.db, has no workflow side effect.
 """

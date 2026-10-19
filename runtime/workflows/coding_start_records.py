@@ -2,8 +2,8 @@
 from __future__ import annotations
 
 import json
-from typing import Literal
-from pydantic import Field, model_validator
+from typing import Annotated, Literal
+from pydantic import Field, StrictInt, field_validator, model_validator
 
 from runtime.workflows._coding_role_records import AgentBinding, Closed, MappingPin, Release, Roles
 from runtime.workflows.artifacts import Token
@@ -53,6 +53,12 @@ class CodingReadiness(Closed):
     enabled: Literal[False]
     reason: Literal['coding_downstream_unavailable']
 
+    @field_validator('enabled', mode='before')
+    @classmethod
+    def disabled_only(cls, value: object) -> bool:
+        _check(type(value) is bool and value is False)
+        return value
+
 
 class QueuedAttempt(Closed):
     id: Token
@@ -62,18 +68,24 @@ class QueuedAttempt(Closed):
     principal: Token
 
 
+class QueuedEvent(Closed):
+    id: Token
+    kind: Literal['run_started']
+    event_seq: Annotated[StrictInt, Field(ge=1, le=1)]
+
+
 class CodingRunReceipt(Closed):
     format: Literal['workflow-coding-run@1']
     instance_id: Token
     release: Release
     mapping: MappingPin
     effective_roles: Roles
-    cas_version: Literal[1]
-    current_revision: Literal[0]
-    target_revision: Literal[1]
+    cas_version: Annotated[StrictInt, Field(ge=1, le=1)]
+    current_revision: Annotated[StrictInt, Field(ge=0, le=0)]
+    target_revision: Annotated[StrictInt, Field(ge=1, le=1)]
     state: Literal['development']
     current_attempt: QueuedAttempt
-    history: list[dict] = Field(min_length=1, max_length=1)
+    history: list[QueuedEvent] = Field(min_length=1, max_length=1)
     closeout: None
     readiness: CodingReadiness
 
@@ -117,3 +129,19 @@ def parse_native_decision(raw: bytes) -> dict:
     _check(type(value) is dict)
     value.pop('_manager_self_evaluation', None)
     return _model(CodingStartDecision, value).model_dump()
+
+
+def start_decision_schema() -> dict:
+    """Closed nested callback schema without dangling OpenAPI component refs."""
+    schema = CodingStartDecision.model_json_schema()
+    definitions = schema.pop('$defs', {})
+
+    def inline(value: object) -> object:
+        if isinstance(value, dict):
+            if '$ref' in value:
+                return inline(definitions[value['$ref'].rsplit('/', 1)[-1]])
+            return {key: inline(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [inline(item) for item in value]
+        return value
+    return inline(schema)

@@ -2,10 +2,14 @@
 from __future__ import annotations
 
 import json
+import sqlite3
+from typing import Any
 from dataclasses import asdict
 from datetime import datetime, timezone
 
-from runtime.models import BlockKind, TaskRecord, TaskStatus
+from runtime.models import BlockKind, CompletionReport, NextStep, TaskRecord, TaskStatus
+from runtime.infrastructure.db.tasks import RetryClaim
+from runtime.workflows.authority import AuthorityAdmissionCapture
 from runtime.orchestrator import prompt_loader
 from runtime.orchestrator.org_config import load_org_config
 from runtime.orchestrator.task_pause import current_invocation
@@ -23,7 +27,7 @@ from runtime.workflows.coding_start_records import CodingRunReceipt, effective_m
 
 
 class CodingStartError(ValueError):
-    def __init__(self, code):
+    def __init__(self, code: str) -> None:
         self.code = code
         super().__init__(code)
 
@@ -39,11 +43,11 @@ def require_ready() -> None:
 
 
 class CodingStartStore:
-    def __init__(self, org):
+    def __init__(self, org: Any) -> None:
         self.org, self.db = org, org.db
         self.support = CodingImportSupport(org)
 
-    def _native(self, conn, claim, invocation):
+    def _native(self, conn: sqlite3.Connection, claim: RetryClaim, invocation: Any) -> tuple:
         _check(not self.org._runner_admission_closed and self.org.orchestrator._db is self.db)
         _check(type(claim.result_row_id) is int and claim.result_row_id > 0
                and self.db._retry_claim_matches(claim))
@@ -53,6 +57,11 @@ class CodingStartStore:
                and invocation.attempt_committed and invocation.unsettled
                and (invocation.task.id, invocation.agent, invocation.session_id) ==
                    (claim.task_id, claim.assigned_agent, claim.current_session_id))
+        if self.db.get_active_authority_continue_envelope(claim.task_id) is not None:
+            # The historical v1 consumer owns a self-committing spend, so it
+            # cannot be borrowed by this atomic graph writer. Preserve its
+            # owner; an unavailable native composition never becomes a bypass.
+            raise CodingStartError('coding_start_native_continuation_unavailable')
         policy = self.db.authority_policy_v2_completion_dispatch_context(
             root_task_id=claim.task_id, result_row_id=claim.result_row_id)
         _check(policy.kind in ('no_v2', 'later', 'reserved')
@@ -61,6 +70,7 @@ class CodingStartStore:
         selected = list(rows(conn, 'tasks', budget, where='id=?', args=(claim.task_id,), maximum=1))
         _check(len(selected) == 1)
         source = selected[0]
+        _check(source['zombie_flagged_at'] is None and source['completed_at'] is None)
         _check(source['task_type'] == 'task' and claim.active_chain is None and claim.active_fanout is None
                and self.org.teams.teams_for_manager(claim.assigned_agent) == (claim.team,))
         ancestors, seen = [], {claim.task_id}
@@ -99,7 +109,7 @@ class CodingStartStore:
                       invocation=dict(id=invocation.identity, owner=invocation.owner, entry=entry))
         return source, result, decision, native
 
-    async def get(self, *, principal, instance_id):
+    async def get(self, *, principal: Any, instance_id: str) -> dict:
         # Reuse current-manager native session transport and lock ownership.
         # Select the source owner before private run/context decoding.
         from runtime.workflows.coding_roles import CodingRoleError
@@ -124,19 +134,43 @@ class CodingStartStore:
                 self.db._check_team_move_workflow_uncommitted(binding_bytes=effective_bindings(instance_id, entry['roles']))
                 return self.project(instance_id, entry)
 
-    def consume(self, claim, decision, report):
+    def guard_cancellation(self, task_id: str, *, cascade: bool) -> None:
+        with self.db._lock:
+            conn = self.db._conn
+            if conn.execute("SELECT 1 FROM sqlite_schema WHERE type='table' AND name='workflow_coding_runs'").fetchone() is None:
+                return
+            saved = queued_storage(conn, self.org.slug)
+            selected = {task_id}
+            if cascade:
+                selected.update(self.db.get_descendant_task_ids(task_id))
+            if selected.intersection(saved.owners):
+                raise CodingStartError('coding_queued_mutation_unavailable')
+
+    def guard_native_mutation(self, task_id: str) -> None:
+        # K3a has no standalone native mutation bridge. Preserve complete
+        # original observations; do not silently accept new PID/clock/status/
+        # counter/session/cancel drift or record a fabricated heartbeat owner.
+        conn = self.db._conn
+        if conn.execute("SELECT 1 FROM sqlite_schema WHERE type='table' AND name='workflow_coding_runs'").fetchone() is None:
+            return
+        if not conn.execute('SELECT 1 FROM workflow_coding_runs LIMIT 1').fetchone():
+            return
+        if task_id in queued_storage(conn, self.org.slug).owners:
+            raise CodingStartError('coding_queued_mutation_unavailable')
+
+    def consume(self, claim: RetryClaim, decision: NextStep, report: CompletionReport) -> str:
         require_ready()  # BEFORE v2 action spending, result claim, or allocation.
         owner = current_invocation()
         coroutine = self._start(claim, decision, report, owner)
         return self.org.workflow_drafts._on_loop(coroutine)
 
-    def _policy(self, claim, revise_limit):
+    def _policy(self, claim: RetryClaim, revise_limit: int) -> None:
         # Native file-backed discovery stays outside SQLite intervals.
         actor = prompt_loader.load_agent(self.org.orchestrator._paths, claim.assigned_agent)
         _check(actor is not None and actor.role == 'manager' and bool(actor.executor) and actor.team == claim.team)
         _check(load_org_config(self.org.orchestrator._paths).max_revise_rounds == revise_limit)
 
-    async def _start(self, claim, decision, report, invocation):
+    async def _start(self, claim: RetryClaim, decision: NextStep, report: CompletionReport, invocation: Any) -> str:
         references = self.support._schema_references()
         authority = self.org.workflow_authority
         # Discovery/file I/O occurs before the synchronous bootstrap interval.
@@ -145,25 +179,31 @@ class CodingStartStore:
             raise CodingStartError('coding_start_authority_unavailable')
         revise_limit = load_org_config(self.org.orchestrator._paths).max_revise_rounds
         self._policy(claim, revise_limit)
-        with self.db._lock:
-            self._native(self.db._conn, claim, invocation)
+        checkpoints = []
+
+        def checkpoint() -> None:
+            with self.db._lock:
+                task, _, _, native = self._native(self.db._conn, claim, invocation)
+                checkpoints.append(dict(source=encode_row(task), ancestors=native['ancestors']))
+
+        checkpoint()
         async with authority._async_writer_lock:
             self._policy(claim, revise_limit)
-            with self.db._lock:
-                self._native(self.db._conn, claim, invocation)
+            checkpoint()
             async with self.org.teams_lock:
                 self._policy(claim, revise_limit)
-                with self.db._lock:
-                    self._native(self.db._conn, claim, invocation)
+                checkpoint()
                 async with self.org.db_lock:
                     self._policy(claim, revise_limit)
                     sessions = tuple(self.org.sessions.iter_active())
                     with authority.admission_writer(capture) as conn:
                         return self.start_in_writer(conn, claim=claim, decision=decision, report=report, invocation=invocation,
-                            capture=capture, references=references, revise_limit=revise_limit, active_sessions=sessions)
+                            capture=capture, references=references, revise_limit=revise_limit, active_sessions=sessions,
+                            checkpoints=checkpoints)
 
-    def start_in_writer(self, conn, *, claim, decision, report, invocation, capture,
-                        references, revise_limit, active_sessions):
+    def start_in_writer(self, conn: sqlite3.Connection, *, claim: RetryClaim, decision: NextStep,
+                        report: CompletionReport, invocation: Any, capture: AuthorityAdmissionCapture,
+                        references: tuple[str, ...], revise_limit: int, active_sessions: tuple, checkpoints: list) -> str:
         """Single uncommitted bootstrap; caller owns native admission transaction.
 
         No self-committing task/delegate helper, I/O, await or queue publication.
@@ -174,6 +214,8 @@ class CodingStartStore:
         self.support._storage(conn, references)
         command = decision.workflow
         parsed = parse_decision(_canonical(dict(action='workflow_start', workflow=command)))
+        _check(self.db.authority_policy_v2_decision_result_report_binds(
+            root_task_id=claim.task_id, spending_result_id=claim.result_row_id, report=report))
         # Frozen replay precedes fresh native claim/current capacity checks.
         from runtime.workflows.coding_start_history import read_queued
         mappings = read_mapping_storage(conn, expected_org_slug=self.org.slug)
@@ -183,10 +225,14 @@ class CodingStartStore:
             old = entry['command']
             if (entry['source']['principal'], old['operation_key']) == (claim.assigned_agent, command['operation_key']):
                 if (entry['source']['result']['id'] != claim.result_row_id
+                        or entry['source']['task_id'] != claim.task_id
+                        or entry['source']['session_id'] != claim.current_session_id
                         or old != command):
                     raise CodingStartError('coding_start_operation_conflict')
                 return instance  # No admission/task/counter/event/pointer writes.
         source_before, callback, actual, native = self._native(conn, claim, invocation)
+        checkpoints = [*checkpoints, dict(source=encode_row(source_before), ancestors=native['ancestors'])]
+        native['checkpoints'] = checkpoints
         _check(same(actual, parsed) and imported is not None and mappings is not None)
         _check(self.db.authority_policy_v2_decision_result_report_binds(
             root_task_id=claim.task_id, spending_result_id=claim.result_row_id, report=report))
@@ -243,7 +289,7 @@ class CodingStartStore:
             brief=task_brief(command['work']), created_at=stamp, updated_at=stamp,
             session_timeout_seconds=source_before['session_timeout_seconds'])
         self.db._check_team_move_task_uncommitted(leaf)
-        pins, context, binding = pinned_rows(org=self.org.slug, command=command, source=source,
+        pins, context, _binding = pinned_rows(org=self.org.slug, command=command, source=source,
             native_source=native, authority=authority, mapping=mapping, roles=roles,
             template=template, carrier_id=carrier_id, instance_id=instance, created_at=now)
         # Native task serializer uses ISO UTC; journal captures those exact bytes.
@@ -308,7 +354,7 @@ class CodingStartStore:
         _check(validate_workflow_schema(conn, expected_org_slug=self.org.slug) == 'J')
         return instance
 
-    def _claim_result_action_uncommitted(self, claim):
+    def _claim_result_action_uncommitted(self, claim: RetryClaim) -> Any:
         # Reuse the native owner's existing uncommitted spend/claim/ack seams.
         # Their exact evidence/CAS/limits stay unchanged; all writes now share
         # this bootstrap transaction instead of a prior self-committing call.
@@ -331,7 +377,7 @@ class CodingStartStore:
         return context
 
     @staticmethod
-    def project(instance, entry):
+    def project(instance: str, entry: dict) -> dict:
         attempt = entry['attempt']
         return CodingRunReceipt.model_validate(dict(format='workflow-coding-run@1', instance_id=instance,
             release=entry['command']['release'], mapping=entry['command']['mapping'], effective_roles=entry['roles'],
@@ -341,7 +387,7 @@ class CodingStartStore:
             readiness=readiness())).model_dump()
 
 
-def queued_storage(conn, org):
+def queued_storage(conn: sqlite3.Connection, org: str) -> Any:
     """Caller owns a coherent complete J snapshot. No schema recursion."""
     from runtime.workflows.coding_start_history import read_queued
     from runtime.workflows._coding_mapping_admission import _MappingCaptures
