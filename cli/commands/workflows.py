@@ -643,7 +643,7 @@ def register(sub: argparse._SubParsersAction) -> None:
     start.add_argument('--from-file', required=True)
     start.add_argument('--emit-decision', action='store_true', required=True)
     start.set_defaults(func=cmd_workflow_coding_run)
-    show = coding_sub.add_parser('run-show', help='Selected source-manager queued run metadata')
+    show = coding_sub.add_parser('run-show', help='Selected source-manager development lifecycle metadata')
     show.add_argument('instance_id')
     show.add_argument('--org', required=True)
     show.add_argument('--session-id', required=True)

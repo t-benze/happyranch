@@ -274,7 +274,8 @@ class CodingDispatcher:
         _check(previous['event_seq'] < entry['source']['budgets']['coding_event_limit'])
         source_tail = invocation.task.id == entry['source']['task_id']
         claim = None if source_tail else getattr(invocation, 'coding_claim', entry['native']['claim'])
-        producer = invocation.identity if source_tail else claim['owner']
+        producer = (invocation.identity if source_tail else claim['owner'] if claim is not None
+                    else self.producer + ':' + invocation.identity)
         row = invocation.store.row_uncommitted(entry['source']['root_ancestor_id'])
         matches = [] if row is None else [r for r in row['journal']['entries'] if r['id'] == invocation.identity]
         native = deepcopy(matches[0]) if len(matches) == 1 else deepcopy(getattr(invocation, 'coding_settled_entry', None))
@@ -329,7 +330,14 @@ class CodingDispatcher:
             session_start_audit_id=audits[0]['id'], session_purpose='worker_execution', session_id=invocation.session_id),
             invocation=invocation, attempt_changes=dict(session_id=invocation.session_id, state='claimed'),
             native_rows=[dict(table='audit_log', id=audits[0]['id'], record=encode_row(audits[0]))], event_time=now)
-        entry = self._entry(conn, invocation.task.id)
+        # Both events belong to this SAME native admission transaction. Do
+        # not expose a separately committed session without its reservation.
+        entry = deepcopy(entry)
+        entry['run'] = dict(conn.execute('SELECT * FROM workflow_coding_runs WHERE instance_id=?', (entry['run']['instance_id'],)).fetchone())
+        entry['attempt'] = dict(conn.execute('SELECT * FROM workflow_coding_attempts WHERE id=?', (entry['attempt']['id'],)).fetchone())
+        entry['tasks'] = {k: dict(conn.execute('SELECT * FROM tasks WHERE id=?', (k,)).fetchone()) for k in entry['tasks']}
+        event = dict(conn.execute('SELECT * FROM workflow_coding_events WHERE id=?', (entry['run']['last_event_id'],)).fetchone())
+        entry['native'].update(claim=invocation.coding_claim, history=[*entry['native']['history'], event], pending_observations=[])
         host = self._host(invocation)
         self._append(conn, entry, 'launch_reserved', dict(host=host, retry=invocation._entry(
             invocation.store.row_uncommitted(entry['source']['root_ancestor_id']))['retry']), invocation=invocation)
@@ -438,6 +446,7 @@ class CodingDispatcher:
                 _check(host is not None and outcome is not None and outcome.request is expected_request
                        and expected_request is invocation.coding_request and outcome.attempt == 0)
                 receipt = None if outcome.receipt is None else _native_value(asdict(outcome.receipt))
+                _check(receipt is None or receipt['terminal_reason'] == outcome.terminal_reason.value)
                 safe = (receipt is not None and host['handle_id'] is not None and receipt['backend'] == host['backend']
                         and receipt['backend'] != 'passthrough' and receipt['quiescent'] is True
                         and receipt['cleanup_status'] != 'incomplete' and not receipt['survivors'] and outcome.cleanup_error is None)
@@ -478,6 +487,17 @@ class CodingDispatcher:
             if ownership[0] == 'coding_carrier':
                 raise CodingStartError('coding_structural_launch_refused')
             source = ownership[0] == 'coding_source_waiting'
+            if not source and (entry['native']['claim'] is None or entry['native']['host'] is None):
+                # Unclosed preparation is not affirmative no-launch proof.
+                # Hold this exact native owner; never invent a host/result or
+                # consume a retry to recover an unrecorded reservation.
+                producer = self.producer + ':' + invocation.identity
+                invocation.coding_settled_entry = native_entry
+                self._append(conn, entry, 'held', dict(reason='coding_native_preparation_unsettled',
+                    owner_event_ids=[entry['native']['history'][-1]['id']], resume_state='development',
+                    required_owner=producer, required_action='original_owner_reconciliation'),
+                    invocation=invocation, run_changes=dict(state='held'))
+                return
             safe = (not failed and cleanup is not None and cleanup.kind == 'safe'
                     and not cleanup.processes and not invocation.unsettled
                     and native_entry is not None and not native_entry['context'].get('execution_unknown'))
@@ -498,7 +518,8 @@ class CodingDispatcher:
             invocation.coding_settled_entry = native_entry
             self._append(conn, entry, 'cleanup_settled', facts, invocation=invocation,
                 run_changes={} if safe else dict(state='held'),
-                attempt_changes=dict(state='completed') if not source and safe and entry['native']['terminal'] == 'success' else {},
+                attempt_changes=(dict(state='completed') if not source and safe and entry['native']['terminal'] == 'success'
+                                 else dict(state='uncertain') if not source and not safe else {}),
                 event_time=now)
 
     def development_instruction(self, task_id: str, agent: str, session_id: str) -> str:

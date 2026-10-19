@@ -54,7 +54,7 @@ def _audit(conn: Any, budget: Any, row: dict, storage: Any) -> None:
     storage.add('audit_log', row)
 
 
-def _host(value: Any, claim: dict, sid: str, task: str, org: str) -> dict:
+def _host(value: Any, claim: dict, sid: str, principal: str, org: str, attempt_id: str) -> dict:
     host = _closed(value, HOST_KEYS)
     _check(host['claim_token'] == claim['token'] and host['claim_owner'] == claim['owner']
            and host['invocation_id'] == claim['invocation_id'] and host['session_id'] == sid
@@ -69,7 +69,9 @@ def _host(value: Any, claim: dict, sid: str, task: str, org: str) -> dict:
            and request['retry_attempt'] == 0 and type(request['retry_attempt']) is int)
     _token(host['logical_request_key'])
     _check(host['execution_key'] == host['logical_request_key'])
-    _check(request['agent_id'] == task)
+    _check(request['agent_id'] == principal
+           and host['logical_request_key'] == identity('host', attempt_id, claim['invocation_id'])
+           and type(request['enqueued_at']) in (int, float) and request['enqueued_at'] >= 0)
     for name in ('handle_id', 'backend'):
         if host[name] is not None:
             _token(host[name])
@@ -93,6 +95,8 @@ def fold_heartbeats(conn: Any, org: str, budget: Any, storage: Any, tasks: dict,
         for audit in rows(conn, 'audit_log', budget, where=where, args=args, maximum=1024):
             _check(len(records) < 1024)
             _integer(audit['id'], 1)
+            from runtime.workflows.coding_source_history import _timestamp as native_timestamp
+            native_timestamp(audit['timestamp'])
             _check(audit['task_id'] == task_id and audit['agent'] == 'orchestrator')
             body = _closed(_json(audit['payload'].encode('utf8'), 1048576),
                 'format instance_id task_id queue_owner session_id previous_audit_id anchor_event_id '
@@ -214,6 +218,8 @@ def read_native(conn: Any, org: str, budget: Any, storage: Any, *, start: dict,
                 _token(claim[name])
             _integer(claim['pause_generation'])
             _timestamp(claim['claimed_at'])
+            _check(claim['owner'] == 'coding-dispatcher:' + org + ':' + claim['invocation_id']
+                   and len(claim['token']) == 32 and all(c in '0123456789abcdef' for c in claim['token']))
             _check(native is not None and claim['invocation_id'] == claim['pause_entry_id'] == native['id']
                    and claim['task_fingerprint'] == native['fingerprint']
                    and claim['pause_generation'] == native['generation'] and native['owner'] == 'coding'
@@ -241,12 +247,12 @@ def read_native(conn: Any, org: str, budget: Any, storage: Any, *, start: dict,
         elif kind == 'launch_reserved':
             _check(state['claim'] is not None and state['host'] is None and attempt['state'] == 'claimed'
                    and facts['retry'] == native['retry'])
-            host = _host(facts['host'], state['claim'], attempt['session_id'], attempt['principal'], org)
+            host = _host(facts['host'], state['claim'], attempt['session_id'], attempt['principal'], org, attempt['id'])
             _check(host['handle_id'] is host['backend'] is host['terminal_receipt'] is host['cleanup'] is None)
             state['host'] = host
         elif kind == 'launch_observed':
             _check(state['host'] is not None and state['host']['handle_id'] is None)
-            host = _host(facts['host'], state['claim'], attempt['session_id'], attempt['principal'], org)
+            host = _host(facts['host'], state['claim'], attempt['session_id'], attempt['principal'], org, attempt['id'])
             _check(host['handle_id'] is not None and host['backend'] is not None)
             _check(same({**host, 'handle_id': None, 'backend': None}, state['host']))
             expected_attempt['state'] = 'running'
@@ -282,7 +288,7 @@ def read_native(conn: Any, org: str, budget: Any, storage: Any, *, start: dict,
             _check(state['host'] is not None and state['terminal'] is None
                    and facts['positive_no_launch'] is None and facts['outer_cleanup_pending'] is True
                    and facts['accepted_result_id'] == attempt['result_id'])
-            host = _host(facts['host'], state['claim'], attempt['session_id'], attempt['principal'], org)
+            host = _host(facts['host'], state['claim'], attempt['session_id'], attempt['principal'], org, attempt['id'])
             _check(same({**host, 'terminal_receipt': None, 'cleanup': None}, state['host']))
             receipt = host['terminal_receipt']
             safe = (type(receipt) is dict and receipt.get('quiescent') is True
@@ -315,6 +321,8 @@ def read_native(conn: Any, org: str, budget: Any, storage: Any, *, start: dict,
                     and not facts['execution_unknown'] and facts['settlement_error'] is None)
             if not safe:
                 expected_run['state'] = 'held'
+                if not source_tail:
+                    expected_attempt['state'] = 'uncertain'
             if source_tail:
                 _check(state['source_cleanup'] is None and facts['pause_entry_id'] == command['producer_identity']
                        and facts['claim_token'] is None and facts['host_identity'] is None)
@@ -362,6 +370,7 @@ def read_native(conn: Any, org: str, budget: Any, storage: Any, *, start: dict,
         previous = event
         state['history'].append(event)
         storage.add('workflow_coding_events', event)
+    _check(state['claim'] is None or state['host'] is not None)
     tasks, pending = fold_heartbeats(conn, org, budget, storage, tasks, anchors)
     state.update(run=run, attempt=attempt, tasks=tasks, anchors=anchors, pending_observations=pending)
     return state
