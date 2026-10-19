@@ -47,7 +47,6 @@ from cli.commands.dreams import (  # noqa: F401
     cmd_dreams_show,
     cmd_dreams_status,
 )
-from cli.commands.workflows import cmd_workflow_coding_capability_set  # noqa: F401
 from cli.commands.workflows import cmd_workflow_coding_release_import  # noqa: F401
 from cli.commands.work_hours import (  # noqa: F401
     cmd_work_hours_list,

@@ -7,12 +7,11 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 
 from runtime.daemon.auth import _require_human, require_token
 from runtime.daemon.routes._org_dep import OrgDep
-from runtime.daemon.routes.workflow_coding_capabilities import _principal
 from runtime.workflows._coding_release_history import COMMAND_LIMIT
 from runtime.workflows.authority import WorkflowAuthorityError
 from runtime.workflows.coding_release_import import CodingReleaseImportError, ImportCommand, ImportReceipt
-from runtime.workflows.coding_setup import CodingSetupError
 from runtime.workflows.profile_coordinator import ProfileCoordinatorError
+from runtime.workflows.templates import WorkflowTemplatePrincipal
 from runtime.workflows.release_templates import (
     ReleaseTemplateError,
     ReleaseTemplateReceipt,
@@ -57,14 +56,24 @@ _IMPORT_RESPONSES = {
 }
 
 
+def _principal(request: Request, org) -> WorkflowTemplatePrincipal:
+    def revalidate() -> None:
+        state = request.app.state.daemon
+        if state.is_idle or state.orgs.get(org.slug) is not org:
+            raise CodingReleaseImportError('coding_release_import_org_stale')
+    revalidate()
+    return WorkflowTemplatePrincipal.founder(org_slug=org.slug,
+        team_slug=org.teams.default_team, revalidate=revalidate)
+
+
 def _import_error(exc: Exception) -> None:
     if isinstance(exc, ReleaseTemplateError):
         code, status = exc.code, 503 if exc.code == 'resource_unavailable' else 500
-    elif isinstance(exc, (CodingReleaseImportError, CodingSetupError)):
+    elif isinstance(exc, CodingReleaseImportError):
         code = exc.code
         status = (403 if code == 'human_only' else 404 if code == 'coding_release_import_not_found'
                   else 422 if code == 'coding_release_import_invalid'
-                  else 500 if code in ('coding_setup_whole_schema_mismatch', 'coding_setup_caller_transaction') else 409)
+                  else 500 if code in ('coding_release_import_whole_schema_mismatch', 'coding_release_import_caller_transaction') else 409)
     elif isinstance(exc, (WorkflowAuthorityError, ProfileCoordinatorError)):
         code, status = 'coding_release_import_authority_unavailable', 409
     else:

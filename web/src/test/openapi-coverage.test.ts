@@ -84,36 +84,6 @@ describe('openapi coverage', () => {
     expect(INCLUDED_PATHS.has('POST /api/v1/orgs/{slug}/workflows/reviews/stages')).toBe(false);
   });
 
-  test('K2b nonallocating source endpoints stay outside the browser', () => {
-    const routes = [
-      ['POST /api/v1/orgs/{slug}/workflows/coding/sources', 'Agent-only current manager nonallocating source mint/refinement; no browser or remote grant'],
-      ['GET /api/v1/orgs/{slug}/workflows/coding/sources/{authorization_id}', 'Agent-only same-source selected metadata; no browser or remote grant'],
-    ];
-    for (const [route, reason] of routes) {
-      expect(EXCLUDED_PATHS.get(route)).toBe(reason);
-      expect(INCLUDED_PATHS.has(route)).toBe(false);
-    }
-  });
-
-  test('K2b mapping endpoints require the current agent manager outside the browser', () => {
-    for (const [method, description] of [
-      ['POST', 'publication/adoption'], ['GET', 'selected metadata'],
-    ]) {
-      const path = `${method} /api/v1/orgs/{slug}/workflows/coding/mappings`;
-      expect(EXCLUDED_PATHS.get(path)).toBe(`Agent-only current manager mapping ${description}; no browser or remote grant`);
-      expect(INCLUDED_PATHS.has(path)).toBe(false);
-    }
-  });
-
-  test('K2b setup endpoints remain Founder CLI-only', () => {
-    const writer = 'POST /api/v1/orgs/{slug}/workflows/coding/capabilities';
-    const reader = 'GET /api/v1/orgs/{slug}/workflows/coding/capabilities/{setup_key}';
-    expect(EXCLUDED_PATHS.get(writer)).toBe('Founder-only CLI setup mutation; no browser or remote grant');
-    expect(EXCLUDED_PATHS.get(reader)).toBe('Founder-only CLI setup metadata; no browser or remote grant');
-    expect(INCLUDED_PATHS.has(writer)).toBe(false);
-    expect(INCLUDED_PATHS.has(reader)).toBe(false);
-  });
-
   test('I includes owner return and safe receipt, excluding new-author mutation', () => {
     expect(INCLUDED_PATHS.has('POST /api/v1/orgs/{slug}/workflows/instances/{instance_id}/revisions')).toBe(true);
     expect(INCLUDED_PATHS.has('GET /api/v1/orgs/{slug}/workflows/revisions/{revision_operation_id}')).toBe(true);

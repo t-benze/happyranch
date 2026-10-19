@@ -172,30 +172,6 @@
         "POST /api/v1/orgs/{slug}/workflows/release-templates/coding/1/import",
         "GET /api/v1/orgs/{slug}/workflows/release-templates/coding/1/import"
       ]
-    },
-    {
-      "id": "coding_setup_cli_only",
-      "description": "Founder-only reusable coding setup mutation and selected metadata are CLI-only, never remote. No credential/normalization policy change.",
-      "examples": [
-        "POST /api/v1/orgs/{slug}/workflows/coding/capabilities",
-        "GET /api/v1/orgs/{slug}/workflows/coding/capabilities/{setup_key}"
-      ]
-    },
-    {
-      "id": "coding_mapping_cli_only",
-      "description": "Mapping publication/adoption and selected metadata require the genuine current native agent manager; never remote or browser accessible.",
-      "examples": [
-        "POST /api/v1/orgs/{slug}/workflows/coding/mappings",
-        "GET /api/v1/orgs/{slug}/workflows/coding/mappings"
-      ]
-    },
-    {
-      "id": "coding_source_cli_only",
-      "description": "Nonallocating source mint/refinement and same-source metadata use genuine current agent transport only; no remote or browser grant.",
-      "examples": [
-        "POST /api/v1/orgs/{slug}/workflows/coding/sources",
-        "GET /api/v1/orgs/{slug}/workflows/coding/sources/{authorization_id}"
-      ]
     }
   ],
   "allow": [

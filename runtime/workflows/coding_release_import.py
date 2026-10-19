@@ -15,18 +15,12 @@ from runtime.workflows._coding_release_history import (
     parse_import_command, publication_rows, read_release_import,
 )
 from runtime.workflows.authority import WorkflowAuthorityError
-from runtime.workflows.coding_setup import CodingSetupStore, _capture
+from runtime.workflows._coding_import_support import CodingImportSupport, CodingReleaseImportError, _capture
 from runtime.workflows.profile_coordinator import ProfileCoordinatorError
 from runtime.workflows.release_templates import (
     ReleaseTemplateError, ReleaseTemplateReceipt, coding_release_projection, read_coding_release,
 )
 from runtime.workflows.templates import WorkflowTemplatePrincipal
-
-
-class CodingReleaseImportError(ValueError):
-    def __init__(self, code: str) -> None:
-        self.code = code
-        super().__init__(code)
 
 
 class ImportCommand(BaseModel):
@@ -73,12 +67,12 @@ class ImportReceipt(BaseModel):
 class CodingReleaseImportStore:
     def __init__(self, org) -> None:
         self.org = org
-        self._setup = CodingSetupStore(org)
+        self._support = CodingImportSupport(org)
 
     def _principal(self, principal: WorkflowTemplatePrincipal) -> None:
         # Reuse the genuine Founder predicate. Manager/source imports stay
-        # unavailable until their actual attenuation/admission producers ship.
-        self._setup._principal(principal)
+        # unavailable in this Founder-only unit.
+        self._support._principal(principal)
 
     def _current(self, conn, capture) -> dict:
         if capture is None:
@@ -120,14 +114,14 @@ class CodingReleaseImportStore:
 
     async def get(self, *, principal: WorkflowTemplatePrincipal) -> dict:
         self._principal(principal)  # Entitlement before private lookup/decode.
-        references = self._setup._schema_references()
-        capture = self._setup._discover()
+        references = self._support._schema_references()
+        capture = self._support._discover()
         async with self.org.workflow_authority._async_writer_lock:
             self._principal(principal)
             async with self.org.db_lock:
                 self._principal(principal)
-                with self._setup._read(capture) as (conn, current_capture):
-                    self._setup._storage(conn, references)
+                with self._support._read(capture) as (conn, current_capture):
+                    self._support._storage(conn, references)
                     history = read_release_import(conn, expected_org_slug=self.org.slug)
                     if history is None:
                         raise CodingReleaseImportError('coding_release_import_not_found')
@@ -141,7 +135,7 @@ class CodingReleaseImportStore:
             parse_import_command(raw)
         except ValueError:
             raise CodingReleaseImportError('coding_release_import_invalid') from None
-        references = self._setup._schema_references()
+        references = self._support._schema_references()
         # Package reads/validation and native discovery occur before waits and
         # outside writer locks; the final writer admits only these exact bytes.
         resource_error = None
@@ -150,14 +144,14 @@ class CodingReleaseImportStore:
         except ReleaseTemplateError as exc:
             resource_error = exc
             definition = None
-        capture = self._setup._discover()
+        capture = self._support._discover()
         authority = self.org.workflow_authority
         async with authority._async_writer_lock:
             self._principal(principal)
             async with self.org.db_lock:
                 self._principal(principal)
-                with self._setup._read(capture) as (conn, current_capture):
-                    self._setup._storage(conn, references)
+                with self._support._read(capture) as (conn, current_capture):
+                    self._support._storage(conn, references)
                     replay = self._replay(conn, raw, current_capture)
                     self._principal(principal)
                     if replay is not None:
@@ -169,7 +163,7 @@ class CodingReleaseImportStore:
                 try:
                     with authority.admission_writer(capture) as conn:
                         self._principal(principal)
-                        self._setup._storage(conn, references)
+                        self._support._storage(conn, references)
                         replay = self._replay(conn, raw, capture)
                         if replay is not None:
                             self._principal(principal)
@@ -191,7 +185,7 @@ class CodingReleaseImportStore:
                             columns = ','.join(row)
                             placeholders = ','.join('?' for _ in row)
                             conn.execute(f'INSERT INTO {table} ({columns}) VALUES ({placeholders})', tuple(row.values()))
-                        self._setup._storage(conn, references)  # Full cold closure before COMMIT.
+                        self._support._storage(conn, references)  # Full cold closure before COMMIT.
                         history = read_release_import(conn, expected_org_slug=self.org.slug)
                         if history is None:
                             raise CodingReleaseImportError('coding_release_import_history_invalid')

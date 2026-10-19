@@ -5,46 +5,6 @@ import Foundation
 @Suite("SurfaceAllowList deny gate")
 struct SurfaceAllowListTests {
 
-    @Test("Source mint and own selected metadata deny raw and normalized candidates independently")
-    func codingSourceDenial() {
-        let policy = SurfaceAllowList.default
-        for (method, family) in [("POST", "/workflows/coding/sources"),
-                                 ("GET", "/workflows/coding/sources/P1")] {
-            for prefix in ["", "/api/v1", "/orgs/alpha", "/api/v1/orgs/alpha"] {
-                for suffix in ["", "/", "?session_id=S1", "/?session_id=S1"] {
-                    let target = prefix + family + suffix
-                    #expect(!policy.isAllowed(method: method, path: target, rawPath: "/tasks"))
-                    #expect(!policy.isAllowed(method: method, path: "/tasks", rawPath: target))
-                }
-            }
-            let encoded = "/%61pi/v1/orgs/alpha/workflows/%63oding/%73ources" + (method == "GET" ? "/P1" : "")
-            #expect(!policy.isAllowed(method: method, path: encoded, rawPath: "/tasks"))
-            #expect(!policy.isAllowed(method: method, path: "/tasks", rawPath: encoded))
-        }
-        #expect(policy.isAllowed(method: "POST", path: "/tasks", rawPath: "/tasks?next=/workflows/coding/sources"))
-    }
-
-    @Test("Mapping publication and selected read deny both candidates independently")
-    func codingMappingDenial() {
-        let policy = SurfaceAllowList.default
-        let family = "/workflows/coding/mappings"
-        for method in ["POST", "GET"] {
-            for prefix in ["", "/api/v1", "/orgs/alpha", "/api/v1/orgs/alpha"] {
-                for suffix in ["", "/", "?x=1", "/?x=1"] {
-                    let target = prefix + family + suffix
-                    #expect(!policy.isAllowed(method: method, path: target, rawPath: "/tasks"))
-                    #expect(!policy.isAllowed(method: method, path: "/tasks", rawPath: target))
-                }
-            }
-            let encoded = "/%61pi/v1/orgs/alpha/workflows/%63oding/%6dappings"
-            #expect(!policy.isAllowed(method: method, path: encoded, rawPath: "/tasks"))
-            #expect(!policy.isAllowed(method: method, path: "/tasks", rawPath: encoded))
-        }
-        #expect(policy.isAllowed(method: "GET", path: "/workflows/release-templates/coding/1",
-                                 rawPath: "/api/v1/orgs/alpha/workflows/release-templates/coding/1"))
-        #expect(policy.isAllowed(method: "POST", path: "/tasks", rawPath: "/tasks?next=" + family))
-    }
-
     @Test("Fixed coding import and saved receipt deny both path candidates")
     func codingImportDenial() {
         let policy = SurfaceAllowList.default
@@ -64,23 +24,6 @@ struct SurfaceAllowListTests {
         #expect(policy.isAllowed(method: "GET", path: "/workflows/release-templates/coding/1",
                                  rawPath: "/api/v1/orgs/alpha/workflows/release-templates/coding/1"))
         #expect(policy.isAllowed(method: "POST", path: "/tasks", rawPath: "/tasks?next=" + family))
-    }
-
-    @Test("Founder setup is denied for raw and normalized candidates independently")
-    func codingSetupDenial() {
-        let policy = SurfaceAllowList.default
-        let selected = "/workflows/coding/capabilities/" + String(repeating: "a", count: 64)
-        for (method, family) in [("POST", "/workflows/coding/capabilities"), ("GET", selected)] {
-            for target in [family, "/api/v1/orgs/alpha" + family,
-                           "/api/v1/orgs/alpha" + family + "/?x=1",
-                           "/%61pi/v1/orgs/alpha" + family.replacingOccurrences(of: "/coding/", with: "/%63oding/")] {
-                #expect(!policy.isAllowed(method: method, path: target, rawPath: "/tasks"))
-                #expect(!policy.isAllowed(method: method, path: "/tasks", rawPath: target))
-            }
-        }
-        #expect(policy.isAllowed(method: "GET", path: "/workflows/release-templates/coding/1",
-                                 rawPath: "/api/v1/orgs/alpha/workflows/release-templates/coding/1"))
-        #expect(policy.isAllowed(method: "POST", path: "/tasks", rawPath: "/tasks?next=" + selected))
     }
 
     @Test("review stage denies raw and normalized aliases independently before forwarding")
@@ -563,12 +506,6 @@ struct SurfaceAllowListTests {
         ("POST", "/workflows/revisions/revision-1/submissions"),
         ("POST", "/workflows/release-templates/coding/1/import"),
         ("GET", "/workflows/release-templates/coding/1/import"),
-        ("POST", "/workflows/coding/sources"),
-        ("GET", "/workflows/coding/sources/*"),
-        ("POST", "/workflows/coding/mappings"),
-        ("GET", "/workflows/coding/mappings"),
-        ("POST", "/workflows/coding/capabilities"),
-        ("GET", "/workflows/coding/capabilities/" + String(repeating: "a", count: 64)),
         // Task agent callbacks
         ("POST", "/tasks/TASK-123/completion"),
         ("POST", "/tasks/TASK-123/progress"),

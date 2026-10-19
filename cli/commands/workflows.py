@@ -499,40 +499,6 @@ def cmd_workflow_release_template(args: argparse.Namespace) -> None:
 
 
 
-def cmd_workflow_coding_capability_set(args: argparse.Namespace) -> None:
-    import hashlib
-    from runtime.workflows.coding_saved_records import COMMAND_LIMIT
-    from runtime.workflows.coding_setup import SetupReceipt, parse_setup_command
-
-    absolute = require_absolute_payload_path(args.from_file, kind='coding-setup')
-    try:
-        with Path(absolute).open('rb') as stream:
-            raw = stream.read(COMMAND_LIMIT + 1)
-        with _founder_client() as client:
-            slug = resolve_org_slug(args_org=args.org, available=_shared._fetch_available_orgs(client))
-            command = parse_setup_command(raw, org_slug=slug)
-            # Existing human client only. Preserve COMPLETE original bytes and
-            # caller key; no session transport, bearer forwarding or retry.
-            response = client.post(f'/api/v1/orgs/{slug}/workflows/coding/capabilities',
-                                   content=raw, headers={'Content-Type': 'application/json'})
-        if response.status_code != 200:
-            _print_error(response)
-        receipt = SetupReceipt.model_validate(response.json()).model_dump()
-        if (receipt['operation_key'] != command['operation_key']
-                or receipt['request_digest'] != hashlib.sha256(raw).hexdigest()
-                or receipt['revision'] != command['expected_authorization_revision'] + 1
-                or (receipt['setup_id'] is not None) != (command['mode'] == 'issue')):
-            raise ValueError('coding_setup_receipt_mismatch')
-    except (OSError, ValueError, httpx.HTTPError):
-        print('error: coding setup command, transport or receipt unavailable', file=sys.stderr)
-        raise SystemExit(1) from None
-    if args.json:
-        print(json.dumps(receipt, sort_keys=True))
-    else:
-        print(f"{receipt['authorization_id']} revision={receipt['revision']} "
-              f"state={receipt['current']['state']} replayed={str(receipt['replayed']).lower()}")
-
-
 def cmd_workflow_coding_release_import(args: argparse.Namespace) -> None:
     import hashlib
     from runtime.workflows._coding_release_history import COMMAND_LIMIT, parse_import_command
@@ -574,92 +540,11 @@ def cmd_workflow_coding_release_import(args: argparse.Namespace) -> None:
               f"replayed={str(receipt['replayed']).lower()} coding-enabled=false")
 
 
-def cmd_workflow_coding_mapping(args: argparse.Namespace) -> None:
-    from runtime.workflows.coding_mapping import parse_mapping_command, validate_mapping_receipt
-    from runtime.workflows.coding_saved_records import COMMAND_LIMIT
-    raw = None
-    command = None
-    client = None
-    try:
-        slug = resolve_org_slug(args_org=args.org, available=[])
-        if args.coding_command == 'mapping-publish':
-            absolute = require_absolute_payload_path(args.from_file, kind='coding-mapping')
-            with Path(absolute).open('rb') as stream:
-                raw = stream.read(COMMAND_LIMIT + 1)
-            command = parse_mapping_command(raw, org_slug=slug)
-        # Actual local agent transport: no bearer, discovery forwarding or retry.
-        client = httpx.Client(base_url=f'http://127.0.0.1:{int(port_file().read_text().strip())}',
-                              timeout=30.0, trust_env=False)
-        path = f'/api/v1/orgs/{slug}/workflows/coding/mappings'
-        params = {'session_id': args.session_id}
-        response = (client.get(path, params=params) if raw is None else
-                    client.post(path, params=params, content=raw, headers={'Content-Type': 'application/json'}))
-        if response.status_code not in ((200,) if raw is None else (200, 201)):
-            _print_error(response)
-        receipt = validate_mapping_receipt(response.json(), org_slug=slug)
-        if (receipt['replayed'] != (raw is not None and response.status_code == 200)
-                or (command is not None and (receipt['generation'] != command['expected_generation'] + 1
-                    or any(receipt['mapping'][key] != command['mapping'][key]
-                           for key in ('release', 'roles', 'eligible_replacements', 'authority'))))):
-            raise ValueError('coding_mapping_receipt_mismatch')
-    except (OSError, ValueError, httpx.HTTPError):
-        print('error: coding mapping command, transport or receipt unavailable; preserve original file/key', file=sys.stderr)
-        raise SystemExit(1) from None
-    finally:
-        if client is not None:
-            client.close()
-    if args.json:
-        print(json.dumps(receipt, sort_keys=True))
-    else:
-        print(f"{receipt['id']} generation={receipt['generation']} replayed={str(receipt['replayed']).lower()}")
-
-def cmd_workflow_coding_source(args: argparse.Namespace) -> None:
-    from runtime.workflows.coding_source import SourceReceipt, parse_source_command
-    import hashlib
-    raw = command = client = None
-    try:
-        slug = resolve_org_slug(args_org=args.org, available=[])
-        if args.coding_command == 'source-mint':
-            absolute = require_absolute_payload_path(args.from_file, kind='coding-source')
-            with Path(absolute).open('rb') as stream:
-                raw = stream.read(65537)
-            command = parse_source_command(raw, org_slug=slug)
-        client = httpx.Client(base_url=f'http://127.0.0.1:{int(port_file().read_text().strip())}',
-                              timeout=30.0, trust_env=False)
-        path = f'/api/v1/orgs/{slug}/workflows/coding/sources'
-        params = {'session_id': args.session_id}
-        response = (client.get(path + '/' + args.authorization_id, params=params) if raw is None else
-                    client.post(path, params=params, content=raw, headers={'Content-Type': 'application/json'}))
-        if response.status_code not in ((200,) if raw is None else (200, 201)):
-            _print_error(response)
-        receipt = SourceReceipt.model_validate(response.json()).model_dump()
-        if (receipt['replayed'] != (raw is not None and response.status_code == 200)
-                or (raw is None and receipt['authorization_id'] != args.authorization_id)
-                or (command is not None and (receipt['operation_key'] != command['operation_key']
-                    or receipt['request_digest'] != hashlib.sha256(raw).hexdigest()))):
-            raise ValueError('coding_source_receipt_mismatch')
-    except (OSError, ValueError, httpx.HTTPError):
-        print('error: coding source command, transport or receipt unavailable; preserve original file/key', file=sys.stderr)
-        raise SystemExit(1) from None
-    finally:
-        if client is not None:
-            client.close()
-    if args.json:
-        print(json.dumps(receipt, sort_keys=True))
-    else:
-        print(f"{receipt['authorization_id']} state={receipt['current']['state']} replayed={str(receipt['replayed']).lower()}")
-
-
 def register(sub: argparse._SubParsersAction) -> None:
     workflows = sub.add_parser("workflows", help="Publish templates and activate bounded workflow drafts")
     workflow_sub = workflows.add_subparsers(dest="workflows_command", required=True)
-    coding = workflow_sub.add_parser('coding', help='Founder coding setup/import; no coding run allocation')
+    coding = workflow_sub.add_parser('coding', help='Founder fixed coding release import; no coding run allocation')
     coding_sub = coding.add_subparsers(dest='coding_command', required=True)
-    capability_set = coding_sub.add_parser('capability-set', help='Issue or withdraw one reusable coding setup')
-    capability_set.add_argument('--org', required=True)
-    capability_set.add_argument('--from-file', required=True)
-    capability_set.add_argument('--json', action='store_true')
-    capability_set.set_defaults(func=cmd_workflow_coding_capability_set)
     for form in ('release-import', 'release-import-show'):
         command = coding_sub.add_parser(form, help='Explicit fixed coding v1 import or saved receipt')
         command.add_argument('--org', required=True)
@@ -667,24 +552,6 @@ def register(sub: argparse._SubParsersAction) -> None:
         if form == 'release-import':
             command.add_argument('--from-file', required=True)
         command.set_defaults(func=cmd_workflow_coding_release_import)
-    for form in ('mapping-publish', 'mapping-show'):
-        command = coding_sub.add_parser(form, help='Admitted manager mapping publication or selected read')
-        command.add_argument('--org', required=True)
-        command.add_argument('--session-id', required=True, type=_workflow_token)
-        command.add_argument('--json', action='store_true')
-        if form == 'mapping-publish':
-            command.add_argument('--from-file', required=True)
-        command.set_defaults(func=cmd_workflow_coding_mapping)
-    for form in ('source-mint', 'source-show'):
-        command = coding_sub.add_parser(form, help='Nonallocating source mint/refinement or own selected metadata')
-        command.add_argument('--org', required=True)
-        command.add_argument('--session-id', required=True, type=_workflow_token)
-        command.add_argument('--json', action='store_true')
-        if form == 'source-mint':
-            command.add_argument('--from-file', required=True)
-        else:
-            command.add_argument('authorization_id', type=_workflow_token)
-        command.set_defaults(func=cmd_workflow_coding_source)
     release = workflow_sub.add_parser("release-template", help="Read the disabled release catalog")
     release.add_argument("kind", choices=["coding"])
     release.add_argument("--version", required=True, type=int, choices=[1])
