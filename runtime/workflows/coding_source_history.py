@@ -351,7 +351,7 @@ def _results(conn: sqlite3.Connection, capability: dict,
 
 
 def _source_records(conn: sqlite3.Connection, expected_org_slug: str,
-                    authorization_id: str, *, budget: _Budget | None = None) -> CodingSourceNativeRecords:
+                    authorization_id: str, *, budget: _Budget | None = None, setups=None) -> CodingSourceNativeRecords:
     # Private call-local composition only; preserve the public five-field API.
     _check(type(conn) is sqlite3.Connection and conn.in_transaction and conn.text_factory is str)
     _check(type(expected_org_slug) is str
@@ -359,7 +359,7 @@ def _source_records(conn: sqlite3.Connection, expected_org_slug: str,
     _token(authorization_id)
     if budget is None:
         budget = _Budget()
-    setups = _SetupHistoryReader(conn, expected_org_slug, budget)
+    setups = setups if setups is not None else _SetupHistoryReader(conn, expected_org_slug, budget)
     history = _history(conn, expected_org_slug, authorization_id, budget=budget, setups=setups)
     capability = json.loads(history.selected.authority_bytes)
     _check(capability['level'] == 'source')

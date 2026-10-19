@@ -3315,6 +3315,10 @@
       "POST": {
         "params": [
           [
+            "authorization",
+            "header"
+          ],
+          [
             "slug",
             "path"
           ]
@@ -3334,6 +3338,10 @@
     "/api/v1/orgs/{slug}/team-moves/by-key/{operation_key}": {
       "GET": {
         "params": [
+          [
+            "authorization",
+            "header"
+          ],
           [
             "operation_key",
             "path"
@@ -3359,6 +3367,10 @@
       "GET": {
         "params": [
           [
+            "authorization",
+            "header"
+          ],
+          [
             "slug",
             "path"
           ]
@@ -3378,6 +3390,10 @@
       "POST": {
         "params": [
           [
+            "authorization",
+            "header"
+          ],
+          [
             "slug",
             "path"
           ]
@@ -3396,6 +3412,10 @@
     "/api/v1/orgs/{slug}/team-moves/{operation_id}": {
       "GET": {
         "params": [
+          [
+            "authorization",
+            "header"
+          ],
           [
             "operation_id",
             "path"
@@ -3420,6 +3440,10 @@
     "/api/v1/orgs/{slug}/team-moves/{operation_id}/recover": {
       "POST": {
         "params": [
+          [
+            "authorization",
+            "header"
+          ],
           [
             "operation_id",
             "path"
@@ -4521,6 +4545,53 @@
         "responses": [
           "200",
           "401",
+          "404",
+          "409",
+          "422",
+          "500",
+          "503"
+        ]
+      }
+    },
+    "/api/v1/orgs/{slug}/workflows/release-templates/coding/1/import": {
+      "GET": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "401",
+          "403",
+          "404",
+          "409",
+          "422",
+          "500",
+          "503"
+        ]
+      },
+      "POST": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "201",
+          "401",
+          "403",
           "404",
           "409",
           "422",

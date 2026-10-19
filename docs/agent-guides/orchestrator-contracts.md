@@ -1,5 +1,358 @@
 # Orchestrator Contracts
 
+<!-- Active coding contract: Founder THR139 seq640 / ROOT10693 step79 -->
+## Active coding contract — agent-read subjects (seq640)
+
+Founder THR139 seq640 supersedes the earlier seq559/562 coding content-serving
+prerequisites and the historical K2b setup/mapping/source checkpoints below.
+Those checkpoints and accepted artifacts/hashes remain historical evidence;
+they do not require rebuilding their producers. Document contracts, native
+permissions, F–J definitions/references and retained history remain in force.
+
+Coding records repository identity, object format, immutable comparison base/head
+and optional PR navigation. An eligible assigned agent reads code through its
+existing authorized repository tools. Progression requires that agent's genuine
+task/session/result, outcome and findings bound to the exact subject, with current
+authority and independence. A descriptor/digest grants no access, inspection,
+execution or merge authority. Unavailable access, a different subject or an
+unassigned/inauthentic result refuses progression. Changed head requires fresh
+independent review and QA; prior results and contributor/assignment/retry history
+remain historical. Branch/PR navigation never identifies approval.
+
+Reduced K2b on SAME draft PR1083 retains the fixed634-byte release import,
+Founder predicate, original publication/admission/replay/current-authority and
+complete template/history/cold/recovery/drain consumers. Import support now lives in
+`_coding_import_support.CodingImportSupport`, extracted without a setup/adoption/
+source prerequisite or expanded agent import authority. Draft setup issue/withdraw,
+store adoption/mapping, source mint/refinement and their exclusive route/CLI/model/
+contract/native entries are removed. Merged K1 stays dormant with its exact main bytes;
+no daemon object read or content-resolution preflight is a coding prerequisite.
+Rejected R2 private records, org fence and privacy projections are not implemented.
+Keep bounded historical positive readers and malformed/orphan/foreign-data refusal;
+reader retention neither restores a producer nor grants current access.
+
+K2c separately supplies org role defaults, eligible repository scopes, per-work
+implementer override, independence and pinned generation, not local-store custody.
+K3 is the first atomic coding instance/carrier/development-task writer and ships
+its own complete readers/recovery. K4 adds review/QA/revision with fresh exact-head
+acceptance; K5 adds successful exact-head lint/static CI and guarded expected-head
+merge/closeout; K6 adds operator entry/cutover. ROOT10693 retains genuine-agent
+revision/re-review/QA/CI/merge, two-org defaults/override and backup-copy operational
+acceptance. Coding remains disabled and runtime/security acceptance is missing.
+
+No live migration, grant, provider allocation, deployment, restart, assignment,
+cutover, cleanup or human trial follows. Python units are RETIRED; integration
+INCLUDING callback is SKIPPED24342. SQL/parser/product/security/mutation/red-green/
+repetition/native-build/E2E/executable proof is UNEXECUTED/FOUNDER-WAIVED139429/430,
+never PASS. Independent FULL code review, same-final-head scoped SOURCE QA,
+normal hooks/nonforce publication, lint/static checks and manager guarded merge
+remain required. No new reader-only publication or replacement authority framework.
+<!-- /Active coding contract: Founder THR139 seq640 / ROOT10693 step79 -->
+
+
+<!-- K2b source producer checkpoint: TASK11918 -->
+**Historical nonallocating coding source producer — ROOT10693, Founder139562/559/329/595/606.**
+Agent-only loopback POST `/workflows/coding/sources?session_id=CURRENT` and
+GET `/workflows/coding/sources/{authorization_id}?session_id=CURRENT` use the
+existing current manager transport, without bearer fallback or browser/remote
+reachability. CLI `workflows coding source-mint --org ORG --session-id CURRENT
+--from-file ABS --json` and `source-show AUTHORIZATION --org ORG --session-id
+CURRENT --json` preserve one original file/key, with no automatic retry.
+Canonical bounded64KiB `workflow-coding-source-command@1` is exactly
+`{format,operation_key,parent_id,mapping:{id,generation,digest},action,work}`;
+work exactly `{repository_id,store_owner,object_format,base,paths,commands}`.
+Only import-release-coding, publish-coding-mapping and adopt-local-store source
+actions mint here, within the current reusable U and all narrower parent edges.
+Server derives genuine current task/principal/team/SID/manager_decision,
+ordinary invocation/Pause/move/complete ancestry, callback absence and original
+limits. Native owners and executor enforcement are composed unchanged.
+The exact selected mapping/adopted store, source_rule/base_rule, executable
+manager repository policy and action/path/argv intersections precede private
+object work. Existing supervised adopted-store object machinery verifies the
+fixed full base outside writers under one deadline; it returns no repository
+content. Fresh native ALL27/ancestry/current policy checks repeat after awaits
+and in the atomic writer. No timestamp exemption or counter refill applies.
+A genuine immutable source P and its complete OWN five-column admission mint
+atomically. Exactly one ORIGINAL source-phase capture retains all original27
+source/ancestor/native session-start/invocation/counter/limit bytes; NULL result
+and claim mean zero callback/carrier/task/run/stage allocation. Same-owner source
+refinements obtain distinct own admissions while retaining the original
+source_admission_id and capture. P/U/capture encodings and F–J DDL stay unchanged.
+Private audit action coding_source_operation stores closed
+`workflow-coding-source-operation@1 {format,org_slug,principal,authorization_id,
+admission_id,session_id,command_bytes_base64,command_digest,created_at}` per mint.
+This D1 operation metadata preserves each complete command/key/principal for
+byte replay; it grants nothing and cannot replace an original capture.
+Replay finds original bytes before fresh CAS/object work, returns original
+identities/current disposition and never recaptures, reissues or restores grants.
+Closed unsigned `workflow-coding-source-receipt@1` is exactly
+`{format,authorization_id,admission_id,source_admission_id,operation_key,
+request_digest,replayed,current:{state,reason}}`; current is active/inactive/revoked,
+with a reason only for revoked. Changed same-key bytes conflict.
+Mixed setup/import/mapping/P cold consumers share bounded native source/mapping
+capture/operation inventory and the enclosing row/byte/step budget. Full positive
+native-row equalities and unknown/orphan/duplicate refusal cover schema(data=False),
+OrgState reopen, recovery and drain; ordinary nonmapping watermark behavior stays.
+Source expected_head remains NULL/own-development-output@1: it grants no arbitrary
+head disclosure, review, QA, CI or merge. K1.resolve remains unavailable because
+no genuine exact-subject read entitlement is produced here. Allocating source
+callback/C0, run C1/C2, native heartbeat and attempt/control/effect producers remain
+K3 and later units, not fabricated subjects/results/grants. Agent release import
+and source-to-action use remain separate from these mint metadata operations.
+This is an incomplete SAME DRAFT PR1083 source checkpoint, never a delivered
+coding engine, operational grant, deployment or merge. Independent FULL review,
+same-final-head scoped SOURCE QA and literal lint/static gates remain required.
+Runtime/security/rollback guarantees remain UNVERIFIED, engineering_manager-owned
+before operational acceptance. Python units RETIRED; integration INCLUDING callback
+SKIPPED24342; SQL/parser/product/timing/security/negative/mutation/red-green/repetition/
+native/build/E2E/protected/executable-QA/test-authoring proof
+UNEXECUTED/FOUNDER-WAIVED139429/430. No live setup/adoption/grant/assignment follows.
+<!-- /K2b source producer checkpoint: TASK11918 -->
+
+
+## Historical K2b mapping publication/adoption checkpoint — ROOT10693 step70
+
+SAME incomplete OPEN DRAFT PR1083 now includes the explicit nonallocating
+mapping writer and every own saved/native/current/cold/public/CLI consumer.
+POST `/api/v1/orgs/{slug}/workflows/coding/mappings?session_id=CURRENT`
+accepts canonical `workflow-coding-mapping-command@1` with only
+`format,operation_key,expected_generation,mapping`; mapping has exactly
+`release,roles,eligible_replacements,repository_selectors,authority`. Each of
+at most eight selectors is exactly `repository_id,store_owner,repo_key,policy`,
+with policy `adopted-local-store@1`. No paths, URLs, proof flags or server
+capsules are accepted. GET on the same path requires the same genuine current
+acting manager binding, selects the latest complete generation and rechecks
+current setup/role/store eligibility. Both return the closed six-field
+`workflow-coding-mapping-receipt@1 {format,id,generation,mapping_digest,mapping,replayed}`.
+POST is201/new or200/exact replay, GET200; missing selection404, malformed422,
+revoked manager/scope403 and unavailable/stale/conflicting admission409.
+CLI `workflows coding mapping-publish --org ORG --session-id CURRENT
+--from-file ABS --json` and `mapping-show --org ORG --session-id CURRENT --json`
+use actual loopback session transport, without bearer fallback or automatic
+retry. Preserve the original key/file after transport loss. Both routes remain
+browser-excluded and native remote-denied on raw and normalized candidates
+independently before credential lookup/forwarding.
+
+Server selection derives the actual assigned executable team manager, task/SID,
+unique native manager_decision session_start, real ordinary/v2 TaskInvocation,
+Pause journal/generation, current tree/move admission and no own-SID callback.
+Reusable M.setup roots authorize publication and each adoption separately for
+its repository/action/store/format; neither roster membership nor a parsed
+capsule grants permission. Fixed coding import and complete published role and
+replacement eligibility are required; four contributors stay distinct. Empty
+repository selectors require one unambiguous eligible setup; no arbitrary root
+selection or empty grant becomes authority.
+
+Configured primary stores are resolved server-side. A shared bounded no-follow
+preflight checks custody, ordinary .git/config/object format/origin and object
+inventory, refuses linked/indirect/symlink/alternate/promisor/shallow/replace/
+graft/helper/unsupported stores, and executes no Git, hook, filter, credential,
+fetch or clone. It derives server adoption-proof@1 and config/store identity.
+After the await, repeat observation and compare before the SQLite writer, then
+revalidate actual native authority/setup/current owner and generation in the
+writer without filesystem/object work or awaits. Local adoption attests local
+storage, not remote provenance or hostile same-UID/OS isolation.
+
+One native admission transaction appends the exact ten J mapping columns,
+complete canonical command/issuer/capture/M roots/adoptions/mapping bytes, and
+its fixed original source-phase native capture. Full original task/ancestry,
+unique session-start ID, actual invocation ID and admitted counters are retained;
+result/claim/callback fields remain genuinely null. Final complete cold closure
+precedes COMMIT; rollback preserves prior rows/ownership. Exact replay compares
+org/real principal/key plus ALL original command bytes before fresh generation
+CAS/adoption I/O, keeps original IDs and issues no work or renewed authority.
+Historical validity does not establish today's permission. Complete positive
+whole-row family matching covers mappings, original capture audit and all five
+admission columns; orphan/foreign/malformed/unsupported families still refuse.
+Central schema validation, also data=False, reopen/recovery and drain/downgrade
+compose that same reader without recursive schema validation or ID exemptions.
+Mapping-positive central scans, including the complete ordinary audit inventory,
+use singleton rowid keyset pages with explicit overflow refusal. Before Python
+fetch, every selected scalar/variable cell gates its original SQLite storage
+class and each TEXT/BLOB UTF8 byte length (including multibyte/NUL suffixes),
+and the whole row must fit the remaining shared raw-byte and candidate budget.
+Original typeof and a separate refusal sentinel preserve genuine nullable NULL;
+invalid/oversized rows never become coerced, truncated or partial success.
+One call shares8192 fetched candidates,16384 traversal steps and16MiB accepted
+raw bytes across setup, mapping, original-capture and central selected scans;
+per-value1MiB and mapping/setup inventories1024 remain upper bounds. Bounds may
+refuse earlier; they do not bound total SQLite/process/decoded-object memory.
+Complete expected mapping/own-admission/source-audit rows are derived once from
+validated records, indexed only for lookup, then compared in full with exact
+native types. Original capture inventory and required setup histories are cached
+only within this coherent call. No mapping row or supported audit is exempted
+by ID or watermark. Unknown/orphan/malformed/duplicate evidence still refuses.
+The SAME enclosing traversal allowance also covers metadata discrimination:
+every structured node/member, duplicate pair and classified member string,
+and malformed lexical prefix/member/whitespace/string/escape visits consume it.
+Nested lists/objects and fallback after partial pairs-hook work never reset or
+replace that allowance. Exhaustion refuses before a normal return, positive
+admission or watermark advance; even small wide ordinary metadata may exhaust
+it. JSON-decoder/encoding internals, total SQL/decoded-object/process memory
+and wall-clock work are not bounded by this traversal or raw-byte accounting.
+Ordinary nonmapping scans retain their historical discriminator/watermark
+contract. This R1 source correction is not behavioral/security verification.
+Mapping/setup/import have no run/host tail; compatible J reader is always needed.
+F–J SQL/reference bytes and all historical document meanings are unchanged.
+
+Current K1 exact-subject disclosure still requires a genuine immutable subject
+and selected entitled admission; the placeholder remains unavailable. SAME-K2b
+remainder is source capability attenuation/current K1 subject selection and its
+original source captures/current readers. K2c–K6 remain per delivery-map; K3 is
+the FIRST run writer. No task/run/stage allocation, live setup/mapping/adoption,
+migration/deploy/restart/cutover or retired trial execution is authorized.
+Python units RETIRED; integration INCLUDING callback SKIPPED24342; SQL/parser/
+product/timing/security/negative/mutation/repetition/executable QA proof remains
+UNEXECUTED/FOUNDER-WAIVED139429/430. Source assertions/lint are no behavioral,
+security or test-authoring PASS. Fresh independent FULL review then same-head
+scoped SOURCE QA and manager disposition remain required. Keep PR1083 draft,
+unmerged and incomplete until the genuine SAME-K2b remainder is delivered.
+
+
+## Historical K2b fixed coding release import checkpoint — ROOT10693 / Founder139562/559/329/606
+
+Manager step68 extends SAME incomplete draft PR1083. This source checkpoint adds
+explicit fixed release import and its own historical/current/public/cold readers;
+setup-only descriptions below retain their original checkpoint meaning. K2b
+remains DRAFT/unmerged until mapping/adoption/current K1 and source attenuation
+with actual nonallocating task/SID/invocation/Pause/ancestor capture producers and
+all their own readers are complete. First coding-run writer is K3, not this unit.
+
+POST `/api/v1/orgs/{slug}/workflows/release-templates/coding/1/import` uses the
+existing Founder human predicate and current native authority admission. It takes
+only canonical UTF8 `workflow-coding-release-import-command@1` with exactly
+`format,operation_key,expected_current_version`; the selector is INTEGER 0..1 (only0 can create the fixed version1) and
+the stable key is 1..128 token characters. The full command is at most1024 bytes.
+No query/body actor, task, SID, namespace, definition, gate or pin selector is
+accepted. The server selects the exact634-byte packaged coding.v1 resource,
+SHA256 `6ee02be98738d3c95fe584b165abe07d0dbef66e510133c117ee0d62c953cad8`,
+namespace `release/happyranch`, template `coding`, version1 and pins
+`workflow-coding-compiler@1`, `workflow-coding-validator@1`, `release-input@1`.
+Human import creates no task/SID/result and does not require an invented machine
+grant. Manager import remains unavailable until genuine source attenuation and
+nonallocating admission producers ship on SAME K2b; identity/setup alone is not
+machine authority. Existing org/team publication grammar remains unchanged.
+
+CLI `happyranch workflows coding release-import --org ORG --from-file ABS --json`
+sends the complete original file once with existing human transport; keep its
+original key/file after transport loss. `release-import-show --org ORG --json`
+uses GET on the SAME path. Both return a closed
+`workflow-coding-release-import-receipt@1` with exact identity/version/admission
+IDs, operation_key/request_digest/replayed, current `{state,reason}`, and the
+unchanged disabled release projection. POST is201 for initial import,200 for
+exact replay; GET is200 and never writes. Current state is admitted/unavailable,
+not coding readiness. Entitlement precedes private decode; absent import is404,
+invalid command/query422, stale admission/duplicate import/conflict409, corrupt
+history/resource500, missing resource503. Both import methods are CLI-only,
+browser-excluded and native remote-denied for raw and normalized paths
+independently, including prefixes, one decode, literal query split and one final
+slash. The original catalog GET remains write-free and enabled:false.
+
+Resource I/O/reference construction/discovery occur outside writer locks; after
+waits the real Founder and current native capture are revalidated. One native
+admission transaction inserts existing draft/version/identity/version-link/
+publish-operation/admission rows and validates complete cold closure before
+COMMIT. `author_principal`/`published_by` retain equal typed canonical import
+provenance `{format:workflow-coding-release-import-provenance@1,org_slug,publisher,
+command_bytes_base64,command_digest,admission:{record,capture},created_at}`;
+publisher is the actual Founder provenance, never a synthetic task principal.
+The original command and native capture bind every row, exact resource hash/pins,
+all five native admission columns and complete original publication/profile
+journal. Ordinary document provenance is unchanged. Exact replay precedes fresh
+CAS, returns original IDs, changes no authority pointer, and separately reports
+current policy loss. A different key cannot create version2 or another import;
+changed bytes under the same key conflict. Missing package I/O can hold a fresh
+import while exact saved replay remains readable. Any partial/foreign/malformed/
+extra/orphan/incorrectly typed relation refuses; failures roll back all new rows.
+
+Central J validation, including validate_data=False, source-data validation,
+startup/reopen, recovery pre-legacy discrimination and drain/downgrade all consume
+complete immutable import closure; no ID exemption or compiler-pin-only admission
+exists. Saved history is independent of today's permission. Ordinary template
+listing includes the shared org-local imported release and exposes only actual
+publisher provenance, never private capture bytes. Exact release store get and
+low-level version readers validate the complete import and J before returning;
+the public selected receipt is the dedicated GET/CLI above. Import cannot bind
+an activation or document binding: unsupported code execution continues to refuse.
+F–J SQL/independent references, create-org I, generic Database/runtime-audit,
+K0 disabled readiness and unavailable K1 current resolution remain unchanged.
+No startup/catalog import, mapping/P/run/attempt/event/receipt writer or live
+operation is added. No schema, authentication, credential, shared transport,
+permission, callback, hook or dependency mechanism changes follow.
+
+Python units RETIRED; integration INCLUDING callback SKIPPED24342. SQL/parser/
+behavior/security/negative/mutation/repetition/executable-QA proof is UNEXECUTED /
+FOUNDER-WAIVED139429/430. Native assertions are retained source, not executed
+coverage. Lint/static checks and inert OpenAPI inspection do not prove behavior.
+Fresh FULL independent final-head review then same-head scoped SOURCE QA return
+to SAME sole ROOT10693. No maker approval/QA/merge or complete K2b acceptance.
+
+## Historical K2b first setup producer checkpoint — ROOT10693 / Founder139562
+
+Manager step65 and THR139seq595/596 select **one K2b draft PR**, continuing
+merged1082. Each writer ships its own complete saved/current/native/cold readers;
+future run/stage readers are required with their corresponding writers. Earlier
+K2a1/K2a2 sections below are historical checkpoint evidence, including their
+then-current empty-only/no-producer and all-future-readers-first descriptions.
+They do not impose another reader-only publication or change accepted encoding.
+
+This checkpoint supplies Founder setup ISSUE/WITHDRAW, selected GET and exact
+replay. POST `/api/v1/orgs/{slug}/workflows/coding/capabilities` accepts only
+canonical UTF8 `workflow-coding-capability-setup-command@1` with exactly
+`format,operation_key,setup_key,expected_authorization_revision,mode,scope`.
+Issue scope fixes repository, actual published manager/team and configured store
+owners, finite actions/path/argv maxima, source_rule and base_rule. Empty path
+or command scope grants none. Withdrawal requires null scope and genuine prior
+issue; its new immutable issuance is an inactive tombstone. No body identity,
+agent session, bearer forwarding, query parameters or automatic retry is allowed.
+Existing `_require_human` derives the Founder principal on the server.
+
+CLI `happyranch workflows coding capability-set --org ORG --from-file ABS --json`
+uses existing human transport and preserves the full original canonical command.
+GET `/api/v1/orgs/{slug}/workflows/coding/capabilities/{setup_key}` returns only
+the selected closed `workflow-coding-capability-setup-receipt@1`: original
+IDs/revision/key/digest/replayed plus current active/inactive/revoked disposition.
+Both endpoints are CLI-only/browser-excluded and native remote-denied; denial
+checks raw and normalized candidates independently before forwarding. No shared
+normalizer, credential or permission semantics change.
+
+Setup records require compatible complete J. Every native admission's five
+columns, original Q/issuance bytes, full snapshot/profile mirror/publication
+journal, contiguous revision prefix, unique setup/operation/admission identities
+and exact latest pointer are checked. One native admission transaction inserts
+admission/revision and CAS-updates the pointer; failed validation rolls all back.
+Discovery and independent whole-native schema reference construction precede
+transactions; final admission uses captured data with current authority checks.
+No file/object I/O or await occurs in the writer. Replay compares full original
+bytes before fresh CAS, changes no pointer/revision, and reports original IDs
+with current inactive/revoked state after withdrawal/replacement/policy loss.
+Cold-valid history never establishes current authority or action permission.
+
+Central J validation (also validate_data=False), reopen, recovery's pre-legacy
+boundary, drain and downgrade recognize exactly complete setup closure. All
+mapping/source/P/run/attempt/event/receipt coding families remain categorically
+unsupported; malformed/duplicate/orphan/foreign values refuse. F–I/J DDL and
+independent references stay unchanged; create-org remains I, startup never
+upgrades, even empty J requires compatible code. Generic Database/runtime-audit
+remain workflow-free. K0 stays disabled and K1 current resolution unavailable.
+
+**K2b remains incomplete and DRAFT/unmerged.** SAME-PR mandatory remainder:
+explicit fixed release import; mapping publication/local-store adoption/current
+K1 resolution; source attenuation and genuine nonallocating task/SID/invocation/
+Pause/ancestor capture producers, each with complete own current/native/cold
+consumers. K2c owns role defaults/overrides/fresh J; first run writer is K3;
+K4/K5 own revision/QA/CI/merge closure, K6 operator entry/cutover. No live setup,
+grant/adoption, SQL fixture, deployment/restart/migration/assignment, provider/
+browser/native build/ad hoc E2E or retired trial execution follows source work.
+Python units RETIRED; integration INCLUDING callback SKIPPED24342; SQL/parser/
+security/negative/mutation/repetition/behavior/executable QA UNEXECUTED/
+FOUNDER-WAIVED139429/430. Lint/static evidence supplies no behavioral PASS.
+Fresh FULL independent review and same-final-head scoped SOURCE QA return to
+SAME sole ROOT10693. No setup-only merge or complete K2b acceptance is claimed.
+
+
+## Approved online team move — C1 task/host and C2 thread source (THR296seq135)
+
 ## Integrated online team-move F candidate — THR296seq135 / TASK11345
 
 The integrated F candidate supplies founder-controlled service/CLI source with
@@ -4189,3 +4542,27 @@ or locals enter this evidence. An audit/storage save failure remains an explicit
 persistence limitation, not a durable count or terminal-success claim. No new timer,
 service, automatic successor or permission follows. Source/scoped verification is
 separate from deployment, running-code identity and operational acceptance.
+
+<!-- TASK11932 current-ancestor correction and owner support boundary -->
+**Historical TASK11932 checkpoint.** Seq640 removes this producer/worker path;
+its unresolved finding and rejected R2 proposal stay history, not a prerequisite
+or a runtime cleanup/security PASS. The active contract above controls.
+
+Every selected source ancestor now revalidates its OWN saved operation and
+original mapping against current admission before object work and again in the
+writer. One bounded iterative traversal shares the native owner and mapping
+selection; historical containment never substitutes for current admission.
+P1 minted under M1 cannot authorize P2 under newer M2 while P1 is revoked; deeper
+stale ancestors also refuse. Original GET/replay keeps original identities and
+returns revoked metadata without recapture; an eligible initial source under U
+is independent of that revoked lineage.
+TASK11927's preflight ownership finding remains OPEN: the current request does
+not durably retain worker/process/private-storage obligations through refusal,
+cancellation or org close. A concrete private ownership support delta is returned
+to ROOT10693 before dependent persistence/lifecycle edits. No cleanup, restart,
+security or cancellation guarantee follows from this source correction or lint.
+SAME PR1083 remains incomplete OPEN DRAFT and unmerged; independent FULL review
+and same-final-head scoped SOURCE QA are still required. Python units RETIRED;
+integration INCLUDING callback SKIPPED24342; behavioral/security/cleanup proof
+UNEXECUTED/FOUNDER-WAIVED139429/430, never PASS. No live operation follows.
+<!-- /TASK11932 current-ancestor correction and owner support boundary -->
