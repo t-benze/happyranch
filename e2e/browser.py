@@ -55,13 +55,19 @@ _RENDERED_DOM = r"""(main, args) => {
             content: tokens(prose), buttons: buttons.map(text), toggles: buttons.map(path)};
     };
     const doc = main.ownerDocument;
-    if (one([...doc.querySelectorAll('main')], 'main') !== main) fail('main-scope');
+    if (one([...doc.querySelectorAll('main:not(main main)')], 'shell') !== main) fail('shell-scope');
     if (!['en', 'zh-CN'].includes(locale) || doc.documentElement.lang !== locale) fail('locale');
     const href = '/orgs/' + org + '/tasks/' + task;
     if (doc.location.pathname !== (surface === 'list' ? '/orgs/' + org + '/tasks' : href)
         || doc.location.search || doc.location.hash) fail('url');
+    // TasksPage owns an inner main; detail owns ContentWrap's two DIVs.
+    // Keep all returned paths relative to the outer shell on both routes.
+    const owner = surface === 'list' ? one(direct(main).filter(c => c.tagName === 'DIV')
+        .flatMap(c => direct(c)).filter(c => c.tagName === 'MAIN'), 'list') :
+        one(direct(main).filter(c => c.tagName === 'DIV')
+            .flatMap(c => direct(c)).filter(c => c.tagName === 'DIV'), 'detail');
     if (surface === 'list') {
-        const link = one([...main.querySelectorAll('a')].filter(a => a.getAttribute('href') === href), 'list-link');
+        const link = one([...owner.querySelectorAll('a')].filter(a => a.getAttribute('href') === href), 'list-link');
         const title = one(direct(link).flatMap(c => direct(c)).filter(c => c.tagName === 'SPAN'
             && c.classList.contains('text-task-title')), 'list-title');
         return {surface, href: link.getAttribute('href'), path: path(link), titlePath: path(title),
@@ -69,7 +75,7 @@ _RENDERED_DOM = r"""(main, args) => {
     }
     const headingText = surface === 'detail' ? (locale === 'en' ? 'Brief' : '简报') :
         (locale === 'en' ? 'Recall tree' : '回溯树');
-    const heading = one([...main.querySelectorAll('h3')].filter(h => text(h) === headingText), 'heading');
+    const heading = one([...owner.querySelectorAll('h3')].filter(h => text(h) === headingText), 'heading');
     const section = heading.parentElement;
     if (section.tagName !== 'SECTION' || section.firstElementChild !== heading) fail('section');
     const owned = direct(section);
@@ -970,11 +976,21 @@ class Browser:
         scope.note("arm")
         yield scope  # Inner lexical exit has no acceptance/cleanup authority.
 
+    def _task_shell(self) -> Any:
+        return self.page.locator('main:not(main main)')
+
+    def _task_surface(self, surface: str) -> Any:
+        require(surface in {'list', 'detail', 'recall'}, 'task-surface')
+        return self._task_shell().locator(':scope > div > main' if surface == 'list' else ':scope > div > div')
+
     def _rendered_once(self, expected: dict) -> dict:
-        c, main = self.controller, self.page.get_by_role('main')
+        c, main = self.controller, self._task_shell()
         expect(main).to_have_count(1, timeout=c.remaining(5)*1000)
         c.remaining()
         surface, locale = expected['surface'], expected.get('locale', 'en')
+        owner = self._task_surface(surface)
+        expect(owner).to_have_count(1, timeout=c.remaining(5)*1000)
+        c.remaining()
         url = f"{self.base}/orgs/{expected['org']}/tasks"
         if surface != 'list':
             url += '/' + expected['task']
@@ -984,7 +1000,7 @@ class Browser:
         # Wait on the exact data owner before the one-shot strict snapshot.
         href = f"/orgs/{expected['org']}/tasks/{expected['task']}"
         if surface == 'list':
-            row = main.locator(f'a[href="{href}"]')
+            row = owner.locator(f'a[href="{href}"]')
             expect(row).to_be_visible(timeout=c.remaining(5)*1000)
             c.remaining()
             expect(row.locator(':scope > div > span.text-task-title')).to_be_visible(timeout=c.remaining(5)*1000)
@@ -992,7 +1008,7 @@ class Browser:
         else:
             label = ({'detail': 'Brief', 'recall': 'Recall tree'} if locale == 'en' else
                      {'detail': '简报', 'recall': '回溯树'})[surface]
-            heading = main.get_by_role('heading', name=label, exact=True)
+            heading = owner.get_by_role('heading', name=label, exact=True)
             expect(heading).to_be_visible(timeout=c.remaining(5)*1000)
             c.remaining()
             section = heading.locator('..')
@@ -1053,7 +1069,7 @@ class Browser:
                     collect(child, child_want)
             collect(observed['node'], wanted['node'])
         for want, flag, path in bodies:
-            toggle = self.page.get_by_role('main').locator(path).locator(':scope > button')
+            toggle = self._task_shell().locator(path).locator(':scope > button')
             toggle.click(timeout=self.controller.remaining(5)*1000)
             self.controller.remaining()
             want[flag] = True
@@ -1077,7 +1093,7 @@ class Browser:
             else:
                 self.page.goto(f"{self.base}/orgs/{org}/tasks", timeout=self.controller.remaining(self.page_timeout)*1000)
                 self.controller.remaining()
-            main = self.page.get_by_role("main")
+            main = self._task_surface('list')
             self.rendered(dict(surface='list', org=org, task=task, raw=brief, headline=brief))
             if alien:
                 expect(main.get_by_text(alien, exact=False)).to_have_count(0, timeout=self.controller.remaining(5)*1000)
@@ -1105,6 +1121,7 @@ class Browser:
             expect(self.page).to_have_url(self.base+f"/orgs/{org}/tasks/{task}", timeout=self.controller.remaining(5)*1000)
             self.controller.remaining()
             self.rendered(dict(surface='detail', org=org, task=task, raw=brief))
+            main = self._task_shell()
             if ready is not None:
                 ready()
             else:
@@ -1121,8 +1138,10 @@ class Browser:
     def revisit_after_cache_expiry(self, org: str, task: str, *, expected: dict, ready: Any) -> None:
         require(self.controller.remaining(32) >= 31, "cache revisit fits action budget")
         begin = time.monotonic()
-        main = self.page.get_by_role("main")
-        main.locator(f'a[href="/orgs/{org}/tasks"]').first.click(timeout=self.controller.remaining(self.page_timeout)*1000)
+        main = self._task_shell()
+        expect(main).to_have_count(1, timeout=self.controller.remaining(5)*1000)
+        self.controller.remaining()
+        main.locator(f'a[href="/orgs/{org}/tasks"]').click(timeout=self.controller.remaining(self.page_timeout)*1000)
         self.controller.remaining()
         self.page.wait_for_timeout(31000)
         self.controller.remaining()
@@ -1132,7 +1151,12 @@ class Browser:
             self.response(f"/api/v1/orgs/{org}/tasks/{task}"),
             self.response(f"/api/v1/orgs/{org}/tasks/{task}/recall", tree=True),
         ):
-            main.locator(f'a[href="/orgs/{org}/tasks/{task}"]').first.click(timeout=self.controller.remaining(self.page_timeout)*1000)
+            main = self._task_surface('list')
+            expect(self._task_shell()).to_have_count(1, timeout=self.controller.remaining(5)*1000)
+            self.controller.remaining()
+            expect(main).to_have_count(1, timeout=self.controller.remaining(5)*1000)
+            self.controller.remaining()
+            main.locator(f'a[href="/orgs/{org}/tasks/{task}"]').click(timeout=self.controller.remaining(self.page_timeout)*1000)
             self.controller.remaining()
             ready()
             group.checkpoint("4/5")
@@ -1160,7 +1184,7 @@ class Browser:
                 group.checkpoint("6/7")
             return
         require(self.page.url == f"{self.base}/orgs/{org}/tasks/{task}", "exact-terminal-task-url")
-        main = self.page.get_by_role("main")
+        main = self._task_shell()
         self.rendered(dict(surface='detail', org=org, task=task, raw=brief))
         # There is no separate detail Outcome section: preserve the root
         # summary obligation through its own Recall Outcome, never a copy.
@@ -1569,10 +1593,18 @@ class Browser:
               self.response(path, capture_json=True, ordinary_roots=True) as roots):
             self.page.reload(timeout=c.remaining(4)*1000)
             self.controller.remaining()
-            main = self.page.get_by_role("main")
-            expect(main.get_by_text("Cancelled",exact=True).first).to_be_visible(timeout=c.remaining(4)*1000)
+            main = self._task_surface('list')
+            # Share the original status operation's four-second cap with
+            # shell/list readiness; additional owners cannot extend it.
+            status_end = time.monotonic() + c.remaining(4)
+            expect(self._task_shell()).to_have_count(1, timeout=c.remaining(status_end-time.monotonic())*1000)
             self.controller.remaining()
-            link = main.locator(f'a[href="/orgs/alpha/tasks/{parent}"]').first
+            expect(main).to_have_count(1, timeout=c.remaining(status_end-time.monotonic())*1000)
+            self.controller.remaining()
+            require(self.page.url == self.base+"/orgs/alpha/tasks", "exact-task-list-url")
+            link = main.locator(f'a[href="/orgs/alpha/tasks/{parent}"]')
+            expect(link.locator(':scope > div:first-child').get_by_text("cancelled",exact=True)).to_be_visible(timeout=c.remaining(status_end-time.monotonic())*1000)
+            self.controller.remaining()
             expect(link).to_be_visible(timeout=c.remaining(4)*1000)
             self.controller.remaining()
             self.page.screenshot(path=str(c.root/"raw/e07-list.png"),full_page=True,timeout=c.remaining(4)*1000)
