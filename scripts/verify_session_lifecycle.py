@@ -69,12 +69,18 @@ def live(identity):
     return same(identity, current) and current["state"] not in ("Z", "X")
 
 
-def specific_wait(pid, deadline):
+def specific_wait(pid, deadline, identity=None):
     while time.monotonic() < deadline:
         try:
             result, status = os.waitpid(pid, os.WNOHANG)
         except ChildProcessError:
-            return None
+            # A killed grandchild can still belong to its exiting parent.
+            # Wait for adoption only for the exact fixture identity; never
+            # interpret ECHILD as a reap or steal a direct Popen's wait.
+            if identity is None or not same(identity, stat(pid)):
+                return None
+            time.sleep(0.01)
+            continue
         if result == pid:
             return status
         time.sleep(0.01)
@@ -358,7 +364,7 @@ class Venue:
             if identity is None:
                 continue
             if identity["pid"] not in direct_pids:
-                status = specific_wait(identity["pid"], deadline)
+                status = specific_wait(identity["pid"], deadline, identity)
                 self.event("fixture_specific_wait", role=role, status=status)
             require(not live(identity), f"unsafe residual: {role}")
             # Nonlive alone is insufficient: any surviving matching zombie
@@ -991,6 +997,7 @@ def main():
         executable.chmod(0o700)
         v.sentinel("S")
         v.sentinel("J")
+        v.report["readiness"] = "PASS"
         cases = BASELINE_CASES if args.mode == "baseline" else CASES
         for case in cases:
             v.case_deadline = min(time.monotonic() + 20, v.rescue_deadline)
@@ -1001,7 +1008,6 @@ def main():
             else:
                 v.results.append(run_case(v, case, api))
             # Baseline expected product failures do not authorize retries.
-        v.report["readiness"] = "PASS"
     except BaseException as exc:
         v.report.update(fatal=f"{type(exc).__name__}: {exc}", trace=traceback.format_exc(limit=6))
     finally:
