@@ -424,5 +424,7 @@ def read_queued(conn: sqlite3.Connection, org: str, budget: _Budget, mappings: A
                               (carrier_id, 'coding_carrier'), (leaf['id'], 'coding_attempt')):
             _check(task_id not in storage.owners)
             storage.owners[task_id] = (kind, instance)
+    from runtime.workflows.coding_native_history import validate_native_journals
+    validate_native_journals(conn, org, budget, storage)
     _check(used_attempts == {r['id'] for r in attempts} and used_events == {r['id'] for r in events})
     return storage

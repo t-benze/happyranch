@@ -107,6 +107,9 @@ def fold_heartbeats(conn: Any, org: str, budget: Any, storage: Any, tasks: dict,
             _token(owner['owner_id'])
             _token(owner['claim_identity'])
             _integer(owner['queue_generation'], 1)
+            expected_kind, expected_claim = storage.heartbeat_claims[task_id]
+            _check(owner['kind'] == expected_kind
+                   and (expected_claim is None or owner['claim_identity'] == expected_claim))
             before, after = _row(body['before_record']), _row(body['after_record'])
             _check(same(before, tasks[task_id]) and body['session_id'] == before['current_session_id'])
             _timestamp(body['observed_at'])
@@ -134,6 +137,8 @@ def read_native(conn: Any, org: str, budget: Any, storage: Any, *, start: dict,
     attempt = decode_row(initial['after']['attempts'][0]['record'])
     leaf = attempt['task_id']
     anchors = {key: (start['id'], _hash(_canonical(encode_row(value))), None) for key, value in tasks.items()}
+    storage.heartbeat_claims = {key: ('source' if key == source['task_id'] else 'attempt' if key == leaf else 'carrier',
+        source['result_claim']['owner_invocation_id'] if key == source['task_id'] else None) for key in tasks}
     state = dict(claim=None, host=None, terminal=None, source_settled=False, source_cleanup=None, cleanup=False, cleanup_recorded=False,
                  callback=None, invocation=None, history=[start])
     previous = start
@@ -232,6 +237,7 @@ def read_native(conn: Any, org: str, budget: Any, storage: Any, *, start: dict,
             expected_tasks[leaf].update(status='in_progress', current_session_id=facts['session_id'],
                 orchestration_step_count=tasks[leaf]['orchestration_step_count'] + 1, updated_at=event['created_at'])
             state['claim'] = claim
+            storage.heartbeat_claims[leaf] = ('attempt', claim['invocation_id'])
         elif kind == 'launch_reserved':
             _check(state['claim'] is not None and state['host'] is None and attempt['state'] == 'claimed'
                    and facts['retry'] == native['retry'])
@@ -307,6 +313,8 @@ def read_native(conn: Any, org: str, budget: Any, storage: Any, *, start: dict,
                     and all(disposition[name] is True for name in ('tracker_clear', 'reconciliation_complete',
                         'task_tail_complete', 'root_worktree_batch_complete', 'settle_live_complete'))
                     and not facts['execution_unknown'] and facts['settlement_error'] is None)
+            if not safe:
+                expected_run['state'] = 'held'
             if source_tail:
                 _check(state['source_cleanup'] is None and facts['pause_entry_id'] == command['producer_identity']
                        and facts['claim_token'] is None and facts['host_identity'] is None)
@@ -357,3 +365,56 @@ def read_native(conn: Any, org: str, budget: Any, storage: Any, *, start: dict,
     tasks, pending = fold_heartbeats(conn, org, budget, storage, tasks, anchors)
     state.update(run=run, attempt=attempt, tasks=tasks, anchors=anchors, pending_observations=pending)
     return state
+
+
+def validate_native_journals(conn: Any, org: str, budget: Any, storage: Any) -> None:
+    """Current native coding owners must close into an authenticated J leaf.
+
+    Shape decoding alone must not admit a coding owner on I, an orphan, a
+    structural/source alias or a foreign SID. Historical event snapshots remain
+    separate from current mutable Pause phase/generation observations.
+    """
+    from runtime.infrastructure.task_pause_controls import decode_journal
+    from runtime.workflows.coding_start_history import rows
+    if conn.execute("SELECT 1 FROM sqlite_schema WHERE type='table' AND name='task_pause_controls'").fetchone() is None:
+        _check(not any(entry['native']['claim'] is not None for entry in storage.runs.values()))
+        return
+    selected = set()
+    for row in rows(conn, 'task_pause_controls', budget):
+        journal = decode_journal(row['admission_journal_json'])
+        coding = [entry for entry in journal['entries'] if entry['owner'] == 'coding']
+        if not coding:
+            continue
+        _check(type(row['schema_version']) is int and row['schema_version'] == 1
+               and type(row['generation']) is int and row['generation'] >= 0
+               and type(row['held']) is int and row['held'] == row['generation'] % 2)
+        for native in coding:
+            budget.step()
+            owner = storage.owners.get(native['task_id'])
+            _check(owner is not None and owner[0] == 'coding_attempt' and native['task_id'] not in selected)
+            selected.add(native['task_id'])
+            entry = storage.runs[owner[1]]
+            attempt, state = entry['attempt'], entry['native']
+            _check(native['agent'] == attempt['principal'] and native['org'] == org
+                   and native['root_task_id'] == row['root_task_id'] == entry['source']['root_ancestor_id']
+                   and native['generation'] <= row['generation'] and native['owner_identity'] == {})
+            if state['claim'] is None:
+                task = entry['tasks'][attempt['task_id']]
+                _check(attempt['state'] == 'queued' and native['phase'] in ('prepared', 'unknown')
+                       and native['fingerprint'] == dict(status=task['status'], block_kind=task['block_kind'],
+                           count=task['orchestration_step_count'], session_id=task['current_session_id'],
+                           agent=task['assigned_agent'], fanout=task['active_fanout'], jobs=task['blocked_on_job_ids'],
+                           parent=task['parent_task_id'], brief_digest=_hash(task['brief'].encode('utf8'))))
+            else:
+                claim = state['claim']
+                _check(native['id'] == claim['invocation_id'] and native['session_id'] == attempt['session_id']
+                       and native['fingerprint'] == claim['task_fingerprint'])
+        storage.add('task_pause_controls', row)
+    for entry in storage.runs.values():
+        state = entry['native']
+        # Missing native ownership never proves teardown. Retain the original
+        # J claim/host identity and expose uncertainty until its actual late
+        # owner commits a positive cleanup observation.
+        state['ownership_unknown'] = (state['claim'] is not None
+            and not (state['cleanup_recorded'] and state['cleanup'])
+            and entry['attempt']['task_id'] not in selected)

@@ -103,26 +103,42 @@ class CodingDispatcher:
         # Every ordinary worker gets a lifetime too: an original source can
         # become coding-owned during that SAME worker's result-action tail.
         with self.db._lock:
-            _check(task_id not in self._queue_live)
             self._queue_generation += 1
             owner = dict(owner_id=uuid.uuid4().hex, queue_generation=self._queue_generation,
                          claim_identity=uuid.uuid4().hex)
-            self._queue_live[task_id] = owner
+            self._queue_live.setdefault(task_id, {})[owner['owner_id']] = owner
             return owner
 
     def queue_finished(self, task_id: str, owner: dict) -> None:
         with self.db._lock:
-            _check(self._queue_live.get(task_id) is owner)
-            self._queue_live.pop(task_id)
+            owners = self._queue_live.get(task_id, {})
+            _check(owners.get(owner['owner_id']) is owner)
+            owners.pop(owner['owner_id'])
+            if not owners:
+                self._queue_live.pop(task_id, None)
+
+    def bind_queue_invocation(self, invocation: Any) -> None:
+        # This is only an observation of the real queue owner. Ordinary duplicate
+        # deliveries retain their original native claim semantics and are not
+        # made ineligible merely because attribution is unavailable.
+        with self.db._lock:
+            owners = self._queue_live.get(invocation.task.id, {})
+            if len(owners) == 1:
+                owner = next(iter(owners.values()))
+                owner['claim_identity'] = invocation.identity
 
     def heartbeat(self, task_id: str, owner: dict | None) -> None:
         with self.db._lock:
-            _check(owner is not None and self._queue_live.get(task_id) is owner)
+            owners = self._queue_live.get(task_id, {})
+            _check(owner is not None and owners.get(owner['owner_id']) is owner)
             with self._writer() as conn:
                 entry = self._entry(conn, task_id)
                 kind = ('source' if task_id == entry['source']['task_id'] else 'attempt'
                         if task_id == entry['attempt']['task_id'] else None)
                 _check(kind is not None)
+                expected_claim = (entry['source']['result_claim']['owner_invocation_id'] if kind == 'source'
+                    else entry['native']['claim']['invocation_id'] if entry['native']['claim'] is not None else None)
+                _check(expected_claim is None or owner['claim_identity'] == expected_claim)
                 anchor, digest, previous = entry['native']['anchors'][task_id]
                 before = entry['tasks'][task_id]
                 now = stamp()
@@ -196,7 +212,8 @@ class CodingDispatcher:
                (entry['roles']['agent_manager']['team'],))
         for binding in entry['roles'].values():
             _check(binding['team'] == entry['roles']['agent_manager']['team'])
-        _check(entry['native']['source_settled'] and entry['run']['state'] == 'development'
+        _check(not entry['native'].get('ownership_unknown')
+               and entry['native']['source_settled'] and entry['run']['state'] == 'development'
                and entry['attempt']['task_id'] == invocation.task.id
                and entry['attempt']['principal'] == invocation.agent)
         for task in entry['tasks'].values():
@@ -262,7 +279,9 @@ class CodingDispatcher:
         matches = [] if row is None else [r for r in row['journal']['entries'] if r['id'] == invocation.identity]
         native = deepcopy(matches[0]) if len(matches) == 1 else deepcopy(getattr(invocation, 'coding_settled_entry', None))
         with self.db._lock:
-            queue_owner = deepcopy(self._queue_live.get(invocation.task.id))
+            candidates = [owner for owner in self._queue_live.get(invocation.task.id, {}).values()
+                          if owner['claim_identity'] == invocation.identity]
+            queue_owner = deepcopy(candidates[0]) if len(candidates) == 1 else None
         observation = dict(facts=facts, invocation=native, queue_owner=queue_owner)
         command = dict(format='workflow-coding-internal-command@1', kind=kind,
             source_event_ids=[previous['id']], source_event_digests=[previous['event_digest']],
@@ -497,7 +516,8 @@ class CodingDispatcher:
                 reading='Use your existing authorized repository tools. A reference grants no access or execution authority.',
                 output=dict(format='workflow-code-change@1', repository_id=entry['command']['work']['repository_id'],
                     object_format=entry['command']['work']['object_format'], base=entry['command']['work']['base'],
-                    head='Only the full commit genuinely produced by this task; absent until produced.', pull_request=None),
+                    head=None, pull_request=None),
+                output_obligation='Return only the full commit genuinely produced by this task, bound to this fixed base and repository. PR navigation is not approval identity.',
                 final_callback=dict(task_id=task_id, agent=agent, session_id=session_id,
                     command='happyranch report-completion --org ' + self.org.slug + ' --from-file ABS',
                     obligation='Report your own authentic result as the final action. No staging/advancement command is available.'))

@@ -99,6 +99,7 @@ CODING_PREFIXES = {
     'action': ('coding_',),
 }
 CODING_VALUES = {
+    'owner': ('coding',),
     'format': ('coding-scope@1', 'coding-replacement-selection@1'),
     'source_pin': ('coding-capability-issuer@1',),
     'kind': ('code-change',),

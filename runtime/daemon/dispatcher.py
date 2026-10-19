@@ -62,10 +62,15 @@ class Dispatcher:
         return True
 
     def worker_started(self, slug: str, task_id: str) -> object:
-        return self._state.get_org(slug).workflow_coding_dispatch.queue_started(task_id)
+        try:
+            coding = self._state.get_org(slug).workflow_coding_dispatch
+        except KeyError:
+            return None
+        return coding, coding.queue_started(task_id)
 
     def worker_finished(self, slug: str, task_id: str, owner: object) -> None:
-        self._state.get_org(slug).workflow_coding_dispatch.queue_finished(task_id, owner)
+        coding, identity = owner
+        coding.queue_finished(task_id, identity)
 
     def heartbeat(self, slug: str, task_id: str, queue_owner: object = None) -> None:
         """Stamp ``tasks.last_heartbeat`` on the per-org DB.
@@ -81,7 +86,9 @@ class Dispatcher:
         from runtime.workflows.recovery import classify_task
         owner = classify_task(org.db, task_id, org_slug=slug)
         if owner.kind in ('coding_source_waiting', 'coding_attempt'):
-            org.workflow_coding_dispatch.heartbeat(task_id, queue_owner)
+            if queue_owner is None or queue_owner[0] is not org.workflow_coding_dispatch:
+                return
+            org.workflow_coding_dispatch.heartbeat(task_id, queue_owner[1])
             return
         if owner.kind.startswith('coding_') or owner.kind == 'reconciliation_required':
             return

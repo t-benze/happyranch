@@ -178,6 +178,9 @@ class TaskInvocation:
             self.store.save_journal_uncommitted(row)
         with self.store.db._lock:
             self.store._live[self.identity] = self
+            coding = getattr(self.orch, "_workflow_coding_dispatch", None)
+            if coding is not None:
+                coding.bind_queue_invocation(self)
 
     def _entry(self, row: dict) -> dict:
         entries = [e for e in row["journal"]["entries"] if e["id"] == self.identity]
