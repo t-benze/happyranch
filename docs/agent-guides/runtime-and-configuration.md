@@ -21,11 +21,11 @@ remain historical. Branch/PR navigation never identifies approval.
 
 Reduced K2b on SAME draft PR1083 retains the fixed634-byte release import,
 Founder predicate, original publication/admission/replay/current-authority and
-complete template/history/cold/recovery/drain consumers. Import support is
-extracted from discarded setup code without a setup/adoption/source prerequisite
-or expanded agent import authority. Remove draft setup issue/withdraw, store
-adoption/mapping, source mint/refinement and their exclusive route/CLI/model/
-contract/native entries. Merged K1 stays dormant with its exact main bytes;
+complete template/history/cold/recovery/drain consumers. Import support now lives in
+`_coding_import_support.CodingImportSupport`, extracted without a setup/adoption/
+source prerequisite or expanded agent import authority. Draft setup issue/withdraw,
+store adoption/mapping, source mint/refinement and their exclusive route/CLI/model/
+contract/native entries are removed. Merged K1 stays dormant with its exact main bytes;
 no daemon object read or content-resolution preflight is a coding prerequisite.
 Rejected R2 private records, org fence and privacy projections are not implemented.
 Keep bounded historical positive readers and malformed/orphan/foreign-data refusal;
@@ -2763,6 +2763,10 @@ Python units RETIRED. That C3 checkpoint had no COMPLETE writer; current D/E/F
 source and independent gates are described above. No live capability follows.
 
 <!-- TASK11932 current-ancestor correction and owner support boundary -->
+**Historical TASK11932 checkpoint.** Seq640 removes this producer/worker path;
+its unresolved finding and rejected R2 proposal stay history, not a prerequisite
+or a runtime cleanup/security PASS. The active contract above controls.
+
 Every selected source ancestor now revalidates its OWN saved operation and
 original mapping against current admission before object work and again in the
 writer. One bounded iterative traversal shares the native owner and mapping
