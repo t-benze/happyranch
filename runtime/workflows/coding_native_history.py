@@ -328,6 +328,7 @@ def read_native(conn: Any, org: str, budget: Any, storage: Any, *, start: dict,
     state = dict(claim=None, host=None, terminal=None, source_settled=False, source_cleanup=None, cleanup=False, cleanup_recorded=False,
                  callback=None, invocation=None, history=[start])
     previous = start
+    expected_principal = 'service:coding-dispatcher:' + org
     _check(len(events) <= min(4096, source['budgets']['coding_event_limit']))
     for event in events:
         budget.step()
@@ -360,11 +361,11 @@ def read_native(conn: Any, org: str, budget: Any, storage: Any, *, start: dict,
         _token(command['producer_identity'])
         expected_key = 'coding-internal:' + _hash(_canonical([
             run['instance_id'], kind, command['producer_identity'], command['source_event_ids'], observation]))
-        operation = dict(org_slug=org, principal=event['principal'], key=expected_key,
+        operation = dict(org_slug=org, principal=expected_principal, key=expected_key,
                          request_digest=_hash(_canonical(command)))
-        _check(body['operation'] == operation and event['org_slug'] == org
+        _check(event['principal'] == expected_principal and body['operation'] == operation and event['org_slug'] == org
                and event['operation_key'] == expected_key and event['request_digest'] == operation['request_digest']
-               and event['id'] == identity('event', org, run['instance_id'], event['principal'], expected_key))
+               and event['id'] == identity('event', org, run['instance_id'], expected_principal, expected_key))
         _check(evidence['authority'] == authority)
         _check(evidence['rows'] == [] or kind in ('session_bound', 'callback_recorded'))
         before, after = body['before'], body['after']

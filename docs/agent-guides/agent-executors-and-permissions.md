@@ -1684,3 +1684,22 @@ protected/executable-QA/test-authoring proof UNEXECUTED/FOUNDER-WAIVED139429/430
 Fresh FULL independent review then same-final-head scoped SOURCE QA return to
 ROOT10693; K3 controls/recovery/K4–K6 and operational acceptance remain root-owned.
 <!-- /K3b four-finding correction: TASK12029 / ROOT10693 step92 -->
+
+
+<!-- K3b native service attribution: TASK12034 / ROOT10693 step93 -->
+Native lifecycle event@2 service attribution is independently fixed to
+`service:coding-dispatcher:` plus the authenticated org. The saved reader requires
+both the event column and operation principal to equal that value and derives
+the deterministic event identity from it. Recomputed keys/digests/pointers cannot
+admit a foreign service, agent principal or another org's dispatcher. Genuine
+worker/source evidence.origin and original native claim/admission/callback/cleanup
+proofs remain separate and independently checked. Valid dispatcher history keeps
+its original meaning; unsupported attribution refuses without rewriting history.
+The common saved/native/J/schema(data=False)/cold/reopen/recovery/drain readers
+apply this same check. All coding readiness remains false before SID/host effects.
+Runtime observations MISSING; Python units RETIRED; integration INCLUDING callback
+SKIPPED24342. Behavioral/security/negative/mutation/red-green/repetition/native-build/
+E2E/protected/executable-QA/test-authoring proof UNEXECUTED/FOUNDER-WAIVED139429/430.
+Fresh FULL independent review then same-final-head scoped SOURCE QA return to
+ROOT10693; K3 controls/recovery/K4–K6 and operational acceptance remain root-owned.
+<!-- /K3b native service attribution: TASK12034 / ROOT10693 step93 -->
