@@ -135,10 +135,10 @@ else:
 
 
 class Venue:
-    def __init__(self, scratch, output, seconds):
+    def __init__(self, scratch, output, seconds, started):
         self.scratch = scratch
         self.output = output
-        self.started = time.monotonic()
+        self.started = started
         self.final_deadline = self.started + seconds
         self.rescue_deadline = self.final_deadline - 15
         self.case_deadline = min(self.started + 15, self.rescue_deadline)
@@ -220,7 +220,7 @@ class Venue:
                 if packet["command"] == "close":
                     child_socket.send(b'{"ack":"closed"}')
                     return
-                child_socket.send(b'{"ack":"ledger"}')
+                child_socket.send(b'{"ack":"ledger","rescue_ready":true}')
             except socket.timeout:
                 pass
             if time.monotonic() >= deadline:
@@ -270,25 +270,32 @@ class Venue:
         # Prove specific adopted-child wait authority with P/Q before cases.
         read_fd, write_fd = os.pipe()
         release_read, release_write = os.pipe()
+        acknowledged_read, acknowledged_write = os.pipe()
         parent_pid = os.fork()
         if parent_pid == 0:
             os.close(read_fd)
             os.close(release_write)
+            os.close(acknowledged_write)
             child_pid = os.fork()
             if child_pid == 0:
                 os.close(write_fd)
                 os.read(release_read, 1)
                 os._exit(0)
             os.write(write_fd, json.dumps(stat(child_pid)).encode() + b"\n")
+            # P stays alive until F has the exact Q identity in both ledgers.
+            os.read(acknowledged_read, 1)
             os._exit(0)
         os.close(write_fd)
         os.close(release_read)
+        os.close(acknowledged_read)
         self.add("P", stat(parent_pid))
         import select
         require(select.select([read_fd], [], [], 2)[0], "P/Q probe message missing")
         identity = json.loads(os.read(read_fd, 4096))
         os.close(read_fd)
         self.add("Q", identity)
+        os.write(acknowledged_write, b"x")
+        os.close(acknowledged_write)
         require(specific_wait(parent_pid, self.case_deadline) is not None, "P wait missing")
         self.wait(lambda: stat(identity["pid"])["ppid"] == os.getpid(), "Q not adopted by F")
         os.write(release_write, b"x")
@@ -299,7 +306,8 @@ class Venue:
         self.ledger.pop("P")
         self.ledger.pop("Q")
         self.send()
-        self.wait(lambda: bool(self.drain_watchdog()), "W readiness acknowledgement missing", 2)
+        self.wait(lambda: any(m.get("rescue_ready") is True for m in self.drain_watchdog()),
+                  "W rescue-readiness acknowledgement missing", 2)
 
     def sentinel(self, role):
         path = self.scratch / (role + ".heartbeat")
@@ -941,6 +949,7 @@ def run_case(v, case, api, fault=None):
 
 
 def main():
+    invocation_started = time.monotonic()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source-root", type=Path, default=Path(__file__).resolve().parents[1])
     parser.add_argument("--scratch-root", type=Path, required=True)
@@ -965,7 +974,7 @@ def main():
     args.scratch_root.mkdir(parents=True, exist_ok=True)
     import tempfile
     scratch = Path(tempfile.mkdtemp(prefix="lifecycle-", dir=args.scratch_root))
-    v = Venue(scratch, args.output, 90 if args.mode == "baseline" else 390)
+    v = Venue(scratch, args.output, 90 if args.mode == "baseline" else 390, invocation_started)
     v.report.update({"mode": args.mode, "source": str(source),
                      "head": source_head,
                      "tree": subprocess.check_output(["git", "rev-parse", "HEAD^{tree}"], cwd=source, text=True).strip(),
