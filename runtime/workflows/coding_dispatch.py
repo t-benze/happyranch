@@ -2,7 +2,7 @@
 
 Queue and launch admission remain unavailable until the whole coding engine is
 present. This owner composes native writers and their SELECT-only readers; it
-has no artifact, receipt, successor, control or legacy completion consumer.
+has no artifact, receipt, successor or legacy completion consumer.
 """
 from __future__ import annotations
 
@@ -57,6 +57,8 @@ class CodingDispatcher:
         self.org, self.db = org, org.db
         self._queue_live: dict[str, dict] = {}
         self.producer = 'coding-dispatcher:' + org.slug
+        from runtime.workflows.coding_control import CodingControlQueue
+        self.controls = CodingControlQueue(self)
 
     def _on_loop(self, coroutine: Any) -> Any:
         loop = self.org.orchestrator._main_loop
@@ -103,7 +105,10 @@ class CodingDispatcher:
         from runtime.workflows.recovery import classify_task
         from runtime.orchestrator.task_pause import TaskInvocation
         with self.db._lock:
-            coding = classify_task(self.db, task_id, org_slug=self.org.slug).kind == 'coding_attempt'
+            kind = classify_task(self.db, task_id, org_slug=self.org.slug).kind
+            if kind == 'coding_control':
+                raise CodingStartError('coding_control_execution_unavailable')
+            coding = kind == 'coding_attempt'
         if coding:
             require_ready()  # Before creating a SID or preparing any owner.
             with self.db._lock:
@@ -193,7 +198,34 @@ class CodingDispatcher:
                     before_record=encode_row(before), after_record=encode_row(after), observed_at=now)
                 self.db.record_coding_heartbeat_uncommitted(task_id=task_id, before=before, after=after, payload=payload)
 
+    def reconcile(self, task_id: str, queue: Any = None) -> None:
+        # Startup/loop-side discovery uses the existing async Pause sweeper;
+        # native worker settlement may synchronously hand off to that loop.
+        try:
+            if asyncio.get_running_loop() is self.org.orchestrator._main_loop:
+                return
+        except RuntimeError:
+            pass
+        loop = self.org.orchestrator._main_loop
+        if loop is None or not loop.is_running():
+            return  # Durable held/queued owner remains discoverable.
+        from runtime.orchestrator.task_pause import DeferredRootPause
+        from runtime.orchestrator.team_move import DeferredTeamMove
+        from runtime.workflows.authority import WorkflowAuthorityError
+        from runtime.workflows.profile_coordinator import ProfileCoordinatorError
+        try:
+            self._on_loop(self.controls.reconcile(task_id, queue))
+        except (ValueError, DeferredRootPause, DeferredTeamMove, WorkflowAuthorityError, ProfileCoordinatorError):
+            import logging
+            logging.getLogger(__name__).warning('coding control retains held owner: %s', task_id, exc_info=True)
+
     def notify_queued(self, task_id: str, queue: Any) -> None:
+        with self.db._lock:
+            entry = self._entry(self.db._conn, task_id)
+            control = entry['native']['control']
+        if control is not None or entry['run']['state'] == 'held':
+            self.reconcile(task_id, queue)
+            return
         if self.queue_admission_allowed(task_id):
             queue.enqueue_if_absent(self.org.slug, task_id)
 
@@ -642,7 +674,7 @@ class CodingDispatcher:
             if ownership is None:
                 return
             entry = saved.runs[ownership[1]]
-            if ownership[0] == 'coding_carrier':
+            if ownership[0] in ('coding_carrier', 'coding_control'):
                 raise CodingStartError('coding_structural_launch_refused')
             source = ownership[0] == 'coding_source_waiting'
             if not source and (entry['native']['claim'] is None or entry['native']['host'] is None):
@@ -697,6 +729,11 @@ class CodingDispatcher:
                 attempt_changes=(dict(state='completed') if not source and safe and entry['native']['terminal'] == 'success'
                                  else dict(state='uncertain') if not source and not safe else {}),
                 event_time=now)
+            # Fold the actual newly committed-to-this-transaction cleanup before
+            # deciding whether all contributing source/development owners settled.
+            self.controls.hold_uncommitted(conn, self._entry(conn, invocation.task.id))
+        # No await or loop handoff under the native DB writer/settlement lock.
+        self.reconcile(invocation.task.id, getattr(self.org.orchestrator, '_queue', None))
 
     def development_instruction(self, task_id: str, agent: str, session_id: str) -> str:
         with self.db._lock:

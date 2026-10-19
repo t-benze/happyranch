@@ -19,7 +19,7 @@ from runtime.workflows.coding_saved_records import (
 from runtime.workflows.coding_source_history import _TASK_COLUMNS, _TASK_TYPES
 
 KINDS = ('session_bound', 'launch_reserved', 'launch_observed', 'callback_recorded',
-         'terminal_recorded', 'cleanup_settled', 'held', 'host_reconciled')
+         'terminal_recorded', 'cleanup_settled', 'held', 'host_reconciled', 'manager_control_queued')
 FACTS = {
     'session_bound': 'claim session_start_audit_id session_purpose session_id',
     'launch_reserved': 'host retry',
@@ -326,7 +326,7 @@ def read_native(conn: Any, org: str, budget: Any, storage: Any, *, start: dict,
     storage.heartbeat_claims = {key: ('source' if key == source['task_id'] else 'attempt' if key == leaf else 'carrier',
         source['result_claim']['owner_invocation_id'] if key == source['task_id'] else None) for key in tasks}
     state = dict(claim=None, host=None, terminal=None, source_settled=False, source_cleanup=None, cleanup=False, cleanup_recorded=False,
-                 callback=None, invocation=None, history=[start])
+                 callback=None, invocation=None, history=[start], control=None, safe_failure_held=None)
     previous = start
     expected_principal = 'service:coding-dispatcher:' + org
     _check(len(events) <= min(4096, source['budgets']['coding_event_limit']))
@@ -338,7 +338,7 @@ def read_native(conn: Any, org: str, budget: Any, storage: Any, *, start: dict,
         body = _closed(_json(event['event_bytes'], 16777216),
             'format id instance_id event_seq event_kind attempt_id operation previous_digest before after evidence created_at')
         _decoded(body, budget)
-        _check(_canonical(body) == event['event_bytes'] and body['format'] == 'workflow-coding-event@2')
+        _check(_canonical(body) == event['event_bytes'] and body['format'] in ('workflow-coding-event@2', 'workflow-coding-event@3'))
         for name in ('id', 'instance_id', 'event_seq', 'event_kind', 'attempt_id', 'previous_digest', 'created_at'):
             _check(same(body[name], event[name]))
         _check(event['event_seq'] == previous['event_seq'] + 1
@@ -346,6 +346,31 @@ def read_native(conn: Any, org: str, budget: Any, storage: Any, *, start: dict,
         _timestamp(body['created_at'])
         evidence = _closed(body['evidence'], 'kind command origin authority rows facts native_task_observations')
         _check(evidence['kind'] == kind)
+        if body['format'] == 'workflow-coding-event@3':
+            from runtime.workflows.coding_control_history import read_control
+            for projection in (body['before'], body['after']):
+                _closed(projection, 'run attempts instances tasks rounds requests assignments')
+                _check(projection['instances'] == initial['after']['instances']
+                       and all(projection[name] == [] for name in ('rounds', 'requests', 'assignments')))
+            observations = evidence['native_task_observations']
+            _check(type(observations) is list)
+            end = max((o['to_audit_id'] for o in observations), default=0)
+            tasks, observed = fold_heartbeats(conn, org, budget, storage, tasks, anchors, through=end)
+            _check(same(observed, observations))
+            run, tasks = read_control(conn, org, budget, storage, event=event, body=body, previous=previous,
+                state=state, run=run, attempt=attempt, tasks=tasks, source=source, roles=roles,
+                command=command_value, mapping=mapping, authority=authority, ancestors=source_ancestors)
+            for key, value in tasks.items():
+                anchors[key] = (event['id'], _hash(_canonical(encode_row(value))), anchors.get(key, (None, None, None))[2])
+                if key not in storage.heartbeat_claims:
+                    storage.heartbeat_claims[key] = ('control', None)
+            previous = event
+            state['history'].append(event)
+            storage.add('workflow_coding_events', event)
+            continue
+        # A queued control admits no native session/heartbeat/callback lifetime.
+        _check(state['control'] is None)
+        _check(kind in FACTS)
         facts = _closed(evidence['facts'], FACTS[kind])
         command = _closed(evidence['command'],
             'format kind source_event_ids source_event_digests subject producer_identity observation')
@@ -622,6 +647,11 @@ def validate_native_journals(conn: Any, org: str, budget: Any, storage: Any) -> 
         for entry in storage.runs.values():
             state = entry['native']
             source_id = entry['source']['result_claim']['owner_invocation_id']
+            control = state['control']
+            if control is not None:
+                # Queued-only controls have no native session/host/job owner,
+                # including a foreign ordinary/draft/recovery owner alias.
+                _check(not any(n['task_id'] in entry['tasks'] for n in journal['entries']))
             original = [n for n in journal['entries'] if n['id'] == source_id]
             if original:
                 for key in ('id', 'org', 'root_task_id', 'task_id', 'agent', 'session_id', 'owner', 'owner_identity', 'fingerprint', 'generation'):
