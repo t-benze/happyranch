@@ -384,6 +384,11 @@ class TaskInvocation:
                 entry["phase"] = "possible_launch"
                 entry["captured_generation"] = None
                 self.store.save_journal_uncommitted(row)
+                if self.owner == "coding":
+                    # Close both native events, their actual admission record
+                    # and the final saved journal before this SAME COMMIT.
+                    from runtime.infrastructure.workflow_schema import validate_workflow_schema
+                    validate_workflow_schema(self.store.db._conn, expected_org_slug=self.store.org_slug)
                 won = True
             if self.publish_binding is not None:
                 cancelled_binding = self.publish_binding()

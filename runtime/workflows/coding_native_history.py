@@ -177,7 +177,8 @@ def _admission(conn: Any, org: str, budget: Any, value: Any, *, callback: bool,
     pause = _closed(decode_row(value['pause']), 'root_task_id schema_version held generation paused_at resumed_at updated_at actor release_pending_generation admission_journal_json')
     _check(type(pause['schema_version']) is int)
     _check(pause['root_task_id'] == source['root_ancestor_id'] and pause['schema_version'] == 1)
-    _integer(pause['generation']); _integer(pause['held'])
+    _integer(pause['generation'])
+    _integer(pause['held'])
     _check(pause['held'] in (0, 1) and pause['held'] == pause['generation'] % 2
            and native['generation'] <= pause['generation'])
     journal = decode_journal(pause['admission_journal_json'])
