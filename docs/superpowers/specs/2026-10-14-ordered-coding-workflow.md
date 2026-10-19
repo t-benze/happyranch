@@ -1,7 +1,57 @@
-# Ordered coding workflow — K2b first setup producer checkpoint
+# Ordered coding workflow — agent-read contract
+
+<!-- Active coding contract: Founder THR139 seq640 / ROOT10693 step79 -->
+## Active coding contract — agent-read subjects (seq640)
+
+Founder THR139 seq640 supersedes the earlier seq559/562 coding content-serving
+prerequisites and the historical K2b setup/mapping/source checkpoints below.
+Those checkpoints and accepted artifacts/hashes remain historical evidence;
+they do not require rebuilding their producers. Document contracts, native
+permissions, F–J definitions/references and retained history remain in force.
+
+Coding records repository identity, object format, immutable comparison base/head
+and optional PR navigation. An eligible assigned agent reads code through its
+existing authorized repository tools. Progression requires that agent's genuine
+task/session/result, outcome and findings bound to the exact subject, with current
+authority and independence. A descriptor/digest grants no access, inspection,
+execution or merge authority. Unavailable access, a different subject or an
+unassigned/inauthentic result refuses progression. Changed head requires fresh
+independent review and QA; prior results and contributor/assignment/retry history
+remain historical. Branch/PR navigation never identifies approval.
+
+Reduced K2b on SAME draft PR1083 retains the fixed634-byte release import,
+Founder predicate, original publication/admission/replay/current-authority and
+complete template/history/cold/recovery/drain consumers. Import support is
+extracted from discarded setup code without a setup/adoption/source prerequisite
+or expanded agent import authority. Remove draft setup issue/withdraw, store
+adoption/mapping, source mint/refinement and their exclusive route/CLI/model/
+contract/native entries. Merged K1 stays dormant with its exact main bytes;
+no daemon object read or content-resolution preflight is a coding prerequisite.
+Rejected R2 private records, org fence and privacy projections are not implemented.
+Keep bounded historical positive readers and malformed/orphan/foreign-data refusal;
+reader retention neither restores a producer nor grants current access.
+
+K2c separately supplies org role defaults, eligible repository scopes, per-work
+implementer override, independence and pinned generation, not local-store custody.
+K3 is the first atomic coding instance/carrier/development-task writer and ships
+its own complete readers/recovery. K4 adds review/QA/revision with fresh exact-head
+acceptance; K5 adds successful exact-head lint/static CI and guarded expected-head
+merge/closeout; K6 adds operator entry/cutover. ROOT10693 retains genuine-agent
+revision/re-review/QA/CI/merge, two-org defaults/override and backup-copy operational
+acceptance. Coding remains disabled and runtime/security acceptance is missing.
+
+No live migration, grant, provider allocation, deployment, restart, assignment,
+cutover, cleanup or human trial follows. Python units are RETIRED; integration
+INCLUDING callback is SKIPPED24342. SQL/parser/product/security/mutation/red-green/
+repetition/native-build/E2E/executable proof is UNEXECUTED/FOUNDER-WAIVED139429/430,
+never PASS. Independent FULL code review, same-final-head scoped SOURCE QA,
+normal hooks/nonforce publication, lint/static checks and manager guarded merge
+remain required. No new reader-only publication or replacement authority framework.
+<!-- /Active coding contract: Founder THR139 seq640 / ROOT10693 step79 -->
+
 
 <!-- K2b source producer checkpoint: TASK11918 -->
-**Nonallocating coding source producer — ROOT10693, Founder139562/559/329/595/606.**
+**Historical nonallocating coding source producer — ROOT10693, Founder139562/559/329/595/606.**
 Agent-only loopback POST `/workflows/coding/sources?session_id=CURRENT` and
 GET `/workflows/coding/sources/{authorization_id}?session_id=CURRENT` use the
 existing current manager transport, without bearer fallback or browser/remote
@@ -60,7 +110,7 @@ UNEXECUTED/FOUNDER-WAIVED139429/430. No live setup/adoption/grant/assignment fol
 <!-- /K2b source producer checkpoint: TASK11918 -->
 
 
-## K2b mapping publication/adoption checkpoint — ROOT10693 step70
+## Historical K2b mapping publication/adoption checkpoint — ROOT10693 step70
 
 SAME incomplete OPEN DRAFT PR1083 now includes the explicit nonallocating
 mapping writer and every own saved/native/current/cold/public/CLI consumer.
@@ -159,7 +209,7 @@ scoped SOURCE QA and manager disposition remain required. Keep PR1083 draft,
 unmerged and incomplete until the genuine SAME-K2b remainder is delivered.
 
 
-## K2b fixed coding release import checkpoint — ROOT10693 / Founder139562/559/329/606
+## Historical K2b fixed coding release import checkpoint — ROOT10693 / Founder139562/559/329/606
 
 Manager step68 extends SAME incomplete draft PR1083. This source checkpoint adds
 explicit fixed release import and its own historical/current/public/cold readers;
@@ -237,7 +287,7 @@ coverage. Lint/static checks and inert OpenAPI inspection do not prove behavior.
 Fresh FULL independent final-head review then same-head scoped SOURCE QA return
 to SAME sole ROOT10693. No maker approval/QA/merge or complete K2b acceptance.
 
-## K2b first setup producer checkpoint — ROOT10693 / Founder139562
+## Historical K2b first setup producer checkpoint — ROOT10693 / Founder139562
 
 Manager step65 and THR139seq595/596 select **one K2b draft PR**, continuing
 merged1082. Each writer ships its own complete saved/current/native/cold readers;
@@ -396,7 +446,7 @@ adds no native reachability grant. K0's explicit approved radius has no TS,
 provider, browser initiation or stage-prompt callers. Browser UI work belongs to
 later K6; no included classification is an execution permission.
 
-## Later serial boundaries and amended v1 merge
+## Historical serial boundaries and amended v1 merge
 
 K1 internal adopted-store mechanics and unavailable current-use service are described below. K2 independent J readers/offline source,
 reusable Founder setup/withdrawal/attenuation, explicit release import/mapping
@@ -443,7 +493,7 @@ engineering-chain, live-upgrade or whole-program acceptance.
 The service mount in OrgState is inert. `resolve(session_id, selected_id)` always
 raises workflow_repository_reader_unavailable before inspecting selectors,
 decoding private descriptor/capsule bytes, probing filesystem objects or awaiting
-locks. K2b's genuine adoption/authority producer is absent. A saved proof model,
+locks. This merged service remains deliberately dormant under seq640. A saved proof model,
 digest, Boolean, constructor flag or callback cannot enable the mount. There is
 no public raw-reader bypass, route or new DTO; code activation's existing refusal
 and K0's disabled readiness remain unchanged.
