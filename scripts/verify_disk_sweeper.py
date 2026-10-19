@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import builtins
+import io
 import json
 import os
 import shutil
@@ -20,7 +22,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from unittest.mock import patch
 
@@ -175,6 +177,7 @@ def c2():
 
 
 def c3():
+    # Historical seq85 process-retention fixture; superseded by seq117.
     with fixture() as f:
         p=f.scratch('TASK-1')
         reads=[];original=os.readlink
@@ -205,6 +208,7 @@ def c3():
 
 
 def c4():
+    # Historical process-environment retention fixture; superseded by seq117.
     with fixture() as f:
         for n,key in enumerate(('TMPDIR','TMP','TEMP'),1):
             p=f.scratch(f'TASK-{n}')
@@ -378,19 +382,14 @@ def c9():
         r=f.sweep();assert row(r,p)['state']=='retained'
         q=f.scratch('TASK-2');(q/'nested').chmod(0)
         r=f.sweep();assert row(r,q)['state']=='retained'
-        # Real denied proc read: a test-owned restriction at the syscall seam
-        # models kernel denial, not a permissive fabricated helper outcome.
-        z=f.scratch('TASK-3');real=os.readlink
-        def deny(path,*a,**kw):
-            if str(path).startswith('/proc/') and str(path).endswith('/root'):raise PermissionError('fixture denial')
-            return real(path,*a,**kw)
-        with patch.object(os,'readlink',deny): retained(f.sweep(),z,'unknown_process_denied')
+        # Process-denial retention was superseded by seq117.
+        z=f.scratch('TASK-3')
         f.db.execute('DROP TABLE jobs');f.db.commit()
         assert row(f.sweep(),z)['state']=='retained'
     unknown=[]
     for status in UNKNOWN_JOB_STATES:
         with fixture() as f:unknown.append(job_refusal(f,status,'unknown_job_status'))
-    return dict(evidence='Missing manifest/jobs, actual unreadable child directory, controlled proc syscall denial all retain. Proc denial injection is not actual OS-denial proof.',unknown_jobs=unknown,unknown_lineage=lineage_refusals())
+    return dict(evidence='Missing manifest/jobs, actual unreadable child directory, all retain. Process-denial retention superseded by seq117.',unknown_jobs=unknown,unknown_lineage=lineage_refusals())
 
 
 def c10():
@@ -1066,6 +1065,8 @@ def isolated_boundary(kind):
     This one executor attempts unprivileged disposable isolation. EPERM is
     reported without sudo, another executor, a job or provisioning fallback.
     """
+    if kind == 'root':
+        return dict(result='SUPERSEDED', reason='THR307 seq117 removed process-root retention; historical source not executed')
     if not sys.platform.startswith('linux') or not shutil.which('unshare'):
         return dict(result='UNAVAILABLE',reason='Linux util-linux unshare required')
     namespaces={name:os.readlink('/proc/self/ns/'+name) for name in ('mnt','pid')}
@@ -1091,90 +1092,32 @@ def isolated_boundary(kind):
 
 
 @contextmanager
-def correction_process_reader(base, records):
-    """Synthetic proc syscall boundary only; no production scanner replacement.
+def no_process_inspection():
+    """Observe Python syscall boundaries; allow real self mountinfo containment.
 
-    Each record supplies a complete visible PID/thread identity. Denials and
-    references are explicit fixture inputs; this is not actual host proc proof.
+    This is a sentinel, not host namespace/OS-denial proof. Count attempts even
+    if shipping code swallows the sentinel exception and reports retention.
     """
-    proc = base / 'synthetic-proc'
-    proc.mkdir(exist_ok=True)
-    real_text, real_bytes, real_stat = Path.read_text, Path.read_bytes, Path.stat
-    real_exists = Path.exists
-    real_is_dir, real_listdir, real_readlink = Path.is_dir, os.listdir, os.readlink
-    by_pid, by_thread = {}, {}
-    for index, record in enumerate(records, 401):
-        pid = str(index)
-        by_pid[pid] = record
-        leader = proc / pid
-        threads = [(pid, record)] + [(str(index * 10 + offset), sibling) for offset, sibling in enumerate(record.get('threads', []), 1)]
-        for tid, thread in threads:
-            by_thread[pid, tid] = thread
-            task = leader / 'task' / tid
-            task.mkdir(parents=True, exist_ok=True)
-            (task / 'fd').mkdir(exist_ok=True)
-            (task / 'stat').write_text(f"{tid} ({thread['name']}) {thread.get('state', 'S')} " + '0 ' * 18 + '100\n')
-            (task / 'environ').write_bytes(b'')
-        (leader / 'stat').write_text(f"{pid} ({record['name']}) {record.get('state', 'S')} " + '0 ' * 18 + '100\n')
-        for directory in (leader, leader / 'task' / pid):
-            (directory / 'status').write_text('Uid:\t' + '\t'.join([str(os.geteuid())] * 4) + '\n')
-    # Keep old fixture directories out of the declared synthetic census.
-    def mapped(path):
-        value = str(path)
-        return proc / value.removeprefix('/proc/') if value.startswith('/proc/') else path
-    def record_for(path):
-        parts = str(path).split('/')
-        if len(parts) > 4 and parts[1] == 'proc' and parts[3] == 'task':
-            return by_thread.get((parts[2], parts[4]), {})
-        return by_pid.get(parts[2], {}) if len(parts) > 2 and parts[1] == 'proc' else {}
-    def denied(path):
-        record = record_for(path)
-        if any(str(path).endswith('/' + ref) for ref in record.get('missing', ())):
-            raise FileNotFoundError('synthetic missing proc reference')
-        if any(str(path).endswith('/' + ref) for ref in record.get('deny', ())):
-            raise PermissionError('synthetic proc denial')
-    def read_text(path, *a, **kw):
-        denied(path)
-        value = real_text(mapped(path), *a, **kw)
-        record = record_for(path)
-        if str(path).endswith('/stat') and record.get('change_start'):
-            record['stat_reads'] = record.get('stat_reads', 0) + 1
-            if record['stat_reads'] > 2:
-                value = value.removesuffix('100\n') + '101\n'
-        if str(path).endswith('/stat') and '/task/' in str(path):
-            record['thread_stat_reads'] = record.get('thread_stat_reads', 0) + 1
-            if record['thread_stat_reads'] % 2 == 0:
-                if record.get('change_thread_start'):
-                    value = value.removesuffix('100\n') + '101\n'
-                if record.get('change_state'):
-                    value = value.replace(') Z ', ') S ')
-        return value
-    def read_bytes(path, *a, **kw):
-        denied(path)
-        return real_bytes(mapped(path), *a, **kw)
-    def listdir(path):
-        if str(path) == '/proc':
-            return list(by_pid)
-        denied(path)
-        parts = str(path).split('/')
-        if len(parts) == 4 and parts[1] == 'proc' and parts[3] == 'task':
-            return [tid for pid, tid in by_thread if pid == parts[2]]
-        return real_listdir(mapped(path))
-    def readlink(path, *a, **kw):
-        if str(path).startswith('/proc/'):
-            record_for(path).setdefault('link_reads', []).append(str(path))
-            denied(path)
-            if str(path).endswith('/ns/mnt'):
-                return 'mnt:[fixture]'
-            return record_for(path).get(Path(path).name, str(base))
-        return real_readlink(path, *a, **kw)
-    def is_dir(path):
-        return True if str(path) == '/proc/self/task' else real_is_dir(mapped(path))
-    def exists(path, *a, **kw):
-        # Python 3.14 Path.exists bypasses Path.stat; map the observation itself.
-        return real_exists(mapped(path), *a, **kw)
-    with patch.object(Path, 'read_text', read_text), patch.object(Path, 'read_bytes', read_bytes), patch.object(Path, 'stat', lambda p, *a, **kw: real_stat(mapped(p), *a, **kw)), patch.object(Path, 'exists', exists), patch.object(Path, 'is_dir', is_dir), patch.object(os, 'listdir', listdir), patch.object(os, 'readlink', readlink):
-        yield
+    attempts, mount_reads = [], []
+    def guarded(operation, original):
+        def call(path, *args, **kwargs):
+            value = os.fsdecode(path) if isinstance(path, (str, bytes, os.PathLike)) else ''
+            if value == '/proc/self/mountinfo':
+                mount_reads.append(operation)
+            elif value == '/proc' or value.startswith('/proc/'):
+                attempts.append(dict(operation=operation, path=value))
+                raise AssertionError('unexpected process inspection: ' + value)
+            return original(path, *args, **kwargs)
+        return call
+    with ExitStack() as stack:
+        for owner, name in ((builtins, 'open'), (io, 'open'), (os, 'open'),
+                            (os, 'listdir'), (os, 'scandir'), (os, 'readlink'),
+                            (os, 'stat'), (os, 'lstat')):
+            stack.enter_context(patch.object(owner, name, guarded(name, getattr(owner, name))))
+        try:
+            yield dict(attempts=attempts, mount_reads=mount_reads)
+        finally:
+            assert attempts == [], attempts
 
 
 def correction_jobs():
@@ -1189,7 +1132,7 @@ def correction_jobs():
         before = candidate_contents(p, q)
         registered = f.git(repo, 'worktree', 'list', '--porcelain')
         observations = []
-        with correction_process_reader(f.base, [dict(name='fixture')]), refuse_mutations():
+        with refuse_mutations():
             r = f.sweep('dry_run')
             assert row(r, p)['state'] == row(r, q)['state'] == 'eligible', r
             assert f.db.execute('SELECT task_id,status FROM jobs').fetchall() == finished
@@ -1202,7 +1145,7 @@ def correction_jobs():
         assert candidate_contents(p, q) == before
         assert f.git(repo, 'worktree', 'list', '--porcelain') == registered
         assert f.db.execute('SELECT task_id,status FROM jobs').fetchall() == finished
-        return dict(finished_orphans='both phases eligible; rows unchanged', paired_refusals=observations, filesystem_and_registration_unchanged=True, proc='synthetic syscall reader')
+        return dict(finished_orphans='both phases eligible; rows unchanged', paired_refusals=observations, filesystem_and_registration_unchanged=True)
 
 
 def correction_superseded():
@@ -1214,7 +1157,7 @@ def correction_superseded():
         before = candidate_contents(p, q)
         registered = f.git(repo, 'worktree', 'list', '--porcelain')
         observations = []
-        with correction_process_reader(f.base, [dict(name='fixture')]), refuse_mutations():
+        with refuse_mutations():
             r = f.sweep('dry_run')
             assert row(r, p)['state'] == row(r, q)['state'] == 'eligible', r
             assert all(phase['measured_allocated_bytes'] > 0 for phase in r['phases'].values()), r
@@ -1228,22 +1171,33 @@ def correction_superseded():
                 f.db.executemany("UPDATE tasks SET status='superseded' WHERE id=?", [(task,) for task in ids]); f.db.commit()
         assert candidate_contents(p, q) == before
         assert f.git(repo, 'worktree', 'list', '--porcelain') == registered
-        return dict(superseded_owner_and_root='both phases dry-run eligible; measured allocation positive', paired_refusals=observations, filesystem_and_registration_unchanged=True, proc='synthetic syscall reader')
+        return dict(superseded_owner_and_root='both phases dry-run eligible; measured allocation positive', paired_refusals=observations, filesystem_and_registration_unchanged=True)
 
 
 def correction_processes():
+    """C3 seq117: ended trees eligible without any process-use inspection."""
     with fixture() as f:
         p = f.scratch('TASK-1')
         repo, q = f.worktree('TASK-2')
-        before = candidate_contents(p, q)
+        f.task('TASK-3')
+        f.db.execute("UPDATE tasks SET parent_task_id='TASK-3' WHERE id IN ('TASK-1','TASK-2')")
+        f.db.commit()
+        out = f.workspace / 'output/TASK-1'
+        out.mkdir(parents=True); (out / 'keep').write_text('durable output')
+        sidecars = f.workspace / '.happyranch/task-scratch-manifests'
+        (q / 'ignored').mkdir(); (q / 'ignored/cache').write_bytes(b'cache' * 2048)
+        (p / 'nested').chmod(0o555); (q / 'ignored').chmod(0o555)
+        excluded = candidate_contents(out, sidecars)
         registered = f.git(repo, 'worktree', 'list', '--porcelain')
-        allowed = [dict(name=name, deny=[ref]) for name, ref in zip(('systemd', '(sd-pam)', 'sshd-session', 'ssh-agent'), ('ns/mnt', 'root', 'fd', 'environ'))]
-        observations = []
+        branches = f.git(repo, 'show-ref', '--heads')
         summary = f.base / 'summary.json'
-        expected_scope = 'visible Linux same-effective-UID processes, all threads; PermissionError-only denied-reference exceptions for exact program names systemd, (sd-pam), sshd-session, ssh-agent with stable identity/credential/census checks; names do not authenticate executables; readable candidate use still retains; snapshot, not host-wide absence'
-        def run(records):
-            # Fixture clock only: exercise the real wrapper/config/JSON path.
-            with correction_process_reader(f.base, records), refuse_mutations(), patch.object(time, 'time', return_value=NOW):
+        expected_scope = 'not checked under THR307 seq117; ended task and structural root required; no process absence or authentication claim'
+        projections = []
+        def run(label):
+            before = candidate_contents(p, q)
+            # Only SQLite lineage/jobs and wall clock are synthetic. Exercise
+            # actual config, filesystem/Git, wrapper, JSON and audit projection.
+            with no_process_inspection() as calls, refuse_mutations(), patch.object(time, 'time', return_value=NOW):
                 report = ds.sweep([str(f.org)], time.monotonic() + 12, summary, dry_run=True, scheduled_date=None, revision='fixture')
             persisted = json.loads(summary.read_text())
             assert persisted == report
@@ -1253,60 +1207,44 @@ def correction_processes():
             assert report['selected_org_roots'] == [str(f.org)] and len(report['orgs']) == 1
             result = report['orgs'][0]
             assert result['org'] == f.org.name and result['configured_mode'] == 'on' and result['mode'] == 'dry_run'
+            assert result['process_scope'] == expected_scope and result['process_exemptions'] == []
+            assert all(not c.get('process_exemptions') for c in result['candidates'])
+            assert all(phase['removed_attributable_bytes'] == 0 for phase in result['phases'].values())
             audit = ds._audit_payload(report, result, summary)
             assert audit['org'] == result and audit['revision'] == report['revision']
-            assert audit['org']['process_exemptions'] == result['process_exemptions']
+            assert audit['org']['process_scope'] == expected_scope and audit['org']['process_exemptions'] == []
+            assert candidate_contents(p, q) == before
+            assert candidate_contents(out, sidecars) == excluded
+            assert f.git(repo, 'worktree', 'list', '--porcelain') == registered
+            assert f.git(repo, 'show-ref', '--heads') == branches
+            assert calls['attempts'] == [] and calls['mount_reads'], calls
+            projections.append(dict(control=label, report=persisted, audit=audit,
+                                    process_attempts=calls['attempts'], mountinfo_reads=len(calls['mount_reads'])))
             return result
-        r = run(allowed)
+        r = run('ended_owner_and_root')
         assert row(r, p)['state'] == row(r, q)['state'] == 'eligible', r
-        for path in (p, q):
-            records = row(r, path)['process_exemptions']
-            assert {record['name'] for record in records} == {record['name'] for record in allowed}
-            assert len(records) == 4 and all(record['starttime'] == '100' and record['uid'] == os.geteuid() for record in records)
-        assert len(r['process_exemptions']) == 8
-        for control in ('codex', 'ssh-agent-extra'):
-            r = run(allowed + [dict(name=control, deny=['root'])])
-            retained(r, p, 'unknown_process_denied'); retained(r, q, 'unknown_process_denied')
-            assert len(r['process_exemptions']) == 8, r  # earlier actual exceptions survive refusal
-            observations.append(dict(control=control, both='retained', reported_exemptions=8))
-        # An exempt denial must not hide a later readable reference in SAME task.
-        r = run([dict(name='ssh-agent', deny=['cwd'], root=str(p)), dict(name='systemd', cwd=str(q))])
-        retained(r, p, 'process_use'); retained(r, q, 'process_use')
-        assert r['process_exemptions'] == [] or all(record['name'] == 'ssh-agent' for record in r['process_exemptions'])
-        r = run([dict(name='ssh-agent', deny=['root'], change_start=True)])
-        retained(r, p, 'unknown_process_identity_changed')
-        assert row(r, p).get('process_exemptions', []) == []
-        # Stable zombies need neither namespace nor live-use links. This is
-        # per-thread; a zombie leader never hides a live sibling.
-        zombie = dict(name='codex', state='Z', missing=['ns/mnt', 'cwd', 'root', 'exe', 'fd', 'environ'])
-        r = run([zombie])
-        assert row(r, p)['state'] == row(r, q)['state'] == 'eligible', r
-        assert r['process_exemptions'] == [] and zombie.get('link_reads', []) == []
-        zombie_controls = []
-        for control, record, reason in (
-            ('live_missing_namespace', dict(name='codex', missing=['ns/mnt']), 'unknown_missing_process_reference'),
-            ('allowed_name_live_missing_namespace', dict(name='ssh-agent', missing=['ns/mnt']), 'unknown_missing_process_reference'),
-            ('zombie_changed_start', dict(name='codex', state='Z', missing=['ns/mnt'], change_thread_start=True), 'unknown_process_identity_changed'),
-            ('zombie_changed_state', dict(name='codex', state='Z', missing=['ns/mnt'], change_state=True), 'unknown_process_identity_changed'),
-            ('zombie_leader_live_sibling_use', dict(name='codex', state='Z', missing=['ns/mnt'], threads=[dict(name='live-sibling', cwd=str(p), root=str(q))]), 'process_use'),
-            ('zombie_leader_live_sibling_missing', dict(name='codex', state='Z', missing=['ns/mnt'], threads=[dict(name='live-sibling', missing=['ns/mnt'])]), 'unknown_missing_process_reference'),
-        ):
-            try:
-                r = run([record])
-                retained(r, p, reason); retained(r, q, reason)
-                assert r['process_exemptions'] == []
-            except AssertionError as exc:
-                raise AssertionError(f'{control}: {exc}') from exc
-            zombie_controls.append(dict(control=control, both='retained', reason=reason))
-        assert candidate_contents(p, q) == before
-        assert f.git(repo, 'worktree', 'list', '--porcelain') == registered
-        return dict(allowed_names=[record['name'] for record in allowed], actual_summary_and_audit_projection=True, top_level_wrapper_and_serialized_metadata=True, process_scope=expected_scope, paired_refusals=observations, readable_use='both phases retained including after denied read', changed_start='retained without exemption', stable_zombie_missing_namespace='both phases eligible without reference reads or exemptions', zombie_controls=zombie_controls, filesystem_and_registration_unchanged=True, proc='fully synthetic syscall reader; no host security change or actual OS denial proof')
+        assert all(phase['measured_allocated_bytes'] > 0 for phase in r['phases'].values()), r
+        source = (q / 'source').read_bytes()
+        (q / 'source').write_text('dirty tracked source')
+        r = run('dirty_worktree')
+        retained(r, q, 'dirty_or_untracked')
+        assert row(r, p)['state'] == 'eligible', r
+        (q / 'source').write_bytes(source)
+        for path in (p / 'nested/payload', q / 'ignored/cache'):
+            os.utime(path, (NOW, NOW))
+        r = run('recent_write_both_phases')
+        retained(r, p, 'changed_within_hour'); retained(r, q, 'changed_within_hour')
+        assert r['retained_allocation_unknown_count'] == 2
+        return dict(actual_summary_and_audit_projection=True, top_level_wrapper_and_serialized_metadata=True,
+                    process_scope=expected_scope, projections=projections,
+                    filesystem_modes_registrations_branches_output_sidecars_unchanged_by_sweep=True,
+                    limits='Python syscall sentinels only; no actual host namespace or OS-denial proof; no process started or inspected')
 
 
 if __name__=='__main__':
     parser=argparse.ArgumentParser(description=__doc__)
     selection=parser.add_mutually_exclusive_group()
-    selection.add_argument('--corrections-only', action='store_true', help='THR307seq85: exactly C1 jobs, C2 superseded, C3 unreadable identities; no historical/config/isolation cases')
+    selection.add_argument('--corrections-only', action='store_true', help='THR307seq117: exactly C1 jobs, C2 superseded, C3 ended trees without process inspection; no historical/config/isolation cases')
     selection.add_argument('--cases',type=int,nargs='+',choices=range(1,23))
     selection.add_argument('--isolation-case',choices=('mount','root'),help='only the private executable namespace fixture; exit77 if unavailable')
     args=parser.parse_args()
@@ -1316,7 +1254,7 @@ if __name__=='__main__':
     status=0
     try:
         if args.corrections_only:
-            for number, purpose, fn in ((1, 'Finished jobs before lineage', correction_jobs), (2, 'Superseded owner and structural root', correction_superseded), (3, 'Exact unreadable process identities and reporting', correction_processes)):
+            for number, purpose, fn in ((1, 'Finished jobs before lineage', correction_jobs), (2, 'Superseded owner and structural root', correction_superseded), (3, 'Ended trees without process inspection and truthful reporting', correction_processes)):
                 case(number, purpose, fn)
         elif args.isolation_case:
             detail=isolated_boundary(args.isolation_case)
@@ -1326,7 +1264,11 @@ if __name__=='__main__':
             config_checks()
             purposes=('Terminal owned root and attribution','Nonterminal and invalid lineage','Real process cwd/root/exe/fd','Real TMPDIR/TMP/TEMP and alias','Readonly handling and bounded Git retry','Link/ancestor and actual mounted boundaries','Dirty/untracked and ignored Git contents','Nonmutating function and public CLI dry run','Missing/denied evidence and all job lineage','Jobs both phases and fresh retry change','Nested recent writes','Partial removal, deadline, shutdown and event loop','Detached commit retained refs','Same-night progress after refusals and exhaustion','Partial discovery with protected non-Git siblings','Narrow unreadable/broken/alias discovery scopes','Global deadline during partial discovery','Progress after many uncertain subtrees','Complete unreadable/missing registration census','No metadata alias or conflicting backlink traversal','Fresh registration gates and truthful partial effects','Primary-only control and metadata enumeration deadline')
             for number,(fn,purpose) in enumerate(zip((c1,c2,c3,c4,c5,c6,c7,c8,c9,c10,c11,c12,c13,c14,c15,c16,c17,c18,c19,c20,c21,c22),purposes),1):
-                if args.cases is None or number in args.cases:case(number,purpose,fn)
+                if args.cases is None or number in args.cases:
+                    if number in (3, 4):
+                        RESULTS.append(dict(case=number, purpose=purpose, result='SUPERSEDED', reason='THR307 seq117 removed OS-process eligibility; historical source not executed'))
+                    else:
+                        case(number,purpose,fn)
             if any(item['result']=='PARTIAL' for item in RESULTS): status=77
     except Exception:
         import traceback

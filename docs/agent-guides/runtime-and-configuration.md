@@ -1142,7 +1142,7 @@ shutdown. `output/` and durable scratch manifest/lock siblings stay excluded.
 Actual task AND structural root must each be completed/failed/cancelled/superseded.
 Recognized finished jobs completed/failed/rejected are skipped before owner-lineage
 lookup; active jobs still require valid lineage and retain their structural root.
-Unknown job status/active lineage retains. Fresh process evidence, recursive
+Unknown job status/active lineage retains. Recursive
 mtime+ctime age of at least one hour and no-follow/same-filesystem containment
 apply to both phases. Git additionally requires owned registration,
 clean/nonignored-untracked status and HEAD reachability through retained local
@@ -1163,24 +1163,22 @@ Manual dry run: `python -m runtime.daemon.disk_sweeper --dry-run --runtime-root
 org audit action is `disk_sweep_summary`. Allocation is inode-deduped and successful
 removal-attributed; retained/partial/unreached bytes and physical freed space stay
 unknown, whole-disk percent is context only. Below20% is flagged in audit/JSON;
-no new notification interface. Linux same-effective-UID all-thread process
-observations are snapshots, not host-wide absence or a writer fence. Missing
-mount/process/ownership evidence refuses except the exact unreadability policy:
-only denied reads for stat comm `systemd`, `(sd-pam)`, `sshd-session`, `ssh-agent`
-can be omitted, with stable PID/start/name/UID and census checks. Every readable
-reference still gates, even after a denial; unknown identity and other names
-retain. Applied exceptions persist in candidate/org `process_exemptions` in the
-existing JSON/audit, also after later refusal. These names do not authenticate
-executables or establish host-wide absence. Stable zombie threads skip namespace
-and live-use references before reading them; missing zombie references need no
-exception. Identity/starttime/comm and Z-state remain bracketed, with UID and
-full census checks preserved. Live siblings are inspected even when their leader
-is a zombie; missing non-zombie references still retain for every name.
+no new notification interface. Founder THR307 seq117 removes all OS-process
+eligibility inspection from this nightly sweeper, including process namespace,
+cwd/root/exe/fd/environment and the former four-name/zombie policy. Top-level
+JSON and org/audit `process_scope` state that process usage is not checked;
+`process_exemptions` remains an unused empty compatibility field. This claims
+neither process absence nor executable authentication. Filesystem mount boundaries
+still retain via `/proc/self/mountinfo`; other owners' legacy/root-terminal process
+gates are unchanged. Ended tasks/root status does not prove OS-process quiescence.
+
 
 See the [full current contract](../superpowers/specs/2026-10-15-nightly-disk-sweeper.md)
 for evidence semantics, limitations, finite disposable verification and staged
 operational acceptance. The current bounded selector is `--corrections-only`: one case per approved
-correction with paired refusals and synthetic proc inputs. Historical case9/10
+correction with paired refusals; C3 asserts no process-inspection calls at Python
+syscall boundaries while allowing real self mountinfo reads. Task/job/clock inputs
+are synthetic; filesystem/Git/config/JSON/audit projection are real. Historical case9/10
 terminal-lineage expectations are superseded; active/unknown refusals remain.
 The mount/process-root isolation fixtures remain SKIPPED/UNEXECUTED under seq62.
 The separate historical isolation source supports disposable namespace boundaries. Run as the ordinary user; only its
