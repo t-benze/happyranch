@@ -141,6 +141,10 @@ def mount_cases():
 
 
 def root_cases():
+    """Historical process-root retention expectation, superseded by seq117.
+
+    Preserved as evidence only; execution is refused before namespace work.
+    """
     observations = []
     for phase in ('scratch', 'worktree'):
         with Disposable() as d:
@@ -189,6 +193,9 @@ def root_cases():
 
 def main():
     case, outer_mount, outer_pid = sys.argv[1:]
+    if case == 'root':
+        print(json.dumps(dict(result='SUPERSEDED', case=case, reason='THR307 seq117 removed process-root eligibility')))
+        return
     assert os.geteuid() == 0 and os.getpid() == 1, 'fresh mapped user/PID namespace required'
     assert os.readlink('/proc/self/ns/mnt') != outer_mount
     assert os.readlink('/proc/self/ns/pid') != outer_pid

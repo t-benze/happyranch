@@ -229,18 +229,18 @@ Preserve owner/session/Pause/possible-launch/race winners, existing running CAS,
 limits and all-terminal resumption. No schema/auth/permission/credential/general
 notifier change or deployment follows. Current contract: [Jobs](docs/superpowers/specs/2026-05-26-jobs-design.md).
 
-**Independent THR307 nightly disk sweeper — Founder seq48–51, ROOT TASK11518.**
+**Independent THR307 nightly disk sweeper — Founder seq117, ROOT TASK11742.**
 `runtime/daemon/disk_sweeper.py` adds machine-local03:00, default-dry-run, sequential
 org sweeping under one1800s monotonic batch window, with an owned stoppable worker
 process group. Only actual terminal-owner/terminal-root scratch and registered
-clean retained-ref worktrees can pass fresh jobs/process/recursive-age/containment
-checks; unknown retains. THR307seq85/88 includes superseded for BOTH owner/root,
-skips recognized finished jobs before owner-lineage lookup, and permits only
-exact unreadable systemd/(sd-pam)/sshd-session/ssh-agent comm identities with
-stable identity/credential/census checks and actual summary reporting. Readable
-candidate use and other uncertainty retain. Stable zombie threads skip namespace
-and live-use reads while retaining identity/Z-state, UID and full census checks;
-a zombie leader never skips live siblings. Missing non-zombie references retain.
+clean retained-ref worktrees can pass fresh jobs/recursive-age/containment
+checks; unknown retains. THR307seq85/88 includes superseded for BOTH owner/root
+and skips recognized finished jobs before owner-lineage lookup. Founder seq117
+removes OS-process eligibility for this nightly sweeper, including namespace,
+cwd/root/exe/fd/environment inspection and the former four-name/zombie policy.
+JSON and org audit `process_scope` say usage is not checked; `process_exemptions`
+is an unused empty compatibility field. Filesystem `/proc/self/mountinfo`
+containment remains. Other cleanup owners retain their own process gates.
 Preserve manifests/locks/output, dirty worktrees and
 branches. No legacy receipt/count/rotation policy is imported into this new
 mechanism; legacy cleanup, flags and seven sessions are unchanged. Dry run never

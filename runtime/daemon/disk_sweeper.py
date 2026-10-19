@@ -7,7 +7,7 @@ Python thread would not stop deletion. Public manual entry is DRY RUN ONLY:
     python -m runtime.daemon.disk_sweeper --dry-run --runtime-root /absolute/runtime
 Default org disk_sweep.mode is dry_run; off does no inventory. No legacy cleanup
 code/flags are invoked. Output is never a candidate. See the maintained THR307
-spec for snapshot/process scope and nonpreemptible kernel-I/O limitations.
+spec for filesystem observation scope and nonpreemptible kernel-I/O limitations.
 """
 from __future__ import annotations
 
@@ -32,11 +32,12 @@ from pathlib import Path
 
 from runtime.daemon._disk_sweep_fs import (
     Expired, Retain, allocated, check, directory, identity, mutate, names,
-    process_use, signature, snapshot,
+    signature, snapshot,
 )
 
 LOG = logging.getLogger(__name__)
 BUDGET_SECONDS = 1800
+PROCESS_SCOPE = 'not checked under THR307 seq117; ended task and structural root required; no process absence or authentication claim'
 TERMINAL = {'completed', 'failed', 'cancelled', 'superseded'}
 TASK = re.compile(r'TASK-[0-9]+\Z')
 
@@ -348,7 +349,7 @@ def _worktree_gate(candidate: dict, deadline: float) -> tuple:
         raise Retain('unique_head_commit')
     return row.get("HEAD"), row.get("branch"), common, metadata
 
-def admit(candidate: dict, evidence: Evidence, deadline: float, *, now: float | None = None, repairs: dict | None = None, checkpoint: Callable[[], None] = lambda: None) -> dict:
+def admit(candidate: dict, evidence: Evidence, deadline: float, *, now: float | None = None, repairs: dict | None = None) -> dict:
     """Fresh common gates before each candidate mutation/retry admission."""
     path, workspace = Path(candidate['path']), Path(candidate['workspace'])
     task_id = path.name
@@ -385,15 +386,7 @@ def admit(candidate: dict, evidence: Evidence, deadline: float, *, now: float | 
             raise Retain('changed_within_hour')
     if candidate['phase'] == 'scratch' and any(Path(p).name == '.git' for p in tree):
         raise Retain('unknown_repository_in_scratch')
-    def report_exemption(observation: dict) -> None:
-        records = candidate.setdefault('process_exemptions', [])
-        if observation not in records:
-            records.append(observation)
-            # Preserve actual applied exceptions even if a later gate refuses.
-            checkpoint()
-
-    process_use(path, deadline, on_exemption=report_exemption)
-    # Re-read durable state after slow filesystem/process/Git observations.
+    # Re-read durable state after slow filesystem/Git observations.
     evidence.ownership(path, workspace, task_id)
     if candidate['phase'] == 'worktree' and _worktree_gate(candidate, deadline) != git_identity:
         raise Retain('git_identity_changed_during_admission')
@@ -505,8 +498,9 @@ def _summarize_org(result: dict) -> None:
     candidates = result.get('candidates', [])
     result['measurement_scope'] = 'eligible scanned inodes only; retained/unreached allocation is unknown; removed allocation is not physical freed space'
     result['physical_freed_bytes'] = None
-    result['process_exemptions'] = [dict(observation, candidate=c['path'])
-                                    for c in candidates for observation in c.get('process_exemptions', [])]
+    result['process_scope'] = PROCESS_SCOPE
+    # Compatibility field: unused since seq117 removed process inspection.
+    result['process_exemptions'] = []
     result['retained_allocation_unknown_count'] = sum(c.get('allocated_bytes') is None for c in candidates)
     result['retained_count'] = sum(c.get('state') == 'retained' for c in candidates)
     result['partial_unknown_count'] = sum(c.get('state') in ('mutation_in_flight', 'partial_or_unknown') for c in candidates)
@@ -560,7 +554,7 @@ def sweep_org(org: Path, deadline: float, *, mode: str, checkpoint=lambda: None,
             try:
                 if candidate.get('repo') in uncertain_repos:
                     raise _RegistrationUnknown('unknown_repository_registration_scope')
-                tree = admit(candidate, evidence, deadline, now=now, checkpoint=report_checkpoint)
+                tree = admit(candidate, evidence, deadline, now=now)
                 amount, _ = allocated(tree, measured_inodes)
                 phase['measured_allocated_bytes'] += amount
                 candidate['allocated_bytes'] = amount
@@ -576,7 +570,7 @@ def sweep_org(org: Path, deadline: float, *, mode: str, checkpoint=lambda: None,
                 phase['attribution_unknown'] = True
                 report_checkpoint()
                 on_config()
-                fresh = admit(candidate, evidence, deadline, now=now, checkpoint=report_checkpoint)
+                fresh = admit(candidate, evidence, deadline, now=now)
                 on_config()
                 if {k: signature(v) for k, v in tree.items()} != {k: signature(v) for k, v in fresh.items()}:
                     raise Retain('tree_changed_before_mutation')
@@ -598,11 +592,11 @@ def sweep_org(org: Path, deadline: float, *, mode: str, checkpoint=lambda: None,
                         # permission/partial changes count as recent and may
                         # conservatively refuse that retry.
                         on_config()
-                        retry_tree = admit(candidate, evidence, deadline, now=now, checkpoint=report_checkpoint)
+                        retry_tree = admit(candidate, evidence, deadline, now=now)
                         on_config()
                         registrations(repo, deadline)
                         repairs = mutate(path, retry_tree, deadline, remove=False)
-                        admit(candidate, evidence, deadline, now=now, repairs=repairs, checkpoint=report_checkpoint)
+                        admit(candidate, evidence, deadline, now=now, repairs=repairs)
                         on_config()
                         registrations(repo, deadline)
                         candidate['retry_count'] = 1
@@ -681,7 +675,7 @@ def sweep(roots: list[str], deadline: float, summary: Path, *, dry_run: bool, sc
                   timezone=datetime.now().astimezone().tzname(), timezone_offset=datetime.now().astimezone().strftime('%z'),
                   started_at=datetime.now().astimezone().isoformat(), deadline_monotonic=deadline,
                   budget_seconds=deadline - started_monotonic if started_monotonic is not None else BUDGET_SECONDS,
-                  process_scope='visible Linux same-effective-UID processes, all threads; PermissionError-only denied-reference exceptions for exact program names systemd, (sd-pam), sshd-session, ssh-agent with stable identity/credential/census checks; names do not authenticate executables; readable candidate use still retains; snapshot, not host-wide absence',
+                  process_scope=PROCESS_SCOPE,
                   outcome='incomplete', orgs=[], unreached_orgs=list(sorted(roots)))
     def checkpoint():
         atomic_json(summary, report)
