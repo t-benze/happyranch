@@ -171,12 +171,20 @@ No history deletion, automatic recovery, apply or execution authority follows.
 An online team-move hold reserves affected agents and source/target membership. The native cleanup trigger defers before work allocation, without advancing an occurrence; real cleanup tasks and unknown process/workspace tails block the move. Never delete another owner’s workspace, clear uncertainty or fabricate settlement to free a hold. Existing cleanup authority and all preservation gates remain. Apply is unavailable; behavior remains UNEXECUTED.
 
 THR307's independent daemon disk sweeper defaults to dry_run and has its own
-terminal-task/root, fresh jobs/process, recursive-age and containment contract.
-It never grants an agent cleanup authority, replaces this skill's legacy gates,
-or disables the seven nightly agent sessions. Outputs and sibling task-scratch
-manifests/locks stay durable and excluded. Put regenerable fixture/cache trees
-in runtime task-tmp; retain only concise evidence in output. Do not run historical
-cleanup, activate on-mode, or use a manual fallback on this note's authority.
+ended-task/ended-structural-root, fresh jobs, recursive-age and containment
+contract. Under Founder seq117 it does not inspect OS-process usage: once both
+the task and its structural root have ended, nightly sweeping may remove their
+task scratch and eligible worktrees. Stop and reap task-owned processes before
+successful completion; do not rely on those folders afterward. Settle owned jobs;
+genuine authorized native job waits keep the existing blocked/wait callbacks,
+never fake completion. Filesystem mount containment remains in force.
+This grants no agent deletion authority or end-of-task deletion hook, replaces
+none of this skill's legacy gates, and disables none of the seven nightly agent
+sessions. Other cleanup owners' process gates and old flags remain unchanged.
+Durable output and sibling task-scratch manifests/locks stay excluded. Put
+regenerable fixture/cache trees in runtime task-tmp; retain only concise evidence
+in output. Do not run historical cleanup, activate on-mode, or use a manual
+fallback on this note's authority.
 
 The one shared workspace-cleanup skill for every agent, including no-repo
 agents. It is invoked two ways, and both use exactly this contract:

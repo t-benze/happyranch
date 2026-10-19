@@ -18,12 +18,20 @@ transport remains `@founder`. Metadata failure gives ID-only context.
 
 
 THR307's independent daemon disk sweeper defaults to dry_run and has its own
-terminal-task/root, fresh jobs/process, recursive-age and containment contract.
-It never grants an agent cleanup authority, replaces this skill's legacy gates,
-or disables the seven nightly agent sessions. Outputs and sibling task-scratch
-manifests/locks stay durable and excluded. Put regenerable fixture/cache trees
-in runtime task-tmp; retain only concise evidence in output. Do not run historical
-cleanup, activate on-mode, or use a manual fallback on this note's authority.
+ended-task/ended-structural-root, fresh jobs, recursive-age and containment
+contract. Under Founder seq117 it does not inspect OS-process usage: once both
+the task and its structural root have ended, nightly sweeping may remove their
+task scratch and eligible worktrees. Stop and reap task-owned processes before
+successful completion; do not rely on those folders afterward. Settle owned jobs;
+genuine authorized native job waits keep the existing blocked/wait callbacks,
+never fake completion. Filesystem mount containment remains in force.
+This grants no agent deletion authority or end-of-task deletion hook, replaces
+none of this skill's legacy gates, and disables none of the seven nightly agent
+sessions. Other cleanup owners' process gates and old flags remain unchanged.
+Durable output and sibling task-scratch manifests/locks stay excluded. Put
+regenerable fixture/cache trees in runtime task-tmp; retain only concise evidence
+in output. Do not run historical cleanup, activate on-mode, or use a manual
+fallback on this note's authority.
 
 ## THR-247 recovery-turn exception
 
