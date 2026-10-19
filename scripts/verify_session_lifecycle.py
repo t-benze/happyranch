@@ -632,32 +632,66 @@ class BackendObserver:
         # Delegate the REAL operational probe, accounting its direct helper.
         original_popen = subprocess.Popen
         helpers = []
+        helper_facts = []
+        child_facts = {}
+        report_observed = False
+        stage = "backend_probe"
 
         def launched(*args, **kwargs):
+            nonlocal stage
+            stage = "helper_launch"
             process = original_popen(*args, **kwargs)
             helpers.append(process)
-            self.v.add("probe", stat(process.pid))
+            fact = {"pid": process.pid}
+            helper_facts.append(fact)
+            stage = "helper_accounting"
+            fact["launch_identity"] = stat(process.pid)
+            self.v.add("probe", fact["launch_identity"])
+            stage = "backend_probe"
             return process
 
         subprocess.Popen = launched
         try:
-            report = self.backend.probe()
-        finally:
-            subprocess.Popen = original_popen
-        for process in helpers:
-            require(process.returncode is not None, "probe helper was not reaped by backend")
-            require(stat(process.pid) is None, "probe helper remains")
-        self.v.ledger.pop("probe", None)
-        self.v.send()
-        with RAW_OPEN(f"/proc/{os.getpid()}/task/{os.getpid()}/children") as stream:
-            children = [int(value) for value in stream.read(4096).split()]
-        known = {row["pid"] for row in self.v.ledger.values()}
-        unexpected = [pid for pid in children if pid not in known]
-        for pid in unexpected:
-            current = stat(pid)
-            if current is not None:
-                self.v.add(f"probe-own-child-{pid}", current)
-        require(not unexpected, "probe left an unaccounted own child; venue refuses")
+            try:
+                report = self.backend.probe()
+            finally:
+                subprocess.Popen = original_popen
+            report_observed = True
+            # Retain the ORIGINAL before any observer postcondition can raise;
+            # HostSupervisor may separately degrade such an exception.
+            stage = "backend_report"
+            self.v.event("probe_report", stage=stage, report=dataclasses.asdict(report))
+            for process, fact in zip(helpers, helper_facts):
+                stage = "helper_reaped"
+                fact["returncode"] = process.returncode
+                require(fact["returncode"] is not None, "probe helper was not reaped by backend")
+                stage = "helper_absent"
+                fact["identity"] = stat(process.pid)
+                require(fact["identity"] is None, "probe helper remains")
+            stage = "ledger_release"
+            self.v.ledger.pop("probe", None)
+            stage = "watchdog_send"
+            self.v.send()
+            stage = "children_read"
+            with RAW_OPEN(f"/proc/{os.getpid()}/task/{os.getpid()}/children") as stream:
+                children = [int(value) for value in stream.read(4096).split()]
+            known = {row["pid"] for row in self.v.ledger.values()}
+            unexpected = [pid for pid in children if pid not in known]
+            child_facts.update(children=children, known=sorted(known), unexpected=unexpected,
+                               observed_unexpected=[])
+            for pid in unexpected:
+                stage = "unexpected_child_accounting"
+                current = stat(pid)
+                child_facts["observed_unexpected"].append({"pid": pid, "identity": current})
+                if current is not None:
+                    self.v.add(f"probe-own-child-{pid}", current)
+            stage = "children_accounted"
+            require(not unexpected, "probe left an unaccounted own child; venue refuses")
+        except BaseException as exc:
+            self.v.event("probe_exception", stage=stage, backend_report_observed=report_observed,
+                         exception_type=type(exc).__name__, message=str(exc),
+                         helpers=helper_facts, children=child_facts)
+            raise
         return report
 
     def __getattr__(self, name):
@@ -895,7 +929,12 @@ def run_case(v, case, api, fault=None):
     supervisor = api.factory(backend=observer, publisher=lambda receipt: (
         publications.append(receipt), v.event("publish", token=receipt.invocation_kind,
                                               receipt_identity=id(receipt))))
-    require(supervisor.probe().healthy, "process-group backend probe failed")
+    probe_report = supervisor.probe()
+    v.event("probe_report", stage="supervisor_return", report=dataclasses.asdict(probe_report))
+    if not probe_report.healthy:
+        v.event("probe_refusal", stage="healthy_gate", provider_launched=False,
+                final_interval="UNREACHED")
+    require(probe_report.healthy, "process-group backend probe failed")
     original_release = supervisor._admission._release
 
     def released(lease):

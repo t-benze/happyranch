@@ -104,6 +104,23 @@ missing or foreign acknowledgement stops acceptance. The protected observation
 interval closes after the last acceptance fact, including root/descendant and
 sentinel observations; the ordered W check rejects matching rescue decisions
 through that cutoff. An earlier receipt freeze alone cannot establish acceptance.
+Before providers launch, `probe_report` events retain the actual original backend
+report at `backend_report` (before observer postconditions) and the actual cached
+or returned supervisor report at `supervisor_return`. Each contains the real
+backend/version, healthy, reason, evidence, probed_at and declared capability map,
+under the existing case/input/generation and event/output bounds. A
+`probe_exception` retains the failed observer/backend stage, actual exception
+type/message, whether an original report returned, and already observed helper
+returncode/identity and child-accounting facts. Absent observations stay absent;
+no extra probe, process read, helper, wait or signal recovers them. Supervisor
+exception degradation is separate from the original report, including an
+original unhealthy report followed by an accounting failure. Its unchanged
+unhealthy gate records `probe_refusal`, leaves providers unlaunched and the final
+interval UNREACHED, then retains fatal FAIL. It never supplies teardown RED or
+PASS. JOB4929's generation13 probe failed before C5-teardown-error launched;
+its discarded historical reason remains UNKNOWN and cannot be reconstructed
+from later fixture rescue. Its eleven passed variants/twelve input boundaries
+remain evidence only at head92153f71, with the invocation FAILED/exit3.
 Signal refusals, sentinel identity/liveness loss, missing/malformed heartbeat,
 failed heartbeat progress and unavailable oracle observations latch fatal fixture
 safety independently of product cleanup errors and stop subsequent cases/inputs.
