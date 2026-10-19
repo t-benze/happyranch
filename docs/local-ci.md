@@ -77,7 +77,19 @@ observer events,1MiB output,64MiB scratch;20s action plus10s cleanup per variant
 readiness15s and final15s reserve, global rescue by375s. C5’s two fault inputs share
 one action budget. Record backend evidence before separately labeled fixture
 rescue; an outer timeout never proves cleanup. Any unsafe residual stops later
-cases. Supported jobs accept explicit runtime caps up to86400s; the containing
+cases. Each W command/reply carries case/input/generation/sequence and monotonic
+rescue decision/action records with exact identities and signal outcomes. F
+requires a matching settlement acknowledgement before the next case/input; a
+missing or foreign acknowledgement stops acceptance. Signal refusals latch a
+fixture safety failure independently of product cleanup errors, stop subsequent
+inputs, and retain interception through rescue and actual worker joins (including
+the real sampler). Unknown settlement keeps interception installed until exit.
+The pipe-timeout case allows at most3s to observe factory-sampled A1/A2 and an
+exited root with those exact descendants holding stdout, then starts the real2s
+communicator timeout; existing5s drain,5s TERM/2s KILL and up to2s sampler stop
+fit the original20s action allowance. Setup failure retains absent/unsettled
+outcome and terminal events before separately labelled rescue, never case PASS.
+Supported jobs accept explicit runtime caps up to86400s; the containing
 job must include setup, both bounded variants, cleanup and local static checks.
 Do not detach helpers or wait/poll a long job in the submitting session.
 
@@ -91,7 +103,13 @@ settlement, kernel PID reuse, genuine macOS/systemd or real-provider behavior.
 Historical JOB4890/JOB4891 remain failed/incomplete with ownership UNPROVEN.
 Baseline setup failure is environment failure, never RED; missing assertions,
 failed cleanup and unexecuted cases stay explicit, never behavioral or
-test-authoring PASS. Independent same-head review/QA remains required.
+test-authoring PASS. JOB4904/JOB4906 exhausted the two maker evidence attempts;
+the R1–R3 source correction authorizes static checks/publication only, no maker
+fixture, baseline, mutation or repetition. Their original failures and baseline
+verifier/source hashes remain historical evidence, not corrected-verifier proof.
+Only after renewed full reviewer APPROVE may the separately allocated one
+independent QA candidate pass run under the unchanged bounds. Independent
+same-head review/QA remains required.
 
 ## Commands and retained lanes
 
