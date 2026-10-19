@@ -108,6 +108,7 @@ public struct SurfaceAllowList: Sendable {
             ("POST", "/workflows/coding/mappings"),
             ("GET", "/workflows/coding/mappings"),
             ("POST", "/workflows/coding/role-selections"),
+            ("GET", "/workflows/coding/runs/*"),
             // Original-current author staging is a native-sensitive mutation.
             ("POST", "/workflows/submissions/handoffs"),
             // Current agent reviewer staging is not a remote human surface.
@@ -266,6 +267,14 @@ public struct SurfaceAllowList: Sendable {
                [rawPath, path].contains(where: { Self.stageDenialCandidate($0) == family }) {
                 return false
             }
+        }
+        if method == "GET", deniedMethods.contains("GET /workflows/coding/runs/*"),
+           [rawPath, path].contains(where: {
+               let parts = Self.stageDenialCandidate($0).split(separator: "/", omittingEmptySubsequences: false)
+               return parts.count == 5 && parts[0].isEmpty && parts[1] == "workflows"
+                   && parts[2] == "coding" && parts[3] == "runs" && !parts[4].isEmpty
+           }) {
+            return false
         }
         if method == "POST", deniedMethods.contains("POST /workflows/reviews/stages"),
            [rawPath, path].contains(where: { Self.stageDenialCandidate($0) == "/workflows/reviews/stages" }) {

@@ -367,6 +367,17 @@ class TasksMixin:
         admission owns the lock, writer reservation and entire graph commit.
         """
         self._check_team_move_task_uncommitted(task)
+        self._insert_task_row_uncommitted(task)
+
+    def _insert_task_row_uncommitted(self, task: TaskRecord) -> None:
+        """Private row primitive for a prechecked, caller-owned graph writer.
+
+        Ordinary callers retain _insert_task_uncommitted's native move guard.
+        Coding prechecks its complete prospective graph before inserting pins,
+        so it never tries to classify a half-built cyclic workflow graph.
+        """
+        if not self._conn.in_transaction:
+            raise RuntimeError('task row insertion requires an owned transaction')
         params = (
             task.id,
             task.status.value,

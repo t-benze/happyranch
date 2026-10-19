@@ -1,0 +1,341 @@
+"""SELECT-only complete queued K3a closure under the enclosing native budget.
+
+Only run_started is supported. Future launch/control/event families refuse.
+Saved validity never supplies current access, readiness or permission.
+"""
+from __future__ import annotations
+
+import base64
+import json
+from dataclasses import dataclass, field
+
+from runtime.workflows._coding_role_records import RECORD_FORMAT, configuration
+from runtime.workflows.coding_authority_history import _bounded_rows, _decoded
+from runtime.workflows.coding_bootstrap import (
+    decode_row, encode_row, identity, initial_scope, journal_rows, pinned_rows, task_brief,
+)
+from runtime.workflows.coding_saved_records import (
+    _Ancestry, _canonical, _capture, _check, _closed, _hash, _integer, _json, _roles, _timestamp, _token,
+)
+from runtime.workflows.coding_source_history import (
+    _RESULT_COLUMNS, _RESULT_TYPES, _TASK_COLUMNS, _TASK_TYPES, _session_start, _task,
+)
+from runtime.workflows.coding_start_records import effective_mapping, parse_decision, parse_native_decision
+
+# Literal native tables only. This is a row payload boundary, not a schema filter.
+PIN_TABLES = (
+    'workflow_authorization_revisions', 'workflow_active_authorizations',
+    'workflow_binding_snapshots', 'workflow_contexts', 'workflow_instances',
+    'workflow_activations', 'workflow_active_activations', 'workflow_activation_operations',
+    'workflow_admission_records',
+)
+J_TABLES = ('workflow_coding_runs', 'workflow_coding_attempts', 'workflow_coding_events')
+
+
+def rows(conn, table, budget, *, where='1', args=(), maximum=8192):
+    columns = tuple(row[1] for row in conn.execute(f'PRAGMA table_xinfo("{table}")'))
+    allowed = (_TASK_TYPES if table == 'tasks' else _RESULT_TYPES if table == 'task_results'
+               else (('text', 'blob', 'integer', 'real', 'null'),) * len(columns))
+    for row in _bounded_rows(conn, table, columns, allowed, budget,
+                             where=where, args=args, maximum=maximum,
+                             value_limit=16777216 if table == 'workflow_coding_events' else 1048576):
+        yield dict(zip(columns, row[:len(columns)], strict=True))
+
+
+def same(left, right):
+    return type(left) is type(right) and (
+        left.keys() == right.keys() and all(same(left[k], right[k]) for k in left)
+        if type(left) is dict else
+        len(left) == len(right) and all(same(a, b) for a, b in zip(left, right, strict=True))
+        if type(left) is list else left == right)
+
+
+def claim_for(row, result_id):
+    return dict(task_id=row['id'], assigned_agent=row['assigned_agent'], team=row['team'],
+        current_session_id=row['current_session_id'], step=row['orchestration_step_count'],
+        active_chain=row['active_chain'], active_fanout=row['active_fanout'], revision=row['revision_count'],
+        note=row['note'], status=row['status'], block_kind=row['block_kind'],
+        cancelled_at=row['cancelled_at'], result_row_id=result_id)
+
+
+@dataclass
+class QueuedStorage:
+    admitted: dict = field(default_factory=dict)
+    runs: dict = field(default_factory=dict)
+    owners: dict = field(default_factory=dict)
+    callbacks: dict = field(default_factory=dict)
+
+    def add(self, table, row):
+        key = _canonical(encode_row(row))
+        self.admitted.setdefault(table, set()).add(key)
+
+    def matches(self, table, row):
+        return _canonical(encode_row(row)) in self.admitted.get(table, ())
+
+
+def read_queued(conn, org, budget, mappings, imported):
+    storage = QueuedStorage()
+    # Native callbacks can exist before allocation. Authenticate each full row,
+    # without consuming a claim or treating a command as permission.
+    for row in rows(conn, 'task_results', budget):
+        raw = row['decision_json']
+        if raw is None:
+            continue
+        try:
+            envelope = json.loads(raw)
+        except (ValueError, TypeError):
+            continue  # Central lexical discriminator still refuses malformed coding.
+        if type(envelope) is not dict or envelope.get('action') != 'workflow_start':
+            continue
+        _decoded(envelope, budget)
+        decision = parse_native_decision(raw.encode('utf8'))
+        _integer(row['id'], 1)
+        _check(row['status'] == 'completed' and row['waiting_on_job_ids'] is None)
+        issuer = dict(task_id=row['task_id'], session_id=row['session_id'], principal=row['agent'])
+        _session_start(conn, issuer, budget)
+        native = _task(conn, row['task_id'], budget)
+        _check(native._text('task_type') == 'task')
+        storage.callbacks[row['id']] = (row, decision)
+        storage.add('task_results', row)
+    if storage.callbacks:
+        from runtime.orchestrator.orchestrator import completion_report_from_result_row
+        for audit in rows(conn, 'audit_log', budget, where="action='completion_report'"):
+            if audit['payload'] is None:
+                continue
+            try:
+                body = json.loads(audit['payload'])
+            except ValueError:
+                continue
+            if type(body) is not dict or type(body.get('decision')) is not dict or body['decision'].get('action') != 'workflow_start':
+                continue
+            _decoded(body, budget)
+            candidates = []
+            for callback, _ in storage.callbacks.values():
+                budget.step()
+                expected = completion_report_from_result_row(callback['task_id'], callback).model_dump()
+                if '_result_row_id' in body or '_result_session_id' in body:
+                    expected.update(_result_row_id=callback['id'], _result_session_id=callback['session_id'])
+                if (audit['task_id'], audit['agent']) == (callback['task_id'], callback['agent']) and same(expected, body):
+                    candidates.append(callback)
+            _check(len(candidates) == 1)
+            storage.add('audit_log', audit)
+    run_rows = list(rows(conn, 'workflow_coding_runs', budget))
+    attempts = list(rows(conn, 'workflow_coding_attempts', budget))
+    events = list(rows(conn, 'workflow_coding_events', budget))
+    _check(len(attempts) == len(events) == len(run_rows))
+    used_attempts, used_events, used_sources = set(), set(), set()
+    for run in run_rows:
+        budget.step()
+        _check(imported is not None and mappings is not None)
+        instance = run['instance_id']
+        selected = [r for r in events if r['instance_id'] == instance]
+        selected_attempts = [r for r in attempts if r['instance_id'] == instance]
+        _check(len(selected) == len(selected_attempts) == 1)
+        event, attempt = selected[0], selected_attempts[0]
+        _check(event['id'] not in used_events and attempt['id'] not in used_attempts)
+        used_events.add(event['id'])
+        used_attempts.add(attempt['id'])
+        _check(type(event['event_bytes']) is bytes and _hash(event['event_bytes']) == event['event_digest'])
+        payload = _closed(_json(event['event_bytes'], 16777216),
+            'format id instance_id event_seq event_kind attempt_id operation previous_digest before after evidence created_at')
+        _decoded(payload, budget)
+        _check(payload['format'] == 'workflow-coding-event@1'
+               and payload['event_kind'] == 'run_started' and payload['event_seq'] == 1
+               and payload['previous_digest'] is None)
+        _check(_canonical(payload) == event['event_bytes'])
+        for key in ('id', 'instance_id', 'event_seq', 'event_kind', 'attempt_id', 'previous_digest', 'created_at'):
+            _check(same(payload[key], event[key]))
+        _timestamp(payload['created_at'])
+        evidence = _closed(payload['evidence'], 'kind command origin authority rows facts native_task_observations')
+        _check(evidence['kind'] == 'run_started' and evidence['native_task_observations'] == [])
+        decision = parse_decision(_canonical(dict(action='workflow_start', workflow=evidence['command'])))
+        command = decision['workflow']
+        digest = _hash(_canonical(command))
+        operation = dict(org_slug=org, principal=event['principal'], key=command['operation_key'], request_digest=digest)
+        _check(payload['operation'] == operation and event['org_slug'] == org
+               and event['operation_key'] == operation['key'] and event['request_digest'] == digest
+               and event['id'] == identity('event', org, instance, event['principal'], operation['key']))
+        facts = _closed(evidence['facts'], 'source carrier_task_id release mapping_id mapping_digest context_id '
+                         'binding_snapshot_id authorization_id activation_id first_attempt_id')
+        source = _closed(facts['source'], 'task_id session_id principal result result_claim parent_task_id root_ancestor_id budgets')
+        result = _closed(source['result'], 'id record')
+        _integer(result['id'], 1)
+        _check(result['id'] in storage.callbacks and source['task_id'] not in used_sources)
+        used_sources.add(source['task_id'])
+        callback, stored_decision = storage.callbacks[result['id']]
+        _check(same(result['record'], encode_row(callback)) and stored_decision == decision
+               and (callback['task_id'], callback['agent'], callback['session_id']) ==
+                   (source['task_id'], source['principal'], source['session_id']))
+        _check(event['principal'] == 'agent:' + source['principal']
+               and instance == identity('root', org, source['task_id'], result['id'], digest))
+        origin = _closed(evidence['origin'], 'kind principal task_id session_id result_id claim')
+        _check(origin == dict(kind='manager_result', principal=source['principal'], task_id=source['task_id'],
+                             session_id=source['session_id'], result_id=result['id'], claim=None))
+        claim = _closed(source['result_claim'], 'native_claim owner_invocation_id action_fingerprint')
+        _token(claim['owner_invocation_id'])
+        _check(claim['action_fingerprint'] == _hash(callback['decision_json'].encode('utf8')))
+        before = _closed(payload['before'], 'run attempts instances tasks rounds requests assignments')
+        after = _closed(payload['after'], 'run attempts instances tasks rounds requests assignments')
+        _check(before['run'] is None and after['run'] == run)
+        for name in ('rounds', 'requests', 'assignments'):
+            _check(before[name] == after[name] == [])
+        _check(type(after['tasks']) is list and len(after['tasks']) == len(before['tasks']) == 3)
+        after_tasks = {r['id']: decode_row(r['record']) for r in after['tasks']}
+        before_tasks = {r['id']: None if r['record'] is None else decode_row(r['record']) for r in before['tasks']}
+        _check(len(after_tasks) == 3 and after_tasks.keys() == before_tasks.keys())
+        source_before = before_tasks[source['task_id']]
+        _check(type(source_before) is dict and tuple(source_before) != ()
+               and set(source_before) == set(_TASK_COLUMNS)
+               and same(claim['native_claim'], claim_for(source_before, result['id'])))
+        _check(source_before['status'] == 'in_progress' and source_before['task_type'] == 'task'
+               and source_before['assigned_agent'] == source['principal']
+               and source_before['current_session_id'] == source['session_id'])
+        for key in ('block_kind', 'active_chain', 'active_fanout', 'blocked_on_job_ids', 'cancelled_at'):
+            _check(source_before[key] is None)
+        expected_source = {**source_before, 'block_kind': 'delegated', 'note': 'coding-owned:' + instance,
+                           'updated_at': payload['created_at']}
+        _check(same(after_tasks[source['task_id']], expected_source))
+        pin_entries = [e for e in mappings.mappings if e.mapping_id == command['mapping']['id']]
+        _check(len(pin_entries) == 1)
+        mapping_entry = pin_entries[0]
+        _check(command['mapping'] == dict(id=mapping_entry.mapping_id, generation=mapping_entry.generation,
+                                         digest=mapping_entry.mapping_digest) and run['mapping_id'] == mapping_entry.mapping_id)
+        record = _json(mapping_entry.mapping_bytes, 1048576)
+        _check(record['format'] == RECORD_FORMAT)
+        mapping = record['mapping']
+        effective = effective_mapping(mapping, command)
+        roles = effective['roles']
+        _roles(roles, {k: [] for k in roles})
+        _check(roles['agent_manager'] == dict(principal=source['principal'], team=source_before['team']))
+        grant, _ = _capture(evidence['authority'], org, _Ancestry())
+        _check(grant == _canonical(command))
+        snapshot = json.loads(base64.b64decode(evidence['authority']['snapshot_bytes_base64'], validate=True))
+        configuration(mapping, snapshot)
+        configuration(effective, snapshot)
+        carrier_id = facts['carrier_task_id']
+        _check(carrier_id in after_tasks and carrier_id != source['task_id'])
+        carrier, leaf = after_tasks[carrier_id], after_tasks[attempt['task_id']]
+        _check(carrier['parent_task_id'] == source['task_id'] and leaf['parent_task_id'] == carrier_id)
+        for row, binding, state, block, brief in (
+            (carrier, roles['agent_manager'], 'in_progress', 'delegated', 'Structural coding carrier ' + instance),
+            (leaf, roles['implementer'], 'pending', None, task_brief(command['work'])),
+        ):
+            _check(set(row) == set(_TASK_COLUMNS) and row['task_type'] == 'subtask'
+                   and row['assigned_agent'] == binding['principal'] and row['team'] == binding['team']
+                   and row['status'] == state and row['block_kind'] == block and row['brief'] == brief
+                   and row['revision_count'] == 0 and row['orchestration_step_count'] == 0
+                   and row['created_at'] == row['updated_at'] == payload['created_at']
+                   and row['session_timeout_seconds'] == source_before['session_timeout_seconds'])
+            for key in ('revisit_of_task_id', 'dispatched_from_thread_id', 'completed_at', 'final_output_summary',
+                        'final_output_dir', 'executor_pid', 'note', 'cancelled_at', 'last_heartbeat',
+                        'blocked_on_job_ids', 'active_chain', 'active_fanout', 'current_session_id', 'zombie_flagged_at'):
+                _check(row[key] is None)
+            _check(before_tasks[row['id']] is None)
+        # Context contains only this new version's native source capture. The
+        # original session-start and all ancestor rows retain their exact bytes.
+        _check(type(evidence['rows']) is list and len(evidence['rows']) == len(PIN_TABLES))
+        context_rows = [r for r in evidence['rows'] if r.get('table') == 'workflow_contexts']
+        _check(len(context_rows) == 1)
+        frozen_context = decode_row(context_rows[0]['record'])
+        context_value = _json(frozen_context['context_bytes'], 1048576)
+        native_source = _closed(context_value['native_source'], 'ancestors session_start invocation')
+        chain = [source_before]
+        seen = {source['task_id']}
+        _check(type(native_source['ancestors']) is list and len(native_source['ancestors']) < 20)
+        for encoded in native_source['ancestors']:
+            parent = decode_row(encoded)
+            _check(set(parent) == set(_TASK_COLUMNS) and chain[-1]['parent_task_id'] == parent['id']
+                   and parent['id'] not in seen and parent['team'] == source_before['team']
+                   and parent['cancelled_at'] is None
+                   and parent['status'] not in ('failed', 'completed', 'cancelled', 'superseded'))
+            seen.add(parent['id'])
+            chain.append(parent)
+        _check(chain[-1]['parent_task_id'] is None and source['root_ancestor_id'] == chain[-1]['id']
+               and source['parent_task_id'] == source_before['parent_task_id'])
+        # Current ancestry may have native observations, but no owner/edge drift.
+        for historical in chain[1:]:
+            current = _task(conn, historical['id'], budget)
+            for key in ('id', 'parent_task_id', 'task_type', 'assigned_agent', 'team', 'created_at', 'brief'):
+                value = current._text(key)
+                _check(same(value, historical[key]))
+        start = _session_start(conn, dict(task_id=source['task_id'], session_id=source['session_id'], principal=source['principal']), budget)
+        actual_start = {c.name: c.value.decode('utf8') if c.storage_class == 'text' else c.value for c in start.columns}
+        _check(same(native_source['session_start'], actual_start))
+        invocation = _closed(native_source['invocation'], 'id owner entry')
+        _check(invocation['id'] == claim['owner_invocation_id'] and invocation['owner'] in ('ordinary', 'v2'))
+        entry = invocation['entry']
+        _check(entry['id'] == invocation['id'] and entry['owner'] == invocation['owner']
+               and entry['task_id'] == source['task_id'] and entry['session_id'] == source['session_id']
+               and entry['agent'] == source['principal'] and entry['phase'] == 'running'
+               and entry['root_task_id'] == source['root_ancestor_id'] and entry['org'] == org
+               and entry['fingerprint']['count'] + 1 == source_before['orchestration_step_count'])
+        limits = _closed(source['budgets'], 'source_step source_revision session_timeout_seconds max_revise_rounds '
+                         'coding_attempt_limit coding_event_limit coding_revision_limit coding_same_principal_retry_limit')
+        for key, value in limits.items():
+            if value is not None:
+                _integer(value)
+        _check(limits['source_step'] == source_before['orchestration_step_count']
+               and limits['source_revision'] == source_before['revision_count']
+               and limits['session_timeout_seconds'] == source_before['session_timeout_seconds']
+               and limits['coding_attempt_limit'] == 64 and limits['coding_event_limit'] == 4096
+               and limits['coding_revision_limit'] == min(3, limits['max_revise_rounds'] - limits['source_revision'] if limits['max_revise_rounds'] else 3)
+               and limits['coding_same_principal_retry_limit'] == 1)
+        template = dict(identity_id=imported.identity_id, version_id=imported.version_id,
+                        **command['release'])
+        expected_pins, context, _ = pinned_rows(org=org, command=command, source=source,
+            native_source=native_source, authority=evidence['authority'], mapping=mapping, roles=roles,
+            template=template, carrier_id=carrier_id, instance_id=instance, created_at=payload['created_at'])
+        _check(same(evidence['rows'], journal_rows(expected_pins)))
+        scope = _canonical(initial_scope(org=org, instance=instance, attempt=attempt['id'], command=command,
+                                        roles=roles, context=context))
+        _check(same(attempt, dict(id=identity('attempt', instance, 1), instance_id=instance,
+            revision=1, stage='development', attempt_sequence=1, assignment_generation=1,
+            predecessor_id=None, task_id=leaf['id'], principal=roles['implementer']['principal'], session_id=None,
+            result_id=None, submission_id=None, review_request_id=None, state='queued',
+            scope_bytes=scope, scope_digest=_hash(scope))))
+        _check(same(run, dict(instance_id=instance, mapping_id=mapping_entry.mapping_id, cas_version=1,
+            current_revision=0, state='development', current_attempt_id=attempt['id'], last_event_id=event['id'])))
+        _check(facts == dict(source=source, carrier_task_id=carrier_id, release=command['release'],
+            mapping_id=mapping_entry.mapping_id, mapping_digest=mapping_entry.mapping_digest,
+            context_id=identity('context', instance), binding_snapshot_id=identity('binding', instance),
+            authorization_id=identity('authorization', instance), activation_id=identity('activation', instance),
+            first_attempt_id=attempt['id']))
+        for name, values in (('attempts', [attempt]), ('instances', expected_pins['workflow_instances'])):
+            key = 'id'
+            _check(before[name] == [dict(id=r[key], record=None) for r in values]
+                   and after[name] == [dict(id=r[key], record=encode_row(r)) for r in values])
+        for table, values in expected_pins.items():
+            for expected in values:
+                key = 'id' if 'id' in expected else 'namespace' if 'namespace' in expected else 'instance_id' if 'instance_id' in expected else 'activation_id'
+                actual = list(rows(conn, table, budget, where=f'{key}=?', args=(expected[key],), maximum=2))
+                _check(len(actual) == 1 and same(actual[0], expected))
+                storage.add(table, expected)
+        for task_id, expected in after_tasks.items():
+            actual = list(rows(conn, 'tasks', budget, where='id=?', args=(task_id,), maximum=1))
+            _check(len(actual) == 1 and same(actual[0], expected))
+            storage.add('tasks', expected)
+        # No alternate dispatcher, result, submission, assignment or premature
+        # downstream stage may share this closed queued graph.
+        for table, column, keys in (
+            ('workflow_draft_dispatch_intents', 'task_id', after_tasks),
+            ('workflow_request_task_bridges', 'task_id', after_tasks),
+            ('workflow_instance_tasks', 'instance_id', [instance]),
+            ('workflow_submissions', 'instance_id', [instance]),
+            ('workflow_rounds', 'instance_id', [instance]),
+            ('workflow_events', 'instance_id', [instance]),
+            ('task_results', 'task_id', [carrier_id, leaf['id']]),
+        ):
+            for key in keys:
+                budget.step()
+                _check(conn.execute(f'SELECT 1 FROM {table} WHERE {column}=? LIMIT 1', (key,)).fetchone() is None)
+        _check([r['id'] for r in rows(conn, 'tasks', budget, where='parent_task_id=?',
+                                    args=(carrier_id,), maximum=2)] == [leaf['id']])
+        for table, row in (('workflow_coding_runs', run), ('workflow_coding_attempts', attempt), ('workflow_coding_events', event)):
+            storage.add(table, row)
+        storage.runs[instance] = dict(run=run, command=command, roles=roles, attempt=attempt, event=event,
+                                    source=source, binding=expected_pins['workflow_binding_snapshots'][0])
+        for task_id, kind in ((source['task_id'], 'coding_source_waiting'),
+                              (carrier_id, 'coding_carrier'), (leaf['id'], 'coding_attempt')):
+            _check(task_id not in storage.owners)
+            storage.owners[task_id] = (kind, instance)
+    return storage

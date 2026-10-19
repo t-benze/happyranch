@@ -8,7 +8,7 @@ from enum import StrEnum
 
 from typing import Annotated, Literal, Mapping
 
-from pydantic import BaseModel, Field, StrictBool, StrictInt, StrictStr, field_validator, model_validator
+from pydantic import BaseModel, Field, StrictBool, StrictInt, StrictStr, field_validator, model_serializer, model_validator
 
 
 class TaskStatus(StrEnum):
@@ -264,7 +264,8 @@ class ManagerSupersessionAttestation(BaseModel):
 
 class NextStep(BaseModel):
     """Decision returned by a task owner for what the orchestrator should do next."""
-    action: Literal["delegate", "done", "escalate", "fanout", "parallel", "supersede"]
+    action: Literal["delegate", "done", "escalate", "fanout", "parallel", "supersede", "workflow_start"]
+    workflow: dict | None = None
     agent: str | None = None
     prompt: str | None = None
     expect_verdict: str | None = None
@@ -279,6 +280,24 @@ class NextStep(BaseModel):
     # via `happyranch tasks attach-upload`; no ambient paths or upload-on-
     # decision route exists.
     attachments: list[TaskAttachmentRef] | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coding_start_is_closed(cls, value: object) -> object:
+        if isinstance(value, dict) and value.get("action") == "workflow_start":
+            from runtime.workflows.coding_start_records import CodingStartDecision
+            return CodingStartDecision.model_validate(value).model_dump()
+        if isinstance(value, dict) and value.get("workflow") is not None:
+            raise ValueError("workflow is reserved for workflow_start")
+        return value
+
+    @model_serializer(mode="wrap")
+    def _closed_workflow_wire(self, handler):
+        if self.action == "workflow_start":
+            return {"action": self.action, "workflow": self.workflow}
+        result = handler(self)
+        result.pop("workflow", None)
+        return result
 
     @field_validator('action')
     @classmethod

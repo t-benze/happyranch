@@ -46,6 +46,10 @@ class Dispatcher:
             org = self._state.get_org(slug)
         except KeyError:
             return False
+        from runtime.workflows.recovery import classify_task
+        ownership = classify_task(org.db, task_id, org_slug=slug)
+        if ownership.kind.startswith('coding_') or ownership.kind == 'reconciliation_required':
+            return False  # K3a owns queued/structural rows, with no launcher.
         move = org.orchestrator._team_moves
         try:
             with move.gate, org.db._lock:
@@ -66,5 +70,11 @@ class Dispatcher:
             org = self._state.get_org(slug)
         except KeyError:
             return
+        from runtime.workflows.recovery import classify_task
+        if classify_task(org.db, task_id, org_slug=slug).kind != 'legacy':
+            # Draft/F5 retain their existing heartbeat path.
+            owner = classify_task(org.db, task_id, org_slug=slug)
+            if owner.kind.startswith('coding_') or owner.kind == 'reconciliation_required':
+                return
         now = datetime.now(timezone.utc).isoformat()
         org.db.update_task(task_id, last_heartbeat=now)

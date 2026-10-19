@@ -328,6 +328,7 @@ def _validate_coding_data(conn: sqlite3.Connection, *, layout: str,
     imported = None
     mappings = None
     mapping_rows = {}
+    queued = None
     budget = None
     if layout == 'J' and expected_org_slug is not None:
         from runtime.workflows.coding_authority_history import (
@@ -354,11 +355,15 @@ def _validate_coding_data(conn: sqlite3.Connection, *, layout: str,
                 index[key] = value
         if mappings is not None and imported is None:
             raise ValueError('workflow_coding_mapping_release_missing')
+        from runtime.workflows.coding_start_history import read_queued
+        queued = read_queued(conn, expected_org_slug, budget, mappings, imported)
     for table in CODING_TABLES:
         if table not in tables:
             if layout == 'J':
                 raise ValueError(f'workflow_coding_data_unsupported: missing {table}')
             continue
+        if queued is not None and table != 'workflow_coding_mappings':
+            continue  # All queued J rows reconstructed independently above.
         if table == 'workflow_coding_mappings' and mappings is not None:
             continue  # Every row is compared below against its complete closed prefix.
         if conn.execute(f'SELECT 1 FROM {table} LIMIT 1').fetchone() is not None:
@@ -380,7 +385,9 @@ def _validate_coding_data(conn: sqlite3.Connection, *, layout: str,
             'workflow_template_publish_operations', 'workflow_admission_records')
         native_mapping = mappings is not None and table in (
             'workflow_coding_mappings', 'workflow_admission_records', 'audit_log', 'workflow_authorization_revisions')
-        if native_setup or native_import or native_mapping:
+        native_queued = queued is not None and table in (
+            *queued.admitted.keys(), *CODING_TABLES)
+        if native_setup or native_import or native_mapping or native_queued:
             selected_columns = columns
         if not selected_columns:
             continue
@@ -404,13 +411,19 @@ def _validate_coding_data(conn: sqlite3.Connection, *, layout: str,
             # Other legacy families keep their existing native type semantics;
             # their selected values still receive the same raw fetch bounds.
             allowed = types or (('text', 'blob', 'integer', 'real', 'null'),) * len(selected_columns)
-            bounded = _bounded_rows(conn, table, tuple(selected_columns), allowed, budget, with_rowid=True)
+            bounded = _bounded_rows(conn, table, tuple(selected_columns), allowed, budget, with_rowid=True,
+                                    value_limit=16777216 if table == 'workflow_coding_events' else 1048576)
             rows = (row[:len(selected_columns) + 1] for row in bounded)
         else:
             query = f'SELECT rowid, {selected} FROM "{quoted}"' + (' WHERE rowid > ? ORDER BY rowid' if file_key else '')
             rows = conn.execute(query, (watermark,) if file_key else ())
         for rowid, *row in rows:
             data = dict(zip(selected_columns, row, strict=True))
+            if native_queued and queued.matches(table, data):
+                budget.step()
+                continue  # Complete typed row equality after independent semantic closure.
+            if table in CODING_TABLES and table != 'workflow_coding_mappings':
+                raise ValueError('workflow_coding_queued_row_mismatch')
             if native_mapping:
                 budget.step()
                 expected = mapping_rows.get(table, {}).get((type(data.get('id')), data.get('id')))

@@ -319,7 +319,15 @@ class TeamMoveCoordinator:
                         binding = json.loads(row["binding_bytes"])
                         if not isinstance(binding, dict):
                             raise ValueError("unknown workflow binding")
-                        related_to_move |= referenced(binding)
+                        if binding.get('format') == 'workflow-coding-binding@2':
+                            from runtime.workflows.coding_start import queued_storage
+                            coding = queued_storage(db._conn, self.store.org_slug)
+                            selected = coding.runs.get(row['id'])
+                            if selected is None or selected['binding']['binding_bytes'] != row['binding_bytes']:
+                                raise ValueError('coding workflow binding is not closed')
+                            related_to_move |= referenced(selected['roles'])
+                        else:
+                            related_to_move |= referenced(binding)
                     except (ValueError, TypeError) as exc:
                         raise DeferredTeamMove("team_move_workflow_owner_unavailable") from exc
         return related_to_move

@@ -2759,6 +2759,20 @@ def _consume_completion_report(
         else {"reclaim_terminal_worktree": False}
     )
     resolved_row_id = _resolve_completion_result_row_id(db, task_id, report, result_row_id)
+    # K3a is selected before any existing v2 result-action spending. The
+    # production owner refuses missing downstream readiness with zero mutation.
+    decision = orch._parse_next_step(report) if task.task_type == "task" else None
+    if decision is not None and decision.action == "workflow_start":
+        from runtime.workflows.coding_start import CodingStartError
+        coding = getattr(orch, "_workflow_coding_start", None)
+        if coding is None:
+            logger.warning("coding start unavailable for %s", task_id)
+            return
+        try:
+            coding.consume(RetryClaim.from_task(task, result_row_id=resolved_row_id), decision, report)
+        except CodingStartError as exc:
+            logger.warning("coding start held for %s: %s", task_id, exc.code)
+        return
     outcome = _v2_decision_dispatch_gate(orch, task_id, report, resolved_row_id, agent)
     if outcome.kind == _V2_DECISION_DISPATCH_SKIP:
         return
@@ -5566,6 +5580,10 @@ def _enqueue_parent_if_waiting(
     task = orch._db.get_task(task_id)
     if task is None or task.parent_task_id is None:
         return
+    from runtime.workflows.recovery import classify_task
+    for owned_id in (task_id, task.parent_task_id):
+        if classify_task(orch._db, owned_id, org_slug=getattr(orch, "_slug", None)).kind != "legacy":
+            return
     parent = orch._db.get_task(task.parent_task_id)
     # Path B: a delegating parent is in_progress(delegated). The non-cascading
     # failure-recovery contract (TASK-573/THR-028) below is otherwise unchanged.

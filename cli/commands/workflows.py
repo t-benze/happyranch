@@ -540,6 +540,40 @@ def cmd_workflow_coding_release_import(args: argparse.Namespace) -> None:
               f"replayed={str(receipt['replayed']).lower()} coding-enabled=false")
 
 
+def cmd_workflow_coding_run(args: argparse.Namespace) -> None:
+    from runtime.workflows.coding_start_records import START_LIMIT, CodingRunReceipt, parse_start
+    from runtime.workflows.coding_saved_records import _canonical
+    try:
+        if args.coding_command == 'run-start':
+            # Pure composition for the manager's OWN final callback. This branch
+            # does not resolve a daemon, org, token, session or HTTP client.
+            absolute = require_absolute_payload_path(args.from_file, kind='coding-start')
+            with Path(absolute).open('rb') as stream:
+                raw = stream.read(START_LIMIT + 1)
+            command = parse_start(raw)
+            print(_canonical(dict(action='workflow_start', workflow=command)).decode('utf8'))
+            return
+        slug = resolve_org_slug(args_org=args.org, available=[])
+        from runtime.workflows.coding_saved_records import _token
+        _token(args.instance_id)
+        path = port_file()
+        if not path.exists():
+            raise DaemonNotRunning('daemon not running')
+        with httpx.Client(base_url=f'http://127.0.0.1:{path.read_text().strip()}',
+                headers={'X-HappyRanch-Surface': 'cli'}, timeout=30.0) as client:
+            response = client.get(f'/api/v1/orgs/{slug}/workflows/coding/runs/{args.instance_id}',
+                                  params={'session_id': args.session_id})
+            if response.status_code != 200:
+                _print_error(response)
+            result = CodingRunReceipt.model_validate(response.json()).model_dump()
+            if result['instance_id'] != args.instance_id:
+                raise ValueError('coding_run_selection_mismatch')
+        print(json.dumps(result, sort_keys=True))
+    except (OSError, ValueError, httpx.HTTPError, DaemonNotRunning):
+        print('error: coding command or selected run unavailable; preserve original start file/key', file=sys.stderr)
+        raise SystemExit(2) from None
+
+
 def cmd_workflow_coding_roles(args: argparse.Namespace) -> None:
     from runtime.workflows._coding_role_records import (
         COMMAND_LIMIT, RoleReceipt, SelectionReceipt, parse_role_command, parse_selection,
@@ -605,6 +639,17 @@ def register(sub: argparse._SubParsersAction) -> None:
     workflow_sub = workflows.add_subparsers(dest="workflows_command", required=True)
     coding = workflow_sub.add_parser('coding', help='Fixed release import and agent-manager role defaults; no coding run allocation')
     coding_sub = coding.add_subparsers(dest='coding_command', required=True)
+    start = coding_sub.add_parser('run-start', help='Compose a result-owned start decision; allocates nothing')
+    start.add_argument('--from-file', required=True)
+    start.add_argument('--emit-decision', action='store_true', required=True)
+    start.set_defaults(func=cmd_workflow_coding_run)
+    show = coding_sub.add_parser('run-show', help='Selected source-manager queued run metadata')
+    show.add_argument('instance_id')
+    show.add_argument('--org', required=True)
+    show.add_argument('--session-id', required=True)
+    show.add_argument('--json', action='store_true')
+    show.set_defaults(func=cmd_workflow_coding_run)
+
     for form in ('mapping-publish', 'mapping-show', 'role-select'):
         command = coding_sub.add_parser(form, help='Agent-manager role defaults or nonallocating pinned selection')
         command.add_argument('--org')

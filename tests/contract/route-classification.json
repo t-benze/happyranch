@@ -231,6 +231,7 @@
     "GET /api/v1/orgs/{slug}/workflows/release-templates/coding/1/import": "Founder-only CLI fixed release import/receipt; no browser or remote grant",
     "GET /api/v1/orgs/{slug}/workflows/coding/mappings": "current agent-manager CLI-only role defaults/selection; no browser, repository access or coding allocation grant",
     "POST /api/v1/orgs/{slug}/workflows/coding/mappings": "current agent-manager CLI-only role defaults/selection; no browser, repository access or coding allocation grant",
-    "POST /api/v1/orgs/{slug}/workflows/coding/role-selections": "current agent-manager CLI-only role defaults/selection; no browser, repository access or coding allocation grant"
+    "POST /api/v1/orgs/{slug}/workflows/coding/role-selections": "current agent-manager CLI-only role defaults/selection; no browser, repository access or coding allocation grant",
+    "GET /api/v1/orgs/{slug}/workflows/coding/runs/{instance_id}": "current source-manager CLI-only queued run metadata; no browser, remote connector or execution grant"
   }
 }
