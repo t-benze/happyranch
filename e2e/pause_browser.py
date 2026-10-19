@@ -70,7 +70,7 @@ class PauseBrowser:
             group.disposals.append(lambda: self.b._detach(emitter, "request", record_overview))
             page.goto(f"{self.b.base}/orgs/alpha/tasks", timeout=self.c.remaining(self.b.page_timeout)*1000)
             self.c.remaining()
-            main = page.get_by_role("main")
+            main = self.b._task_surface('list')
             self.b.rendered(dict(surface='list', org='alpha', task=root, locale=locale,
                                  raw='PAUSE_RESTART_ROOT', headline='PAUSE_RESTART_ROOT'))
             expect(page.locator("[data-task-pause]")).to_have_count(0, timeout=self.c.remaining(5)*1000)
@@ -96,6 +96,7 @@ class PauseBrowser:
             self.c.remaining()
             self.b.rendered(dict(surface='detail', org='alpha', task=root, locale=locale,
                                  raw='PAUSE_RESTART_ROOT'))
+            main = self.b._task_shell()
             root_control = main.locator(f'[data-task-pause="{root}"]')
             expect(root_control.get_by_text(label, exact=True)).to_be_visible(timeout=self.c.remaining(5)*1000)
             self.c.remaining()
@@ -152,7 +153,9 @@ class PauseBrowser:
             self.c.remaining()
             data = child_response.provisional_json()
             require(data["task"]["parent_task_id"] == root and data["pause"]["effective_hold"], "live inherited child transport", data)
-            child_control = page.get_by_role("main").locator(f'[data-task-pause="{child}"]')
+            expect(self.b._task_shell()).to_have_count(1, timeout=self.c.remaining(5)*1000)
+            self.c.remaining()
+            child_control = self.b._task_shell().locator(f'[data-task-pause="{child}"]')
             expect(child_control.get_by_text(label, exact=True)).to_be_visible(timeout=self.c.remaining(5)*1000)
             self.c.remaining()
             expect(child_control.get_by_text("Hold inherited from root" if locale == "en" else "继承根任务", exact=False)).to_be_visible(timeout=self.c.remaining(5)*1000)
@@ -174,7 +177,7 @@ class PauseBrowser:
                         reload=p, child_projection=data["pause"], screenshots=[shot + "-root.png", shot + "-child.png"])
 
     def recall_dom(self, expected: dict, locale: str) -> None:
-        main = self.b.page.get_by_role("main")
+        main = self.b._task_shell()
         self.b.rendered(dict(surface='recall', org='alpha', task=expected['task_id'],
                              locale=locale, node=expected))
         expect(main.locator('a[href^="/orgs/beta/tasks/"]')).to_have_count(0, timeout=self.c.remaining(5)*1000)
@@ -193,7 +196,7 @@ class PauseBrowser:
             self.c.remaining()
             expect(page).to_have_url(f"{self.b.base}/orgs/alpha/tasks/{root}", timeout=self.c.remaining(5)*1000)
             self.c.remaining()
-            main = page.get_by_role("main")
+            main = self.b._task_shell()
             self.b.rendered(dict(surface='detail', org='alpha', task=root, raw='PAUSE_RESTART_ROOT'))
             self.recall_dom(rendered, "en")
             controls = main.locator(f'[data-task-pause="{root}"]')
