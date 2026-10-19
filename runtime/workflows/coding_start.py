@@ -381,9 +381,9 @@ class CodingStartStore:
         attempt = entry['attempt']
         return CodingRunReceipt.model_validate(dict(format='workflow-coding-run@1', instance_id=instance,
             release=entry['command']['release'], mapping=entry['command']['mapping'], effective_roles=entry['roles'],
-            cas_version=1, current_revision=0, target_revision=1, state='development',
-            current_attempt=dict(id=attempt['id'], task_id=attempt['task_id'], stage='development', state='queued', principal=attempt['principal']),
-            history=[dict(id=entry['event']['id'], kind='run_started', event_seq=1)], closeout=None,
+            cas_version=entry['run']['cas_version'], current_revision=0, target_revision=1, state=entry['run']['state'],
+            current_attempt=dict(id=attempt['id'], task_id=attempt['task_id'], stage='development', state=attempt['state'], principal=attempt['principal']),
+            history=[dict(id=e['id'], kind=e['event_kind'], event_seq=e['event_seq']) for e in entry['native']['history']], closeout=None,
             readiness=readiness())).model_dump()
 
 

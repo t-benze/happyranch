@@ -628,3 +628,11 @@ publication/merge does not establish that the running daemon contains the correc
 ## Root task Pause outcomes
 
 A root Pause holds future task execution, not your already running callback. Complete truthful progress/completion for your original task/session and preserve real job evidence. A held-root deferred invocation is not an execution failure, and Resume grants no new session, step, budget or permission. Only the server-captured ordinary-purpose actual running session (including a normal v2-admitted manager session) may auto-run its already-authorized unreviewed jobs while held; recovery sessions retain their existing purpose restrictions.
+
+A bound `workflow-coding-development@1` supplement selects only the actual
+first-development task. Preserve its repository/object-format/fixed-base/path
+identity and use existing authorized repository tools. A descriptor grants no
+access, inspection or execution authority. Head remains absent until you actually
+produce the commit. Report only your own result through the supplied genuine
+task/SID final callback. No coding staging or advancement command is available
+in this disabled slice; never substitute a document staging command.

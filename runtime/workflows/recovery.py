@@ -48,7 +48,7 @@ def classify_task(db: Any, task_id: str, *, org_slug: str | None) -> WorkflowTas
                 saved = queued_storage(conn, org_slug)
                 if task_id in saved.owners:
                     kind, instance = saved.owners[task_id]
-                    return WorkflowTaskOwnership(kind, instance, "queued")
+                    return WorkflowTaskOwnership(kind, instance, saved.runs[instance]["attempt"]["state"])
             if not tables:
                 return WorkflowTaskOwnership("legacy")
             roots = conn.execute("SELECT id FROM workflow_instances WHERE root_task_id=?", (task_id,)).fetchall()
@@ -125,6 +125,10 @@ def route_owned_task(orch: Any, task_id: str) -> bool:
         reviewer = getattr(orch, '_workflow_reviews', None)
         if reviewer is not None:
             reviewer.dispatch(task_id)
+    elif ownership.kind == "coding_attempt":
+        coding = getattr(orch, "_workflow_coding_dispatch", None)
+        if coding is not None and coding.queue_admission_allowed(task_id):
+            coding.dispatch(task_id)
     # An unavailable dispatcher/host is pending execution, never permission
     # to call legacy launch, retry, delegation or parent propagation. Existing
     # F5 producers remain deferred and reconciliation-owned.
@@ -135,7 +139,11 @@ def recover_owned_task(db: Any, queue: Any, slug: str, task_id: str, *, orchestr
     ownership = classify_task(db, task_id, org_slug=slug)
     if ownership.kind == "legacy":
         return False
-    if ownership.kind in ('draft', 'f5') and ownership.state == "queued":
+    if ownership.kind == 'coding_attempt':
+        coding = getattr(orchestrator, '_workflow_coding_dispatch', None)
+        if coding is not None:
+            coding.notify_queued(task_id, queue)
+    elif ownership.kind in ('draft', 'f5') and ownership.state == "queued":
         # This is discovery of the committed intent, not reinsertion or host
         # launch. All ownership effects occur at the dispatcher claim seam.
         queue.enqueue_if_absent(slug, task_id)

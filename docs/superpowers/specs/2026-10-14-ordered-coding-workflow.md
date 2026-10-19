@@ -1331,3 +1331,42 @@ and same-final-head scoped SOURCE QA are still required. Python units RETIRED;
 integration INCLUDING callback SKIPPED24342; behavioral/security/cleanup proof
 UNEXECUTED/FOUNDER-WAIVED139429/430, never PASS. No live operation follows.
 <!-- /TASK11932 current-ancestor correction and owner support boundary -->
+
+<!-- K3b native development: TASK12023 / ROOT10693 step91 -->
+## Disabled first-development native ownership (K3b)
+
+The production CodingDispatcher is mounted beside the coding start owner. Actual
+owned routing, queue admission and TaskInvocation use the explicit `coding`
+owner; source-wait and carrier remain structural. Both global start/callback
+readiness and actual coding queue/dispatch admission remain unconditionally
+unavailable before SID/host effects. No caller/config readiness Boolean exists.
+This source slice does not enable the coding engine or allocate a next stage.
+
+The first-development journal pairs full native rows with session_bound,
+launch_reserved, actual handle/PID launch_observed/host_reconciled, own INTEGER
+callback_recorded, terminal_recorded and late cleanup_settled observations.
+Callback alone cannot complete or advance. Real terminal success still waits
+for tracker/reconciliation/task-tail/root-worktree-batch/settle_live closure.
+Original captures remain unchanged; unknown teardown retains the same owner.
+The fixed native coding_task_heartbeat audit overlays exactly last_heartbeat and
+updated_at under the actual queue worker lifetime. Unattributed full-row drift
+and unsupported stage/control/cancel/retry/successor mutations refuse.
+Complete mixed saved/native/J/schema(data=False)/cold/reopen/recovery/drain
+consumers use the same closed first-development reader and full27 task equality.
+New native `coding` journal values require compatible code, including on empty J.
+F–J DDL/reference bytes and ordinary native owner/permission/host meanings stay.
+
+The consumed development supplement pins original brief/repository/object format/
+fixed base/paths and actual run/attempt/task/role/generation. The agent uses its
+existing authorized tools; references grant no access or inspection assertion.
+Head remains absent until genuine output. The final callback belongs to that
+actual task/SID; no unavailable staging/advancement command is advertised.
+
+Independent FULL code review then same-final-head scoped SOURCE QA remain
+required. Local all and hosted Source Boundary Lint/Web Lint(Node24) are static
+only. Python units RETIRED; integration INCLUDING callback SKIPPED24342. All
+behavior/SQL/parser/security/race/rollback/negative/mutation/red-green/repetition/
+native-build/E2E/protected/executable/test-authoring proof is UNEXECUTED /
+FOUNDER-WAIVED139429/430. K3 control/recovery and K4–K6 plus actual agent/two-org/
+override/backup-copy acceptance stay ROOT10693-owned. No live operation follows.
+<!-- /K3b native development: TASK12023 / ROOT10693 step91 -->

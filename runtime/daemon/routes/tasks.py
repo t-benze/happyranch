@@ -880,9 +880,9 @@ async def task_events(task_id: str, org: OrgDep):
 async def submit_completion(task_id: str, body: CompletionBody, org: OrgDep) -> dict:
     from runtime.workflows.recovery import classify_task
     ownership = classify_task(org.db, task_id, org_slug=getattr(org, "slug", None))
-    workflow_draft = ownership.kind in {"draft", "f5"}
-    workflow_owner = (org.workflow_reviews if ownership.kind == "f5" else org.workflow_drafts) if workflow_draft else None
-    if ownership.kind not in {"legacy", "draft", "f5", "coding_source_waiting"}:
+    workflow_draft = ownership.kind in {"draft", "f5", "coding_attempt"}
+    workflow_owner = (org.workflow_coding_dispatch if ownership.kind == "coding_attempt" else org.workflow_reviews if ownership.kind == "f5" else org.workflow_drafts) if workflow_draft else None
+    if ownership.kind not in {"legacy", "draft", "f5", "coding_attempt", "coding_source_waiting"}:
         raise HTTPException(status_code=409, detail={"code": "workflow_reconciliation_required"})
     draft_prior = org.db.get_latest_task_result(task_id, body.agent, body.session_id) if workflow_draft else None
     # Task-active gate runs BEFORE session ownership (see _require_task_active).

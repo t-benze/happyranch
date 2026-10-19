@@ -31,7 +31,9 @@ HEARTBEAT_INTERVAL_SECONDS = 30
 
 class _Dispatcher(Protocol):
     def run_step(self, slug: str, task_id: str, metadata: dict | None = None) -> None: ...
-    def heartbeat(self, slug: str, task_id: str) -> None: ...
+    def heartbeat(self, slug: str, task_id: str, queue_owner: object = None) -> None: ...
+    def worker_started(self, slug: str, task_id: str) -> object: ...
+    def worker_finished(self, slug: str, task_id: str, owner: object) -> None: ...
     def task_admission_allowed(self, slug: str, task_id: str, metadata: dict | None = None) -> bool: ...
 
 
@@ -139,7 +141,7 @@ class TaskQueue:
                 self._admission_reservations.discard(key)
 
     @staticmethod
-    async def _heartbeat(dispatcher: _Dispatcher, slug: str, task_id: str) -> None:
+    async def _heartbeat(dispatcher: _Dispatcher, slug: str, task_id: str, owner: object = None) -> None:
         """Stamp tasks.last_heartbeat every HEARTBEAT_INTERVAL_SECONDS.
 
         Lives alongside the run_in_executor call in `_worker_loop`. Cancelled
@@ -152,13 +154,13 @@ class TaskQueue:
         # Tap once up front so a task that finishes faster than the interval
         # still leaves a non-null marker that the worker actually picked it up.
         try:
-            dispatcher.heartbeat(slug, task_id)
+            dispatcher.heartbeat(slug, task_id, owner) if owner is not None else dispatcher.heartbeat(slug, task_id)
         except Exception:
             logger.exception("initial heartbeat for %s/%s failed", slug, task_id)
         while True:
             await asyncio.sleep(HEARTBEAT_INTERVAL_SECONDS)
             try:
-                dispatcher.heartbeat(slug, task_id)
+                dispatcher.heartbeat(slug, task_id, owner) if owner is not None else dispatcher.heartbeat(slug, task_id)
             except Exception:
                 logger.exception("heartbeat for %s/%s failed", slug, task_id)
 
@@ -170,7 +172,9 @@ class TaskQueue:
             if admission is not None and not admission(slug, task_id, metadata):
                 self._queue.task_done()
                 continue
-            hb = asyncio.create_task(self._heartbeat(dispatcher, slug, task_id))
+            started = getattr(dispatcher, "worker_started", None)
+            owner = started(slug, task_id) if started is not None else None
+            hb = asyncio.create_task(self._heartbeat(dispatcher, slug, task_id, owner))
             t0 = time.monotonic()
             try:
                 await loop.run_in_executor(
@@ -189,6 +193,8 @@ class TaskQueue:
                     await hb
                 except asyncio.CancelledError:
                     pass
+                if owner is not None:
+                    dispatcher.worker_finished(slug, task_id, owner)
                 self._queue.task_done()
 
     def start_workers(self, dispatcher: _Dispatcher, n: int = 6) -> None:
