@@ -112,6 +112,58 @@ def ident(s):
     return [s.st_dev, s.st_ino, s.st_mode, s.st_uid, s.st_nlink, s.st_size, s.st_mtime_ns, s.st_ctime_ns]
 
 
+def _native_path(value: object) -> tuple[str | None, bool]:
+    """Keep whole codepoints/escapes within 192 serialized ASCII characters."""
+    if value is None:
+        return None, False
+    value = str(value)
+    if len(value) <= 192 and len(json.dumps(value, ensure_ascii=True)) <= 192:
+        return value, False
+    prefix, size = [], 2 + len('...')
+    for character in value:
+        width = len(json.dumps(character, ensure_ascii=True)) - 2
+        if size + width > 192:
+            break
+        prefix.append(character)
+        size += width
+    return ''.join(prefix) + '...', True
+
+
+def native_tool_context(error: Exception, context: dict | None, *,
+                        path: Path | None = None, info: os.stat_result | None = None) -> None:
+    """Best-effort failure-only note; never a custody record or success gate."""
+    try:
+        if context is None:
+            return
+        if info is not None:
+            # Only the actual pre-read refusal supplies these same-fd facts.
+            context.update(terminal=path, info=info)
+        prefix = 'NATIVE_TOOL_CONTEXT '
+        if any(note.startswith(prefix) for note in getattr(error, '__notes__', [])):
+            return
+        selected, selected_truncated = _native_path(context['selected'])
+        terminal, terminal_truncated = _native_path(context['terminal'])
+        info = context.get('info')
+        kinds = {stat.S_IFREG: 'regular', stat.S_IFDIR: 'directory', stat.S_IFLNK: 'symlink',
+                 stat.S_IFCHR: 'character', stat.S_IFBLK: 'block', stat.S_IFIFO: 'fifo',
+                 stat.S_IFSOCK: 'socket'}
+        value = dict(role=context['role'], operation=context['operation'], selected=selected,
+                     terminal=terminal, selected_truncated=selected_truncated,
+                     terminal_truncated=terminal_truncated,
+                     observation='opened_before_admission' if info is not None else None,
+                     mode=oct(info.st_mode) if info is not None else None,
+                     type_bits=oct(stat.S_IFMT(info.st_mode)) if info is not None else None,
+                     type=kinds.get(stat.S_IFMT(info.st_mode), 'unknown') if info is not None else None,
+                     uid=info.st_uid if info is not None else None,
+                     nlink=info.st_nlink if info is not None else None)
+        note = prefix + json.dumps(value, ensure_ascii=True, separators=(',', ':'))
+        if len(note) <= 1024 and note.isascii() and not any(ord(c) < 32 for c in note):
+            error.add_note(note)
+    except Exception:
+        # Formatting/add_note cannot replace the original refusal or cleanup.
+        pass
+
+
 class Budget:
     def __init__(self):
         self.reads = self.snapshots = self.members = self.names = self.records = 0
@@ -124,16 +176,20 @@ class Budget:
 
 
 @contextlib.contextmanager
-def regular(path, cap):
+def regular(path, cap, *, native_context=None):
     """Use held absolute ancestry and descriptor-relative no-follow leaf IO."""
     path = absolute(path)
     with ASSET['RootHandle'](path.parent, '/', False) as parent:
         fd = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, dir_fd=parent.fd)
         try:
             before = os.fstat(fd)
-            need(stat.S_ISREG(before.st_mode) and before.st_nlink == 1, 'REGULAR_SINGLE_LINK_REQUIRED')
-            need(before.st_uid in (0, os.getuid()) and not before.st_mode & 0o022, 'SUBJECT_OWNER_MODE')
-            need(before.st_size <= cap, 'SUBJECT_CAP')
+            try:
+                need(stat.S_ISREG(before.st_mode) and before.st_nlink == 1, 'REGULAR_SINGLE_LINK_REQUIRED')
+                need(before.st_uid in (0, os.getuid()) and not before.st_mode & 0o022, 'SUBJECT_OWNER_MODE')
+                need(before.st_size <= cap, 'SUBJECT_CAP')
+            except FreezerError as error:
+                native_tool_context(error, native_context, path=path, info=before)
+                raise
             yield fd, before
             need(ident(os.fstat(fd)) == ident(before)
                  and ident(os.stat(path.name, dir_fd=parent.fd, follow_symlinks=False)) == ident(before), 'SUBJECT_UNSTABLE')
@@ -162,7 +218,7 @@ def create(path, raw):
         return ASSET['create_once'](root, path.name, raw, ASSET['ReadDomain'](RECORD_CAP))
 
 
-def observe(path, roots, budget, snapshot=None, cap=CONTAINER_CAP):
+def observe(path, roots, budget, snapshot=None, cap=CONTAINER_CAP, *, native_context=None):
     path = absolute(path)
     matches = [absolute(p) for p in roots if path.is_relative_to(p)]
     need(matches, 'SOURCE_OUTSIDE_ROOTS')
@@ -170,7 +226,7 @@ def observe(path, roots, budget, snapshot=None, cap=CONTAINER_CAP):
     relative = name(path.relative_to(root).as_posix())
     with ASSET['RootHandle'](root,'/',False) as domain_root:
         device = os.fstat(domain_root.fd).st_dev
-    with regular(path, cap) as (fd, info):
+    with regular(path, cap, native_context=native_context) as (fd, info):
         need(info.st_dev == device, 'CROSS_DEVICE_DESCENT')
         budget.charge(info.st_size + 1)
         h = hashlib.sha256()
@@ -830,19 +886,22 @@ class Session:
         need(row['contract'] == 'pyinstaller-6.21.0-1happyranchcustody2', 'CONTRACT')
         return row
 
-    def snapshot(self, path, lane, stage, cap=CONTAINER_CAP):
+    def snapshot(self, path, lane, stage, cap=CONTAINER_CAP, *, native_context=None):
         original = absolute(path)
         choices = [absolute(p) for p in self.roots if original.is_relative_to(p)]
         need(choices, 'SOURCE_OUTSIDE_ROOTS')
         root = max(choices,key=lambda p:len(p.parts))
         path, aliases = resolve_link(root,original.relative_to(root).as_posix(),self.budget)
+        if native_context is not None:
+            native_context['terminal'] = path
         if aliases:
             self.aliases.append({'root':str(root),'original':original.relative_to(root).as_posix(),
                                  'terminal':path.relative_to(root).as_posix(),'aliases':aliases})
         directory = self.stage / stage / lane
         directory.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.ordinal += 1
-        return observe(path, self.roots, self.budget, directory / f'{self.ordinal}.bin', cap)
+        return observe(path, self.roots, self.budget, directory / f'{self.ordinal}.bin', cap,
+                       native_context=native_context)
 
     def rows(self, toc, lane, stage):
         result = []
@@ -1016,10 +1075,18 @@ def spec_begin(project):
     session.toolchain['python_alias'] = aliases
     session.toolchain['python_executable'] = session.snapshot(executable,'shared','toolchain',256*MiB)
     for tool, selected in (('codesign','/usr/bin/codesign'),('lipo',shutil.which('lipo')),('install_name_tool',shutil.which('install_name_tool'))):
-        need(selected is not None, 'NATIVE_TOOL_UNAVAILABLE')
-        tool_path, aliases = executable_alias(selected,session)
-        session.toolchain['native_tools'].append({'tool':tool,'selected':selected,'aliases':aliases,
-                    'subject':session.snapshot(tool_path,'shared','toolchain',256*MiB), 'relation':'selection_observation'})
+        native_context = dict(role=tool, selected=selected, terminal=None, operation='selection')
+        try:
+            need(selected is not None, 'NATIVE_TOOL_UNAVAILABLE')
+            native_context['operation'] = 'executable_alias'
+            tool_path, aliases = executable_alias(selected,session)
+            native_context['operation'] = 'native_snapshot'
+            session.toolchain['native_tools'].append({'tool':tool,'selected':selected,'aliases':aliases,
+                        'subject':session.snapshot(tool_path,'shared','toolchain',256*MiB,
+                                                   native_context=native_context), 'relation':'selection_observation'})
+        except (FreezerError, ASSET['AssetError'], OSError) as error:
+            native_tool_context(error, native_context)
+            raise
     return session
 
 
