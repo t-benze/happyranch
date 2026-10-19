@@ -360,6 +360,8 @@ actual native readiness; independent whole-feature acceptance remains required.
 A provenance model, agent bearer or caller success flag grants no authority.
 Earlier B/C/D checkpoint absence statements describe those historical units.
 
+The planner projects native launch allow rules with explicit `cli=True`, matching
+both native executor launch consumers; native settings rendering retains `cli=False`.
 The planner uses native AgentDef/TeamsRegistry validation and instruction/skill
 selectors, without materializing, creating an ArtifactStore root, building a
 package or emitting an event. It pins the three exact before/after images,

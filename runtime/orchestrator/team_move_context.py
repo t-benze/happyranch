@@ -75,7 +75,8 @@ def plan_context(org, definition) -> ContextPlan:
         "reasoning_effort": definition.reasoning_effort, "allow_rules": list(definition.allow_rules),
         "repos": definition.repos, "workspace": str(workspace),
         "codex_sandbox_mode": org.settings.codex_sandbox_mode,
-        "native_allow_rules": native.allow_rules_for_agent(paths, definition.name),
+        # Launch inputs use the native CLI syntax; settings above use cli=False.
+        "native_allow_rules": native.allow_rules_for_agent(paths, definition.name, cli=True),
         "native_bash_prefixes": native.bash_allow_prefixes_for_agent(paths, definition.name),
         "retained_settings_digest": retained_settings if adapter == "codex" else None}
     return ContextPlan(definition.name, workspace, definition.executor, adapter,

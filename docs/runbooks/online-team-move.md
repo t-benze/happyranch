@@ -113,6 +113,10 @@ as request fields or returned by show. Preview calls only D's pure native
 selection/rendering path, without adapters/materialization, stores/packages,
 reset, publication or reservation.
 
+The launch-input manifest selects native `cli=True` allow-rule syntax, matching
+both native executor launch consumers. Settings retain the native `cli=False`
+projection. These selectors preserve the existing two permission surfaces.
+
 `inventory_complete:true` describes that observation, not future quiescence.
 `can_apply_now` also requires enabled capability and no blockers.
 `can_drain_threads` identifies already-running native thread candidates; it does
