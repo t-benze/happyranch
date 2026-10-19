@@ -61,6 +61,14 @@ no bearer fallback, browser or remote connector reachability. CLI forms are
 `mapping-show --org ORG --session-id CURRENT --json`, and
 `role-select --org ORG --session-id CURRENT --from-file ABS --json`.
 Keep the original file/key on transport loss; no automatic retry.
+The route streams the bounded body outside authority/team locks. The service
+alone acquires authority, then teams, then DB/binding ownership for GET, publish
+and selection. Native checkpoints use DB-before-binding order; DB is released
+before waiting for teams. This agrees with authority-first configuration writers
+and agent-update bootstrap/compensation. After each awaited acquisition the
+serving org/session/team is rechecked; native invocation, executable manager and
+current policy are rechecked at the coherent DB boundary before private decoding,
+current use and writes. No non-reentrant authority reacquisition is needed.
 
 Canonical bounded64KiB `workflow-coding-mapping-command@2` has exactly
 `format,operation_key,expected_generation,mapping`. Mapping has exactly
@@ -70,6 +78,15 @@ code_reviewer, qa_engineer and agent_manager, each `{principal,team}` with
 permanent active agent IDs, four distinct principals, at most16 eligible
 replacements per role and no replacement collision with another default role.
 Agent manager is an actual executable registered agent manager, never Founder.
+Every default and eligible replacement must belong to that initiating manager's
+own authorized team, including the actual selected implementer override. A worker
+in another team of the same org refuses even with an identical repository origin;
+shared membership/repository access grants no cross-team action. Original saved
+role records validate this radius against their authentic issuer, native manager
+team and captured snapshot; current use validates it again under current policy.
+Previously admitted out-of-radius role records now fail closed as invalid history,
+without rewriting bytes or using today's roster to invent historical authority.
+Valid same-team history and separate historical custody formats remain readable.
 Each of1..8 repository references is exactly
 `{repository_id,repo_key,origin_digest,object_format:sha1|sha256}`. Existing org/key/
 configured-origin identity and repository permission must agree for every role

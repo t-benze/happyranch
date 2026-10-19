@@ -147,23 +147,36 @@ def parse_selection(raw: bytes) -> dict:
 def configuration(mapping: dict, snapshot: dict) -> None:
     """Same existing published roster/repository policy at capture and current use.
 
+    The mapping manager is separately bound to the authentic issuer/current caller.
+    This same predicate checks original captured authority and current use.
     No filesystem/Git/storage/object inspection. An origin digest identifies a
     configured reference; it never proves access or inspection by an agent.
     """
     _model(RoleMapping, mapping)
     agents = {a['name']: a for a in snapshot['agents'] if a['status'] == 'active'}
     teams = {team['name']: team for team in snapshot['teams']}
+    manager = mapping['roles']['agent_manager']
+    owner = agents.get(manager['principal'])
+    team = teams.get(manager['team'])
+    expected = manager['principal'] if snapshot['schema_version'] == 1 else dict(
+        kind='agent', principal=manager['principal'])
+    _check(owner is not None and team is not None and bool(owner['executor'])
+           and owner['role'] == 'manager' and owner['team'] == manager['team']
+           and team['manager'] == expected)
+    # Existing ordinary manager actions are confined to the manager's own team.
+    # Shared org/repository membership is not cross-team routing authority.
     for role in ROLES:
         for selector in [mapping['roles'][role], *mapping['eligible_replacements'][role]]:
+            _check(selector['team'] == manager['team'])
             agent = agents.get(selector['principal'])
             team = teams.get(selector['team'])
             _check(agent is not None and team is not None and bool(agent['executor'])
                    and agent['team'] == selector['team'])
             if role == 'agent_manager':
-                manager = team['manager']
+                registered_manager = team['manager']
                 expected = selector['principal'] if snapshot['schema_version'] == 1 else dict(
                     kind='agent', principal=selector['principal'])
-                _check(agent['role'] == 'manager' and manager == expected)
+                _check(agent['role'] == 'manager' and registered_manager == expected)
             else:
                 _check(agent['role'] == 'worker' and selector['principal'] in team['workers'])
             for reference in mapping['repository_references']:

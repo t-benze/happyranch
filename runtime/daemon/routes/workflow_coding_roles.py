@@ -70,43 +70,43 @@ async def _handle(request: Request, org: Any, session_id: str, *, selection: boo
         raise HTTPException(403, detail={'code': 'coding_role_manager_required'})
     _, task_id, agent = context
     try:
-        async with org.teams_lock:
-            teams = org.teams.teams_for_manager(agent)
-            if len(teams) != 1:
-                raise CodingRoleError('coding_role_manager_required')
-            team = teams[0]
+        teams = org.teams.teams_for_manager(agent)
+        if len(teams) != 1:
+            raise CodingRoleError('coding_role_manager_required')
+        team = teams[0]
 
-            def revalidate() -> None:
-                state = request.app.state.daemon
-                if (state.is_idle or state.orgs.get(org.slug) is not org
-                        or org.sessions.get_context_by_session(session_id) != context
-                        or org.sessions.get_active(task_id, agent) != session_id
-                        or org.sessions.is_recovery_session(task_id, agent, session_id)
-                        or org.teams.teams_for_manager(agent) != (team,)):
-                    raise CodingRoleError('coding_role_manager_revoked')
-            principal = WorkflowTemplatePrincipal.agent(org_slug=org.slug, agent_name=agent,
-                team_slug=team, task_id=task_id, session_id=session_id, revalidate=revalidate)
-            revalidate()
-            raw = bytearray()
-            async for chunk in request.stream():
-                if len(raw) + len(chunk) > COMMAND_LIMIT:
-                    raise CodingRoleError('coding_role_invalid_request')
-                raw.extend(chunk)
-            revalidate()
-            if request.method == 'GET':
-                if raw:
-                    raise CodingRoleError('coding_role_invalid_request')
-                result = await org.workflow_coding_roles.get(principal=principal)
+        def revalidate() -> None:
+            state = request.app.state.daemon
+            if (state.is_idle or state.orgs.get(org.slug) is not org
+                    or org.sessions.get_context_by_session(session_id) != context
+                    or org.sessions.get_active(task_id, agent) != session_id
+                    or org.sessions.is_recovery_session(task_id, agent, session_id)
+                    or org.teams.teams_for_manager(agent) != (team,)):
+                raise CodingRoleError('coding_role_manager_revoked')
+        principal = WorkflowTemplatePrincipal.agent(org_slug=org.slug, agent_name=agent,
+            team_slug=team, task_id=task_id, session_id=session_id, revalidate=revalidate)
+        revalidate()
+        # Stream bounded bytes before the service acquires authority -> teams.
+        raw = bytearray()
+        async for chunk in request.stream():
+            if len(raw) + len(chunk) > COMMAND_LIMIT:
+                raise CodingRoleError('coding_role_invalid_request')
+            raw.extend(chunk)
+        revalidate()
+        if request.method == 'GET':
+            if raw:
+                raise CodingRoleError('coding_role_invalid_request')
+            result = await org.workflow_coding_roles.get(principal=principal)
+        else:
+            if request.headers.get('content-type', '').split(';', 1)[0].strip().lower() != 'application/json':
+                raise CodingRoleError('coding_role_invalid_request')
+            if selection:
+                result = await org.workflow_coding_roles.select(principal=principal, raw=bytes(raw))
             else:
-                if request.headers.get('content-type', '').split(';', 1)[0].strip().lower() != 'application/json':
-                    raise CodingRoleError('coding_role_invalid_request')
-                if selection:
-                    result = await org.workflow_coding_roles.select(principal=principal, raw=bytes(raw))
-                else:
-                    result = await org.workflow_coding_roles.publish(principal=principal, raw=bytes(raw))
-            revalidate()
-            return JSONResponse(result, status_code=201 if request.method == 'POST'
-                and not selection and not result['replayed'] else 200)
+                result = await org.workflow_coding_roles.publish(principal=principal, raw=bytes(raw))
+        revalidate()
+        return JSONResponse(result, status_code=201 if request.method == 'POST'
+            and not selection and not result['replayed'] else 200)
     except CodingRoleError as exc:
         status = (422 if exc.code == 'coding_role_invalid_request' else
                   404 if exc.code == 'coding_role_not_found' else
