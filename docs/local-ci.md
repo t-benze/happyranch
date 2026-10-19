@@ -80,15 +80,27 @@ rescue; an outer timeout never proves cleanup. Any unsafe residual stops later
 cases. Each W command/reply carries case/input/generation/sequence and monotonic
 rescue decision/action records with exact identities and signal outcomes. F
 requires a matching settlement acknowledgement before the next case/input; a
-missing or foreign acknowledgement stops acceptance. Signal refusals latch a
-fixture safety failure independently of product cleanup errors, stop subsequent
-inputs, and retain interception through rescue and actual worker joins (including
-the real sampler). Unknown settlement keeps interception installed until exit.
+missing or foreign acknowledgement stops acceptance. The protected observation
+interval closes after the last acceptance fact, including root/descendant and
+sentinel observations; the ordered W check rejects matching rescue decisions
+through that cutoff. An earlier receipt freeze alone cannot establish acceptance.
+Signal refusals, sentinel identity/liveness loss, missing/malformed heartbeat,
+failed heartbeat progress and unavailable oracle observations latch fatal fixture
+safety independently of product cleanup errors and stop subsequent cases/inputs.
+Sentinel creation/readiness uses the same fatal path and existing readiness
+budget. Interception stays installed through rescue and actual worker joins
+(including the real sampler). Unknown settlement keeps interception until exit.
 The pipe-timeout case allows at most3s to observe factory-sampled A1/A2 and an
-exited root with those exact descendants holding stdout, then starts the real2s
+exact exited/zombie root via a non-reaping OS observation, with those exact
+descendants holding stdout, then starts the real2s
 communicator timeout; existing5s drain,5s TERM/2s KILL and up to2s sampler stop
-fit the original20s action allowance. Setup failure retains absent/unsettled
-outcome and terminal events before separately labelled rescue, never case PASS.
+fit the original20s action allowance. Exit observation supplies no reap proof:
+production communication/backend owns the direct wait. F independently requires
+root disappearance and wait/terminal/release ordering before acceptance. Rescue
+joins actual production workers before any fixture waits, within the original
+cleanup bound. Setup/assertion failure retains observed identities, actual
+outcome or explicit absence and terminal events before rescue, plus separately
+labeled actual final settlement/outcome; rescue never supplies case PASS.
 Supported jobs accept explicit runtime caps up to86400s; the containing
 job must include setup, both bounded variants, cleanup and local static checks.
 Do not detach helpers or wait/poll a long job in the submitting session.

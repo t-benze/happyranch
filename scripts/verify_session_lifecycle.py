@@ -190,20 +190,37 @@ class Venue:
     def boundary(self):
         require(not self.stopped, "fixture stopped; no further action/inputs")
         require(time.monotonic() < self.case_deadline, "case action deadline")
+        if self.sentinels:
+            self.sentinel_snapshot(tuple(self.sentinels), record=False)
         self.budgets()
 
+    def observe(self, pid):
+        try:
+            return stat(pid)  # /proc only: never poll/wait/reap a direct child
+        except BaseException as exc:
+            self.safety_violation("fixture identity observation unavailable", pid=pid,
+                                  error=f"{type(exc).__name__}: {exc}")
+
+    def is_live(self, identity):
+        current = self.observe(identity["pid"])
+        return same(identity, current) and current["state"] not in ("Z", "X")
+
     def budgets(self):
-        current = [v for v in self.ledger.values() if live(v)]
-        threads = 0
-        for identity in current:
-            try:
-                with RAW_SCANDIR(f"/proc/{identity['pid']}/task") as it:
-                    threads += sum(1 for _ in it)
-            except FileNotFoundError:
-                require(not same(identity, stat(identity["pid"])), "task enumeration unavailable for live identity")
-        self.peaks["processes"] = max(self.peaks["processes"], len(current))
-        self.peaks["threads"] = max(self.peaks["threads"], threads)
-        require(len(current) <= 8 and threads <= 32, "fixture process/thread cap")
+        try:
+            current = [v for v in self.ledger.values() if self.is_live(v)]
+            threads = 0
+            for identity in current:
+                try:
+                    with RAW_SCANDIR(f"/proc/{identity['pid']}/task") as it:
+                        threads += sum(1 for _ in it)
+                except FileNotFoundError:
+                    require(not same(identity, self.observe(identity["pid"])), "task enumeration unavailable for live identity")
+            self.peaks["processes"] = max(self.peaks["processes"], len(current))
+            self.peaks["threads"] = max(self.peaks["threads"], threads)
+            require(len(current) <= 8 and threads <= 32, "fixture process/thread cap")
+        except BaseException as exc:
+            self.safety_violation("fixture process/thread observation or budget unsafe",
+                                  error=f"{type(exc).__name__}: {exc}")
 
     def wait(self, predicate, message, seconds=None):
         end = self.case_deadline if seconds is None else min(self.case_deadline, time.monotonic() + seconds)
@@ -256,16 +273,20 @@ class Venue:
 
     def begin_case(self, case, fault):
         require(self.boundary_settled and not self.stopped, "preceding boundary unsettled/unsafe")
+        self.acceptance_started_t = time.monotonic() - self.started
+        # Refuse before any next-case backend probe or second C5 input.
+        self.sentinel_snapshot()
         self.scope = {"case": case, "input": fault, "generation": self.scope["generation"] + 1}
         self.boundary_settled = False
-        self.send("begin")
+        reply = self.send("begin")
+        self.acceptance_begin_sequence = reply["sequence"]
 
     def settle_case(self):
         self.send("settle")  # disarms this deadline before another generation
         self.boundary_settled = True
 
     def add(self, role, identity):
-        current = stat(identity["pid"])
+        current = self.observe(identity["pid"])
         require(same(identity, current), f"fixture identity changed: {role}")
         self.ledger[role] = dict(current)
         self.event("identity", role=role, **current)
@@ -339,11 +360,15 @@ class Venue:
         rescue("watchdog-final", include_sentinels=True)
         # F remains the sole reaper. No W wait/kill authority over F.
 
-    def check_watchdog(self, frozen_t):
-        self.send()  # orders all earlier W decisions before this acknowledgement
+    def check_watchdog(self, observed_through_t):
+        reply = self.send()  # orders all earlier W decisions before this acknowledgement
         rescues = [r for r in self.watchdog_rescues if r["scope"] == self.scope]
-        require(not any(r["decision_t"] <= frozen_t for r in rescues),
-                "matching watchdog rescue before backend evidence")
+        self.event("acceptance_interval", started_t=self.acceptance_started_t,
+                   observed_through_t=observed_through_t,
+                   begin_sequence=self.acceptance_begin_sequence, check_sequence=reply["sequence"],
+                   rescues=rescues)
+        require(not any(r["decision_t"] <= observed_through_t for r in rescues),
+                "matching watchdog rescue before last acceptance observation")
         return rescues
 
     def readiness(self):
@@ -409,40 +434,66 @@ class Venue:
 
     def sentinel(self, role):
         path = self.scratch / (role + ".heartbeat")
-        pid = os.fork()
-        if pid == 0:
-            os.setsid()
-            counter = 0
-            while True:
-                pending = path.with_suffix(".pending")
-                pending.write_text(str(counter))
-                pending.replace(path)
-                counter += 1
-                time.sleep(0.025)
-        self.add(role, stat(pid))
-        self.wait(path.exists, f"{role} heartbeat missing", 2)
-        self.sentinels[role] = path
+        end = min(self.case_deadline, time.monotonic() + 2)
+        try:
+            pid = os.fork()
+            if pid == 0:
+                try:
+                    os.setsid()
+                    counter = 0
+                    while True:
+                        pending = path.with_suffix(".pending")
+                        pending.write_text(str(counter))
+                        pending.replace(path)
+                        counter += 1
+                        time.sleep(0.025)
+                finally:
+                    os._exit(1)  # never enter F's exception/cleanup path
+            self.add(role, self.observe(pid))
+            self.wait(path.exists, f"{role} heartbeat missing", max(0, end - time.monotonic()))
+            self.sentinels[role] = path
+            before = self.sentinel_snapshot((role,))
+            self.wait(lambda: self.sentinel_snapshot((role,), record=False)[role] > before[role],
+                      f"{role} readiness heartbeat did not advance", max(0, end - time.monotonic()))
+            self.sentinel_progress(before, self.sentinel_snapshot((role,)))
+        except BaseException as exc:
+            self.safety_violation("sentinel creation/readiness failed", role=role,
+                                  error=f"{type(exc).__name__}: {exc}")
 
-    def sentinel_snapshot(self):
+    def sentinel_snapshot(self, roles=("S", "J"), *, record=True):
         result = {}
-        for role, path in self.sentinels.items():
-            require(live(self.ledger[role]), f"foreign sentinel {role} killed")
+        observations = {}
+        for role in roles:
             try:
-                value = path.read_text()
-                if not value:
-                    value = "-1"
+                identity = self.ledger[role]
+                current = self.observe(identity["pid"])
+                require(same(identity, current) and current["state"] not in ("Z", "X"),
+                        f"sentinel {role} identity/liveness lost")
+                with RAW_OPEN(self.sentinels[role], encoding="ascii") as stream:
+                    value = stream.read(65)
+                require(0 < len(value) <= 64 and value.isascii() and value.isdecimal(),
+                        f"invalid sentinel {role} heartbeat")
                 result[role] = int(value)
-            except ValueError:
-                raise AssertionError("invalid sentinel heartbeat")
+                observations[role] = {"identity": dict(identity), "observed": current,
+                                      "heartbeat": result[role], "t": time.monotonic() - self.started}
+            except BaseException as exc:
+                self.safety_violation("sentinel observation unavailable or unsafe", role=role,
+                                      error=f"{type(exc).__name__}: {exc}")
+        if record:
+            self.event("sentinel_observation", observations=observations)
         return result
 
-    def cleanup(self, roles, direct=(), deadline=None):
+    def sentinel_progress(self, before, after):
+        if not all(role in after and after[role] > value for role, value in before.items()):
+            self.safety_violation("sentinel heartbeat did not advance", before=before, after=after)
+
+    def cleanup(self, roles, direct=(), deadline=None, workers=()):
         """Separate fixture rescue. Evidence is captured BEFORE calling this."""
         deadline = min(time.monotonic() + 10, self.final_deadline - 1) if deadline is None else deadline
         rescued = []
         for role in reversed(tuple(roles)):
             identity = self.ledger.get(role)
-            if identity and live(identity):
+            if identity and self.is_live(identity):
                 action = {"role": role, "identity": dict(identity), "boot": self.boot,
                           "decision_t": time.monotonic() - self.started, "signal": int(signal.SIGKILL)}
                 self.event("fixture_rescue_signal_attempt", **action)
@@ -453,6 +504,11 @@ class Venue:
                     raise
                 self.event("fixture_rescue_signal_result", **action, outcome="sent")
                 rescued.append(role)
+        # Rescue may unblock communication, but cannot take its direct wait.
+        # All production owners must finish before F consumes any child status.
+        for worker in workers:
+            worker.join(timeout=max(0.0, deadline - time.monotonic()))
+        require(all(not worker.is_alive() for worker in workers), "unsafe worker remains before fixture waits")
         for proc in direct:
             proc.wait(timeout=max(0.0, deadline - time.monotonic()))
             for pipe in (proc.stdin, proc.stdout, proc.stderr):
@@ -466,10 +522,10 @@ class Venue:
             if identity["pid"] not in direct_pids:
                 status = specific_wait(identity["pid"], deadline, identity)
                 self.event("fixture_specific_wait", role=role, status=status)
-            require(not live(identity), f"unsafe residual: {role}")
+            require(not self.is_live(identity), f"unsafe residual: {role}")
             # Nonlive alone is insufficient: any surviving matching zombie
             # means F did not establish complete own-child reaping.
-            require(not same(identity, stat(identity["pid"])), f"unreaped fixture: {role}")
+            require(not same(identity, self.observe(identity["pid"])), f"unreaped fixture: {role}")
             self.ledger.pop(role)
         self.event("fixture_rescue", roles=rescued)
         self.send()
@@ -478,7 +534,7 @@ class Venue:
         self.case_deadline = min(time.monotonic() + 10, self.final_deadline - 1)
         failures = []
         try:
-            self.cleanup([role for role in self.ledger if role not in ("F", "W")])
+            self.cleanup([role for role in self.ledger if role not in ("F", "W")], workers=self.threads)
             for worker in self.threads:
                 worker.join(timeout=max(0.0, self.case_deadline - time.monotonic()))
             require(all(not thread.is_alive() for thread in self.threads), "fixture thread remains")
@@ -491,12 +547,12 @@ class Venue:
                 except BaseException as exc:
                     failures.append(str(exc))
                     identity = self.ledger.get("W")
-                    if identity and live(identity):
+                    if identity and self.is_live(identity):
                         RAW_KILL(identity["pid"], signal.SIGKILL)
                 finally:
                     status = specific_wait(self.watchdog_pid, min(self.final_deadline, time.monotonic() + 1))
                     require(status is not None, "W wait missing")
-                    require(not same(self.ledger["W"], stat(self.watchdog_pid)), "W remains")
+                    require(not same(self.ledger["W"], self.observe(self.watchdog_pid)), "W remains")
                     self.sock.close()
                     self.sock = None
         require(not failures, "; ".join(failures))
@@ -817,7 +873,7 @@ def run_case(v, case, api, fault=None):
         return sampler
 
     supervisor._start_sampler = observed_start_sampler
-    before_sentinels = v.sentinel_snapshot()
+    before_sentinels = None
     direct = []
     roles = []
     start_index = len(v.events)
@@ -903,6 +959,7 @@ def run_case(v, case, api, fault=None):
         (directory / (role + ".ack")).touch()
 
     record = {**v.scope, "status": "MISSING", "assertions": []}
+    retained_identities = {}
 
     def freeze_backend(label):
         # Always called before rescue, including setup/assertion failure. An
@@ -912,10 +969,23 @@ def run_case(v, case, api, fault=None):
             snapshots[owner] = {"terminal_reason": outcome.terminal_reason.value,
                                 "cleanup_error": outcome.cleanup_error,
                                 "receipt": dataclasses.asdict(outcome.receipt) if outcome.receipt else None}
+        identities = {}
+        for role in roles:
+            identity = v.ledger.get(role, retained_identities.get(role))
+            if identity is not None:
+                retained_identities[role] = dict(identity)
+                try:
+                    identities[role] = {"identity": dict(identity), "observed": v.observe(identity["pid"])}
+                except BaseException as exc:
+                    # observe already latched fatal unknown. Keep this failure
+                    # snapshot and continue bounded rescue/worker settlement.
+                    identities[role] = {"identity": dict(identity), "observed": "UNKNOWN",
+                                        "error": f"{type(exc).__name__}: {exc}"}
         frozen_t = time.monotonic() - v.started
         record[label] = {"t": frozen_t, "outcomes": snapshots,
                          "outcome_A": "present" if "A" in snapshots else "ABSENT/UNSETTLED",
                          "errors": list(errors), "workers": {w.name: w.is_alive() for w in v.threads},
+                         "identities": identities,
                          "event_range": [start_index, len(v.events)],
                          "safety_violations": list(v.safety_violations)}
         v.event(label, outcome_A=record[label]["outcome_A"])
@@ -923,6 +993,7 @@ def run_case(v, case, api, fault=None):
 
     with observer.dependencies(api.census):
         try:
+            before_sentinels = v.sentinel_snapshot()
             request, thread = start()
             v.wait(lambda: "A" in observer.running, "real launch handle missing")
             direct.append(observer.running["A"].process)
@@ -998,7 +1069,7 @@ def run_case(v, case, api, fault=None):
                         and b_context.running() == observer.running["B"] and "B" not in terminals,
                         "A changed/released B context")
                 require(len(b_context.samples_snapshot()) >= len(b_samples), "B sample/account loss")
-                require(live(v.ledger["B0"]), "A killed B")
+                require(v.is_live(v.ledger["B0"]), "A killed B")
                 (case_dirs["B"] / "exit").touch()
                 v.wait(lambda: not b_thread.is_alive(), "B independent finish missing")
                 b_thread.join()
@@ -1016,25 +1087,44 @@ def run_case(v, case, api, fault=None):
                         api.census._CHECKED_ROW_LIMIT = 8
                     else:
                         v.wait(lambda: observer.fault_hits > 0, "exact low-level PermissionError not reached")
-                    require(live(v.ledger["A1"]), "fault oracle child not live")
+                    require(v.is_live(v.ledger["A1"]), "fault oracle child not live")
                 (case_dirs["A"] / "exit").touch()
                 if case == "C2-timeout-pipe":
                     running = observer.running["A"]
-                    v.wait(lambda: running.process.poll() is not None, "root did not exit before pipe timeout",
+                    root_exit = {}
+
+                    def root_exited():
+                        current = v.observe(running.root_pid)
+                        if not same(v.ledger["A0"], current):
+                            v.safety_violation("root identity unavailable before communicator", pid=running.root_pid,
+                                               observed=current)
+                        root_exit.update(identity=dict(v.ledger["A0"]), observed=current,
+                                         t=time.monotonic() - v.started)
+                        return current["state"] in ("Z", "X")
+
+                    v.wait(root_exited, "root did not exit before pipe timeout",
                            max(0, timeout_setup_deadline - time.monotonic()))
                     # Exact OS oracle: BOTH sampled same-group descendants
                     # actually retain the Popen stdout pipe after root exit.
                     pipe = os.readlink(f"/proc/self/fd/{running.process.stdout.fileno()}")
                     holders = {}
+                    sampled = {}
                     for role in ("A1", "A2"):
                         row = v.ledger[role]
-                        current = stat(row["pid"])
+                        current = v.observe(row["pid"])
                         require(same(row, current) and current["state"] not in ("Z", "X")
                                 and current["pgid"] == running.root_pid, "pipe holder identity/group changed")
-                        require(os.readlink(f"/proc/{row['pid']}/fd/1") == pipe, "descendant lacks actual stdout pipe")
-                        holders[role] = dict(row)
+                        stdout = os.readlink(f"/proc/{row['pid']}/fd/1")
+                        require(stdout == pipe, "descendant lacks actual stdout pipe")
+                        require(observer.history_has(row["pid"], row["start"]), "pipe holder missing authentic factory history")
+                        holders[role] = {"identity": dict(row), "observed": current, "stdout": stdout,
+                                         "t": time.monotonic() - v.started}
+                        sampled[role] = {"pid": row["pid"], "start": row["start"], "history_has": True}
                     require(time.monotonic() < timeout_setup_deadline, "pipe setup exceeded 3s allowance")
-                    record["pipe_preconditions"] = {"root_returncode": running.process.returncode,
+                    record["pipe_preconditions"] = {"root_exit_observation": root_exit,
+                                                     "root_reaping": "NOT observed; production owner retains wait",
+                                                     "factory_sampled": sampled,
+                                                     "factory_sample_count": observer.samples.get("A", 0),
                                                      "holders": holders, "pipe": pipe}
                     v.event("root_exited_pipe_held", **record["pipe_preconditions"])
                     communicate_ready.set()
@@ -1052,10 +1142,10 @@ def run_case(v, case, api, fault=None):
                            "signals": observer.signal_attempts,
                            "fault_hits": observer.fault_hits, "scan_rows": observer.rows,
                            "scan_attempts": observer.scan_attempts,
-                           "known_live_before_rescue": {role: live(v.ledger[role]) for role in roles},
+                           "known_live_before_rescue": {role: v.is_live(v.ledger[role]) for role in roles},
                            "factory_samples": observer.samples})
             # Freeze backend result BEFORE separate fixture rescue/reaping.
-            frozen_t = freeze_backend("backend_evidence_frozen")
+            freeze_backend("backend_evidence_frozen")
             require(not v.safety_violations, "fixture signal safety violation")
             require(sum(e["kind"] == "finish_enter" and e["owner"] == "A" for e in evidence) == 1,
                     "finish not exactly once")
@@ -1067,12 +1157,14 @@ def run_case(v, case, api, fault=None):
             hooks = [i for i,e in enumerate(evidence) if e["kind"] == "terminal_hook" and e["owner"] == "A"]
             releases = [i for i,e in enumerate(evidence) if e["kind"] == "lease_release" and e["logical_id"].endswith("-A")]
             require(waits and max(waits) < hooks[0] < releases[0], "direct wait/terminal/release order")
-            require(not same(v.ledger["A0"], stat(v.ledger["A0"]["pid"])), "backend direct root unreaped")
+            require(all(evidence[i]["operation"] in ("communicate", "finish") for i in waits),
+                    "fixture consumed direct wait before backend evidence")
+            require(not same(v.ledger["A0"], v.observe(v.ledger["A0"]["pid"])), "backend direct root unreaped")
             record["assertions"].append("one finish/direct wait/terminal hook/lease release in order")
             if case == "C1-late-in-group":
                 require(observer.samples.get("A") == late_sample_count, "late child was not after the last periodic sample")
                 require(observer.read_operations.get("finish", 0) > 0, "fresh finish observation missing")
-                remaining = [role for role in roles if live(v.ledger[role])]
+                remaining = [role for role in roles if v.is_live(v.ledger[role])]
                 require((receipt is not None and not remaining and receipt.quiescent)
                         or (outcome.cleanup_error and not supervisor._residue.evaluate().admit)
                         or (receipt is not None and not receipt.quiescent),
@@ -1086,22 +1178,22 @@ def run_case(v, case, api, fault=None):
                 require(outcome.terminal_reason.value == "success", "cleanup replaced provider success reason")
                 require(len(publications) == (1 if receipt else 0), "fabricated/duplicate publication")
                 if fault == "permission":
-                    require(observer.fault_hits > 0 and live(v.ledger["A1"]), "permission fault not proven")
+                    require(observer.fault_hits > 0 and v.is_live(v.ledger["A1"]), "permission fault not proven")
                 if fault == "cap":
                     require(observer.scan_attempts and all(a["rows"] == 9 for a in observer.scan_attempts)
-                            and live(v.ledger["A1"]), "row9/private cap8 not exercised")
+                            and v.is_live(v.ledger["A1"]), "row9/private cap8 not exercised")
                 record["assertions"].append("real fault/reuse refused clean outcome and closed gate")
             elif case == "C1-escaped-known":
                 identity_row = v.ledger["A1"]
                 require(observer.samples.get("A", 0) >= 2, "factory sampler missing")
                 require(receipt is not None and not receipt.quiescent
                         and any(s.pid == identity_row["pid"] and s.start_identity == identity_row["start"]
-                                for s in receipt.survivors) and live(identity_row), "known escaped identity forgotten")
+                                for s in receipt.survivors) and v.is_live(identity_row), "known escaped identity forgotten")
                 require(any(s.pid == identity_row["pid"] for s in supervisor._residue.census()), "escaped identity not charged")
                 record["assertions"].append("factory sampling retains escaped live identity in receipt and residue")
             else:
                 require(receipt is not None, "missing cleanup receipt")
-                remaining = [role for role in roles if live(v.ledger[role])]
+                remaining = [role for role in roles if v.is_live(v.ledger[role])]
                 require(not remaining or not receipt.quiescent, "live owned child falsely clean")
                 if case != "C1-late-in-group":
                     require(not remaining and receipt.quiescent, "owned group cleanup incomplete")
@@ -1123,8 +1215,13 @@ def run_case(v, case, api, fault=None):
                             "root was not already waited before finish")
                 record["assertions"].append("real contained communication/group cleanup and case-specific final transition")
             after = v.sentinel_snapshot()
-            require(all(after[r] > before_sentinels[r] for r in before_sentinels), "sentinel heartbeat did not advance")
-            v.check_watchdog(frozen_t)
+            v.sentinel_progress(before_sentinels, after)
+            # The earlier receipt freeze is NOT the acceptance cutoff. All
+            # setup/root/descendant/sentinel facts above must precede this cut.
+            # No acceptance observation may be made after the ordered W check.
+            observed_through_t = freeze_backend("acceptance_evidence_frozen")
+            v.check_watchdog(observed_through_t)
+            require(not v.stopped and not v.safety_violations, "fixture fatal safety/unknown state")
             record["status"] = "PASS"
         except Exception as exc:
             record.update(status="FAIL", error=f"{type(exc).__name__}: {exc}")
@@ -1132,6 +1229,16 @@ def run_case(v, case, api, fault=None):
         finally:
             # Keep dependencies, especially both signal interceptors, installed
             # throughout rescue and all backend/control/sampler settlement.
+            if record["status"] != "PASS":
+                try:
+                    failed_after = v.sentinel_snapshot()
+                    if before_sentinels is not None:
+                        v.sentinel_progress(before_sentinels, failed_after)
+                except BaseException as exc:
+                    # Sentinel methods latch first. An ordinary case error
+                    # must not skip safety observation or prevent cleanup.
+                    v.stopped = True
+                    record["sentinel_error"] = f"{type(exc).__name__}: {exc}"
             freeze_backend("before_fixture_rescue")
             observer.read_release.set()
             observer.launch_release.set()
@@ -1140,10 +1247,10 @@ def run_case(v, case, api, fault=None):
                     if running.process not in direct:
                         direct.append(running.process)
                     role = "B0" if owner == "B" else "A0"
-                    if role not in v.ledger and stat(running.root_pid) is not None:
-                        v.add(role, stat(running.root_pid))
+                    if role not in v.ledger and v.observe(running.root_pid) is not None:
+                        v.add(role, v.observe(running.root_pid))
                         roles.append(role)
-                v.cleanup(roles, direct, deadline=cleanup_deadline)
+                v.cleanup(roles, direct, deadline=cleanup_deadline, workers=v.threads)
                 for worker in v.threads:
                     worker.join(timeout=max(0.0, cleanup_deadline - time.monotonic()))
                 # Sampler threads are created by the real supervisor, not F's
@@ -1154,6 +1261,7 @@ def run_case(v, case, api, fault=None):
             except BaseException as exc:
                 v.stopped = True
                 record.update(status="FAIL", settlement_error=f"{type(exc).__name__}: {exc}")
+            freeze_backend("after_fixture_settlement")  # actual final outcome, never backend acceptance
             record.update(safety_violations=list(v.safety_violations),
                           watchdog_rescues=[r for r in v.watchdog_rescues if r["scope"] == v.scope],
                           boundary_settled=v.boundary_settled)
