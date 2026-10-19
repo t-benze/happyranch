@@ -104,6 +104,10 @@ public struct SurfaceAllowList: Sendable {
             // Fixed release import is CLI-only; no remote/browser grant.
             ("POST", "/workflows/release-templates/coding/1/import"),
             ("GET", "/workflows/release-templates/coding/1/import"),
+            // Agent-read role defaults/selection remain CLI-only.
+            ("POST", "/workflows/coding/mappings"),
+            ("GET", "/workflows/coding/mappings"),
+            ("POST", "/workflows/coding/role-selections"),
             // Original-current author staging is a native-sensitive mutation.
             ("POST", "/workflows/submissions/handoffs"),
             // Current agent reviewer staging is not a remote human surface.
@@ -256,6 +260,12 @@ public struct SurfaceAllowList: Sendable {
                Self.stageDenialCandidate($0) == "/workflows/release-templates/coding/1/import"
            }) {
             return false
+        }
+        for family in ["/workflows/coding/mappings", "/workflows/coding/role-selections"] {
+            if deniedMethods.contains("\(method) \(family)"),
+               [rawPath, path].contains(where: { Self.stageDenialCandidate($0) == family }) {
+                return false
+            }
         }
         if method == "POST", deniedMethods.contains("POST /workflows/reviews/stages"),
            [rawPath, path].contains(where: { Self.stageDenialCandidate($0) == "/workflows/reviews/stages" }) {

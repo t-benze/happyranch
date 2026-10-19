@@ -1,9 +1,10 @@
-"""SELECT-only mapping/setup/original native admission closure.
+"""SELECT-only version-aware mapping/original native admission closure.
 
 Caller admits the complete native/J schema and owns one coherent SQLite read
 transaction/connection/lock with raw native values for the entire call. This
 reader establishes saved grammar, original operation/generation prefix and
-historical admission/publication/setup and original native containment only. No current default,
+historical admission/publication/native containment and, for custody records
+only, original setup closure. Agent-read role records never inherit custody. No current default,
 grant, task/SID/policy/source-rule/capability/J graph authenticity is asserted.
 No current pointer, roster, cache, filesystem, objects or network is read.
 """
@@ -128,6 +129,8 @@ def _history(conn: sqlite3.Connection, org_slug: str,
         operations.add((principal, key))
         digests.add(digest)
         inventory.append((values, row[10:], saved.command_bytes, record))
+    captures.load()
+    _check(set(captures.by_mapping) == identities)
     inventory.sort(key=lambda entry: (entry[0][3], entry[0][0]))
     selected = [entry for entry in inventory if entry[0][0] == mapping_id]
     _check(len(selected) == 1)
@@ -155,7 +158,7 @@ def _history(conn: sqlite3.Connection, org_slug: str,
         _capture_admission(conn, expected, capture, budget)
         grant = _decoded(json.loads(base64.b64decode(capture['grant_bytes_base64'], validate=True)), budget)
         histories = []
-        for setup in grant['setups']:
+        for setup in (grant['setups'] if record['format'] == 'workflow-coding-mapping-record@1' else []):
             budget.step()
             # Pure reader already checks U -> mapping/adoption prior times,
             # manager/actions/repository radius and all adoption pin equalities.
