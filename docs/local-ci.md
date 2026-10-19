@@ -126,8 +126,9 @@ assertion identity separately from finalization/safety/cleanup failures. Named
 target mismatches retain actual observed values and independently specified
 expected values. A failing assertion alone is never intended sensitivity RED.
 Before rescue, the failure finalizer completes independent S/J identity/liveness/
-progress, ledger identities, signal/budget and worker observations, freezes the
-LAST acceptance snapshot and cutoff, then obtains the unchanged attributed ordered
+progress, ledger identities, signal/budget and worker observations. It materializes
+ALL snapshot facts, including outcomes/errors, worker/sampler and guard state,
+BEFORE reading/storing the LAST monotonic cutoff, then obtains the unchanged attributed ordered
 W check. It must fit the original action deadline; cleanup time cannot fund
 acceptance. `before_fixture_rescue` reuses that frozen snapshot without a new
 acceptance observation. Missing/unknown W, ordinary matching rescue or unsafe/
@@ -147,7 +148,20 @@ observations/W2s and1s slack. During holding, both remaining times are recompute
 actual completion, admitted window,14s action reserve or1s barrier margin releases
 the read promptly. Save any premature publication/release mismatch, release the
 genuine read and complete A/control then B through production before propagating
-the saved mismatch through the failure finalizer. Normal C4 runs release promptly
+the saved mismatch through the failure finalizer. Before recording normal C
+settlement or admitting its D1 interval, require BOTH actual returned A/B outcomes,
+no worker errors, settled actual workers/samplers and independently released leases.
+For each owner retain exactly one actual successful finish, its contained production
+direct wait, the same finish receipt's publication, terminal hook and lease release
+in that order. Process-local receipt identities link existing finish/publication
+events; actual Popen wait owner/operation/PID evidence excludes fixture waits.
+Concrete completion proof or a concrete normal-settlement failure remains in the
+raw record. Thread death or a timestamp alone cannot establish completion.
+Saved target mismatches remain separate: target receipt values/immutability,
+clean/quiescent results and successful target assertions are not completion gates.
+Missing/failed production completion preserves those mismatches and its own error,
+invalidates `failure_interval_complete` and fatally stops later cases/inputs;
+subsequent fixture rescue cannot backfill it. Normal C4 runs release promptly
 without requesting sensitivity. Infeasible admission or no attributable wrong
 value in the finite C window is missing sensitivity, never timeout-as-RED. These
 conditional caps guarantee no timing; phase overruns/missing completion retain

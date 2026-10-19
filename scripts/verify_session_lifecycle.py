@@ -718,7 +718,8 @@ class BackendObserver:
         except Exception as exc:
             self.v.event("finish_error", owner=owner, error=str(exc))
             raise
-        self.v.event("finish_return", owner=owner, receipt=dataclasses.asdict(receipt))
+        self.v.event("finish_return", owner=owner, receipt=dataclasses.asdict(receipt),
+                     receipt_identity=id(receipt))
         return receipt
 
     def history_has(self, pid, start=None):
@@ -892,7 +893,8 @@ def run_case(v, case, api, fault=None):
     publications, terminals, results, errors = [], [], {}, []
     # Real operational probe occurs before providers/overlap, never bypassed.
     supervisor = api.factory(backend=observer, publisher=lambda receipt: (
-        publications.append(receipt), v.event("publish", token=receipt.invocation_kind)))
+        publications.append(receipt), v.event("publish", token=receipt.invocation_kind,
+                                              receipt_identity=id(receipt))))
     require(supervisor.probe().healthy, "process-group backend probe failed")
     original_release = supervisor._admission._release
 
@@ -1049,18 +1051,109 @@ def run_case(v, case, api, fault=None):
                     # snapshot and continue bounded rescue/worker settlement.
                     identities[role] = {"identity": dict(identity), "observed": "UNKNOWN",
                                         "error": f"{type(exc).__name__}: {exc}"}
-        frozen_t = time.monotonic() - v.started
-        record[label] = {"t": frozen_t, "outcomes": snapshots,
-                         "outcome_A": "present" if "A" in snapshots else "ABSENT/UNSETTLED",
-                         "errors": list(errors), "workers": {w.name: w.is_alive() for w in v.threads},
-                         "identities": identities,
-                         "signal_attempts": list(observer.signal_attempts),
-                         "active_samplers": observer.active_samplers,
-                         "stopped": v.stopped,
-                         "event_range": [start_index, len(v.events)],
-                         "safety_violations": list(v.safety_violations)}
-        v.event(label, outcome_A=record[label]["outcome_A"])
-        return frozen_t
+        snapshot = {"outcomes": snapshots,
+                    "outcome_A": "present" if "A" in snapshots else "ABSENT/UNSETTLED",
+                    "errors": list(errors), "workers": {w.name: w.is_alive() for w in v.threads},
+                    "identities": identities,
+                    "signal_attempts": list(observer.signal_attempts),
+                    "active_samplers": observer.active_samplers,
+                    "stopped": v.stopped,
+                    "event_range": [start_index, len(v.events)],
+                    "safety_violations": list(v.safety_violations)}
+        # LAST observation: materialize every independent acceptance fact above
+        # before reading this cutoff. The event below only labels frozen data.
+        snapshot["t"] = time.monotonic() - v.started
+        record[label] = snapshot
+        v.event(label, outcome_A=snapshot["outcome_A"])
+        return snapshot["t"]
+
+    def c_production_settlement():
+        # Observe only existing returned results/events. No fixture poll/wait,
+        # rescue, or target clean/quiescent assertion can supply this proof.
+        proof = {"complete": False, "errors": list(errors),
+                 "workers": {w.name: w.is_alive() for w in v.threads},
+                 "active_samplers": observer.active_samplers,
+                 "returned_owners": list(results), "terminals": list(terminals),
+                 "active_leases": supervisor.active_count(),
+                 "released_total": supervisor._admission.released_total(),
+                 "owners": {}, "events": [dict(e) for e in v.events[start_index:]]}
+        record["C_production_settlement"] = proof
+        try:
+            require(not proof["errors"], "C normal settlement has worker errors",
+                    observed=proof["errors"], expected=[])
+            require(set(proof["returned_owners"]) == {"A", "B"}, "C missing actual A/B outcome",
+                    observed=proof["returned_owners"], expected=["A", "B"])
+            require(not any(proof["workers"].values()) and proof["active_samplers"] == 0,
+                    "C production workers/samplers unsettled",
+                    observed={"workers": proof["workers"], "active_samplers": proof["active_samplers"]},
+                    expected="all actual workers and samplers settled before rescue")
+            require(proof["active_leases"] == 0 and proof["released_total"] == 2,
+                    "C production leases not independently released once per owner",
+                    observed={"active": proof["active_leases"], "released": proof["released_total"]},
+                    expected={"active": 0, "released": 2})
+            require(len(publications) == 2 and sorted(proof["terminals"]) == ["A", "B"],
+                    "C missing/duplicate production publications or terminal hooks")
+            evidence = proof["events"]
+            require(sum(e["kind"] == "publish" for e in evidence) == 2,
+                    "C missing/duplicate publication events")
+            for owner in ("A", "B"):
+                outcome, running = results[owner], observer.running[owner]
+                receipt = outcome.receipt
+                owner_proof = {"logical_id": outcome.request.logical_id, "token": running.token,
+                               "pid": running.root_pid, "terminal_reason": outcome.terminal_reason.value,
+                               "cleanup_error": outcome.cleanup_error,
+                               "receipt": dataclasses.asdict(receipt) if receipt else None,
+                               "receipt_identity": id(receipt),
+                               "root_observation": v.observe(running.root_pid)}
+                proof["owners"][owner] = owner_proof
+                require(outcome.request.logical_id == "synthetic-lifecycle-" + owner,
+                        "C wrong-owner returned outcome", observed=owner_proof,
+                        expected="actual owner's returned outcome")
+                indices = {kind: [i for i, e in enumerate(evidence)
+                                  if e["kind"] == kind and e.get("owner") == owner]
+                           for kind in ("finish_enter", "finish_return", "finish_error",
+                                        "backend_direct_wait", "terminal_hook")}
+                require(len(indices["finish_return"]) == 1, "C missing/duplicate actual finish return",
+                        observed=indices, expected="one actual finish return for this owner")
+                finished = evidence[indices["finish_return"][0]]
+                # Match the actual finish to its publication, independently of
+                # the returned outcome's target receipt values/immutability.
+                owner_proof["finish_receipt_identity"] = finished["receipt_identity"]
+                require(sum(id(r) == finished["receipt_identity"] for r in publications) == 1,
+                        "C actual finish receipt not published exactly once")
+                indices["publish"] = [i for i, e in enumerate(evidence) if e["kind"] == "publish"
+                                      and e.get("receipt_identity") == finished["receipt_identity"]]
+                indices["lease_release"] = [i for i, e in enumerate(evidence)
+                                            if e["kind"] == "lease_release"
+                                            and e["logical_id"] == outcome.request.logical_id]
+                owner_proof["event_indices"] = indices
+                require(all(len(indices[k]) == 1 for k in
+                            ("finish_enter", "finish_return", "publish", "terminal_hook", "lease_release"))
+                        and not indices["finish_error"], "C missing/duplicate production completion event",
+                        observed=owner_proof, expected="one successful finish/publication/terminal/release per owner")
+                enter, returned, published, hook, released = (indices[k][0] for k in
+                    ("finish_enter", "finish_return", "publish", "terminal_hook", "lease_release"))
+                waits = indices["backend_direct_wait"]
+                require(enter < returned < published < hook < released and waits
+                        and max(waits) < hook
+                        and all(evidence[i]["pid"] == running.root_pid
+                                and evidence[i]["operation"] in ("communicate", "finish") for i in waits)
+                        and any(enter < i < returned and evidence[i]["operation"] == "finish" for i in waits),
+                        "C production finish/direct wait/publication/terminal/release order",
+                        observed=owner_proof,
+                        expected="actual owner finish contains direct wait; return < publish < hook < release; all waits before hook, no F wait")
+                require(evidence[enter]["token"] == running.token,
+                        "C finish belongs to a different containment token")
+                require(not same(v.ledger[owner + "0"], owner_proof["root_observation"]),
+                        "C direct root unreaped before rescue", observed=owner_proof,
+                        expected="matching root absent after actual production wait")
+            require(not v.stopped and not v.safety_violations and time.monotonic() < v.case_deadline,
+                    "C normal production completion unavailable within safe action interval")
+            proof.update(complete=True, completed_t=time.monotonic())
+            record["C_hold"]["production_A_B_settled_t"] = proof["completed_t"]
+        except BaseException as exc:
+            proof["failure"] = failure(exc)
+            raise
 
     def acceptance_finalizer():
         # Observation only, inside the original action. Never poll/wait/reap,
@@ -1069,15 +1162,20 @@ def run_case(v, case, api, fault=None):
         require(not v.stopped, "acceptance finalizer unavailable after fatal stop")
         require(time.monotonic() < v.case_deadline, "acceptance finalizer action deadline")
         if case == "C4-owner-isolation":
-            require(record.get("C_hold", {}).get("production_A_B_settled_t") is not None,
-                    "C acceptance unavailable without normal A/B production settlement")
+            require(record.get("C_production_settlement", {}).get("complete") is True
+                    and "C_normal_settlement_failure" not in record,
+                    "C acceptance unavailable without proved normal A/B production settlement",
+                    observed=record.get("C_production_settlement"),
+                    expected="both returned outcomes and ordered production completion proof before rescue")
         after = v.sentinel_snapshot()
         require(before_sentinels is not None, "acceptance lacks initial sentinel observations")
         v.sentinel_progress(before_sentinels, after)
         v.budgets()
         record["acceptance_sentinels"] = {"before": before_sentinels, "after": after}
         cutoff = freeze_backend("acceptance_evidence_frozen")
-        require(not v.stopped and time.monotonic() < v.case_deadline,
+        frozen = record["acceptance_evidence_frozen"]
+        require(not frozen["stopped"] and not frozen["safety_violations"]
+                and time.monotonic() < v.case_deadline,
                 "acceptance observations incomplete within action deadline")
         if case == "C4-owner-isolation":
             require(time.monotonic() - finalizer_started <= 1, "C final observations exceeded 1s planning cap")
@@ -1088,7 +1186,6 @@ def run_case(v, case, api, fault=None):
         try:
             v.check_watchdog(cutoff)  # unchanged ordered check, for success AND failure
             require(time.monotonic() < v.case_deadline, "acceptance W exchange exceeded action deadline")
-            require(not v.stopped and not v.safety_violations, "fixture fatal safety/unknown state")
             if case == "C4-owner-isolation":
                 require(time.monotonic() - check_started <= 1, "C ordered W exchange exceeded 1s planning cap")
             record["finalizer"]["watchdog_accepted"] = True
@@ -1283,7 +1380,7 @@ def run_case(v, case, api, fault=None):
                        and observer.active_samplers == 0, "B independent finish/sampler settlement missing",
                        max(0, b_end - time.monotonic()))
                 b_thread.join()
-                record["C_hold"]["production_A_B_settled_t"] = time.monotonic()
+                c_production_settlement()
                 if "missing_sensitivity" in record:
                     require(False, record["missing_sensitivity"], observed=record["C_hold"],
                             expected="admitted >=5.5s opportunity; no deadline extension")
@@ -1480,6 +1577,13 @@ def run_case(v, case, api, fault=None):
             record["status"] = "PASS"
         except Exception as exc:
             record.update(status="FAIL", error=f"{type(exc).__name__}: {exc}", primary_failure=failure(exc))
+            if case == "C4-owner-isolation" and not record.get("C_production_settlement", {}).get("complete"):
+                # Keep the original exception AND every saved target mismatch.
+                # Missing proof is fatal even if rescue later settles the venue.
+                record["C_normal_settlement_failure"] = record.get("C_production_settlement", {}).get(
+                    "failure", {"message": "normal A/B production completion not established before rescue",
+                                "cause": record["primary_failure"]})
+                v.stopped = True
             v.event("case_failure", error=record["error"])
         finally:
             # Keep dependencies, especially both signal interceptors, installed
@@ -1546,7 +1650,10 @@ def run_case(v, case, api, fault=None):
                 record["stop_reason"] = "fixture safety violation or unknown boundary/worker settlement"
             record["failure_interval_complete"] = bool(
                 record.get("finalizer", {}).get("watchdog_accepted") and v.boundary_settled
-                and not v.stopped and not v.safety_violations and "settlement_error" not in record)
+                and not v.stopped and not v.safety_violations and "settlement_error" not in record
+                and (case != "C4-owner-isolation" or (
+                    record.get("C_production_settlement", {}).get("complete") is True
+                    and "C_normal_settlement_failure" not in record)))
             record["sensitivity"] = "UNASSESSED: requires named target/source attribution; FAIL is never GREEN"
             # Retain completed cleanup-path events as separately labelled data;
             # they cannot replace missing before-rescue backend proof.
