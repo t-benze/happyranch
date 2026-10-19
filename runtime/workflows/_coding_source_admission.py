@@ -98,6 +98,7 @@ def source_storage(conn, org_slug, budget, setups, captures, mappings):
         original = history.source_capture
         root = json.loads(history.native_records.capability_history.setup_history.selected.setup_bytes)
         mapping_body = _decoded(json.loads(mapping.mapping_bytes), budget)
+        _check(mapping_body['format'] == 'workflow-coding-mapping-record@1')
         roots = _decoded(json.loads(base64.b64decode(mapping_body['authority']['grant_bytes_base64'], validate=True)), budget)['setups']
         _check(root in roots and mapping_body['mapping']['roles']['agent_manager'] == root['manager_selector'])
         bindings = [item for item in mapping_body['mapping']['repository_bindings']

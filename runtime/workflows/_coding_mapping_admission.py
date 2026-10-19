@@ -1,6 +1,6 @@
-"""Retained mapping capture inventory and historical native containment.
+"""Version-aware mapping capture inventory and historical native containment.
 
-No capture writer or current invocation admission is supplied. Historical
+K2c writes its own original capture through _coding_role_admission. Historical
 validity does not restore current permission or create any task/result.
 """
 from __future__ import annotations
@@ -79,22 +79,26 @@ def mapping_capture(conn, org_slug, mapping_id, raw, record, budget, *, inventor
            and task._text('team') == record['mapping']['roles']['agent_manager']['team'])
     from runtime.workflows.coding_authority_history import _setup_configuration, _canonical, _digest
     snapshot = _decoded(json.loads(base64.b64decode(record['authority']['snapshot_bytes_base64'], validate=True)), budget)
-    grant = _decoded(json.loads(base64.b64decode(record['authority']['grant_bytes_base64'], validate=True)), budget)
-    for setup in grant['setups']:
-        budget.step()
-        _setup_configuration(setup, snapshot)
-    agents = {agent['name']: agent for agent in snapshot['agents'] if agent['status'] == 'active'}
-    for role, selector in record['mapping']['roles'].items():
-        for candidate in [selector, *record['mapping']['eligible_replacements'][role]]:
+    if record['format'] == 'workflow-coding-agent-read-role-record@1':
+        from runtime.workflows._coding_role_records import configuration
+        configuration(record['mapping'], snapshot)
+    else:
+        grant = _decoded(json.loads(base64.b64decode(record['authority']['grant_bytes_base64'], validate=True)), budget)
+        for setup in grant['setups']:
             budget.step()
-            _check(bool(agents[candidate['principal']]['executor']))
-    for entry in record['mapping']['repository_bindings']:
-        budget.step()
-        binding = entry['binding']
-        origin = agents[binding['store_owner']]['repos'].get(binding['repo_key'])
-        _check(type(origin) is str and _digest(origin.encode('utf8')) == binding['origin_digest']
-               and binding['repository_id'] == 'workflow-repository:' + _digest(_canonical(
-                   [org_slug, binding['repo_key'], binding['origin_digest']])))
+            _setup_configuration(setup, snapshot)
+        agents = {agent['name']: agent for agent in snapshot['agents'] if agent['status'] == 'active'}
+        for role, selector in record['mapping']['roles'].items():
+            for candidate in [selector, *record['mapping']['eligible_replacements'][role]]:
+                budget.step()
+                _check(bool(agents[candidate['principal']]['executor']))
+        for entry in record['mapping']['repository_bindings']:
+            budget.step()
+            binding = entry['binding']
+            origin = agents[binding['store_owner']]['repos'].get(binding['repo_key'])
+            _check(type(origin) is str and _digest(origin.encode('utf8')) == binding['origin_digest']
+                   and binding['repository_id'] == 'workflow-repository:' + _digest(_canonical(
+                       [org_slug, binding['repo_key'], binding['origin_digest']])))
     start_key = (issuer['task_id'], issuer['session_id'], issuer['principal'])
     budget.step()
     if start_key not in cache.starts:

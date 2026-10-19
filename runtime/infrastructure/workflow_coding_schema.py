@@ -1,6 +1,7 @@
 """Exact additive J definitions and closed per-family coding admission.
 
-K2b admits complete setup/import/mapping/nonallocating source histories on J.
+K2b/K2c admit complete historical setup/import/mapping/source and agent-read
+role-default histories on unchanged J, including metadata-only schema reads.
 Each later producer must ship its own complete readers. No schema installation,
 repository resolution or current authority is provided by this module.
 """

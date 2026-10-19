@@ -49,6 +49,107 @@ normal hooks/nonforce publication, lint/static checks and manager guarded merge
 remain required. No new reader-only publication or replacement authority framework.
 <!-- /Active coding contract: Founder THR139 seq640 / ROOT10693 step79 -->
 
+<!-- K2c agent-read role defaults: TASK11987 / ROOT10693 step83 -->
+## Agent-read role defaults and pinned selection (seq640)
+
+K2c adds current executable-manager CLI POST/GET
+`/api/v1/orgs/{slug}/workflows/coding/mappings?session_id=CURRENT` and
+nonallocating POST `/api/v1/orgs/{slug}/workflows/coding/role-selections?session_id=CURRENT`.
+These reuse existing native task-session/Pause/move/publication admission, with
+no bearer fallback, browser or remote connector reachability. CLI forms are
+`workflows coding mapping-publish --org ORG --session-id CURRENT --from-file ABS --json`,
+`mapping-show --org ORG --session-id CURRENT --json`, and
+`role-select --org ORG --session-id CURRENT --from-file ABS --json`.
+Keep the original file/key on transport loss; no automatic retry.
+The route streams the bounded body outside authority/team locks. The service
+alone acquires authority, then teams, then DB/binding ownership for GET, publish
+and selection. Native checkpoints use DB-before-binding order; DB is released
+before waiting for teams. This agrees with authority-first configuration writers
+and agent-update bootstrap/compensation. After each awaited acquisition the
+serving org/session/team is rechecked; native invocation, executable manager and
+current policy are rechecked at the coherent DB boundary before private decoding,
+current use and writes. No non-reentrant authority reacquisition is needed.
+
+Canonical bounded64KiB `workflow-coding-mapping-command@2` has exactly
+`format,operation_key,expected_generation,mapping`. Mapping has exactly
+`release,roles,eligible_replacements,repository_references,authority`.
+Release remains the imported fixed coding v1/digest; four roles are implementer,
+code_reviewer, qa_engineer and agent_manager, each `{principal,team}` with
+permanent active agent IDs, four distinct principals, at most16 eligible
+replacements per role and no replacement collision with another default role.
+Agent manager is an actual executable registered agent manager, never Founder.
+Every default and eligible replacement must belong to that initiating manager's
+own authorized team, including the actual selected implementer override. A worker
+in another team of the same org refuses even with an identical repository origin;
+shared membership/repository access grants no cross-team action. Original saved
+role records validate this radius against their authentic issuer, native manager
+team and captured snapshot; current use validates it again under current policy.
+Previously admitted out-of-radius role records now fail closed as invalid history,
+without rewriting bytes or using today's roster to invent historical authority.
+Valid same-team history and separate historical custody formats remain readable.
+Each of1..8 repository references is exactly
+`{repository_id,repo_key,origin_digest,object_format:sha1|sha256}`. Existing org/key/
+configured-origin identity and repository permission must agree for every role
+and eligible replacement. No local-store adoption, Git/object/content/provenance
+probe, dedicated setup/source capability, R2 record or inspection Boolean exists.
+
+Append-only `workflow-coding-agent-read-role-record@1` uses the unchanged TEN J
+mapping columns, with explicit org, full original command/digest, genuine issuer,
+native complete admission snapshot, mapping and original timestamp. It has no
+custody/adoption fields and never reinterprets historical mapping-record@1.
+One existing admission transaction writes mapping, five-column admission and
+original native `coding_source_admission` capture; complete cold closure precedes
+COMMIT. Full command replay in the same org/principal/key namespace precedes
+fresh generation CAS and returns original IDs with current disposition, without
+recapture or grant restoration. Changed bytes conflict. New POST201/replay200,
+GET200; malformed422, missing404, revoked403, stale/conflict/unavailable409,
+corrupt-history500. Closed `workflow-coding-mapping-receipt@2` has exactly
+`format,id,generation,mapping_digest,mapping,replayed,current`; current is
+`{state:active|revoked,reason:null|Token}`. GET refuses currently revoked use.
+After every await and in the writer, native current session/owner/ancestry,
+Pause/move, full published policy and role/repository eligibility are rechecked.
+
+Canonical `workflow-coding-role-selection-command@1` is exactly
+`{format,mapping:{id,generation,digest},implementer_override:null|{principal,team},subject}`.
+Only implementer may override, from that immutable generation's eligible set;
+all four actual selected principals stay independent and current. Defaults and
+all pinned history remain unchanged by selection. Later default updates affect
+future default GETs; an older exact pin is selectable while current authority
+remains eligible. Unknown pin404, mismatched generation/digest409. Subject is
+existing `workflow-code-change@1`: exact repository reference/object format/full
+base+head are required; branch/PR navigation carries no approval identity.
+The closed response `workflow-coding-role-selection@1` contains exactly
+`format,mapping,roles,subject,overridden,coding_enabled:false`. It allocates no
+task/result/instance/carrier/run/stage/effect or entitlement, and proves neither
+object existence nor actual inspection. Current complete storage still refuses
+ALL coding runs/attempts/events; K3 must compose genuine per-work contributor
+history before its first allocation, never trust caller-provided history.
+
+Saved/native/current/public/CLI/template/schema(data=False)/cold/reopen/recovery/
+drain consumers validate complete mixed old/new mapping prefixes and all TEN
+original typed columns, own full admission/publication/native capture and original
+command/generation identity. Unknown/malformed/orphan/foreign/gapped/conflicting
+families refuse without repair. Shared bounded prefetch/native row/raw-byte/step
+budgets remain; no per-family reset, schema-object filter, startup upgrade, old-byte
+rewrite or empty reset. Old binaries may refuse this new saved record family even
+though J DDL is identical: use compatible code, with no downgrade-readability claim.
+Historical setup/mapping/source/import readers remain; new role records cannot
+serve as historical custody/source grants. F–J definitions/references, document/
+human receipts, native security/lifecycle mechanisms and dormant K1 are preserved.
+
+This is SOURCE delivery only. Independent FULL review, same-final-head scoped
+SOURCE QA, normal hooks/nonforce publication, local static all, literal hosted
+Source Boundary Lint + Web Lint(Node24) and manager guarded merge remain required.
+Python units RETIRED; integration INCLUDING callback SKIPPED24342. All behavioral/
+SQL/parser/security/mutation/red-green/repetition/native-build/E2E/protected/
+executable/test-authoring proof UNEXECUTED/FOUNDER-WAIVED139429/430. Coding remains
+disabled. ROOT10693 owns K3–K6, genuine-agent rejection/revision/fresh review/QA/
+CI/merge, two actual org defaults/override and backup-copy operational acceptance.
+No live migration/grant/assignment/deployment/restart/cutover/trial renewal follows.
+<!-- /K2c agent-read role defaults: TASK11987 / ROOT10693 step83 -->
+
+
+
 
 <!-- K2b source producer checkpoint: TASK11918 -->
 **Historical nonallocating coding source producer — ROOT10693, Founder139562/559/329/595/606.**
