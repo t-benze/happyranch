@@ -41,11 +41,34 @@ CASES = (
     "C3-reused-identity", "C4-owner-isolation", "C5-unreadable", "C5-teardown-error",
 )
 BASELINE_CASES = ("C1-escaped-known", "C3-reused-identity")
+SELECTIONS = {
+    "B": BASELINE_CASES,
+    "H": ("C1-escaped-known",),
+    "K": ("C1-group-builtin", "C1-group-custom", "C2-cancel", "C2-timeout-pipe", "C3-root-gone"),
+    "W": ("C2-shutdown-bind",), "T": ("C2-timeout-pipe",),
+    "C": ("C4-owner-isolation",), "R": ("C5-unreadable",),
+    "E": ("C5-teardown-error",), "L": ("C1-late-in-group",),
+    "S": ("C5-unreadable",), "U": ("C1-group-builtin",),
+}
 
 
-def require(value, message):
+class ContractMismatch(AssertionError):
+    def __init__(self, message, observed, expected, explicit_values):
+        super().__init__(message)
+        self.assertion = message
+        self.observed = observed
+        self.expected = expected
+        self.explicit_values = explicit_values
+
+
+UNRECORDED = object()
+
+
+def require(value, message, *, observed=UNRECORDED, expected=UNRECORDED):
     if not value:
-        raise AssertionError(message)
+        explicit = observed is not UNRECORDED and expected is not UNRECORDED
+        raise ContractMismatch(message, bool(value) if observed is UNRECORDED else observed,
+                               True if expected is UNRECORDED else expected, explicit)
 
 
 def stat(pid):
@@ -168,6 +191,10 @@ class Venue:
         self.watchdog_rescues = []
         self.safety_violations = []
         self.stopped = False
+        self.exchange_deadline = None
+        self.diagnostic = None
+        self.heartbeat_fault_armed = False
+        self.heartbeat_fault_applied = False
         self.report.update(watchdog_rescues=self.watchdog_rescues,
                            safety_violations=self.safety_violations)
 
@@ -232,20 +259,27 @@ class Venue:
             time.sleep(0.01)
         raise AssertionError(message)
 
-    def send(self, command="ledger"):
+    def send(self, command="ledger", *, rescue_deadline=None):
         """One outstanding command; every reply is retained and attributed."""
         if self.sock is None:
             return
+        if rescue_deadline is not None:
+            require(self.diagnostic == "U" and command == "ledger"
+                    and rescue_deadline <= time.monotonic() < self.case_deadline,
+                    "only explicit U may supply an earlier in-action W deadline")
         self.command_sequence += 1
         sequence = self.command_sequence
         scope = dict(self.scope)
+        deadline = self.case_deadline if rescue_deadline is None else rescue_deadline
         packet = {"command": command, "sequence": sequence, "scope": scope,
-                  "deadline": self.case_deadline, "ledger": self.ledger, "boot": self.boot}
+                  "deadline": deadline, "ledger": self.ledger, "boot": self.boot}
         self.event("watchdog_command", command=command, sequence=sequence,
-                   deadline=self.case_deadline)
+                   deadline=deadline, diagnostic=self.diagnostic)
         # Shared action/cleanup deadline, not an extra allowance per message.
         end = min(time.monotonic() + 1, self.case_deadline + (10 if command != "begin" else 0),
                   self.final_deadline - 1)
+        if self.exchange_deadline is not None:
+            end = min(end, self.exchange_deadline)
         try:
             self.sock.settimeout(max(0.001, end - time.monotonic()))
             self.sock.send(json.dumps(packet).encode())
@@ -471,8 +505,16 @@ class Venue:
                         f"sentinel {role} identity/liveness lost")
                 with RAW_OPEN(self.sentinels[role], encoding="ascii") as stream:
                     value = stream.read(65)
+                if role == "S" and self.heartbeat_fault_armed:
+                    # One explicit S input, after genuine permission cleanup_error.
+                    # Delegate the actual read; only this verifier observation is malformed.
+                    self.heartbeat_fault_armed = False
+                    self.heartbeat_fault_applied = True
+                    self.event("S_heartbeat_input", actual_read=value, selected_value="malformed-S")
+                    value = "malformed-S"
                 require(0 < len(value) <= 64 and value.isascii() and value.isdecimal(),
-                        f"invalid sentinel {role} heartbeat")
+                        f"invalid sentinel {role} heartbeat", observed=value,
+                        expected="1..64 ASCII decimal characters")
                 result[role] = int(value)
                 observations[role] = {"identity": dict(identity), "observed": current,
                                       "heartbeat": result[role], "t": time.monotonic() - self.started}
@@ -574,6 +616,7 @@ class BackendObserver:
         self.launch_release = threading.Event()
         self.read_entered = threading.Event()
         self.read_release = threading.Event()
+        self.read_entry = None
         self.arm_read = False
         self.fault = None
         self.fault_hits = 0
@@ -707,8 +750,10 @@ class BackendObserver:
                         start_identity=running.start_identity + "-replacement", state="S")]
                 if observer.arm_read and operation == "sample" and owner == "A":
                     observer.arm_read = False
+                    observer.read_entry = {"t": time.monotonic(), "token": observer.running["A"].token}
                     observer.read_entered.set()
-                    observer.v.event("sample_read_entered", token=observer.running["A"].token)
+                    observer.v.event("sample_read_entered", token=observer.read_entry["token"],
+                                     read_entry_t=observer.read_entry["t"])
                     require(observer.read_release.wait(12), "in-flight read barrier expired")
             return original_read(reader)
 
@@ -962,6 +1007,25 @@ def run_case(v, case, api, fault=None):
     record = {**v.scope, "status": "MISSING", "assertions": []}
     retained_identities = {}
 
+    def failure(exc):
+        details = {"type": type(exc).__name__, "message": str(exc),
+                   "trace": traceback.format_exc(limit=12)}
+        if isinstance(exc, ContractMismatch):
+            details.update(assertion=exc.assertion, observed=exc.observed,
+                           expected=exc.expected, explicit_values=exc.explicit_values)
+            if exc.assertion == "matching watchdog rescue before last acceptance observation":
+                cutoff = record.get("finalizer", {}).get("cutoff")
+                details.update(observed={"cutoff": cutoff, "rescues": [r for r in v.watchdog_rescues
+                               if r["scope"] == v.scope]},
+                               expected="no matching W rescue decision at or before the frozen cutoff",
+                               explicit_values=True)
+        cause = exc.__context__
+        if isinstance(cause, ContractMismatch):
+            details["cause"] = {"type": type(cause).__name__, "assertion": cause.assertion,
+                                "observed": cause.observed, "expected": cause.expected,
+                                "explicit_values": cause.explicit_values}
+        return details
+
     def freeze_backend(label):
         # Always called before rescue, including setup/assertion failure. An
         # absent outcome is explicit, alongside actual retained terminal events.
@@ -971,10 +1035,13 @@ def run_case(v, case, api, fault=None):
                                 "cleanup_error": outcome.cleanup_error,
                                 "receipt": dataclasses.asdict(outcome.receipt) if outcome.receipt else None}
         identities = {}
-        for role in roles:
+        for role in tuple(v.ledger.keys() | retained_identities.keys()):
             identity = v.ledger.get(role, retained_identities.get(role))
             if identity is not None:
                 retained_identities[role] = dict(identity)
+                if v.stopped:
+                    identities[role] = {"identity": dict(identity), "observed": "UNAVAILABLE: fixture stopped"}
+                    continue
                 try:
                     identities[role] = {"identity": dict(identity), "observed": v.observe(identity["pid"])}
                 except BaseException as exc:
@@ -987,10 +1054,84 @@ def run_case(v, case, api, fault=None):
                          "outcome_A": "present" if "A" in snapshots else "ABSENT/UNSETTLED",
                          "errors": list(errors), "workers": {w.name: w.is_alive() for w in v.threads},
                          "identities": identities,
+                         "signal_attempts": list(observer.signal_attempts),
+                         "active_samplers": observer.active_samplers,
+                         "stopped": v.stopped,
                          "event_range": [start_index, len(v.events)],
                          "safety_violations": list(v.safety_violations)}
         v.event(label, outcome_A=record[label]["outcome_A"])
         return frozen_t
+
+    def acceptance_finalizer():
+        # Observation only, inside the original action. Never poll/wait/reap,
+        # release a held read, or spend cleanup time obtaining acceptance.
+        finalizer_started = time.monotonic()
+        require(not v.stopped, "acceptance finalizer unavailable after fatal stop")
+        require(time.monotonic() < v.case_deadline, "acceptance finalizer action deadline")
+        if case == "C4-owner-isolation":
+            require(record.get("C_hold", {}).get("production_A_B_settled_t") is not None,
+                    "C acceptance unavailable without normal A/B production settlement")
+        after = v.sentinel_snapshot()
+        require(before_sentinels is not None, "acceptance lacks initial sentinel observations")
+        v.sentinel_progress(before_sentinels, after)
+        v.budgets()
+        record["acceptance_sentinels"] = {"before": before_sentinels, "after": after}
+        cutoff = freeze_backend("acceptance_evidence_frozen")
+        require(not v.stopped and time.monotonic() < v.case_deadline,
+                "acceptance observations incomplete within action deadline")
+        if case == "C4-owner-isolation":
+            require(time.monotonic() - finalizer_started <= 1, "C final observations exceeded 1s planning cap")
+        record["finalizer"] = {"observations_complete": True, "cutoff": cutoff,
+                               "watchdog_accepted": False}
+        check_started = time.monotonic()
+        v.exchange_deadline = min(v.case_deadline, check_started + 1)
+        try:
+            v.check_watchdog(cutoff)  # unchanged ordered check, for success AND failure
+            require(time.monotonic() < v.case_deadline, "acceptance W exchange exceeded action deadline")
+            require(not v.stopped and not v.safety_violations, "fixture fatal safety/unknown state")
+            if case == "C4-owner-isolation":
+                require(time.monotonic() - check_started <= 1, "C ordered W exchange exceeded 1s planning cap")
+            record["finalizer"]["watchdog_accepted"] = True
+        finally:
+            v.exchange_deadline = None
+
+    def watchdog_diagnostic():
+        if v.stopped or time.monotonic() >= v.case_deadline:
+            v.safety_violation("U unsafe/expired prerequisite")
+        proof = {}
+        for role, identity in tuple(v.ledger.items()):
+            if role in ("F", "W", "S", "J"):
+                continue
+            current = v.observe(identity["pid"])
+            if same(identity, current) and current["state"] not in ("Z", "X"):
+                v.safety_violation("U refuses live rescue target", role=role, observed=current,
+                                   expected="each nonsentinel target absent or nonlive")
+            proof[role] = {"identity": dict(identity), "observed": current}
+        if not proof:
+            v.safety_violation("U has no independently observed rescue targets")
+        record["U"] = {"prerequisites": proof, "deadline_input": time.monotonic()}
+        v.exchange_deadline = v.case_deadline
+        try:
+            prior = len(v.watchdog_rescues)
+            v.send(rescue_deadline=record["U"]["deadline_input"])
+            # W decides after the first acknowledgement, before receiving the
+            # next ledger. The second ordered acknowledgement retains its real decision.
+            v.send()
+            decisions = v.watchdog_rescues[prior:]
+            require(len(decisions) == 1 and decisions[0]["scope"] == v.scope,
+                    "U missing attributed W decision")
+            actions = decisions[0]["actions"]
+            require(len(actions) == len(proof) and {a["role"] for a in actions} == set(proof)
+                    and all(a["identity"] == proof[a["role"]]["identity"]
+                            and a["outcome"] == "identity-absent-or-nonlive; no signal"
+                            and "action_t" not in a for a in actions),
+                    "U decision unsafe/unknown or signaled a target")
+            record["U"].update(decision=decisions[0], no_signal_decision=True)
+        except BaseException:
+            v.stopped = True
+            raise
+        finally:
+            v.exchange_deadline = None
 
     with observer.dependencies(api.census):
         try:
@@ -1053,27 +1194,105 @@ def run_case(v, case, api, fault=None):
                 v.wait(lambda: any(c.terminal_reason() is not None for c in
                                   supervisor._admission.ownerships_snapshot() if c is not b_context),
                        "A cancellation not frozen")
-                terminal_before = results.get("A")
-                frozen = json.dumps(dataclasses.asdict(terminal_before.receipt), sort_keys=True) if terminal_before and terminal_before.receipt else None
-                if terminal_before is None:
-                    require(not publications and not terminals and supervisor.active_count() == 2,
-                            "premature final evidence/release with unsettled read")
-                    v.event("sample_finish_serialized", terminal_frozen=True, published=False, active=2)
-                observer.read_release.set()
-                v.wait(lambda: not control.is_alive() and not thread.is_alive(), "A did not settle after read release")
+                entry = observer.read_entry
+                require(entry is not None and entry["token"] == observer.running["A"].token,
+                        "C missing genuine read-entry timestamp/token")
+                now = time.monotonic()
+                barrier_end = entry["t"] + 12
+                require(now < barrier_end and not observer.read_release.is_set(),
+                        "C captured-read barrier already expired/released")
+                r12, r20 = barrier_end - now, v.case_deadline - now
+                h_max = max(0, min(8, r12 - 1, r20 - 14))
+                record["C_hold"] = {"read_entry": entry, "admission_t": now,
+                                    "R12": r12, "R20": r20, "h_max": h_max,
+                                    "minimum_opportunity": 5.5, "release_margin": 1,
+                                    "reserve": {"A": 9, "B": 2, "final": 2, "slack": 1},
+                                    "selected_sensitivity": api.selection == "C"}
+                saved_mismatches = []
+                record["C_mismatches"] = []
+                if api.selection == "C" and h_max < 5.5:
+                    record["missing_sensitivity"] = "conditional hold cannot fit: h_max < 5.5s"
+
+                def save_condition(value, message, observed, expected):
+                    if not value:
+                        mismatch = ContractMismatch(message, observed, expected, True)
+                        saved_mismatches.append(mismatch)
+                        record["C_mismatches"].append({"assertion": message, "observed": observed,
+                                                       "expected": expected})
+                        v.event("C_saved_mismatch", assertion=message, observed=observed, expected=expected)
+
+                try:
+                    # B admission, readiness and control above consume BOTH clocks.
+                    # Normal runs retain their immediate release; only explicit C
+                    # requests the conditional sensitivity opportunity.
+                    if api.selection == "C" and h_max >= 5.5:
+                        hold_end = now + h_max
+                        while True:
+                            now = time.monotonic()
+                            if (not control.is_alive() or not thread.is_alive()
+                                    or now >= hold_end or v.case_deadline - now <= 14
+                                    or barrier_end - now <= 1):
+                                break
+                            v.boundary()
+                            time.sleep(min(.01, max(0, min(hold_end, v.case_deadline - 14,
+                                                         barrier_end - 1) - time.monotonic())))
+                    terminal_before = results.get("A")
+                    frozen = (json.dumps(dataclasses.asdict(terminal_before.receipt), sort_keys=True)
+                              if terminal_before and terminal_before.receipt else None)
+                    held = {"outcome_present": terminal_before is not None, "publications": len(publications),
+                            "terminals": list(terminals), "active": supervisor.active_count()}
+                    save_condition(terminal_before is None and not publications and not terminals
+                                   and held["active"] == 2,
+                                   "premature final evidence/release with unsettled read", held,
+                                   {"outcome_present": False, "publications": 0, "terminals": [], "active": 2})
+                    record["C_hold"].update(held_observation=held, frozen_receipt=frozen,
+                                            admitted=h_max >= 5.5,
+                                            release_t=time.monotonic())
+                    if terminal_before is None:
+                        v.event("sample_finish_serialized", terminal_frozen=True,
+                                published=bool(publications), active=held["active"])
+                finally:
+                    # Also release promptly on refusal. An unsafe/overrun path
+                    # cannot credit later fixture rescue as production completion.
+                    observer.read_release.set()
+                v.wait(lambda: not control.is_alive() and not thread.is_alive(),
+                       "A did not settle after read release",
+                       max(0, record["C_hold"]["release_t"] + 9 - time.monotonic()))
                 control.join()
-                require(observer.running["A"].token not in backend._sessions, "retired A resurrected")
+                record["C_hold"]["A_settled_t"] = time.monotonic()
+                save_condition(observer.running["A"].token not in backend._sessions, "retired A resurrected",
+                               {"token": observer.running["A"].token,
+                                "present": observer.running["A"].token in backend._sessions}, {"present": False})
                 if frozen:
-                    require(json.dumps(dataclasses.asdict(results["A"].receipt), sort_keys=True) == frozen,
-                            "terminal A evidence changed after delayed read")
-                require(b_context in supervisor._admission.ownerships_snapshot()
-                        and b_context.running() == observer.running["B"] and "B" not in terminals,
-                        "A changed/released B context")
-                require(len(b_context.samples_snapshot()) >= len(b_samples), "B sample/account loss")
-                require(v.is_live(v.ledger["B0"]), "A killed B")
+                    actual_frozen = (json.dumps(dataclasses.asdict(results["A"].receipt), sort_keys=True)
+                                     if results.get("A") and results["A"].receipt else None)
+                    save_condition(actual_frozen == frozen, "terminal A evidence changed after delayed read",
+                                   actual_frozen, frozen)
+                save_condition(b_context in supervisor._admission.ownerships_snapshot()
+                               and b_context.running() == observer.running["B"] and "B" not in terminals,
+                               "A changed/released B context", {"B_terminal": "B" in terminals,
+                               "B_owned": b_context in supervisor._admission.ownerships_snapshot()},
+                               {"B_terminal": False, "B_owned": True})
+                save_condition(len(b_context.samples_snapshot()) >= len(b_samples), "B sample/account loss",
+                               len(b_context.samples_snapshot()), {"minimum": len(b_samples)})
+                save_condition(v.is_live(v.ledger["B0"]), "A killed B", v.observe(v.ledger["B0"]["pid"]),
+                               {"identity": v.ledger["B0"], "live": True})
+                b_end = time.monotonic() + 2
                 (case_dirs["B"] / "exit").touch()
-                v.wait(lambda: not b_thread.is_alive(), "B independent finish missing")
+                v.wait(lambda: not b_thread.is_alive() and all(not w.is_alive() for w in v.threads)
+                       and observer.active_samplers == 0, "B independent finish/sampler settlement missing",
+                       max(0, b_end - time.monotonic()))
                 b_thread.join()
+                record["C_hold"]["production_A_B_settled_t"] = time.monotonic()
+                if "missing_sensitivity" in record:
+                    require(False, record["missing_sensitivity"], observed=record["C_hold"],
+                            expected="admitted >=5.5s opportunity; no deadline extension")
+                if saved_mismatches:
+                    raise saved_mismatches[0]
+                if api.selection == "C":
+                    record["missing_sensitivity"] = "no attributable wrong completion/value in finite held-read window"
+                    require(False, record["missing_sensitivity"], observed=record["C_hold"],
+                            expected="admitted >=5.5s opportunity and attributable C mismatch; no timeout-as-RED")
             elif case == "C2-cancel":
                 control = threading.Thread(target=request.cancellation.cancel, name="lifecycle-cancel")
                 v.threads.append(control)
@@ -1157,25 +1376,39 @@ def run_case(v, case, api, fault=None):
             waits = [i for i,e in enumerate(evidence) if e["kind"] == "backend_direct_wait" and e["owner"] == "A"]
             hooks = [i for i,e in enumerate(evidence) if e["kind"] == "terminal_hook" and e["owner"] == "A"]
             releases = [i for i,e in enumerate(evidence) if e["kind"] == "lease_release" and e["logical_id"].endswith("-A")]
-            require(waits and max(waits) < hooks[0] < releases[0], "direct wait/terminal/release order")
+            require(waits and max(waits) < hooks[0] < releases[0], "direct wait/terminal/release order",
+                    observed={"wait_indices": waits, "hook_indices": hooks, "release_indices": releases},
+                    expected="actual production waits present, last wait < terminal hook < lease release")
             require(all(evidence[i]["operation"] in ("communicate", "finish") for i in waits),
                     "fixture consumed direct wait before backend evidence")
-            require(not same(v.ledger["A0"], v.observe(v.ledger["A0"]["pid"])), "backend direct root unreaped")
+            root_observation = v.observe(v.ledger["A0"]["pid"])
+            require(not same(v.ledger["A0"], root_observation), "backend direct root unreaped",
+                    observed={"identity": v.ledger["A0"], "observed": root_observation},
+                    expected="matching direct root absent after production wait")
             record["assertions"].append("one finish/direct wait/terminal hook/lease release in order")
             if case == "C1-late-in-group":
                 require(observer.samples.get("A") == late_sample_count, "late child was not after the last periodic sample")
-                require(observer.read_operations.get("finish", 0) > 0, "fresh finish observation missing")
                 remaining = [role for role in roles if v.is_live(v.ledger[role])]
                 require((receipt is not None and not remaining and receipt.quiescent)
                         or (outcome.cleanup_error and not supervisor._residue.evaluate().admit)
                         or (receipt is not None and not receipt.quiescent),
-                        "late child falsely clean without fresh authenticated group witness")
+                        "late child falsely clean without fresh authenticated group witness",
+                        observed={"live_roles": remaining, "receipt": dataclasses.asdict(receipt) if receipt else None,
+                                  "cleanup_error": outcome.cleanup_error, "gate_admit": supervisor._residue.evaluate().admit},
+                        expected="no live child with quiescent receipt, or explicit uncertainty/nonquiescence and closed gate")
+                require(observer.read_operations.get("finish", 0) > 0, "fresh finish observation missing",
+                        observed=observer.read_operations.get("finish", 0), expected={"minimum": 1})
                 record["assertions"].append("fresh terminal observation cleans late child or retains explicit uncertainty")
             elif fault or case in ("C3-reused-identity", "C5-teardown-error"):
                 if case == "C3-reused-identity":
-                    require(not observer.signal_attempts, "replacement numeric group received signal attempt")
-                require(outcome.cleanup_error or (receipt and not receipt.quiescent), "fault became clean")
-                require(not supervisor._residue.evaluate().admit, "unknown cleanup did not close gate")
+                    require(not observer.signal_attempts, "replacement numeric group received signal attempt",
+                            observed=list(observer.signal_attempts), expected=[])
+                require(outcome.cleanup_error or (receipt and not receipt.quiescent), "fault became clean",
+                        observed={"cleanup_error": outcome.cleanup_error,
+                                  "receipt": dataclasses.asdict(receipt) if receipt else None},
+                        expected="retained cleanup_error or nonquiescent receipt")
+                require(not supervisor._residue.evaluate().admit, "unknown cleanup did not close gate",
+                        observed=supervisor._residue.evaluate().admit, expected=False)
                 require(outcome.terminal_reason.value == "success", "cleanup replaced provider success reason")
                 require(len(publications) == (1 if receipt else 0), "fabricated/duplicate publication")
                 if fault == "permission":
@@ -1186,18 +1419,26 @@ def run_case(v, case, api, fault=None):
                 record["assertions"].append("real fault/reuse refused clean outcome and closed gate")
             elif case == "C1-escaped-known":
                 identity_row = v.ledger["A1"]
-                require(observer.samples.get("A", 0) >= 2, "factory sampler missing")
+                require(observer.samples.get("A", 0) >= 2, "factory sampler missing",
+                        observed=observer.samples.get("A", 0), expected={"minimum": 2})
                 require(receipt is not None and not receipt.quiescent
                         and any(s.pid == identity_row["pid"] and s.start_identity == identity_row["start"]
-                                for s in receipt.survivors) and v.is_live(identity_row), "known escaped identity forgotten")
+                                for s in receipt.survivors) and v.is_live(identity_row), "known escaped identity forgotten",
+                        observed={"identity": dict(identity_row), "observed": v.observe(identity_row["pid"]),
+                                  "receipt": dataclasses.asdict(receipt) if receipt else None},
+                        expected="actual live A1 PID/start retained in nonquiescent receipt")
                 require(any(s.pid == identity_row["pid"] for s in supervisor._residue.census()), "escaped identity not charged")
                 record["assertions"].append("factory sampling retains escaped live identity in receipt and residue")
             else:
                 require(receipt is not None, "missing cleanup receipt")
                 remaining = [role for role in roles if v.is_live(v.ledger[role])]
-                require(not remaining or not receipt.quiescent, "live owned child falsely clean")
+                require(not remaining or not receipt.quiescent, "live owned child falsely clean",
+                        observed={"live_roles": remaining, "receipt": dataclasses.asdict(receipt)},
+                        expected="no live owned child with quiescent receipt")
                 if case != "C1-late-in-group":
-                    require(not remaining and receipt.quiescent, "owned group cleanup incomplete")
+                    require(not remaining and receipt.quiescent, "owned group cleanup incomplete",
+                            observed={"live_roles": remaining, "receipt": dataclasses.asdict(receipt)},
+                            expected={"live_roles": [], "quiescent": True})
                 require(len(publications) == len(direct), "receipt not published once per invocation")
                 if case == "C2-shutdown-bind":
                     require(outcome.terminal_reason.value == "shutdown" and not observer.started
@@ -1212,7 +1453,8 @@ def run_case(v, case, api, fault=None):
                     require(outcome.terminal_reason is TerminalReason.TIMEOUT,
                             "real pipe-holder terminal timeout lost")
                     launch_result = outcome.payload
-                    require(isinstance(launch_result, LaunchResult), "timeout outcome lacks LaunchResult")
+                    require(isinstance(launch_result, LaunchResult), "timeout outcome lacks LaunchResult",
+                            observed=type(launch_result).__name__, expected="LaunchResult")
                     require(launch_result.timed_out is True and launch_result.success is False,
                             "timeout LaunchResult flags lost")
                     executor_result = launch_result.payload
@@ -1227,32 +1469,53 @@ def run_case(v, case, api, fault=None):
                     require(any(e["kind"] == "finish_enter" and e["root_returncode"] is not None for e in evidence),
                             "root was not already waited before finish")
                 record["assertions"].append("real contained communication/group cleanup and case-specific final transition")
-            after = v.sentinel_snapshot()
-            v.sentinel_progress(before_sentinels, after)
-            # The earlier receipt freeze is NOT the acceptance cutoff. All
-            # setup/root/descendant/sentinel facts above must precede this cut.
-            # No acceptance observation may be made after the ordered W check.
-            observed_through_t = freeze_backend("acceptance_evidence_frozen")
-            v.check_watchdog(observed_through_t)
-            require(not v.stopped and not v.safety_violations, "fixture fatal safety/unknown state")
+            if v.diagnostic == "S":
+                require(fault == "permission" and outcome.cleanup_error is not None,
+                        "S requires genuine first-input permission cleanup_error")
+                record["S"] = {"cleanup_error": outcome.cleanup_error, "selected_input": "permission"}
+                v.heartbeat_fault_armed = True
+            if v.diagnostic == "U":
+                watchdog_diagnostic()
+            acceptance_finalizer()
             record["status"] = "PASS"
         except Exception as exc:
-            record.update(status="FAIL", error=f"{type(exc).__name__}: {exc}")
+            record.update(status="FAIL", error=f"{type(exc).__name__}: {exc}", primary_failure=failure(exc))
             v.event("case_failure", error=record["error"])
         finally:
             # Keep dependencies, especially both signal interceptors, installed
             # throughout rescue and all backend/control/sampler settlement.
             if record["status"] != "PASS":
-                try:
-                    failed_after = v.sentinel_snapshot()
-                    if before_sentinels is not None:
-                        v.sentinel_progress(before_sentinels, failed_after)
-                except BaseException as exc:
-                    # Sentinel methods latch first. An ordinary case error
-                    # must not skip safety observation or prevent cleanup.
+                if "acceptance_evidence_frozen" not in record and not v.stopped:
+                    try:
+                        acceptance_finalizer()
+                    except BaseException as exc:
+                        record["finalization_error"] = failure(exc)
+                        v.stopped = True
+                elif not record.get("finalizer", {}).get("watchdog_accepted"):
+                    # U must fail the unchanged ordered cutoff assertion. It
+                    # never retries that check or certifies a production RED.
+                    if (v.diagnostic == "U" and record.get("U", {}).get("no_signal_decision")
+                            and record.get("primary_failure", {}).get("assertion") ==
+                            "matching watchdog rescue before last acceptance observation"
+                            and not v.stopped and not v.safety_violations):
+                        record["diagnostic_result"] = "U: expected attributed no-signal W refusal; FAIL"
+                    else:
+                        record.setdefault("finalization_error", {
+                            "message": "acceptance finalizer incomplete/refused; no intended RED interval"})
+                        v.stopped = True
+                if v.diagnostic == "S" and record.get("S"):
+                    record["S"].update(input_applied=v.heartbeat_fault_applied, stopped=v.stopped)
+                    record["diagnostic_result"] = "S: fatal diagnostic; FAIL, no complete production RED interval"
+            # Reuse the LAST frozen cutoff; never enlarge the accepted interval
+            # with new observations after its ordered W check (including U).
+            if "acceptance_evidence_frozen" in record:
+                record["before_fixture_rescue"] = record["acceptance_evidence_frozen"]
+                record["before_fixture_rescue_source"] = "acceptance_evidence_frozen; same cutoff"
+            else:
+                freeze_backend("before_fixture_rescue")
+                record["before_fixture_rescue_source"] = "unaccepted failure snapshot; finalizer unavailable"
+                if record["status"] != "PASS":
                     v.stopped = True
-                    record["sentinel_error"] = f"{type(exc).__name__}: {exc}"
-            freeze_backend("before_fixture_rescue")
             observer.read_release.set()
             observer.launch_release.set()
             try:
@@ -1277,10 +1540,14 @@ def run_case(v, case, api, fault=None):
             freeze_backend("after_fixture_settlement")  # actual final outcome, never backend acceptance
             record.update(safety_violations=list(v.safety_violations),
                           watchdog_rescues=[r for r in v.watchdog_rescues if r["scope"] == v.scope],
-                          boundary_settled=v.boundary_settled)
+                          boundary_settled=v.boundary_settled, stopped=v.stopped)
             if v.safety_violations or v.stopped:
                 record["status"] = "FAIL"
                 record["stop_reason"] = "fixture safety violation or unknown boundary/worker settlement"
+            record["failure_interval_complete"] = bool(
+                record.get("finalizer", {}).get("watchdog_accepted") and v.boundary_settled
+                and not v.stopped and not v.safety_violations and "settlement_error" not in record)
+            record["sensitivity"] = "UNASSESSED: requires named target/source attribution; FAIL is never GREEN"
             # Retain completed cleanup-path events as separately labelled data;
             # they cannot replace missing before-rescue backend proof.
             record["after_rescue_event_range"] = [start_index, len(v.events)]
@@ -1294,7 +1561,20 @@ def main():
     parser.add_argument("--scratch-root", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--mode", choices=("baseline", "candidate"), required=True)
+    selection = parser.add_mutually_exclusive_group()
+    selection.add_argument("--case", choices=CASES, help="one existing variant, with both normal C5 inputs")
+    selection.add_argument("--selection", choices=tuple(SELECTIONS),
+                           help="accepted B/H/K/W/T/C/R/E/L selection, or explicit S/U negative diagnostic")
     args = parser.parse_args()
+    # Validate selectors BEFORE even the source-admission Git subprocesses,
+    # imports, scratch creation, readiness or fixture/backend probe.
+    if args.mode == "baseline" and (args.case is not None or args.selection not in (None, "B")):
+        parser.error("baseline permits only its immutable two-case B selection")
+    if args.mode == "candidate" and args.selection == "B":
+        parser.error("B requires --mode baseline and the exact accepted pre-fix HEAD")
+    cases = ((args.case,) if args.case else SELECTIONS[args.selection] if args.selection
+             else BASELINE_CASES if args.mode == "baseline" else CASES)
+    diagnostic = args.selection if args.selection in ("S", "U") else None
     source = args.source_root.resolve(strict=True)
     source_head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=source, text=True).strip()
     require(not subprocess.check_output(["git", "status", "--porcelain", "--untracked-files=no"], cwd=source, text=True),
@@ -1308,13 +1588,15 @@ def main():
     from runtime.platform.session_backend import LaunchSpec
     api = SimpleNamespace(request=AdmissionRequest, result=LaunchResult, spec=LaunchSpec,
                           factory=build_default_host_supervisor, backend=MacOSProcessGroupBackend,
-                          census=process_census, mode=args.mode)
+                          census=process_census, mode=args.mode, selection=args.selection)
     require(args.scratch_root.is_absolute() and args.output.is_absolute(), "absolute scratch/output required")
     args.scratch_root.mkdir(parents=True, exist_ok=True)
     import tempfile
     scratch = Path(tempfile.mkdtemp(prefix="lifecycle-", dir=args.scratch_root))
-    v = Venue(scratch, args.output, 90 if args.mode == "baseline" else 390, invocation_started)
+    v = Venue(scratch, args.output, 15 + 30 * len(cases) + 15, invocation_started)
+    v.diagnostic = diagnostic
     v.report.update({"mode": args.mode, "source": str(source),
+                     "selection": args.selection, "selected_cases": cases, "diagnostic": diagnostic,
                      "head": source_head,
                      "tree": subprocess.check_output(["git", "rev-parse", "HEAD^{tree}"], cwd=source, text=True).strip(),
                      "python": sys.version, "python_executable": sys.executable,
@@ -1331,7 +1613,6 @@ def main():
         v.sentinel("S")
         v.sentinel("J")
         v.report["readiness"] = "PASS"
-        cases = BASELINE_CASES if args.mode == "baseline" else CASES
         for case in cases:
             v.case_deadline = min(time.monotonic() + 20, v.rescue_deadline)
             if case == "C5-unreadable":
@@ -1341,6 +1622,9 @@ def main():
                         break
                     inputs.append(run_case(v, case, api, fault))
                 v.results.append({"case": case, "status": "PASS" if len(inputs) == 2 and all(r["status"] == "PASS" for r in inputs) else "FAIL",
+                                  "declared_inputs": ["permission", "cap"],
+                                  "unexecuted_inputs": [f for f in ("permission", "cap")
+                                                        if f not in [r["input"] for r in inputs]],
                                   "inputs": inputs})
             else:
                 v.results.append(run_case(v, case, api))
@@ -1358,11 +1642,11 @@ def main():
         except BaseException as exc:
             v.report["fixture_cleanup"] = f"RESIDUAL/UNKNOWN: {exc}"
         v.report.update(elapsed_seconds=round(time.monotonic() - v.started, 6), peaks=v.peaks,
-                        scratch=str(scratch), boot_id=v.boot)
+                        scratch=str(scratch), boot_id=v.boot, stopped=v.stopped)
         size = sum(p.stat().st_size for p in scratch.rglob("*") if p.is_file())
         v.report["scratch_bytes"] = size
         require(size <= 67108864, "scratch cap exceeded")
-        expected = len(BASELINE_CASES if args.mode == "baseline" else CASES)
+        expected = len(cases)
         v.report["all_cases_present"] = len(v.results) == expected
         v.report["status"] = "PASS" if (len(v.results) == expected and all(r["status"] == "PASS" for r in v.results)
             and v.report.get("fixture_cleanup") == "SETTLED" and "fatal" not in v.report

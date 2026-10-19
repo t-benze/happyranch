@@ -66,14 +66,34 @@ python scripts/verify_session_lifecycle.py --mode candidate \
   --scratch-root /absolute/runtime/task-tmp/TASK-ID \
   --output /absolute/workspace/output/TASK-ID/candidate.json
 # baseline: same script, --mode baseline, --source-root registered design29d743a worktree
+# --case C1-group-builtin selects one existing variant in a fresh invocation
+# --selection K selects only its five accepted group/cancel/timeout/root-gone variants
+# --selection S or U explicitly requests a negative verifier diagnostic (default off)
 ```
 
-One baseline comparison runs C1-escaped-known/C3-reused-identity only (90s total),
-then one candidate pass runs the twelve accepted variants (390s total). Readiness
+Default baseline selects C1-escaped-known/C3-reused-identity only (90s total);
+default candidate selects the twelve accepted variants (390s total). A mutually
+exclusive `--case` selects one of those existing variants. `--selection` accepts
+only B/H/K/W/T/C/R/E/L/S/U: B is the baseline pair; H escaped-known; K group-builtin,
+group-custom, cancel, timeout-pipe and root-gone; W shutdown-bind; T timeout-pipe;
+C owner-isolation; R unreadable; E teardown-error; L late-in-group; S unreadable
+with the explicit heartbeat diagnostic; U group-builtin with the explicit W
+deadline diagnostic. B requires baseline mode and its exact accepted design HEAD;
+all other selections require candidate mode. Invalid/conflicting selectors refuse
+before any subprocess, source import, scratch creation or backend probe. There
+are no arbitrary executable inputs or general mutation runner. Normal C5 selection
+always retains BOTH permission/cap inputs within the shared20s action; S declares
+both but must fatally stop during permission and report cap as unexecuted.
+
+Every source still requires a clean tracked immutable HEAD, tree and three runtime
+hashes; source/observer/Python provenance remains in the raw report. A changed
+verifier cannot inherit an old verifier's GREEN or sensitivity evidence. Selected
+bounds are15s readiness +30s per selected variant +15s final: single60s, B90s,
+K180s, full390s, with global rescue15s before each final deadline. Readiness
 proves process-local subreaper SET/GET plus exact P/Q adoption and specific wait
 before orphan cases. F remains driver/reaper; controlled W provides independent
 bounded rescue. Limits: eight fixture processes including F,32 threads,1024
-observer events,1MiB output,64MiB scratch;20s action plus10s cleanup per variant,
+observer events,1MiB combined stdout+stderr+report,64MiB scratch;20s action plus10s cleanup per variant,
 readiness15s and final15s reserve, global rescue by375s. C5’s two fault inputs share
 one action budget. Record backend evidence before separately labeled fixture
 rescue; an outer timeout never proves cleanup. Any unsafe residual stops later
@@ -101,11 +121,56 @@ requires terminal TIMEOUT, a typed LaunchResult with timed_out true and success
 false, and its typed ExecutorResult payload with failure_category provider_timeout
 and success false, retained in timeout_result. Rescue joins actual production
 workers before any fixture waits, within the original cleanup bound.
-Setup/assertion failure retains observed identities, actual
-outcome or explicit absence and terminal events before rescue, plus separately
-labeled actual final settlement/outcome; rescue never supplies case PASS.
-Supported jobs accept explicit runtime caps up to86400s; the containing
-job must include setup, both bounded variants, cleanup and local static checks.
+Setup/assertion failure retains its primary exception type/message/trace and
+assertion identity separately from finalization/safety/cleanup failures. Named
+target mismatches retain actual observed values and independently specified
+expected values. A failing assertion alone is never intended sensitivity RED.
+Before rescue, the failure finalizer completes independent S/J identity/liveness/
+progress, ledger identities, signal/budget and worker observations, freezes the
+LAST acceptance snapshot and cutoff, then obtains the unchanged attributed ordered
+W check. It must fit the original action deadline; cleanup time cannot fund
+acceptance. `before_fixture_rescue` reuses that frozen snapshot without a new
+acceptance observation. Missing/unknown W, ordinary matching rescue or unsafe/
+incomplete finalization invalidates intended RED and stops expansion, retaining
+the primary FAIL. Fatal stopped state never forces observations past refusal.
+Later actual settlement/outcomes remain separate and cannot upgrade acceptance.
+Production retains direct-child wait ownership; interceptors remain until actual
+backend/control/sampler settlement. L evaluates the independent live-child/
+receipt/gate contradiction before the retained structural fresh-observation check.
+
+Explicit C sensitivity timestamps the genuine captured A read BEFORE its event
+and12s barrier. B admission/readiness/control time is charged to both that barrier
+and the original20s action. At admission `h_max=max(0,min(8,R12-1,R20-14))`, with
+at least5.5s opportunity required. The14s post-release reserve plans A9s (unchanged
+5s TERM +2s KILL/direct wait +2s sampler/control), B2s normal completion, final
+observations/W2s and1s slack. During holding, both remaining times are recomputed;
+actual completion, admitted window,14s action reserve or1s barrier margin releases
+the read promptly. Save any premature publication/release mismatch, release the
+genuine read and complete A/control then B through production before propagating
+the saved mismatch through the failure finalizer. Normal C4 runs release promptly
+without requesting sensitivity. Infeasible admission or no attributable wrong
+value in the finite C window is missing sensitivity, never timeout-as-RED. These
+conditional caps guarantee no timing; phase overruns/missing completion retain
+actual failure and only bounded safety rescue, never extended deadlines.
+
+S delegates the actual first-input heartbeat read beside a genuine permission
+cleanup_error, then supplies one malformed S observation. Its fatal latch remains
+set; no cap input or next backend probe is allowed. Unavailable finalizer evidence
+is explicit, never a complete production RED interval. U first independently
+proves EVERY nonsentinel rescue-ledger identity absent/nonlive, then supplies one
+earlier scoped W deadline within the original action. It records the real W
+decision with every action absent/nonlive and no signal, then final S/J facts and
+the unchanged ordered cutoff check MUST refuse that decision. Unsafe/unknown
+prerequisites, missing/unattributed decision or any signal invalidate U and stop.
+S/U retain FAIL/exit3 as negative diagnostics; neither is production RED or GREEN,
+and neither clears stopped, suppresses a latch or fabricates a W acknowledgement.
+
+Supported jobs accept explicit runtime caps up to86400s. Any future containing
+allocation must separately bound setup/hooks/static/final reporting overhead;
+unknown overhead is not zero and cannot borrow fixture time. A future authorized
+launcher must enforce ONE shared1MiB stdout+stderr+report counter; the verifier's
+report-size check alone does not establish that combined cap. No launcher is
+implemented by these prerequisites.
 Do not detach helpers or wait/poll a long job in the submitting session.
 
 Wrappers observe the real factory-selected `backend.sample`, its existing
@@ -119,12 +184,15 @@ Historical JOB4890/JOB4891 remain failed/incomplete with ownership UNPROVEN.
 Baseline setup failure is environment failure, never RED; missing assertions,
 failed cleanup and unexecuted cases stay explicit, never behavioral or
 test-authoring PASS. JOB4904/JOB4906 exhausted the two maker evidence attempts;
-the R1–R3 source correction authorizes static checks/publication only, no maker
+the accepted Vnext prerequisite correction authorizes static checks/publication only, no maker
 fixture, baseline, mutation or repetition. Their original failures and baseline
 verifier/source hashes remain historical evidence, not corrected-verifier proof.
-Only after renewed full reviewer APPROVE may the separately allocated one
-independent QA candidate pass run under the unchanged bounds. Independent
-same-head review/QA remains required.
+JOB4920's scoped twelve-case GREEN remains only at its original source/verifier;
+JOB4918 remains a failure. All Vnext behavior, diagnostics, sensitivity/restoration
+and repetitions are UNEXECUTED. The accepted76-invocation/136-variant/147-boundary/
+6360s ceiling is a proposal, not an execution grant. Source requires renewed FULL
+independent cumulative review, returning to SAME manager BEFORE any behavioral
+allocation; do not auto-chain proofs/QA. Original gates/allocations remain.
 
 ## Commands and retained lanes
 
