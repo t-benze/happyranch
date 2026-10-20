@@ -659,7 +659,7 @@ has a dormant service bound to the actual initial app/state/runtime/org-map,
 org/DB/path, supervisor/tracker and attachment generation. Only actual successful
 ASGI/listener startup admits it; construction/readiness performs no operation or
 selection. Native preview/show and the sole `release_exact_thread_delivery`
-transaction have no HTTP, CLI, startup, reaper or automatic release caller.
+transaction have no ACTIVE HTTP/CLI, startup, reaper or automatic release caller.
 Temporary, dynamic, custom, replaced and missing contexts refuse. Neither
 ambient credentials nor caller proof flags enable mutation. Proof-backed release
 is unavailable. The approved human risk override requires exact preview, stable
@@ -683,11 +683,44 @@ no replacement;15402 gets no second catch-up. Unknown COMMIT requires strict
 same-key readback, never remint/rekey. Old-reader/mixed-version operation and
 downgrade after use are unsupported. Cooperative 3s/1024-row/4MiB/256-statement/
 5M-step budgets include closing reads; exhaustion is unavailable, not absence or
-a hard wall/RSS guarantee. C1b external adapters and C2 task-tail remain deferred;
+a hard wall/RSS guarantee. C1-13 activation and C2 task-tail remain deferred;
 12044/10693 remain unrecovered. All behavior/SQL/locks/races/cancellation/crash/
 security proof is UNEXECUTED; integration INCLUDING callback is SKIPPED24342,
 Python units RETIRED. Only lint/static evidence and independent full review plus
 same-final-head scoped SOURCE QA can be attributed to this slice.
+
+C1-13 dormant adapter source adds an UNMOUNTED four-handler router and an
+UNCALLED `threads.register_release` with capability/preview/apply/show handlers,
+private request custody and four client methods. Existing `threads.register`,
+app mounts and serving owner stay unchanged: no supported installed release
+tool, external_adapters_available=false and proof_backed_available=false.
+Future request metadata derives from native strict DTOs. Original streamed UTF8
+JSON is limited to16KiB before normalization; query/execution bindings refuse.
+Bounded32KiB closed results/errors preserve committed=false/null/true and
+no-store even on dependency errors; no synthesized202 or absence on failed read.
+Preview/full-command digests are distinct. Explicit four-risk confirmation and
+positive no-follow same-UID0600 file/0700 private-directory fsync/readback/close
+custody precede exact-byte POST. Failures preserve bytes/key. Transport loss
+allows at most one same-key GET and never another POST/rekey/poll; show never
+publishes. Shared bearer/same UID cannot establish exclusive human presence.
+Disconnect leaves native lifetime/outer retirement with the existing owner.
+Fixture/native-denial/mount/registration activation remains HELD: the six shared
+Web/Swift reader cases lack attributable RED/restoration/GREEN, with no waiver
+or execution allocated. C1-13 public delivery and C2 remain pending; all adapter
+runtime/security/custody/HTTP/CLI proof is UNEXECUTED, never test-authoring PASS.
+
+Future human syntax (not registered or usable in this source unit):
+`threads release preview --org ORG --operation-key KEY --thread-id THR
+--invocation-id INTEGER --agent-id ID --owner-session-id SID
+--preparation-id ID --token-digest SHA256` durably saves selection/preview.
+A separate `threads release apply --org ORG --operation-key KEY
+--expected-digest PREVIEW_SHA256 --confirm-risk-override` saves the full command.
+`threads release capability --org ORG` and `threads release show --org ORG
+--operation-key KEY` are complete reads. No caller task/session or agent-auth
+option exists. Exit2 is local syntax/selection/custody failure;1 is refusal,
+unavailable, unknown or invalid/incomplete response;3 is actual202;0 requires a
+strict complete read or matched committed operation history. Pending/unknown
+notification stays qualified history, never cleanup or recovery success.
 
 C1b registers each operation and org native lifetime before submission, captures
 every returned future before a cancellable await and owns outer retirement after
