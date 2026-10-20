@@ -17,7 +17,10 @@ _LIMIT = 3
 
 
 def safe_cause(stage: str, exc: BaseException | None = None, *,
-               repo: str | None = None, returncode: int | None = None) -> dict:
+               repo: str | None = None, returncode: int | None = None,
+               diagnostic_category: str | None = None, diagnostic_rule: str | None = None,
+               capture_complete: bool | None = None, capture_truncated: bool | None = None,
+               timed_out: bool | None = None) -> dict:
     """No exception text, source lines, command arguments or process output."""
     cause: dict[str, Any] = {"stage": stage}
     if exc is not None:
@@ -50,6 +53,35 @@ def safe_cause(stage: str, exc: BaseException | None = None, *,
         cause["operation"] = "pull_ff_only"
     if returncode is not None:
         cause["returncode"] = returncode
+    diagnostic_values = (diagnostic_category, diagnostic_rule, capture_complete,
+                         capture_truncated, timed_out)
+    # Historical/ordinary causes gain no required keys. Only a NEW executed
+    # failed pull can carry the optional extension; attempted starts omit it.
+    if (any(value is not None for value in diagnostic_values)
+            and stage == "repository_pull" and repo is not None
+            and (exc is not None or type(returncode) is int and returncode != 0)):
+        pairs = {
+            ("lock", "pull-lock-exists-v1"),
+            ("network", "pull-resolve-host-v1"),
+            ("auth", "pull-auth-failed-v1"),
+            ("other", "pull-non-ff-v1"),
+            ("other", "pull-unmatched-v1"),
+            ("unknown", "pull-unknown-v1"),
+        }
+        valid = (type(diagnostic_category) is str and type(diagnostic_rule) is str
+                 and (diagnostic_category, diagnostic_rule) in pairs
+                 and all(type(value) is bool for value in
+                         (capture_complete, capture_truncated, timed_out))
+                 and (not timed_out or not capture_complete)
+                 and (diagnostic_category == "unknown"
+                      or exc is None and capture_complete and not capture_truncated and not timed_out))
+        cause.update({
+            "diagnostic_category": diagnostic_category if valid else "unknown",
+            "diagnostic_rule": diagnostic_rule if valid else "pull-unknown-v1",
+            "capture_complete": capture_complete if valid else False,
+            "capture_truncated": capture_truncated if type(capture_truncated) is bool else False,
+            "timed_out": timed_out if type(timed_out) is bool else False,
+        })
     return cause
 
 

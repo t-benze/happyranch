@@ -636,7 +636,15 @@ and warn of stale source. Every executed pull failure/timeout/exception retains
 uncertainty, including dirty/non-fast-forward and recursive partial effects;
 equal HEAD/branch/porcelain summaries never prove no effects. Read-only upstream
 lookup is admission only, not a remote-state lock. All observations/pulls share
-one 30-second batch deadline; exhausted/unattempted siblings stay false. Thread/dream/
+one 30-second batch deadline including scan, probes and executor-queue delay;
+exhausted/unattempted siblings stay false. Pull stdout is discarded; stderr retains
+at most4096 bytes plus bounded read scratch, draining/discarding excess while the
+direct child runs. Nonblocking capture permits at most two4096-byte exit-tail
+reads, never waiting for descendant EOF or a reader thread. Overflow/incomplete/
+failed capture cannot select a specific label. Actual rc0 remains success despite
+truncation/unavailable capture; a post-start read exception remains failure even
+if the child later exits0. Direct-child settlement is required, without a hard
+real-time guarantee over OS creation/reap or native persistence. Thread/dream/
 wake/Todo await off-loop refresh under the SAME native preparation-effects scope,
 joining its worker before cancellation propagates and settlement runs. Timeout
 never certifies process-tree quiescence; existing unknown owners remain sticky.
@@ -3431,11 +3439,22 @@ existing claim exclusions, never ordinary pending/carrier eligibility. Callback,
 current-owner, cancellation and intentional hold winners still exclude accounting.
 
 The first preparation cause is kept separately from the final Pause/cleanup error:
-bounded stage, exception class/stable Pause code and source locations only. An
-executed pull adds a safe repo identifier, fixed operation and return code or
-exception class. Skipped pre-pull admission remains a stale-source warning and
-creates no pull-failure cause. No exception messages, output, argv, URLs, environment
-or locals enter this evidence. An audit/storage save failure remains an explicit
+bounded stage, exception class/stable Pause code and source locations. An
+executed failed task pull can additionally retain a safe repo identifier, fixed
+operation, return code or safe exception class, and optional closed advisory
+`diagnostic_category`/`diagnostic_rule` with exact Boolean `capture_complete`,
+`capture_truncated` and `timed_out` facts. Categories are lock/network/auth/other/
+unknown; non-fast-forward remains other. Only complete, untruncated, strictly
+decoded whole-stream grammar can select a specific wording label; ambiguity,
+unsafe structure, timeout or unavailable/failed capture is unknown. Labels never
+prove provenance or historical cause; missing/old exit128 stays unknown. Existing
+first causes and historical dictionaries are reused unchanged, and no non-task
+cause fields are added. Skipped pre-pull admission remains a stale-source warning
+and creates no pull-failure cause. No exception messages, output, argv, URLs,
+environment or locals enter this evidence. Pull failures latch sticky cleanup
+before attribution, attempt the first cause even after an evidence-save failure,
+and propagate only fixed safe errors without captured exception chains. An
+audit/storage save failure remains an explicit
 persistence limitation, not a durable count or terminal-success claim. No new timer,
 service, automatic successor or permission follows. Source/scoped verification is
 separate from deployment, running-code identity and operational acceptance.

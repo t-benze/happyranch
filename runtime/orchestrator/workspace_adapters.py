@@ -4,13 +4,15 @@ import asyncio
 import json
 import logging
 import os
+import re
+import select
 import shutil
 import subprocess
 import threading
 import time
 from contextlib import contextmanager
 from contextvars import copy_context
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -19,6 +21,9 @@ from runtime.config import Settings
 
 if TYPE_CHECKING:
     from runtime.orchestrator._paths import OrgPaths
+    from runtime.orchestrator.producer_move import ProducerPreparation
+    from runtime.orchestrator.task_pause import TaskInvocation
+    from runtime.orchestrator.thread_move import ThreadPreparation
 
 logger = logging.getLogger(__name__)
 
@@ -1811,6 +1816,240 @@ def _repo_refresh_git(
     )
 
 
+_REPO_PULL_CAPTURE_BYTES = 4096
+_REPO_PULL_POLL_SECONDS = 0.05
+
+
+@dataclass
+class _RepoPullOutcome:
+    """Private capture only; neither bytes nor an original exception leave here."""
+
+    started: bool = False
+    returncode: int | None = None
+    settled: bool = False
+    stderr: bytearray = field(default_factory=bytearray, repr=False)
+    capture_complete: bool = False
+    capture_truncated: bool = False
+    timed_out: bool = False
+    failure: BaseException | None = field(default=None, repr=False)
+
+    def fail(self, exc: BaseException) -> None:
+        if self.failure is None or isinstance(exc, (asyncio.CancelledError, KeyboardInterrupt, SystemExit)):
+            self.failure = _repo_pull_safe_error(exc)
+        self.timed_out = self.timed_out or isinstance(exc, subprocess.TimeoutExpired)
+        self.capture_complete = False
+
+
+def _repo_pull_safe_error(exc: BaseException) -> BaseException:
+    # Never retain text, notes, command, output, traceback or exception chains.
+    if isinstance(exc, asyncio.CancelledError):
+        return asyncio.CancelledError("repository_pull_interrupted")
+    if isinstance(exc, KeyboardInterrupt):
+        return KeyboardInterrupt("repository_pull_interrupted")
+    if isinstance(exc, SystemExit):
+        return SystemExit("repository_pull_interrupted")
+    if isinstance(exc, subprocess.TimeoutExpired):
+        return subprocess.TimeoutExpired("git_pull_ff_only", _REPO_REFRESH_SECONDS)
+    if isinstance(exc, OSError):
+        return OSError("repository_pull_io_failed")
+    if isinstance(exc, subprocess.SubprocessError):
+        return subprocess.SubprocessError("repository_pull_failed")
+    return RuntimeError("repository_pull_failed")
+
+
+def _repo_refresh_pull(
+    repo_dir: Path, *, deadline: float, cancel_requested: threading.Event | None,
+) -> _RepoPullOutcome | None:
+    """One owned direct child, bounded nonblocking capture, no descendant EOF wait.
+
+    None proves admission refused before attempting Popen. All other failures,
+    including attempted creation, require native uncertainty at the caller.
+    """
+    remaining = deadline - time.monotonic()
+    if remaining <= 0 or (cancel_requested is not None and cancel_requested.is_set()):
+        return None
+    outcome = _RepoPullOutcome()
+    process: subprocess.Popen[bytes] | None = None
+    pipe = None
+    # Unsupported capture still uses bounded execution without a blocking reader.
+    capture_available = os.name == "posix" and hasattr(os, "set_blocking")
+    try:
+        process = subprocess.Popen(
+            ["git", "--no-optional-locks", "pull", "--ff-only"], cwd=str(repo_dir),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE if capture_available else subprocess.DEVNULL,
+        )
+        outcome.started = True
+        pipe = process.stderr
+        if capture_available:
+            if pipe is None:
+                raise OSError("repository_pull_capture_unavailable")
+            descriptor = pipe.fileno()
+            os.set_blocking(descriptor, False)
+
+            def read_once() -> bool:
+                """One <=4096-byte scratch read; True only for proven EOF."""
+                try:
+                    chunk = os.read(descriptor, _REPO_PULL_CAPTURE_BYTES)
+                except BlockingIOError:
+                    return False
+                if not chunk:
+                    return True
+                capacity = _REPO_PULL_CAPTURE_BYTES - len(outcome.stderr)
+                outcome.stderr.extend(chunk[:capacity])
+                if len(chunk) > capacity:
+                    outcome.capture_truncated = True
+                return False
+
+            eof = False
+            while process.poll() is None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    outcome.timed_out = True
+                    raise subprocess.TimeoutExpired("git_pull_ff_only", _REPO_REFRESH_SECONDS)
+                if eof:
+                    # EOF alone is not child settlement. Wait only to the original bound.
+                    process.wait(timeout=remaining)
+                elif select.select([descriptor], [], [], min(remaining, _REPO_PULL_POLL_SECONDS))[0]:
+                    eof = read_once()
+            # Never drain to EOF after exit: a descendant may retain/write the pipe.
+            for _ in range(2):
+                if eof:
+                    break
+                eof = read_once()
+            outcome.capture_complete = eof
+        else:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                outcome.timed_out = True
+                raise subprocess.TimeoutExpired("git_pull_ff_only", _REPO_REFRESH_SECONDS)
+            process.wait(timeout=remaining)
+        outcome.returncode = process.returncode
+    except BaseException as exc:
+        outcome.fail(exc)
+    finally:
+        # Close OUR read end before any reap; never wait for pipe EOF or a reader.
+        if pipe is not None:
+            try:
+                pipe.close()
+            except BaseException as exc:
+                outcome.fail(exc)
+        if process is not None:
+            while True:
+                try:
+                    if process.poll() is None:
+                        process.kill()  # Direct child only; no tree-quiescence claim.
+                    break
+                except ProcessLookupError:
+                    break
+                except (InterruptedError, KeyboardInterrupt, SystemExit, asyncio.CancelledError) as exc:
+                    outcome.fail(exc)
+                except BaseException as exc:
+                    outcome.fail(exc)
+                    break
+            # Repeated process-control interruption cannot detach our direct child.
+            while True:
+                try:
+                    outcome.returncode = process.wait()
+                    outcome.settled = True
+                    break
+                except (InterruptedError, KeyboardInterrupt, SystemExit, asyncio.CancelledError) as exc:
+                    outcome.fail(exc)
+                except BaseException as exc:
+                    outcome.fail(exc)
+                    break
+    return outcome
+
+
+def _repo_pull_diagnostics(outcome: _RepoPullOutcome) -> dict[str, str | bool]:
+    """Whole bounded stream, opaque operands, fixed advisory wording pairs only."""
+    facts: dict[str, str | bool] = {
+        "diagnostic_category": "unknown", "diagnostic_rule": "pull-unknown-v1",
+        "capture_complete": outcome.capture_complete,
+        "capture_truncated": outcome.capture_truncated, "timed_out": outcome.timed_out,
+    }
+    if (not outcome.capture_complete or outcome.capture_truncated
+            or outcome.timed_out or outcome.failure is not None):
+        return facts
+    try:
+        message = outcome.stderr.decode("utf8", errors="strict").replace("\r\n", "\n")
+        if not message.strip() or any(c != "\n" and not c.isprintable() for c in message):
+            return facts
+        # Graphic ASCII tokens exclude quote/backslash; lock also permits spaces.
+        remote = r"[\x21-\x26\x28-\x5b\x5d-\x7e]{1,2048}"
+        lock = r"[\x20-\x26\x28-\x5b\x5d-\x7e]{1,2048}"
+        host = r"(?=[A-Za-z0-9.-]{1,253}$)[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?"
+        patterns = (
+            ("lock", "pull-lock-exists-v1", rf"fatal: Unable to create '({lock})': File exists\."),
+            ("network", "pull-resolve-host-v1", rf"fatal: unable to access '{remote}': Could not resolve host: {host}"),
+            ("auth", "pull-auth-failed-v1", rf"fatal: Authentication failed for '{remote}'"),
+            ("other", "pull-non-ff-v1", r"fatal: Not possible to fast-forward, aborting\."),
+        )
+        matched: set[tuple[str, str]] = set()
+        unaccounted = False
+        for line in message.split("\n"):
+            if not line or re.fullmatch(r"remote: Enumerating objects: [0-9]{1,10}, done\.", line):
+                continue
+            for category, rule, pattern in patterns:
+                match = re.fullmatch(pattern, line)
+                if match is not None and (category != "lock" or match[1].endswith(".lock")):
+                    matched.add((category, rule))
+                    break
+            else:
+                # Unsafe quoting/escapes cannot be reinterpreted as multiple lines.
+                if "'" in line or "\\" in line:
+                    return facts
+                unaccounted = True
+        if len(matched) == 1 and not unaccounted:
+            facts["diagnostic_category"], facts["diagnostic_rule"] = next(iter(matched))
+        elif not matched:
+            facts["diagnostic_category"], facts["diagnostic_rule"] = "other", "pull-unmatched-v1"
+    except Exception:
+        # No classifier defect may bypass native uncertainty or escape with bytes.
+        facts["diagnostic_category"], facts["diagnostic_rule"] = "unknown", "pull-unknown-v1"
+        facts["capture_complete"] = False
+    return facts
+
+
+def _repo_pull_failed(
+    preparation: TaskInvocation | ThreadPreparation | ProducerPreparation | None,
+    name: str, outcome: _RepoPullOutcome,
+) -> None:
+    """Latch uncertainty BEFORE any fallible attribution, including classifier work."""
+    evidence_failure: BaseException | None = None
+    if preparation is not None:
+        try:
+            preparation.failed_cleanup()
+        except BaseException as exc:
+            evidence_failure = _repo_pull_safe_error(exc)
+        from runtime.orchestrator.task_pause import current_invocation
+        if preparation is current_invocation():
+            try:
+                facts = _repo_pull_diagnostics(outcome) if outcome.started else {}
+                preparation.record_preparation_cause(
+                    "repository_pull", outcome.failure, repo=name,
+                    returncode=outcome.returncode, **facts,
+                )
+            except BaseException as exc:
+                if evidence_failure is None or isinstance(exc, (asyncio.CancelledError, KeyboardInterrupt, SystemExit)):
+                    evidence_failure = _repo_pull_safe_error(exc)
+    outcome.stderr.clear()
+    if isinstance(evidence_failure, (asyncio.CancelledError, KeyboardInterrupt, SystemExit)):
+        raise evidence_failure from None
+    if isinstance(outcome.failure, (asyncio.CancelledError, KeyboardInterrupt, SystemExit)):
+        # An ordinary evidence fault must not turn control into refusal accounting.
+        raise outcome.failure from None
+    if evidence_failure is not None:
+        # Never chain/format evidence exceptions (which can contain private data).
+        raise RuntimeError("repository_preparation_evidence_failed") from None
+    if outcome.failure is not None and not isinstance(
+        outcome.failure, (subprocess.SubprocessError, OSError),
+    ):
+        raise outcome.failure from None
+    if outcome.started and not outcome.settled:
+        raise RuntimeError("repository_pull_settlement_unavailable") from None
+
+
 def _repo_refresh_can_pull(
     repo_dir: Path, *, deadline: float, cancel_requested: threading.Event | None,
 ) -> bool:
@@ -1891,29 +2130,19 @@ def refresh_workspace_repos(
                                       cancel_requested=_cancel_requested):
             continue
         try:
-            result = _repo_refresh_git(repo_dir, ["pull", "--ff-only"],
-                                       deadline=deadline, cancel_requested=_cancel_requested)
+            result = _repo_refresh_pull(repo_dir, deadline=deadline,
+                                        cancel_requested=_cancel_requested)
         except BaseException as exc:
-            if preparation is not None:
-                if preparation is current_invocation():
-                    preparation.record_preparation_cause("repository_pull", exc, repo=name)
-                try:
-                    preparation.failed_cleanup()
-                except BaseException as evidence:
-                    exc.add_note(f"repository preparation evidence failed: {evidence!r}")
-                    raise exc from evidence
-            if not isinstance(exc, (subprocess.SubprocessError, OSError)):
-                raise
-            logger.info("repo refresh: git pull failed for %s: %s", repo_dir, exc)
-        else:
-            # None is an affirmative refusal before invoking pull. Every
-            # executed nonzero exit is uncertain, even with equal summaries.
-            if result is not None:
-                results[name] = result.returncode == 0
-                if result.returncode != 0 and preparation is not None:
-                    if preparation is current_invocation():
-                        preparation.record_preparation_cause("repository_pull", repo=name, returncode=result.returncode)
-                    preparation.failed_cleanup()
+            # An unexpected capture-helper failure is never a no-start receipt.
+            # Leave the handler before attribution/raising so raw context stays private.
+            result = _RepoPullOutcome(failure=_repo_pull_safe_error(exc))
+        # None is affirmative no-start; attempted creation is not that proof.
+        if result is not None:
+            results[name] = result.returncode == 0 and result.failure is None
+            if not results[name]:
+                _repo_pull_failed(preparation, name, result)
+            else:
+                result.stderr.clear()
     return results
 
 
@@ -1951,10 +2180,10 @@ async def refresh_workspace_repos_async(workspace: Path) -> dict[str, bool]:
                 raise cancellation or exc
             cancellation = cancellation or exc
             cancel_requested.set()
-        except BaseException as exc:
+        except BaseException:
             if cancellation is not None:
-                cancellation.add_note(f"repository refresh worker failed: {exc!r}")
-                raise cancellation from exc
+                cancellation.add_note("repository refresh worker failed; native evidence may be unavailable")
+                raise cancellation from None
             raise
     if cancellation is not None:
         raise cancellation
