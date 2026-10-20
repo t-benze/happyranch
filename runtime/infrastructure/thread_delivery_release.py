@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import Annotated, Any, Iterator, Literal
 
-from pydantic import Field, ValidationError
+from pydantic import BeforeValidator, Field, ValidationError
 
 from runtime.infrastructure.thread_admission import Closed, ThreadAdmissionStore
 
@@ -100,6 +100,23 @@ def fingerprint(rows: list[dict]) -> str:
         typed((key, value)) for key, value in row.items()) for row in rows))
 
 
+def _version(value: Any) -> int:
+    # Literal equality can normalize True/1.0 to 1 even in strict mode.
+    if type(value) is not int or value != 1:
+        raise ValueError("thread delivery release version")
+    return value
+
+
+def _confirmed(value: Any) -> bool:
+    if value is not True:
+        raise ValueError("thread delivery release confirmation")
+    return value
+
+
+Version = Annotated[Literal[1], BeforeValidator(_version)]
+Confirmed = Annotated[Literal[True], BeforeValidator(_confirmed)]
+
+
 class Selection(Closed):
     org_slug: SafeID
     thread_id: SafeID
@@ -111,7 +128,7 @@ class Selection(Closed):
 
 
 class PreviewRequest(Closed):
-    version: Literal[1]
+    version: Version
     operation_key: Key
     mode: Mode
     selection: Selection
@@ -131,7 +148,7 @@ class DeliveryRange(Closed):
 
 
 class Confirmation(Closed):
-    confirmed: Literal[True]
+    confirmed: Confirmed
     preview_digest: Digest
     accepted_risks: tuple[Literal[
         "late_producer_and_session_writes", "overlapping_native_and_workspace_work",
@@ -149,7 +166,7 @@ class ReleaseCommand(PreviewRequest):
 
 
 class Companion(Closed):
-    version: Literal[1]
+    version: Version
     org_slug: SafeID
     operation_key: Key
     command: Annotated[str, Field(max_length=16384)]
