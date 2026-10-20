@@ -708,8 +708,10 @@ def native_authority(db: Any, selection: Selection) -> Iterator[Any]:
 
     This fixed refusal deliberately precedes lock/settings/transaction changes.
     Future integration must hold move -> DB -> short revoke/COMMIT leaf, renew
-    actual owner/host/tracker controls and retain DB lifetime through uncertain
-    rollback/settings restoration. No active caller exists in C1a.
+    actual owner/host/tracker controls with the shared native reader/budget,
+    then use only a local admission/revocation check in the COMMIT leaf. Retain
+    DB lifetime through uncertain rollback/settings restoration. No active
+    caller exists in C1a.
     """
     raise ReleaseUnavailable("serving_owner_unavailable")
     yield

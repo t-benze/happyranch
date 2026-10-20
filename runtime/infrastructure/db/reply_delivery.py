@@ -123,7 +123,7 @@ class ReplyDeliveryMixin:
                         if (fresh["inputs"] != cmd.model_dump(mode="json", exclude={"confirmation"})
                                 or fresh["preview_digest"] != cmd.confirmation.preview_digest):
                             raise ReleaseUnavailable("stale_preview")
-                        owner._revalidate_native_control_uncommitted(s)
+                        owner._revalidate_native_control_uncommitted(s, reader=reader)
                         evidence = view.thread(s.thread_id)
                         inv, history = selected(evidence, s)
                         now = _now().isoformat()
@@ -153,8 +153,12 @@ class ReplyDeliveryMixin:
                         # audit/source/replacement graph, not a writer-owned DTO.
                         closing = ReleaseReader(reader, s.org_slug)
                         closing.inventory()
+                        # All native control SQL shares this same reader/budget.
+                        # The innermost leaf performs only local revocation /
+                        # admission identity checks; no slow control acquisition.
+                        owner._revalidate_native_control_uncommitted(s, reader=reader)
                         with owner._commit_leaf:
-                            owner._revalidate_native_control_uncommitted(s)
+                            owner._assert_current_admission_leaf(self, s)
                             budget.check()
                             committing = True
                             self._conn.commit()
