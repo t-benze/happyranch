@@ -56,9 +56,10 @@ a committed pending token is republished on a later attached tick. Unloaded orgs
 require reattachment for recovery. Mint/claim/settlement/count-once/cooldown rules
 are unchanged. Other synchronous DB callers and shutdown retain their limits.
 
-C1a (THR317 seq25/34, ROOT12084) adds dormant native exact-delivery disposition
-source only. Its serving-authority boundary always refuses; no service, route,
-CLI, scheduler or reaper applies a human override. An admitted future pending
+C1a/C1b (THR317 seq25/34, ROOT12084) supplies private native exact-delivery
+disposition source bound to the actual initial serving lifetime. The real
+successful ASGI/listener adapter admits its dormant service, performing no
+operation. No route, CLI, scheduler or reaper applies a human override. A pending
 started REPLY interruption preserves acknowledgement/required range and breaker
 episode, receipts, failures, cooldown and existing HALF_OPEN lease, while one
 transaction creates one covering native queued replacement and consumes only
@@ -69,7 +70,29 @@ history, including saved-prefix drift and late original lifecycle revocation.
 Raw unknown/process/effect evidence and retry budgets remain unchanged. Late
 writes, overlapping work and repeated external effects remain explicit risks;
 proof-backed release is unavailable. Old-reader/mixed-version operation and
-downgrade after companion use are unsupported. C1b serving lifetime/adapters and
+downgrade after companion use are unsupported. C1b external adapters and
 C2 task-tail are deferred; no historical recovery or live use follows. All native
 SQL/lock/race/cancellation/crash/security behavior is UNEXECUTED; integration
 SKIPPED24342, Python units RETIRED, required checks lint/static only.
+
+C1b registers each operation and org native lifetime before submission, captures
+every returned future before a cancellable await and owns outer retirement after
+disconnect. Positive native return, rollback/settings restoration and outer
+settlement alone discharge that guard. Revoke closes loop intake first and takes
+only its C leaf for at most25ms; timeout is incomplete and bars host shutdown,
+detach and DB-close fallthrough. Remove/all-close/runtime switch/direct org close
+independently require positive C idle and renewed attachment/busy/hold checks.
+Final order is move -> DB -> controller -> residue -> tracker -> C leaf -> the
+existing COMMIT. All SQL inventory/decoding finishes before owner guards; only
+COMMIT occurs inside, with reverse release before rollback/readback/notification.
+The original3s budget starts before submission, includes both observation passes
+and native+SQL work within5M steps. Under actual owner locks, built-in maps over64
+refuse before iteration; each pass reserves n+1 rows,2048*(n+1) raw bytes and4096
+native units per record/completion. Any residue/unhealthy measurement, relevant
+retained ownership/binding/preparation or outstanding native writer blocks.
+Org-level unresolved move/Pause controls conservatively refuse; no task root is
+inferred from thread text or tracker absence. Fresh guarded CURRENT facts and
+existing admission/release counters detect observed changes, without certifying
+invisible historical tracker/residue ABA or old process/effect retirement. After
+commit, independent current eligibility permits only SAME-token put_once through
+the existing queue; notification loss never rolls back, remints or reapplies.

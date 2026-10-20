@@ -443,6 +443,34 @@ class TeamMoveCoordinator:
                     and (not reservation.possible_launch or reservation.quiescent)):
                 self._reservations.pop(reservation.owner_id, None)
 
+    def _thread_release_task_preparations_uncommitted(self, selection, budget):
+        """Bounded read under caller-held move/DB, no policy or writer change."""
+        from runtime.infrastructure.thread_delivery_release import ReleaseUnavailable
+        budget.population(self._reservations)
+        records = []
+        for key, reservation in self._reservations.items():
+            if type(reservation) is not TaskPreparation or reservation.coordinator is not self:
+                raise ReleaseUnavailable("task_preparation_unavailable")
+            identity = reservation.identity
+            if type(identity) is not PermanentAgentIdentity:
+                raise ReleaseUnavailable("task_preparation_unavailable")
+            for value in (key, reservation.task_id, reservation.session_id,
+                          identity.org_slug, identity.agent_id):
+                budget.text(value)
+            if (reservation.owner_id != key or identity.org_slug != selection.org_slug
+                    or any(type(v) is not bool for v in (reservation.owner_live,
+                        reservation.possible_launch, reservation.quiescent, reservation.cleanup_failed))):
+                raise ReleaseUnavailable("task_preparation_unavailable")
+            unsafe = (reservation.owner_live or reservation.cleanup_failed
+                      or reservation.possible_launch and not reservation.quiescent)
+            if identity.agent_id == selection.agent_id and unsafe:
+                raise ReleaseUnavailable("task_preparation_current_owner")
+            records.append((key, identity.agent_id, reservation.task_id,
+                reservation.session_id, reservation.owner_live, reservation.possible_launch,
+                reservation.quiescent, reservation.cleanup_failed))
+        budget.check()
+        return tuple(records)
+
     def blockers(self) -> tuple[dict, ...]:
         """Complete preparation registry for later D census, never idle proof.
 

@@ -518,6 +518,7 @@ class Database(
 
     def __init__(self, db_path: Path) -> None:
         self.db_path = db_path
+        self._thread_release_serving_binding = None
         db_path.parent.mkdir(parents=True, exist_ok=True)
         # See `_synchronized` for the threading model. RLock (not Lock) because
         # e.g. `walk_ancestors` → `get_task` and `get_recall_payload` → `get_task`

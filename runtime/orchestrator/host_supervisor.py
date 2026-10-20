@@ -66,6 +66,8 @@ Load-bearing ordering invariants (enforced here, honored by wiring):
 from __future__ import annotations
 
 import logging
+from contextlib import contextmanager
+from types import MethodType
 import threading
 import time
 from collections import deque
@@ -508,6 +510,47 @@ class AdmissionController:
         with self._cv:
             return self._shutdown_generation
 
+    @contextmanager
+    def _thread_release_observation_guard(self, selection, budget):
+        """Timed read of the actual ownership registry; no terminal callbacks."""
+        from runtime.infrastructure.thread_delivery_release import ReleaseUnavailable
+        if not self._cv.acquire(timeout=budget.lock_timeout()):
+            raise ReleaseUnavailable("controller_busy")
+        try:
+            budget.check()
+            count = budget.population(self._ownerships)
+            active = budget.integer(self._active)
+            admitted = budget.integer(self._admitted_total)
+            released = budget.integer(self._released_total)
+            if (type(self._shutdown) is not bool or self._shutdown or active != count
+                    or admitted < released or admitted - released != count):
+                raise ReleaseUnavailable("host_ownership_unavailable")
+            identities = []
+            for key, context in self._ownerships.items():
+                if budget.integer(key) == 0 or type(context) is not _AttemptContext:
+                    raise ReleaseUnavailable("host_identity_unavailable")
+                identity = context._move_identity
+                if identity is None:
+                    raise ReleaseUnavailable("host_unscoped_owner")
+                if type(identity) is not tuple or len(identity) != 3:
+                    raise ReleaseUnavailable("host_identity_unavailable")
+                org, agent, logical = identity
+                budget.text(logical)
+                if org is None:
+                    raise ReleaseUnavailable("host_unscoped_owner")
+                budget.text(org)
+                if agent is None:
+                    raise ReleaseUnavailable("host_unattributed_owner")
+                budget.text(agent)
+                if org == selection.org_slug and agent == selection.agent_id:
+                    # A retained terminal lease is still ownership.
+                    raise ReleaseUnavailable("host_current_owner")
+                identities.append((key, org, agent, logical))
+            budget.check()
+            yield (admitted, released, tuple(identities))
+        finally:
+            self._cv.release()
+
     def ownerships_snapshot(self) -> tuple["_AttemptContext", ...]:
         """Every admitted-but-not-yet-released ownership record.
 
@@ -683,6 +726,25 @@ class ResidueAccountant:
         self._waker = waker
 
     # ── census ────────────────────────────────────────────────────
+
+    @contextmanager
+    def _thread_release_observation_guard(self, budget):
+        """Constant-size residue facts, never survivors/probe/reason projection."""
+        from runtime.infrastructure.thread_delivery_release import ReleaseUnavailable
+        if not self._lock.acquire(timeout=budget.lock_timeout()):
+            raise ReleaseUnavailable("residue_busy")
+        try:
+            budget.native()
+            if (type(self._survivors) is not dict
+                    or type(self._measurement_healthy) is not bool):
+                raise ReleaseUnavailable("residue_unavailable")
+            # len ONLY: even a below-threshold survivor blocks this operation.
+            if len(self._survivors) or not self._measurement_healthy or self._gate_reason is not None:
+                raise ReleaseUnavailable("residue_or_measurement_unknown")
+            budget.check()
+            yield (0, True, False)
+        finally:
+            self._lock.release()
 
     def census(self) -> tuple[SurvivorRecord, ...]:
         """Identity-verified survivors currently censused/charged/visible."""
@@ -1758,6 +1820,25 @@ class HostSessionSupervisor:
     def active_count(self) -> int:
         """Admitted-but-not-yet-released attempts (the ownership registry)."""
         return len(self._admission.ownerships_snapshot())
+
+    @contextmanager
+    def _thread_release_observation_guard(self, selection, budget):
+        """Supported default owner topology, controller -> residue through COMMIT."""
+        from runtime.infrastructure.thread_delivery_release import ReleaseUnavailable
+        budget.native()
+        if (type(self) is not HostSessionSupervisor
+                or type(self._admission) is not AdmissionController
+                or type(self._residue) is not ResidueAccountant
+                or type(self._admission._gates) is not list
+                or len(self._admission._gates) != 1
+                or self._admission._gates[0] is not self._residue
+                or type(self._residue._waker) is not MethodType
+                or self._residue._waker.__self__ is not self._admission
+                or self._residue._waker.__func__ is not AdmissionController.wake):
+            raise ReleaseUnavailable("host_topology_unavailable")
+        with self._admission._thread_release_observation_guard(selection, budget) as host:
+            with self._residue._thread_release_observation_guard(budget) as residue:
+                yield (host, residue)
 
     def team_move_census(self, org: str, agents: tuple[str, ...]) -> tuple[dict, ...]:
         """Actual unbounded native ownership/residue observation for D.

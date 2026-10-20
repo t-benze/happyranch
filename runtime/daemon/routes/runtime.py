@@ -52,6 +52,9 @@ def _swap(state: DaemonState, runtime: RuntimeDir, *, move_diagnostics=None) -> 
     # instances before construction, then fence stale references via close.
     # No await separates the all-org admission decision from map replacement.
     _assert_can_swap(state)
+    state._revoke_thread_releases()
+    for org in state.orgs.values():
+        org._assert_thread_releases_idle()
     state._revoke_cleanup_diagnostics()
     # Synchronous callers cannot bypass the asynchronous drain barrier.
     for org in state.orgs.values():
@@ -95,11 +98,17 @@ def _swap(state: DaemonState, runtime: RuntimeDir, *, move_diagnostics=None) -> 
 
 
 async def _drain_before_swap(daemon: DaemonState) -> tuple:
-    async with daemon.orgs_lock:
-        _assert_can_swap(daemon)
-        captured = daemon._capture_attachments()
-        daemon._revoke_cleanup_diagnostics()
     try:
+        async with daemon.orgs_lock:
+            captured = daemon._capture_attachments()
+            daemon._revoke_thread_releases()
+        # C can be active at the initial capture. Join outside org/native locks,
+        # then run ALL ordinary busy/hold checks before any switch effects.
+        await daemon._drain_thread_releases()
+        async with daemon.orgs_lock:
+            daemon._assert_attachments_unchanged(captured)
+            _assert_can_swap(daemon)
+            daemon._revoke_cleanup_diagnostics()
         await daemon._drain_cleanup_diagnostics()
     except _OrgBusyError as exc:
         raise HTTPException(status_code=409, detail={"code": exc.code}) from exc
@@ -109,6 +118,8 @@ async def _drain_before_swap(daemon: DaemonState) -> tuple:
 def _renew_swap_preflight(daemon: DaemonState, captured: tuple) -> None:
     try:
         daemon._assert_attachments_unchanged(captured)
+        for org in daemon.orgs.values():
+            org._assert_thread_releases_idle()
     except _OrgBusyError as exc:
         raise HTTPException(status_code=409, detail={"code": exc.code}) from exc
     _assert_can_swap(daemon)

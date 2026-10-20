@@ -824,6 +824,14 @@ class _DiagnosticServer(uvicorn.Server):
         except Exception:
             # Scheduling/logging/diagnostic results never gate successful serve.
             pass
+        # Independent of B's signalling outcome. Only actual successful ASGI
+        # AND listener startup admits this dormant private service.
+        try:
+            service = self._diagnostic_app.state.daemon._thread_release_service
+            if service is not None:
+                service.signal_ready(self._diagnostic_app)
+        except Exception:
+            pass  # C stays unavailable, never substitutes readiness success
 
 
 def main(argv: list[str] | None = None) -> int:
