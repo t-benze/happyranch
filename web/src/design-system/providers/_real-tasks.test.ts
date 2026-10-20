@@ -51,12 +51,16 @@ const LIST_KEYS = {
   tasksRoots: ['tasks-roots', SLUG, undefined],
   tasksRootsInfinite: ['tasks-roots-infinite', SLUG, undefined],
   attentionRootsInfinite: ['tasks-roots-infinite', SLUG, { status: 'escalated' }],
+  // Tasks-list ordinary owners: one key per status/agent, distinct from attention.
+  ordinaryEscalated: ['tasks-list-ordinary', SLUG, { status: 'escalated' }],
+  ordinaryCompletedByAgent: ['tasks-list-ordinary', SLUG, { status: 'completed', assigned_agent: 'a' }],
 } as const;
 const DETAIL_KEY = ['task', SLUG, TASK_ID];
 // Control keys that MUST NOT be invalidated: 'task-recall' doesn't start with
 // 'tasks', and a different slug's list must be untouched.
 const RECALL_KEY = ['task-recall', SLUG, TASK_ID];
 const OTHER_SLUG_KEY = ['tasks-roots-infinite', 'other-org', undefined];
+const OTHER_SLUG_ORDINARY_KEY = ['tasks-list-ordinary', 'other-org', { status: 'escalated' }];
 
 function makeClient(): QueryClient {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -64,6 +68,7 @@ function makeClient(): QueryClient {
   qc.setQueryData(DETAIL_KEY, { seeded: true });
   qc.setQueryData(RECALL_KEY, { seeded: true });
   qc.setQueryData(OTHER_SLUG_KEY, { seeded: true });
+  qc.setQueryData(OTHER_SLUG_ORDINARY_KEY, { seeded: true });
   return qc;
 }
 
@@ -89,6 +94,9 @@ function expectAllListFamiliesInvalidated(qc: QueryClient): void {
   // task LIST actually reads was left stale.
   expect(isInvalidated(qc, LIST_KEYS.tasksRootsInfinite)).toBe(true);
   expect(isInvalidated(qc, LIST_KEYS.attentionRootsInfinite)).toBe(true);
+  expect(isInvalidated(qc, LIST_KEYS.ordinaryEscalated)).toBe(true);
+  expect(isInvalidated(qc, LIST_KEYS.ordinaryCompletedByAgent)).toBe(true);
+  expect(isInvalidated(qc, OTHER_SLUG_ORDINARY_KEY)).toBe(false);
   // Different slug and the recall key are correctly excluded.
   expect(isInvalidated(qc, OTHER_SLUG_KEY)).toBe(false);
   expect(isInvalidated(qc, RECALL_KEY)).toBe(false);

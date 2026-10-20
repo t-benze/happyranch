@@ -5,7 +5,7 @@ import {
   useQuery,
   useQueryClient,
 } from '@tanstack/react-query';
-import { useEffect } from 'react';
+import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { useParams } from 'react-router-dom';
 import { subscribeSSE, tasks as tasksApi } from '@/lib/api';
 import type { TaskEvent } from '@/lib/api/types';
@@ -17,6 +17,8 @@ import type {
   QueryLike,
   ResolveEscalationArgs,
   ResolveEscalationResult,
+  TaskListStream,
+  TaskListStreams,
   TaskTailSSECallbacks,
   RevisitTaskArgs,
   RevisitTaskResult,
@@ -149,6 +151,146 @@ function useTasksRootsInfinite(
   };
 }
 
+// Tasks list owners. Ordinary partitions use their own key family so an
+// ordinary `status=escalated` traversal never shares a cache entry, cursor or
+// error with the attention traversal, even when both send identical requests.
+// Both families start with 'tasks', so invalidateTaskViews reaches them.
+const TASK_LIST_ORDINARY_FAMILY = 'tasks-list-ordinary';
+const TASK_LIST_ATTENTION_FAMILY = 'tasks-roots-infinite';
+const TASK_LIST_PAGE_SIZE = 50;
+
+function useTaskListStream(
+  slug: string,
+  family: string,
+  owner: string,
+  status: string,
+  assignedAgent: string | undefined,
+  enabled: boolean,
+): TaskListStream {
+  const qc = useQueryClient();
+  const params = assignedAgent ? { status, assigned_agent: assignedAgent } : { status };
+  const queryKey = [family, slug, params];
+  const keyHash = JSON.stringify(queryKey);
+  const active = enabled && !!slug;
+  const q = useInfiniteQuery<TasksListPage>({
+    queryKey,
+    initialPageParam: undefined,
+    queryFn: ({ pageParam }) =>
+      tasksApi.listTaskRoots(slug, {
+        status,
+        ...(assignedAgent ? { assigned_agent: assignedAgent } : {}),
+        limit: TASK_LIST_PAGE_SIZE,
+        ...(pageParam ? { before: pageParam as string } : {}),
+      }),
+    getNextPageParam: (last) => last.next_cursor ?? undefined,
+    enabled: active,
+  });
+  const latest = useRef(q);
+  latest.current = q;
+  // One accepted operation per owner: a second advance/refresh/retry while this
+  // owner's query is fetching (for any reason) is coalesced, never queued.
+  const operation = useRef<{ key: string } | null>(null);
+  const run = useCallback(async (work: () => Promise<unknown>) => {
+    if (!active) return;
+    if (operation.current?.key === keyHash) return;
+    if (qc.getQueryState(JSON.parse(keyHash) as unknown[])?.fetchStatus === 'fetching') return;
+    const token = { key: keyHash };
+    operation.current = token;
+    try {
+      await work();
+    } finally {
+      if (operation.current === token) operation.current = null;
+    }
+  }, [active, keyHash, qc]);
+  const fetchNextPage = useCallback((options?: { explicit?: boolean }) => run(async () => {
+    const current = latest.current;
+    if (!current.hasNextPage) return;
+    // A failed continuation resumes only on explicit Retry; a failed initial
+    // load or refresh must reconcile before its stale chain advances again.
+    if (current.isFetchNextPageError ? !options?.explicit : current.isError) return;
+    // An invalidation that lands while this continuation is in flight is
+    // otherwise cleared by the continuation's own success (for example after
+    // remounting onto the in-flight fetch). Finish, then reconcile this owner
+    // by its own key: the observer may have moved to another org/filter while
+    // awaiting, so re-mark exactly this key (refetching it only if active).
+    const hash = keyHash;
+    let invalidated = false;
+    const unsubscribe = qc.getQueryCache().subscribe((event) => {
+      if (event.type === 'updated' && event.action.type === 'invalidate' &&
+        JSON.stringify(event.query.queryKey) === hash) invalidated = true;
+    });
+    try {
+      await current.fetchNextPage({ cancelRefetch: false });
+    } finally {
+      unsubscribe();
+    }
+    if (invalidated) {
+      await qc.invalidateQueries({ queryKey: JSON.parse(hash) as unknown[], exact: true }, { cancelRefetch: false });
+    }
+  }), [keyHash, qc, run]);
+  const refresh = useCallback(() => run(() => latest.current.refetch({ cancelRefetch: false })), [run]);
+  const retry = useCallback(
+    () => (latest.current.isFetchNextPageError ? fetchNextPage({ explicit: true }) : refresh()),
+    [fetchNextPage, refresh],
+  );
+  const tasks = useMemo(() => {
+    const seen = new Set<string>();
+    return (q.data?.pages.flatMap((page) => page.tasks) ?? []).filter((task) => {
+      if (
+        task.status !== status ||
+        (assignedAgent && task.assigned_agent !== assignedAgent) ||
+        task.parent_task_id ||
+        seen.has(task.task_id)
+      ) return false;
+      seen.add(task.task_id);
+      return true;
+    });
+  }, [q.data, status, assignedAgent]);
+  const isInitialPending = active && q.isPending && !q.isError;
+  return useMemo(() => ({
+    owner,
+    status,
+    tasks,
+    isInitialPending,
+    isInitialError: q.isLoadingError,
+    isStale: q.isRefetchError,
+    isContinuationError: q.isFetchNextPageError,
+    isRefreshing: q.isRefetching,
+    isFetchingNextPage: q.isFetchingNextPage,
+    hasNextPage: !!q.hasNextPage,
+    fetchNextPage,
+    refresh,
+    retry,
+  }), [owner, status, tasks, isInitialPending, q.isLoadingError, q.isRefetchError, q.isFetchNextPageError,
+    q.isRefetching, q.isFetchingNextPage, q.hasNextPage, fetchNextPage, refresh, retry]);
+}
+
+function useTasksListStreams(
+  filters?: { status?: string; assigned_agent?: string },
+): TaskListStreams {
+  const slug = useRealOrgSlug();
+  const agent = filters?.assigned_agent || undefined;
+  const selected = (status: string) => !filters?.status || filters.status === status;
+  const ordinary = (status: string) => [slug, TASK_LIST_ORDINARY_FAMILY, status, status, agent, selected(status)] as const;
+  // Fixed, finite owners (hook order never varies); unselected owners are disabled.
+  const pending = useTaskListStream(...ordinary('pending'));
+  const inProgress = useTaskListStream(...ordinary('in_progress'));
+  const escalated = useTaskListStream(...ordinary('escalated'));
+  const completed = useTaskListStream(...ordinary('completed'));
+  const failed = useTaskListStream(...ordinary('failed'));
+  const cancelled = useTaskListStream(...ordinary('cancelled'));
+  const superseded = useTaskListStream(...ordinary('superseded'));
+  // Waiting on you keeps its established independent, filter-free traversal.
+  const attention = useTaskListStream(slug, TASK_LIST_ATTENTION_FAMILY, 'attention', 'escalated', undefined, true);
+  const status = filters?.status;
+  const ordinaryStreams = useMemo(
+    () => [pending, inProgress, escalated, completed, failed, cancelled, superseded]
+      .filter((stream) => !status || stream.status === status),
+    [pending, inProgress, escalated, completed, failed, cancelled, superseded, status],
+  );
+  return useMemo(() => ({ ordinary: ordinaryStreams, attention }), [ordinaryStreams, attention]);
+}
+
 function useTask(taskId: string | undefined) {
   const slug = useRealOrgSlug();
   return useQuery({
@@ -269,6 +411,7 @@ export const realTasksApi: TasksApi = {
   useTasksInfiniteList,
   useTasksRoots,
   useTasksRootsInfinite,
+  useTasksListStreams,
   useTask: useTask as TasksApi['useTask'],
   useTaskRecall: useTaskRecall as TasksApi['useTaskRecall'],
   useTaskTailSSE,

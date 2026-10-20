@@ -26,6 +26,9 @@ function task(id: string, status = 'pending', agent = 'agent-a'): TaskRecord {
     closed_at: null, cancelled_at: null, session_timeout_seconds: null, severity_rollup: status,
   } as TaskRecord;
 }
+// Ordinary Tasks owners, one per lifecycle status (hook/request order).
+const STATUSES = ['pending', 'in_progress', 'escalated', 'completed', 'failed', 'cancelled', 'superseded'];
+const ordinaryKey = (slug: string, params: { status: string; assigned_agent?: string }) => ['tasks-list-ordinary', slug, params];
 function client() {
   const qc = makeQueryClient();
   qc.setQueryDefaults(['orgs'], { staleTime: Infinity });
@@ -102,17 +105,18 @@ async function apply(status = '', agent = '') {
 describe('C13 actual Tasks route auth recovery', () => {
   test.each(['a', 'b', 'c', 'd'] as const)('C13-%s exact attempts and final recovery', async (variant) => {
     const qc = client();
-    qc.setQueryData(['tasks-roots-infinite', 'org-a', undefined], { pages: [{ tasks: [task('ALIEN')], next_cursor: null }], pageParams: [undefined] });
+    for (const status of STATUSES) qc.setQueryData(ordinaryKey('org-a', { status }), { pages: [{ tasks: [task('ALIEN', status)], next_cursor: null }], pageParams: [undefined] });
     if (variant === 'd') { __resetTokenCacheForTests(); sessionStorage.clear(); }
     let recovered = false; let bootstraps = 0;
-    const roots: { bearer: string | null; params: string; slug: string }[] = [];
+    const roots: { bearer: string | null; params: string; slug: string; status: string | null }[] = [];
     server.use(
       http.get('/api/v1/auth/bootstrap', () => {
         bootstraps++;
         return variant === 'd' && !recovered ? new HttpResponse(null, { status: 403 }) : HttpResponse.json({ token: 'synthetic-fresh' });
       }),
       http.get('/api/v1/orgs/:slug/tasks/roots', ({ request, params }) => {
-        roots.push({ bearer: request.headers.get('Authorization'), params: new URL(request.url).search, slug: String(params.slug) });
+        const search = new URL(request.url).searchParams;
+        roots.push({ bearer: request.headers.get('Authorization'), params: new URL(request.url).search, slug: String(params.slug), status: search.get('status') });
         if (!recovered && variant === 'a') return new HttpResponse(null, { status: 403 });
         if (!recovered && (variant === 'c' || (variant === 'b' && roots.length === 1))) return new HttpResponse(null, { status: 401 });
         return HttpResponse.json({ tasks: [task('B-1'), task('B-2')], next_cursor: null });
@@ -149,11 +153,14 @@ describe('C13 actual Tasks route auth recovery', () => {
       mount(qc, 'org-b');
       if (variant === 'b') {
         await screen.findByText('Brief B-2');
-        expect(roots.map((r) => r.bearer)).toEqual(['Bearer synthetic-stale', 'Bearer synthetic-fresh']);
-        expect(roots[0].params).toBe(roots[1].params);
+        // Seven owners start with the stale bearer; only the 401 owner repeats its exact request with the fresh one.
+        expect(roots.filter((r) => r.bearer === 'Bearer synthetic-stale')).toHaveLength(7);
+        const refreshed = roots.filter((r) => r.bearer === 'Bearer synthetic-fresh');
+        expect(refreshed).toHaveLength(1);
+        expect(refreshed[0].params).toBe(roots[0].params);
       } else {
         await screen.findByText('Could not load tasks'); noFalseSuccess(); expect(ids()).toEqual([]);
-        expect(roots).toHaveLength(variant === 'd' ? 0 : variant === 'c' ? 2 : 1);
+        expect(roots).toHaveLength(variant === 'd' ? 0 : variant === 'c' ? 14 : 7);
         expect(bootstraps).toBe(variant === 'a' ? 0 : 1);
         healthyShell();
         expect(taskHrefs()).toEqual([]);
@@ -166,8 +173,13 @@ describe('C13 actual Tasks route auth recovery', () => {
       expect(screen.getByText('Brief B-1')).toBeInTheDocument();
       expect(screen.getByText('Brief B-2')).toBeInTheDocument();
       expect(screen.getByLabelText('Current URL').textContent).toBe('/orgs/org-b/tasks');
-      expect(roots.every((r) => r.slug === 'org-b' && r.params === '?limit=50')).toBe(true);
-      expect(roots).toHaveLength(variant === 'c' ? 3 : variant === 'd' ? 1 : 2);
+      // Every request is one exact per-status first page: status, limit=50, no agent or cursor.
+      expect(roots.every((r) => {
+        const p = new URLSearchParams(r.params);
+        return r.slug === 'org-b' && STATUSES.includes(r.status ?? '') && p.get('limit') === '50' && [...p.keys()].sort().join() === 'limit,status';
+      })).toBe(true);
+      expect(new Set(roots.map((r) => r.status))).toEqual(new Set(STATUSES));
+      expect(roots).toHaveLength(variant === 'c' ? 21 : variant === 'd' ? 7 : variant === 'b' ? 8 : 14);
       expect(bootstraps).toBe(variant === 'a' ? 0 : variant === 'd' ? 2 : 1);
       if (variant !== 'a') expect(roots.at(-1)?.bearer).toBe('Bearer synthetic-fresh');
       expect(screen.queryByText('Could not load tasks')).not.toBeInTheDocument();
@@ -189,10 +201,15 @@ test('C06 real provider Apply/Clear, closed drafts, exact params and truthful mo
   await userEvent.click(screen.getByRole('button', { name: 'Filter' }));
   await userEvent.selectOptions(screen.getByLabelText('Task status'), 'completed');
   await userEvent.click(screen.getByRole('button', { name: 'Filter' }));
-  expect(ledger).toHaveLength(1); expect(ids()).toHaveLength(4);
+  // A closed draft fetches nothing: only the seven unfiltered per-status first pages exist.
+  expect(ledger).toHaveLength(7); expect(ids()).toHaveLength(4);
   await apply('pending'); await waitFor(() => expect(ids()).toEqual(['P-A', 'P-B']));
+  // status=pending is the same exact owner as the unfiltered pending traversal: its fresh cache is reused.
+  expect(ledger).toHaveLength(7);
   await apply('', 'agent-b'); await waitFor(() => expect(ids()).toEqual(['C-B', 'P-B']));
+  expect(ledger).toHaveLength(14);
   await apply('completed', 'agent-a'); await waitFor(() => expect(ids()).toEqual(['C-A']));
+  expect(ledger).toHaveLength(15);
   await userEvent.click(screen.getByRole('tab', { name: 'Agent' }));
   expect(ids()).toEqual(['C-A']); expect(screen.getByText(/Applied filters:/)).toHaveTextContent('completed');
   await apply('', 'missing-agent'); await screen.findByText('No tasks'); expect(ids()).toEqual([]);
@@ -201,10 +218,16 @@ test('C06 real provider Apply/Clear, closed drafts, exact params and truthful mo
   await waitFor(() => expect(ids()).toEqual(['C-A', 'C-B', 'P-A', 'P-B']));
   expect(screen.queryByText(/Applied filters:/)).not.toBeInTheDocument();
   expect(ledger.every((p) => p.get('limit') === '50' && !p.has('before'))).toBe(true);
-  expect(ledger.map((p) => [p.get('status'), p.get('assigned_agent')])).toEqual([[null, null], ['pending', null], [null, 'agent-b'], ['completed', 'agent-a'], [null, 'missing-agent']]);
-  // Clear reuses the still-fresh unfiltered cache; it never requests a fake null assignee.
-  const mock = mockTasksApi.useTasksRootsInfinite({ status: 'completed', assigned_agent: 'missing-agent' });
-  expect(mock.data?.pages.flatMap((p) => p.tasks)).toEqual([]);
+  // Unfiltered and agent-only contexts request every lifecycle status once; a status filter
+  // requests only that status. Clear reuses the still-fresh unfiltered caches; it never
+  // requests a fake null assignee.
+  const pairs = (agent: string | null) => STATUSES.map((status) => [status, agent]);
+  const sorted = (rows: (string | null)[][]) => rows.map((r) => JSON.stringify(r)).sort();
+  expect(ledger).toHaveLength(22);
+  expect(sorted(ledger.map((p) => [p.get('status'), p.get('assigned_agent')]))).toEqual(sorted([
+    ...pairs(null), ...pairs('agent-b'), ['completed', 'agent-a'], ...pairs('missing-agent')]));
+  const mock = mockTasksApi.useTasksListStreams({ status: 'completed', assigned_agent: 'missing-agent' });
+  expect(mock.ordinary.map((stream) => [stream.status, stream.tasks])).toEqual([['completed', []]]);
 });
 
 function gate() {
@@ -218,78 +241,141 @@ const combinations = (['status', 'agent', 'org'] as const).flatMap((switchBy) =>
 describe.each(['M', 'R'] as const)('C07-%s manual recovery ownership', (family) => {
   test.each(combinations)('$switchBy $mode oldFail=$oldFail finalFail=$finalFail', async ({ switchBy, mode, oldFail, finalFail }) => {
     const qc = client();
-    const params = (context: 'A' | 'B') => switchBy === 'status' ? { status: context === 'A' ? 'pending' : 'completed' }
-      : switchBy === 'agent' ? { assigned_agent: context === 'A' ? 'agent-a' : 'agent-b' } : undefined;
+    let observer: IntersectionObserverCallback | undefined;
+    vi.stubGlobal('IntersectionObserver', class { constructor(callback: IntersectionObserverCallback) { observer = callback; } observe() {} disconnect() {} unobserve() {} });
+    const trigger = () => act(async () => { observer?.([{ isIntersecting: true } as IntersectionObserverEntry], {} as IntersectionObserver); });
+    // Each context is ONE exact ordinary owner: status switches between two status owners,
+    // agent switches agent within the pending owner, org switches org with the pending owner.
+    const params = (context: 'A' | 'B'): { status: string; assigned_agent?: string } => switchBy === 'status' ? { status: context === 'A' ? 'pending' : 'completed' }
+      : switchBy === 'agent' ? { status: 'pending', assigned_agent: context === 'A' ? 'agent-a' : 'agent-b' } : { status: 'pending' };
     const slug = (context: 'A' | 'B') => switchBy === 'org' && context === 'B' ? 'org-b' : 'org-a';
-    const key = (context: 'A' | 'B') => ['tasks-roots-infinite', slug(context), params(context)];
+    // Owner queries are discovered from the real cache (by the fixture rows they hold,
+    // or as the only query fetching a held request), never by spelling the provider key.
+    type OwnerQuery = ReturnType<ReturnType<typeof qc.getQueryCache>['getAll']>[number];
+    const holding = (id: string) => qc.getQueryCache().getAll().filter((query) =>
+      (query.state.data as { pages?: { tasks: TaskRecord[] }[] } | undefined)?.pages?.some((page) => page.tasks.some((t) => t.task_id === id)));
+    const ownerOf = (id: string) => { const found = holding(id); expect(found, `one owner query holds ${id}`).toHaveLength(1); return found[0]; };
+    const fetching = () => qc.getQueryCache().findAll({ fetchStatus: 'fetching' });
+    // Initial: requests before the first filter (the unfiltered mount) fail and are outside
+    // both contexts. Stale: the warm phase serves exactly A's and B's owner requests from the
+    // first mount, so warm-up never depends on a remount refetching an earlier failed key.
+    let ready = mode === 'stale';
     const rows = (context: string, revision: string, page: number) => [task(`${context}-${revision}-${page}`, context === 'B' && switchBy === 'status' ? 'completed' : 'pending', context === 'B' && switchBy === 'agent' ? 'agent-b' : 'agent-a')];
-    if (mode === 'stale') for (const context of ['A', 'B'] as const) qc.setQueryData(key(context), {
-      pages: [{ tasks: rows(context, 'cached', 1), next_cursor: `${context}-cursor` }, { tasks: rows(context, 'cached', 2), next_cursor: null }], pageParams: [undefined, `${context}-cursor`],
-    });
     const old = gate(); const current = gate();
     let oldPageTwo = false;
-    type Phase = 'error' | 'old' | 'current';
-    const phase: Record<'A' | 'B', Phase> = { A: 'error', B: 'error' };
+    // 'warm' loads the stale-mode cached pages through the mounted route and its continuation.
+    type Phase = 'warm' | 'error' | 'old' | 'current';
+    const phase: Record<'A' | 'B', Phase> = mode === 'stale' ? { A: 'warm', B: 'warm' } : { A: 'error', B: 'error' };
     const ledger: { context: string; phase: Phase; before: string | null; status: string | null; agent: string | null; limit: string | null; settled: boolean }[] = [];
     server.use(http.get('/api/v1/orgs/:slug/tasks/roots', async ({ request, params: route }) => {
       const p = new URL(request.url).searchParams;
-      if (switchBy !== 'org' && !p.has('status') && !p.has('assigned_agent')) return HttpResponse.json({ tasks: [], next_cursor: null });
+      if (!ready) return new HttpResponse(null, { status: 500 });
       const context = (switchBy === 'org' ? route.slug === 'org-b' : switchBy === 'status' ? p.get('status') === 'completed' : p.get('assigned_agent') === 'agent-b') ? 'B' : 'A';
+      const exact = (c: 'A' | 'B') => route.slug === slug(c) && p.get('status') === params(c).status && p.get('assigned_agent') === (params(c).assigned_agent ?? null);
+      if (phase[context] === 'warm' && !exact(context)) return HttpResponse.json({ tasks: [], next_cursor: null });
       // This provider does not consume AbortSignal. A cancelled stale refresh
       // can finish its already-started page chain after its query promise settles.
       // The old gate is released before the current first page, so its page two
-      // is distinguishable without relabeling it as a current attempt.
-      const oldContinuation = family === 'R' && context === 'A' && mode === 'stale' && !oldFail && p.has('before') && !oldPageTwo;
+      // is distinguishable without relabeling it as a current attempt (warm-up
+      // continuations happen before A's current phase).
+      const oldContinuation = family === 'R' && context === 'A' && mode === 'stale' && !oldFail && phase.A === 'current' && p.has('before') && !oldPageTwo;
       if (oldContinuation) oldPageTwo = true;
       const state = oldContinuation ? 'old' : phase[context];
       const receipt = { context, phase: state, before: p.get('before'), status: p.get('status'), agent: p.get('assigned_agent'), limit: p.get('limit'), settled: false }; ledger.push(receipt);
       if (state === 'old') await old.promise;
       if (state === 'current') await current.promise;
       receipt.settled = true;
-      if (state === 'error' || (state === 'old' ? oldFail : finalFail)) return new HttpResponse(null, { status: 500 });
-      return HttpResponse.json({ tasks: rows(context, state, p.has('before') ? 2 : 1), next_cursor: mode === 'stale' && !p.has('before') ? `${context}-cursor` : null });
+      if (state === 'error' || (state === 'old' ? oldFail : state === 'current' && finalFail)) return new HttpResponse(null, { status: 500 });
+      return HttpResponse.json({ tasks: rows(context, state === 'warm' ? 'cached' : state, p.has('before') ? 2 : 1), next_cursor: mode === 'stale' && !p.has('before') ? `${context}-cursor` : null });
     }));
     async function switchTo(context: 'A' | 'B') {
       if (switchBy === 'org') await userEvent.click(screen.getByRole('link', { name: `Go ${context}` }));
-      else await apply(params(context)?.status ?? '', params(context)?.assigned_agent ?? '');
+      else await apply(params(context).status, params(context).assigned_agent ?? '');
     }
+    async function warm(context: 'A' | 'B') {
+      await waitFor(() => expect(ids()).toEqual([`${context}-cached-1`]));
+      await trigger(); await screen.findByText(`Brief ${context}-cached-2`);
+      expect(ids()).toEqual([`${context}-cached-1`, `${context}-cached-2`]);
+    }
+    const cachedIds = (context: 'A' | 'B') => mode === 'initial' ? [] : [`${context}-cached-1`, `${context}-cached-2`];
     async function establishError(context: 'A' | 'B') {
-      await act(() => qc.invalidateQueries({ queryKey: key(context), exact: true }));
+      // Initial: the context's own mounted load already failed. Stale: refresh the
+      // discovered owner of its cached rows and let that refresh fail.
+      if (mode === 'stale') await act(() => qc.invalidateQueries({ queryKey: ownerOf(`${context}-cached-1`).queryKey, exact: true }));
       await screen.findByText(mode === 'initial' ? 'Could not load tasks' : 'Tasks may be out of date');
+      await waitFor(() => expect(fetching()).toEqual(family === 'M' && context === 'B' ? [oldQuery] : []));
     }
+    // A visible context assertion: only this context's own rows, and no Retry
+    // pending on another context's operation (initial: its own failed load).
+    async function ownContext(context: 'A' | 'B') {
+      const visible = () => ({ rows: ids(), initialError: !!screen.queryByText('Could not load tasks'),
+        retrying: !!screen.queryByRole('button', { name: 'Retrying…' }), url: screen.getByLabelText('Current URL').textContent });
+      await waitFor(() => expect(visible()).toEqual({ rows: cachedIds(context), initialError: mode === 'initial', retrying: false, url: `/orgs/${slug(context)}/tasks` }));
+      for (const retry of screen.queryAllByRole('button', { name: 'Retry' })) expect(retry).toBeEnabled();
+    }
+    let oldQuery: OwnerQuery | undefined;
     try {
       mount(qc);
-      if (switchBy !== 'org') await switchTo('A');
+      await waitFor(() => expect(qc.isFetching()).toBe(0));
+      ready = true;
+      await apply(params('A').status, params('A').assigned_agent ?? '');
+      if (mode === 'stale') {
+        await warm('A'); await switchTo('B'); await warm('B'); await switchTo('A');
+        await waitFor(() => expect(ids()).toEqual(cachedIds('A')));
+        await waitFor(() => expect(qc.isFetching()).toBe(0));
+        expect(ownerOf('A-cached-1')).not.toBe(ownerOf('B-cached-1'));
+        phase.A = 'error'; phase.B = 'error';
+      }
       await establishError('A');
       phase.A = 'old'; await keyboardRetry();
       await waitFor(() => expect(ledger.some((r) => r.phase === 'old')).toBe(true));
+      // The old operation is the one query fetching A's held request.
+      const oldFetching = fetching(); expect(oldFetching).toHaveLength(1); oldQuery = oldFetching[0];
+      if (mode === 'stale') expect(oldQuery).toBe(ownerOf('A-cached-1'));
       await switchTo('B');
+      await ownContext('B');
       const target = family === 'M' ? 'B' : 'A';
       if (family === 'R') {
         // Cancellation settles the old real query promise now, not at late network release.
-        await act(() => qc.cancelQueries({ queryKey: key('A'), exact: true }));
-        expect(qc.getQueryState(key('A'))?.fetchStatus).toBe('idle');
+        expect(ledger.some((r) => r.phase === 'old' && !r.settled)).toBe(true);
+        await act(() => qc.cancelQueries({ queryKey: oldQuery!.queryKey, exact: true }));
+        expect(oldQuery.state.fetchStatus).toBe('idle');
+        expect(ledger.some((r) => r.phase === 'old' && !r.settled), 'old network response is still unreleased').toBe(true);
         phase.A = 'error'; await switchTo('A');
+        await ownContext('A');
       }
       await establishError(target);
       phase[target] = 'current'; await keyboardRetry();
       await waitFor(() => expect(ledger.some((r) => r.phase === 'current')).toBe(true));
+      const currentFetching = fetching().filter((query) => family === 'R' || query !== oldQuery);
+      expect(currentFetching).toHaveLength(1);
+      const currentQuery = currentFetching[0];
+      // M: the current owner is a different query; R: the return reuses A's own query.
+      if (family === 'M') expect(currentQuery).not.toBe(oldQuery); else expect(currentQuery).toBe(oldQuery);
+      if (mode === 'stale') expect(currentQuery).toBe(ownerOf(`${target}-cached-1`));
       const pending = () => mode === 'initial' ? expect(screen.getByRole('button', { name: 'Retrying…' })).toBeInTheDocument()
         : expect(screen.getByRole('button', { name: 'Retry' })).toBeDisabled();
       pending();
       old.release();
       await waitFor(() => expect(ledger.filter((r) => r.phase === 'old').every((r) => r.settled)).toBe(true));
       if (family === 'R' && mode === 'stale' && !oldFail) await waitFor(() => expect(oldPageTwo).toBe(true));
-      if (family === 'M') await waitFor(() => expect(qc.getQueryState(key('A'))?.fetchStatus).toBe('idle'));
-      pending(); expect(qc.getQueryState(key(target))?.fetchStatus).toBe('fetching');
-      expect(ids()).toEqual(mode === 'initial' ? [] : [`${target}-cached-1`, `${target}-cached-2`]);
+      if (family === 'M') {
+        // M: the old operation settles late, into its own query only.
+        await waitFor(() => expect(oldQuery!.state.fetchStatus).toBe('idle'));
+        if (oldFail) expect(oldQuery.state.error).not.toBeNull(); else expect(ownerOf('A-old-1')).toBe(oldQuery);
+      } else {
+        // R: the cancelled operation's late network response is not admitted anywhere.
+        expect(holding('A-old-1')).toEqual([]);
+      }
+      pending(); expect(currentQuery.state.fetchStatus).toBe('fetching');
+      expect(ids()).toEqual(cachedIds(target));
       current.release();
-      await waitFor(() => expect(qc.getQueryState(key(target))?.fetchStatus).toBe('idle'));
+      await waitFor(() => expect(currentQuery.state.fetchStatus).toBe('idle'));
       await waitFor(() => expect(screen.queryByRole('button', { name: 'Retrying…' })).not.toBeInTheDocument());
       if (finalFail) {
         await screen.findByText(mode === 'initial' ? 'Could not load tasks' : 'Tasks may be out of date'); noFalseSuccess();
         expect(screen.getByRole('button', { name: 'Retry' })).toBeEnabled();
-        expect(ids()).toEqual(mode === 'initial' ? [] : [`${target}-cached-1`, `${target}-cached-2`]);
+        expect(ids()).toEqual(cachedIds(target));
       } else {
         await waitFor(() => expect(ids()).toEqual(mode === 'initial' ? [`${target}-current-1`] : [`${target}-current-1`, `${target}-current-2`]));
         expect(screen.queryByText('Tasks may be out of date')).not.toBeInTheDocument();
@@ -297,7 +383,7 @@ describe.each(['M', 'R'] as const)('C07-%s manual recovery ownership', (family) 
       }
       const currentRequests = ledger.filter((r) => r.phase === 'current');
       expect(currentRequests.map((r) => r.before)).toEqual(mode === 'stale' && !finalFail ? [null, `${target}-cursor`] : [null]);
-      expect(currentRequests.every((r) => r.context === target && r.limit === '50' && r.status === (params(target)?.status ?? null) && r.agent === (params(target)?.assigned_agent ?? null))).toBe(true);
+      expect(currentRequests.every((r) => r.context === target && r.limit === '50' && r.status === params(target).status && r.agent === (params(target).assigned_agent ?? null))).toBe(true);
       expect(screen.getByLabelText('Current URL')).toHaveTextContent(`/orgs/${slug(target)}/tasks`);
     } finally {
       old.release(); current.release();
@@ -392,12 +478,15 @@ test.each([false, true])('C10/C11 duplicate sentinel, repeated retry and termina
   const qc = client(); const held = gate(); let pageAttempts = 0;
   const first = Array.from({ length: 50 }, (_, i) => task(`P-${String(i).padStart(2, '0')}`));
   const ledger: string[] = [];
+  // Only the pending owner has a second page; the six sibling owners are exhausted-empty.
   server.use(http.get('/api/v1/orgs/org-a/tasks/roots', async ({ request }) => {
-    const before = new URL(request.url).searchParams.get('before'); ledger.push(before ?? 'first');
+    const p = new URL(request.url).searchParams; const before = p.get('before');
+    ledger.push(`${p.get('status')}:${before ?? 'first'}`);
+    if (p.get('status') !== 'pending') return HttpResponse.json({ tasks: [], next_cursor: null });
     if (!before) return HttpResponse.json({ tasks: first, next_cursor: 'next' });
     const attempt = ++pageAttempts;
     if (attempt === 1) await held.promise;
-    return attempt < 3 ? new HttpResponse(null, { status: 500 }) : HttpResponse.json({ tasks: emptyTerminal ? [] : [task('LAST', 'completed')], next_cursor: null });
+    return attempt < 3 ? new HttpResponse(null, { status: 500 }) : HttpResponse.json({ tasks: emptyTerminal ? [] : [task('LAST', 'pending')], next_cursor: null });
   }));
   const trigger = () => act(async () => { intersect?.([{ isIntersecting: true } as IntersectionObserverEntry], {} as IntersectionObserver); });
   try {
@@ -406,15 +495,18 @@ test.each([false, true])('C10/C11 duplicate sentinel, repeated retry and termina
     expect(ids()).toHaveLength(50); held.release();
     await screen.findByText('Could not load more tasks');
     await trigger(); expect(pageAttempts).toBe(1);
-    const retryPage = () => userEvent.click(screen.getByRole('button', { name: 'Retry loading more tasks' }));
+    // Unfiltered: seven owners, so the failed owner's Retry names its status.
+    const retryName = 'Retry loading Pending tasks';
+    const retryPage = () => userEvent.click(screen.getByRole('button', { name: retryName }));
     await retryPage(); await waitFor(() => expect(pageAttempts).toBe(2));
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Retry loading more tasks' })).toBeEnabled());
+    await waitFor(() => expect(screen.getByRole('button', { name: retryName })).toBeEnabled());
     expect(ids()).toHaveLength(50); noFalseSuccess();
     await retryPage(); await screen.findByText('End of list');
     expect(ids()).toEqual([...(emptyTerminal ? [] : ['LAST']), ...first.map((t) => t.task_id)]);
     await trigger();
     expect(screen.queryByText('Could not load more tasks')).not.toBeInTheDocument();
-    expect(ledger).toEqual(['first', 'next', 'next', 'next']);
+    expect(ledger.filter((entry) => entry.startsWith('pending:'))).toEqual(['pending:first', 'pending:next', 'pending:next', 'pending:next']);
+    expect(ledger.filter((entry) => !entry.startsWith('pending:')).sort()).toEqual(STATUSES.slice(1).map((status) => `${status}:first`).sort());
   } finally { held.release(); await qc.cancelQueries(); }
 });
 
@@ -424,30 +516,36 @@ describe('C07-P page error and pending ownership', () => {
     const qc = client(); const old = gate(); const current = gate();
     let observer: IntersectionObserverCallback | undefined;
     vi.stubGlobal('IntersectionObserver', class { constructor(callback: IntersectionObserverCallback) { observer = callback; } observe() {} disconnect() {} });
-    const params = (c: string) => switchBy === 'status' ? { status: c === 'A' ? 'pending' : 'completed' } : switchBy === 'agent' ? { assigned_agent: c === 'A' ? 'agent-a' : 'agent-b' } : undefined;
+    // Each context is ONE exact ordinary owner (see C07-M/R).
+    const params = (c: string): { status: string; assigned_agent?: string } => switchBy === 'status' ? { status: c === 'A' ? 'pending' : 'completed' }
+      : switchBy === 'agent' ? { status: 'pending', assigned_agent: c === 'A' ? 'agent-a' : 'agent-b' } : { status: 'pending' };
     const slug = (c: string) => switchBy === 'org' && c === 'B' ? 'org-b' : 'org-a';
-    const key = (c: string) => ['tasks-roots-infinite', slug(c), params(c)];
+    const key = (c: string) => ordinaryKey(slug(c), params(c));
+    let ready = false;
+    // Rows match their owner's exact status/agent filter, so the owner keeps them.
+    const row = (c: string, label: string) => task(`${c}-${label}`, params(c).status, params(c).assigned_agent ?? 'agent-a');
     let phase: 'old' | 'current' | 'recovery' = 'old';
     const ledger: { context: string; before: string | null; phase: string; settled: boolean }[] = [];
     server.use(http.get('/api/v1/orgs/:slug/tasks/roots', async ({ request, params: route }) => {
       const p = new URL(request.url).searchParams;
-      if (switchBy !== 'org' && !p.has('status') && !p.has('assigned_agent')) return HttpResponse.json({ tasks: [], next_cursor: null });
+      if (!ready) return new HttpResponse(null, { status: 500 });
       const c = (switchBy === 'org' ? route.slug === 'org-b' : switchBy === 'status' ? p.get('status') === 'completed' : p.get('assigned_agent') === 'agent-b') ? 'B' : 'A';
       const state = phase; const before = p.get('before'); const receipt = { context: c, before, phase: state, settled: false }; ledger.push(receipt);
-      if (!before) { receipt.settled = true; return HttpResponse.json({ tasks: [task(`${c}-first`)], next_cursor: `${c}-cursor` }); }
+      if (!before) { receipt.settled = true; return HttpResponse.json({ tasks: [row(c, 'first')], next_cursor: `${c}-cursor` }); }
       if (state === 'old' && oldResult !== 'failed') await old.promise;
       if (state === 'current') await current.promise;
       receipt.settled = true;
       if (state === 'current' || (state === 'old' && oldResult !== 'held-success')) return new HttpResponse(null, { status: 500 });
-      return HttpResponse.json({ tasks: [task(`${c}-${state}`)], next_cursor: null });
+      return HttpResponse.json({ tasks: [row(c, state)], next_cursor: null });
     }));
     const trigger = () => act(async () => { observer?.([{ isIntersecting: true } as IntersectionObserverEntry], {} as IntersectionObserver); });
     const switchTo = async (c: 'A' | 'B') => {
       if (switchBy === 'org') await userEvent.click(screen.getByRole('link', { name: `Go ${c}` }));
-      else await apply(params(c)?.status ?? '', params(c)?.assigned_agent ?? '');
+      else await apply(params(c).status, params(c).assigned_agent ?? '');
     };
     try {
-      mount(qc); if (switchBy !== 'org') await switchTo('A'); await screen.findByText('Brief A-first');
+      mount(qc); await waitFor(() => expect(qc.isFetching()).toBe(0)); ready = true;
+      await apply(params('A').status, params('A').assigned_agent ?? ''); await screen.findByText('Brief A-first');
       await trigger(); await waitFor(() => expect(ledger.some((r) => r.before === 'A-cursor')).toBe(true));
       if (oldResult === 'failed') await screen.findByText('Could not load more tasks');
       await switchTo('B'); await screen.findByText('Brief B-first');
@@ -542,16 +640,24 @@ test('C12 Tasks shell preserves ROOT without assistant launcher or dock', async 
   expect(ids()).toEqual(['ROOT']);
 });
 
-test('C02 legacy blocked displays its exact status and full long identities, without a filter option', async () => {
+test('C02 full long identities stay accessible; legacy non-lifecycle and child rows are not root rows, without a filter option', async () => {
   const agent = 'agent-with-a-long-exact-runtime-identity';
   const thread = 'THR-WITH-A-LONG-EXACT-RUNTIME-IDENTITY';
-  const record = { ...task('TASK-WITH-A-LONG-EXACT-RUNTIME-IDENTITY', 'blocked', agent), dispatched_from_thread_id: thread,
+  const record = { ...task('TASK-WITH-A-LONG-EXACT-RUNTIME-IDENTITY', 'in_progress', agent), dispatched_from_thread_id: thread,
     brief: `\n# ${'UnbrokenHeadline'.repeat(20)}\nFull second line remains accessible`,
   };
-  server.use(http.get('/api/v1/orgs/org-a/tasks/roots', () => HttpResponse.json({ tasks: [record], next_cursor: null })));
+  // Every owner receives the same over-broad payload: a legacy `blocked` root (no lifecycle
+  // partition owns it) and a child row. Only the exact in_progress root is presented.
+  const legacy = task('LEGACY-BLOCKED-ROOT', 'blocked', agent);
+  const child = { ...task('CHILD-OF-ROOT', 'in_progress', agent), parent_task_id: record.task_id };
+  server.use(http.get('/api/v1/orgs/org-a/tasks/roots', () => HttpResponse.json({ tasks: [record, legacy, child], next_cursor: null })));
   mount(client()); await screen.findByText('End of list');
+  expect(ids()).toEqual([record.task_id]);
+  expect(screen.queryByText('Brief LEGACY-BLOCKED-ROOT')).not.toBeInTheDocument();
+  expect(screen.queryByText('Brief CHILD-OF-ROOT')).not.toBeInTheDocument();
+  expect(screen.queryByText('blocked')).not.toBeInTheDocument();
   const row = document.querySelector('[data-tasks-responsive-list] li > div > a')! as HTMLElement;
-  expect(within(row).getByText('blocked')).toHaveClass('tasks-status');
+  expect(within(row).getByText('in_progress')).toHaveClass('tasks-status');
   const headline = within(row).getByText('UnbrokenHeadline'.repeat(20));
   expect(headline).toHaveClass('truncate');
   expect(headline).toHaveAttribute('title', record.brief);

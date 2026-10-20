@@ -11,6 +11,9 @@
  */
 import { useData } from '@/design-system/providers/DataContext';
 
+export { TASK_LIST_STATUSES } from '@/design-system/providers/DataContext';
+export type { TaskListStream, TaskListStreams } from '@/design-system/providers/DataContext';
+
 /**
  * Provider-aware route builder for the tasks feature. Compositions
  * use this instead of hardcoding `/orgs/${slug}/tasks/...` paths,
@@ -37,6 +40,10 @@ export const useTasksRoots: ReturnType<typeof useData>['tasks']['useTasksRoots']
 export const useTasksRootsInfinite: ReturnType<typeof useData>['tasks']['useTasksRootsInfinite'] = (
   params,
 ) => useData().tasks.useTasksRootsInfinite(params);
+
+export const useTasksListStreams: ReturnType<typeof useData>['tasks']['useTasksListStreams'] = (
+  filters,
+) => useData().tasks.useTasksListStreams(filters);
 
 export const useTask: ReturnType<typeof useData>['tasks']['useTask'] = (
   taskId,

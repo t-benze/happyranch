@@ -21,7 +21,6 @@ import { renderThreadErrorDetail, type ThreadErrorDetail } from '@/lib/threadErr
  * right-aligned group-by segmented control.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useQueryClient } from '@tanstack/react-query';
 import { AlertCircle, Filter, RefreshCw } from 'lucide-react';
 import { Tabs, TabsList, TabsTrigger } from '@/design-system/primitives/Tabs';
 import { Button } from '@/design-system/primitives/Button';
@@ -32,7 +31,7 @@ import {
   TaskListRow,
   severityRollupStatus,
 } from './TaskListRow';
-import { useTasksRootsInfinite, useTasksRoutes } from '@/hooks/tasks';
+import { TASK_LIST_STATUSES, useTasksListStreams, useTasksRoutes, type TaskListStream } from '@/hooks/tasks';
 import type { TaskRecord } from '@/lib/api/types';
 import { useOrgSlugOptional } from '@/lib/orgSlug';
 import { useTranslation } from '@/hooks/i18n';
@@ -178,6 +177,43 @@ const GROUP_ORDER_STATUS: Record<string, number> = {
 
 type TaskFilters = { status?: string; assigned_agent?: string };
 
+const PARTITION_PRIORITY = new Map<string, number>(TASK_LIST_STATUSES.map((status, index) => [status, index]));
+
+function timeOf(value: string): number {
+  const time = Date.parse(value);
+  return Number.isNaN(time) ? Number.NEGATIVE_INFINITY : time;
+}
+
+/**
+ * One deterministic ordinary projection per root id across the loaded owners.
+ * Each owner already holds only rows matching its exact status/agent filter.
+ * The greatest updated_at wins; equal timestamps use the fixed partition
+ * order, then the owner's own page position. This is a loaded-projection rule,
+ * independent of which owner's response arrived first, not a server snapshot.
+ * The result is merged by created_at descending, preserving page order on ties.
+ */
+function projectOrdinaryTasks(owners: TaskListStream[]): TaskRecord[] {
+  const chosen = new Map<string, { task: TaskRecord; rank: number }>();
+  for (const owner of owners) {
+    const rank = PARTITION_PRIORITY.get(owner.status) ?? TASK_LIST_STATUSES.length;
+    for (const task of owner.tasks) {
+      const previous = chosen.get(task.task_id);
+      if (previous) {
+        const time = timeOf(task.updated_at);
+        const previousTime = timeOf(previous.task.updated_at);
+        if (time < previousTime || (time === previousTime && rank >= previous.rank)) continue;
+      }
+      chosen.set(task.task_id, { task, rank });
+    }
+  }
+  // Stable: equal created_at keeps partition order, then each owner's own
+  // server page order (the server's id tie-break is not reconstructed here).
+  return [...chosen.values()].map(({ task }) => task).sort((a, b) => {
+    const created = timeOf(b.created_at) - timeOf(a.created_at);
+    return Number.isNaN(created) ? 0 : created;
+  });
+}
+
 export function TasksPage(): JSX.Element {
   const [groupBy, setGroupBy] = useState<GroupBy>('status');
   const [filters, setFilters] = useState<TaskFilters>();
@@ -207,45 +243,26 @@ function TasksList({ groupBy, setGroupBy, filters, setFilters }: {
   const abandoned = useRef(false);
   useEffect(() => { abandoned.current = false; return () => { abandoned.current = true; }; }, []);
   const [isRetrying, setIsRetrying] = useState(false);
-  const [nextPageError, setNextPageError] = useState(false);
-  const [attentionNextPageError, setAttentionNextPageError] = useState(false);
-  const retryOwner = useRef(false);
-  const pageOwner = useRef(false);
-  const attentionPageOwner = useRef(false);
   const routes = useTasksRoutes();
   const orgSlug = useOrgSlugOptional();
-  const queryClient = useQueryClient();
-  const tasksQuery = useTasksRootsInfinite(filters);
+  // One owner per selected ordinary status plus the independent attention
+  // traversal. Each owner keeps its own cursor, errors and Retry; the page owns
+  // only presentation, grouping and scroll demand.
+  const streams = useTasksListStreams(filters);
+  const owners = streams.ordinary;
+  const attention = streams.attention;
+
+  const allTasks = useMemo(() => projectOrdinaryTasks(owners), [owners]);
   // This is deliberately not derived from the ordinary pages. The roots
   // endpoint has no total, so its independent status traversal is the only
   // truthful source for a Waiting-on-you presentation.
-  const attentionParams = { status: 'escalated' };
-  const attentionQuery = useTasksRootsInfinite(attentionParams);
-
-  const allTasks = useMemo(
-    () => tasksQuery.data?.pages.flatMap((p) => p.tasks) ?? [],
-    [tasksQuery.data],
-  );
-  const attentionTasks = useMemo(
-    () => {
-      const seen = new Set<string>();
-      return (attentionQuery.data?.pages.flatMap((p) => p.tasks) ?? [])
-        // Keep the presentation rooted in the exact status contract even when
-        // a test/double or stale intermediary returns an over-broad payload.
-        .filter((task) => {
-          if (task.status !== 'escalated' || seen.has(task.task_id)) return false;
-          seen.add(task.task_id);
-          return true;
-        });
-    },
-    [attentionQuery.data],
-  );
+  const attentionTasks = attention.tasks;
   const attentionTaskIds = useMemo(
     () => new Set(attentionTasks.map((task) => task.task_id)),
     [attentionTasks],
   );
-  // A waiting root owns its presentation. If it also occurs in the ordinary
-  // chronological traversal, keep one row rather than duplicating it.
+  // A waiting root owns its presentation. If it also occurs in an ordinary
+  // traversal, keep one row rather than duplicating it.
   const ordinaryTasks = useMemo(
     () => allTasks.filter((task) => !attentionTaskIds.has(task.task_id)),
     [allTasks, attentionTaskIds],
@@ -296,101 +313,118 @@ function TasksList({ groupBy, setGroupBy, filters, setFilters }: {
     return entries;
   }, [ordinaryTasks, groupBy]);
 
-  // Sentinel observer for infinite scroll.
+  const hasUsableTasks = allTasks.length > 0;
+  const pendingOwners = owners.filter((stream) => stream.isInitialPending);
+  const initialErrorOwners = owners.filter((stream) => stream.isInitialError);
+  const allInitialFailed = owners.length > 0 && initialErrorOwners.length === owners.length;
+  const ordinaryExhausted = owners.every((stream) =>
+    !stream.isInitialPending && !stream.isInitialError && !stream.isStale &&
+    !stream.isContinuationError && !stream.hasNextPage);
+  const multipleOwners = owners.length > 1;
+
+  // Sentinel observer for infinite scroll. Each demand asks every owner that
+  // can advance for at most one page with its own cursor; each owner refuses
+  // when exhausted, failed or already fetching, so siblings never re-advance.
   const sentinelRef = useRef<HTMLDivElement | null>(null);
-  const { fetchNextPage, hasNextPage, isFetchingNextPage } = tasksQuery;
-  const loadNextPage = useCallback(async () => {
-    if (pageOwner.current || retryOwner.current) return;
-    pageOwner.current = true;
-    setNextPageError(false);
-    try {
-      const result = await fetchNextPage();
-      const failed =
-        typeof result === 'object' &&
-        result !== null &&
-        'isFetchNextPageError' in result &&
-        result.isFetchNextPageError === true;
-      setNextPageError(failed);
-    } catch {
-      setNextPageError(true);
-    } finally {
-      pageOwner.current = false;
-    }
-  }, [fetchNextPage]);
+  const ownersRef = useRef(owners);
+  ownersRef.current = owners;
+  const anyFetchingNextPage = owners.some((stream) => stream.isFetchingNextPage);
+  const canAdvance = owners.some((stream) =>
+    stream.hasNextPage && !stream.isContinuationError && !stream.isStale &&
+    !stream.isInitialError && !stream.isRefreshing);
+  const loadNextPages = useCallback(() => {
+    for (const stream of ownersRef.current) void stream.fetchNextPage();
+  }, []);
   useEffect(() => {
     const node = sentinelRef.current;
-    if (!node || !hasNextPage || nextPageError || isRetrying) return;
+    if (!node || !canAdvance || anyFetchingNextPage || isRetrying) return;
     let active = true;
     const obs = new IntersectionObserver(
       (entries) => {
-        if (active && entries[0]?.isIntersecting && !isFetchingNextPage) {
-          void loadNextPage();
-        }
+        if (active && entries[0]?.isIntersecting) loadNextPages();
       },
       { rootMargin: '200px' },
     );
     obs.observe(node);
     return () => { active = false; obs.disconnect(); };
-  }, [hasNextPage, isFetchingNextPage, loadNextPage, nextPageError, isRetrying]);
+  }, [canAdvance, anyFetchingNextPage, isRetrying, loadNextPages]);
 
-  const isLoading = tasksQuery.isLoading;
-  const hasUsableTasks = allTasks.length > 0;
-  const retry = async () => {
-    if (retryOwner.current || pageOwner.current) return;
-    retryOwner.current = true;
+  const retryAllFailed = async () => {
+    if (isRetrying) return;
+    const failed = ownersRef.current.filter((stream) => stream.isInitialError);
+    if (failed.length === 0) return;
     setIsRetrying(true);
     try {
-      await queryClient.refetchQueries({
-        queryKey: ['tasks-roots-infinite', orgSlug, filters],
-        exact: true,
-      });
+      await Promise.all(failed.map((stream) => stream.retry()));
     } finally {
-      retryOwner.current = false;
-      setIsRetrying(false);
+      if (!abandoned.current) setIsRetrying(false);
     }
   };
-  const retryAttention = async () => {
-    setAttentionNextPageError(false);
-    await queryClient.refetchQueries({
-      queryKey: ['tasks-roots-infinite', orgSlug, attentionParams],
-      exact: true,
-    });
-  };
-  const loadNextAttentionPage = async () => {
-    if (attentionPageOwner.current) return;
-    attentionPageOwner.current = true;
-    setAttentionNextPageError(false);
-    try {
-      const result = await attentionQuery.fetchNextPage();
-      const failed =
-        typeof result === 'object' &&
-        result !== null &&
-        'isFetchNextPageError' in result &&
-        result.isFetchNextPageError === true;
-      setAttentionNextPageError(failed);
-    } catch {
-      setAttentionNextPageError(true);
-    } finally {
-      attentionPageOwner.current = false;
-    }
-  };
-  const attentionCount = attentionQuery.hasNextPage
+  const attentionCount = attention.hasNextPage
     ? t('tasks.attention.countMore')
     : t('tasks.attention.count', { count: attentionTasks.length });
 
   // Presentation split. The escalated attention traversal is independent of the
-  // ordinary roots page, so its group is decided on its own data: when it has
+  // ordinary owners, so its group is decided on its own data: when it has
   // rows it renders FIRST inside the shared list shell (identical markup to the
   // ordinary groups); when it is empty/loading/errored it renders no group.
   // The ordinary initial loading/error/empty states stay truthful even when
   // the escalated group is present, and never hide the shared list shell.
-  const attentionLoading = attentionQuery.isLoading;
-  const attentionInitialError = attentionQuery.isError && attentionTasks.length === 0;
+  const attentionLoading = attention.isInitialPending;
+  const attentionFailed = attention.isInitialError || attention.isStale || attention.isContinuationError;
+  const attentionInitialError = attentionFailed && attentionTasks.length === 0;
   const showEscalatedGroup = attentionTasks.length > 0;
-  const ordinaryLoading = isLoading && !isRetrying;
-  const ordinaryInitialError = (tasksQuery.isError || isRetrying) && !hasUsableTasks;
-  const showOrdinaryGroups = !ordinaryLoading && !ordinaryInitialError && allTasks.length > 0;
+  const ordinaryLoading = !hasUsableTasks && pendingOwners.length > 0 && !isRetrying;
+  const ordinaryInitialError = !hasUsableTasks && (allInitialFailed || isRetrying);
+  const showOrdinaryGroups = hasUsableTasks;
   const showListShell = showEscalatedGroup || showOrdinaryGroups;
+  // Global empty / end-of-list claims need every relevant owner — the selected
+  // ordinary owners AND the attention traversal — to have succeeded and been
+  // exhausted, with no visible attention rows.
+  const allOwnersExhausted = ordinaryExhausted && !attentionLoading && !attentionFailed &&
+    !attention.hasNextPage && attentionTasks.length === 0;
+  const globalEmpty = allOwnersExhausted && !hasUsableTasks;
+  const globalEnd = allOwnersExhausted && hasUsableTasks;
+  const statusLabel = (status: string) => groupLabel(status, 'status', t);
+  // Per-owner recovery: each failed owner stays visibly incomplete with its own
+  // Retry, while successful siblings keep their rows.
+  const ownerAlert = (stream: TaskListStream, kind: 'initial' | 'stale' | 'more') => (
+    <div key={`${kind}-${stream.owner}`} role="alert"
+      className="border-feedback-danger bg-danger-soft flex flex-wrap items-center justify-between gap-3 rounded-lg border p-4">
+      <div className="flex min-w-0 items-center gap-2">
+        <AlertCircle className="text-feedback-danger shrink-0" size={18} aria-hidden />
+        <div className="min-w-0">
+          <p className="text-text-primary text-sm font-medium">
+            {t(kind === 'initial' ? 'tasks.list.errorTitle' : kind === 'stale' ? 'tasks.list.staleTitle' : 'tasks.list.moreErrorTitle')}
+          </p>
+          {multipleOwners && (
+            <p className="text-text-secondary text-xs">{t('tasks.list.ownerScope', { status: statusLabel(stream.status) })}</p>
+          )}
+          <p className="text-text-secondary text-xs">
+            {t(kind === 'initial' ? 'tasks.list.errorBody' : kind === 'stale' ? 'tasks.list.staleBody' : 'tasks.list.moreErrorBody')}
+          </p>
+        </div>
+      </div>
+      <Button
+        size="sm"
+        variant="outline"
+        className="h-auto max-w-full whitespace-normal break-words"
+        aria-label={multipleOwners
+          ? t('tasks.list.retryStatus', { status: statusLabel(stream.status) })
+          : kind === 'more' ? t('tasks.list.retryMore') : undefined}
+        onClick={() => void stream.retry()}
+        loading={kind === 'more' ? stream.isFetchingNextPage : stream.isRefreshing}
+      >
+        <RefreshCw size={14} aria-hidden />
+        {t('common.retry')}
+      </Button>
+    </div>
+  );
+  const topAlerts = owners.flatMap((stream) =>
+    stream.isStale ? [ownerAlert(stream, 'stale')]
+      : stream.isInitialError && !allInitialFailed ? [ownerAlert(stream, 'initial')] : []);
+  const moreAlerts = owners.flatMap((stream) => stream.isContinuationError ? [ownerAlert(stream, 'more')] : []);
+  const partialLoading = pendingOwners.length > 0 && (hasUsableTasks || showEscalatedGroup);
 
   return (
     <div className="bg-surface-canvas flex h-full flex-col">
@@ -471,7 +505,7 @@ function TasksList({ groupBy, setGroupBy, filters, setFilters }: {
         {attentionInitialError && (
           <div role="alert" className="border-feedback-danger bg-danger-soft mx-6 flex flex-wrap items-center justify-between gap-3 rounded-lg border p-4">
             <p className="text-text-primary text-sm font-medium">{t('tasks.attention.error')}</p>
-            <Button size="sm" variant="outline" className="h-auto w-full max-w-full whitespace-normal break-words sm:w-auto" onClick={() => void retryAttention()}>
+            <Button size="sm" variant="outline" className="h-auto w-full max-w-full whitespace-normal break-words sm:w-auto" onClick={() => void attention.retry()}>
               <RefreshCw size={14} aria-hidden /> {t('common.retry')}
             </Button>
           </div>
@@ -490,26 +524,18 @@ function TasksList({ groupBy, setGroupBy, filters, setFilters }: {
           [data-tasks-responsive-list] section li > div > a > div:nth-child(5) { grid-column: 2; grid-row: 3; }
           [data-tasks-responsive-list] section li > div > a > div:nth-child(6) { grid-column: 2; grid-row: 4; justify-self: end; }
         }`}</style>
+        {(topAlerts.length > 0 || partialLoading) && (
+          <div className="mb-6 space-y-3">
+            {topAlerts}
+            {partialLoading && (
+              <p className="text-text-muted text-sm" role="status">
+                {t('tasks.list.partialLoading', { statuses: pendingOwners.map((stream) => statusLabel(stream.status)).join(t('tasks.list.statusSeparator')) })}
+              </p>
+            )}
+          </div>
+        )}
         {showListShell ? (
           <div className="space-y-6">
-            {tasksQuery.isError && !nextPageError && hasUsableTasks && (
-              <div
-                role="alert"
-                className="border-feedback-danger bg-danger-soft flex flex-wrap items-center justify-between gap-3 rounded-lg border p-4"
-              >
-                <div className="flex min-w-0 items-center gap-2">
-                  <AlertCircle className="text-feedback-danger shrink-0" size={18} aria-hidden />
-                  <div>
-                    <p className="text-text-primary text-sm font-medium">{t('tasks.list.staleTitle')}</p>
-                    <p className="text-text-secondary text-xs">{t('tasks.list.staleBody')}</p>
-                  </div>
-                </div>
-                <Button size="sm" variant="outline" onClick={retry} loading={isRetrying}>
-                  <RefreshCw size={14} aria-hidden />
-                  {t('common.retry')}
-                </Button>
-              </div>
-            )}
             <div data-testid="tasks-responsive-list" data-tasks-responsive-list>
               <TaskListColumnHeader />
               {showEscalatedGroup && (
@@ -540,16 +566,16 @@ function TasksList({ groupBy, setGroupBy, filters, setFilters }: {
                       ))}
                     </ul>
                   </section>
-                  {attentionQuery.isError && (
+                  {attentionFailed && (
                     <div role="alert" className="border-feedback-danger bg-danger-soft mt-2 flex flex-wrap items-center justify-between gap-3 rounded-lg border p-3">
                       <p className="text-text-primary text-sm font-medium">{t('tasks.attention.partialError')}</p>
-                      <Button size="sm" variant="outline" className="h-auto w-full max-w-full whitespace-normal break-words sm:w-auto" onClick={() => void (attentionNextPageError ? loadNextAttentionPage() : retryAttention())}>
-                        <RefreshCw size={14} aria-hidden /> {attentionNextPageError ? t('tasks.attention.retryMore') : t('common.retry')}
+                      <Button size="sm" variant="outline" className="h-auto w-full max-w-full whitespace-normal break-words sm:w-auto" onClick={() => void attention.retry()} loading={attention.isContinuationError ? attention.isFetchingNextPage : attention.isRefreshing}>
+                        <RefreshCw size={14} aria-hidden /> {attention.isContinuationError ? t('tasks.attention.retryMore') : t('common.retry')}
                       </Button>
                     </div>
                   )}
-                  {attentionQuery.hasNextPage && !attentionNextPageError && (
-                    <Button size="sm" variant="outline" className="mt-2 h-auto w-full max-w-full whitespace-normal break-words sm:w-auto" onClick={() => void loadNextAttentionPage()} loading={attentionQuery.isFetchingNextPage}>
+                  {attention.hasNextPage && !attentionFailed && (
+                    <Button size="sm" variant="outline" className="mt-2 h-auto w-full max-w-full whitespace-normal break-words sm:w-auto" onClick={() => void attention.fetchNextPage({ explicit: true })} loading={attention.isFetchingNextPage}>
                       {t('tasks.attention.loadMore')}
                     </Button>
                   )}
@@ -591,31 +617,17 @@ function TasksList({ groupBy, setGroupBy, filters, setFilters }: {
                 icon={<AlertCircle size={32} className="text-feedback-danger" />}
                 title={t('tasks.list.errorTitle')}
                 body={t('tasks.list.errorBody')}
-                cta={{ label: isRetrying ? t('tasks.list.retrying') : t('common.retry'), onClick: retry }}
+                cta={{ label: isRetrying ? t('tasks.list.retrying') : t('common.retry'), onClick: () => void retryAllFailed() }}
               />
             )}
             <div ref={sentinelRef} aria-hidden className="h-1" />
-            {isFetchingNextPage && (
+            {anyFetchingNextPage && (
               <p className="text-text-muted py-3 text-center text-sm">
                 {t('tasks.list.loadingMore')}
               </p>
             )}
-            {nextPageError && (
-              <div role="alert" className="border-feedback-danger bg-danger-soft flex flex-wrap items-center justify-between gap-3 rounded-lg border p-4">
-                <div className="flex min-w-0 items-center gap-2">
-                  <AlertCircle className="text-feedback-danger shrink-0" size={18} aria-hidden />
-                  <div>
-                    <p className="text-text-primary text-sm font-medium">{t('tasks.list.moreErrorTitle')}</p>
-                    <p className="text-text-secondary text-xs">{t('tasks.list.moreErrorBody')}</p>
-                  </div>
-                </div>
-                <Button size="sm" variant="outline" aria-label={t('tasks.list.retryMore')} onClick={() => void loadNextPage()} loading={isFetchingNextPage}>
-                  <RefreshCw size={14} aria-hidden />
-                  {t('common.retry')}
-                </Button>
-              </div>
-            )}
-            {!tasksQuery.isError && !nextPageError && !hasNextPage && allTasks.length > 0 && (
+            {moreAlerts}
+            {globalEnd && (
               <p className="text-text-muted py-4 text-center text-xs">
                 {t('tasks.list.endOfList')}
               </p>
@@ -628,11 +640,13 @@ function TasksList({ groupBy, setGroupBy, filters, setFilters }: {
             icon={<AlertCircle size={32} className="text-feedback-danger" />}
             title={t('tasks.list.errorTitle')}
             body={t('tasks.list.errorBody')}
-            cta={{ label: isRetrying ? t('tasks.list.retrying') : t('common.retry'), onClick: retry }}
+            cta={{ label: isRetrying ? t('tasks.list.retrying') : t('common.retry'), onClick: () => void retryAllFailed() }}
           />
-        ) : (
+        ) : globalEmpty ? (
           <EmptyState title={t('tasks.list.emptyTitle')} body={t('tasks.list.emptyBody')} />
-        )}
+        ) : moreAlerts.length > 0 ? (
+          <div className="space-y-6">{moreAlerts}</div>
+        ) : null}
         </ContentWrap>
       </main>
     </div>

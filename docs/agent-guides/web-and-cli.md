@@ -1668,12 +1668,44 @@ An empty agent means no agent filter, not an unassigned-only request. Applied
 values remain visible, including for successful empty results. A new org/filter
 request starts without another context's cursor; returning to a cached context
 retains its own pages. Local recovery ownership resets on context changes.
+
+Ordinary loading is per lifecycle status (Founder THR-319 seq9). Without a status
+filter the list runs seven independent `GET /tasks/roots` traversals — pending,
+in_progress, escalated, completed, failed, cancelled, superseded — each with its
+exact `status`, the exact `assigned_agent` when an agent filter is applied,
+`limit=50` and only its own `before` cursor; a status filter runs only that one.
+The first successful response of every owner therefore shows up to 50 matching
+roots, so an old active root is not hidden behind newer completed history. The
+tasks provider owns each traversal (key family `tasks-list-ordinary`, keyed by
+org, status and agent), its cursor, errors and refresh/Retry operations; the page
+owns presentation, grouping and scroll demand. Each scroll demand asks every
+owner that has more for at most one page; an exhausted owner stays exhausted and
+an exactly-50 owner may need a final empty page. A selected status reuses that
+same owner's cached traversal. Each owner keeps only roots matching its exact
+status/agent, so child rows never become list roots. When a root appears in more
+than one loaded owner, the projection with the greatest `updated_at` wins; equal
+timestamps use the partition order above, then that owner's page order. This is a
+loaded-projection rule, not a server snapshot: owners are separate live keysets,
+so a root that changes status mid-traversal can be missed or shown from an older
+projection until a refresh, and continuation alone cannot guarantee discovery of
+every concurrent move. Grouping changes issue no requests and keep every owner's
+depth. A failed owner stays visibly incomplete with its own Retry (scoped by its
+status name when more than one owner is selected) while successful siblings keep
+their rows, and still-loading owners are named. Only every selected owner failing
+initially shows the single error state. `No tasks` and `End of list` require every
+selected owner and the attention traversal to have succeeded and been exhausted,
+with no visible attention rows; until then neither claim is shown. Repeated Retry while an owner is fetching is coalesced,
+continuation never starts while that owner is refreshing, and an invalidation that
+lands during a continuation reconciles that owner's loaded depth afterwards.
+That reconciliation targets only the owner's own org/filter key: if the list
+has moved to another org or filter meanwhile, the old owner is re-marked stale
+and refetches when shown again, and the current owner is not refetched.
 `Waiting on you` uses a separate root traversal with exact
 `status=escalated`; it is never derived from loaded ordinary pages or a
 severity rollup. Its rows are root-only and own the presentation when an
 ordinary page contains the same task id. While its cursor remains, wording is
 non-exact (`50+ waiting on you`); only an exhausted traversal may show an
-exact count. The ordinary cursor order is unchanged.
+exact count. Each ordinary owner's `(created_at, id)` cursor order is unchanged.
 When the attention traversal has rows, they render as the FIRST group inside the
 shared list shell — the same `tasks-group` wrapper, group heading (attention
 dot + `Waiting on you`) and raised rows-card as every status group — directly
@@ -1686,8 +1718,10 @@ separately; a non-empty escalated group can coexist with an ordinary initial
 loading/error state without hiding the shared list shell, and a successful
 empty ordinary result must not claim `No tasks` while escalated rows are
 visible.
-Ordinary status/agent filters remain their established independent traversal;
-they do not alter the separate attention query. Initial attention failures make
+Ordinary status/agent filters select ordinary owners only; they do not alter the
+separate attention query, whose cache identity, cursor, errors and Retry stay
+distinct from the ordinary `status=escalated` owner even when both send identical
+requests. Initial attention failures make
 no count claim and show Retry. A failed attention refresh or continuation keeps
 the deduplicated loaded rows and their honest current count visible with a
 stale/error warning; continuation Retry resumes the failed attention cursor,
@@ -1696,9 +1730,11 @@ share the ordinary responsive row treatment because they live under the shared
 list shell; its page-local load-more and Retry controls wrap within the group at
 narrow widths; shared button behavior is unchanged.
 Initial ordinary failures show an
-explicit Retry; failed ordinary refreshes retain cached rows and a stale warning;
-failed ordinary pagination retains loaded rows and requires its separate page Retry.
-Manual refresh retries the active context's loaded pages. Subtask severity
+explicit Retry per failed owner; a failed owner refresh retains its cached rows with
+a stale warning until it reconciles (including failure after one of several pages
+refetched); failed owner pagination retains loaded rows, pauses that owner's
+automatic demand and requires its own Retry, which reuses only its failed cursor.
+Refresh/Retry refetches that owner's loaded pages. Subtask severity
 rollups are count-free and reflect the worst **current** status of the root's
 `parent_task_id` subtree; a historical FAILED descendant whose same-parent
 revisit lineage leaves no unresolved FAILED leaf does not dominate, while the

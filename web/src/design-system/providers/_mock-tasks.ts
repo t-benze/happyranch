@@ -1,6 +1,9 @@
 import type { TaskRecord, TaskRecallNode } from '@/lib/api/types';
+import { TASK_LIST_STATUSES } from './DataContext';
 import type {
   InfiniteQueryLike,
+  TaskListStream,
+  TaskListStreams,
   QueryLike,
   TasksApi,
   TasksListPage,
@@ -132,6 +135,29 @@ const ROOT_FIXTURES: TaskRecord[] = [
   },
 ] as TaskRecord[];
 
+function staticStream(owner: string, status: string, tasks: TaskRecord[]): TaskListStream {
+  const done = async () => { /* no-op: prototype fixtures fit in one page */ };
+  return {
+    owner, status, tasks, isInitialPending: false, isInitialError: false, isStale: false,
+    isContinuationError: false, isRefreshing: false, isFetchingNextPage: false, hasNextPage: false,
+    fetchNextPage: done, refresh: done, retry: done,
+  };
+}
+
+/** Static prototype owners; they prove presentation only, never paging. */
+export function staticTaskListStreams(
+  roots: TaskRecord[],
+  filters?: { status?: string; assigned_agent?: string },
+): TaskListStreams {
+  const matches = (task: TaskRecord, status: string, agent?: string) =>
+    task.status === status && (!agent || task.assigned_agent === agent) && !task.parent_task_id;
+  return {
+    ordinary: TASK_LIST_STATUSES.filter((status) => !filters?.status || filters.status === status)
+      .map((status) => staticStream(status, status, roots.filter((task) => matches(task, status, filters?.assigned_agent)))),
+    attention: staticStream('attention', 'escalated', roots.filter((task) => matches(task, 'escalated'))),
+  };
+}
+
 export const mockTasksApi: TasksApi = {
   // Prototype actions are explicitly unavailable; fixtures never claim enforcement.
   usePauseTask: () => ({ isPending: false, mutateAsync: async () => { throw { code: 'pause_control_unavailable' }; } }),
@@ -144,6 +170,7 @@ export const mockTasksApi: TasksApi = {
     staticInfinite({ tasks: ROOT_FIXTURES.filter((task) =>
       (!params?.status || task.status === params.status) &&
       (!params?.assigned_agent || task.assigned_agent === params.assigned_agent)), next_cursor: null }),
+  useTasksListStreams: (filters) => staticTaskListStreams(ROOT_FIXTURES, filters),
   useTask: (taskId) =>
     ok(FIXTURES.find((t) => t.task_id === taskId) ?? FIXTURES[0]),
   useTaskRecall: () => ok(RECALL_TREE),
