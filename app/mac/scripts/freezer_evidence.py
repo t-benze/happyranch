@@ -1059,14 +1059,13 @@ def native_selection_paths(value):
     """Transient spec-only selection, never a persisted root or trust grant."""
     keys(value, {'developer','lipo','install_name_tool'}, 'NATIVE_SELECTION_SCHEMA')
     developer = native_selection_path(value['developer'])
-    need(developer.name == 'Developer' and developer.parent.name == 'Contents'
-         and developer.parent.parent.name.endswith('.app'), 'NATIVE_DEVELOPER_SELECTION')
+    need(value['developer'] == '/Library/Developer/CommandLineTools', 'NATIVE_DEVELOPER_SELECTION')
     result = {'developer': developer}
     for role in ('lipo','install_name_tool'):
         try:
             path = native_selection_path(value[role])
-            need(path.name == role and path.is_relative_to(developer)
-                 and path.parent.parts[-2:] == ('usr','bin'), 'NATIVE_REAL_TOOL_SELECTION')
+            need(value[role] == '/Library/Developer/CommandLineTools/usr/bin/' + role,
+                 'NATIVE_REAL_TOOL_SELECTION')
             result[role] = path
         except FreezerError as error:
             native_tool_context(error, dict(role=role, selected=value[role], terminal=None,
