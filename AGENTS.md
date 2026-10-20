@@ -732,22 +732,55 @@ Existing retry/recovery IDs, frozen budgets,
 INTEGER callbacks and authority-v2 are preserved. No new persisted field/journal, history
 backfill, compensation or clearance writer is introduced. Behavior UNEXECUTED.
 
-Private cleanup-diagnostic reader support is staged in `Database` and
-`ThreadAdmissionStore`; it has no serving or startup caller. A future coordinator
-must supply one fixed readiness deadline/shared boot budget (3s,8 initial
-contexts,64 owners,1024 fetched rows,4MiB,256 statements,5M VM steps) and revoke/
-positively join native work before DB close. Fixed indexed reads include terminal
-thread owners, complete strict selected lifecycle histories, Pause journals and
-exact native task lookups, with closing comparisons under that same budget.
-Lock/busy waits are at most25ms, batches target50ms and SQLite progress is sampled
-every1000 VM steps; record length is capped before Python allocation. Exhausted,
-missing, malformed, conflicting or moving evidence is incomplete, never absence
-or release proof. Failed cursor/settings restoration is separately unsafe and
-retains the future coordinator's DB-close obligation. Private projections omit
-credentials, raw payloads, model/text and cleanup suffixes. These cooperative
-bounds prove no hard wall/RSS limit or process/effect closure. No post-start pass,
-classification/logging, release or recovery is wired here; runtime/SQL/timing/
-cancellation/crash proof remains UNEXECUTED. A's lifetime barriers are unchanged.
+The serving lifespan owns one dormant private cleanup-diagnostic coordinator.
+Only the real Uvicorn Server adapter signals it after successful ASGI/listener
+startup returns with started true and no requested exit. Early port/PID files,
+health probes, pre-yield scheduling, maintenance and ad hoc lifespans never start
+acquisition. Signalling schedules work only; diagnostics never gate readiness.
+Initial org count is checked before enumeration: empty/over-eight/missing context
+is unavailable/incomplete. Tokens bind the actual serving state/runtime, canonical
+org/DB paths, OrgState/Database/supervisor/tracker references and distinct local
+attachment generations. Dynamic attachments and reconstructed runtimes remain
+unsupported; no substitute registry or historical process proof is inferred.
+
+One off-loop serial pass uses `Database` and strict `ThreadAdmissionStore` replay,
+sharing a budget fixed at readiness: 3s,8 initial contexts,64 owners,1024 fetched
+rows,4MiB,256 statements,5M VM steps, including closing comparisons. Native
+lock/busy waits are at most25ms, batches target50ms, progress samples1000 VM
+steps and record length is capped before allocation. Refusal/missing/malformed/
+conflicting/moving evidence stays incomplete. These cooperative limits prove no
+hard wall/RSS bound, global snapshot, process/effect closure or absence certificate.
+
+A separate org diagnostic guard registers before executor submission and captures
+THAT returned future before any cancellable await, including queued work. Only
+positive native return with safe cursor/settings restoration and coordinator
+settlement releases it. Cancellation, uncertain submission/return, failed
+restoration and drain timeout retain the guard/DB. Detach/same-root reconstruction/
+switch capture and revoke under orgs_lock, drain outside locks, then renew exact
+map/runtime/org identity and all existing busy/hold preflights before any close or
+registry/activation effect; races refuse409. Refused operations never restart a
+revoked pass. OrgState.close revokes/refuses diagnostics independently of runners;
+close_all independently revokes/joins/checks before DB closure. Lifespan revokes
+before its first shutdown await and retains A's admission fence, host SHUTDOWN,
+runner/queue joins and no-clean-success on incomplete drain. Direct/re-emitted
+signals still close no DB; KILL/OOM remains crash uncertainty.
+
+Publication rechecks the same serving objects and attachment generation; stale
+results are discarded. Only selected-history agreement is reported. Labels are
+process_attempt_unknown, effects_unknown, completion_unrecorded_or_unknown,
+evidence_incomplete, context_unsupported, and (only for matching prior/final facts
+with every recorded attempt settled/quiescent) late_producer_failure_after_recorded_attempt_quiescence.
+producer_settled alone is insufficient. No affirmative whole-cleanup fact exists,
+so final_bookkeeping_write_failure remains unreachable. Jobs remain uninterpreted
+blockers; no release/recovery/mutation follows. Existing daemon logging emits one
+summary and at most16 whole owner records, each at most2KiB UTF8 and32KiB total
+message bytes including summary. Oversized whole records are suppressed and output
+marked incomplete; identities are never shortened. Only bounded exact native IDs,
+audit prefixes/journal generations/digests, status/reason/coverage and counters
+are projected, without credentials/raw payloads/errors/model text/cleanup suffixes/
+argv/environment/private paths/object IDs. Logging failure neither fails serving
+nor retries diagnostics. Runtime/SQL/timing/cancellation/crash proof UNEXECUTED;
+integration INCLUDING lifespan/SessionTracker/callback SKIPPED24342, units RETIRED.
 
 Preview resolves native current names/IDs, rejects former/unknown names, uses
 only D's pure native planner and returns exact founder-only diff/digests,
