@@ -678,6 +678,23 @@ Existing retry/recovery IDs, frozen budgets,
 INTEGER callbacks and authority-v2 are preserved. No new persisted field/journal, history
 backfill, compensation or clearance writer is introduced. Behavior UNEXECUTED.
 
+Private cleanup-diagnostic reader support is staged in `Database` and
+`ThreadAdmissionStore`; it has no serving or startup caller. A future coordinator
+must supply one fixed readiness deadline/shared boot budget (3s,8 initial
+contexts,64 owners,1024 fetched rows,4MiB,256 statements,5M VM steps) and revoke/
+positively join native work before DB close. Fixed indexed reads include terminal
+thread owners, complete strict selected lifecycle histories, Pause journals and
+exact native task lookups, with closing comparisons under that same budget.
+Lock/busy waits are at most25ms, batches target50ms and SQLite progress is sampled
+every1000 VM steps; record length is capped before Python allocation. Exhausted,
+missing, malformed, conflicting or moving evidence is incomplete, never absence
+or release proof. Failed cursor/settings restoration is separately unsafe and
+retains the future coordinator's DB-close obligation. Private projections omit
+credentials, raw payloads, model/text and cleanup suffixes. These cooperative
+bounds prove no hard wall/RSS limit or process/effect closure. No post-start pass,
+classification/logging, release or recovery is wired here; runtime/SQL/timing/
+cancellation/crash proof remains UNEXECUTED. A's lifetime barriers are unchanged.
+
 Preview resolves native current names/IDs, rejects former/unknown names, uses
 only D's pure native planner and returns exact founder-only diff/digests,
 context/permission/skill deltas, complete blockers/owners, drain candidates and

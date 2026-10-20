@@ -6,6 +6,7 @@ The full bounded snapshots are strict, append-only evidence, not process proof.
 from __future__ import annotations
 
 import json
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
@@ -85,37 +86,66 @@ class ThreadAdmissionStore:
             "AND action='thread_move_lifecycle' ORDER BY id", (inv.thread_id,),
         )
         prior = None
-        for row in rows:
-            try:
-                raw = row["payload"]
-                if type(raw) is not str or len(raw.encode("utf8")) > 16384:
-                    raise ValueError("audit bound")
-                def unique(pairs: list[tuple[str, Any]]) -> dict:
-                    result = {}
-                    for key, value in pairs:
-                        if key in result:
-                            raise ValueError("duplicate thread evidence field")
-                        result[key] = value
-                    return result
-                json.loads(raw, object_pairs_hook=unique)
-                state = ThreadLifecycle.model_validate_json(raw, strict=True)
-                if (state.org_slug != self.org_slug or state.thread_id != inv.thread_id
-                        or state.agent_id != row["agent"]):
-                    raise ValueError("audit owner")
-                if state.invocation_id != inv.id:
-                    continue
-                if state.agent_id != inv.agent_name or (inv.session_id and state.session_id != inv.session_id):
-                    raise ValueError("invocation owner")
-                if prior is not None:
-                    self._validate_append(prior, state)
-                elif (state.retry_initialized is True or state.attempts or state.phase != "initial" or state.ordinal or state.schedule
-                        or state.deferred or state.producer_settled or state.failed_cleanup):
-                    raise ValueError("thread initial preparation evidence missing")
+        try:
+            for _, state in self._replay_states(inv, rows, check=lambda: None):
                 prior = state
-            except (ValueError, TypeError, ValidationError) as exc:
-                from runtime.orchestrator.team_move import DeferredTeamMove
-                raise DeferredTeamMove("team_move_thread_audit_unavailable") from exc
+        except (ValueError, TypeError, ValidationError) as exc:
+            from runtime.orchestrator.team_move import DeferredTeamMove
+            raise DeferredTeamMove("team_move_thread_audit_unavailable") from exc
         return prior
+
+    def _replay_bounded(
+        self, inv: Any, rows: Sequence[Mapping[str, Any]], *, check: Callable[[], None],
+    ) -> tuple[tuple[int, ThreadLifecycle], ...]:
+        """Replay a COMPLETE selected thread scope, already charged by Database.
+
+        The caller supplies every lifecycle row from the true beginning, never
+        a last-row or truncated prefix. Missing initial history refuses. This
+        private entry has no SQL or daemon dependency; its budget check is pure.
+        """
+        check()
+        if len(rows) > 1024:
+            raise ValueError("thread history bound")
+        states = tuple((row["id"], state) for row, state in self._replay_states(inv, rows, check=check))
+        if not states:
+            raise ValueError("thread history missing")
+        check()
+        return states
+
+    def _replay_states(
+        self, inv: Any, rows: Iterable[Mapping[str, Any]], *, check: Callable[[], None],
+    ) -> Iterable[tuple[Mapping[str, Any], ThreadLifecycle]]:
+        prior = None
+        for row in rows:
+            check()
+            raw = row["payload"]
+            if type(raw) is not str or len(raw.encode("utf8")) > 16384:
+                raise ValueError("audit bound")
+            def unique(pairs: list[tuple[str, Any]]) -> dict:
+                result = {}
+                for key, value in pairs:
+                    if key in result:
+                        raise ValueError("duplicate thread evidence field")
+                    result[key] = value
+                return result
+            json.loads(raw, object_pairs_hook=unique)
+            check()
+            state = ThreadLifecycle.model_validate_json(raw, strict=True)
+            if (state.org_slug != self.org_slug or state.thread_id != inv.thread_id
+                    or state.agent_id != row["agent"]):
+                raise ValueError("audit owner")
+            if state.invocation_id != inv.id:
+                continue
+            if state.agent_id != inv.agent_name or (inv.session_id and state.session_id != inv.session_id):
+                raise ValueError("invocation owner")
+            if prior is not None:
+                self._validate_append(prior, state)
+            elif (state.retry_initialized is True or state.attempts or state.phase != "initial" or state.ordinal or state.schedule
+                    or state.deferred or state.producer_settled or state.failed_cleanup):
+                raise ValueError("thread initial preparation evidence missing")
+            prior = state
+            check()
+            yield row, state
 
     @staticmethod
     def _validate_append(prior: ThreadLifecycle, current: ThreadLifecycle) -> None:
