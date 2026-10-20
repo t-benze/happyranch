@@ -307,9 +307,15 @@ existing claim exclusions, never ordinary pending/carrier eligibility. Callback,
 current-owner, cancellation and intentional hold winners still exclude accounting.
 
 The first preparation cause is kept separately from the final Pause/cleanup error:
-bounded stage, exception class/stable Pause code and source locations. An
-executed failed task pull can additionally retain a safe repo identifier, fixed
-operation, return code or safe exception class, and optional closed advisory
+bounded stage, exception class/stable Pause code and source locations. A
+failed task refresh can additionally retain a safe repo identifier, optional
+explicit operation=refresh_ff_only and closed refresh_phase=precheck|fetch|
+between_stages|merge|submodule_update. Absent selector retains legacy pull_ff_only
+shape/meaning; old dictionaries are unchanged. repository_pull is aggregate.
+Only the actual failing child's returned exit is recorded; nonchild precheck/
+between-stage failures invent no exit or successful-child diagnostic reuse.
+Phase identifies operation, not root/network cause. The cause may also retain a
+safe exception class and the existing optional closed advisory
 `diagnostic_category`/`diagnostic_rule` with exact Boolean `capture_complete`,
 `capture_truncated` and `timed_out` facts. Categories are lock/network/auth/other/
 unknown; non-fast-forward remains other. Only complete, untruncated, strictly
@@ -317,9 +323,9 @@ decoded whole-stream grammar can select a specific wording label; ambiguity,
 unsafe structure, timeout or unavailable/failed capture is unknown. Labels never
 prove provenance or historical cause; missing/old exit128 stays unknown. Existing
 first causes and historical dictionaries are reused unchanged, and no non-task
-cause fields are added. Skipped pre-pull admission remains a stale-source warning
-and creates no pull-failure cause. No exception messages, output, argv, URLs,
-environment or locals enter this evidence. Pull failures latch sticky cleanup
+cause fields are added. Skipped unsupported/unavailable admission stays a stale-source
+warning and creates no refresh-failure cause. No exception messages, output, argv, URLs,
+environment or locals enter this evidence. Refresh failures latch sticky cleanup
 before attribution, attempt the first cause even after an evidence-save failure,
 and propagate only fixed safe errors without captured exception chains. An
 audit/storage save failure remains an explicit

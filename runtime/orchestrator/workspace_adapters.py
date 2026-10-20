@@ -1806,14 +1806,26 @@ def _repo_refresh_git(
     repo_dir: Path, arguments: list[str], *, deadline: float,
     cancel_requested: threading.Event | None,
 ) -> subprocess.CompletedProcess[bytes] | None:
-    """None means no command was started; a raised timeout is not that proof."""
-    remaining = deadline - time.monotonic()
-    if remaining <= 0 or (cancel_requested is not None and cancel_requested.is_set()):
-        return None
-    return subprocess.run(
-        ["git", "--no-optional-locks", *arguments], cwd=str(repo_dir),
-        capture_output=True, timeout=remaining,
+    """Bounded, complete private control output; never authorize from a prefix.
+
+    Reuse the direct-child supervisor, with stdout in place of diagnostic stderr.
+    No lazy object fetch is allowed in a read-only availability/ancestry probe.
+    """
+    result = _repo_refresh_child(
+        repo_dir, ["--no-lazy-fetch", *arguments], deadline=deadline,
+        cancel_requested=cancel_requested, control_output=True,
     )
+    if result is None:
+        return None
+    try:
+        if (result.failure is not None or not result.settled
+                or not result.capture_complete or result.capture_truncated):
+            if result.failure is not None:
+                raise result.failure from None
+            raise subprocess.SubprocessError("repository_refresh_probe_unavailable")
+        return subprocess.CompletedProcess(arguments, result.returncode, bytes(result.stderr), b"")
+    finally:
+        result.stderr.clear()
 
 
 _REPO_PULL_CAPTURE_BYTES = 4096
@@ -1824,6 +1836,7 @@ _REPO_PULL_POLL_SECONDS = 0.05
 class _RepoPullOutcome:
     """Private capture only; neither bytes nor an original exception leave here."""
 
+    refresh_phase: str = "fetch"
     started: bool = False
     returncode: int | None = None
     settled: bool = False
@@ -1857,8 +1870,9 @@ def _repo_pull_safe_error(exc: BaseException) -> BaseException:
     return RuntimeError("repository_pull_failed")
 
 
-def _repo_refresh_pull(
-    repo_dir: Path, *, deadline: float, cancel_requested: threading.Event | None,
+def _repo_refresh_child(
+    repo_dir: Path, arguments: list[str], *, deadline: float,
+    cancel_requested: threading.Event | None, control_output: bool = False,
 ) -> _RepoPullOutcome | None:
     """One owned direct child, bounded nonblocking capture, no descendant EOF wait.
 
@@ -1875,12 +1889,12 @@ def _repo_refresh_pull(
     capture_available = os.name == "posix" and hasattr(os, "set_blocking")
     try:
         process = subprocess.Popen(
-            ["git", "--no-optional-locks", "pull", "--ff-only"], cwd=str(repo_dir),
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE if capture_available else subprocess.DEVNULL,
+            ["git", "--no-optional-locks", *arguments], cwd=str(repo_dir),
+            stdout=subprocess.PIPE if control_output and capture_available else subprocess.DEVNULL,
+            stderr=subprocess.PIPE if not control_output and capture_available else subprocess.DEVNULL,
         )
         outcome.started = True
-        pipe = process.stderr
+        pipe = process.stdout if control_output else process.stderr
         if capture_available:
             if pipe is None:
                 raise OSError("repository_pull_capture_unavailable")
@@ -2028,7 +2042,8 @@ def _repo_pull_failed(
                 facts = _repo_pull_diagnostics(outcome) if outcome.started else {}
                 preparation.record_preparation_cause(
                     "repository_pull", outcome.failure, repo=name,
-                    returncode=outcome.returncode, **facts,
+                    returncode=outcome.returncode, operation="refresh_ff_only",
+                    refresh_phase=outcome.refresh_phase, **facts,
                 )
             except BaseException as exc:
                 if evidence_failure is None or isinstance(exc, (asyncio.CancelledError, KeyboardInterrupt, SystemExit)):
@@ -2050,73 +2065,299 @@ def _repo_pull_failed(
         raise RuntimeError("repository_pull_settlement_unavailable") from None
 
 
-def _repo_refresh_can_pull(
+@dataclass(frozen=True, repr=False)
+class _RepoRefreshIdentity:
+    # Transient control data only: never format config, transport, refs or paths.
+    branch_ref: str
+    head: str
+    upstream: str
+    object_format: str
+    config: bytes
+    transport: bytes
+
+
+def _repo_refresh_observe(
+    repo_dir: Path, arguments: list[str], *, deadline: float,
+    cancel_requested: threading.Event | None, allowed: tuple[int, ...] = (0,),
+) -> subprocess.CompletedProcess[bytes]:
+    result = _repo_refresh_git(repo_dir, arguments, deadline=deadline,
+                               cancel_requested=cancel_requested)
+    if result is None or result.returncode not in allowed:
+        raise subprocess.SubprocessError("repository_refresh_probe_unavailable")
+    return result
+
+
+def _repo_refresh_line(data: bytes) -> str:
+    value = data.removesuffix(b"\n").decode("utf8", errors="strict")
+    if not value or any(c in value for c in "\r\n\0"):
+        raise ValueError("repository_refresh_invalid_control")
+    return value
+
+
+def _repo_refresh_oid(value: str, object_format: str) -> str:
+    length = {"sha1": 40, "sha256": 64}.get(object_format)
+    if length is None or re.fullmatch(r"[0-9a-f]{%d}" % length, value) is None:
+        raise ValueError("repository_refresh_invalid_oid")
+    return value
+
+
+def _repo_refresh_config_values(config: bytes, key: str) -> list[bytes | None]:
+    if not config.endswith(b"\0"):
+        raise ValueError("repository_refresh_invalid_config")
+    values: list[bytes | None] = []
+    for entry in config[:-1].split(b"\0"):
+        name, separator, value = entry.partition(b"\n")
+        if not name:
+            raise ValueError("repository_refresh_invalid_config")
+        if name == key.encode("utf8"):
+            values.append(value if separator else None)
+    return values
+
+
+def _repo_refresh_identity(
     repo_dir: Path, *, deadline: float, cancel_requested: threading.Event | None,
-) -> bool:
-    """Read-only admission only. A refusal skips pull, never certifies freshness.
+) -> _RepoRefreshIdentity:
+    def observe(arguments: list[str]) -> bytes:
+        return _repo_refresh_observe(repo_dir, arguments, deadline=deadline,
+                                     cancel_requested=cancel_requested).stdout
 
-    In particular ls-remote catches a configured branch deleted upstream even
-    when the local remote-tracking ref still exists. Its positive result is
-    NOT a lock on remote/local state: every subsequent executed failure stays
-    uncertain regardless of this check or any checkout/status summaries.
-    """
-    def observe(arguments: list[str]) -> bytes | None:
-        result = _repo_refresh_git(repo_dir, arguments, deadline=deadline,
-                                   cancel_requested=cancel_requested)
-        if result is None or result.returncode != 0:
-            return None
-        return result.stdout.removesuffix(b"\n")
+    branch_ref = _repo_refresh_line(observe(["symbolic-ref", "--quiet", "HEAD"]))
+    if not branch_ref.startswith("refs/heads/"):
+        raise ValueError("unsupported_refresh_configuration")
+    branch = branch_ref[len("refs/heads/"):]
+    object_format = _repo_refresh_line(observe(["rev-parse", "--show-object-format"]))
+    head = _repo_refresh_oid(_repo_refresh_line(observe(
+        ["rev-parse", "--verify", "--quiet", "HEAD"])), object_format)
+    if observe(["cat-file", "-t", head]) != b"commit\n":
+        raise ValueError("repository_refresh_commit_unavailable")
+    # --list reads applicable scopes/includes. NUL separates entries, the first
+    # newline separates name/value, so embedded newlines cannot hide cardinality.
+    config = observe(["config", "--null", "--list"])
+    for key, expected in (
+        ("remote.origin.fetch", b"+refs/heads/*:refs/remotes/origin/*"),
+        (f"branch.{branch}.remote", b"origin"),
+        (f"branch.{branch}.merge", branch_ref.encode("utf8")),
+    ):
+        if _repo_refresh_config_values(config, key) != [expected]:
+            raise ValueError("unsupported_refresh_configuration")
+    upstream = _repo_refresh_line(observe(
+        ["rev-parse", "--symbolic-full-name", "--verify", "@{upstream}"]))
+    if upstream != f"refs/remotes/origin/{branch}":
+        raise ValueError("unsupported_refresh_configuration")
+    _repo_refresh_oid(_repo_refresh_line(observe(
+        ["rev-parse", "--verify", "--quiet", "@{upstream}^{commit}"])), object_format)
+    transport = observe(["remote", "get-url", "--all", "origin"])
+    if not transport.strip():
+        raise ValueError("repository_refresh_transport_unavailable")
+    return _RepoRefreshIdentity(branch_ref, head, upstream, object_format, config, transport)
 
+
+def _repo_refresh_advertised(
+    repo_dir: Path, identity: _RepoRefreshIdentity, *, deadline: float,
+    cancel_requested: threading.Event | None,
+) -> str:
+    result = _repo_refresh_observe(
+        repo_dir, ["ls-remote", "--exit-code", "--refs", "--", "origin", identity.branch_ref],
+        deadline=deadline, cancel_requested=cancel_requested,
+    )
+    line = _repo_refresh_line(result.stdout)
+    oid, separator, source = line.partition("\t")
+    if not separator or source != identity.branch_ref:
+        raise ValueError("repository_refresh_source_unavailable")
+    return _repo_refresh_oid(oid, identity.object_format)
+
+
+def _repo_refresh_admit(
+    repo_dir: Path, *, deadline: float, cancel_requested: threading.Event | None,
+) -> _RepoRefreshIdentity | None:
     try:
-        branch_ref = observe(["symbolic-ref", "--quiet", "HEAD"])
-        if branch_ref is None or not branch_ref.startswith(b"refs/heads/"):
-            return False
-        branch = branch_ref[len(b"refs/heads/"):].decode("utf8")
-        remote = observe(["config", "--get-all", f"branch.{branch}.remote"])
-        merge = observe(["config", "--get-all", f"branch.{branch}.merge"])
-        if (not remote or not merge or b"\n" in remote or b"\n" in merge
-                or not merge.startswith(b"refs/heads/")):
-            return False
-        if observe(["rev-parse", "--verify", "--quiet", "@{upstream}"]) is None:
-            return False
-        upstream = observe(["ls-remote", "--exit-code", "--refs", "--",
-                            remote.decode("utf8"), merge.decode("utf8")])
-        # Require one exact advertised ref; no stderr-based classification.
-        return (upstream is not None and b"\n" not in upstream
-                and upstream.partition(b"\t")[0] != b""
-                and upstream.partition(b"\t")[2] == merge)
-    except (subprocess.SubprocessError, OSError, UnicodeError, ValueError) as exc:
-        logger.debug("repo refresh: pre-pull admission refused for %s: %s", repo_dir, exc)
-        return False
+        identity = _repo_refresh_identity(repo_dir, deadline=deadline,
+                                           cancel_requested=cancel_requested)
+        # U0 is existence only. It must NEVER become the later merge operand.
+        _repo_refresh_advertised(repo_dir, identity, deadline=deadline,
+                                 cancel_requested=cancel_requested)
+        return identity
+    except (subprocess.SubprocessError, OSError, UnicodeError, ValueError):
+        # No raw control values, exception text, repo paths or remote URLs.
+        logger.debug("repo refresh skipped: unsupported_or_unavailable_refresh_configuration")
+        return None
+
+
+def _repo_refresh_precheck(
+    repo_dir: Path, identity: _RepoRefreshIdentity, *, deadline: float,
+    cancel_requested: threading.Event | None,
+) -> tuple[list[str], bool]:
+    """Pull's early state checks and pull-specific autostash precedence.
+
+    This is admitted-state failure, not a new unsupported-config skip. Only
+    Git owns stash/apply and merge options; no rebase or compensation is added.
+    """
+    def observe(arguments: list[str], allowed: tuple[int, ...] = (0,)) -> subprocess.CompletedProcess[bytes]:
+        return _repo_refresh_observe(repo_dir, arguments, deadline=deadline,
+                                     cancel_requested=cancel_requested, allowed=allowed)
+
+    def boolean(key: str) -> bool | None:
+        result = observe(["config", "--null", "--type=bool", "--get-all", key], (0, 1))
+        if result.returncode == 1 and not result.stdout:
+            return None
+        values = result.stdout.split(b"\0")
+        if values[-1] != b"" or any(value not in {b"true", b"false"} for value in values[:-1]):
+            raise ValueError("repository_refresh_invalid_setting")
+        return values[-2] == b"true"
+
+    branch = identity.branch_ref[len("refs/heads/"):]
+    key = f"branch.{branch}.rebase"
+    values = _repo_refresh_config_values(identity.config, key)
+    if not values:
+        key = "pull.rebase"
+        values = _repo_refresh_config_values(identity.config, key)
+    rebase = False
+    if values:
+        if values[-1] in {b"merges", b"m", b"interactive", b"i"}:
+            rebase = True
+        else:
+            # Use Git's boolean parser rather than approximate numeric/case rules.
+            result = observe(["config", "--type=bool", "--get", key])
+            if result.stdout not in {b"true\n", b"false\n"}:
+                raise ValueError("repository_refresh_invalid_setting")
+            rebase = result.stdout == b"true\n"
+    # pull validates these settings even when a later override makes one unused.
+    rebase_autostash = boolean("rebase.autostash") or False
+    pull_autostash = boolean("pull.autostash")
+    recursive = boolean("submodule.recurse") or False
+    autostash = pull_autostash if pull_autostash is not None else (rebase_autostash if rebase else None)
+    if observe(["ls-files", "--unmerged", "-z"]).stdout:
+        raise subprocess.SubprocessError("repository_refresh_precheck_failed")
+    # Pull rejects presence, including an empty/malformed MERGE_HEAD, not merely
+    # a successfully parsed object name. --git-path also handles linked worktrees.
+    merge_head = Path(_repo_refresh_line(observe(["rev-parse", "--git-path", "MERGE_HEAD"]).stdout))
+    if not merge_head.is_absolute():
+        merge_head = repo_dir / merge_head
+    try:
+        merge_head.lstat()
+    except FileNotFoundError:
+        pass
+    else:
+        raise subprocess.SubprocessError("repository_refresh_precheck_failed")
+    if rebase and not autostash:
+        # Pull ignores submodule-only dirtiness here, and does not blanket-reject
+        # untracked files. A later merge/update still applies Git's own checks.
+        for arguments in (["diff", "--quiet", "--ignore-submodules", "--"],
+                          ["diff", "--cached", "--quiet", "--ignore-submodules", "HEAD", "--"]):
+            if observe(arguments, (0, 1)).returncode != 0:
+                raise subprocess.SubprocessError("repository_refresh_precheck_failed")
+    merge_options = [] if autostash is None else ["--autostash" if autostash else "--no-autostash"]
+    return merge_options, recursive
+
+
+def _repo_refresh_pull(
+    repo_dir: Path, identity: _RepoRefreshIdentity, *, deadline: float,
+    cancel_requested: threading.Event | None,
+) -> _RepoPullOutcome | None:
+    """Compose supervised children; later no-start cannot erase earlier effects."""
+    def active() -> bool:
+        return time.monotonic() < deadline and not (cancel_requested is not None and cancel_requested.is_set())
+
+    if not active():
+        return None
+    phase = "precheck"
+    result: _RepoPullOutcome | None = None
+    try:
+        merge_options, recursive = _repo_refresh_precheck(
+            repo_dir, identity, deadline=deadline, cancel_requested=cancel_requested,
+        )
+        phase = "fetch"
+        result = _repo_refresh_child(repo_dir, ["fetch", "--", "origin"],
+                                     deadline=deadline, cancel_requested=cancel_requested)
+        if result is None:
+            return None  # No mutating creation attempted; ordinary stale skip.
+        result.refresh_phase = phase
+        if result.failure is not None or result.returncode != 0 or not result.settled:
+            return result
+        result.stderr.clear()
+        phase = "between_stages"
+        if not active() or _repo_refresh_identity(
+            repo_dir, deadline=deadline, cancel_requested=cancel_requested,
+        ) != identity:
+            raise subprocess.SubprocessError("repository_refresh_changed_or_interrupted")
+        # Select U once, AFTER the successful fetch, independently of FETCH_HEAD
+        # and tracking contents. No fetch/chase/fallback on unavailable objects.
+        target = _repo_refresh_advertised(repo_dir, identity, deadline=deadline,
+                                          cancel_requested=cancel_requested)
+
+        def observe(arguments: list[str], allowed: tuple[int, ...] = (0,)) -> subprocess.CompletedProcess[bytes]:
+            return _repo_refresh_observe(repo_dir, arguments, deadline=deadline,
+                                         cancel_requested=cancel_requested, allowed=allowed)
+
+        if observe(["cat-file", "-t", target]).stdout != b"commit\n":
+            raise subprocess.SubprocessError("repository_refresh_commit_unavailable")
+        behind = observe(["merge-base", "--is-ancestor", identity.head, target], (0, 1)).returncode == 0
+        ahead = observe(["merge-base", "--is-ancestor", target, identity.head], (0, 1)).returncode == 0
+        expected = target if behind else identity.head
+        phase = "merge"
+        result = _repo_refresh_child(repo_dir, ["merge", "--ff-only", *merge_options, target],
+                                     deadline=deadline, cancel_requested=cancel_requested)
+        if result is None:
+            phase = "between_stages"
+            raise subprocess.SubprocessError("repository_refresh_incomplete")
+        result.refresh_phase = phase
+        if result.failure is not None or result.returncode != 0 or not result.settled:
+            return result
+        result.stderr.clear()
+        if recursive:
+            phase = "submodule_update"
+            result = _repo_refresh_child(repo_dir, ["submodule", "update", "--recursive", "--checkout"],
+                                         deadline=deadline, cancel_requested=cancel_requested)
+            if result is None:
+                phase = "between_stages"
+                raise subprocess.SubprocessError("repository_refresh_incomplete")
+            result.refresh_phase = phase
+            if result.failure is not None or result.returncode != 0 or not result.settled:
+                return result
+            result.stderr.clear()
+        phase = "between_stages"
+        final_branch = _repo_refresh_line(observe(["symbolic-ref", "--quiet", "HEAD"]).stdout)
+        final_head = _repo_refresh_line(observe(["rev-parse", "--verify", "--quiet", "HEAD"]).stdout)
+        if (not active() or not (behind or ahead) or final_branch != identity.branch_ref
+                or final_head != expected):
+            raise subprocess.SubprocessError("repository_refresh_final_state_unavailable")
+        return result
+    except BaseException as exc:
+        # Discard successful preceding-child diagnostics and its rc. No fabricated
+        # mutating-child exit for a precheck, probe or between-stage control gap.
+        if result is not None:
+            result.stderr.clear()
+        failure = _repo_pull_safe_error(exc)
+    return _RepoPullOutcome(refresh_phase=phase, failure=failure)
 
 
 def refresh_workspace_repos(
     workspace: Path, *, _deadline: float | None = None,
     _cancel_requested: threading.Event | None = None,
 ) -> dict[str, bool]:
-    """Best-effort refresh of already-cloned repos before executor launch.
+    """Best-effort standard-origin/same-name refresh before executor launch.
 
-    All read-only admission checks and pulls share ONE 30-second monotonic
-    batch deadline, including scan time. Each subprocess gets only what is
-    left; expired/cancelled and otherwise refused siblings return false without
-    starting a pull. A failed repo may leave budget for later siblings. Scan,
-    process creation/reap and native evidence persistence are synchronous OS/DB
-    operations, not hard real-time bounds. Async runners use the joined offload
-    below so none of these waits occupies their shared event loop.
+    Admission, probes, pull-state prechecks, configured fetch, literal pinned-U
+    ff-only merge, conditional recursive checkout and final B/L/U oracle share
+    ONE original30s batch deadline, including scan and executor-queue time.
+    Unsupported/missing/detached/unusable/deleted-source admission is false/stale
+    without new cleanup uncertainty. Admitted-state semantic precheck failures
+    and every incomplete possible mutating attempt retain failed_cleanup before
+    fallible attribution. Later no-start or stable HEAD never proves no effects.
 
-    Detached/unusable/missing/unreadable upstream checks refuse BEFORE pull.
-    Any executed pull failure/exception/timeout retains native failed_cleanup;
-    parent HEAD/branch/porcelain equality cannot establish absence of effects,
-    especially with recursive submodules. Timeout is no process-tree quiescence
-    claim. Existing unknown reservations are never cleared. Expected Git errors
-    are best-effort; native evidence errors and cancellation still propagate.
-    False results always retain the stale-source prompt warning.
+    U is one exact origin/source advertisement AFTER successful fetch, with
+    locally available commit/ancestry; U0/FETCH_HEAD/late tracking values cannot
+    select it. Stable checkout/config/transport is cooperative, not atomic:
+    last-window/ABA and remote-observation correspondence remain limitations.
+    Direct-child settlement is required, not process-tree quiescence. OS/DB
+    creation/reap/persistence are not hard real-time bounds. Expected Git errors
+    are best-effort; evidence errors/control propagate. False always warns stale.
     """
     deadline = time.monotonic() + _REPO_REFRESH_SECONDS if _deadline is None else _deadline
     try:
         repo_names = PersistentWorkspaceSetup.detect_repo_names(workspace)
-    except OSError as exc:
-        logger.debug("repo refresh: could not scan %s: %s", workspace, exc)
+    except OSError:
+        logger.debug("repo refresh skipped: repository_scan_unavailable")
         return {}
     from runtime.orchestrator.producer_move import current_producer_preparation
     from runtime.orchestrator.thread_move import current_thread_preparation
@@ -2126,11 +2367,12 @@ def refresh_workspace_repos(
     for name in repo_names:
         results[name] = False
         repo_dir = workspace / "repos" / name
-        if not _repo_refresh_can_pull(repo_dir, deadline=deadline,
-                                      cancel_requested=_cancel_requested):
+        identity = _repo_refresh_admit(repo_dir, deadline=deadline,
+                                        cancel_requested=_cancel_requested)
+        if identity is None:
             continue
         try:
-            result = _repo_refresh_pull(repo_dir, deadline=deadline,
+            result = _repo_refresh_pull(repo_dir, identity, deadline=deadline,
                                         cancel_requested=_cancel_requested)
         except BaseException as exc:
             # An unexpected capture-helper failure is never a no-start receipt.
@@ -2138,7 +2380,7 @@ def refresh_workspace_repos(
             result = _RepoPullOutcome(failure=_repo_pull_safe_error(exc))
         # None is affirmative no-start; attempted creation is not that proof.
         if result is not None:
-            results[name] = result.returncode == 0 and result.failure is None
+            results[name] = result.returncode == 0 and result.failure is None and result.settled
             if not results[name]:
                 _repo_pull_failed(preparation, name, result)
             else:

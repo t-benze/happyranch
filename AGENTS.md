@@ -586,9 +586,15 @@ existing claim exclusions, never ordinary pending/carrier eligibility. Callback,
 current-owner, cancellation and intentional hold winners still exclude accounting.
 
 The first preparation cause is kept separately from the final Pause/cleanup error:
-bounded stage, exception class/stable Pause code and source locations. An
-executed failed task pull can additionally retain a safe repo identifier, fixed
-operation, return code or safe exception class, and optional closed advisory
+bounded stage, exception class/stable Pause code and source locations. A
+failed task refresh can additionally retain a safe repo identifier, optional
+explicit operation=refresh_ff_only and closed refresh_phase=precheck|fetch|
+between_stages|merge|submodule_update. Absent selector retains legacy pull_ff_only
+shape/meaning; old dictionaries are unchanged. repository_pull is aggregate.
+Only the actual failing child's returned exit is recorded; nonchild precheck/
+between-stage failures invent no exit or successful-child diagnostic reuse.
+Phase identifies operation, not root/network cause. The cause may also retain a
+safe exception class and the existing optional closed advisory
 `diagnostic_category`/`diagnostic_rule` with exact Boolean `capture_complete`,
 `capture_truncated` and `timed_out` facts. Categories are lock/network/auth/other/
 unknown; non-fast-forward remains other. Only complete, untruncated, strictly
@@ -596,9 +602,9 @@ decoded whole-stream grammar can select a specific wording label; ambiguity,
 unsafe structure, timeout or unavailable/failed capture is unknown. Labels never
 prove provenance or historical cause; missing/old exit128 stays unknown. Existing
 first causes and historical dictionaries are reused unchanged, and no non-task
-cause fields are added. Skipped pre-pull admission remains a stale-source warning
-and creates no pull-failure cause. No exception messages, output, argv, URLs,
-environment or locals enter this evidence. Pull failures latch sticky cleanup
+cause fields are added. Skipped unsupported/unavailable admission stays a stale-source
+warning and creates no refresh-failure cause. No exception messages, output, argv, URLs,
+environment or locals enter this evidence. Refresh failures latch sticky cleanup
 before attribution, attempt the first cause even after an evidence-save failure,
 and propagate only fixed safe errors without captured exception chains. An
 audit/storage save failure remains an explicit
@@ -684,19 +690,48 @@ Restart treats unclosed task `prepared` entries as unknown, including terminal
 rows and prepared recovery/retry owners; absence of first launch is no proof of
 preparation cleanup. Unknown deferred entries cannot authorize a fresh launch.
 Native pre-effect source/artifact validation, repo-scan and missing launch-seam refusals
-retain their no-effect disposition. Repository refresh also refuses before pull
-on detached HEAD or missing/unusable/unreadable upstream; skipped repos stay false
-and warn of stale source. Every executed pull failure/timeout/exception retains
-uncertainty, including dirty/non-fast-forward and recursive partial effects;
-equal HEAD/branch/porcelain summaries never prove no effects. Read-only upstream
-lookup is admission only, not a remote-state lock. All observations/pulls share
-one 30-second batch deadline including scan, probes and executor-queue delay;
-exhausted/unattempted siblings stay false. Pull stdout is discarded; stderr retains
+retain their no-effect disposition. Automatic repository refresh admits only ONE
+effective byte-exact `+refs/heads/*:refs/remotes/origin/*` origin fetch rule,
+ONE checked-branch remote=origin and merge=refs/heads/<same branch>, with exact
+usable refs/remotes/origin/<same branch> upstream (slash names included).
+Applicable scopes/includes count; duplicate/extra/negative/custom mappings skip.
+Unsupported config, missing/detached/unborn/unreadable/no-upstream or absent exact
+source stays false/stale before mutation, with a fixed safe reason and no newly
+latched failed_cleanup solely for that refusal. Existing uncertainty stays sticky.
+Admitted pull-state prechecks retain unmerged/MERGE_HEAD and branch-before-pull
+rebase clean-tracked checks, ignoring submodule-only dirtiness and allowing
+untracked files subject to Git's later collision checks. Semantic precheck failure
+is false/unknown before attribution, without an invented mutating-child exit.
+Configured `fetch -- origin` must succeed and settle before one exact post-fetch
+origin/refs/heads/<branch> advertisement selects locally available commit U.
+Admission U0 is existence only; newly fetched U1 may replace it. Unavailable U2,
+deleted/malformed/ambiguous source, probe failure or observed B/L/config/upstream/
+transport drift refuses without merge, retry or fallback. FETCH_HEAD and late
+tracking contents supply no U provenance. Merge uses literal full U with explicit
+`--ff-only`, retaining inherited merge settings and pull.autostash true/false
+precedence; absent pull override uses rebase.autostash when resolved rebase is
+on, otherwise inherits merge behavior. Git owns stash/apply/conflicts.
+After successful merge, effective submodule.recurse requires one supervised
+`submodule update --recursive --checkout`, also for equal/local-ahead no-ops.
+No init/force/remote/rebase workaround or completion after failed merge.
+True requires all required children and final exact original-branch/HEAD oracle
+AFTER completion: behind ends U; equal stays L=U; local-ahead preserves EXACT L;
+divergence refuses FF. Exit0/any descendant of U alone cannot establish freshness.
+Any incomplete possible mutating attempt retains uncertainty, including failed
+completion after HEAD advances and later no-start/cancel/probe failure. Equal
+HEAD/branch/porcelain or a settled child never proves no effects. Checkout/config/
+transport stability is cooperative, not a lock; last-window/ABA and transactional
+correspondence of remote observations remain limitations, with no rollback.
+All probes/prechecks/children/final checks and siblings share ONE original30-second
+batch deadline including scan and executor-queue delay; exhausted/unattempted
+siblings stay false. Read-only control output is privately bounded4096B and must
+be complete/validated, with lazy object fetching disabled. Child stdout is
+discarded; each mutating child's private stderr retains
 at most4096 bytes plus bounded read scratch, draining/discarding excess while the
 direct child runs. Nonblocking capture permits at most two4096-byte exit-tail
 reads, never waiting for descendant EOF or a reader thread. Overflow/incomplete/
-failed capture cannot select a specific label. Actual rc0 remains success despite
-truncation/unavailable capture; a post-start read exception remains failure even
+failed capture cannot select a specific label. Actual child rc0 remains eligible despite
+truncation/unavailable advisory capture; a post-start read exception remains failure even
 if the child later exits0. Direct-child settlement is required, without a hard
 real-time guarantee over OS creation/reap or native persistence. Thread/dream/
 wake/Todo await off-loop refresh under the SAME native preparation-effects scope,
