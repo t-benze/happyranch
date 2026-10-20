@@ -80,6 +80,30 @@ class OpcClient:
         return self.post(f"/api/v1/orgs/{slug}/team-moves/{operation_id}/recover",
                          json={"expected_revision": expected_revision})
 
+    def thread_delivery_release_capability(self, slug: str) -> httpx.Response:
+        from cli.thread_delivery_release_requests import identifier
+        identifier(slug)
+        return self.get(f"/api/v1/orgs/{slug}/thread-delivery-releases/capability")
+
+    def thread_delivery_release_preview(self, slug: str, request_bytes: bytes) -> httpx.Response:
+        from cli.thread_delivery_release_requests import identifier
+        identifier(slug)
+        return self.post(f"/api/v1/orgs/{slug}/thread-delivery-releases/preview", content=request_bytes,
+                         headers={"Content-Type": "application/json"})
+
+    def thread_delivery_release_apply(self, slug: str, request_bytes: bytes) -> httpx.Response:
+        from cli.thread_delivery_release_requests import identifier
+        identifier(slug)
+        # The caller positively saved and reread these exact bytes. No retry.
+        return self.post(f"/api/v1/orgs/{slug}/thread-delivery-releases", content=request_bytes,
+                         headers={"Content-Type": "application/json"})
+
+    def thread_delivery_release_show(self, slug: str, operation_key: str) -> httpx.Response:
+        from cli.thread_delivery_release_requests import identifier
+        identifier(slug)
+        identifier(operation_key, key=True)
+        return self.get(f"/api/v1/orgs/{slug}/thread-delivery-releases/by-key/{operation_key}")
+
     def list_tokens(
         self,
         slug: str,
