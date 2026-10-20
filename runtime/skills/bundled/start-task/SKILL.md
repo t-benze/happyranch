@@ -608,6 +608,8 @@ are not covered by that rail — are documented in the **manage-agent** skill an
 
 ## Native launch-refusal outcomes
 
+Optional pull diagnostic labels describe advisory wording only; absent labels or historical exit128 remain unknown and grant no cleanup or retry authority.
+
 Ordinary native prelaunch refusals have a durable maximum of three consecutive
 attempts per logical continuation; an unclosed durable preparation can fail earlier
 because unknown ownership prevents safe retry. A `launch_refused` FAILED task uses
