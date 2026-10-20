@@ -47,6 +47,7 @@ class _Attachment:
     revoked: threading.Event = field(default_factory=threading.Event)
     native_finished: threading.Event = field(default_factory=threading.Event)
     future: asyncio.Future | None = None
+    retirement: asyncio.Future | None = None
     safe_return: bool = False
 
     def revoke(self) -> None:
@@ -245,6 +246,7 @@ class _CleanupDiagnostics:
                 continue
             if not token.org._acquire_cleanup_diagnostic(token):
                 continue
+            token.retirement = asyncio.get_running_loop().create_future()
             try:
                 # Registration, submission and capture of THAT returned Future
                 # are one synchronous event-loop segment before ANY await.
@@ -254,6 +256,7 @@ class _CleanupDiagnostics:
                 # admitted. Keep the token/DB guard; never infer safe retirement.
                 completed.append((token, _NativeResult(
                     _CleanupReadEvidence("incomplete", "submission_unknown", False, self.budget.counters()), ())))
+                token.retirement.set_result(None)
                 break
             result = await self._native_return(token)
             if (isinstance(result, _NativeResult) and token.native_finished.is_set()
@@ -266,32 +269,38 @@ class _CleanupDiagnostics:
                 result = _NativeResult(_CleanupReadEvidence(
                     "incomplete", "native_return_unknown", False, self.budget.counters()), ())
             completed.append((token, result))
+            token.retirement.set_result(None)
             if not token.safe_return:
                 break
         self._publish(completed)
 
-    async def drain(self) -> None:
+    async def drain(self, org: OrgState | None = None) -> None:
         """Bounded owned join, outside attachment/control locks; no task.cancel."""
         from runtime.daemon.org_state import _OrgBusyError
         deadline = time.monotonic() + _DRAIN_SECONDS
         cancellation = None
-        if self.worker is not None:
-            while not self.worker.done():
+        selected = [t for t in self.attachments if org is None or t.org is org]
+        # Org removal joins only ITS submitted native/settlement obligation.
+        # Before submission, revoke prevents that token ever acquiring the DB;
+        # another org's active/unsafe diagnostic must not block this detach.
+        join = self.worker if org is None else next((t.retirement for t in selected), None)
+        if join is not None:
+            while not join.done():
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     raise _OrgBusyError("cleanup_diagnostic_drain_incomplete")
                 try:
-                    await asyncio.wait_for(asyncio.shield(self.worker), timeout=remaining)
+                    await asyncio.wait_for(asyncio.shield(join), timeout=remaining)
                 except asyncio.CancelledError as exc:
                     cancellation = cancellation or exc
-                    if self.worker.cancelled():
+                    if join.cancelled():
                         break
                 except TimeoutError:
                     raise _OrgBusyError("cleanup_diagnostic_drain_incomplete") from None
                 except Exception:
                     break
         # Future/task settlement alone never certifies native restoration.
-        for token in self.attachments:
+        for token in selected:
             token.org._assert_cleanup_diagnostics_idle()
         if cancellation is not None:
             raise cancellation

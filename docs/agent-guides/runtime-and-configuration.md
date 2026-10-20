@@ -696,8 +696,9 @@ settlement releases it. Cancellation, uncertain submission/return, failed
 restoration and drain timeout retain the guard/DB. Detach/same-root reconstruction/
 switch capture and revoke under orgs_lock, drain outside locks, then renew exact
 map/runtime/org identity and all existing busy/hold preflights before any close or
-registry/activation effect; races refuse409. Refused operations never restart a
-revoked pass. OrgState.close revokes/refuses diagnostics independently of runners;
+registry/activation effect; races refuse409. Org removal joins only its own
+diagnostic obligation; unrelated org diagnostics do not block it. Refused
+operations never restart a revoked pass. OrgState.close revokes/refuses diagnostics independently of runners;
 close_all independently revokes/joins/checks before DB closure. Lifespan revokes
 before its first shutdown await and retains A's admission fence, host SHUTDOWN,
 runner/queue joins and no-clean-success on incomplete drain. Direct/re-emitted

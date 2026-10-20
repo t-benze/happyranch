@@ -93,11 +93,11 @@ class DaemonState:
         for org in self.orgs.values():
             org._revoke_cleanup_diagnostics()
 
-    async def _drain_cleanup_diagnostics(self) -> None:
+    async def _drain_cleanup_diagnostics(self, org: OrgState | None = None) -> None:
         if self._cleanup_diagnostics is not None:
-            await self._cleanup_diagnostics.drain()
-        for org in self.orgs.values():
-            org._assert_cleanup_diagnostics_idle()
+            await self._cleanup_diagnostics.drain(org)
+        for current in self.orgs.values() if org is None else (org,):
+            current._assert_cleanup_diagnostics_idle()
 
     def _stop_runner_admission(self) -> None:
         # No await: fence both existing OrgState references and later add_org.
@@ -397,7 +397,8 @@ class DaemonState:
             if current is not None:
                 current._revoke_cleanup_diagnostics()
         # Never await a native scan under orgs/root/move/terminal locks.
-        await self._drain_cleanup_diagnostics()
+        if current is not None:
+            await self._drain_cleanup_diagnostics(current)
         async with self.orgs_lock:
             self._assert_attachments_unchanged(captured)
             current = self._assert_can_remove_org(slug)
