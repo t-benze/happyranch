@@ -407,7 +407,7 @@ is supplied. See accepted TASK11214 C01–C18 for the full independent contract.
 The freezer operation observer uses the original-backed PyInstaller input and
 bounded independent archive reader described in
 [the freezer contract](../../packaging/README.md#freezer-operation-custody).
-Darwin selects custody revision 3 (`1happyranchcustody3`) with descriptor-relative
+Darwin selects custody revision 4 (`1happyranchcustody4`) with descriptor-relative
 snapshot writes and ZIP metadata budgets enforced before allocation. The original
 base-library producer sorts modules by name before each original lane capture,
 with or without custody. It retains membership, cached-code selection,
@@ -415,7 +415,30 @@ optimization and ZIP member bytes.
 Both original Analysis observations and all contributor edges remain, with exact
 byte/kind collision and live-drift refusal unchanged. Equal module tuples do not
 prove equal cached code, and build12's exact changed subject remains unknown.
-The new wheel/provenance/lock/wrapper/reader pins agree; historical revision 1/2
+Fixed operation-selected freezer inputs/output profiles are32MiB each with both
+lexical/object1,000,000-node admission; context64KiB and copy/default8MiB/smaller
+site caps remain. All retain strict UTF8/duplicates/nonfinite/types/Boolean-field
+checks, depth16 and string4096B. Object preflight and bounded incremental encoding
+preserve full canonical records, every occurrence/order/ID and lineage. All fresh
+accept/before-copy/copy/verify/licenses readers use matching caps, reopen/hash full
+bytes and preserve the four-digest DAG; copy references actual stored output.
+One enclosing attempted JSON-I/O256MiB meter per helper command/spec Session
+charges every write/readback/load/reference and standalone/nested fragment read,
+including both parse and retained-byte reads, without path discounts/nested reset.
+Readback reserves written length plus an EOF probe before creation under an
+exact-length domain within the kind cap; partial IO does not refund reservations.
+Exhaustion stays sticky; original failure/nonzero/partial diagnostics remain.
+Ordinary reads8GiB/snapshots2GiB/members16384/names8MiB are independent; fragment
+JSON also charges ordinary reads. Vendor COLLECT independently reads the entire
+32MiB ledger with declared integer size/full consumed digest/lexical1m and original
+object1m/depth16/string4096 guards, ordered arguments and stable observation.
+Those reads charge its8GiB meter; vendor fragments/default parse remain8MiB,
+fragment writes32MiB/run. Unrelated marshal/PYZ/ZIP and asset budgets stay unchanged.
+The224MiB/spec and232.125MiB/fresh-reader formulas plus small records/EOF probes
+bound the current call graph, not native totals or hard RSS/time. Build13's exact
+rejected size/content remain UNKNOWN; finite capacities do not guarantee native
+success. Original schema/notice/guard/default/occurrence semantics remain.
+The new wheel/provenance/lock/wrapper/reader pins agree; historical revision 1/2/3
 evidence and retained wheels keep their original identities. Deterministic
 source-repack reproduction is separate from Darwin install/compatibility, actual
 lane equality and fresh-reader behavior, which remain UNEXECUTED/UNVERIFIED.

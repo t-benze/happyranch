@@ -228,7 +228,7 @@
  
          self.strip_binaries = kwargs.get('strip', False)
          self.upx_exclude = kwargs.get("upx_exclude", [])
-@@ -1141,13 +1235,36 @@
+@@ -1141,13 +1235,52 @@
              else:
                  raise TypeError(f"Invalid argument type for COLLECT: {type(arg)!r}")
  
@@ -241,11 +241,27 @@
 +            self.custody.admit(raw, 'COLLECT')
 +            ref = self.custody.value['ledger_ref']
 +            _hr_need(type(ref) is dict and set(ref) == {'path', 'size', 'sha256'}, 'COLLECT_LEDGER_REQUIRED')
-+            ledger = self.custody.subject(ref['path'], False, cap=8 * 1024**2)
++            # Fixed COLLECT-only complete ledger profile; never nominated by JSON.
++            ledger_cap = 32 * 1024**2
++            _hr_need(type(ref['size']) is int and 0 <= ref['size'] <= ledger_cap, 'COLLECT_LEDGER_SIZE')
++            ledger = self.custody.subject(ref['path'], False, cap=ledger_cap)
 +            _hr_need((ledger['size'], ledger['sha256']) == (ref['size'], ref['sha256']), 'COLLECT_LEDGER_DIGEST')
 +            with _hr_fd(ref['path']) as fd:
++                _hr_need(os.fstat(fd).st_size == ref['size'], 'COLLECT_LEDGER_SIZE')
 +                self.custody.charge(ref['size'] + 1)
-+                payload = _hr_parse(os.read(fd, 8 * 1024**2 + 1))['payload']
++                retained = bytearray()
++                consumed = hashlib.sha256()
++                while True:
++                    chunk = os.read(fd, min(65536, ledger_cap - len(retained) + 1,
++                                            ref['size'] - len(retained) + 1))
++                    if not chunk:
++                        break
++                    retained.extend(chunk)
++                    _hr_need(len(retained) <= ref['size'], 'COLLECT_LEDGER_SHORT_OR_GROWING')
++                    consumed.update(chunk)
++                _hr_need(len(retained) == ref['size'], 'COLLECT_LEDGER_SHORT_OR_GROWING')
++                _hr_need(consumed.hexdigest() == ref['sha256'], 'COLLECT_LEDGER_DIGEST')
++                payload = _hr_parse(bytes(retained), _collect_ledger=True)['payload']
 +            expected = payload['collect_arguments']
 +            actual = [[r['destination'], r['source'], r['kind']] for r in raw]
 +            _hr_need(actual == expected, 'COLLECT_LEDGER_MISMATCH')
@@ -265,7 +281,7 @@
  
      _GUTS = (
          # COLLECT always builds, we just want the TOC to be written out.
-@@ -1159,12 +1276,17 @@
+@@ -1159,12 +1292,17 @@
          return True
  
      def assemble(self):
@@ -283,7 +299,7 @@
              if typecode not in {'DEPENDENCY', 'SYMLINK'} and not os.path.exists(src_name):
                  # If file is contained within python egg, it will be added with the egg.
                  if strict_collect_mode:
-@@ -1193,7 +1315,12 @@
+@@ -1193,7 +1331,12 @@
                      "but there already exists a file at that path!"
                  )
              if typecode in ('EXTENSION', 'BINARY'):
@@ -297,7 +313,7 @@
                      src_name,
                      dest_name,
                      use_strip=self.strip_binaries,
-@@ -1203,7 +1330,11 @@
+@@ -1203,7 +1346,11 @@
                      codesign_identity=self.codesign_identity,
                      entitlements_file=self.entitlements_file,
                      strict_arch_validation=(typecode == 'EXTENSION'),
@@ -309,7 +325,7 @@
              if typecode == 'SYMLINK':
                  # On Windows, ensure that symlink target path (stored in src_name) is using Windows-style back slash
                  # separators.
-@@ -1230,6 +1361,19 @@
+@@ -1230,6 +1377,19 @@
                  or (typecode == 'DATA' and os.access(src_name, os.X_OK))
              ):
                  os.chmod(dest_path, 0o755)
@@ -331,7 +347,7 @@
  
 --- a/PyInstaller/building/utils.py
 +++ b/PyInstaller/building/utils.py
-@@ -104,6 +104,350 @@
+@@ -104,6 +104,363 @@
      return os.path.join(*dest_elements)
  
  
@@ -360,9 +376,10 @@
 +
 +
 +
-+def _hr_parse(raw):
-+    _hr_need(len(raw) <= 8 * 1024**2, 'JSON_CAP')
-+    depth, quoted, escape = 0, False, False
++def _hr_parse(raw, *, _collect_ledger=False):
++    cap = (32 if _collect_ledger else 8) * 1024**2
++    _hr_need(len(raw) <= cap, 'JSON_CAP')
++    depth, quoted, escape, scalar, lexical = 0, False, False, False, 0
 +    for char in raw.decode('utf-8', 'strict'):
 +        if quoted:
 +            if escape:
@@ -373,11 +390,23 @@
 +                quoted = False
 +        elif char == '"':
 +            quoted = True
++            scalar = False
++            lexical += 1
 +        elif char in '[{':
++            scalar = False
++            lexical += 1
 +            depth += 1
 +            _hr_need(depth <= 16, 'JSON_DEPTH')
 +        elif char in ']}':
++            scalar = False
 +            depth -= 1
++        elif char in ' \t\r\n,:':
++            scalar = False
++        elif not scalar:
++            scalar = True
++            lexical += 1
++        if _collect_ledger:
++            _hr_need(lexical <= 1000000, 'JSON_LEXICAL_NODE_CAP')
 +    def pairs(items):
 +        value = {}
 +        for key, child in items:
@@ -682,7 +711,7 @@
  def process_collected_binary(
      src_name,
      dest_name,
-@@ -113,7 +457,8 @@
+@@ -113,7 +470,8 @@
      target_arch=None,
      codesign_identity=None,
      entitlements_file=None,
@@ -692,7 +721,7 @@
  ):
      """
      Process the collected binary using strip or UPX (or both), and apply any platform-specific processing. On macOS,
-@@ -123,12 +468,46 @@
+@@ -123,12 +481,46 @@
      In addition to given arguments, this function also uses CONF['cachedir'] and CONF['upx_dir'].
      """
      from PyInstaller.config import CONF
@@ -740,7 +769,7 @@
  
      # Match against provided UPX exclude patterns.
      upx_exclude = upx_exclude or []
-@@ -169,7 +548,7 @@
+@@ -169,7 +561,7 @@
  
      # Exit early if no processing is required after above rules are applied.
      if not use_strip and not use_upx and not is_darwin:
@@ -749,7 +778,7 @@
  
      # Prepare cache directory path. Cache is tied to python major/minor version, but also to various processing options.
      pyver = f'py{sys.version_info[0]}{sys.version_info[1]}'
-@@ -218,7 +597,7 @@
+@@ -218,7 +610,7 @@
      if cached_id in cache_index:
          # If digest matches to the cached digest, return the cached file...
          if src_digest == cache_index[cached_id]:
@@ -758,7 +787,7 @@
  
          # ... otherwise remove it.
          os.remove(cached_name)
-@@ -327,6 +706,7 @@
+@@ -327,6 +719,7 @@
              osxutils.set_dylib_dependency_paths(cached_name, target_rpath)
              osxutils.sign_binary(cached_name, codesign_identity, entitlements_file)
          except osxutils.InvalidBinaryError:
@@ -766,7 +795,7 @@
              # Raised by osxutils.binary_to_target_arch when the given file is not a valid macOS binary (for example,
              # a linux .so file; see issue #6327). The error prevents any further processing, so just ignore it.
              pass
-@@ -342,6 +722,7 @@
+@@ -342,6 +735,7 @@
              #    the actual python code is running on M1 in native arm64 mode.
              if strict_arch_validation:
                  raise
@@ -774,7 +803,7 @@
              logger.debug("File %s failed optional architecture validation - collecting as-is!", src_name)
          except Exception as e:
              raise SystemError(f"Failed to process binary {cached_name!r}!") from e
-@@ -350,7 +731,7 @@
+@@ -350,7 +744,7 @@
      cache_index[cached_id] = src_digest
      misc.save_py_data_struct(cache_index_file, cache_index)
  
@@ -783,7 +812,7 @@
  
  
  def _compute_file_digest(filename):
-@@ -827,7 +1208,7 @@
+@@ -827,7 +1221,7 @@
      Create a zip archive with python modules that are needed during python interpreter initialization.
      """
      with zipfile.ZipFile(filename, 'w') as zf:
