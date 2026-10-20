@@ -215,8 +215,10 @@ Directory guard refusals retain their original category and error text. Python
 tracebacks can additionally show one `DIRECTORY_CONTEXT ` note containing compact
 ASCII JSON: category, full held-descriptor octal `mode`, `uid`, the actual `owned`
 predicate, process-root `role` (or null), truncation flags, offending `cursor` and
-selected `root` (or null). Process roles are checked in order: `prefix`,
-`base_prefix`, `stdlib`, `usr-bin`. An unsafe ancestor names that ancestor even
+selected `root` (or null). Original process roles are checked in order: `prefix`,
+`base_prefix`, `stdlib`, `usr-bin`. At the later native stage the selected lipo
+and install_name_tool immediate bin roots are each checked before deduplication,
+with cap16 preserved before native snapshots and Analysis. An unsafe ancestor names that ancestor even
 when the selected root is a safe child. The note is at most 768 ASCII bytes;
 each path is at most 192 serialized characters including JSON quotes. Long paths
 keep a whole-codepoint prefix plus `...` and an explicit truncation flag. The
@@ -259,7 +261,55 @@ wrapper collector permits 8 MiB per input/32 MiB total read and 2 MiB per stored
 file/8 MiB total stored. Actual hosted log/artifact propagation, runtime bounds,
 descriptor/race/negative behavior and final native consumers remain unverified.
 This diagnostic establishes no tool execution identity, successful build or app
-acceptance; existing vendor-consistent literal codesign/PATH selection remains.
+acceptance. Literal codesign and original vendor PATH argv remain; the custody
+selection described below aligns the two affected PATH roles.
+
+For full-app custody builds, spec setup now discovers real lipo/install_name_tool
+paths before `spec_begin` and either Analysis. A present valid absolute
+`DEVELOPER_DIR` selects an `.app` (lexically appended `Contents/Developer`) or full
+developer directory; otherwise one literal `/usr/bin/xcode-select --print-path`
+must select full Xcode. The same resolver child environment pins that raw path
+for exactly two `/usr/bin/xcrun --sdk macosx --find` queries. Each query has a
+10-second deadline, streaming combined8192-byte stdout/stderr cap and4096-byte
+path plus optional LF limit, drains both pipes and settles only its owned child.
+Strict UTF8/single-path/control/colon/component/length validation precedes use;
+spaces are allowed. No host selection/cache mutation, probe execution, retry,
+alternate installation or copied tool is used. Discovery failures report bounded
+role/category errors with descriptor facts unknown, never wholesale stderr/env.
+
+The transient selection is validated again in `spec_begin` after the original
+caller/context/platform/root/wheel/receipt/Python sequence. Candidates must have
+their exact role basenames beneath that full developer directory with immediate
+`usr/bin` parents. Only those exact bin roots are admitted; `/Applications`,
+Xcode/Developer/SDK trees and `/` gain no general read permission. Raw ancestry
+and all existing single-link/type/uid/mode/no-follow/nonblocking/device/cap and
+stable-identity safeguards remain controlling. Returned leaf aliases and
+nonexecutables refuse; no unsafe path or attributes are assumed. Native row and
+snapshot order stays codesign,lipo,install_name_tool, with literal
+`/usr/bin/codesign`. Original same-descriptor refusal notes remain authoritative.
+
+After successful snapshots, candidate parents (lipo then install_name_tool,
+deduplicated) precede the complete original PATH. Both `shutil.which` results
+must equal the discovered paths before activation, so cross-shadow/disappearance/
+fallback refuses before Analysis and tentative PATH is restored on refusal.
+Only this PyInstaller process receives the PATH for both lanes and the whole
+PYZ/EXE/COLLECT lifetime. The original vendor PATH argv for the two affected
+roles inherits this selection; no wheel edit is involved. The parent shell,
+later web/Go/Swift and frozen CLI inspection environments are unchanged;
+custody-absent standalone freezes perform no discovery/PATH change.
+
+Native row shapes, `selection_observation`, `origin_unobserved`, root propagation
+and four caller-held digests stay unchanged. Fresh accept/before-copy/copy/licenses
+readers reopen recorded roots/selected paths/aliases/live and snapshot subjects,
+never their own PATH or a new xcrun result. Final verify-release PATH lipo
+inspection is a separate unchanged consumer. This observes intended selection,
+not an executed image or publisher, and cannot detect invisible same-UID
+replacement/restore. Actual discovery/safe candidates, bounded cleanup/FD/race/
+negative behavior, both-lane completion and fresh native consumers remain
+UNEXECUTED/UNVERIFIED; source/static success establishes no app/archive/receipt,
+native or release acceptance. The full
+[freezer selection contract](../../packaging/README.md#freezer-operation-custody)
+retains original-backed notices and all independent package checks.
 
 The shared freezer overrides inherited `PYINSTALLER_CONFIG_DIR` with a fresh,
 validated cache under this run's freeze work path before invoking build tools.
