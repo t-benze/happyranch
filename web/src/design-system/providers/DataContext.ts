@@ -181,6 +181,53 @@ export type ResolveEscalationResult = Awaited<ReturnType<typeof tasksApi.resolve
 
 export type TasksListPage = { tasks: TaskRecord[]; next_cursor?: string | null };
 
+/** Ordinary Tasks-list partitions, in their fixed deduplication priority order. */
+export const TASK_LIST_STATUSES = [
+  'pending',
+  'in_progress',
+  'escalated',
+  'completed',
+  'failed',
+  'cancelled',
+  'superseded',
+] as const;
+
+/** One independently paged roots traversal of the Tasks list. Each owner has
+ *  its own cache entry, cursor, errors and operations; a sibling's state never
+ *  changes it. `tasks` holds only loaded roots that match this owner's exact
+ *  status/agent filter, once each, in page order. */
+export interface TaskListStream {
+  /** Lifecycle status, or `attention` for the independent Waiting-on-you owner. */
+  owner: string;
+  status: string;
+  tasks: TaskRecord[];
+  /** No successful response yet and no failure. */
+  isInitialPending: boolean;
+  /** The first response failed; nothing is loaded. */
+  isInitialError: boolean;
+  /** A refetch of loaded pages failed; the loaded rows are stale until reconciled. */
+  isStale: boolean;
+  /** The last continuation failed; automatic demand pauses until explicit retry. */
+  isContinuationError: boolean;
+  isRefreshing: boolean;
+  isFetchingNextPage: boolean;
+  hasNextPage: boolean;
+  /** Advance by at most one page with this owner's own cursor. Refused while
+   *  this owner is fetching, after a failure, or when exhausted, unless
+   *  `explicit` retries a failed continuation. */
+  fetchNextPage: (options?: { explicit?: boolean }) => Promise<void>;
+  /** Refetch this owner's loaded traversal; coalesced while it is fetching. */
+  refresh: () => Promise<void>;
+  /** Failed continuation → its failed cursor; otherwise refresh. */
+  retry: () => Promise<void>;
+}
+
+export interface TaskListStreams {
+  /** Selected ordinary owners in TASK_LIST_STATUSES order. */
+  ordinary: TaskListStream[];
+  attention: TaskListStream;
+}
+
 export interface TaskTailSSECallbacks {
   onOpen?: () => void;
   onError?: (error: unknown) => void;
@@ -211,6 +258,13 @@ export interface TasksApi {
     status?: string;
     assigned_agent?: string;
   }) => InfiniteQueryLike<TasksListPage>;
+  /** Tasks list: one 50-root traversal per selected ordinary status (all
+   *  seven unfiltered, only the filtered one otherwise) plus the independent
+   *  `status=escalated` attention traversal, each with its own owner. */
+  useTasksListStreams: (filters?: {
+    status?: string;
+    assigned_agent?: string;
+  }) => TaskListStreams;
   useTask: (taskId: string | undefined) => QueryLike<TaskRecord>;
   useTaskRecall: (taskId: string | undefined) => QueryLike<TaskRecallNode>;
 

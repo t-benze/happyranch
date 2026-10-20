@@ -2,11 +2,19 @@ import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 import { MemoryRouter } from 'react-router-dom';
-import { test, expect } from 'vitest';
+import { afterEach, beforeEach, test, expect, vi } from 'vitest';
 import { AppProvider, makeQueryClient } from '@/design-system/providers/AppProvider';
 import { AppRoutes } from '@/routes';
 import { I18nTestBoundary } from '@/test/render';
 import { server } from '@/test/server';
+
+// The ordinary status=escalated owner sends the same wire request as the
+// attention owner; a sentinel that never intersects keeps it at its first page
+// so every continuation request below belongs to the attention owner.
+beforeEach(() => {
+  vi.stubGlobal('IntersectionObserver', class { observe() {} disconnect() {} unobserve() {} });
+});
+afterEach(() => { vi.unstubAllGlobals(); });
 
 test.each(['pagination', 'refresh'])('retains loaded attention rows after %s failure', async (mode) => {
   sessionStorage.setItem('happyranch.token', 'tok');
@@ -21,7 +29,7 @@ test.each(['pagination', 'refresh'])('retains loaded attention rows after %s fai
     http.get('/api/v1/orgs/:slug/dashboard/summary', () => HttpResponse.json({ org_age_days: 1 })),
     http.get('/api/v1/orgs/review-org/tasks/roots', ({ request }) => {
       const p = new URL(request.url).searchParams;
-      if (!p.has('status')) return HttpResponse.json({ tasks: [task], next_cursor: null });
+      if (p.get('status') !== 'escalated') return HttpResponse.json({ tasks: [], next_cursor: null });
       requests.push(p.toString());
       if (fail || p.has('before')) return new HttpResponse(null, { status: 500 });
       const tasks = mode === 'pagination' ? Array.from({ length: 50 }, (_, i) => i === 0 ? task : { ...task, task_id: `TASK-ESC-${i}`, brief: `Other decision ${i}` }) : [task];
@@ -62,7 +70,7 @@ test('retries a failed attention continuation with its own cursor and reaches th
     http.get('/api/v1/orgs/:slug/dashboard/summary', () => HttpResponse.json({ org_age_days: 1 })),
     http.get('/api/v1/orgs/review-org/tasks/roots', ({ request }) => {
       const params = Object.fromEntries(new URL(request.url).searchParams);
-      if (params.status !== 'escalated') return HttpResponse.json({ tasks: [first], next_cursor: null });
+      if (params.status !== 'escalated') return HttpResponse.json({ tasks: [], next_cursor: null });
       attentionRequests.push(params);
       if (!params.before) return HttpResponse.json({ tasks: Array.from({ length: 50 }, (_, i) => i === 0 ? first : { ...first, task_id: `TASK-ESC-${i}`, brief: `Other decision ${i}` }), next_cursor: 'attention-cursor' });
       continuationAttempts += 1;
@@ -81,8 +89,13 @@ test('retries a failed attention continuation with its own cursor and reaches th
   await userEvent.click(within(alert).getByRole('button', { name: 'Retry loading more waiting-on-you tasks' }));
   await screen.findByText('Final retried founder decision');
   expect(screen.getByText('51 waiting on you')).toBeInTheDocument();
-  expect(attentionRequests).toEqual([
+  // Two identical first-page requests: the ordinary escalated owner and the
+  // attention owner each own one. Only attention continued, with its own cursor.
+  expect(attentionRequests.filter((params) => !params.before)).toEqual([
     { status: 'escalated', limit: '50' },
+    { status: 'escalated', limit: '50' },
+  ]);
+  expect(attentionRequests.filter((params) => params.before)).toEqual([
     { status: 'escalated', limit: '50', before: 'attention-cursor' },
     { status: 'escalated', limit: '50', before: 'attention-cursor' },
   ]);

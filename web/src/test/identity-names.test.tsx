@@ -487,7 +487,11 @@ describe('naming v1 shipping UI — mocked HTTP', () => {
       await act(async () => { finish(); });
       await waitFor(() => expect(client.isMutating()).toBe(0));
       expect(queries.map((query) => query.toString())).toEqual(initialQueries);
-      expect(queries.some((query) => query.has('assigned_agent') || query.get('status') === 'completed')).toBe(false);
+      // Unfiltered loading legitimately requests status=completed (one owner per
+      // status), so a leaked filter is visible as an agent-scoped request or as the
+      // applied-filter line below, never as a bare status parameter.
+      expect(queries.some((query) => query.has('assigned_agent'))).toBe(false);
+      expect(queries.filter((query) => query.get('status') === 'completed')).toHaveLength(1);
       expect(screen.getByLabelText(t('tasks.filters.agent'))).toHaveValue('');
       expect(screen.getByLabelText(t('tasks.filters.statusSelect'))).toHaveValue('');
       expect(screen.queryByRole('alert')).not.toBeInTheDocument();
