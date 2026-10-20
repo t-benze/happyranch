@@ -5,7 +5,7 @@
 > replacement E2E coverage is PENDING. See [the coverage gap record](../../python-test-reset.md).
 
 > Status: current
-> Current Source: `runtime/infrastructure/database.py`
+> Current Source: `runtime/infrastructure/database.py`, `runtime/infrastructure/db/reply_delivery.py`, `runtime/infrastructure/thread_delivery_release.py`
 > Notes: PR A defines persistence/compatibility; serial PR B activates runtime behavior without API/web expansion.
 
 THR-200 PR A adds two SQLite tables and three indexes. One episode row is keyed
@@ -55,3 +55,21 @@ detached queue need not be consumed. Cancellation cannot stop running thread wor
 a committed pending token is republished on a later attached tick. Unloaded orgs
 require reattachment for recovery. Mint/claim/settlement/count-once/cooldown rules
 are unchanged. Other synchronous DB callers and shutdown retain their limits.
+
+C1a (THR317 seq25/34, ROOT12084) adds dormant native exact-delivery disposition
+source only. Its serving-authority boundary always refuses; no service, route,
+CLI, scheduler or reaper applies a human override. An admitted future pending
+started REPLY interruption preserves acknowledgement/required range and breaker
+episode, receipts, failures, cooldown and existing HALF_OPEN lease, while one
+transaction creates one covering native queued replacement and consumes only
+legitimate released catch-up markers. Held/unsafe state refuses. Terminal sources
+get no replacement. Recovery, final claim, and the separate probe republication/
+mint path validate the same strict append-only companion/source/replacement
+history, including saved-prefix drift and late original lifecycle revocation.
+Raw unknown/process/effect evidence and retry budgets remain unchanged. Late
+writes, overlapping work and repeated external effects remain explicit risks;
+proof-backed release is unavailable. Old-reader/mixed-version operation and
+downgrade after companion use are unsupported. C1b serving lifetime/adapters and
+C2 task-tail are deferred; no historical recovery or live use follows. All native
+SQL/lock/race/cancellation/crash/security behavior is UNEXECUTED; integration
+SKIPPED24342, Python units RETIRED, required checks lint/static only.

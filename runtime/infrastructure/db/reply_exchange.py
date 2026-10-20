@@ -342,6 +342,8 @@ class ReplyExchangeMixin:
         ).fetchall()
         for row in rows:
             agent = row["agent_name"]
+            if not self._thread_release_pair_permitted_uncommitted(thread_id, agent):
+                continue  # Preserve markers/obligations; no alternate release mint.
             ack = int(row["acknowledged_through_seq"] or 0)
             req = int(row["required_through_seq"] or 0)
             if row["queued_invocation_token"] or row["running_invocation_token"]:

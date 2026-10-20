@@ -721,6 +721,39 @@ argv/environment/private paths/object IDs. Logging failure neither fails serving
 nor retries diagnostics. Runtime/SQL/timing/cancellation/crash proof UNEXECUTED;
 integration INCLUDING lifespan/SessionTracker/callback SKIPPED24342, units RETIRED.
 
+C1a native thread-delivery release source (THR317 seq25/34, ROOT12084) is
+unmounted. Native preview/show and the sole `release_exact_thread_delivery`
+transaction have no service, HTTP, CLI, startup, reaper or automatic release
+caller. The native serving-authority boundary always refuses until separately
+scoped C1b supplies actual serving/lifetime/current-control integration; neither
+ambient credentials nor caller proof flags enable it. Proof-backed release is
+unavailable. The approved human risk override requires exact preview, stable
+org-wide key, canonical command and explicit confirmation of late producer/session
+writes, overlapping work, repeated external effects and missing owner/process/
+effect closure. This source supplies no live-use, deployment or restart authority.
+
+The append-only version1 `thread_delivery_release` companion retains real thread
+scope/permanent agent meanings and literal lifecycle-v1/unknown/retry history.
+Complete bounded five-column and native readers bind source prefix, original and
+optional genuine INTEGER replacement; invalid/foreign/orphan/duplicate/future or
+incomplete evidence refuses. Only that obstruction's delivery interpretation can
+change. Saved-prefix drift or late ORIGINAL lifecycle revokes current permission;
+legitimate replacement history and the operation's own suffix preserve committed
+history. Native recovery/runnable/reserve/claim, arrival/settlement, exchange
+catch-up and separate probe republication share this interpretation. Raw host,
+move/Pause/drain and diagnostic census remain blocking. A pending started REPLY
+uses one interruption/slot-CAS/covering replacement commit without advancing ack,
+resetting breaker/lease/held state or adopting old retries. Terminal history gets
+no replacement;15402 gets no second catch-up. Unknown COMMIT requires strict
+same-key readback, never remint/rekey. Old-reader/mixed-version operation and
+downgrade after use are unsupported. Cooperative 3s/1024-row/4MiB/256-statement/
+5M-step budgets include closing reads; exhaustion is unavailable, not absence or
+a hard wall/RSS guarantee. C1b lifetime/adapters and C2 task-tail remain deferred;
+12044/10693 remain unrecovered. All behavior/SQL/locks/races/cancellation/crash/
+security proof is UNEXECUTED; integration INCLUDING callback is SKIPPED24342,
+Python units RETIRED. Only lint/static evidence and independent full review plus
+same-final-head scoped SOURCE QA can be attributed to this slice.
+
 Preview resolves native current names/IDs, rejects former/unknown names, uses
 only D's pure native planner and returns exact founder-only diff/digests,
 context/permission/skill deltas, complete blockers/owners, drain candidates and

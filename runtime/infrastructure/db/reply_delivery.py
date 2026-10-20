@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+import time
 from datetime import datetime, timedelta, timezone
 
 from runtime.infrastructure.db._shared import (
@@ -31,6 +32,222 @@ from runtime.reply_delivery import reply_failure_category
 
 
 class ReplyDeliveryMixin:
+    def preview_exact_thread_delivery(self, raw: str) -> dict:
+        """Read-only C1a native preview. No service/HTTP/CLI caller is mounted."""
+        from runtime.infrastructure.thread_delivery_release import (
+            Budget, PreviewRequest, ReleaseReader, ReleaseUnavailable, decode, native_read, preview,
+        )
+        budget = Budget()
+        request = decode(PreviewRequest, raw)
+        with native_read(self, budget) as reader:
+            if self._conn.in_transaction:
+                raise ReleaseUnavailable("database_owned")
+            try:
+                reader.execute("BEGIN").close()
+                view = ReleaseReader(reader, request.selection.org_slug)
+                view.inventory()
+                result = preview(view, request)
+                # Closing acquisition is part of the SAME budget and snapshot.
+                budget.check()
+                return result
+            finally:
+                self._conn.rollback()  # SELECT-only snapshot, never domain writes
+
+    def show_exact_thread_delivery(self, *, org_slug: str, operation_key: str) -> dict | None:
+        """Strict SAME-key readback, including after unknown COMMIT response."""
+        from runtime.infrastructure.thread_delivery_release import (
+            Budget, ReleaseReader, ReleaseUnavailable, native_read,
+        )
+        budget = Budget()
+        try:
+            with native_read(self, budget) as reader:
+                if self._conn.in_transaction:
+                    raise ReleaseUnavailable("database_owned")
+                try:
+                    reader.execute("BEGIN").close()
+                    view = ReleaseReader(reader, org_slug)
+                    view.inventory()
+                    return view.show(operation_key)
+                finally:
+                    self._conn.rollback()
+        except ReleaseUnavailable as exc:
+            # Failed/incomplete readback proves neither absence nor rollback
+            # of the original operation whose COMMIT response may be lost.
+            raise ReleaseUnavailable(exc.code, committed=None,
+                settings_restored=exc.settings_restored) from None
+
+    def release_exact_thread_delivery(self, raw: str) -> dict:
+        """SOLE C1a transaction owner; native authority is unavailable in C1a.
+
+        Future C1b supplies the REAL serving owner, registered native lifetime
+        and actual control renewal. No caller owner, callback or Boolean is
+        accepted. Slow capture precedes native locks; revoke-versus-COMMIT is
+        the innermost short leaf. No notification or await occurs here.
+        """
+        from runtime.infrastructure.thread_delivery_release import (
+            Budget, Companion, PreviewRequest, ReleaseCommand, ReleaseReader,
+            ReleaseUnavailable, canonical, decode, digest, fingerprint, history_digest,
+            native_authority, native_read, preview, selected, validate_confirmation,
+        )
+        budget = Budget()
+        cmd = decode(ReleaseCommand, raw)
+        validate_confirmation(cmd)
+        if cmd.mode == "proof_backed":
+            raise ReleaseUnavailable("whole_owner_proof_unavailable")
+        command_bytes = canonical(cmd.model_dump(mode="json"))
+        s = cmd.selection
+        # This fixed native boundary ALWAYS refuses in C1a, before DB/locks.
+        # Its later owner must join on uncertain rollback/restoration too.
+        with native_authority(self, s) as owner:
+            if not owner.move.gate.acquire(timeout=min(.025, max(0, budget.deadline - time.monotonic()))):
+                raise ReleaseUnavailable("move_busy")
+            try:
+                with native_read(self, budget) as reader:
+                    if self._conn.in_transaction:
+                        raise ReleaseUnavailable("database_owned")
+                    committing = False
+                    committed = False
+                    try:
+                        reader.execute("BEGIN IMMEDIATE").close()
+                        view = ReleaseReader(reader, s.org_slug)
+                        view.inventory()
+                        existing = view.records.get(cmd.operation_key)
+                        if existing is not None:
+                            if existing[1].command.encode() != command_bytes:
+                                raise ReleaseUnavailable("key_collision")
+                            result = view.show(cmd.operation_key)
+                            self._conn.rollback()  # replay has no writes
+                            return result
+                        fresh = preview(view, PreviewRequest.model_validate(
+                            cmd.model_dump(include={"version", "operation_key", "mode", "selection"}), strict=True))
+                        if (fresh["inputs"] != cmd.model_dump(mode="json", exclude={"confirmation"})
+                                or fresh["preview_digest"] != cmd.confirmation.preview_digest):
+                            raise ReleaseUnavailable("stale_preview")
+                        owner._revalidate_native_control_uncommitted(s, reader=reader)
+                        evidence = view.thread(s.thread_id)
+                        inv, history = selected(evidence, s)
+                        now = _now().isoformat()
+                        replacement = None
+                        wake_id = marker_id = None
+                        if inv["status"] == "pending":
+                            replacement, wake_id, marker_id = self._replace_exact_running_reply_uncommitted(
+                                reader, inv, evidence, cmd, now)
+                        source = reader.one("thread_invocations", "id=?", (s.invocation_id,), "id")
+                        if source is None:
+                            raise ReleaseUnavailable("source_missing")
+                        delivery = reader.rows("thread_reply_delivery_state", "thread_id=? AND agent_name=?",
+                            (s.thread_id, s.agent_id), "agent_name")
+                        payload = Companion(version=1, org_slug=s.org_slug, operation_key=cmd.operation_key,
+                            command=command_bytes.decode(), command_digest=digest(command_bytes),
+                            principal="founder", admission="native_serving_human_owner",
+                            source_history_digest=history_digest(history), source_post_digest=fingerprint([source]),
+                            disposition="running_replaced" if replacement else "historical_only",
+                            replacement_id=replacement["id"] if replacement else None,
+                            replacement_token_digest=digest(replacement["invocation_token"].encode()) if replacement else None,
+                            replacement_initial_digest=fingerprint([replacement]) if replacement else None,
+                            poststate_digest=fingerprint([source] + ([replacement] + delivery if replacement else [])),
+                            wake_audit_id=wake_id, marker_audit_id=marker_id)
+                        self._insert_thread_release_audit_uncommitted(reader, s.thread_id, s.agent_id,
+                            "thread_delivery_release", payload.model_dump(mode="json"))
+                        # Independent cold reader verifies the COMPLETE prospective
+                        # audit/source/replacement graph, not a writer-owned DTO.
+                        closing = ReleaseReader(reader, s.org_slug)
+                        closing.inventory()
+                        # All native control SQL shares this same reader/budget.
+                        # The innermost leaf performs only local revocation /
+                        # admission identity checks; no slow control acquisition.
+                        owner._revalidate_native_control_uncommitted(s, reader=reader)
+                        with owner._commit_leaf:
+                            owner._assert_current_admission_leaf(self, s)
+                            budget.check()
+                            committing = True
+                            self._conn.commit()
+                            committed = True
+                        return closing.show(cmd.operation_key)
+                    except BaseException as exc:
+                        # Once COMMIT was attempted its acknowledgement may be
+                        # lost. Rollback cannot prove it did not commit. SAME-key
+                        # show, never a new key/apply, resolves that uncertainty.
+                        try:
+                            self._conn.rollback()
+                        except BaseException:
+                            self._thread_release_settings_unsafe = True
+                            owner._retain_native_close_obligation()
+                            raise ReleaseUnavailable("rollback_unavailable", committed=True if committed else None,
+                                settings_restored=False) from exc
+                        if committing:
+                            raise ReleaseUnavailable("commit_readback_required", committed=True if committed else None) from exc
+                        raise
+            except BaseException:
+                if getattr(self, "_thread_release_settings_unsafe", False):
+                    owner._retain_native_close_obligation()
+                raise
+            finally:
+                owner.move.gate.release()
+
+    def _insert_thread_release_audit_uncommitted(self, reader, thread_id, agent_id, action, payload):
+        """Measure AuditMixin's ACTUAL json.dumps representation before INSERT."""
+        import json
+        from runtime.infrastructure.thread_delivery_release import Companion, ReleaseUnavailable, decode
+        raw = json.dumps(payload)
+        if len(raw.encode("utf8")) > 16384:
+            raise ReleaseUnavailable("payload_bound")
+        if action == "thread_delivery_release":
+            decode(Companion, raw)
+        reader.budget.statement()
+        return self.insert_audit_log_uncommitted(thread_id, agent_id, action, payload)
+
+    def _replace_exact_running_reply_uncommitted(self, reader, inv, evidence, cmd, now):
+        """Narrow interruption leaf. No acknowledgement/breaker/exchange reset."""
+        from runtime.infrastructure.thread_delivery_release import ReleaseUnavailable
+        if not self._conn.in_transaction:
+            raise ReleaseUnavailable("transaction_missing")
+        s, r = cmd.selection, cmd.range
+        token = inv["invocation_token"]
+        changed = reader.change(
+            "UPDATE thread_invocations SET status='failed',decline_reason='human_delivery_release',consumed_at=? "
+            "WHERE id=? AND thread_id=? AND agent_name=? AND invocation_token=? AND purpose='reply' "
+            "AND status='pending' AND started_at IS NOT NULL AND session_id=?",
+            (now, s.invocation_id, s.thread_id, s.agent_id, token, s.session_id))
+        if changed != 1:
+            raise ReleaseUnavailable("invocation_cas")
+        reader.budget.statement()
+        replacement_token = self._mint_reply_invocation_uncommitted(s.thread_id, s.agent_id, r.acknowledged + 1)
+        replacement = reader.one("thread_invocations", "invocation_token=?", (replacement_token,), "id")
+        if replacement is None or type(replacement["id"]) is not int:
+            raise ReleaseUnavailable("replacement_missing")
+        changed = reader.change(
+            "UPDATE thread_reply_delivery_state SET running_invocation_token=NULL,running_from_seq=NULL,"
+            "running_through_seq=NULL,queued_invocation_token=?,last_terminal_reason='human_delivery_release',"
+            "last_terminal_at=?,updated_at=? WHERE thread_id=? AND agent_name=? AND running_invocation_token=? "
+            "AND queued_invocation_token IS NULL AND acknowledged_through_seq=? AND required_through_seq=? "
+            "AND running_from_seq=? AND running_through_seq=?",
+            (replacement_token, now, now, s.thread_id, s.agent_id, token,
+             r.acknowledged, r.required, r.running_from, r.running_through))
+        if changed != 1:
+            raise ReleaseUnavailable("slot_cas")
+        wake_id = self._insert_thread_release_audit_uncommitted(reader, s.thread_id, s.agent_id,
+            "thread_reply_wake_recovered", dict(agent_name=s.agent_id, kind="human_delivery_release",
+                from_seq=r.acknowledged + 1, through_seq=r.required, token_prefix=replacement_token[:8]))
+        marker_id = None
+        markers = [d for d in evidence.deferrals if d["agent_name"] == s.agent_id and d["catchup_pending"] == 1]
+        if markers:
+            # The one covering replacement satisfies ALL released markers. No
+            # broad committing recovery/settlement helper or second mint.
+            changed = reader.change(
+                "UPDATE thread_exchange_deferrals SET catchup_pending=0 WHERE thread_id=? AND agent_name=? "
+                "AND state='released' AND catchup_pending=1", (s.thread_id, s.agent_id))
+            if changed != len(markers):
+                raise ReleaseUnavailable("marker_cas")
+            marker_id = self._insert_thread_release_audit_uncommitted(reader, s.thread_id, s.agent_id,
+                "thread_deferral_catchup_minted", dict(agent_name=s.agent_id, kind="human_delivery_release",
+                    from_seq=r.acknowledged + 1, through_seq=r.required, replacement_id=replacement["id"]))
+        return replacement, wake_id, marker_id
+
+    def _thread_release_pair_permitted_uncommitted(self, thread_id: str, agent_id: str) -> bool:
+        from runtime.infrastructure.thread_delivery_release import delivery_view, pair_permission
+        return pair_permission(delivery_view(self, thread_id), thread_id, agent_id)
+
     # ── GitHub #688 Phase 1 Slice A: reply delivery state store ──────────
     #
     # HANDOFF CONTRACT (Slice B):
@@ -256,6 +473,8 @@ class ReplyDeliveryMixin:
                 "d.queued_invocation_token IS NOT NULL AND i.status='pending' "
                 "ORDER BY b.thread_id,b.agent_name"
             ).fetchall():
+                if not self._thread_release_pair_permitted_uncommitted(queued["thread_id"], queued["agent_name"]):
+                    continue
                 results.append(ThreadReplyRecoveryEntry(
                     thread_id=queued["thread_id"],
                     agent_name=queued["agent_name"],
@@ -280,6 +499,8 @@ class ReplyDeliveryMixin:
                 if move is not None and move.threads.held_uncommitted(candidate["agent_name"]) is not None:
                     continue
                 pair = (candidate["thread_id"], candidate["agent_name"])
+                if not self._thread_release_pair_permitted_uncommitted(*pair):
+                    continue
                 executor_key = (no_episode_executor_keys or {}).get(pair)
                 if executor_key is None:
                     continue
@@ -316,6 +537,8 @@ class ReplyDeliveryMixin:
                 (at_s,),
             ).fetchall()
             for row in rows:
+                if not self._thread_release_pair_permitted_uncommitted(row["thread_id"], row["agent_name"]):
+                    continue
                 if move is not None and move.threads.held_uncommitted(row["agent_name"]) is not None:
                     continue
                 if (row["queued_invocation_token"] is not None
@@ -539,6 +762,8 @@ class ReplyDeliveryMixin:
             ]
             move = getattr(self, "_team_move_coordinator", None)
             for agent_name in participants:
+                if not self._thread_release_pair_permitted_uncommitted(thread_id, agent_name):
+                    continue
                 if move is not None and move.threads.preserve_pair_uncommitted(thread_id, agent_name):
                     continue
                 existing = self._conn.execute(
@@ -682,6 +907,8 @@ class ReplyDeliveryMixin:
             self._conn.execute("BEGIN IMMEDIATE")
             move = getattr(self, "_team_move_coordinator", None)
             for row in rows:
+                if not self._thread_release_pair_permitted_uncommitted(row["thread_id"], row["agent_name"]):
+                    continue
                 if move is not None and move.threads.preserve_pair_uncommitted(row["thread_id"], row["agent_name"]):
                     continue
                 thread_id = row["thread_id"]
@@ -1006,6 +1233,8 @@ class ReplyDeliveryMixin:
             ).fetchall():
                 thread_id = d["thread_id"]
                 agent_name = d["agent_name"]
+                if not self._thread_release_pair_permitted_uncommitted(thread_id, agent_name):
+                    continue
                 if move is not None and move.threads.preserve_pair_uncommitted(thread_id, agent_name):
                     continue
                 srow = self._conn.execute(
@@ -1095,11 +1324,18 @@ class ReplyDeliveryMixin:
         for a newly-seen pair starts at this message.
         """
         now = _now().isoformat()
+        permitted = self._thread_release_pair_permitted_uncommitted(thread_id, agent_name)
         row = self._conn.execute(
             "SELECT * FROM thread_reply_delivery_state "
             "WHERE thread_id = ? AND agent_name = ?",
             (thread_id, agent_name),
         ).fetchone()
+        if not permitted:
+            self._raise_required_uncommitted(thread_id, agent_name, seq)
+            ack = row["acknowledged_through_seq"] if row else seq - 1
+            req = max(row["required_through_seq"], seq) if row else seq
+            return ThreadReplyArrival(agent_name=agent_name, invocation_token=None,
+                coalesced=True, from_seq=ack + 1, through_seq=req)
         if row is None:
             # New pair: seed acknowledged = seq - 1 (tail before this message),
             # required = seq, and mint one queued wake covering seq..seq.
@@ -1385,6 +1621,10 @@ class ReplyDeliveryMixin:
             return None
         thread_id = row["thread_id"]
         agent_name = row["agent_name"]
+        delivery_permitted = self._thread_release_pair_permitted_uncommitted(thread_id, agent_name)
+        if not delivery_permitted and outcome in ("reply", "decline"):
+            from runtime.infrastructure.thread_delivery_release import ReleaseUnavailable
+            raise ReleaseUnavailable("permission_revoked")
         acknowledged = int(row["acknowledged_through_seq"] or 0)
         required = int(row["required_through_seq"] or 0)
         inv = self._conn.execute(
@@ -1478,7 +1718,7 @@ class ReplyDeliveryMixin:
         follow_on: str | None = None
         exchange_held = False
         catchup_minted = False
-        if required > new_ack:
+        if required > new_ack and delivery_permitted:
             # A residual range remains. At most one wake may carry it:
             #   * a held pair (member of an OPEN exchange) suppresses the
             #     follow-on — the exchange's single catch-up at closure
@@ -1866,6 +2106,8 @@ class ReplyDeliveryMixin:
         inv = self.get_pending_invocation(token)
         if inv is None:
             return None
+        if not self._thread_release_pair_permitted_uncommitted(inv.thread_id, inv.agent_name):
+            return None
         row = self._conn.execute("SELECT * FROM thread_reply_delivery_state WHERE thread_id=? AND agent_name=?",
             (inv.thread_id, inv.agent_name)).fetchone()
         if row is None:
@@ -1932,6 +2174,8 @@ class ReplyDeliveryMixin:
                 and inv["status"] == ThreadInvocationStatus.PENDING.value
                 and inv["started_at"] is None
             )
+            if valid and not self._thread_release_pair_permitted_uncommitted(inv["thread_id"], inv["agent_name"]):
+                valid = False
             if not valid:
                 if _move_owner is None:
                     self._conn.commit()

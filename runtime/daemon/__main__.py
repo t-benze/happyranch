@@ -446,6 +446,13 @@ def _sweep_on_startup(
         # keep the generic daemon_restart reaping below.
         _now = datetime.now(timezone.utc).isoformat()
 
+        # C1a: orphan/raw reaper paths below may never visit a participant
+        # pair. Validate the COMPLETE companion family before any thread
+        # recovery/rekeying. This is a reader, never an automatic release.
+        from runtime.infrastructure.thread_delivery_release import delivery_view
+        with db._lock:
+            delivery_view(db)
+
         # 6a. Activate per-pair reply delivery state for every OPEN thread
         # (idempotent cutover: seeds/coalesces legacy pending REPLYs).
         move = getattr(db, "_team_move_coordinator", None)
