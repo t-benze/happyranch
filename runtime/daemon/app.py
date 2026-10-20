@@ -133,6 +133,11 @@ async def _lifespan(app: FastAPI):
             # Diagnostics must not replace the mandatory startup outcome.
             pass
 
+    from runtime.daemon.thread_delivery_release_service import _ThreadDeliveryReleaseService
+    if state._thread_release_service is None:
+        # Binding only. No database read, operation, task or release at startup.
+        state._thread_release_service = _ThreadDeliveryReleaseService(state, app)
+
     # THR-109: wire the ThreadQueue + main loop BEFORE task workers start.
     # Uses _wire_then_start_workers to enforce ordering: wiring must precede
     # ensure_workers_started so a rapid terminal thread-dispatched task can
@@ -402,6 +407,9 @@ async def _lifespan(app: FastAPI):
         # attachment before the first shutdown await. Native owners remain live
         # through worker completion, effects unwind and their final settlement.
         state._stop_runner_admission()
+        # C native work/outer retirement must be positively idle before host
+        # shutdown. Revoke or drain failure forbids every close fallthrough.
+        await state._drain_thread_releases()
         state._revoke_cleanup_diagnostics()
         # HTTP disconnect never owns these tasks. Reap the bounded operation
         # owners before host shutdown or any org DB can close; retain holds.

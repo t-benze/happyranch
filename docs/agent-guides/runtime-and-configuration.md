@@ -721,13 +721,15 @@ argv/environment/private paths/object IDs. Logging failure neither fails serving
 nor retries diagnostics. Runtime/SQL/timing/cancellation/crash proof UNEXECUTED;
 integration INCLUDING lifespan/SessionTracker/callback SKIPPED24342, units RETIRED.
 
-C1a native thread-delivery release source (THR317 seq25/34, ROOT12084) is
-unmounted. Native preview/show and the sole `release_exact_thread_delivery`
-transaction have no service, HTTP, CLI, startup, reaper or automatic release
-caller. The native serving-authority boundary always refuses until separately
-scoped C1b supplies actual serving/lifetime/current-control integration; neither
-ambient credentials nor caller proof flags enable it. Proof-backed release is
-unavailable. The approved human risk override requires exact preview, stable
+C1a/C1b private thread-delivery release source (THR317 seq25/34, ROOT12084)
+has a dormant service bound to the actual initial app/state/runtime/org-map,
+org/DB/path, supervisor/tracker and attachment generation. Only actual successful
+ASGI/listener startup admits it; construction/readiness performs no operation or
+selection. Native preview/show and the sole `release_exact_thread_delivery`
+transaction have no HTTP, CLI, startup, reaper or automatic release caller.
+Temporary, dynamic, custom, replaced and missing contexts refuse. Neither
+ambient credentials nor caller proof flags enable mutation. Proof-backed release
+is unavailable. The approved human risk override requires exact preview, stable
 org-wide key, canonical command and explicit confirmation of late producer/session
 writes, overlapping work, repeated external effects and missing owner/process/
 effect closure. This source supplies no live-use, deployment or restart authority.
@@ -748,11 +750,34 @@ no replacement;15402 gets no second catch-up. Unknown COMMIT requires strict
 same-key readback, never remint/rekey. Old-reader/mixed-version operation and
 downgrade after use are unsupported. Cooperative 3s/1024-row/4MiB/256-statement/
 5M-step budgets include closing reads; exhaustion is unavailable, not absence or
-a hard wall/RSS guarantee. C1b lifetime/adapters and C2 task-tail remain deferred;
+a hard wall/RSS guarantee. C1b external adapters and C2 task-tail remain deferred;
 12044/10693 remain unrecovered. All behavior/SQL/locks/races/cancellation/crash/
 security proof is UNEXECUTED; integration INCLUDING callback is SKIPPED24342,
 Python units RETIRED. Only lint/static evidence and independent full review plus
 same-final-head scoped SOURCE QA can be attributed to this slice.
+
+C1b registers each operation and org native lifetime before submission, captures
+every returned future before a cancellable await and owns outer retirement after
+disconnect. Positive native return, rollback/settings restoration and outer
+settlement alone discharge that guard. Revoke closes loop intake first and takes
+only its C leaf for at most25ms; timeout is incomplete and bars host shutdown,
+detach and DB-close fallthrough. Remove/all-close/runtime switch/direct org close
+independently require positive C idle and renewed attachment/busy/hold checks.
+Final order is move -> DB -> controller -> residue -> tracker -> C leaf -> the
+existing COMMIT. All SQL inventory/decoding finishes before owner guards; only
+COMMIT occurs inside, with reverse release before rollback/readback/notification.
+The original3s budget starts before submission, includes both observation passes
+and native+SQL work within5M steps. Under actual owner locks, built-in maps over64
+refuse before iteration; each pass reserves n+1 rows,2048*(n+1) raw bytes and4096
+native units per record/completion. Any residue/unhealthy measurement, relevant
+retained ownership/binding/preparation or outstanding native writer blocks.
+Org-level unresolved move/Pause controls conservatively refuse; no task root is
+inferred from thread text or tracker absence. Fresh guarded CURRENT facts and
+existing admission/release counters detect observed changes, without certifying
+invisible historical tracker/residue ABA or old process/effect retirement. After
+commit, independent current eligibility permits only SAME-token put_once through
+the existing queue; notification loss never rolls back, remints or reapplies.
+
 
 Preview resolves native current names/IDs, rejects former/unknown names, uses
 only D's pure native planner and returns exact founder-only diff/digests,

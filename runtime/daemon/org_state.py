@@ -131,6 +131,29 @@ class OrgState:
     _cleanup_diagnostic_unavailable: str | None = field(init=False, default="not_initial_attachment", repr=False)
     _cleanup_diagnostic_users: set[object] = field(init=False, default_factory=set, repr=False)
 
+    # C is independent of diagnostic B and ordinary runner/task ownership.
+    _thread_release_attachment: Any = field(init=False, default=None, repr=False)
+    _thread_release_users: set[object] = field(init=False, default_factory=set, repr=False)
+
+    def _acquire_thread_release(self, operation) -> bool:
+        a = self._thread_release_attachment
+        if (self._runner_admission_closed or a is None or operation.attachment is not a
+                or not a.intake or a.revoked or not a.current()):
+            return False
+        self._thread_release_users.add(operation)
+        return True
+
+    def _release_thread_release(self, operation) -> None:
+        self._thread_release_users.remove(operation)
+
+    def _revoke_thread_releases(self) -> None:
+        if self._thread_release_attachment is not None:
+            self._thread_release_attachment.revoke()
+
+    def _assert_thread_releases_idle(self) -> None:
+        if self._thread_release_users or getattr(self.db, "_thread_release_settings_unsafe", False):
+            raise _OrgBusyError("thread_release_native_in_flight_or_unsafe")
+
     def _acquire_cleanup_diagnostic(self, token: _Attachment) -> bool:
         if (self._runner_admission_closed or self._cleanup_diagnostic_attachment is not token
                 or token.revoked.is_set()):
@@ -178,7 +201,9 @@ class OrgState:
     def _release_native_task(self, owner: object) -> None:
         self._native_task_users.remove(owner)
 
-    def _assert_runners_idle(self) -> None:
+    def _assert_runners_idle(self, *, thread_releases: bool = True) -> None:
+        if thread_releases:
+            self._assert_thread_releases_idle()
         if self._native_task_users:
             raise _OrgBusyError("native_tasks_in_flight")
         if self._runner_tasks:
@@ -466,6 +491,8 @@ class OrgState:
             raise
 
     def close(self) -> None:
+        self._revoke_thread_releases()
+        self._assert_thread_releases_idle()
         self._revoke_cleanup_diagnostics()
         self._assert_cleanup_diagnostics_idle()
         self._assert_runners_idle()

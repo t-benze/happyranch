@@ -33,32 +33,45 @@ from runtime.reply_delivery import reply_failure_category
 
 class ReplyDeliveryMixin:
     def preview_exact_thread_delivery(self, raw: str) -> dict:
-        """Read-only C1a native preview. No service/HTTP/CLI caller is mounted."""
+        """Read-only preview, sharing the private serving operation allowance."""
         from runtime.infrastructure.thread_delivery_release import (
-            Budget, PreviewRequest, ReleaseReader, ReleaseUnavailable, decode, native_read, preview,
+            operation_budget, read_operation, PreviewRequest, ReleaseReader, ReleaseUnavailable, decode, native_read, preview,
         )
-        budget = Budget()
+        budget = operation_budget(self)
         request = decode(PreviewRequest, raw)
+        owner = read_operation(self)
         with native_read(self, budget) as reader:
             if self._conn.in_transaction:
                 raise ReleaseUnavailable("database_owned")
             try:
                 reader.execute("BEGIN").close()
+                if owner is not None:
+                    owner._revalidate_native_control_uncommitted(request.selection, reader=reader)
                 view = ReleaseReader(reader, request.selection.org_slug)
                 view.inventory()
                 result = preview(view, request)
                 # Closing acquisition is part of the SAME budget and snapshot.
                 budget.check()
+                if owner is not None:
+                    with owner._final_native_observation_guard(request.selection):
+                        with owner._commit_leaf():
+                            owner._assert_current_admission_leaf(self, request.selection)
+                            result["serving_admission_available"] = True
                 return result
             finally:
-                self._conn.rollback()  # SELECT-only snapshot, never domain writes
+                try:
+                    self._conn.rollback()  # SELECT-only, never domain writes
+                except BaseException:
+                    self._thread_release_settings_unsafe = True
+                    raise ReleaseUnavailable("read_snapshot_unrestored", committed=None,
+                        settings_restored=False) from None
 
     def show_exact_thread_delivery(self, *, org_slug: str, operation_key: str) -> dict | None:
         """Strict SAME-key readback, including after unknown COMMIT response."""
         from runtime.infrastructure.thread_delivery_release import (
-            Budget, ReleaseReader, ReleaseUnavailable, native_read,
+            operation_budget, read_operation, ReleaseReader, ReleaseUnavailable, native_read,
         )
-        budget = Budget()
+        budget = operation_budget(self)
         try:
             with native_read(self, budget) as reader:
                 if self._conn.in_transaction:
@@ -67,9 +80,20 @@ class ReplyDeliveryMixin:
                     reader.execute("BEGIN").close()
                     view = ReleaseReader(reader, org_slug)
                     view.inventory()
-                    return view.show(operation_key)
+                    result = view.show(operation_key)
+                    owner = read_operation(self)
+                    if owner is not None and result is not None:
+                        # Selection comes only from the strict committed native
+                        # graph, never a caller's show proof/owner parameter.
+                        owner.selection = view.records[operation_key][2].selection
+                    return result
                 finally:
-                    self._conn.rollback()
+                    try:
+                        self._conn.rollback()
+                    except BaseException:
+                        self._thread_release_settings_unsafe = True
+                        raise ReleaseUnavailable("read_snapshot_unrestored", committed=None,
+                            settings_restored=False) from None
         except ReleaseUnavailable as exc:
             # Failed/incomplete readback proves neither absence nor rollback
             # of the original operation whose COMMIT response may be lost.
@@ -77,31 +101,32 @@ class ReplyDeliveryMixin:
                 settings_restored=exc.settings_restored) from None
 
     def release_exact_thread_delivery(self, raw: str) -> dict:
-        """SOLE C1a transaction owner; native authority is unavailable in C1a.
+        """SOLE transaction owner, bound to actual private C1b serving work.
 
-        Future C1b supplies the REAL serving owner, registered native lifetime
+        C1b supplies the real serving owner, registered native lifetime
         and actual control renewal. No caller owner, callback or Boolean is
         accepted. Slow capture precedes native locks; revoke-versus-COMMIT is
         the innermost short leaf. No notification or await occurs here.
         """
         from runtime.infrastructure.thread_delivery_release import (
-            Budget, Companion, PreviewRequest, ReleaseCommand, ReleaseReader,
+            Companion, PreviewRequest, ReleaseCommand, ReleaseReader,
             ReleaseUnavailable, canonical, decode, digest, fingerprint, history_digest,
-            native_authority, native_read, preview, selected, validate_confirmation,
+            native_authority, native_read, preview, selected, validate_confirmation, serving_operation,
         )
-        budget = Budget()
+        budget = serving_operation(self).budget
         cmd = decode(ReleaseCommand, raw)
         validate_confirmation(cmd)
         if cmd.mode == "proof_backed":
             raise ReleaseUnavailable("whole_owner_proof_unavailable")
         command_bytes = canonical(cmd.model_dump(mode="json"))
         s = cmd.selection
-        # This fixed native boundary ALWAYS refuses in C1a, before DB/locks.
-        # Its later owner must join on uncertain rollback/restoration too.
+        # Only the service-owned submitted operation can cross this boundary.
+        # It retains DB lifetime on uncertain rollback/restoration too.
         with native_authority(self, s) as owner:
-            if not owner.move.gate.acquire(timeout=min(.025, max(0, budget.deadline - time.monotonic()))):
+            if not owner.move.gate.acquire(timeout=budget.lock_timeout()):
                 raise ReleaseUnavailable("move_busy")
             try:
+                budget.check()
                 with native_read(self, budget) as reader:
                     if self._conn.in_transaction:
                         raise ReleaseUnavailable("database_owned")
@@ -157,12 +182,13 @@ class ReplyDeliveryMixin:
                         # The innermost leaf performs only local revocation /
                         # admission identity checks; no slow control acquisition.
                         owner._revalidate_native_control_uncommitted(s, reader=reader)
-                        with owner._commit_leaf:
-                            owner._assert_current_admission_leaf(self, s)
-                            budget.check()
-                            committing = True
-                            self._conn.commit()
-                            committed = True
+                        with owner._final_native_observation_guard(s):
+                            with owner._commit_leaf():
+                                owner._assert_current_admission_leaf(self, s)
+                                budget.check()
+                                committing = True
+                                self._conn.commit()
+                                committed = True
                         return closing.show(cmd.operation_key)
                     except BaseException as exc:
                         # Once COMMIT was attempted its acknowledgement may be

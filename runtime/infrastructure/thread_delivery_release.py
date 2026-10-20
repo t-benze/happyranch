@@ -1,7 +1,7 @@
 """Dormant C1a delivery dispositions; never a cleanup/retirement certificate.
 
-The native mutator is UNMOUNTED. C1b must supply a real serving lifetime and
-current-control owner before native_authority can admit anything. In particular
+The native mutator has no external adapter. The private C1b service binds actual
+serving lifetime and current controls to each native operation. In particular
 there is no caller callback, proof Boolean, ambient credential or local registry
 that enables mutation. Raw ThreadLifecycle and safety census remain unchanged.
 """
@@ -13,6 +13,7 @@ import re
 import sqlite3
 import time
 from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import Annotated, Any, Iterator, Literal
@@ -209,6 +210,12 @@ _COLUMNS = {
         "thread_id exchange_id agent_name state created_at released_at mint_token_prefix catchup_pending"
     ),
     "thread_messages": "id thread_id seq mentions_json",
+    "task_pause_controls": (
+        "root_task_id schema_version held generation release_pending_generation admission_journal_json"
+    ),
+    "tasks": "id parent_task_id assigned_agent current_session_id status block_kind cancelled_at",
+    "team_move_operations": "operation_id schema_version org_slug phase active_slot",
+
 }
 
 
@@ -219,17 +226,83 @@ class Budget:
     raw_bytes: int = 0
     statements: int = 0
     vm_steps: int = 0
+    native_steps: int = 0
 
     def check(self) -> None:
         if (time.monotonic() >= self.deadline or self.rows > 1024
                 or self.raw_bytes > 4 * 1024 * 1024
-                or self.statements > 256 or self.vm_steps > 5_000_000):
+                or self.statements > 256 or self.vm_steps > 5_000_000
+                or self.vm_steps + self.native_steps > 5_000_000):
             raise ReleaseUnavailable("budget_unavailable")
 
     def statement(self) -> None:
         self.statements += 1
         self.vm_steps += 1000  # conservative charge below progress granularity
         self.check()
+
+
+    def native(self, count: int = 0) -> None:
+        """Reserve BEFORE native interpretation; even empty/scalar work costs."""
+        if type(count) is not int or not 0 <= count <= 64:
+            raise ReleaseUnavailable("native_population_unavailable")
+        self.rows += count + 1
+        self.raw_bytes += 2048 * (count + 1)
+        self.native_steps += 4096 * (count + 1)
+        self.check()
+
+    def population(self, mapping: Any) -> int:
+        if type(mapping) is not dict:
+            raise ReleaseUnavailable("native_container_unavailable")
+        count = len(mapping)  # under the actual owner lock, BEFORE iteration
+        self.native(count)
+        return count
+
+    def text(self, value: Any) -> str:
+        # All callers reserved their fixed record first. No repr/coercion or
+        # arbitrary property, hashing or encoding before the length gate.
+        if (type(value) is not str or not 0 < len(value) <= 256
+                or any(not 33 <= ord(c) <= 126 for c in value)):
+            raise ReleaseUnavailable("native_identity_unavailable")
+        return value
+
+    def integer(self, value: Any) -> int:
+        if type(value) is not int or not 0 <= value <= 2**63 - 1:
+            raise ReleaseUnavailable("native_counter_unavailable")
+        return value
+
+    def lock_timeout(self) -> float:
+        self.native()
+        self.check()
+        remaining = self.deadline - time.monotonic()
+        if remaining <= 0:
+            raise ReleaseUnavailable("budget_unavailable")
+        return min(.025, remaining)
+
+
+# Private context is set only by the actual service's submitted native body.
+# Binding a DTO or passing a caller-owned owner cannot admit a transaction.
+_serving_operation: ContextVar[Any] = ContextVar("thread_release_serving_operation", default=None)
+
+
+def serving_operation(db: Any) -> Any:
+    operation = _serving_operation.get()
+    if operation is None:
+        raise ReleaseUnavailable("serving_owner_unavailable")
+    # Lazy import avoids an infrastructure -> daemon module-time dependency.
+    from runtime.daemon.thread_delivery_release_service import _Operation
+    if type(operation) is not _Operation or not operation._owns(db):
+        raise ReleaseUnavailable("serving_owner_unavailable")
+    return operation
+
+
+def read_operation(db: Any) -> Any:
+    return serving_operation(db) if _serving_operation.get() is not None else None
+
+
+def operation_budget(db: Any) -> Budget:
+    if _serving_operation.get() is not None:
+        return serving_operation(db).budget
+    return Budget()  # standalone C1a read-only readers remain supported
 
 
 class NativeRead:
@@ -297,7 +370,7 @@ class NativeRead:
 @contextmanager
 def native_read(db: Any, budget: Budget) -> Iterator[NativeRead]:
     # A native caller under DB may reenter this lock; no DB->move acquisition.
-    if not db._lock.acquire(timeout=min(.025, max(0, budget.deadline - time.monotonic()))):
+    if not db._lock.acquire(timeout=budget.lock_timeout()):
         raise ReleaseUnavailable("database_busy")
     changed = False
     old_timeout = old_length = old_factory = None
@@ -346,7 +419,7 @@ def native_read(db: Any, budget: Budget) -> Iterator[NativeRead]:
             old_timeout = cur.fetchone()[0]
         finally:
             cur.close()
-        reader.execute("PRAGMA busy_timeout=25").close()
+        reader.execute("PRAGMA busy_timeout=0").close()  # no stale busy wait near deadline
         yield reader
     except sqlite3.Error:
         if failure is not None:
@@ -721,17 +794,11 @@ def preview(reader: ReleaseReader, request: PreviewRequest) -> dict:
 
 @contextmanager
 def native_authority(db: Any, selection: Selection) -> Iterator[Any]:
-    """C1b dependency: actual serving owner/control/lifetime, never attestation.
-
-    This fixed refusal deliberately precedes lock/settings/transaction changes.
-    Future integration must hold move -> DB -> short revoke/COMMIT leaf, renew
-    actual owner/host/tracker controls with the shared native reader/budget,
-    then use only a local admission/revocation check in the COMMIT leaf. Retain
-    DB lifetime through uncertain rollback/settings restoration. No active
-    caller exists in C1a.
-    """
-    raise ReleaseUnavailable("serving_owner_unavailable")
-    yield
+    """Only the service's actual registered native operation supplies authority."""
+    operation = serving_operation(db)
+    operation._assert_selection(selection)
+    operation.budget.check()
+    yield operation
 
 
 def delivery_view(db: Any, thread_id: str | None = None) -> ReleaseReader | None:
