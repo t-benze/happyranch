@@ -1,6 +1,11 @@
 --- a/PyInstaller/building/api.py
 +++ b/PyInstaller/building/api.py
-@@ -28,7 +28,8 @@
+@@ -18,3 +18,4 @@
++import hashlib  # HappyRanch custody revision 5, changed 2026-10-21.
+ import os
+ import subprocess
+ import sys
+@@ -28,7 +29,8 @@
  from PyInstaller.archive.writers import CArchiveWriter, ZlibArchiveWriter
  from PyInstaller.building.datastruct import Target, _check_guts_eq, normalize_pyz_toc, normalize_toc
  from PyInstaller.building.utils import (
@@ -10,7 +15,7 @@
  )
  from PyInstaller.building.splash import Splash  # argument type validation in EXE
  from PyInstaller.compat import is_cygwin, is_darwin, is_linux, is_win, strict_collect_mode, is_nogil, is_aix
-@@ -77,7 +78,12 @@
+@@ -77,7 +79,12 @@
              self.name = os.path.splitext(self.tocfilename)[0] + '.pyz'
  
          # PyInstaller bootstrapping modules.
@@ -23,7 +28,7 @@
  
          # Compile the python modules that are part of bootstrap dependencies, so that they can be collected into the
          # CArchive/PKG and imported by the bootstrap script.
-@@ -98,9 +104,15 @@
+@@ -98,9 +105,15 @@
              else:
                  # Include as is (extensions).
                  self.dependencies.append((name, src_path, typecode))
@@ -39,7 +44,7 @@
          bootstrap_module_names = set(name for name, _, typecode in self.dependencies if typecode == 'PYMODULE')
          self.toc = []
          self.code_dict = {}
-@@ -116,16 +128,33 @@
+@@ -116,16 +129,33 @@
                  assert typecode in {'PYMODULE', 'PYMODULE-1', 'PYMODULE-2'}, f"Invalid entry passed to PYZ: {entry}!"
                  # Module required during bootstrap; skip to avoid collecting a duplicate.
                  if name in bootstrap_module_names:
@@ -73,7 +78,7 @@
  
      _GUTS = (
          # input parameters
-@@ -149,11 +178,14 @@
+@@ -149,11 +179,14 @@
                  try:
                      self.code_dict[name] = get_code_object(name, src_path, optimize=optim_level)
                  except SyntaxError:
@@ -88,7 +93,7 @@
          ZlibArchiveWriter(self.name, archive_toc, code_dict=self.code_dict)
          logger.info("Building PYZ (ZlibArchive) %s completed successfully.", self.name)
  
-@@ -480,6 +512,11 @@
+@@ -480,6 +513,11 @@
  
          # UPX needs to be both available and enabled for the target.
          self.upx = CONF['upx_available'] and kwargs.get('upx', False)
@@ -100,7 +105,7 @@
  
          # Catch and clear options that are unsupported on specific platforms.
          if self.versrsrc and not is_win:
-@@ -539,6 +576,14 @@
+@@ -539,6 +577,14 @@
  
          self.toc = []
  
@@ -115,7 +120,7 @@
          for arg in args:
              # Valid arguments: PYZ object, Splash object, and TOC-list iterables
              if isinstance(arg, (PYZ, Splash)):
-@@ -651,7 +696,13 @@
+@@ -651,7 +697,13 @@
                  self.python_lib += f"(libpython{_py_major}.{_py_minor}.so)"
  
          # Normalize TOC
@@ -129,7 +134,7 @@
  
          self.pkg = PKG(
              toc=self.toc,
-@@ -672,7 +723,12 @@
+@@ -672,7 +724,12 @@
          exe = self._bootloader_file('run', '.exe' if is_win or is_cygwin else '')
          self.exefiles = [(os.path.basename(exe), exe, 'EXECUTABLE')]
  
@@ -142,7 +147,7 @@
  
      _GUTS = (
          # input parameters
-@@ -754,6 +810,8 @@
+@@ -754,6 +811,8 @@
          return bootloader_file
  
      def assemble(self):
@@ -151,7 +156,7 @@
          # On Windows, we used to append .notanexecutable to the intermediate/temporary file name to (attempt to)
          # prevent interference from anti-virus programs with the build process (see #6467). This is now disabled
          # as we wrap all processing steps that modify the executable in the `_retry_operation` helper; however,
-@@ -773,10 +831,17 @@
+@@ -773,10 +832,17 @@
          if not os.path.exists(bootloader_exe):
              raise SystemExit(_MISSING_BOOTLOADER_ERRORMSG)
  
@@ -169,7 +174,7 @@
  
          if is_win:
              # First, remove all resources from the file. This ensures that no manifest is embedded, even if bootloader
-@@ -800,7 +865,16 @@
+@@ -800,7 +866,16 @@
          elif is_darwin:
              # Convert bootloader to the target arch
              logger.info("Converting EXE to target arch (%s)", self.target_arch)
@@ -186,7 +191,7 @@
  
          # Step 2: append the PKG, if necessary
          if self.append_pkg:
-@@ -861,7 +935,15 @@
+@@ -861,7 +936,15 @@
  
              # Append the data
              logger.info("Appending %s to EXE", append_type)
@@ -202,7 +207,7 @@
  
              # Fix Mach-O headers
              logger.info("Fixing EXE headers for code signing")
-@@ -910,6 +992,15 @@
+@@ -910,6 +993,15 @@
          self.mtm = self._retry_operation(miscutils.mtime, build_name)
          if build_name != self.name:
              self._retry_operation(os.rename, build_name, self.name)
@@ -218,7 +223,7 @@
          logger.info("Building EXE from %s completed successfully.", self.tocbasename)
  
      def _copy_windows_resource(self, build_name, resource_spec):
-@@ -1094,6 +1185,9 @@
+@@ -1094,6 +1186,9 @@
          from PyInstaller.config import CONF
  
          super().__init__()
@@ -228,7 +233,7 @@
  
          self.strip_binaries = kwargs.get('strip', False)
          self.upx_exclude = kwargs.get("upx_exclude", [])
-@@ -1141,13 +1235,52 @@
+@@ -1141,13 +1236,52 @@
              else:
                  raise TypeError(f"Invalid argument type for COLLECT: {type(arg)!r}")
  
@@ -281,7 +286,7 @@
  
      _GUTS = (
          # COLLECT always builds, we just want the TOC to be written out.
-@@ -1159,12 +1292,17 @@
+@@ -1159,12 +1293,17 @@
          return True
  
      def assemble(self):
@@ -299,7 +304,7 @@
              if typecode not in {'DEPENDENCY', 'SYMLINK'} and not os.path.exists(src_name):
                  # If file is contained within python egg, it will be added with the egg.
                  if strict_collect_mode:
-@@ -1193,7 +1331,12 @@
+@@ -1193,7 +1332,12 @@
                      "but there already exists a file at that path!"
                  )
              if typecode in ('EXTENSION', 'BINARY'):
@@ -313,7 +318,7 @@
                      src_name,
                      dest_name,
                      use_strip=self.strip_binaries,
-@@ -1203,7 +1346,11 @@
+@@ -1203,7 +1347,11 @@
                      codesign_identity=self.codesign_identity,
                      entitlements_file=self.entitlements_file,
                      strict_arch_validation=(typecode == 'EXTENSION'),
@@ -325,7 +330,7 @@
              if typecode == 'SYMLINK':
                  # On Windows, ensure that symlink target path (stored in src_name) is using Windows-style back slash
                  # separators.
-@@ -1230,6 +1377,19 @@
+@@ -1230,6 +1378,19 @@
                  or (typecode == 'DATA' and os.access(src_name, os.X_OK))
              ):
                  os.chmod(dest_path, 0o755)

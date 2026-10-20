@@ -53,5 +53,5 @@ exclude = ["runtime/skills/bundled/**"]
 
 [tool.uv.sources]
 pyinstaller = [
-    { path = "packaging/vendor/pyinstaller-6.21.0/dist/pyinstaller-6.21.0-1happyranchcustody4-py3-none-macosx_10_13_universal2.whl", marker = "sys_platform == 'darwin'" },
+    { path = "packaging/vendor/pyinstaller-6.21.0/dist/pyinstaller-6.21.0-1happyranchcustody5-py3-none-macosx_10_13_universal2.whl", marker = "sys_platform == 'darwin'" },
 ]
