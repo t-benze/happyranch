@@ -20,7 +20,8 @@ def safe_cause(stage: str, exc: BaseException | None = None, *,
                repo: str | None = None, returncode: int | None = None,
                diagnostic_category: str | None = None, diagnostic_rule: str | None = None,
                capture_complete: bool | None = None, capture_truncated: bool | None = None,
-               timed_out: bool | None = None) -> dict:
+               timed_out: bool | None = None, operation: str | None = None,
+               refresh_phase: str | None = None) -> dict:
     """No exception text, source lines, command arguments or process output."""
     cause: dict[str, Any] = {"stage": stage}
     if exc is not None:
@@ -51,6 +52,12 @@ def safe_cause(stage: str, exc: BaseException | None = None, *,
         cause["repo"] = repo if (0 < len(repo) <= 80 and all(
             c.isascii() and (c.isalnum() or c in "_.-") for c in repo)) else "redacted"
         cause["operation"] = "pull_ff_only"
+        if stage == "repository_pull" and operation == "refresh_ff_only":
+            cause["operation"] = "refresh_ff_only"
+            if type(refresh_phase) is str and refresh_phase in {
+                "precheck", "fetch", "between_stages", "merge", "submodule_update",
+            }:
+                cause["refresh_phase"] = refresh_phase
     if returncode is not None:
         cause["returncode"] = returncode
     diagnostic_values = (diagnostic_category, diagnostic_rule, capture_complete,
