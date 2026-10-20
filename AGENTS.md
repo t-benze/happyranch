@@ -690,10 +690,25 @@ runners and fences detached instances against late starts. Runtime registration
 runners and team-move holds before any close or registration/activation effect.
 Shutdown refuses runtime replacement before construction; idle replacement closes
 and fences every retired instance before publishing new OrgStates. A busy later
-org leaves earlier orgs open, with busy refusals mapped to409. Shutdown stops runner
-and attachment admission, then joins cancelled workers and native finish before
-DB close; repeated cancellation during that join cannot skip it. No timeout
-establishes quiescence, and failed persistence retains native uncertainty.
+org leaves earlier orgs open, with busy refusals mapped to409. Native task queue
+work also holds the original OrgState/DB through preparation, run_step outer
+settlement, heartbeat teardown and the SAME returned worker owner's retirement.
+Every submitted future is tracked before a cancellable await; consumer cancellation
+cannot retire an active run or redirect late work to a replacement with the same
+slug. The retained drain_sync entrypoint uses this same ownership path.
+Shutdown fences queue, runner and attachment admission before draining, preserves
+host SHUTDOWN before producer cancellation and retains the existing async-runner
+join. Queue stop owns its join across repeated waiter cancellation; its bounded
+native drain timeout reports incomplete and leaves obligations and DB-close
+barriers intact. Future failures/cancellation or failed retirement retain those
+barriers, never certify idle or clean shutdown. Org close/unload and all-org
+close/runtime reconstruction refuse native users before closing; unpublished
+construction failure has no admitted native queue work. The signal handler never
+closes DBs and reports nonzero unless the shared close path positively completed,
+including when Uvicorn re-emits a signal. No timeout establishes quiescence;
+failed persistence retains native uncertainty. External KILL/OOM or termination
+past launcher grace remains crash uncertainty; this prevents new post-close
+writes when retirement succeeds, not historical recovery or kill survival.
 Existing retry/recovery IDs, frozen budgets,
 INTEGER callbacks and authority-v2 are preserved. No new persisted field/journal, history
 backfill, compensation or clearance writer is introduced. Behavior UNEXECUTED.

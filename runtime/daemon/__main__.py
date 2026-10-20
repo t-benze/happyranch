@@ -625,17 +625,17 @@ def _bind_port(host: str, port: int = 0) -> tuple[socket.socket, int]:
 def _install_signal_handlers(state: DaemonState) -> None:
     def _handle(signum: int, _frame: FrameType | None) -> None:
         logger.info("received signal %s — shutting down", signum)
-        # uvicorn handles its own SIGTERM/SIGINT to drain workers; here
-        # we just make sure the lifecycle files get cleaned up.
+        # Uvicorn re-emits captured signals after its lifespan has run. Only
+        # positive completion of the shared close barrier is a clean shutdown.
+        # A direct/early signal or a timed-out drain never closes DBs here and
+        # leaves lifecycle files as uncertainty rather than advertising clean.
+        if not state._shutdown_complete:
+            logger.error("shutdown incomplete; retaining database/lifecycle barriers")
+            sys.exit(1)
         for f in (paths.pid_file(), paths.port_file()):
             try:
                 f.unlink()
             except FileNotFoundError:
-                pass
-        for org in state.orgs.values():
-            try:
-                org.db.close()
-            except Exception:
                 pass
         sys.exit(0)
 
@@ -840,7 +840,7 @@ def main(argv: list[str] | None = None) -> int:
     server = uvicorn.Server(config)
     # Hand the bound socket to uvicorn so we don't race the port number.
     server.run(sockets=[sock])
-    return 0
+    return 0 if state._shutdown_complete else 1
 
 
 if __name__ == "__main__":

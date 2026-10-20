@@ -65,10 +65,12 @@ class DaemonState:
     profile_coordinator: ProfileCoordinator | None = None
     team_move_service: TeamMoveService = field(init=False, repr=False)
     _runner_shutdown: bool = field(init=False, default=False, repr=False)
+    _shutdown_complete: bool = field(init=False, default=False, repr=False)
 
     def _stop_runner_admission(self) -> None:
         # No await: fence both existing OrgState references and later add_org.
         self._runner_shutdown = True
+        self.queue.close_admission()
         for org in self.orgs.values():
             org._runner_admission_closed = True
 
@@ -343,6 +345,8 @@ class DaemonState:
         async with self.orgs_lock:
             self.team_move_service.assert_no_owner(slug)
             current = self.orgs.get(slug)
+            if current is not None:
+                current._assert_runners_idle()
             if current is not None and current.db._team_move_coordinator.store.read() is not None:
                 from runtime.infrastructure.team_move_store import TeamMoveError
                 raise TeamMoveError("team_move_runtime_detach_held")
@@ -358,10 +362,16 @@ class DaemonState:
 
     async def close_all(self) -> None:
         self._stop_runner_admission()
+        # Refuse native users before any service/org closure. The final
+        # all-org preflight below renews this after the service/lock awaits.
+        self.queue.assert_native_idle()
+        for org in self.orgs.values():
+            org._assert_runners_idle()
         await self.team_move_service.close()
         async with self.orgs_lock:
             # Fail before any close if an unexpected caller still owns an org.
             # Lifespan joins the actual runners; cancellation is not that proof.
+            self.queue.assert_native_idle()
             for org in self.orgs.values():
                 org._assert_runners_idle()
             for org in self.orgs.values():
@@ -369,3 +379,4 @@ class DaemonState:
             self.orgs.clear()
         if self.direct_connect_authority_store is not None:
             self.direct_connect_authority_store.close()
+        self._shutdown_complete = True
