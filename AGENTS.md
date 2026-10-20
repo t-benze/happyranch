@@ -2454,6 +2454,29 @@ Only one ordered authenticated intent/identity/raised-terminal tuple with actual
 failed lifecycle, correct parent/type/population, Boolean false expectation and
 binding, INTEGER0 launch callbacks, explicit null success/returncode and complete
 absence of exposure/callback/credited get/search qualifies for this class.
+Founder THR091seq532 separately permits a POST-expectation class: exactly one
+ordered truthful intent/identity/expectation/raised-terminal, same tuple and
+complete failed lifecycle/ancestry, true expectation/false binding/INTEGER0/null/
+null, full renderer facts and positive CURRENT-attempt native no-AGENT-launch
+proof. Only the exact source-resolved initial host ordinal-zero retry
+cleanup_failed raise BEFORE FIFO/backend/commit/provider is supported; native
+invocation/attempt/logical-owner/SID/order and ALL four source sites must agree.
+Current identity-bound sites and the separate shipped5a19e562 path
+(orchestrator1506/1817, host1402, Pause510) retain their own meanings; current
+Pause510 is a different coding guard. Mixed/unknown source paths refuse.
+Inherited first_cause,
+repository_pull, refused kind, no callback/rows/steps alone never prove no launch.
+Later retries, partial launch, callback failure, malformed/duplicate/contradictory
+or unknown AGENT paths refuse. Preparation Git is distinct from AGENT execution.
+Preparation/outer cleanup/close/release custody is NOT an admission condition;
+its uncertainty remains separately UNKNOWN, never clean/settled/quiescent/closed.
+TASK11977 is evaluated from actual facts, with no task-ID exception; JOB4909
+remains failed acquisition before validators. Both classes preserve every census
+count/digest/seal/error, stable complete acquisition and in-flight rules. Shared
+native/HTTP reduction gives only exact classified invocations zero denominator/
+credit. Health digest/loaded helper/native-function identity changes require
+fresh qualified acceptance; original receipts/epoch bytes remain unchanged.
+No producer/API/custody/writer/history/permission or operational grant follows.
 The seq480 scope is boot/epoch activity plus referenced lifecycle, ancestry,
 retry, QA/job and epoch/invalidation dependencies, including current activity on
 old retired SIDs. Unrelated global same-SID searches are outside admission under

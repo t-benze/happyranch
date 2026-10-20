@@ -2190,6 +2190,51 @@ bookends must establish the strict raised/false/false/INTEGER0/null/null termina
 actual failed lifecycle and exhaustive no-exposure/no-callback/no-credit tuple.
 Missing/contradictory evidence and all-failure populations refuse. See the
 corrective memory spec; this supplies no installed B/C or epoch acceptance.
+Founder THR-091 seq532 (approving531/529, preserving514/519's other
+safeguards) adds a separate closed POST-expectation no-AGENT-launch class.
+Exactly one authenticated ordered intent -> identity -> expectation -> raised
+terminal must retain the same org/org-root/boot/ordinal/task/agent/runtime SID,
+original parent/type/population/purpose and complete failed lifecycle/ancestry.
+The full expectation retains truthful renderer/version/digest/budget/ID facts;
+the terminal requires Boolean true expectation_known, Boolean false
+binding_known, exact INTEGER0 launched_callbacks and explicit null success and
+returncode. Positive supported CURRENT-attempt native refusal evidence is
+mandatory in addition to exhaustive absence of binding/start/impression/launch/
+result/credited activity. The supported path is the source-resolved initial
+host ordinal-zero retry bookkeeping cleanup_failed raise BEFORE FIFO admission,
+backend preparation, commitment and provider launch. Exact native invocation,
+attempt, logical-owner and reserved SID attribution/order must agree; duplicate,
+malformed, contradictory or unknown paths refuse. All four traceback
+frames must match one complete supported source path: current identity-bound
+statement sites, or the separately pinned shipped5a19e562 historical path
+(orchestrator1506/1817, host1402, Pause510). Historical Pause510 was the cleanup
+guard; current Pause510 is a different coding guard. Mixed/unknown paths
+refuse. Later host retries, partial launch and callback failure cannot use this initial-entry path.
+An inherited first_cause, repository_pull, kind=refused, launch_observed=false,
+zero steps or absent callbacks/rows alone never establish no AGENT launch.
+Preparation Git processes are distinct from the AGENT provider.
+
+Preparation/outer compensation, cleanup, close/release and native custody are
+NOT eligibility predicates for this new class. Preserve their uncertainty
+separately without calling it clean, settled, quiescent or closed. Unknown AGENT
+launch still refuses. No new producer, custody witness/API, writer relocation,
+false flag, duplicate terminal, historical backfill or owner clearing is supplied.
+TASK11977 is evaluated by its actual tuple and supported path, with no task-ID
+exception or automatic exclusion. Its cleanup/Git root cause remain UNKNOWN;
+JOB4909 remains a failed acquisition before validators, never a census verdict.
+
+Both classes retain all ordinals/attempted-persisted counts/digests/full seals,
+sticky errors and complete bounded selected acquisition at stable bookends.
+Closing and atomic rereads rediscover membership; failed, moving, pending,
+truncated or exhausted reads refuse. A class never repairs invalid global
+census evidence; all-failure populations remain insufficient. Only classified
+invocations receive zero shown/natural denominator/credit, preserving other
+sessions on the same task. Native AuditLogger and canonical HTTP CLI share the
+same reduction. The changed health digest and loaded identity bind all trusted
+reader helpers and native launch-order/refusal functions. Original receipts and
+epoch bytes remain immutable; changed source requires genuine fresh qualified
+acceptance. Source/static checks supply no B/C, installed health or epoch PASS.
+
 G1 authority additionally reads exact admitted roles/results, original finite
 plan/tasks, owned jobs/full outputs and operation history at stable bookends.
 Its server admission, locked commit and serving checks use the existing

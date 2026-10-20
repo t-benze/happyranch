@@ -634,11 +634,16 @@ def reduce_collection_report(tables: dict, view: dict, outputs: dict, agent_role
         if agent_role_map is not None and agent_role_map != roles:
             raise AcceptanceUnavailable("epoch_role_drift")
         started = aware_utc(head["timestamp"])
+        # The current complete authenticated census classifies invocations,
+        # never whole tasks. Keep their phases/seals in tables, with zero
+        # natural denominator/credit even when a real expectation was frozen.
+        closed = set(prepared["snapshot"]["closed_failed_before_exposure"])
         intents = {row["payload"]["ordinal"]: row for row in rows if row["action"] == "memory_runtime_intent"
                    and row["payload"].get("boot_id") == view["boot_id"]
                    and row["payload"]["ordinal"] > body["base_assigned_intents"]
                    and started <= aware_utc(row["payload"]["entered_at"]) < now
                    and not row["payload"].get("recovery")
+                   and row["payload"]["ordinal"] not in closed
                    and row["task_id"] not in prepared["synthetic_task_ids"]}
         keys = {(row["agent"], row["task_id"], row["payload"]["session_id"]) for row in rows
                 if row["action"] == "memory_runtime_identity" and row["payload"].get("boot_id") == view["boot_id"]
