@@ -1635,8 +1635,8 @@ depth. A failed owner stays visibly incomplete with its own Retry (scoped by its
 status name when more than one owner is selected) while successful siblings keep
 their rows, and still-loading owners are named. Only every selected owner failing
 initially shows the single error state. `No tasks` and `End of list` require every
-selected owner — and, for `No tasks`, the attention traversal — to have succeeded
-and been exhausted. Repeated Retry while an owner is fetching is coalesced,
+selected owner and the attention traversal to have succeeded and been exhausted,
+with no visible attention rows; until then neither claim is shown. Repeated Retry while an owner is fetching is coalesced,
 continuation never starts while that owner is refreshing, and an invalidation that
 lands during a continuation reconciles that owner's loaded depth afterwards.
 That reconciliation targets only the owner's own org/filter key: if the list

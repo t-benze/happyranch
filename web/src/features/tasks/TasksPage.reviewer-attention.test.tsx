@@ -102,3 +102,78 @@ test('retries a failed attention continuation with its own cursor and reaches th
   await qc.cancelQueries();
   qc.clear();
 });
+
+// Global End of list requires the attention owner, too, to have succeeded and
+// been exhausted with no visible rows. The ordinary escalated owner is seeded
+// exhausted (it shares the wire request), so every status=escalated request
+// below belongs to the attention owner while the other ordinary owners settle
+// to one exhausted completed row.
+test.each([
+  ['more', false], ['pending', false], ['initial-error', false], ['continuation-error', false],
+  ['stale-refresh', false], ['exhausted-visible', false], ['exhausted-empty', true],
+] as const)('End of list with exhausted ordinary owners and attention %s: shown=%s', async (mode, shown) => {
+  sessionStorage.setItem('happyranch.token', 'tok');
+  const row = { team: 'content', block_kind: null, parent_task_id: null, revisit_of_task_id: null,
+    created_at: '2026-05-18T10:00:00Z', updated_at: '2026-05-18T10:06:12Z',
+    closed_at: null, cancelled_at: null, session_timeout_seconds: null };
+  const done = { ...row, task_id: 'TASK-DONE', brief: 'Exhausted completed root', status: 'completed', severity_rollup: 'completed' };
+  const esc = (i: number) => ({ ...row, task_id: `TASK-ESC-${i}`, brief: `Waiting decision ${i}`, status: 'escalated', severity_rollup: 'escalated' });
+  let failAttention = false;
+  let releasePending = () => {};
+  server.use(
+    http.get('/api/v1/orgs', () => HttpResponse.json({ orgs: [{ slug: 'review-org', root: '/x' }] })),
+    http.get('/api/v1/orgs/:slug/dashboard/summary', () => HttpResponse.json({ org_age_days: 1 })),
+    http.get('/api/v1/orgs/review-org/agents', () => HttpResponse.json({ agents: [] })),
+    http.get('/api/v1/orgs/review-org/tasks/roots', async ({ request }) => {
+      const p = new URL(request.url).searchParams;
+      if (p.get('status') !== 'escalated') {
+        return HttpResponse.json({ tasks: p.get('status') === 'completed' ? [done] : [], next_cursor: null });
+      }
+      if (mode === 'pending') await new Promise<void>((resolve) => { releasePending = resolve; });
+      if (failAttention || mode === 'initial-error' || p.has('before')) return new HttpResponse(null, { status: 500 });
+      if (mode === 'more' || mode === 'continuation-error') return HttpResponse.json({ tasks: Array.from({ length: 50 }, (_, i) => esc(i)), next_cursor: 'TASK-ESC-49' });
+      return HttpResponse.json({ tasks: mode === 'exhausted-empty' ? [] : [esc(0)], next_cursor: null });
+    }),
+  );
+  const qc = makeQueryClient();
+  qc.setDefaultOptions({ queries: { retry: false } });
+  const ordinaryEscalated = ['tasks-list-ordinary', 'review-org', { status: 'escalated' }];
+  qc.setQueryDefaults(ordinaryEscalated, { staleTime: Infinity });
+  qc.setQueryData(ordinaryEscalated, { pages: [{ tasks: [], next_cursor: null }], pageParams: [undefined] });
+  render(<MemoryRouter initialEntries={['/orgs/review-org/tasks']}><AppProvider client={qc}><I18nTestBoundary><AppRoutes /></I18nTestBoundary></AppProvider></MemoryRouter>);
+  try {
+    await screen.findByText('Exhausted completed root');
+    // Every ordinary owner has succeeded and is exhausted.
+    await waitFor(() => {
+      for (const status of ['pending', 'in_progress', 'escalated', 'completed', 'failed', 'cancelled', 'superseded']) {
+        const data = qc.getQueryData<{ pages: { next_cursor: string | null }[] }>(['tasks-list-ordinary', 'review-org', { status }]);
+        expect(data?.pages.at(-1)?.next_cursor).toBeNull();
+      }
+    });
+    if (mode === 'more') await screen.findByText('50+ waiting on you');
+    if (mode === 'pending') await screen.findByText('Loading waiting-on-you tasks…');
+    if (mode === 'initial-error') await screen.findByText('Could not load waiting-on-you tasks');
+    if (mode === 'continuation-error') {
+      await screen.findByText('50+ waiting on you');
+      await userEvent.click(screen.getByRole('button', { name: 'Load more waiting-on-you tasks' }));
+      await screen.findByRole('button', { name: 'Retry loading more waiting-on-you tasks' });
+    }
+    if (mode === 'stale-refresh' || mode === 'exhausted-visible') await screen.findByText('1 waiting on you');
+    if (mode === 'stale-refresh') {
+      failAttention = true;
+      await act(async () => { await qc.invalidateQueries({ queryKey: ['tasks-roots-infinite', 'review-org', { status: 'escalated' }], exact: true }); });
+      await screen.findByText('Could not load waiting-on-you tasks; previously loaded rows are still shown.');
+      expect(screen.getByText('Waiting decision 0')).toBeInTheDocument();
+    }
+    if (shown) {
+      expect(await screen.findByText('End of list')).toBeInTheDocument();
+    } else {
+      expect(screen.queryByText('End of list')).not.toBeInTheDocument();
+      expect(screen.queryByText('No tasks')).not.toBeInTheDocument();
+    }
+  } finally {
+    releasePending();
+    await qc.cancelQueries();
+    qc.clear();
+  }
+});

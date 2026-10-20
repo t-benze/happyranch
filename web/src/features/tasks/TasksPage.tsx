@@ -378,10 +378,13 @@ function TasksList({ groupBy, setGroupBy, filters, setFilters }: {
   const ordinaryInitialError = !hasUsableTasks && (allInitialFailed || isRetrying);
   const showOrdinaryGroups = hasUsableTasks;
   const showListShell = showEscalatedGroup || showOrdinaryGroups;
-  // A global empty claim needs every relevant owner to have succeeded and
-  // been exhausted, with no visible attention rows.
-  const globalEmpty = ordinaryExhausted && !hasUsableTasks && !attentionLoading && !attentionFailed &&
+  // Global empty / end-of-list claims need every relevant owner — the selected
+  // ordinary owners AND the attention traversal — to have succeeded and been
+  // exhausted, with no visible attention rows.
+  const allOwnersExhausted = ordinaryExhausted && !attentionLoading && !attentionFailed &&
     !attention.hasNextPage && attentionTasks.length === 0;
+  const globalEmpty = allOwnersExhausted && !hasUsableTasks;
+  const globalEnd = allOwnersExhausted && hasUsableTasks;
   const statusLabel = (status: string) => groupLabel(status, 'status', t);
   // Per-owner recovery: each failed owner stays visibly incomplete with its own
   // Retry, while successful siblings keep their rows.
@@ -624,7 +627,7 @@ function TasksList({ groupBy, setGroupBy, filters, setFilters }: {
               </p>
             )}
             {moreAlerts}
-            {ordinaryExhausted && hasUsableTasks && (
+            {globalEnd && (
               <p className="text-text-muted py-4 text-center text-xs">
                 {t('tasks.list.endOfList')}
               </p>
