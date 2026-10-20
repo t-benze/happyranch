@@ -7,6 +7,7 @@ No observer lock is retained across preparation, provider execution or callbacks
 """
 from __future__ import annotations
 
+import ast
 import copy
 from collections import deque
 import hashlib
@@ -24,6 +25,7 @@ from email.parser import BytesHeaderParser
 from types import CodeType
 import threading
 import time
+import textwrap
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -647,8 +649,140 @@ def _result(problems: list[str], discrepancies: dict) -> dict:
             "collection_decision": "insufficient_instrumentation", "thresholds_met": False}
 
 
-def _failed_before_exposure(snapshot: dict, phases: dict, rows: list[dict], evidence: dict | None) -> bool:
-    """Closed seq428 class; phase absence alone is never exhaustive evidence.
+def _initial_host_refusal_sites() -> tuple[tuple[str, ...], ...]:
+    """Only the initial ordinal-zero host retry, before FIFO/provider entry.
+
+    Resolve exact statement sites in the identity-bound source; never treat all
+    native_admission exceptions (or later retry bookkeeping) as no-launch proof.
+    Historical line meanings are separate explicit source versions, never a
+    loose range or an alias of today's line numbers.
+    """
+    from runtime.orchestrator.host_supervisor import HostSessionSupervisor
+    from runtime.orchestrator.task_pause import TaskInvocation
+    from runtime.orchestrator.orchestrator import Orchestrator
+    def function(function: Any) -> tuple[ast.FunctionDef, int]:
+        lines, start = inspect.getsourcelines(function)
+        tree = ast.parse(textwrap.dedent("".join(lines)))
+        return _one(tree.body, "refusal_source_function"), start - 1
+    host, offset = function(HostSessionSupervisor.run)
+    loop = _one([node for node in host.body if isinstance(node, ast.While)], "refusal_host_loop")
+    calls = [node for statement in host.body if statement.lineno < loop.lineno
+             for node in ast.walk(statement) if isinstance(node, ast.Call)
+             and ast.unparse(node.func) == "task_invocation.retry_attempt"
+             and {key.arg: ast.literal_eval(key.value) for key in node.keywords
+                  if key.arg in {"boundary", "ordinal"}} == {"boundary": "host", "ordinal": 0}]
+    call = _one(calls, "refusal_initial_retry")
+    retry, retry_offset = function(TaskInvocation.retry_attempt)
+    guard = _one([node for node in ast.walk(retry) if isinstance(node, ast.If)
+                  and ast.unparse(node.test) == "reservation is not None and reservation.cleanup_failed"],
+                 "refusal_preparation_guard")
+    refusal = _one(guard.body, "refusal_preparation_raise")
+    if (not isinstance(refusal, ast.Raise) or refusal.exc is None
+            or ast.unparse(refusal.exc) != "PauseControlError('pause_control_unavailable')"):
+        raise ValueError("refusal_source_changed")
+    def callsite(owner: Any, target: str) -> str:
+        tree, offset = function(owner)
+        call = _one([node for node in ast.walk(tree) if isinstance(node, ast.Call)
+                     and ast.unparse(node.func) == target], "refusal_source_call")
+        return f"runtime/orchestrator/orchestrator.py:{offset + call.lineno}"
+    current = (callsite(Orchestrator._launch_agent_with_scratch, "self._run_agent_launch_contained"),
+               callsite(Orchestrator._run_agent_launch_contained, "self._host_supervisor.run"),
+               f"runtime/orchestrator/host_supervisor.py:{offset + call.lineno}",
+               f"runtime/orchestrator/task_pause.py:{retry_offset + refusal.lineno}")
+    # Shipped 5a19e562cffe34e4f560550a6ed3d9869a42166c, independently
+    # preserved source: orchestrator b756a0b6..., host b10d01df..., Pause
+    # 29d21001.... At THAT version line510 is the cleanup guard. In current
+    # coding-aware Pause, line510 is a different raise; mixing paths refuses.
+    historical = ("runtime/orchestrator/orchestrator.py:1506",
+                  "runtime/orchestrator/orchestrator.py:1817",
+                  "runtime/orchestrator/host_supervisor.py:1402",
+                  "runtime/orchestrator/task_pause.py:510")
+    return current, historical
+
+
+def _unexposed_expectation(body: dict) -> bool:
+    """Validate the full original renderer facts; no synthetic empty expectation."""
+    from runtime.infrastructure.learnings_store import ID_RE
+    if (type(body["budget"]) is not int or body["budget"] < 0
+            or body["config_version"] is not None
+            or type(body["memory_telemetry_version"]) is not int or body["memory_telemetry_version"] != 1
+            or body["renderer_contract_digest"] != RENDER_CONTRACT_DIGEST
+            or type(body["rendered_text_present"]) is not bool
+            or type(body["digest_count"]) is not int):
+        return False
+    for key in ("digest_ids", "pointer_ids", "full_body_ids"):
+        ids = body[key]
+        if (not isinstance(ids, list) or any(not isinstance(mid, str) or ID_RE.fullmatch(mid) is None for mid in ids)
+                or len(set(ids)) != len(ids)):
+            return False
+    ids, pointers, bodies = (body[key] for key in ("digest_ids", "pointer_ids", "full_body_ids"))
+    if (body["digest_count"] != len(ids) or set(pointers) & set(bodies)
+            or set(pointers) | set(bodies) != set(ids)):
+        return False
+    state, reason = body["state"], body["reason"]
+    if body["budget"] == 0:
+        return state == "disabled" and reason == "budget_zero" and not ids and not body["rendered_text_present"]
+    if state == "nonempty":
+        return reason == "rendered_ids" and body["rendered_text_present"] and bool(ids)
+    return (state == "empty" and not ids and (
+        reason in {"memory_directory_absent", "renderer_empty"} and not body["rendered_text_present"]
+        or reason == "no_valid_rendered_ids" and body["rendered_text_present"]))
+
+
+def _post_expectation_refusal(identity: dict, terminal: dict, rows: list[dict], task: dict) -> dict:
+    """Positive current-attempt evidence, independent of preparation custody.
+
+    Only the source-resolved pre-FIFO initial-host-retry failure is supported.
+    first_cause is deliberately not used: it can belong to an earlier attempt.
+    No callback, kind=refused or cleanup disposition alone supplies this proof.
+    """
+    from runtime.infrastructure.memory_telemetry_report import aware_utc
+    tid, agent, sid = identity["task_id"], identity["agent"], identity["payload"]["session_id"]
+    native = [row for row in rows if row["action"] == "task_native_launch_boundary"]
+    row = _one([row for row in native if row["task_id"] == tid
+                and isinstance(row["payload"], dict) and row["payload"].get("session_id") == sid],
+               "refusal_native_tuple")
+    p = _closed(row["payload"], {"kind", "logical_owner", "attempt_id", "invocation_id", "session_id",
+                               "count", "first_cause", "refusal", "disposition"})
+    if (row["agent"] != agent or p["kind"] != "refused"
+            or type(row["id"]) is not int or not terminal["id"] < row["id"]
+            or not aware_utc(terminal["timestamp"]) <= aware_utc(row["timestamp"]) <= aware_utc(task["completed_at"])
+            or type(p["count"]) is not int or not 1 <= p["count"] <= 3
+            or p["disposition"] not in {"bounded_admission", "unclosed_preparation"}
+            or not isinstance(p["first_cause"], dict) or not p["first_cause"]):
+        raise ValueError("refusal_native_shape")
+    _sha256(p["logical_owner"])
+    for key in ("attempt_id", "invocation_id"):
+        if not isinstance(p[key], str) or re.fullmatch(r"[0-9a-f]{32}", p[key]) is None:
+            raise ValueError("refusal_native_identity")
+    for other in native:
+        body = other["payload"]
+        if not isinstance(body, dict):
+            if other["task_id"] == tid:
+                raise ValueError("refusal_native_unknown")
+            continue
+        if other["task_id"] == tid and any(not isinstance(body.get(key), str) or not body[key]
+                for key in ("session_id", "invocation_id", "attempt_id", "logical_owner")):
+            raise ValueError("refusal_native_unknown_identity")
+        related = (body.get("session_id") == sid or body.get("invocation_id") == p["invocation_id"]
+                   or body.get("attempt_id") == p["attempt_id"])
+        if related and other is not row:
+            # Initial host retry cannot follow another attempt/start for this
+            # native invocation, even if its on_started callback never arrived.
+            raise ValueError("refusal_native_contradiction")
+    cause = _closed(p["refusal"], {"stage", "exception_class", "code", "locations"})
+    locations = cause["locations"]
+    if (cause["stage"] != "native_admission" or cause["exception_class"] != "PauseControlError"
+            or cause["code"] != "pause_control_unavailable"
+            or not isinstance(locations, list) or len(locations) != 4
+            or tuple(locations) not in _initial_host_refusal_sites()):
+        raise ValueError("refusal_no_positive_prelaunch_path")
+    return row
+
+
+def _failed_before_exposure(snapshot: dict, phases: dict, rows: list[dict], evidence: dict | None, *,
+                            after_expectation: bool = False) -> bool:
+    """Closed seq428 / separately positive seq532 classes.
 
     Callers must supply their complete, bounded, revision/bookend-checked capture.
     A missing capture is deliberately distinct from a successfully read empty
@@ -658,20 +792,28 @@ def _failed_before_exposure(snapshot: dict, phases: dict, rows: list[dict], evid
     try:
         if (evidence is None or evidence["audit_log"] != rows
                 or not isinstance(evidence["tasks"], list) or not isinstance(evidence["task_results"], list)
-                or any(len(phases[name]) != (1 if name in {"intent", "identity", "terminal"} else 0) for name in PHASES)):
+                or any(len(phases[name]) != (1 if name in {"intent", "identity", "terminal"}
+                       or after_expectation and name == "expectation" else 0) for name in PHASES)):
             return False
         intent, identity, terminal = (phases[name][0] for name in ("intent", "identity", "terminal"))
         common = {"contract_version", "org", "root", "boot_id", "ordinal", "generation", "task_id", "agent", "session_id"}
         fields = [common | {"entered_at", "recovery"},
                   common | {"executor", "model", "parent_task_id", "task_type", "population", "parent_known", "invocation_purpose"},
                   common | {"outcome", "success", "returncode", "expectation_known", "binding_known", "launched_callbacks"}]
+        authenticated = [intent, identity, terminal]
+        if after_expectation:
+            expectation = phases["expectation"][0]
+            authenticated.insert(2, expectation)
+            fields.insert(2, common | {"state", "reason", "budget", "config_version", "memory_telemetry_version",
+                                      "renderer_contract_digest", "rendered_text_present", "pointer_ids",
+                                      "full_body_ids", "digest_ids", "digest_count"})
         p, i, t = (row["payload"] for row in (intent, identity, terminal))
         sid, tid, agent = i["session_id"], intent["task_id"], intent["agent"]
         if (not isinstance(sid, str) or not sid.startswith("sess-") or not sid[5:]
                 or not isinstance(agent, str) or not agent.strip()):
             return False
         _identifier(tid, "TASK")
-        for row, required in zip((intent, identity, terminal), fields):
+        for row, required in zip(authenticated, fields):
             body = _closed(row["payload"], required)
             if (type(row["id"]) is not int or row["id"] <= 0
                     or type(body["contract_version"]) is not int or body["contract_version"] != 1
@@ -686,7 +828,7 @@ def _failed_before_exposure(snapshot: dict, phases: dict, rows: list[dict], evid
                 or not intent["id"] < identity["id"] < terminal["id"]
                 or not p["generation"] < i["generation"] < t["generation"]
                 or not aware_utc(p["entered_at"]) <= aware_utc(intent["timestamp"]) <= aware_utc(identity["timestamp"]) <= aware_utc(terminal["timestamp"])
-                or t["outcome"] != "raised" or t["expectation_known"] is not False or t["binding_known"] is not False
+                or t["outcome"] != "raised" or t["expectation_known"] is not after_expectation or t["binding_known"] is not False
                 or type(t["launched_callbacks"]) is not int or t["launched_callbacks"] != 0
                 or t["success"] is not None or t["returncode"] is not None
                 or type(p["recovery"]) is not bool or i["parent_known"] is not True
@@ -699,6 +841,13 @@ def _failed_before_exposure(snapshot: dict, phases: dict, rows: list[dict], evid
         purpose = "unattributed" if p["recovery"] else "manager_decision" if i["task_type"] == "task" else "worker_execution"
         if i["population"] != population or i["invocation_purpose"] != purpose or parent == tid:
             return False
+        if after_expectation:
+            e = expectation["payload"]
+            if (e["session_id"] != sid or not _unexposed_expectation(e)
+                    or not identity["id"] < expectation["id"] < terminal["id"]
+                    or not i["generation"] < e["generation"] < t["generation"]
+                    or not aware_utc(identity["timestamp"]) <= aware_utc(expectation["timestamp"]) <= aware_utc(terminal["timestamp"])):
+                return False
         tasks = evidence["tasks"]
         ids = [task["id"] for task in tasks]
         if len(set(ids)) != len(ids):
@@ -730,6 +879,11 @@ def _failed_before_exposure(snapshot: dict, phases: dict, rows: list[dict], evid
                         or not isinstance(result["agent"], str) or not result["agent"].strip()
                         or result["session_id"] == sid):
                     return False
+        permitted = authenticated[:]
+        if after_expectation:
+            if task["current_session_id"] == sid:
+                return False
+            permitted.append(_post_expectation_refusal(identity, terminal, rows, task))
         for row in rows:
             body, action = row["payload"], row["action"]
             if not isinstance(body, dict):
@@ -737,13 +891,13 @@ def _failed_before_exposure(snapshot: dict, phases: dict, rows: list[dict], evid
                     return False
                 continue
             if (action.startswith("memory_runtime_") and body.get("boot_id") == snapshot["boot_id"]
-                    and body.get("ordinal") == p["ordinal"] and row not in (intent, identity, terminal)):
+                    and body.get("ordinal") == p["ordinal"] and row not in authenticated):
                 return False
             # seq480: only related owner evidence and current-boot ordinal
             # contradictions participate. Unrelated historical SID sharing is
             # the documented supplied-liveSID trust limit, not admission proof.
             owner = body.get("task_id") if action == "memory_read" else row["task_id"]
-            if owner == tid and body.get("session_id") == sid and row not in (identity, terminal):
+            if owner == tid and body.get("session_id") == sid and row not in permitted:
                 return False
             if action in {"session_start", "memory_digest_impression", "memory_read", "memory_search"}:
                 owner = body.get("task_id") if action == "memory_read" else row["task_id"]
@@ -751,7 +905,7 @@ def _failed_before_exposure(snapshot: dict, phases: dict, rows: list[dict], evid
                         and (not isinstance(body.get("session_id"), str) or not body["session_id"].strip())):
                     return False
         return True
-    except (KeyError, TypeError, ValueError, OverflowError):
+    except (KeyError, TypeError, ValueError, OverflowError, OSError, SyntaxError):
         return False
 
 
@@ -1134,6 +1288,9 @@ def _validate_census(snapshot: dict, rows: list[dict], *, require_seal: bool,
         if len(identities) != 1 or len(expectations) != 1:
             problems.append(f"unknown_preparation:{ordinal}")
             continue
+        if (require_seal and _failed_before_exposure(snapshot, selected, rows, evidence, after_expectation=True)):
+            closed_failures.append(ordinal)
+            continue
         identity = identities[0]["payload"]
         expected = expectations[0]["payload"]
         population = identity.get("population")
@@ -1339,6 +1496,10 @@ def loaded_identity(org: Any) -> dict:
                  _serving_revision, _check_serving_snapshot, _now, serving_observation, loaded_identity]
     from runtime.infrastructure.memory_telemetry_report import reduce_report, reduce_collection_report, _session_diagnostics, aware_utc
     from runtime.orchestrator.run_step import _run_step_body
+    from runtime.orchestrator.run_step import run_step_impl
+    from runtime.orchestrator.host_supervisor import HostSessionSupervisor
+    from runtime.orchestrator.task_pause import TaskInvocation, fingerprint as task_fingerprint, eligible as task_eligible
+    from runtime.orchestrator import launch_refusals
     from runtime.infrastructure.audit_logger import AuditLogger
     from cli.commands.learning import cmd_memory_report, _compute_report, _print_report, _fetch_agent_roles
     functions.extend([org.orchestrator._log_step_result, org.memory_collection.reconcile_acceptance,
@@ -1354,6 +1515,16 @@ def loaded_identity(org: Any) -> dict:
                       _validate_probe_operations, _census_from_view, validate_acceptance_evidence, _view_projection,
                       _referenced_probe_jobs, _local_job_outputs, _registered_cohort, validate_epoch_candidate, prepare_acceptance, reconcile_acceptance, acquire_collection_report,
                       CollectionObserver._rows, CollectionObserver.validate, validate_census, _validate_census, _failed_before_exposure,
+                      _initial_host_refusal_sites, _unexposed_expectation, _post_expectation_refusal,
+                      HostSessionSupervisor.run, HostSessionSupervisor._execute_attempt,
+                      TaskInvocation.prepare, TaskInvocation._entry, TaskInvocation._begin_launch_attempt,
+                      TaskInvocation.retry_attempt, TaskInvocation.commit, TaskInvocation._commit_local,
+                      TaskInvocation._task_pause_commit, TaskInvocation.finalize, TaskInvocation.__call__,
+                      TaskInvocation._business_uncommitted, TaskInvocation.phase, TaskInvocation.preparation_effects.__wrapped__,
+                      task_fingerprint, task_eligible,
+                      TaskInvocation.started, TaskInvocation.record_preparation_cause, TaskInvocation.failed_cleanup,
+                      launch_refusals.safe_cause, launch_refusals._logical_owner, launch_refusals._current,
+                      launch_refusals.record_started, launch_refusals.settle_refusal, run_step_impl,
                       semantic_task_projection, _semantic_evidence_projection, aware_utc, _run_step_body,
                       _result, _advance, _projection, CollectionObserver._read_revision,
                       _CensusBudget.__init__, _CensusBudget.check, _CensusBudget.record, _CensusBudget.step, _CensusBudget.request,
@@ -1768,7 +1939,7 @@ def _approved_probe_plan(data: dict, candidate: dict, qa_task: dict, qa_result: 
 
 
 HEALTH_DEFINITION_SHA256 = hashlib.sha256(
-    b'H-v1:complete-intent-and-expectation-census;closed-failed-before-exposure:THR091seq428;zero-false-credit;per-path-root-child:2/4/2;admission-age<=48h-at-final-commit;original-epoch-current-health;installed-identity;no-stitching'
+    b'H-v1:complete-intent-and-expectation-census;closed-failed-before-exposure:THR091seq428;post-expectation-positive-initial-host-refusal:THR091seq532;preparation-custody-independent;unknown-agent-launch-refuses;zero-false-credit;per-path-root-child:2/4/2;admission-age<=48h-at-final-commit;original-epoch-current-health;installed-identity;no-stitching'
 ).hexdigest()
 
 
