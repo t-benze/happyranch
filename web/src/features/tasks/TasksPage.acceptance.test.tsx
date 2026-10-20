@@ -241,84 +241,141 @@ const combinations = (['status', 'agent', 'org'] as const).flatMap((switchBy) =>
 describe.each(['M', 'R'] as const)('C07-%s manual recovery ownership', (family) => {
   test.each(combinations)('$switchBy $mode oldFail=$oldFail finalFail=$finalFail', async ({ switchBy, mode, oldFail, finalFail }) => {
     const qc = client();
+    let observer: IntersectionObserverCallback | undefined;
+    vi.stubGlobal('IntersectionObserver', class { constructor(callback: IntersectionObserverCallback) { observer = callback; } observe() {} disconnect() {} unobserve() {} });
+    const trigger = () => act(async () => { observer?.([{ isIntersecting: true } as IntersectionObserverEntry], {} as IntersectionObserver); });
     // Each context is ONE exact ordinary owner: status switches between two status owners,
     // agent switches agent within the pending owner, org switches org with the pending owner.
     const params = (context: 'A' | 'B'): { status: string; assigned_agent?: string } => switchBy === 'status' ? { status: context === 'A' ? 'pending' : 'completed' }
       : switchBy === 'agent' ? { status: 'pending', assigned_agent: context === 'A' ? 'agent-a' : 'agent-b' } : { status: 'pending' };
     const slug = (context: 'A' | 'B') => switchBy === 'org' && context === 'B' ? 'org-b' : 'org-a';
-    const key = (context: 'A' | 'B') => ordinaryKey(slug(context), params(context));
-    // Requests before the first filter (the unfiltered mount) are outside both contexts.
-    let ready = false;
+    // Owner queries are discovered from the real cache (by the fixture rows they hold,
+    // or as the only query fetching a held request), never by spelling the provider key.
+    type OwnerQuery = ReturnType<ReturnType<typeof qc.getQueryCache>['getAll']>[number];
+    const holding = (id: string) => qc.getQueryCache().getAll().filter((query) =>
+      (query.state.data as { pages?: { tasks: TaskRecord[] }[] } | undefined)?.pages?.some((page) => page.tasks.some((t) => t.task_id === id)));
+    const ownerOf = (id: string) => { const found = holding(id); expect(found, `one owner query holds ${id}`).toHaveLength(1); return found[0]; };
+    const fetching = () => qc.getQueryCache().findAll({ fetchStatus: 'fetching' });
+    // Initial: requests before the first filter (the unfiltered mount) fail and are outside
+    // both contexts. Stale: the warm phase serves exactly A's and B's owner requests from the
+    // first mount, so warm-up never depends on a remount refetching an earlier failed key.
+    let ready = mode === 'stale';
     const rows = (context: string, revision: string, page: number) => [task(`${context}-${revision}-${page}`, context === 'B' && switchBy === 'status' ? 'completed' : 'pending', context === 'B' && switchBy === 'agent' ? 'agent-b' : 'agent-a')];
-    if (mode === 'stale') for (const context of ['A', 'B'] as const) qc.setQueryData(key(context), {
-      pages: [{ tasks: rows(context, 'cached', 1), next_cursor: `${context}-cursor` }, { tasks: rows(context, 'cached', 2), next_cursor: null }], pageParams: [undefined, `${context}-cursor`],
-    });
     const old = gate(); const current = gate();
     let oldPageTwo = false;
-    type Phase = 'error' | 'old' | 'current';
-    const phase: Record<'A' | 'B', Phase> = { A: 'error', B: 'error' };
+    // 'warm' loads the stale-mode cached pages through the mounted route and its continuation.
+    type Phase = 'warm' | 'error' | 'old' | 'current';
+    const phase: Record<'A' | 'B', Phase> = mode === 'stale' ? { A: 'warm', B: 'warm' } : { A: 'error', B: 'error' };
     const ledger: { context: string; phase: Phase; before: string | null; status: string | null; agent: string | null; limit: string | null; settled: boolean }[] = [];
     server.use(http.get('/api/v1/orgs/:slug/tasks/roots', async ({ request, params: route }) => {
       const p = new URL(request.url).searchParams;
       if (!ready) return new HttpResponse(null, { status: 500 });
       const context = (switchBy === 'org' ? route.slug === 'org-b' : switchBy === 'status' ? p.get('status') === 'completed' : p.get('assigned_agent') === 'agent-b') ? 'B' : 'A';
+      const exact = (c: 'A' | 'B') => route.slug === slug(c) && p.get('status') === params(c).status && p.get('assigned_agent') === (params(c).assigned_agent ?? null);
+      if (phase[context] === 'warm' && !exact(context)) return HttpResponse.json({ tasks: [], next_cursor: null });
       // This provider does not consume AbortSignal. A cancelled stale refresh
       // can finish its already-started page chain after its query promise settles.
       // The old gate is released before the current first page, so its page two
-      // is distinguishable without relabeling it as a current attempt.
-      const oldContinuation = family === 'R' && context === 'A' && mode === 'stale' && !oldFail && p.has('before') && !oldPageTwo;
+      // is distinguishable without relabeling it as a current attempt (warm-up
+      // continuations happen before A's current phase).
+      const oldContinuation = family === 'R' && context === 'A' && mode === 'stale' && !oldFail && phase.A === 'current' && p.has('before') && !oldPageTwo;
       if (oldContinuation) oldPageTwo = true;
       const state = oldContinuation ? 'old' : phase[context];
       const receipt = { context, phase: state, before: p.get('before'), status: p.get('status'), agent: p.get('assigned_agent'), limit: p.get('limit'), settled: false }; ledger.push(receipt);
       if (state === 'old') await old.promise;
       if (state === 'current') await current.promise;
       receipt.settled = true;
-      if (state === 'error' || (state === 'old' ? oldFail : finalFail)) return new HttpResponse(null, { status: 500 });
-      return HttpResponse.json({ tasks: rows(context, state, p.has('before') ? 2 : 1), next_cursor: mode === 'stale' && !p.has('before') ? `${context}-cursor` : null });
+      if (state === 'error' || (state === 'old' ? oldFail : state === 'current' && finalFail)) return new HttpResponse(null, { status: 500 });
+      return HttpResponse.json({ tasks: rows(context, state === 'warm' ? 'cached' : state, p.has('before') ? 2 : 1), next_cursor: mode === 'stale' && !p.has('before') ? `${context}-cursor` : null });
     }));
     async function switchTo(context: 'A' | 'B') {
       if (switchBy === 'org') await userEvent.click(screen.getByRole('link', { name: `Go ${context}` }));
       else await apply(params(context).status, params(context).assigned_agent ?? '');
     }
-    async function establishError(context: 'A' | 'B') {
-      await act(() => qc.invalidateQueries({ queryKey: key(context), exact: true }));
-      await screen.findByText(mode === 'initial' ? 'Could not load tasks' : 'Tasks may be out of date');
+    async function warm(context: 'A' | 'B') {
+      await waitFor(() => expect(ids()).toEqual([`${context}-cached-1`]));
+      await trigger(); await screen.findByText(`Brief ${context}-cached-2`);
+      expect(ids()).toEqual([`${context}-cached-1`, `${context}-cached-2`]);
     }
+    const cachedIds = (context: 'A' | 'B') => mode === 'initial' ? [] : [`${context}-cached-1`, `${context}-cached-2`];
+    async function establishError(context: 'A' | 'B') {
+      // Initial: the context's own mounted load already failed. Stale: refresh the
+      // discovered owner of its cached rows and let that refresh fail.
+      if (mode === 'stale') await act(() => qc.invalidateQueries({ queryKey: ownerOf(`${context}-cached-1`).queryKey, exact: true }));
+      await screen.findByText(mode === 'initial' ? 'Could not load tasks' : 'Tasks may be out of date');
+      await waitFor(() => expect(fetching()).toEqual(family === 'M' && context === 'B' ? [oldQuery] : []));
+    }
+    // A visible context assertion: only this context's own rows, and no Retry
+    // pending on another context's operation (initial: its own failed load).
+    async function ownContext(context: 'A' | 'B') {
+      const visible = () => ({ rows: ids(), initialError: !!screen.queryByText('Could not load tasks'),
+        retrying: !!screen.queryByRole('button', { name: 'Retrying…' }), url: screen.getByLabelText('Current URL').textContent });
+      await waitFor(() => expect(visible()).toEqual({ rows: cachedIds(context), initialError: mode === 'initial', retrying: false, url: `/orgs/${slug(context)}/tasks` }));
+      for (const retry of screen.queryAllByRole('button', { name: 'Retry' })) expect(retry).toBeEnabled();
+    }
+    let oldQuery: OwnerQuery | undefined;
     try {
       mount(qc);
       await waitFor(() => expect(qc.isFetching()).toBe(0));
       ready = true;
       await apply(params('A').status, params('A').assigned_agent ?? '');
+      if (mode === 'stale') {
+        await warm('A'); await switchTo('B'); await warm('B'); await switchTo('A');
+        await waitFor(() => expect(ids()).toEqual(cachedIds('A')));
+        await waitFor(() => expect(qc.isFetching()).toBe(0));
+        expect(ownerOf('A-cached-1')).not.toBe(ownerOf('B-cached-1'));
+        phase.A = 'error'; phase.B = 'error';
+      }
       await establishError('A');
       phase.A = 'old'; await keyboardRetry();
       await waitFor(() => expect(ledger.some((r) => r.phase === 'old')).toBe(true));
+      // The old operation is the one query fetching A's held request.
+      const oldFetching = fetching(); expect(oldFetching).toHaveLength(1); oldQuery = oldFetching[0];
+      if (mode === 'stale') expect(oldQuery).toBe(ownerOf('A-cached-1'));
       await switchTo('B');
+      await ownContext('B');
       const target = family === 'M' ? 'B' : 'A';
       if (family === 'R') {
         // Cancellation settles the old real query promise now, not at late network release.
-        await act(() => qc.cancelQueries({ queryKey: key('A'), exact: true }));
-        expect(qc.getQueryState(key('A'))?.fetchStatus).toBe('idle');
+        expect(ledger.some((r) => r.phase === 'old' && !r.settled)).toBe(true);
+        await act(() => qc.cancelQueries({ queryKey: oldQuery!.queryKey, exact: true }));
+        expect(oldQuery.state.fetchStatus).toBe('idle');
+        expect(ledger.some((r) => r.phase === 'old' && !r.settled), 'old network response is still unreleased').toBe(true);
         phase.A = 'error'; await switchTo('A');
+        await ownContext('A');
       }
       await establishError(target);
       phase[target] = 'current'; await keyboardRetry();
       await waitFor(() => expect(ledger.some((r) => r.phase === 'current')).toBe(true));
+      const currentFetching = fetching().filter((query) => family === 'R' || query !== oldQuery);
+      expect(currentFetching).toHaveLength(1);
+      const currentQuery = currentFetching[0];
+      // M: the current owner is a different query; R: the return reuses A's own query.
+      if (family === 'M') expect(currentQuery).not.toBe(oldQuery); else expect(currentQuery).toBe(oldQuery);
+      if (mode === 'stale') expect(currentQuery).toBe(ownerOf(`${target}-cached-1`));
       const pending = () => mode === 'initial' ? expect(screen.getByRole('button', { name: 'Retrying…' })).toBeInTheDocument()
         : expect(screen.getByRole('button', { name: 'Retry' })).toBeDisabled();
       pending();
       old.release();
       await waitFor(() => expect(ledger.filter((r) => r.phase === 'old').every((r) => r.settled)).toBe(true));
       if (family === 'R' && mode === 'stale' && !oldFail) await waitFor(() => expect(oldPageTwo).toBe(true));
-      if (family === 'M') await waitFor(() => expect(qc.getQueryState(key('A'))?.fetchStatus).toBe('idle'));
-      pending(); expect(qc.getQueryState(key(target))?.fetchStatus).toBe('fetching');
-      expect(ids()).toEqual(mode === 'initial' ? [] : [`${target}-cached-1`, `${target}-cached-2`]);
+      if (family === 'M') {
+        // M: the old operation settles late, into its own query only.
+        await waitFor(() => expect(oldQuery!.state.fetchStatus).toBe('idle'));
+        if (oldFail) expect(oldQuery.state.error).not.toBeNull(); else expect(ownerOf('A-old-1')).toBe(oldQuery);
+      } else {
+        // R: the cancelled operation's late network response is not admitted anywhere.
+        expect(holding('A-old-1')).toEqual([]);
+      }
+      pending(); expect(currentQuery.state.fetchStatus).toBe('fetching');
+      expect(ids()).toEqual(cachedIds(target));
       current.release();
-      await waitFor(() => expect(qc.getQueryState(key(target))?.fetchStatus).toBe('idle'));
+      await waitFor(() => expect(currentQuery.state.fetchStatus).toBe('idle'));
       await waitFor(() => expect(screen.queryByRole('button', { name: 'Retrying…' })).not.toBeInTheDocument());
       if (finalFail) {
         await screen.findByText(mode === 'initial' ? 'Could not load tasks' : 'Tasks may be out of date'); noFalseSuccess();
         expect(screen.getByRole('button', { name: 'Retry' })).toBeEnabled();
-        expect(ids()).toEqual(mode === 'initial' ? [] : [`${target}-cached-1`, `${target}-cached-2`]);
+        expect(ids()).toEqual(cachedIds(target));
       } else {
         await waitFor(() => expect(ids()).toEqual(mode === 'initial' ? [`${target}-current-1`] : [`${target}-current-1`, `${target}-current-2`]));
         expect(screen.queryByText('Tasks may be out of date')).not.toBeInTheDocument();
