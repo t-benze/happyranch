@@ -13,9 +13,12 @@ import hashlib
 import importlib.metadata
 import json
 import os
+import selectors
 import shutil
 import runpy
+import subprocess
 import sys
+import time
 import tomllib
 from pathlib import Path
 
@@ -33,7 +36,127 @@ if _freezer_caller is not None:
     if hashlib.sha256(_freezer_helper.read_bytes()).hexdigest() != _expected_helper:
         raise ValueError('FREEZER_HELPER_SOURCE_MISMATCH')
 _freezer = runpy.run_path(str(_freezer_helper))
-_custody = _freezer['spec_begin'](_PROJ)
+
+
+def _settle_native_query(process, streams):
+    """Settle only our query child; discard remaining pipe bytes with a deadline."""
+    if process.poll() is None:
+        process.kill()
+    process.wait(timeout=1)
+    deadline = time.monotonic() + 1
+    while streams.get_map() and time.monotonic() < deadline:
+        for key, _ in streams.select(max(0, deadline - time.monotonic())):
+            if not os.read(key.fd, 4096):
+                streams.unregister(key.fileobj)
+    if streams.get_map():
+        raise subprocess.TimeoutExpired('native query pipe drain', 1)
+
+
+def _native_query(argv, role, environment):
+    """Configuration queries only: bounded streaming, never candidate execution."""
+    def refuse(category):
+        raise _freezer['FreezerError']('FREEZER_NATIVE_DISCOVERY_' + role.upper() + '_' + category) from None
+
+    process, failure = None, None
+    stdout, total = bytearray(), 0
+    deadline = time.monotonic() + 10
+    with selectors.DefaultSelector() as streams:
+        try:
+            process = subprocess.Popen(argv, env=environment, stdin=subprocess.DEVNULL,
+                                       stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            for pipe in (process.stdout, process.stderr):
+                os.set_blocking(pipe.fileno(), False)
+                streams.register(pipe, selectors.EVENT_READ)
+            while streams.get_map():
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    refuse('TIMEOUT')
+                for key, _ in streams.select(remaining):
+                    chunk = os.read(key.fd, min(4096, 8192 - total + 1))
+                    if not chunk:
+                        streams.unregister(key.fileobj)
+                        continue
+                    total += len(chunk)
+                    if total > 8192:
+                        refuse('OUTPUT_CAP')
+                    if key.fileobj is process.stdout:
+                        if len(stdout) + len(chunk) > 4097:
+                            refuse('PATH_CAP')
+                        stdout.extend(chunk)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                refuse('TIMEOUT')
+            try:
+                status = process.wait(timeout=remaining)
+            except subprocess.TimeoutExpired:
+                refuse('TIMEOUT')
+            if status != 0:
+                refuse('EXIT')
+            try:
+                value = stdout.decode('utf-8', 'strict')
+            except UnicodeError:
+                refuse('UTF8')
+            value = value[:-1] if value.endswith('\n') else value
+            try:
+                _freezer['native_selection_path'](value)
+            except _freezer['FreezerError']:
+                refuse('PATH_SHAPE')
+            return value
+        except (OSError, subprocess.SubprocessError):
+            failure = _freezer['FreezerError']('FREEZER_NATIVE_DISCOVERY_' + role.upper() + '_IO')
+            raise failure from None
+        except BaseException as error:
+            failure = error
+            raise
+        finally:
+            if process is not None:
+                cleanup_failed = False
+                try:
+                    _settle_native_query(process, streams)
+                except (OSError, subprocess.SubprocessError):
+                    cleanup_failed = True
+                finally:
+                    for pipe in (process.stdout, process.stderr):
+                        try:
+                            pipe.close()
+                        except OSError:
+                            cleanup_failed = True
+                if cleanup_failed:
+                    if failure is None:
+                        refuse('SETTLEMENT')
+                    # Preserve the original refusal, with no stderr/environment dump.
+                    failure.add_note('NATIVE_QUERY_SETTLEMENT_UNVERIFIED')
+
+
+def discover_native_tools():
+    """Freeze active full-Xcode selection without changing host configuration."""
+    environment = os.environ.copy()
+    developer = environment.get('DEVELOPER_DIR')
+    explicit_developer = developer is not None
+    if developer is None:
+        developer = _native_query(['/usr/bin/xcode-select', '--print-path'], 'developer', environment)
+    developer = _freezer['native_selection_path'](developer)
+    if explicit_developer and developer.name.endswith('.app'):
+        developer = developer / 'Contents/Developer'
+    developer = _freezer['native_selection_path'](str(developer))
+    _freezer['need'](developer.name == 'Developer' and developer.parent.name == 'Contents'
+                     and developer.parent.parent.name.endswith('.app'), 'NATIVE_DEVELOPER_SELECTION')
+    environment['DEVELOPER_DIR'] = str(developer)
+    selection = {'developer': str(developer)}
+    for role in ('lipo', 'install_name_tool'):
+        try:
+            selection[role] = _native_query(['/usr/bin/xcrun', '--sdk', 'macosx', '--find', role],
+                                             role, environment)
+        except (_freezer['FreezerError'], OSError) as error:
+            _freezer['native_tool_context'](error, dict(role=role, selected=selection.get(role),
+                                                       terminal=None, operation='selection'))
+            raise
+    _freezer['native_selection_paths'](selection)
+    return selection
+
+
+_native_selection = discover_native_tools() if _freezer_caller is not None else None
+_custody = _freezer['spec_begin'](_PROJ, native_selection=_native_selection)
 def custody_for(lane, target):
     return _custody.custody(lane, target) if _custody else None
 

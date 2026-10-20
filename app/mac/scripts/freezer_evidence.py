@@ -1045,7 +1045,37 @@ def _admit_process_roots(roles: tuple[tuple[str, Path], ...], roots: list[str]) 
             roots.append(str(root))
 
 
-def spec_begin(project):
+def native_selection_path(value):
+    """Validate raw resolver spelling without resolving away unsafe ancestry."""
+    need(type(value) is str and 0 < len(value) <= 4096 and ':' not in value
+         and not any(unicodedata.category(c).startswith('C') for c in value), 'NATIVE_SELECTION_PATH')
+    try:
+        return absolute(value)
+    except (ASSET['AssetError'], UnicodeError):
+        raise FreezerError('FREEZER_NATIVE_SELECTION_PATH') from None
+
+
+def native_selection_paths(value):
+    """Transient spec-only selection, never a persisted root or trust grant."""
+    keys(value, {'developer','lipo','install_name_tool'}, 'NATIVE_SELECTION_SCHEMA')
+    developer = native_selection_path(value['developer'])
+    need(developer.name == 'Developer' and developer.parent.name == 'Contents'
+         and developer.parent.parent.name.endswith('.app'), 'NATIVE_DEVELOPER_SELECTION')
+    result = {'developer': developer}
+    for role in ('lipo','install_name_tool'):
+        try:
+            path = native_selection_path(value[role])
+            need(path.name == role and path.is_relative_to(developer)
+                 and path.parent.parts[-2:] == ('usr','bin'), 'NATIVE_REAL_TOOL_SELECTION')
+            result[role] = path
+        except FreezerError as error:
+            native_tool_context(error, dict(role=role, selected=value[role], terminal=None,
+                                            operation='selection'))
+            raise
+    return result
+
+
+def spec_begin(project, *, native_selection=None):
     raw = os.environ.get('HAPPYRANCH_FREEZER_CALLER')
     if raw is None:
         return None
@@ -1074,12 +1104,27 @@ def spec_begin(project):
     executable, aliases = executable_alias(sys.executable,session)
     session.toolchain['python_alias'] = aliases
     session.toolchain['python_executable'] = session.snapshot(executable,'shared','toolchain',256*MiB)
-    for tool, selected in (('codesign','/usr/bin/codesign'),('lipo',shutil.which('lipo')),('install_name_tool',shutil.which('install_name_tool'))):
+    # Revalidate the internal selection only at the native stage, after the
+    # original caller/context/process-root/wheel/receipt/Python checks.
+    native = native_selection_paths(native_selection)
+    for tool in ('lipo','install_name_tool'):
+        try:
+            _admit_process_roots(((tool, native[tool].parent),), session.roots)
+        except (FreezerError, ASSET['AssetError'], OSError) as error:
+            native_tool_context(error, dict(role=tool, selected=str(native[tool]), terminal=None,
+                                            operation='selection'))
+            raise
+    need(len(session.roots) <= 16, 'ROOT_CAP')
+    for tool, selected in (('codesign','/usr/bin/codesign'),('lipo',str(native['lipo'])),
+                           ('install_name_tool',str(native['install_name_tool']))):
         native_context = dict(role=tool, selected=selected, terminal=None, operation='selection')
         try:
             need(selected is not None, 'NATIVE_TOOL_UNAVAILABLE')
             native_context['operation'] = 'executable_alias'
             tool_path, aliases = executable_alias(selected,session)
+            if tool != 'codesign':
+                need(not aliases and str(tool_path) == selected, 'NATIVE_PHYSICAL_TOOL_REQUIRED')
+                need(os.access(selected, os.X_OK), 'NATIVE_TOOL_NOT_EXECUTABLE')
             native_context['operation'] = 'native_snapshot'
             session.toolchain['native_tools'].append({'tool':tool,'selected':selected,'aliases':aliases,
                         'subject':session.snapshot(tool_path,'shared','toolchain',256*MiB,
@@ -1087,6 +1132,23 @@ def spec_begin(project):
         except (FreezerError, ASSET['AssetError'], OSError) as error:
             native_tool_context(error, native_context)
             raise
+    original_path = os.environ.get('PATH')
+    parents = list(dict.fromkeys(str(native[tool].parent) for tool in ('lipo','install_name_tool')))
+    proposed_path = os.pathsep.join(parents) + (os.pathsep + original_path if original_path is not None else '')
+    try:
+        for tool in ('lipo','install_name_tool'):
+            need(shutil.which(tool, path=proposed_path) == str(native[tool]), 'NATIVE_PATH_SELECTION_CHANGED')
+        # Vendor PATH argv inherits this for both lanes and PYZ/EXE/COLLECT.
+        # Fresh external readers reopen recorded paths; the wrapper is unchanged.
+        os.environ['PATH'] = proposed_path
+    except BaseException as error:
+        if original_path is None:
+            os.environ.pop('PATH', None)
+        else:
+            os.environ['PATH'] = original_path
+        native_tool_context(error, dict(role=tool, selected=str(native[tool]), terminal=None,
+                                        operation='selection'))
+        raise
     return session
 
 

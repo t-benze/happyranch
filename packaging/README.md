@@ -396,6 +396,65 @@ platforms keep registry PyInstaller 6.21.0. The shared `build_daemon.sh` command
 binding the private managed interpreter described above. Standalone freezer
 work has no app-custody token.
 
+Before `spec_begin` or either Analysis, the custody-only spec setup freezes the
+active full-Xcode developer directory. A present `DEVELOPER_DIR` must be a valid
+absolute `.app` or `.app/Contents/Developer` path (the former is appended
+lexically); otherwise one literal `/usr/bin/xcode-select --print-path` must
+return the full developer path. The resolver child environment pins that raw
+`DEVELOPER_DIR`, preserving the original PATH and other settings. Exactly two
+literal `/usr/bin/xcrun --sdk macosx --find` queries select `lipo` and
+`install_name_tool`. No host selection/cache change, candidate execution, retry,
+alternate installation, copied tool or PATH fallback is permitted.
+
+Each configuration query has a 10-second deadline, streaming combined
+stdout/stderr limit of 8192 bytes and stdout limit of 4096 path bytes plus one
+optional LF. Both pipes are drained without unbounded capture; failures kill
+and reap only the owned child, with bounded discard/descriptor cleanup. Exit,
+timeout, output, UTF8 and path failures report bounded role/category errors,
+without dumping stderr or environment. Paths must be single, nonempty, strict
+UTF8 absolute spellings, without controls, colon, empty/dot/traversal components
+or existing component/length violations. Spaces remain valid. CLT selection,
+dispatchers, outside-Xcode paths and wrong role basenames refuse. Each candidate
+must be beneath the chosen developer directory with an immediate `usr/bin`
+parent; path shape alone establishes no safe filesystem attributes.
+
+`spec_begin` validates the transient closed selection again at its native stage,
+after the unchanged caller/context/platform, prefix/base-prefix/stdlib/usr-bin
+root, installed-wheel, receipt and Python checks. It admits only each candidate's
+immediate bin parent, checking each occurrence before deduplication through the
+unchanged `RootHandle` ancestry/owner/mode/device/identity predicates. At most two
+distinct roots are added, retaining cap16 before native snapshots and Analysis.
+Neither `/Applications`, the Xcode/Developer tree, SDK nor `/` becomes a general
+read root. Native snapshot order stays codesign, lipo, install_name_tool;
+codesign remains literal `/usr/bin/codesign`. The two discovered leaves must be
+physical executable files with no alias chain, and still pass all original
+single-link/type/uid/mode/no-follow/nonblocking/device/size/budget/identity guards.
+Unsafe ancestry and same-descriptor leaf refusals retain their original notes.
+
+After all native snapshots succeed, ordered deduplicated candidate parents
+(lipo then install_name_tool) precede the complete original PATH. Both
+`shutil.which` results must equal the discovered paths before activation;
+cross-shadowing, disappearance or fallback refuses before Analysis. Any
+tentative PATH is restored on refusal. Only this PyInstaller process receives
+the PATH, for both lanes through PYZ/EXE/shared COLLECT. Original vendor lipo and
+install_name_tool PATH argv inherit that selection; the wheel remains unchanged.
+The parent wrapper, later web/Go/Swift and frozen CLI inspection keep their own
+environments. Standalone custody-absent setup performs no discovery or PATH
+change and retains its ordinary unobserved tool selection.
+
+Existing native rows keep their keys, role order and `selection_observation`
+relation, toolchain `origin_unobserved`, expanded root propagation and four
+caller-held digests. Fresh accept/before-copy/copy/licenses readers re-admit the
+recorded roots and reopen selected paths, alias identities and live/snapshot
+subjects; they never rediscover via xcrun or their own PATH. Final
+`verify-release.sh` PATH lipo inspection is separate and unchanged. Discovery
+and intended invocation alignment attest neither an executed kernel image nor
+publisher identity, and provide no same-UID replacement/restore guarantee.
+Actual candidate suitability, query bounds/cleanup/races/negative behavior,
+both-lane completion and fresh native readers remain UNVERIFIED until the
+root-owned shipping run. Successful source/static checks or discovery establish
+no app/archive/receipt or native acceptance.
+
 The spec retains each Analysis/PYZ/EXE generation before later lanes can replace
 it. PYZ bootstrap selections and redirects, EXE raw inputs, both dependency
 lists and every shared Analysis occurrence survive normalization. Equal copies
