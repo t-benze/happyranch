@@ -210,7 +210,9 @@ function useTaskListStream(
     if (current.isFetchNextPageError ? !options?.explicit : current.isError) return;
     // An invalidation that lands while this continuation is in flight is
     // otherwise cleared by the continuation's own success (for example after
-    // remounting onto the in-flight fetch). Finish, then reconcile this owner.
+    // remounting onto the in-flight fetch). Finish, then reconcile this owner
+    // by its own key: the observer may have moved to another org/filter while
+    // awaiting, so re-mark exactly this key (refetching it only if active).
     const hash = keyHash;
     let invalidated = false;
     const unsubscribe = qc.getQueryCache().subscribe((event) => {
@@ -222,7 +224,9 @@ function useTaskListStream(
     } finally {
       unsubscribe();
     }
-    if (invalidated) await latest.current.refetch({ cancelRefetch: false });
+    if (invalidated) {
+      await qc.invalidateQueries({ queryKey: JSON.parse(hash) as unknown[], exact: true }, { cancelRefetch: false });
+    }
   }), [keyHash, qc, run]);
   const refresh = useCallback(() => run(() => latest.current.refetch({ cancelRefetch: false })), [run]);
   const retry = useCallback(

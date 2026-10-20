@@ -1639,6 +1639,9 @@ selected owner — and, for `No tasks`, the attention traversal — to have succ
 and been exhausted. Repeated Retry while an owner is fetching is coalesced,
 continuation never starts while that owner is refreshing, and an invalidation that
 lands during a continuation reconciles that owner's loaded depth afterwards.
+That reconciliation targets only the owner's own org/filter key: if the list
+has moved to another org or filter meanwhile, the old owner is re-marked stale
+and refetches when shown again, and the current owner is not refetched.
 `Waiting on you` uses a separate root traversal with exact
 `status=escalated`; it is never derived from loaded ordinary pages or a
 severity rollup. Its rows are root-only and own the presentation when an
