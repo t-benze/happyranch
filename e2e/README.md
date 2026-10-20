@@ -1065,14 +1065,23 @@ another row or chrome. Its text comes from the route list alone. The seven
 original four-second operation caps, roots response/group and checkpoint18
 sequence remain unchanged.
 
-The finite body contract admits the audited plain paragraphs and the exact
-prior-worker context generated for Pause's reviewer. That context renders as
+The finite body contract admits the audited plain paragraphs, the exact
+`Delegated to case_worker (child=TASK-[0-9]+)` lifecycle paragraph (ASCII digits
+only), and the exact prior-worker context generated for Pause's reviewer. That context renders as
 three h2 blocks, five br elements and zero hr elements, with exact metadata,
 spacing and newline-prefixed post-br text nodes. Unknown Markdown or malformed
 context explicitly refuses. List titles have a separate contract: a multiline
 headline example is list-only, not a supported detail body. Pause supplies
-rendered expectations from known scenario IDs, callback summaries and states
-before observation; its prearm raw transport oracle remains unchanged.
+rendered expectations from known scenario IDs and states before observation.
+Recall projects the current task note: both pausing and paused/post-restart
+root Outcomes name the ORIGINAL worker, even after the distinct reviewer exists.
+The initial public detail must retain that exact delegation note alongside the
+accepted original callback result `PAUSE_RESTART_DELEGATE`, with its INTEGER
+identity, task/agent/session and decision unchanged. Existing final audit joins
+retain the callback summary and ordered consumption evidence. Final Recall
+instead requires `PAUSE_RESTART_DONE`, with exact worker/reviewer outcomes.
+No returned note, API summary or DOM value supplies the rendered expectation;
+the prearm raw transport oracle remains unchanged.
 
 Body-owned controls retain exact English/Chinese labels and character counts,
 Recall's 240/detail's 600 thresholds, complete expanded content and identical
@@ -1117,4 +1126,12 @@ overall test-authoring/product PASS follows. Protected12/repetitions remain
 UNEXECUTED/unauthorized; integration INCLUDING actual CLI callback is SKIPPED
 THR243seq42, and Python units remain RETIRED. Required automation stays
 lint/static only; independent full review, same-head scoped QA and manager
-guarded merge remain with sole ROOT TASK-11958. No second E2E execution is released.
+guarded merge remain with the delivery root. TASK-11958/PR1129 is delivered
+history; the bounded lifecycle-expectation continuation belongs to sole ROOT
+TASK-12085. Scheduled run39336928907 at `2f7f158d` remains EACH27 PASS +1
+partial/failed `Pause.browser-pausing-en` +28 unreached. Its reached own-body
+content failure compared the actual delegation note to the callback summary.
+Native corrected GREEN, paused/restart/Resume/final transition and downstream
+jobs/threads/E07 behavior remain MISSING until authorized scheduled evidence.
+Finite actual-source controls establish only their exercised observer/producer
+boundaries, never full behavior or test-authoring PASS. No new E2E execution is released.

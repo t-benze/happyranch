@@ -133,7 +133,7 @@ def open_chain(c: Controller, prefix: str) -> tuple[str, dict, dict, list[dict]]
                     then=[dict(agent="code_reviewer", prompt=prefix + "_REVIEW", expect_verdict="APPROVE")])
     first = c.payload(manager, prefix + "_DELEGATE", decision)
     c.callback("alpha", first)
-    c.stores["alpha"].result(first)
+    committed = c.stores["alpha"].result(first)
     c.release(manager)
     worker = c.start("alpha", None, "case_worker")
     task = detail(c, worker["task"])["task"]
@@ -143,6 +143,13 @@ def open_chain(c: Controller, prefix: str) -> tuple[str, dict, dict, list[dict]]
             and parent["active_chain"]["step_index"] == 0
             and parent["active_chain"]["legs"][0]["agent"] == "code_reviewer"
             and parent["active_chain"]["legs"][0]["expect_verdict"] == "APPROVE", "actual public chain", parent)
+    # Recall projects the lifecycle note; accepted callback bytes stay separate.
+    require(parent["task"]["note"] == f"Delegated to case_worker (child={worker['task']})",
+            "original worker delegation note", parent["task"])
+    keys = ("id", "task_id", "agent", "session_id", "output_summary", "decision_json")
+    require(type(committed["id"]) is int and len(parent["results"]) == 1
+            and all(parent["results"][0][key] == committed[key] for key in keys),
+            "public original callback result distinct from lifecycle note", parent["results"])
     # Socket arrival precedes the product's running publication; await its
     # affirmative journal before testing generation capture.
     c.poll(lambda: next((e for e in json.loads(control_row(c, root)["admission_journal_json"])["entries"]
@@ -349,14 +356,15 @@ def exercise(c: Controller) -> None:
             result["root"]["blocker_task"] = worker["task"]
         return result
     # Rendered expectations are scenario facts, separate from browser_expected's
-    # untouched prearm transport snapshot. Never use returned briefs as an oracle.
+    # untouched prearm transport snapshot. Never use returned notes/briefs as an oracle.
     def rendered_recall(stage: str, reviewer_id: str | None = None) -> dict:
         def node(task_id: str, agent: str, status: str, brief: str, summary: str | None) -> dict:
             return dict(task_id=task_id, assigned_agent=agent, status=status, brief=brief,
                         output_summary=summary, children=[])
         terminal = stage == 'terminal'
         tree = node(root, 'case_manager', 'completed' if terminal else 'in_progress',
-                    'PAUSE_RESTART_ROOT', 'PAUSE_RESTART_DONE' if terminal else 'PAUSE_RESTART_DELEGATE')
+                    'PAUSE_RESTART_ROOT', 'PAUSE_RESTART_DONE' if terminal else
+                    f"Delegated to case_worker (child={worker['task']})")
         tree['children'].append(node(worker['task'], 'case_worker',
             'in_progress' if stage == 'pausing' else 'completed', 'PAUSE_RESTART_WORKER',
             None if stage == 'pausing' else 'PAUSE_RESTART_WORKER_OUTCOME'))
