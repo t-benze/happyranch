@@ -121,6 +121,8 @@ class OrgState:
     # actual runner callers through native finish, not durable owner clearance.
     _runner_admission_closed: bool = field(init=False, default=False, repr=False)
     _runner_tasks: set[asyncio.Task] = field(init=False, default_factory=set, repr=False)
+    # Queue tokens survive consumer cancellation through native retirement.
+    _native_task_users: set[object] = field(init=False, default_factory=set, repr=False)
 
     @contextmanager
     def _runner_lifetime(self) -> Iterator[bool]:
@@ -140,7 +142,19 @@ class OrgState:
             if registered:
                 self._runner_tasks.remove(task)
 
+    def _acquire_native_task(self, owner: object) -> bool:
+        # Like runner registration, submission/close is event-loop-only.
+        if self._runner_admission_closed:
+            return False
+        self._native_task_users.add(owner)
+        return True
+
+    def _release_native_task(self, owner: object) -> None:
+        self._native_task_users.remove(owner)
+
     def _assert_runners_idle(self) -> None:
+        if self._native_task_users:
+            raise _OrgBusyError("native_tasks_in_flight")
         if self._runner_tasks:
             raise _OrgBusyError("active_runners_in_flight")
 
@@ -421,6 +435,7 @@ class OrgState:
                 )
             return state
         except Exception:
+            # Unpublished construction has no queue/runner admission yet.
             db.close()
             raise
 

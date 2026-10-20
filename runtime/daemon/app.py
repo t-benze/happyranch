@@ -446,7 +446,17 @@ async def _lifespan(app: FastAPI):
         # Fence task consumers and every producer entrypoint before job
         # shutdown can fire a blocked-task resume check. The parked task then
         # stays blocked_on_job until the next startup recovery pass.
-        await state.queue.stop()
+        try:
+            await state.queue.stop()
+        except asyncio.CancelledError as exc:
+            # stop delays caller cancellation until its owned join completed.
+            # Renew the predicate before proceeding; canceled native futures
+            # or failed retirement must never reach close_all.
+            state.queue.assert_native_idle()
+            shutdown_cancellation = shutdown_cancellation or exc
+        except Exception:
+            logger.exception("Task drain incomplete; org databases remain open")
+            raise
         from runtime.daemon.jobs_runner import terminate_all_inflight
         await terminate_all_inflight(grace_seconds=5)
         await state.close_all()

@@ -27,6 +27,11 @@ def _assert_can_swap(state: DaemonState) -> None:
     from runtime.orchestrator.team_move_startup import refuse_runtime_detach
     refuse_runtime_detach(state.runtime, diagnostics=state.broken_orgs)
     for org in state.orgs.values():
+        try:
+            org._assert_runners_idle()
+        except _OrgBusyError as exc:
+            raise HTTPException(status_code=409, detail={"code": exc.code, "org": org.slug}) from exc
+    for org in state.orgs.values():
         if org.db._team_move_coordinator.store.read() is not None:
             from runtime.infrastructure.team_move_store import TeamMoveError
             raise TeamMoveError("team_move_runtime_detach_held")
@@ -34,7 +39,6 @@ def _assert_can_swap(state: DaemonState) -> None:
             in_flight = org.db.get_nonterminal_task_ids()
             if in_flight:
                 raise _OrgBusyError("active_tasks_in_flight", task_ids=in_flight)
-            org._assert_runners_idle()
         except _OrgBusyError as exc:
             detail = {"code": exc.code, "org": org.slug}
             if exc.task_ids is not None:
