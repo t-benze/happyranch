@@ -2036,6 +2036,9 @@ def _repo_pull_failed(
     outcome.stderr.clear()
     if isinstance(evidence_failure, (asyncio.CancelledError, KeyboardInterrupt, SystemExit)):
         raise evidence_failure from None
+    if isinstance(outcome.failure, (asyncio.CancelledError, KeyboardInterrupt, SystemExit)):
+        # An ordinary evidence fault must not turn control into refusal accounting.
+        raise outcome.failure from None
     if evidence_failure is not None:
         # Never chain/format evidence exceptions (which can contain private data).
         raise RuntimeError("repository_preparation_evidence_failed") from None
