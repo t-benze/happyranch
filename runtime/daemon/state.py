@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from runtime.daemon.team_move_service import TeamMoveService
+    from runtime.daemon.cleanup_diagnostics import _CleanupDiagnostics
 
 from runtime.config import Settings
 from runtime.daemon.direct_connect_store import DirectConnectAuthorityStore
@@ -66,6 +67,37 @@ class DaemonState:
     team_move_service: TeamMoveService = field(init=False, repr=False)
     _runner_shutdown: bool = field(init=False, default=False, repr=False)
     _shutdown_complete: bool = field(init=False, default=False, repr=False)
+
+    _cleanup_diagnostics: _CleanupDiagnostics | None = field(init=False, default=None, repr=False)
+
+    def _capture_attachments(self) -> tuple:
+        # Private two-phase detach identity, captured under orgs_lock. Paths
+        # accompany object identity so in-place root/DB changes also refuse.
+        return (self.orgs, self.runtime, self.runtime.root if self.runtime else None,
+                self.host_supervisor, tuple((slug, org, org.root, org.db, org.db.db_path, org.sessions)
+                                            for slug, org in self.orgs.items()))
+
+    def _assert_attachments_unchanged(self, captured: tuple) -> None:
+        org_map, runtime, root, supervisor, orgs = captured
+        if (self.orgs is not org_map or self.runtime is not runtime
+                or (self.runtime.root if self.runtime else None) != root
+                or self.host_supervisor is not supervisor or len(self.orgs) != len(orgs)
+                or any(self.orgs.get(slug) is not org or org.slug != slug or org.root != org_root
+                       or org.db is not db or db.db_path != db_path or org.sessions is not tracker
+                       for slug, org, org_root, db, db_path, tracker in orgs)):
+            raise _OrgBusyError("attachment_changed_during_diagnostic_drain")
+
+    def _revoke_cleanup_diagnostics(self) -> None:
+        if self._cleanup_diagnostics is not None:
+            self._cleanup_diagnostics.revoke()
+        for org in self.orgs.values():
+            org._revoke_cleanup_diagnostics()
+
+    async def _drain_cleanup_diagnostics(self, org: OrgState | None = None) -> None:
+        if self._cleanup_diagnostics is not None:
+            await self._cleanup_diagnostics.drain(org)
+        for current in self.orgs.values() if org is None else (org,):
+            current._assert_cleanup_diagnostics_idle()
 
     def _stop_runner_admission(self) -> None:
         # No await: fence both existing OrgState references and later add_org.
@@ -323,6 +355,8 @@ class DaemonState:
                 self.orgs.pop(slug, None)
                 org.close()
                 raise
+            # New/dynamic attachments never inherit a boot diagnostic pass.
+            org._cleanup_diagnostic_unavailable = "dynamic_attachment_unsupported"
             self.broken_orgs.pop(slug, None)
             if self.profile_coordinator is not None:
                 # The outside-lease load positively inspected this existing DB;
@@ -341,27 +375,41 @@ class DaemonState:
                 org.orchestrator.attach_thread_queue(org.thread_queue, loop)
             return org
 
-    async def remove_org(self, slug: str) -> None:
-        async with self.orgs_lock:
-            self.team_move_service.assert_no_owner(slug)
-            current = self.orgs.get(slug)
-            if current is not None:
-                current._assert_runners_idle()
-            if current is not None and current.db._team_move_coordinator.store.read() is not None:
+    def _assert_can_remove_org(self, slug: str) -> OrgState | None:
+        if self._runner_shutdown:
+            raise _OrgBusyError("daemon_shutting_down")
+        self.team_move_service.assert_no_owner(slug)
+        current = self.orgs.get(slug)
+        if current is not None:
+            current._assert_runners_idle()
+            if current.db._team_move_coordinator.store.read() is not None:
                 from runtime.infrastructure.team_move_store import TeamMoveError
                 raise TeamMoveError("team_move_runtime_detach_held")
+            in_flight = current.db.get_nonterminal_task_ids()
+            if in_flight:
+                raise _OrgBusyError("active_tasks_in_flight", task_ids=in_flight)
+        return current
+
+    async def remove_org(self, slug: str) -> None:
+        async with self.orgs_lock:
+            current = self._assert_can_remove_org(slug)
+            captured = self._capture_attachments()
             if current is not None:
-                # Renew the route's task check after acquiring orgs_lock. Keep
-                # busy checks, admission fencing, close and detach synchronous
-                # so a late runner either registers first or sees closed admission.
-                in_flight = current.db.get_nonterminal_task_ids()
-                if in_flight:
-                    raise _OrgBusyError("active_tasks_in_flight", task_ids=in_flight)
+                current._revoke_cleanup_diagnostics()
+        # Never await a native scan under orgs/root/move/terminal locks.
+        if current is not None:
+            await self._drain_cleanup_diagnostics(current)
+        async with self.orgs_lock:
+            self._assert_attachments_unchanged(captured)
+            current = self._assert_can_remove_org(slug)
+            if current is not None:
                 current.close()
                 self.orgs.pop(slug)
 
     async def close_all(self) -> None:
         self._stop_runner_admission()
+        self._revoke_cleanup_diagnostics()
+        await self._drain_cleanup_diagnostics()
         # Refuse native users before any service/org closure. The final
         # all-org preflight below renews this after the service/lock awaits.
         self.queue.assert_native_idle()
@@ -374,6 +422,7 @@ class DaemonState:
             self.queue.assert_native_idle()
             for org in self.orgs.values():
                 org._assert_runners_idle()
+                org._assert_cleanup_diagnostics_idle()
             for org in self.orgs.values():
                 org.close()
             self.orgs.clear()

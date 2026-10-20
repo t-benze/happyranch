@@ -123,6 +123,15 @@ async def _lifespan(app: FastAPI):
     from runtime.daemon.thread_queue import thread_worker_loop
 
     state: DaemonState = app.state.daemon
+    from runtime.daemon.cleanup_diagnostics import _CleanupDiagnostics
+    # Dormant: construction captures references only; it performs no DB reads.
+    # Only the actual Server's successful startup adapter may signal this app.
+    if state._cleanup_diagnostics is None:
+        try:
+            state._cleanup_diagnostics = _CleanupDiagnostics(state, app)
+        except Exception:
+            # Diagnostics must not replace the mandatory startup outcome.
+            pass
 
     # THR-109: wire the ThreadQueue + main loop BEFORE task workers start.
     # Uses _wire_then_start_workers to enforce ordering: wiring must precede
@@ -393,6 +402,7 @@ async def _lifespan(app: FastAPI):
         # attachment before the first shutdown await. Native owners remain live
         # through worker completion, effects unwind and their final settlement.
         state._stop_runner_admission()
+        state._revoke_cleanup_diagnostics()
         # HTTP disconnect never owns these tasks. Reap the bounded operation
         # owners before host shutdown or any org DB can close; retain holds.
         await state.team_move_service.close()
@@ -459,6 +469,7 @@ async def _lifespan(app: FastAPI):
             raise
         from runtime.daemon.jobs_runner import terminate_all_inflight
         await terminate_all_inflight(grace_seconds=5)
+        await state._drain_cleanup_diagnostics()
         await state.close_all()
         if shutdown_cancellation is not None:
             raise shutdown_cancellation

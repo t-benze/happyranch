@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from runtime.infrastructure.memory_collection import CollectionObserver
+    from runtime.daemon.cleanup_diagnostics import _Attachment
 
 from runtime.config import Settings
 from runtime.daemon.dream_queue import DreamQueue
@@ -123,6 +124,31 @@ class OrgState:
     _runner_tasks: set[asyncio.Task] = field(init=False, default_factory=set, repr=False)
     # Queue tokens survive consumer cancellation through native retirement.
     _native_task_users: set[object] = field(init=False, default_factory=set, repr=False)
+
+    # Diagnostic acquisition is separate from ordinary runner/task busy state.
+    # A revoked attachment is never re-admitted by detach refusal or reload.
+    _cleanup_diagnostic_attachment: _Attachment | None = field(init=False, default=None, repr=False)
+    _cleanup_diagnostic_unavailable: str | None = field(init=False, default="not_initial_attachment", repr=False)
+    _cleanup_diagnostic_users: set[object] = field(init=False, default_factory=set, repr=False)
+
+    def _acquire_cleanup_diagnostic(self, token: _Attachment) -> bool:
+        if (self._runner_admission_closed or self._cleanup_diagnostic_attachment is not token
+                or token.revoked.is_set()):
+            return False
+        self._cleanup_diagnostic_users.add(token)
+        return True
+
+    def _release_cleanup_diagnostic(self, token: _Attachment) -> None:
+        self._cleanup_diagnostic_users.remove(token)
+
+    def _revoke_cleanup_diagnostics(self) -> None:
+        if self._cleanup_diagnostic_attachment is not None:
+            self._cleanup_diagnostic_attachment.revoke()
+        self._cleanup_diagnostic_unavailable = "attachment_revoked"
+
+    def _assert_cleanup_diagnostics_idle(self) -> None:
+        if self._cleanup_diagnostic_users:
+            raise _OrgBusyError("cleanup_diagnostic_native_in_flight_or_unsafe")
 
     @contextmanager
     def _runner_lifetime(self) -> Iterator[bool]:
@@ -440,6 +466,8 @@ class OrgState:
             raise
 
     def close(self) -> None:
+        self._revoke_cleanup_diagnostics()
+        self._assert_cleanup_diagnostics_idle()
         self._assert_runners_idle()
         self._runner_admission_closed = True
         self.db.close()

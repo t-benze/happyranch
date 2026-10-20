@@ -379,7 +379,7 @@ class _CleanupReadRefused(Exception):
 class _CleanupReadBudget:
     """One caller-owned boot budget. Deadline is fixed at REAL readiness.
 
-    Future coordinator owns the eight-context admission and serial use of this
+    The serving coordinator owns eight-context admission and serial use of this
     object. These are cooperative refusal limits, never hard wall/RSS bounds.
     """
 
@@ -1205,7 +1205,7 @@ class Database(
     def _read_cleanup_diagnostic_evidence(
         self, *, org_slug: str, budget: _CleanupReadBudget, revoked: threading.Event,
     ) -> _CleanupReadEvidence:
-        """Dormant selected-history diagnostics, no serving/startup caller.
+        """Selected-history diagnostics for the private post-readiness coordinator.
 
         Supply ONE boot-wide budget with the already fixed readiness deadline;
         never reset it per org/read. All SQL/decode/closing work shares it. No

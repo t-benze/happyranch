@@ -795,6 +795,30 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+class _DiagnosticServer(uvicorn.Server):
+    """Signal only after actual ASGI startup AND listener creation returned."""
+
+    def __init__(self, config: uvicorn.Config, app) -> None:
+        super().__init__(config)
+        self._diagnostic_app = app
+        self._diagnostic_signalled = False
+
+    async def startup(self, sockets=None) -> None:
+        await super().startup(sockets=sockets)
+        if (self._diagnostic_signalled or not self.started or self.should_exit
+                or self.lifespan.should_exit or self.config.app is not self._diagnostic_app):
+            return
+        self._diagnostic_signalled = True
+        try:
+            app = self._diagnostic_app
+            coordinator = app.state.daemon._cleanup_diagnostics
+            if coordinator is not None:
+                coordinator.signal_ready(app)
+        except Exception:
+            # Scheduling/logging/diagnostic results never gate successful serve.
+            pass
+
+
 def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(
         level=logging.INFO,
@@ -837,7 +861,7 @@ def main(argv: list[str] | None = None) -> int:
 
     logger.info("HappyRanch daemon listening on %s:%d", settings.daemon_bind_host, port)
     config = uvicorn.Config(app, log_level="info", lifespan="on")
-    server = uvicorn.Server(config)
+    server = _DiagnosticServer(config, app)
     # Hand the bound socket to uvicorn so we don't race the port number.
     server.run(sockets=[sock])
     return 0 if state._shutdown_complete else 1
