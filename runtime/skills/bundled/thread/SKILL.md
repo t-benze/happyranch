@@ -65,6 +65,19 @@ history end-to-end, then decide one outcome.
 > not in this skill. This skill covers the operational mechanics — how to
 > format and submit each outcome.
 
+The C1a native thread-delivery release source is unmounted: no supported
+release command or route is available. Agents, automatic diagnostics, reapers
+and schedulers cannot select the human risk override. Its native serving-owner
+boundary always refuses until separately scoped C1b lifetime/control integration.
+A companion never clears raw lifecycle/host/move/Pause/effect uncertainty, supplies
+process proof, replenishes retries, restores task12044/10693, or grants a callback
+for a consumed token. Terminal sources get no second catch-up. Future human
+admission must bind exact preview/key/owner/range and explicit late-write,
+overlap, repeated-effect and missing-closure risks. Old-reader/mixed-version
+operation and downgrade after use are unsupported. Current invocation-token
+callbacks below keep their native single-use authority; no agent release follows.
+C1b adapters/lifetime and C2 task-tail remain deferred; behavioral proof UNEXECUTED.
+
 ## Your invocation_token
 
 Look for this line in your prompt:
