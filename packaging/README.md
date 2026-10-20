@@ -397,11 +397,10 @@ binding the private managed interpreter described above. Standalone freezer
 work has no app-custody token.
 
 Before `spec_begin` or either Analysis, the custody-only spec setup freezes the
-active full-Xcode developer directory. A present `DEVELOPER_DIR` must be a valid
-absolute `.app` or `.app/Contents/Developer` path (the former is appended
-lexically); otherwise one literal `/usr/bin/xcode-select --print-path` must
-return the full developer path. The resolver child environment pins that raw
-`DEVELOPER_DIR`, preserving the original PATH and other settings. Exactly two
+fixed `/Library/Developer/CommandLineTools` developer selection. Only the resolver
+child environment overrides `DEVELOPER_DIR`, preserving the original PATH and
+other settings. Caller-selected `DEVELOPER_DIR` is not consulted and
+`xcode-select` is not queried. Exactly two sequential
 literal `/usr/bin/xcrun --sdk macosx --find` queries select `lipo` and
 `install_name_tool`. No host selection/cache change, candidate execution, retry,
 alternate installation, copied tool or PATH fallback is permitted.
@@ -413,10 +412,11 @@ and reap only the owned child, with bounded discard/descriptor cleanup. Exit,
 timeout, output, UTF8 and path failures report bounded role/category errors,
 without dumping stderr or environment. Paths must be single, nonempty, strict
 UTF8 absolute spellings, without controls, colon, empty/dot/traversal components
-or existing component/length violations. Spaces remain valid. CLT selection,
-dispatchers, outside-Xcode paths and wrong role basenames refuse. Each candidate
-must be beneath the chosen developer directory with an immediate `usr/bin`
-parent; path shape alone establishes no safe filesystem attributes.
+or existing component/length violations. The developer string must have the exact
+raw spelling `/Library/Developer/CommandLineTools`; each candidate must have the
+exact raw spelling `/Library/Developer/CommandLineTools/usr/bin/<role>`.
+Dispatchers, aliases, other SDK/toolchain/installation paths and alternative raw
+spellings refuse; path shape alone establishes no safe filesystem attributes.
 
 `spec_begin` validates the transient closed selection again at its native stage,
 after the unchanged caller/context/platform, prefix/base-prefix/stdlib/usr-bin
@@ -424,7 +424,7 @@ root, installed-wheel, receipt and Python checks. It admits only each candidate'
 immediate bin parent, checking each occurrence before deduplication through the
 unchanged `RootHandle` ancestry/owner/mode/device/identity predicates. At most two
 distinct roots are added, retaining cap16 before native snapshots and Analysis.
-Neither `/Applications`, the Xcode/Developer tree, SDK nor `/` becomes a general
+Neither `/Library`, the Developer/CLT tree, SDK nor `/` becomes a general
 read root. Native snapshot order stays codesign, lipo, install_name_tool;
 codesign remains literal `/usr/bin/codesign`. The two discovered leaves must be
 physical executable files with no alias chain, and still pass all original
@@ -439,8 +439,9 @@ tentative PATH is restored on refusal. Only this PyInstaller process receives
 the PATH, for both lanes through PYZ/EXE/shared COLLECT. Original vendor lipo and
 install_name_tool PATH argv inherit that selection; the wheel remains unchanged.
 The parent wrapper, later web/Go/Swift and frozen CLI inspection keep their own
-environments. Standalone custody-absent setup performs no discovery or PATH
-change and retains its ordinary unobserved tool selection.
+environments, including the active Xcode and outer SDK selection. Standalone
+custody-absent setup performs no discovery or PATH change and retains its ordinary
+unobserved tool selection.
 
 Existing native rows keep their keys, role order and `selection_observation`
 relation, toolchain `origin_unobserved`, expanded root propagation and four
@@ -450,8 +451,9 @@ subjects; they never rediscover via xcrun or their own PATH. Final
 `verify-release.sh` PATH lipo inspection is separate and unchanged. Discovery
 and intended invocation alignment attest neither an executed kernel image nor
 publisher identity, and provide no same-UID replacement/restore guarantee.
-Actual candidate suitability, query bounds/cleanup/races/negative behavior,
-both-lane completion and fresh native readers remain UNVERIFIED until the
+Actual CLT ancestry/leaf suitability and command compatibility, query
+bounds/cleanup/races/negative behavior, both-lane completion and fresh native
+readers remain UNVERIFIED until the
 root-owned shipping run. Successful source/static checks or discovery establish
 no app/archive/receipt or native acceptance.
 

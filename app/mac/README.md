@@ -265,12 +265,13 @@ acceptance. Literal codesign and original vendor PATH argv remain; the custody
 selection described below aligns the two affected PATH roles.
 
 For full-app custody builds, spec setup now discovers real lipo/install_name_tool
-paths before `spec_begin` and either Analysis. A present valid absolute
-`DEVELOPER_DIR` selects an `.app` (lexically appended `Contents/Developer`) or full
-developer directory; otherwise one literal `/usr/bin/xcode-select --print-path`
-must select full Xcode. The same resolver child environment pins that raw path
-for exactly two `/usr/bin/xcrun --sdk macosx --find` queries. Each query has a
-10-second deadline, streaming combined8192-byte stdout/stderr cap and4096-byte
+paths before `spec_begin` and either Analysis using the fixed developer directory
+`/Library/Developer/CommandLineTools`. Only the resolver child environment
+overrides `DEVELOPER_DIR`, retaining the original PATH and other settings.
+Caller-selected `DEVELOPER_DIR` is not consulted; `xcode-select` is not queried.
+Exactly two sequential `/usr/bin/xcrun --sdk macosx --find` queries select the
+two roles. Each query has a 10-second deadline, streaming combined8192-byte
+stdout/stderr cap and4096-byte
 path plus optional LF limit, drains both pipes and settles only its owned child.
 Strict UTF8/single-path/control/colon/component/length validation precedes use;
 spaces are allowed. No host selection/cache mutation, probe execution, retry,
@@ -279,9 +280,11 @@ role/category errors with descriptor facts unknown, never wholesale stderr/env.
 
 The transient selection is validated again in `spec_begin` after the original
 caller/context/platform/root/wheel/receipt/Python sequence. Candidates must have
-their exact role basenames beneath that full developer directory with immediate
-`usr/bin` parents. Only those exact bin roots are admitted; `/Applications`,
-Xcode/Developer/SDK trees and `/` gain no general read permission. Raw ancestry
+the exact raw spelling `/Library/Developer/CommandLineTools/usr/bin/<role>`;
+the developer string must be exactly `/Library/Developer/CommandLineTools`.
+Dispatchers, aliases, other SDK/toolchain/installations and alternative raw
+spellings refuse. Only those exact bin roots are admitted; `/Library`,
+Developer/CLT/SDK trees and `/` gain no general read permission. Raw ancestry
 and all existing single-link/type/uid/mode/no-follow/nonblocking/device/cap and
 stable-identity safeguards remain controlling. Returned leaf aliases and
 nonexecutables refuse; no unsafe path or attributes are assumed. Native row and
@@ -295,8 +298,9 @@ fallback refuses before Analysis and tentative PATH is restored on refusal.
 Only this PyInstaller process receives the PATH for both lanes and the whole
 PYZ/EXE/COLLECT lifetime. The original vendor PATH argv for the two affected
 roles inherits this selection; no wheel edit is involved. The parent shell,
-later web/Go/Swift and frozen CLI inspection environments are unchanged;
-custody-absent standalone freezes perform no discovery/PATH change.
+active Xcode/outer SDK selection, later web/Go/Swift and frozen CLI inspection
+environments are unchanged; custody-absent standalone freezes perform no
+discovery/PATH change.
 
 Native row shapes, `selection_observation`, `origin_unobserved`, root propagation
 and four caller-held digests stay unchanged. Fresh accept/before-copy/copy/licenses
@@ -304,8 +308,9 @@ readers reopen recorded roots/selected paths/aliases/live and snapshot subjects,
 never their own PATH or a new xcrun result. Final verify-release PATH lipo
 inspection is a separate unchanged consumer. This observes intended selection,
 not an executed image or publisher, and cannot detect invisible same-UID
-replacement/restore. Actual discovery/safe candidates, bounded cleanup/FD/race/
-negative behavior, both-lane completion and fresh native consumers remain
+replacement/restore. Actual CLT ancestry/leaf suitability, command compatibility
+and discovery, bounded cleanup/FD/race/negative behavior, both-lane completion
+and fresh native consumers remain
 UNEXECUTED/UNVERIFIED; source/static success establishes no app/archive/receipt,
 native or release acceptance. The full
 [freezer selection contract](../../packaging/README.md#freezer-operation-custody)

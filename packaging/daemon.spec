@@ -129,20 +129,11 @@ def _native_query(argv, role, environment):
 
 
 def discover_native_tools():
-    """Freeze active full-Xcode selection without changing host configuration."""
+    """Select fixed Command Line Tools in resolver children only."""
     environment = os.environ.copy()
-    developer = environment.get('DEVELOPER_DIR')
-    explicit_developer = developer is not None
-    if developer is None:
-        developer = _native_query(['/usr/bin/xcode-select', '--print-path'], 'developer', environment)
-    developer = _freezer['native_selection_path'](developer)
-    if explicit_developer and developer.name.endswith('.app'):
-        developer = developer / 'Contents/Developer'
-    developer = _freezer['native_selection_path'](str(developer))
-    _freezer['need'](developer.name == 'Developer' and developer.parent.name == 'Contents'
-                     and developer.parent.parent.name.endswith('.app'), 'NATIVE_DEVELOPER_SELECTION')
-    environment['DEVELOPER_DIR'] = str(developer)
-    selection = {'developer': str(developer)}
+    developer = '/Library/Developer/CommandLineTools'
+    environment['DEVELOPER_DIR'] = developer
+    selection = {'developer': developer}
     for role in ('lipo', 'install_name_tool'):
         try:
             selection[role] = _native_query(['/usr/bin/xcrun', '--sdk', 'macosx', '--find', role],
