@@ -39,7 +39,7 @@ MAX_MEMBERS = 16384
 KINDS = {'PYMODULE', 'PYMODULE-1', 'PYMODULE-2', 'PYSOURCE', 'PYSOURCE-1', 'PYSOURCE-2',
          'BINARY', 'EXTENSION', 'DATA', 'ZIPFILE', 'PYZ', 'EXECUTABLE', 'SYMLINK', 'OPTION'}
 VENDOR = 'packaging/vendor/pyinstaller-6.21.0'
-WHEEL = 'pyinstaller-6.21.0-1happyranchcustody2-py3-none-macosx_10_13_universal2.whl'
+WHEEL = 'pyinstaller-6.21.0-1happyranchcustody3-py3-none-macosx_10_13_universal2.whl'
 ENCODING = 'happyranch-freezer@1'
 FILES = {k: f'freezer-{k}.json' for k in ('context', 'inputs', 'output', 'copy')}
 SUBJECT_KEYS = {'root', 'relative', 'identity', 'size', 'sha256', 'snapshot'}
@@ -883,7 +883,7 @@ class Session:
             check_subject(subject, self.roots, self.budget)
         for key in ('wheel', 'provenance'):
             check_subject(row[key], self.roots, self.budget)
-        need(row['contract'] == 'pyinstaller-6.21.0-1happyranchcustody2', 'CONTRACT')
+        need(row['contract'] == 'pyinstaller-6.21.0-1happyranchcustody3', 'CONTRACT')
         return row
 
     def snapshot(self, path, lane, stage, cap=CONTAINER_CAP, *, native_context=None):
@@ -955,7 +955,7 @@ def begin(candidate, paths, run, asset_context, toolchains):
             'directories': dirs, 'owner': owner, 'preflight':preflight, 'asset_context':asset_context,
             'toolchains':toolchains, 'sources':sources, 'wheel':wheel,
             'provenance':observe(vendor / 'provenance.json', session.roots, session.budget, cap=256*1024),
-            'contract':'pyinstaller-6.21.0-1happyranchcustody2'}, None)
+            'contract':'pyinstaller-6.21.0-1happyranchcustody3'}, None)
         return {'context':reference['sha256'], 'caller':{'candidate':asdict(candidate), 'paths':{k:str(v) for k,v in asdict(paths).items()},
                                                        'run_id':run,'context':reference['sha256'],
                                                        'helper_sha256':sources[1]['sha256']}}

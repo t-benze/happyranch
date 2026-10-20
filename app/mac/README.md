@@ -407,10 +407,22 @@ is supplied. See accepted TASK11214 C01–C18 for the full independent contract.
 The freezer operation observer uses the original-backed PyInstaller input and
 bounded independent archive reader described in
 [the freezer contract](../../packaging/README.md#freezer-operation-custody).
-Darwin selects custody revision 2 with descriptor-relative snapshot writes and
-ZIP metadata budgets enforced before allocation. Historical revision 1 evidence
-remains attributed to its original input. The existing daemon freeze and app cp-R
-execute once; observers retain their
+Darwin selects custody revision 3 (`1happyranchcustody3`) with descriptor-relative
+snapshot writes and ZIP metadata budgets enforced before allocation. The original
+base-library producer sorts modules by name before each original lane capture,
+with or without custody. It retains membership, cached-code selection,
+optimization and ZIP member bytes.
+Both original Analysis observations and all contributor edges remain, with exact
+byte/kind collision and live-drift refusal unchanged. Equal module tuples do not
+prove equal cached code, and build12's exact changed subject remains unknown.
+The new wheel/provenance/lock/wrapper/reader pins agree; historical revision 1/2
+evidence and retained wheels keep their original identities. Deterministic
+source-repack reproduction is separate from Darwin install/compatibility, actual
+lane equality and fresh-reader behavior, which remain UNEXECUTED/UNVERIFIED.
+App/archive/receipt and final manifest notices remain NOT_REACHED; original-backed
+notice precedence, unsafe-original refusal, exact missing-original fallback and
+both-lane interpreter/RECORD/native ownership obligations are unchanged.
+The existing daemon freeze and app cp-R execute once; observers retain their
 actual generations and results. Preserve the full local scratch tree for the
 independent reader. Removing intermediate subjects makes custody unavailable.
 

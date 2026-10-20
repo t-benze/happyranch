@@ -472,7 +472,8 @@ availability is a literal Boolean, with the bounded force environment string
 recorded separately. Constructors, pre-guts/assemble and processing entry/return
 recheck admission. Cache hits need the genuine same-run compatible predecessor;
 non-Mach-O and optional-architecture passthrough remain distinct outcomes.
-Unopted upstream callers retain their existing return types and semantics.
+Unopted upstream callers retain their existing return types; the canonical
+base-library producer ordering applies with or without custody.
 
 Caller-held digests bind context → inputs → output → app-copy. Early fragments
 have null ledger references. Records and snapshots are exclusive, failures
@@ -502,8 +503,21 @@ refuse. Central extras/comments and local extras share an 8MiB per-archive cap;
 extra fields must be structurally complete. Existing payload CRC, expansion,
 duplicate, local-range and complete-coverage checks remain independent. Logical
 member/name budgets are charged once in admission, cumulatively across archives.
-The Darwin input is custody revision 2; historical revision 1 receipts describe
-only their original input and head.
+The Darwin input is custody revision 3, build tag `1happyranchcustody3`, pinned
+through the local wheel, provenance, lock, wrapper and reader contract. Historical
+revision 1/2 wheels and receipts retain only their original input and head.
+Revision 3 sorts base-library modules by name at the original ZIP producer before
+each original lane observation. It preserves module membership, cached-code
+lookup, optimization, headers and deterministic ZipInfo. Equal content no longer
+depends on traversal order; equal module tuples alone do not prove equal cached
+code objects. Both original Analysis captures, PYZ/EXE lanes, shared contributor
+occurrences and fresh readers remain. Exact-byte and kind collisions, missing
+inputs and live generation drift still refuse; no captured ZIP is rewritten or
+later generation substituted. Build12's exact changed subject and bytes remain
+unknown. Guarded deterministic wheel reproduction validates source repack only;
+new Darwin installation, actual equal lane ZIPs and mismatch/fresh-reader behavior
+remain UNEXECUTED/UNVERIFIED. App/archive/receipt and final manifest-based notices
+remain NOT_REACHED.
 
 Compilation associations remain `declared_compile_origin`/`origin_unobserved`.
 Technical matches do not certify legal applicability. Manifest-selected

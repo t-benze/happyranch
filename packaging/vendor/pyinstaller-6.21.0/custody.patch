@@ -783,3 +783,12 @@
  
  
  def _compute_file_digest(filename):
+@@ -827,7 +1208,7 @@
+     Create a zip archive with python modules that are needed during python interpreter initialization.
+     """
+     with zipfile.ZipFile(filename, 'w') as zf:
+-        for name, src_path, typecode in modules_toc:
++        for name, src_path, typecode in sorted(modules_toc, key=lambda entry: entry[0]):
+             # Obtain code object from cache, or compile it.
+             code = None if code_cache is None else code_cache.get(name, None)
+             if code is None:

@@ -92,7 +92,7 @@ with contextlib.ExitStack() as stack:
     # Current reviewed source configuration has only its frozen Darwin source.
     # New uv settings require review rather than silently overriding admission.
     expected = {'sources': {'pyinstaller': [{
-        'path': 'packaging/vendor/pyinstaller-6.21.0/dist/pyinstaller-6.21.0-1happyranchcustody2-py3-none-macosx_10_13_universal2.whl',
+        'path': 'packaging/vendor/pyinstaller-6.21.0/dist/pyinstaller-6.21.0-1happyranchcustody3-py3-none-macosx_10_13_universal2.whl',
         'marker': "sys_platform == 'darwin'"}]}}
     if project.get('tool', {}).get('uv') != expected:
         raise SystemExit('FREEZE_UV_PROJECT_CONFIG_CHANGED: review frozen source settings before building')
