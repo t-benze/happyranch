@@ -395,13 +395,13 @@ class DaemonState:
                 org.orchestrator.attach_thread_queue(org.thread_queue, loop)
             return org
 
-    def _assert_can_remove_org(self, slug: str, *, before_thread_release_drain: bool = False) -> OrgState | None:
+    def _assert_can_remove_org(self, slug: str) -> OrgState | None:
         if self._runner_shutdown:
             raise _OrgBusyError("daemon_shutting_down")
         self.team_move_service.assert_no_owner(slug)
         current = self.orgs.get(slug)
         if current is not None:
-            current._assert_runners_idle(thread_releases=not before_thread_release_drain)
+            current._assert_runners_idle()
             if current.db._team_move_coordinator.store.read() is not None:
                 from runtime.infrastructure.team_move_store import TeamMoveError
                 raise TeamMoveError("team_move_runtime_detach_held")
@@ -412,7 +412,14 @@ class DaemonState:
 
     async def remove_org(self, slug: str) -> None:
         async with self.orgs_lock:
-            current = self._assert_can_remove_org(slug, before_thread_release_drain=True)
+            # Local checks only: C may own the DB through a stalled COMMIT.
+            # Reach finite revoke before any DB-backed task/move preflight.
+            if self._runner_shutdown:
+                raise _OrgBusyError("daemon_shutting_down")
+            self.team_move_service.assert_no_owner(slug)
+            current = self.orgs.get(slug)
+            if current is not None:
+                current._assert_runners_idle(thread_releases=False)
             captured = self._capture_attachments()
             if current is not None:
                 self._revoke_thread_releases(current)
