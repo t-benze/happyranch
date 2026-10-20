@@ -34,12 +34,14 @@ from pathlib import Path
 ASSET = runpy.run_path(str(Path(__file__).with_name('asset_evidence.py')))
 MiB = 1024**2
 RECORD_CAP = 8 * MiB
+AGGREGATE_RECORD_CAP = 32 * MiB
+JSON_IO_CAP = 256 * MiB
 CONTAINER_CAP = 512 * MiB
 MAX_MEMBERS = 16384
 KINDS = {'PYMODULE', 'PYMODULE-1', 'PYMODULE-2', 'PYSOURCE', 'PYSOURCE-1', 'PYSOURCE-2',
          'BINARY', 'EXTENSION', 'DATA', 'ZIPFILE', 'PYZ', 'EXECUTABLE', 'SYMLINK', 'OPTION'}
 VENDOR = 'packaging/vendor/pyinstaller-6.21.0'
-WHEEL = 'pyinstaller-6.21.0-1happyranchcustody3-py3-none-macosx_10_13_universal2.whl'
+WHEEL = 'pyinstaller-6.21.0-1happyranchcustody4-py3-none-macosx_10_13_universal2.whl'
 ENCODING = 'happyranch-freezer@1'
 FILES = {k: f'freezer-{k}.json' for k in ('context', 'inputs', 'output', 'copy')}
 SUBJECT_KEYS = {'root', 'relative', 'identity', 'size', 'sha256', 'snapshot'}
@@ -73,26 +75,105 @@ def digest(raw):
     return hashlib.sha256(raw).hexdigest()
 
 
-def encoded(value):
-    return (json.dumps(value, sort_keys=True, separators=(',', ':'), ensure_ascii=True, allow_nan=False) + '\n').encode()
+def _record_profile(kind=None):
+    # Only the already-known operation kind selects capacity, before file IO.
+    need(kind is None or kind in FILES, 'RECORD_KIND')
+    if kind in ('inputs', 'output'):
+        return AGGREGATE_RECORD_CAP, 1000000
+    return (65536 if kind == 'context' else RECORD_CAP), 100000
 
 
-def parse(raw):
-    need(len(raw) <= RECORD_CAP, 'JSON_CAP')
-    # Existing guarded parser also refuses duplicate keys, floats and excess depth.
-    value = ASSET['parse_json'](raw)
+def _json_object(value, node_cap):
+    count = 0
     boolean_fields = {'declared_strip','declared_upx','availability','effective_strip','effective_upx',
                       'strict_arch_validation','append_pkg','ready'}
-    def boolean_shape(item, field=None):
-        if type(item) is bool:
-            need(field in boolean_fields, 'JSON_BOOLEAN_FIELD')
-        elif isinstance(item,dict):
-            for key,child in item.items():
-                boolean_shape(child,key)
-        elif isinstance(item,list):
+
+    def visit(item, level=0, field=None):
+        nonlocal count
+        count += 1
+        need(count <= node_cap and level <= 16, 'JSON_COMPLEXITY_CAP_EXCEEDED')
+        if isinstance(item, str):
+            need(len(item.encode('utf-8', 'strict')) <= 4096, 'JSON_STRING_CAP_EXCEEDED')
+        elif isinstance(item, dict):
+            for key, child in item.items():
+                need(isinstance(key, str), 'JSON_KEY_INVALID')
+                visit(key, level + 1)
+                visit(child, level + 1, key)
+        elif isinstance(item, (list, tuple)):
+            # JSONEncoder represents producer tuples as arrays, as before.
             for child in item:
-                boolean_shape(child)
-    boolean_shape(value)
+                visit(child, level + 1)
+        else:
+            need(item is None or type(item) in (bool, int), 'JSON_SCALAR_INVALID')
+            if type(item) is bool:
+                need(field in boolean_fields, 'JSON_BOOLEAN_FIELD')
+    visit(value)
+
+
+def encoded(value, *, _kind=None):
+    cap, nodes = _record_profile(_kind)
+    # Record producers use the matching strict object admission. Other callers
+    # include vendor fragment byte comparisons: preserve their existing semantic
+    # validators rather than imposing the default parser's 100k fence on an
+    # already materialized vendor fragment (vendor object cap is 1m).
+    if _kind is not None:
+        _json_object(value, nodes)
+    # For records, preflight bounds strings/nodes/depth before chunk allocation.
+    result = bytearray()
+    encoder = json.JSONEncoder(sort_keys=True, separators=(',', ':'), ensure_ascii=True, allow_nan=False)
+    for part in encoder.iterencode(value):
+        chunk = part.encode('utf-8', 'strict')
+        need(len(result) + len(chunk) + 1 <= cap, 'JSON_CAP')
+        result.extend(chunk)
+    need(len(result) + 1 <= cap, 'JSON_CAP')
+    result.extend(b'\n')
+    return bytes(result)
+
+
+def parse(raw, *, _kind=None):
+    cap, node_cap = _record_profile(_kind)
+    need(len(raw) <= cap, 'JSON_CAP')
+    # Preserve asset parse_json's lexical/object predicates locally. Asset and
+    # unrelated freezer readers retain their original profiles and budgets.
+    text = raw.decode('utf-8', 'strict')
+    depth, nodes, quoted, escape, scalar = 0, 0, False, False, False
+    for c in text:
+        if quoted:
+            if escape:
+                escape = False
+            elif c == chr(92):
+                escape = True
+            elif c == '"':
+                quoted = False
+        elif c == '"':
+            quoted = True
+            scalar = False
+            nodes += 1
+        elif c in '[{':
+            scalar = False
+            depth += 1
+            nodes += 1
+            need(depth <= 16, 'JSON_DEPTH_CAP_EXCEEDED')
+        elif c in ']}':
+            scalar = False
+            depth -= 1
+        elif c in ' \t\r\n,:':
+            scalar = False
+        elif not scalar:
+            scalar = True
+            nodes += 1
+        need(nodes <= node_cap, 'JSON_NODE_CAP_EXCEEDED')
+
+    def pairs(items):
+        value = {}
+        for key, child in items:
+            need(key not in value, 'JSON_DUPLICATE_KEY')
+            value[key] = child
+        return value
+
+    value = json.loads(text, object_pairs_hook=pairs,
+                       parse_constant=lambda v: (_ for _ in ()).throw(FreezerError('FREEZER_JSON_NONFINITE')))
+    _json_object(value, node_cap)
     return value
 
 
@@ -167,12 +248,20 @@ def native_tool_context(error: Exception, context: dict | None, *,
 class Budget:
     def __init__(self):
         self.reads = self.snapshots = self.members = self.names = self.records = 0
+        self._failure = None
 
     def charge(self, count, key='reads'):
         limits = {'reads': 8 * 1024**3, 'snapshots': 2 * 1024**3, 'members': MAX_MEMBERS,
-                  'names': 8 * MiB, 'records': 32 * MiB}
+                  'names': 8 * MiB, 'records': JSON_IO_CAP}
+        need(type(count) is int and count >= 0, 'BUDGET_INCREMENT_INVALID')
         setattr(self, key, getattr(self, key) + count)
-        need(getattr(self, key) <= limits[key], 'CUMULATIVE_' + key.upper() + '_CAP')
+        if self._failure is not None:
+            raise self._failure
+        try:
+            need(getattr(self, key) <= limits[key], 'CUMULATIVE_' + key.upper() + '_CAP')
+        except FreezerError as error:
+            self._failure = error
+            raise
 
 
 @contextlib.contextmanager
@@ -197,25 +286,34 @@ def regular(path, cap, *, native_context=None):
             os.close(fd)
 
 
-def read(path, budget, cap=RECORD_CAP):
+def read(path, budget, cap=RECORD_CAP, *, _json=False):
     with regular(path, cap) as (fd, info):
         budget.charge(info.st_size + 1)
+        if _json:
+            budget.charge(info.st_size + 1, 'records')
         data = bytearray()
         while True:
-            chunk = os.read(fd, min(65536, cap - len(data) + 1))
+            chunk = os.read(fd, min(65536, cap - len(data) + 1, info.st_size - len(data) + 1))
             if not chunk:
                 break
             data.extend(chunk)
             need(len(data) <= cap, 'SUBJECT_CAP')
+            need(len(data) <= info.st_size, 'SUBJECT_SHORT_OR_GROWING')
         need(len(data) == info.st_size, 'SUBJECT_SHORT_OR_GROWING')
         return bytes(data), ident(info)
 
 
-def create(path, raw):
+def create(path, raw, budget, *, _kind=None):
     path = absolute(path)
-    need(len(raw) <= RECORD_CAP, 'WRITE_CAP')
+    cap, _ = _record_profile(_kind)
+    need(len(raw) <= cap, 'WRITE_CAP')
+    # Reserve the attempted exclusive write AND its mandatory guarded readback
+    # before create_once. A partial IO failure cannot refund this operation.
+    budget.charge(len(raw), 'records')
+    budget.charge(len(raw) + 1, 'records')
+    budget.charge(len(raw) + 1)
     with ASSET['root_for'](path.parent) as root:
-        return ASSET['create_once'](root, path.name, raw, ASSET['ReadDomain'](RECORD_CAP))
+        return ASSET['create_once'](root, path.name, raw, ASSET['ReadDomain'](len(raw)))
 
 
 def observe(path, roots, budget, snapshot=None, cap=CONTAINER_CAP, *, native_context=None):
@@ -812,10 +910,10 @@ def compare_copy(before, after, mode_changes=None):
 
 
 class Session:
-    def __init__(self, candidate, paths, run_id, context_sha256=None):
+    def __init__(self, candidate, paths, run_id, context_sha256=None, *, _budget=None):
         self.candidate, self.paths, self.run = candidate, paths, run_id
         self.context_sha256 = context_sha256
-        self.budget = Budget()
+        self.budget = Budget() if _budget is None else _budget
         self.roots = [str(paths.exported_source), str(paths.output)]
         self.start = time.monotonic_ns()
         self.stage = paths.output / 'scratch/freezer-subjects'
@@ -841,20 +939,18 @@ class Session:
                  'observed_start_ns': self.start, 'observed_end_ns': time.monotonic_ns(), 'payload': payload}
         if kind != 'context':
             value.update(context_sha256=self.context_sha256, upstream=upstream)
-        raw = encoded(value)
-        need(len(raw) <= (65536 if kind == 'context' else RECORD_CAP), 'RECORD_CAP:'+kind)
-        self.budget.charge(len(raw), 'records')
-        parse(raw)
-        create(self.paths.evidence_dir / FILES[kind], raw)
+        raw = encoded(value, _kind=kind)
+        parse(raw, _kind=kind)
+        create(self.paths.evidence_dir / FILES[kind], raw, self.budget, _kind=kind)
         return {'path': str(self.paths.evidence_dir / FILES[kind]), 'size': len(raw), 'sha256': digest(raw)}
 
     def load(self, kind, expected):
         self.check_live()
         ASSET['hex_value'](expected)
-        raw, _ = read(self.paths.evidence_dir / FILES[kind], self.budget, 65536 if kind == 'context' else RECORD_CAP)
+        cap, _ = _record_profile(kind)
+        raw, _ = read(self.paths.evidence_dir / FILES[kind], self.budget, cap, _json=True)
         need(digest(raw) == expected, 'EXPECTED_DIGEST:' + kind)
-        self.budget.charge(len(raw), 'records')
-        row = parse(raw)
+        row = parse(raw, _kind=kind)
         fields = {'encoding','kind','candidate','run_id','observed_start_ns','observed_end_ns','payload'}
         keys(row, fields if kind == 'context' else fields | {'context_sha256','upstream'}, 'RECORD_SCHEMA')
         need(row['encoding'] == ENCODING and row['kind'] == kind and row['candidate'] == asdict(self.candidate)
@@ -867,7 +963,8 @@ class Session:
         return row
 
     def reference(self, kind, expected):
-        raw,_ = read(self.paths.evidence_dir/FILES[kind],self.budget,65536 if kind == 'context' else RECORD_CAP)
+        cap, _ = _record_profile(kind)
+        raw,_ = read(self.paths.evidence_dir/FILES[kind],self.budget,cap,_json=True)
         need(digest(raw) == expected, 'REFERENCE_DIGEST')
         return {'path':str(self.paths.evidence_dir/FILES[kind]), 'size':len(raw), 'sha256':expected}
 
@@ -883,7 +980,7 @@ class Session:
             check_subject(subject, self.roots, self.budget)
         for key in ('wheel', 'provenance'):
             check_subject(row[key], self.roots, self.budget)
-        need(row['contract'] == 'pyinstaller-6.21.0-1happyranchcustody3', 'CONTRACT')
+        need(row['contract'] == 'pyinstaller-6.21.0-1happyranchcustody4', 'CONTRACT')
         return row
 
     def snapshot(self, path, lane, stage, cap=CONTAINER_CAP, *, native_context=None):
@@ -927,16 +1024,16 @@ class Session:
         try:
             create(self.paths.evidence_dir / 'freezer-failure.json', encoded({
                 'encoding': ENCODING, 'state': 'INCOMPLETE', 'run_id': self.run,
-                'error': str(error)[:4096], 'original_exit': original_exit, 'refused_owners': ['freezer']}))
+                'error': str(error)[:4096], 'original_exit': original_exit, 'refused_owners': ['freezer']}), self.budget)
         except (OSError, ValueError) as persistence:
             print('FREEZER_FAILURE_PERSISTENCE:' + type(persistence).__name__, file=sys.stderr)
 
 
-def begin(candidate, paths, run, asset_context, toolchains):
-    session = Session(candidate, paths, run)
+def begin(candidate, paths, run, asset_context, toolchains, *, _budget=None):
+    session = Session(candidate, paths, run, _budget=_budget)
     try:
         session.check_live()
-        create(paths.evidence_dir / 'freezer-attempt.json', encoded({'encoding':ENCODING, 'run_id':run, 'state':'INCOMPLETE'}))
+        create(paths.evidence_dir / 'freezer-attempt.json', encoded({'encoding':ENCODING, 'run_id':run, 'state':'INCOMPLETE'}), session.budget)
         ASSET['check_context'](candidate, paths, run, asset_context)
         dirs, owner, preflight = ASSET['bindings'](candidate, paths, run)
         tool_raw, _ = read(paths.evidence_dir / 'toolchains.txt', session.budget, MiB)
@@ -945,7 +1042,7 @@ def begin(candidate, paths, run, asset_context, toolchains):
                    ('packaging/daemon.spec', 'app/mac/scripts/freezer_evidence.py', 'app/mac/scripts/asset_evidence.py',
                     'pyproject.toml','uv.lock', VENDOR+'/prepare.py', VENDOR+'/custody.patch')]
         vendor = paths.exported_source / VENDOR
-        provenance_raw, _ = read(vendor / 'provenance.json', session.budget, 256*1024)
+        provenance_raw, _ = read(vendor / 'provenance.json', session.budget, 256*1024,_json=True)
         provenance = parse(provenance_raw)
         wheel = observe(vendor / 'dist' / WHEEL, session.roots, session.budget)
         need((wheel['size'],wheel['sha256']) == (provenance['replacement']['size'],provenance['replacement']['sha256']), 'SOURCE_WHEEL_DIGEST')
@@ -955,7 +1052,7 @@ def begin(candidate, paths, run, asset_context, toolchains):
             'directories': dirs, 'owner': owner, 'preflight':preflight, 'asset_context':asset_context,
             'toolchains':toolchains, 'sources':sources, 'wheel':wheel,
             'provenance':observe(vendor / 'provenance.json', session.roots, session.budget, cap=256*1024),
-            'contract':'pyinstaller-6.21.0-1happyranchcustody3'}, None)
+            'contract':'pyinstaller-6.21.0-1happyranchcustody4'}, None)
         return {'context':reference['sha256'], 'caller':{'candidate':asdict(candidate), 'paths':{k:str(v) for k,v in asdict(paths).items()},
                                                        'run_id':run,'context':reference['sha256'],
                                                        'helper_sha256':sources[1]['sha256']}}
@@ -966,7 +1063,7 @@ def begin(candidate, paths, run, asset_context, toolchains):
 
 def installed_pyinstaller(session):
     vendor = session.paths.exported_source / VENDOR
-    provenance = parse(read(vendor/'provenance.json', session.budget, 256*1024)[0])
+    provenance = parse(read(vendor/'provenance.json', session.budget, 256*1024,_json=True)[0])
     distribution = importlib.metadata.distribution('pyinstaller')
     need(distribution.version == '6.21.0', 'INSTALLED_VERSION')
     records = []
@@ -1018,7 +1115,7 @@ def executable_alias(value,session):
 
 def check_toolchain(session,tool):
     check_subject(tool['receipt'],session.roots,session.budget)
-    receipt = parse(read(tool['receipt']['snapshot'],session.budget,MiB)[0])
+    receipt = parse(read(tool['receipt']['snapshot'],session.budget,MiB,_json=True)[0])
     need(receipt == {'executable':tool['executable'],'version':tool['version'],'platform':'darwin','machine':tool['machine']}, 'EFFECTIVE_PYTHON_RECEIPT')
     executable, aliases = executable_alias(tool['executable'],session)
     need(aliases == tool['python_alias'] and str(executable) == str(Path(tool['python_executable']['root'])/tool['python_executable']['relative']), 'PYTHON_ALIAS_BINDING')
@@ -1078,12 +1175,14 @@ def spec_begin(project, *, native_selection=None):
     raw = os.environ.get('HAPPYRANCH_FREEZER_CALLER')
     if raw is None:
         return None
+    budget = Budget()
+    budget.charge(len(raw.encode()), 'records')
     caller = parse(raw.encode())
     keys(caller, {'candidate','paths','run_id','context','helper_sha256'}, 'CALLER_SCHEMA')
     candidate = ASSET['Candidate'](**caller['candidate'])
     paths = ASSET['Paths'](**{k:Path(v) for k,v in caller['paths'].items()})
     need(paths.exported_source == project, 'SPEC_CALLER_SOURCE')
-    session = Session(candidate, paths, caller['run_id'], caller['context'])
+    session = Session(candidate, paths, caller['run_id'], caller['context'], _budget=budget)
     session.context()
     need(sys.platform == 'darwin' and platform.machine() == 'arm64' and (3,12) <= sys.version_info[:2] <= (3,14), 'NATIVE_PLATFORM')
     # These explicit observed process roots are not installer or image attestation.
@@ -1098,7 +1197,7 @@ def spec_begin(project, *, native_selection=None):
                          'bytecode_magic':importlib.util.MAGIC_NUMBER.hex(), 'python_version':sys.version_info[0]*100+sys.version_info[1],
                          'origin':'origin_unobserved', 'receipt':session.snapshot(paths.output/'scratch/freeze-work/python-toolchain.json','shared','toolchain',MiB),
                          'python_executable':None,'python_alias':[], 'native_tools':[]}
-    receipt = parse(read(session.toolchain['receipt']['snapshot'],session.budget,MiB)[0])
+    receipt = parse(read(session.toolchain['receipt']['snapshot'],session.budget,MiB,_json=True)[0])
     need(receipt == {'executable':sys.executable,'version':sys.version,'platform':sys.platform,'machine':platform.machine()}, 'EFFECTIVE_PYTHON_RECEIPT')
     executable, aliases = executable_alias(sys.executable,session)
     session.toolchain['python_alias'] = aliases
@@ -1383,7 +1482,7 @@ def validate_fragment(fragment, session, live=False, native_index=None):
     stage = session.stage / fragment['target'] / fragment['lane']
     if native_index is not None:
         stage = stage / str(native_index)
-    retained,_ = read(stage/'fragment.json',session.budget,RECORD_CAP)
+    retained,_ = read(stage/'fragment.json',session.budget,RECORD_CAP,_json=True)
     need(retained == encoded(fragment), 'RETAINED_FRAGMENT_MISMATCH')
     need(fragment['stage_dir'] == str(stage) and fragment['source_roots'] == session.roots, 'FRAGMENT_ROOT_BINDING')
     need((fragment['ledger_ref'] is None) == (fragment['target'] != 'COLLECT'), 'FRAGMENT_DAG')
@@ -1463,7 +1562,7 @@ def validate_fragment(fragment, session, live=False, native_index=None):
                 need(all(value['copy']['input'][k] == value['copy']['output'][k] for k in ('size','sha256')), 'COPY_GENERATION')
                 if value['kind'] in ('BINARY','EXTENSION'):
                     validate_native(value['native'],session)
-                    process = parse(read(stage/str(copy_index)/'fragment.json',session.budget,RECORD_CAP)[0])
+                    process = parse(read(stage/str(copy_index)/'fragment.json',session.budget,RECORD_CAP,_json=True)[0])
                     validate_fragment(process,session,native_index=copy_index)
                     need(fragment_event(process,'native_return') == value['native'], 'PROCESS_FRAGMENT_BINDING')
                     need(all(value['native']['returned'][k] == value['copy']['input'][k] for k in ('size','sha256','identity')),
@@ -1488,7 +1587,7 @@ def archive_observations(session, inputs):
     for lane in ('daemon','cli'):
         info = inputs['lanes'][lane]
         exe = fragment_event(info['EXE'],'exe_operation')
-        provenance = parse(read(session.paths.exported_source/VENDOR/'provenance.json',session.budget,256*1024)[0])
+        provenance = parse(read(session.paths.exported_source/VENDOR/'provenance.json',session.budget,256*1024,_json=True)[0])
         selected_member = 'PyInstaller/bootloader/Darwin-64bit/run'
         original_bootloader = provenance['original_members'][selected_member]
         need((exe['selected']['size'],exe['selected']['sha256']) == (original_bootloader['size'],original_bootloader['sha256']), 'BOOTLOADER_ORIGINAL_BINDING')
@@ -1575,7 +1674,7 @@ def finish_freeze(session, collect):
         output = session.write('output', {'collect_fragment':collect.custody_fragment,'collect_census':census,
             'archives':archives,'inputs':session.inputs,'contributor_edges':edges,'unresolved':inputs['unresolved']},[session.inputs])
         create(session.stage/'return/token.json',encoded({'run_id':session.run,'context':session.context_sha256,
-                                                        'inputs':session.inputs['sha256'],'output':output['sha256']}))
+                                                        'inputs':session.inputs['sha256'],'output':output['sha256']}), session.budget)
     except BaseException as error:
         session.fail(error)
         raise
@@ -1619,8 +1718,8 @@ def check_inputs(session, inputs):
         check_subject(row['subject'],session.roots,session.budget)
 
 
-def verify_freezer(candidate, paths, run, context, inputs_sha, output_sha, copy_sha=None):
-    session = Session(candidate,paths,run,context)
+def verify_freezer(candidate, paths, run, context, inputs_sha, output_sha, copy_sha=None, *, _budget=None):
+    session = Session(candidate,paths,run,context,_budget=_budget)
     session.context()
     inputs_row = session.load('inputs',inputs_sha)
     need(inputs_row['upstream'] == [session.reference('context',context)], 'INPUTS_DAG')
@@ -1696,46 +1795,53 @@ def main():
     q.add_argument('--token',required=True); q.add_argument('--field',required=True)
     args = parser.parse_args()
     if args.command == 'token-field':
+        budget = Budget()
+        budget.charge(len(args.token.encode()), 'records')
         value = parse(args.token.encode())
         need(args.field in value,'TOKEN_FIELD')
         result = value[args.field]
-        print(encoded(result).decode().strip() if isinstance(result,dict) else result)
+        if isinstance(result,dict):
+            raw = encoded(result)
+            budget.charge(len(raw), 'records')
+            result = raw.decode().strip()
+        print(result)
         return
     candidate,paths = ASSET['invocation'](args)
     session = Session(candidate,paths,args.run_id,getattr(args,'freezer_context_sha256',None))
     try:
         if args.command == 'begin':
-            result = begin(candidate,paths,args.run_id,args.asset_context_sha256,args.toolchains_sha256)
+            result = begin(candidate,paths,args.run_id,args.asset_context_sha256,args.toolchains_sha256,_budget=session.budget)
         elif args.command == 'fail':
             session.fail('wrapper_command_failure',args.original_exit)
             return
         elif args.command == 'accept':
             session.context()
-            raw,_ = read(session.stage/'return/token.json',session.budget,4096)
+            raw,_ = read(session.stage/'return/token.json',session.budget,4096,_json=True)
             result = parse(raw)
             keys(result, {'run_id','context','inputs','output'}, 'RETURN_TOKEN_SCHEMA')
             need(result['run_id'] == args.run_id and result['context'] == args.freezer_context_sha256, 'RETURN_TOKEN_BINDING')
-            verify_freezer(candidate,paths,args.run_id,result['context'],result['inputs'],result['output'])
-            create(session.stage/'return/consumed.json',raw)
+            verify_freezer(candidate,paths,args.run_id,result['context'],result['inputs'],result['output'],_budget=session.budget)
+            create(session.stage/'return/consumed.json',raw,session.budget)
         else:
             session, output = verify_freezer(candidate,paths,args.run_id,args.freezer_context_sha256,
-                args.freezer_inputs_sha256,args.freezer_output_sha256,getattr(args,'freezer_copy_sha256',None))
+                args.freezer_inputs_sha256,args.freezer_output_sha256,getattr(args,'freezer_copy_sha256',None),_budget=session.budget)
             if args.command == 'before-copy':
-                create(session.stage/'return/copy-ready.json',encoded({'run_id':args.run_id,'output':args.freezer_output_sha256}))
+                create(session.stage/'return/copy-ready.json',encoded({'run_id':args.run_id,'output':args.freezer_output_sha256}),session.budget)
                 result = {'ready':True}
             elif args.command == 'copy':
-                ready = parse(read(session.stage/'return/copy-ready.json',session.budget,4096)[0])
+                ready = parse(read(session.stage/'return/copy-ready.json',session.budget,4096,_json=True)[0])
                 need(ready == {'run_id':args.run_id,'output':args.freezer_output_sha256}, 'COPY_READY_BINDING')
                 before = tree(paths.output/'scratch/freeze-dist/happyranch-daemon',session.budget)
                 after = tree(paths.app/'Contents/Resources/daemon',session.budget)
                 changes = compare_copy(before,after,allowed_modes(paths))
-                ref = {'path':str(paths.evidence_dir/FILES['output']),'size':len(encoded(output)),'sha256':args.freezer_output_sha256}
+                ref = session.reference('output',args.freezer_output_sha256)
                 result = session.write('copy',{'output':ref,'before':before,'after':after,'mode_changes':changes,
                                               'unresolved':output['payload']['unresolved']},[ref])
             else:
                 result = {'technical_relations':'MATCHED','notice_standard':'dependency-manifest-notices'}
         raw = encoded(result)
         need(len(raw) <= 4096,'TOKEN_CAP')
+        session.budget.charge(len(raw), 'records')
         print(raw.decode(),end='')
     except BaseException as error:
         session.fail(error)

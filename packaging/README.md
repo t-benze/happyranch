@@ -486,11 +486,36 @@ opaque; the finite marshal decoder accepts only TOC data forms, never code.
 
 Freezer limits are additional to unchanged asset-helper limits: container512MiB,
 native256MiB, ordinary source16MiB, notice/manifest256KiB; decoded member16MiB
-(native256MiB), container expansion512MiB and ratio1000. Aggregate reads8GiB,
-snapshots2GiB, records32MiB, logical members/operations16,384, tree8,192/depth24,
-names8MiB, alias hops16. Each success record is at most8MiB, context64KiB,
-response4KiB; the reused JSON parser's stricter depth16/100,000-node fence also
-applies. Overflow refuses; these caps have not been calibrated by a native run.
+(native256MiB), container expansion512MiB and ratio1000. Aggregate ordinary
+reads8GiB, snapshots2GiB, logical members/operations16,384, tree8,192/depth24,
+names8MiB and alias hops16 remain independent. Fixed internally selected inputs
+and output profiles admit32MiB each with BOTH lexical/object1,000,000 nodes;
+context stays64KiB and copy/default8MiB, with smaller site caps retained. All
+retain depth16/string4096B/strict UTF8/duplicate/nonfinite/type and Boolean-field
+checks. Object preflight precedes bounded incremental canonical JSON encoding;
+sorted keys, separators, ASCII escaping and final newline stay unchanged, along
+with all complete occurrences/order/IDs/lineage and digest-bound references.
+One enclosing attempted helper JSON-I/O meter256MiB per command/spec Session
+replaces records32MiB write/load-only accounting. Every write and mandatory
+readback, load, full reference reread and standalone/nested fragment read is
+charged before attempted work, without path discounts or nested accept/verify
+reset; exhaustion is sticky and failure persistence remains best effort. Write
+readbacks reserve the exact written length plus an EOF probe under an exact-length
+ReadDomain within the fixed kind cap; a partial write does not refund reservations.
+Fragment JSON reads also charge ordinary reads. Copy references stored output
+bytes rather than reserializing under a default cap. Responses retain4KiB.
+The current complete call graph bounds are224MiB/spec and232.125MiB/fresh verify
+with copy, plus small records/EOF probes. These formulas are not measured native
+totals or hard RSS/time bounds. Overflow still refuses; build13's rejected input
+size/content remain UNKNOWN, and these finite capacities do not guarantee success.
+The independent vendor COLLECT ledger profile is32MiB with lexical/object1m,
+depth16/string4096 and original types/duplicates. Integer declared size, original
+guarded observation, bounded cap+1 full-read size/actual consumed digest, ordered
+collect arguments and stable-ledger reobservation all agree. Both reads and the
+final stability reread charge its existing8GiB meter. Vendor default parse and
+fragments stay8MiB each/32MiB per-run writes, with snapshots2GiB and members16384;
+asset and vendor budgets remain separate. Unrelated freezer RECORD_CAP uses,
+including marshal/PYZ TOC and ZIP metadata, stay8MiB.
 Container snapshots are hashed in chunks on held stable descriptors; archive
 parsing uses bounded ranges and expansion, without executing or extracting code.
 Both application and upstream snapshot writers open the ordinal leaf relative to
@@ -503,9 +528,9 @@ refuse. Central extras/comments and local extras share an 8MiB per-archive cap;
 extra fields must be structurally complete. Existing payload CRC, expansion,
 duplicate, local-range and complete-coverage checks remain independent. Logical
 member/name budgets are charged once in admission, cumulatively across archives.
-The Darwin input is custody revision 3, build tag `1happyranchcustody3`, pinned
+The Darwin input is custody revision 4, build tag `1happyranchcustody4`, pinned
 through the local wheel, provenance, lock, wrapper and reader contract. Historical
-revision 1/2 wheels and receipts retain only their original input and head.
+revision 1/2/3 wheels and receipts retain only their original input and head.
 Revision 3 sorts base-library modules by name at the original ZIP producer before
 each original lane observation. It preserves module membership, cached-code
 lookup, optimization, headers and deterministic ZipInfo. Equal content no longer
