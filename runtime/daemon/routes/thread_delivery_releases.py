@@ -280,7 +280,10 @@ async def _invoke(owner: _ThreadDeliveryReleaseService, slug: str, kind: str, *,
             value = await owner.show(slug, key)
     except ReleaseUnavailable as exc:
         code = exc.code if exc.code in CONFLICTS | UNAVAILABLE else "unavailable"
-        return _error(409 if code in CONFLICTS else 503, code, exc.committed, key=key)
+        # Key-only show has no caller selection: this category means the
+        # strict stored graph is unavailable, not a request selection conflict.
+        conflict = code in CONFLICTS and not (kind == "show" and code == "selection")
+        return _error(409 if conflict else 503, code, exc.committed, key=key)
     except Exception:
         return _error(503, "unavailable", None, key=key)
     if value is None and kind == "show":
