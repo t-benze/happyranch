@@ -51,6 +51,14 @@ def fingerprint(task: TaskRecord) -> dict:
             "brief_digest": hashlib.sha256(task.brief.encode()).hexdigest()}
 
 
+def _refuse_queued_coding_control(orch: Any, task_id: str) -> None:
+    if getattr(orch, '_workflow_coding_dispatch', None) is not None:
+        from runtime.workflows.recovery import classify_task
+        ownership = classify_task(orch._db, task_id, org_slug=orch._slug)
+        if ownership.kind in ('coding_control', 'reconciliation_required'):
+            raise DeferredRootPause('coding_control_execution_unavailable')
+
+
 def eligible(orch: Any, task: TaskRecord) -> bool:
     """The unchanged ordinary pending / satisfied parked-carrier predicate."""
     from runtime.orchestrator.run_step import _child_has_landed_terminal_result, TERMINAL_STATES
@@ -156,6 +164,7 @@ class TaskInvocation:
         return self.orch._db._task_pause_store
 
     def prepare(self) -> None:
+        _refuse_queued_coding_control(self.orch, self.task.id)
         if self.owner == "coding":
             from runtime.workflows.coding_start import require_ready
             require_ready()
@@ -244,6 +253,7 @@ class TaskInvocation:
 
     def _business_uncommitted(self, entry: dict) -> float | None:
         db = self.orch._db
+        _refuse_queued_coding_control(self.orch, self.task.id)
         recovery_deadline = None
         current = db.get_task(self.task.id)
         if (current is None or fingerprint(current) != entry["fingerprint"]
@@ -733,6 +743,7 @@ def _same_deferred_owner(left: TaskInvocation, right: TaskInvocation) -> bool:
 def deferred_invocation(orch: Any, task: TaskRecord, metadata: dict | None = None,
                         *, adopt: bool = True) -> TaskInvocation | None:
     """Identify the durable owner before any fallible adoption write."""
+    _refuse_queued_coding_control(orch, task.id)
     store = orch._db._task_pause_store
     with store.db._lock:
         current = store.db.get_task(task.id)
@@ -967,6 +978,9 @@ async def discover_pause_work(org: Any, queue: Any) -> None:
     from runtime.workflows.recovery import classify_task
     from runtime.orchestrator.authority import enqueue_task_generation_aware
     from runtime.daemon.routes.jobs import _run_job_core
+    from runtime.orchestrator.team_move import DeferredTeamMove
+    from runtime.workflows.authority import WorkflowAuthorityError
+    from runtime.workflows.profile_coordinator import ProfileCoordinatorError
     # One bounded page per sweep, retaining cursor only as a traversal aid.
     # Release intent is acknowledged only for a fully inspected actual root.
     cursor = getattr(store, "_discovery_cursor", "")
@@ -986,6 +1000,23 @@ async def discover_pause_work(org: Any, queue: Any) -> None:
                 "SELECT id FROM tree LIMIT 10001", (root_id,)).fetchall()
             complete = len(task_rows) <= 10000
             entries = list(row["journal"]["entries"])
+        # Revisit the same positive failure if its source settled last or
+        # notification was lost. This awaits only outside native DB/gates.
+        if not held:
+            from runtime.workflows.coding_start import queued_storage
+            with org.db._lock:
+                coding_sources = []
+                if org.db._conn.execute("SELECT 1 FROM sqlite_schema WHERE name='workflow_coding_runs' AND type='table'").fetchone():
+                    saved = queued_storage(org.db._conn, org.slug)
+                    coding_sources = [entry['source']['task_id'] for entry in saved.runs.values()
+                        if entry['source']['root_ancestor_id'] == root_id]
+            for source_task in coding_sources:
+                try:
+                    await org.workflow_coding_dispatch.controls.reconcile(source_task, queue)
+                except (ValueError, DeferredRootPause, DeferredTeamMove, WorkflowAuthorityError, ProfileCoordinatorError):
+                    # The durable hold retains required_owner/action. Current
+                    # authority/move/capacity loss is never a cleanup witness.
+                    logging.getLogger(__name__).warning('coding control remains held: %s', source_task, exc_info=True)
         # A pending job rejected without ever committing launch is closed by
         # that actual row. A terminal record for possible/unknown launch is
         # not a quiescence receipt and is deliberately retained.
@@ -1059,7 +1090,7 @@ async def discover_pause_work(org: Any, queue: Any) -> None:
                         org.workflow_drafts.notify_queued(task_id, queue)
                     elif ownership.kind == "f5":
                         org.workflow_reviews.notify_queued(task_id, queue)
-                    elif ownership.kind == 'coding_attempt':
+                    elif ownership.kind in ('coding_attempt', 'coding_control'):
                         org.workflow_coding_dispatch.notify_queued(task_id, queue)
                     elif ownership.kind.startswith('coding_'):
                         continue

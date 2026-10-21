@@ -11,7 +11,7 @@ from runtime.infrastructure.workflow_coding_schema import has_coding_schema_obje
 
 @dataclass(frozen=True)
 class WorkflowTaskOwnership:
-    kind: Literal["legacy", "draft", "f5", "coding_source_waiting", "coding_carrier", "coding_attempt", "reconciliation_required"]
+    kind: Literal["legacy", "draft", "f5", "coding_source_waiting", "coding_carrier", "coding_attempt", "coding_control", "reconciliation_required"]
     intent_id: str | None = None
     state: str | None = None
 
@@ -48,7 +48,7 @@ def classify_task(db: Any, task_id: str, *, org_slug: str | None) -> WorkflowTas
                 saved = queued_storage(conn, org_slug)
                 if task_id in saved.owners:
                     kind, instance = saved.owners[task_id]
-                    return WorkflowTaskOwnership(kind, instance, saved.runs[instance]["attempt"]["state"])
+                    return WorkflowTaskOwnership(kind, instance, "queued" if kind == "coding_control" else saved.runs[instance]["attempt"]["state"])
             if not tables:
                 return WorkflowTaskOwnership("legacy")
             roots = conn.execute("SELECT id FROM workflow_instances WHERE root_task_id=?", (task_id,)).fetchall()
@@ -125,10 +125,13 @@ def route_owned_task(orch: Any, task_id: str) -> bool:
         reviewer = getattr(orch, '_workflow_reviews', None)
         if reviewer is not None:
             reviewer.dispatch(task_id)
-    elif ownership.kind == "coding_attempt":
+    elif ownership.kind.startswith("coding_"):
         coding = getattr(orch, "_workflow_coding_dispatch", None)
-        if coding is not None and coding.queue_admission_allowed(task_id):
-            coding.dispatch(task_id)
+        if coding is not None:
+            if ownership.kind == 'coding_attempt' and coding.queue_admission_allowed(task_id):
+                coding.dispatch(task_id)
+            else:
+                coding.reconcile(task_id)
     # An unavailable dispatcher/host is pending execution, never permission
     # to call legacy launch, retry, delegation or parent propagation. Existing
     # F5 producers remain deferred and reconciliation-owned.
@@ -139,7 +142,7 @@ def recover_owned_task(db: Any, queue: Any, slug: str, task_id: str, *, orchestr
     ownership = classify_task(db, task_id, org_slug=slug)
     if ownership.kind == "legacy":
         return False
-    if ownership.kind == 'coding_attempt':
+    if ownership.kind.startswith('coding_'):
         coding = getattr(orchestrator, '_workflow_coding_dispatch', None)
         if coding is not None:
             coding.notify_queued(task_id, queue)

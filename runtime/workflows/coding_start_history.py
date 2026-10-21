@@ -415,13 +415,26 @@ def read_queued(conn: sqlite3.Connection, org: str, budget: _Budget, mappings: A
         for child in rows(conn, 'tasks', budget, where='parent_task_id=?', args=(source['task_id'],)):
             _check(child['id'] == carrier_id or (child['status'] in ('completed', 'failed', 'cancelled', 'superseded')
                 and datetime.fromisoformat(child['created_at']) <= datetime.fromisoformat(payload['created_at'].replace('Z', '+00:00'))))
-        _check([r['id'] for r in rows(conn, 'tasks', budget, where='parent_task_id=?',
-                                    args=(carrier_id,), maximum=2)] == [leaf['id']])
+        control = native['control']
+        children = [leaf['id']]
+        if control is not None:
+            control_task = control['control_task_id']
+            children.append(control_task)
+            _check(conn.execute('SELECT 1 FROM task_results WHERE task_id=? LIMIT 1', (control_task,)).fetchone() is None
+                   and conn.execute('SELECT 1 FROM tasks WHERE parent_task_id=? LIMIT 1', (control_task,)).fetchone() is None
+                   and conn.execute("SELECT 1 FROM audit_log WHERE task_id=? AND action='session_start' LIMIT 1", (control_task,)).fetchone() is None
+                   and conn.execute('SELECT 1 FROM task_completion_recoveries WHERE task_id=? LIMIT 1', (control_task,)).fetchone() is None)
+        _check(sorted(r['id'] for r in rows(conn, 'tasks', budget, where='parent_task_id=?',
+                                    args=(carrier_id,), maximum=3)) == sorted(children))
         for table, row in (('workflow_coding_runs', run), ('workflow_coding_attempts', attempt), ('workflow_coding_events', event)):
             storage.add(table, row)
         storage.runs[instance] = dict(run=run, command=command, roles=roles, attempt=attempt, event=event,
                                     source=source, binding=expected_pins['workflow_binding_snapshots'][0],
                                     native=native, authority=evidence['authority'], tasks=after_tasks)
+        if control is not None:
+            task_id = control['control_task_id']
+            _check(task_id not in storage.owners)
+            storage.owners[task_id] = ('coding_control', instance)
         for task_id, kind in ((source['task_id'], 'coding_source_waiting'),
                               (carrier_id, 'coding_carrier'), (leaf['id'], 'coding_attempt')):
             _check(task_id not in storage.owners)

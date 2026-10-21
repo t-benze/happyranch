@@ -70,7 +70,7 @@ class QueuedAttempt(Closed):
 
 class QueuedEvent(Closed):
     id: Token
-    kind: Literal['run_started', 'session_bound', 'launch_reserved', 'launch_observed', 'callback_recorded', 'terminal_recorded', 'cleanup_settled', 'held', 'host_reconciled']
+    kind: Literal['run_started', 'session_bound', 'launch_reserved', 'launch_observed', 'callback_recorded', 'terminal_recorded', 'cleanup_settled', 'held', 'host_reconciled', 'manager_control_queued']
     event_seq: Annotated[StrictInt, Field(ge=1, le=4096)]
 
 

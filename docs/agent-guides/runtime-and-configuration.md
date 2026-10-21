@@ -3237,3 +3237,59 @@ E2E/protected/executable-QA/test-authoring proof UNEXECUTED/FOUNDER-WAIVED139429
 Fresh FULL independent review then same-final-head scoped SOURCE QA return to
 ROOT10693; K3 controls/recovery/K4–K6 and operational acceptance remain root-owned.
 <!-- /K3b native service attribution: TASK12034 / ROOT10693 step93 -->
+
+
+<!-- K3c queued manager control: TASK12041 / ROOT10693 step96 -->
+## Queued recovery ownership (K3c)
+
+A development failure can queue exactly one genuine pending manager-control
+subtask after its own full INTEGER failed callback, matching failure/quiescent
+host receipt and positive source/development native close/release plus all outer
+tails. `held(stage_safe_failure)` records actual witnesses and the original
+source manager/required restoration action. Unavailable, contradictory, unknown
+or unsettled ownership retains held; no PID absence/expiry/task label is proof.
+
+The task is parented to the structural carrier, assigned to the actual effective
+agent-manager/team, pending with null SID/block/chain/fanout/revisit/result.
+Source/carrier remain delegated, failed predecessor/current_attempt and all
+contributors remain unchanged. There is no control content-attempt row.
+Control identity hashes instance/predecessor/held event; its frozen scope binds
+original limits, exact eligible targets, original role/source history and fresh
+agent-read authority. No retired custody grant or service-retry policy is minted.
+
+The native outer-settlement owner and existing bounded Pause/recovery sweeps
+rediscover this same failure. Authority-before-teams and native Pause/move/DB
+ordering, current original/effective role/repository/team independence, original
+claim/ancestry/limits and prospective binding checks repeat after waits and in
+the writer. Task/queued event/admission/CAS/full validation commit together;
+notification follows COMMIT with original enqueue age. Replay returns original
+IDs/current disposition, with no second allocation/event/capacity debit. Each
+hold/queued event spends one original event slot; queued control counts against
+the original finite allocation allowance. No native execution step is charged
+before an actual execution; this slice admits none and opens no new budget pool.
+
+Event@3/internal-command@3 is a separate queued-control branch; historical
+run_started@1/native@2 retain their bytes and interpretations. Independent
+saved/native/J/schema(data=False)/cold/reopen/recovery/drain readers reconstruct
+held witnesses, scope, task/event identities and all27 native task fields under
+the enclosing row/byte/step bounds. Orphan/dual/foreign/unknown data refuses.
+Explicit coding_control ownership precedes legacy recovery, parent wake, queue,
+Pause/move/cancel and preparation. Existing selected-owner run-show adds only
+manager_control_queued history metadata, through the shared served/CLI model;
+no public control endpoint or browser/remote access is added.
+
+Every unconditional start/callback/queue/dispatch/prepare/final-claim readiness
+refusal remains. Notifications cannot admit a control SID, native claim, host,
+heartbeat, callback or selection. No executable control-select instruction is
+published. Full control lifetime/selection/settlement/replacement, K4–K6 and
+operational acceptance remain ROOT10693-owned. Unchanged SQL does not imply
+old-reader readability; new queued history requires compatible code.
+
+Independent FULL review then same-final-head scoped SOURCE QA, normal hooks,
+nonforce publication, lint/static local all and literal hosted Source Boundary
+Lint/Web Lint(Node24), and manager guarded merge remain required. Python units
+RETIRED; integration INCLUDING callback SKIPPED24342. Runtime observations are
+MISSING; behavioral/SQL/parser/security/race/negative/mutation/repetition/native
+build/E2E/protected/executable-QA/test-authoring proof UNEXECUTED/FOUNDER-WAIVED
+139429/430, never PASS. No live action or coding-engine enablement follows.
+<!-- /K3c queued manager control: TASK12041 / ROOT10693 step96 -->
