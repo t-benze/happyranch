@@ -10,19 +10,22 @@ separate delivery obligations.
 
 Fresh Product E2E keeps the daily `0 19 * * *` schedule (19:00 UTC /
 03:00 Asia/Shanghai) on immutable default-branch `github.sha`. Founder
-THR291seq247 additionally authorizes **ONE** immediate full main execution under
-sole root TASK-11897 through the reviewed `workflow_dispatch` entry. Manual
-admission requires actual `refs/heads/main`, default branch `main`, and matching
-repository/workflow/run/source identity. This entry is not standing execution
-authority. Baseline56 variants EACH Python3.12/3.14 plus TERM3.12/INT3.14 retain
+THR291seq277 authorizes engineering_manager under sole linked ROOT TASK-12281
+(resolving superseded TASK-12262) to use the existing main-only `workflow_dispatch`
+on demand after concrete reviewed corrections, without per-run approval or a
+nightly wait. Reconcile active owners/runs first; no blind same-source retry loop.
+Manual admission requires actual `refs/heads/main`, default branch `main`, and
+matching repository/workflow/run/source identity. Historical seq247's ONE-run
+allocation to TASK-11897 and its receipts remain history. Baseline56 variants
+EACH Python3.12/3.14 plus TERM3.12/INT3.14 retain
 exactly four execution artifacts and the original bounds. `Daily Product E2E
 Health` remains outside merge checks and reports the actual event, run/attempt,
 SHA and checkout tree; manual receipts are never labeled scheduled.
 There is no local E2E alias, PR/push/release/workflow_call/repository_dispatch
 entry, automatic retry, extra schedule or SLA. Admission, lint and scoped QA
-success do not establish product execution success. The root owns the one
-actual dispatch after independent review/scoped QA, both final-head lints,
-guarded merge and an exact-main receipt.
+success do not establish product execution success. The root owns each actual
+dispatch after full independent review/scoped QA, both final-head lints, normal
+hooks/nonforce publication, guarded merge and an exact-main two-lint receipt.
 
 `run.daily_admission` validates genuine schedule payloads with the exact cron;
 manual payloads carry their actual main ref and no invented schedule. Both
@@ -108,10 +111,23 @@ cleanup budget or server-settlement proof follows. Secondary body/cleanup errors
 retain type-only partial diagnostics and cannot replace the first observed cause.
 Activity after disposal is outside this finite dispatcher-observed guarantee.
 
-All three ordinary roots sites (IDs1/18/19: open_task/e07_terminal/Pause held)
-retain the PR1107 complete decoded query exactly limit=["50"], including blank,
-repetition, fragment and strict parser behavior. Attention status=escalated cannot
-join. Recall requires exactly tree=["true"]; detail/jobs require an empty query;
+All three roots sites (IDs1/18/19: open_task/e07_terminal/Pause held) use ONE
+endpoint scope with seven literal queries: exactly limit=["50"] plus exactly
+one status=[pending/in_progress/escalated/completed/failed/cancelled/superseded].
+Strict parsing retains blanks/multiplicity/UTF8/fragment refusal. Unfiltered,
+cursor/filter/extra-key queries cannot satisfy a member. Ordinary and attention
+escalated requests are indistinguishable; each admitted duplicate independently
+validates, with no hook-owner inference. Every query needs an original body
+while OPEN before DOM/checkpoint/freeze; every admitted body AND successful
+finish must settle before whole-group seal. Missing queries or a failed/late
+member refuse all. No count/first200/quiet shortcut supplies closure.
+Each root has unique identity, null parent and requested status, cursor:null;
+the independently authored target occurs exactly once only in its authored
+status partition, and zero times elsewhere. Empty non-target partitions are
+valid. Complete type-sensitive images compare only within the same query,
+retaining raw array order and unknown fields. The sealed exact-query accessor
+selects that query's earliest original; unqualified multistatus access refuses.
+Recall requires exactly tree=["true"]; detail/jobs require an empty query;
 all reject fragments and use fixed parse-error categories without query text.
 Response admission repeats the query and original Request identity checks.
 Literal harness-only R/D/C/J shapes and independently supplied scenario facts
@@ -138,10 +154,25 @@ At those six sites we deliberately relinquish fresh HTTP, method/query/status,
 original Response/body/finish ownership and failed/conflicting/duplicate
 background-request coverage. DOM content is visible navigation evidence. Later
 reload/API/DB evidence does not prove the removed click transport. Cached-return
-passive target-org path200 provenance remains weaker; the same populated
-alpha-beta-alpha journey, full31s expiry, fresh detail AND Recall observation,
-render/alien checks and completion reload are preserved separately. No accepted
-HTTP record is fabricated for a DOM site.
+passive target-org path200 provenance remains weaker. For the same populated
+alpha-beta-alpha cached return ONLY, Founder THR291seq290 approves moving the
+earlier fresh-list checkpoint and list-before-wait breadcrumb. One fixed early
+E=min(entry effective_end,entry+stored clipped page cap) covers both selector
+actions, initial own/alien list URL/href/render assertions and cached detail/
+Recall/provenance; the original cached-entry inner end can only tighten E.
+Release both before the unchanged31000ms wait ON DETAIL, retaining original
+remaining(32)>=31 admission and enclosing absolute owners. After the wait, arm
+original ID1 once before the ordinary breadcrumb, require seven-query R/list
+proof and whole seal, then separate original fresh D+C(tree=true)/full own/alien
+DOM/Recall/screenshot/mark. Inclusive browser-cache-revisit timing remains.
+Later evidence does not certify the relinquished earlier HTTP checkpoint.
+Existing observations cannot prove complete prewait cache-update age: earlier
+refreshes may finish during the wait, leaving fresh/coalesced keys. No settled
+flag or success guarantee is inferred; missing/ineligible new originals refuse
+within original R/DC, and such refusal is not automatically a product regression.
+No extra wait/retry/reload/eviction/context/fetch/state/clock/product seam or time
+expansion is introduced; other callers keep their original order and caps.
+No accepted HTTP record is fabricated for a DOM site.
 
 Native sites9/12/13/14/17 (Reject, thread list/detail/messages, Cancel) retain
 their original predicates/passive sinks and weaker start/query/ownership limits;
@@ -150,6 +181,19 @@ latches forbidden-overview-read on arrival and remains live through all roots
 body/finish settlement. A final synchronous empty assertion precedes its local
 detach/seal. Arrival after completed disposal remains unobserved. Dashboard503
 and original native error/cleanup evidence remain distinct.
+
+Only ID18 exports every admitted original roots body through the existing
+browser-events artifact. Its group/checkpoint/source/interpreter/boot/origin/
+native-document/arm/freeze/seal/member reference joins views[2] and list-reload.
+aggregate.validate_e07 independently reconstructs the seven literal queries,
+all original body/finish outcomes, per-query full images and earliest cancelled
+representative, binding genuine P/W allocation/cancellation/DB/audit/session
+facts. It compares the complete selected public body/reference in existing
+copies, without importing maker query/image predicates, trusting success labels,
+unioning bodies or stitching groups. Raw SHA identifies private raw bytes only,
+not sanitized JSON. Missing/truncated/unparseable/redacted required content,
+including unknown fields, refuses; four artifacts/export bounds are unchanged.
+100MiB suffix fit, repaired GREEN, flake and sensitivity remain unproved.
 
 These are source contracts, not runtime outcomes. A01–A16 remain the accepted
 four-answer case record in TASK11803; task/PR evidence attributes any isolated

@@ -1621,6 +1621,235 @@ def validate_e07(row: dict, observations: dict, directory: Path) -> None:
           and "Cancelled" in listing["text"] and listing["parent_href"] == f"/orgs/alpha/tasks/{P}"
           and (directory/listing["screenshot"]).read_bytes().startswith(b"\x89PNG\r\n\x1a\n"), "actual list group and task link")
 
+    # ID18 is an independent exported-content consumer. Producer labels and
+    # private raw-byte digests cannot stand in for missing original members.
+    from urllib.parse import parse_qs, urlsplit
+    import re
+
+    def image(value: object) -> str:
+        return json.dumps(value, sort_keys=True, ensure_ascii=True, allow_nan=False, separators=(",", ":"))
+
+    def strict_file(name: str) -> object:
+        def pairs(items: list) -> dict:
+            value = {}
+            for key, item in items:
+                check(key not in value, "duplicate exported JSON key")
+                value[key] = item
+            return value
+        def nonfinite(_value: str) -> None:
+            raise ValueError("E07 content: nonfinite exported JSON")
+        return json.loads((directory/name).read_bytes().decode("utf-8"),
+                          object_pairs_hook=pairs, parse_constant=nonfinite)
+
+    check(image(strict_file("e07.json")) == image(case)
+          and image(strict_file("observations.json")) == image(observations)
+          and image(strict_file("result.json")) == image(row), "strict complete exported copies")
+    admission = daily_admission(Path(__file__).resolve().parents[1])
+    check(all(row[key] == value for key, value in admission.items()), "independent source/tree/event/run binding")
+    check(directory.name == "e2e-"+row["python"] and row["python"] in ("3.12", "3.14")
+          and any(d.get("python_version", "").startswith(row["python"]+".")
+                  for d in observations["durable"]), "actual cell/interpreter version")
+    trace = strict_file("browser-events.json")
+    check(type(trace) is list and observations["failures"] == [] and observations["observer_error"] is None,
+          "complete browser stream and no recorded ownership errors")
+    ref = listing["roots_observation"]
+    check(type(ref) is dict and set(ref) == {"group_id", "checkpoint_site", "selected_request_sequence", "query", "accepted_at"}
+          and type(ref["group_id"]) is int and ref["group_id"] > 0
+          and ref["checkpoint_site"] == "18", "public exact group/checkpoint reference")
+    groups = [item for item in trace if item.get("event") == "response-observation"
+              and item.get("group_id") == ref["group_id"]]
+    check(len(groups) == 1, "one complete ID18 group in this browser stream")
+    group = groups[0]
+    origin = "http://127.0.0.1:"+str(restart[0]["new"]["port"])
+    destination = origin+"/orgs/alpha/tasks"
+    boots = observations["boots"]
+    check(len(boots) == 2 and type(group["boot_index"]) is int and group["boot_index"] == 1
+          and image(group["boot"]) == image(boots[1])
+          and (boots[1]["pid"], boots[1]["start"]) == (restart[0]["new"]["pid"], restart[0]["new"]["start"])
+          and restart[0]["new"]["port"] in boots[1]["discovered_ports"], "current original post-Pause boot/port")
+    check(group["source_sha"] == case["source_sha"] == row["source_sha"]
+          and group["python"] == case["python"] == manifest["python"]
+          and group["origin"] == origin and group["org"] == "alpha"
+          and group["phase"] == "terminal-ui-and-refusals" and group["checkpoint_site"] == "18"
+          and group["path"] == "/api/v1/orgs/alpha/tasks/roots" and group["document"] == "/orgs/alpha/tasks"
+          and group["source_url"] == listing["url"] == destination
+          and group["mode"] == "new-document" and group["tree"] is False
+          and group["capture_json"] is True, "exact source/cell/origin/document/phase")
+    steps = group["steps"]
+    check(type(steps) is list and steps and steps[0]["event"] == "arm", "original arm")
+    end = group["deadline"]
+    for step in steps:
+        check(type(step["sequence"]) is int and step["sequence"] >= 0
+              and type(step["at"]) in (int, float) and steps[0]["at"] <= step["at"] < end,
+              "all trace work inside original bound")
+    check(all(a["sequence"] <= b["sequence"] and a["at"] <= b["at"] for a,b in zip(steps,steps[1:])),
+          "ordered native sequence and synchronous step positions")
+    def positions(event: str) -> list[int]:
+        return [i for i,step in enumerate(steps) if step["event"] == event]
+    def only(event: str) -> int:
+        found = positions(event)
+        check(len(found) == 1, "one "+event)
+        return found[0]
+    arm,nav,commit,frozen,guarded,cleanup,sealed = (only(name) for name in
+        ("arm", "navigation-request", "commit", "checkpoint", "final-guard", "local-cleanup", "seal"))
+    check(arm == 0 and arm < nav < commit < frozen < guarded < cleanup < sealed == len(steps)-1
+          and steps[nav]["expected"] is True and steps[nav]["main_frame"] is True
+          and steps[nav]["method"] == "GET" and steps[nav]["unredirected"] is True
+          and steps[nav]["url"] == steps[commit]["url"] == destination
+          and steps[commit]["expected"] is True and steps[nav]["sequence"] < steps[commit]["sequence"]
+          and steps[commit]["document_sequence"] == steps[nav]["sequence"], "actual unredirected navigation Request/commit")
+    check(all(step["expected"] is True and step["url"] == destination
+              and step["document_sequence"] == steps[nav]["sequence"]
+              for step in steps if step["event"] == "same-document"), "no departure/other document")
+    check(steps[guarded]["document_sequence"] == steps[nav]["sequence"]
+          and steps[guarded]["boot_index"] == 1 and steps[guarded]["failure"] is False
+          and steps[guarded]["poisoned"] is False, "final non-yielding current-document/boot/error guard")
+    check(not any(step["event"] in {"request-failed", "ineligible-response", "observation-error"} for step in steps),
+          "no member failure or refused ownership")
+    terminal_phase = case["phases"][2]
+    check(boots[1]["entered"] < terminal_phase["entered"] <= steps[arm]["at"]
+          and second["finished"] <= steps[arm]["at"]
+          and steps[arm]["at"] <= listing["at"] <= steps[frozen]["at"]
+          and steps[sealed]["at"] <= ref["accepted_at"] < end
+          and end <= min(steps[arm]["at"]+4, terminal_phase["end"],case["end"],case["scenario_deadline"])
+          and ref["accepted_at"] <= case["phases"][3]["entered"], "original4s/phase/arm/DOM/freeze/seal/accept join")
+    required = ("pending", "in_progress", "escalated", "completed", "failed", "cancelled", "superseded")
+    def query(url: str) -> dict | None:
+        parsed = urlsplit(url)
+        check((parsed.scheme,parsed.netloc,parsed.path) == ("http",urlsplit(origin).netloc,
+              "/api/v1/orgs/alpha/tasks/roots") and not parsed.fragment, "literal roots origin/path/no fragment")
+        value = parse_qs(parsed.query, keep_blank_values=True, strict_parsing=True, errors="strict")
+        return value if value in [{"limit":["50"],"status":[status]} for status in required] else None
+    members = {}
+    for i,step in enumerate(steps):
+        if step["event"] != "request-start":
+            continue
+        decoded = query(step["url"]) if step["url"] is not None else None
+        eligible = (decoded is not None and step["main_frame"] is True and step["method"] == "GET"
+                    and step["unredirected"] is True and i > commit
+                    and step["commit"] == steps[commit]["sequence"]
+                    and step["document_sequence"] == steps[nav]["sequence"])
+        check(step["eligible"] is eligible, "independently reconstructed request eligibility")
+        if eligible:
+            seq = step["request_sequence"]
+            check(type(seq) is int and seq == step["sequence"] and seq not in members and i < frozen
+                  and image(decoded) == image(step["query"]), "unique original OPEN member/query, no late start")
+            members[seq] = (i,step,decoded)
+    check({item[2]["status"][0] for item in members.values()} == set(required), "all seven literal queries")
+    frozen_members = steps[frozen]["members"]
+    check(steps[frozen]["site"] == "18" and frozen_members == list(members)
+          and steps[sealed]["members"] == frozen_members, "complete frozen/sealed member equality")
+    bodies = group["bodies"]
+    check(type(bodies) is list and len(bodies) == len(members)
+          and {body["request_sequence"] for body in bodies} == set(members), "every original full body exactly once")
+    member_events = {"selected", "body-begin", "body-settled", "body-end", "request-finished"}
+    check(all(step["request_sequence"] in members for step in steps if step["event"] in member_events),
+          "no unmatched response/body/finish or cross-group stitching")
+    images = {}
+    def stamp(value: object) -> None:
+        check(type(value) is str and "T" in value, "UTC observation stamp shape")
+        parsed = datetime.fromisoformat(value)
+        check(parsed.tzinfo is not None and parsed.utcoffset() == timedelta(0), "UTC observation stamp")
+    def fields(value: object, strings: str = "", nullable: str = "", integers: str = "", booleans: str = "") -> None:
+        check(type(value) is dict, "complete object shape")
+        for key in strings.split():
+            check(key in value and type(value[key]) is str, "string "+key)
+        for key in nullable.split():
+            check(key in value and (value[key] is None or type(value[key]) is str), "nullable "+key)
+        for key in integers.split():
+            check(key in value and type(value[key]) is int, "integer "+key)
+        for key in booleans.split():
+            check(key in value and type(value[key]) is bool, "boolean "+key)
+    for seq,(started,request,decoded) in members.items():
+        joins = {}
+        for event in member_events:
+            found = [i for i,step in enumerate(steps) if step["event"] == event and step["request_sequence"] == seq]
+            check(len(found) == 1, "one original "+event)
+            joins[event] = found[0]
+        response = steps[joins["selected"]]
+        check(started < joins["selected"] < joins["body-begin"] < joins["body-settled"] < joins["body-end"] < guarded
+              and joins["selected"] < joins["request-finished"] < guarded
+              and response["status"] == 200 and type(response["status"]) is int
+              and response["method"] == "GET" and response["main_frame"] is True and response["unredirected"] is True
+              and response["request_url"] == request["url"] == response["response_url"]
+              and response["document_sequence"] == steps[nav]["sequence"]
+              and image(query(response["response_url"])) == image(decoded)
+              and steps[joins["body-settled"]]["outcome"] == "success"
+              and steps[joins["body-settled"]]["error"] is None, "own original response/body AND finish")
+        raw_body = next(body for body in bodies if body["request_sequence"] == seq)
+        check(type(raw_body["sha256"]) is str and re.fullmatch(r"[0-9a-f]{64}",raw_body["sha256"]) is not None,
+              "diagnostic private raw-byte identity only")
+        body = raw_body["body"]
+        check("[REDACTED]" not in image(body) and type(body) is dict
+              and type(body.get("tasks")) is list and "next_cursor" in body and body["next_cursor"] is None,
+              "complete unredacted roots including unknown content")
+        compared = copy.deepcopy(body)
+        seen = set()
+        status = decoded["status"][0]
+        for index,task in enumerate(body["tasks"]):
+            fields(task, "task_id status team task_type brief created_at updated_at severity_rollup",
+                   "assigned_agent parent_task_id revisit_of_task_id dispatched_from_thread_id block_kind "
+                   "blocked_on_job_ids active_chain active_fanout note final_output_dir completed_at cancelled_at "
+                   "last_heartbeat current_session_id zombie_flagged_at", "orchestration_step_count revision_count")
+            check(task["task_id"] not in seen and task["task_id"] != W and task["parent_task_id"] is None
+                  and task["status"] == status and "session_timeout_seconds" in task
+                  and (task["session_timeout_seconds"] is None or type(task["session_timeout_seconds"]) is int)
+                  and type(task.get("direct_revisits")) is list, "unique null-parent requested-status full root")
+            seen.add(task["task_id"])
+            # ID18 is terminal: an undeclared delegated task cannot borrow a
+            # stamp exclusion or a phase from another case/group.
+            check("child_wait" in task and task["child_wait"] is None
+                  and not (task["status"] == "in_progress" and task["block_kind"] == "delegated"), "terminal/undeclared child-wait refusal")
+            hold = task["pause"]
+            fields(hold, "org_slug root_task_id lifecycle_status control_state observed_at", "paused_at resumed_at",
+                   "generation", "held effective_hold evidence_complete")
+            stamp(hold["observed_at"])
+            check(hold["org_slug"] == "alpha" and hold["root_task_id"] == task["task_id"]
+                  and hold["lifecycle_status"] == task["status"] and type(hold.get("blockers")) is list, "root pause identity")
+            for blocker in compared["tasks"][index]["pause"]["blockers"]:
+                check(type(blocker) is dict and blocker.get("observed_at") == hold["observed_at"], "exact-slot blocker stamp")
+                del blocker["observed_at"]
+            del compared["tasks"][index]["pause"]["observed_at"]
+            if task["task_id"] == P:
+                want = dict(task_id=P, brief="E07_CANCEL_PARENT", team="engineering", status="cancelled",
+                            assigned_agent="case_manager", parent_task_id=None, block_kind=None,
+                            current_session_id=parent["session"], note="cancelled by founder: E07_CANCEL_TREE",
+                            severity_rollup="cancelled")
+                check(all(image(task[key]) == image(value) for key,value in want.items())
+                      and hold["held"] is False and hold["effective_hold"] is False
+                      and hold["control_state"] == "unheld" and hold["generation"] == 0
+                      and hold["paused_at"] is None and hold["resumed_at"] is None,
+                      "authored cancelled P bound to genuine allocation/session/DB/audit")
+        check((P in seen) == (status == "cancelled"), "P exactly once only in cancelled partition; W never root")
+        full_image = image(compared)
+        check(status not in images or images[status] == full_image, "every same-query full type-sensitive image")
+        images[status] = full_image
+    for ready_at in positions("ready"):
+        ready_members = steps[ready_at]["members"]
+        check(ready_at < frozen and len(ready_members) == len(set(ready_members))
+              and set(ready_members) <= set(members)
+              and {members[seq][2]["status"][0] for seq in ready_members} == set(required)
+              and all(any(i < ready_at and step["event"] == "body-end" and step["request_sequence"] == seq
+                          for i,step in enumerate(steps)) for seq in ready_members), "OPEN all-query original-body readiness")
+    check(positions("ready"), "readiness before DOM/checkpoint/freeze")
+    check(steps[positions("ready")[0]]["at"] <= listing["at"], "all-query readiness before DOM snapshot")
+    representatives = [dict(query={"limit":["50"],"status":[status]}, request_sequence=min(
+        seq for seq,member in members.items() if member[2]["status"] == [status])) for status in required]
+    check(image(steps[sealed]["representatives"]) == image(representatives)
+          and steps[sealed]["body_tasks_settled"] is True and steps[sealed]["wakes_detached"] is True
+          and steps[sealed]["disposals_complete"] is True and steps[cleanup]["aborted"] is False
+          and steps[cleanup]["tasks"] == [], "whole frozen group settled/disposed without outstanding owner")
+    selected = next(item["request_sequence"] for item in representatives if item["query"]["status"] == ["cancelled"])
+    selected_body = next(body["body"] for body in bodies if body["request_sequence"] == selected)
+    check(ref["selected_request_sequence"] == selected and type(ref["selected_request_sequence"]) is int
+          and image(ref["query"]) == image({"status":["cancelled"],"limit":["50"]})
+          and listing["roots_url"] == members[selected][1]["url"]
+          and image(query(listing["roots_url"])) == image(ref["query"])
+          and image(listing["roots"]) == image(selected_body)
+          and image(dict(event="list-reload",**listing)) == image(events[-1])
+          and image(case) == image(observations["e07"]) == image(row["e07"]),
+          "earliest cancelled original, full selected body and identical public references/copies")
+
 
 def main() -> int:
     parser = argparse.ArgumentParser()

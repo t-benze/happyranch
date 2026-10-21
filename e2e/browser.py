@@ -8,7 +8,7 @@ import json
 import re
 import threading
 import time
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from copy import deepcopy
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
@@ -322,7 +322,7 @@ def _recall_shape(value: Any, seen: set | None = None) -> None:
         _recall_shape(child, seen)
 
 
-def _body_image(body: Any, family: str, expected: dict) -> str:
+def _body_image(body: Any, family: str, expected: dict, query: dict | None = None) -> str:
     """Literal harness predicates, independent scenario E, then narrow comparison copy."""
     require(type(expected) is dict and type(expected.get("task" if family != "J" else "job")) is dict,
             "predeclared-scenario-expectation")
@@ -366,25 +366,36 @@ def _body_image(body: Any, family: str, expected: dict) -> str:
     else:
         require(family == "R" and type(body.get("tasks")) is list and "next_cursor" in body
                 and body["next_cursor"] is None, "small-synthetic-roots-page")
+        require(query in [{"limit": ["50"], "status": [status]} for status in (
+            "pending", "in_progress", "escalated", "completed", "failed", "cancelled", "superseded")],
+            "declared-roots-query")
+        status = query["status"][0]
         seen = set()
         for index, row in enumerate(body["tasks"]):
-            require(type(row) is dict and row.get("task_id") not in seen and row.get("parent_task_id") is None,
+            require(type(row) is dict and type(row.get("task_id")) is str
+                    and row["task_id"] not in seen and row.get("parent_task_id") is None
+                    and row.get("status") == status,
                     "unique-root-identity")
             seen.add(row["task_id"])
             target = expected["task"] if row["task_id"] == expected["task"]["task_id"] else None
             copy["tasks"][index] = _task_copy(row, target)
             _fields(row, "severity_rollup")
             if target is not None:
-                require(row["severity_rollup"] == expected["task"]["status"], "scenario-root-severity")
+                require(row["severity_rollup"] == expected["severity_rollup"], "scenario-root-severity")
             require(type(row.get("direct_revisits")) is list, "root-revisits-shape")
             copy["tasks"][index]["pause"] = _pause_copy(row.get("pause"))
-        require(expected["task"]["task_id"] in seen, "scenario-root-present")
-    if family in {"D", "R"} and "pause" in expected:
+            require(row["pause"]["org_slug"] == expected["org"]
+                    and row["pause"]["root_task_id"] == row["task_id"]
+                    and row["pause"]["lifecycle_status"] == row["status"], "root-pause-identity")
+        require((expected["task"]["task_id"] in seen) == (status == expected["task"]["status"]),
+                "scenario-root-status-partition")
+    has_target = family != "R" or status == expected["task"]["status"]
+    if family in {"D", "R"} and has_target and "pause" in expected:
         projection = body["pause"] if family == "D" else next(
             row["pause"] for row in body["tasks"] if row["task_id"] == expected["task"]["task_id"])
         require(all(key in projection and _json_image(projection[key]) == _json_image(want)
                     for key, want in expected["pause"].items()), "scenario-hold-core")
-    if family in {"D", "R"} and "blocker_task" in expected:
+    if family in {"D", "R"} and has_target and "blocker_task" in expected:
         require(any(blocker.get("task_id") == expected["blocker_task"]
                     and blocker.get("kind") == "task_session" for blocker in projection["blockers"]),
                 "scenario-running-worker-blocker")
@@ -413,6 +424,9 @@ class _ObservationGroup:
         self.tasks: list[Any] = []
         self.final_checks: list[Any] = []
         self.disposals: list[Any] = []
+        browser._group_sequence += 1
+        self.id = browser._group_sequence
+        self.site: str | None = None
 
     def fail(self, reason: str) -> None:
         if self.failure is None:
@@ -432,12 +446,19 @@ class _ObservationGroup:
         require(all(scope.current() for scope in self.scopes), "group-document-lineage")
 
     def checkpoint(self, site: str) -> None:
+        require(self.site is None or self.site == site, "declared-checkpoint-site")
+        # Admission remains OPEN while every declared query/body becomes ready.
+        for scope in self.scopes:
+            scope.ready()
         self.guard()
         require(self.state == "OPEN" and self.scopes and all(s.requests for s in self.scopes),
                 "nonempty-open-cohorts")
         self.state = "FROZEN"
+        self.site = site
         for scope in self.scopes:
-            scope.note("checkpoint", site=site)
+            scope.trace["checkpoint_site"] = site
+            scope.note("checkpoint", site=site,
+                       members=[m["sequence"] for m in scope.requests.values()])
 
     def wait(self, ready: Any) -> None:
         async def wait() -> None:
@@ -469,16 +490,24 @@ class _ObservationGroup:
                 member["body_task"].remove_done_callback(member["wake"])
         for scope in self.scopes:
             if scope.capture_json:
-                scope.trace["body"] = json.loads(self.browser.controller.sanitize(
-                    json.dumps(next(iter(scope.requests.values()))["json"])))
+                if scope.family != "R":
+                    scope.trace["body"] = json.loads(self.browser.controller.sanitize(
+                        json.dumps(next(iter(scope.requests.values()))["json"])))
         for check in self.final_checks:
             check()
         for dispose in self.disposals:
             dispose()
         self.guard()
         for scope in self.scopes:
+            scope.note("final-guard", document_sequence=self.browser._document_sequence,
+                       boot_index=len(self.browser.controller.boots)-1,
+                       failure=self.failure is not None, poisoned=self.browser.poisoned)
             scope.note("local-cleanup", aborted=False, tasks=[])
+            scope.note("seal", members=[m["sequence"] for m in scope.requests.values()],
+                       representatives=scope.representatives(), body_tasks_settled=True,
+                       wakes_detached=True, disposals_complete=True)
             scope.trace["validation"] = "validated"
+        self.guard()
         self.browser._scopes.clear()
         self.state = "FINALIZED"
 
@@ -500,12 +529,22 @@ class _ResponseObservation:
         self.aborted = False
         self.capture_json = capture_json
         self.family = "R" if ordinary_roots else "C" if tree else "J" if "/jobs/" in path else "D"
-        self.image: str | None = None
+        self.images: dict[str, str] = {}
+        self.queries = ([{"limit": ["50"], "status": [status]} for status in (
+            "pending", "in_progress", "escalated", "completed", "failed", "cancelled", "superseded")]
+            if ordinary_roots else [{"tree": ["true"]} if tree else {}])
         self.trace = dict(event="response-observation", path=path, mode=self.mode, document=self.document,
                           tree=tree, capture_json=capture_json, deadline=group.end,
+                          group_id=group.id, checkpoint_site=group.site,
+                          source_sha=browser.controller.revision,
+                          python=browser.controller.python, origin=browser.base,
+                          org=path.split("/")[4], source_url=self.start_url,
+                          boot_index=len(browser.controller.boots)-1,
+                          boot=deepcopy(browser.controller.boots[-1]),
+                          phase=(browser.controller.e07.get("phases") or [{}])[-1].get("name"),
                           validation="partial/unvalidated", steps=[])
         if ordinary_roots:
-            self.trace["query_contract"] = "ordinary-roots-limit50"
+            self.trace["query_contract"] = "seven-status-limit50"
         browser.events.append(self.trace)
 
     def note(self, event: str, **metadata: Any) -> None:
@@ -513,15 +552,14 @@ class _ResponseObservation:
                                        at=time.monotonic(), **metadata))
 
     def query_matches(self, parsed: SplitResult, request_sequence: int | None) -> bool:
-        contract = {"R": {"limit": ["50"]}, "C": {"tree": ["true"]}, "D": {}, "J": {}}[self.family]
         try:
             matches = not parsed.fragment and parse_qs(parsed.query, keep_blank_values=True,
-                                                       errors="strict", strict_parsing=True) == contract
+                                                       errors="strict", strict_parsing=True) in self.queries
         except (ValueError, UnicodeError):
             self.note("query-match", request_sequence=request_sequence, matches=False, reason="invalid-query")
             raise Error("invalid ordinary roots query" if self.family == "R" else "invalid observation query") from None
         self.note("query-match", request_sequence=request_sequence,
-                  contract="ordinary-roots-limit50" if self.family == "R" else self.family,
+                  contract="seven-status-limit50" if self.family == "R" else self.family,
                   matches=matches, reason="invalid-query" if parsed.fragment else
                   "ordinary-root-page" if matches and self.family == "R" else "exact-query" if matches else "other-query")
         return matches
@@ -544,12 +582,14 @@ class _ResponseObservation:
                 except (ValueError, UnicodeError):
                     raise Error("invalid-original-body") from None
                 body = _strict_json(raw)
-                image = _body_image(body, self.family, self.group.expected)
-                require(self.image is None or self.image == image, "conflicting-original-bodies")
-                self.image = image
+                query = member["query"]
+                key = _json_image(query)
+                image = _body_image(body, self.family, self.group.expected, query)
+                require(key not in self.images or self.images[key] == image, "conflicting-original-bodies")
+                self.images[key] = image
                 member["json"] = body
                 diagnostic = dict(request_sequence=member["sequence"], sha256=hashlib.sha256(raw).hexdigest())
-                if self.capture_json:
+                if self.capture_json and (self.family != "R" or self.group.site == "18"):
                     diagnostic["body"] = json.loads(self.browser.controller.sanitize(json.dumps(body)))
                 self.trace.setdefault("bodies", []).append(diagnostic)
                 self.note("body-end", request_sequence=member["sequence"])
@@ -560,12 +600,16 @@ class _ResponseObservation:
         require(request in self.requests and self.requests[request] is member and response.status == 200
                 and request.method == "GET" and request.frame is self.browser.page.main_frame._impl_obj
                 and request.redirected_from is None and request.redirected_to is None
+                and request.url == member["url"]
                 and (parsed.scheme, parsed.netloc, parsed.path) == (base.scheme, base.netloc, self.path)
-                and self.query_matches(parsed, member["sequence"]), "original-member-recheck")
+                and self.query_matches(parsed, member["sequence"])
+                and parse_qs(parsed.query, keep_blank_values=True, errors="strict", strict_parsing=True)
+                == member["query"], "original-member-recheck")
         return member["json"]
 
     def provisional_json(self) -> Any:
         require(self.group.state == "OPEN", "open-provisional-loan")
+        require(self.family != "R", "exact-query-required")
         self.group.wait(lambda: bool(self.requests))
         return self.consume(next(iter(self.requests.values())))
 
@@ -573,13 +617,41 @@ class _ResponseObservation:
     def value(self) -> Any:
         self.group.guard()
         require(self.group.state == "FINALIZED", "whole-group-sealed-response")
+        require(self.family != "R", "exact-query-required")
         return mapping.from_impl(next(iter(self.requests.values()))["response"])
 
     @property
     def captured_json(self) -> Any:
         self.group.guard()
         require(self.capture_json and self.group.state == "FINALIZED", "whole-group-sealed-json")
+        require(self.family != "R", "exact-query-required")
         return next(iter(self.requests.values()))["json"]
+
+    def ready(self) -> None:
+        require(self.group.state == "OPEN", "open-query-readiness")
+        self.group.wait(lambda: all(any(m["query"] == query and m["body_task"] is not None
+            and m["body_task"].done() for m in self.requests.values()) for query in self.queries))
+        # New duplicates may arrive while a previous body is being consumed.
+        while any("json" not in m for m in self.requests.values()):
+            for member in list(self.requests.values()):
+                self.consume(member)
+        self.note("ready", members=[m["sequence"] for m in self.requests.values()])
+
+    def representatives(self) -> list[dict]:
+        return [dict(query=query, request_sequence=min(m["sequence"] for m in self.requests.values()
+                if m["query"] == query)) for query in self.queries]
+
+    def selected(self, query: dict) -> tuple[Any, Any, dict]:
+        self.group.guard()
+        require(self.capture_json and self.group.state == "FINALIZED" and query in self.queries,
+                "sealed-exact-query-selection")
+        member = min((m for m in self.requests.values() if m["query"] == query), key=lambda m: m["sequence"])
+        response = mapping.from_impl(member["response"])
+        reference = dict(group_id=self.group.id, checkpoint_site=self.group.site,
+                         selected_request_sequence=member["sequence"], query=deepcopy(query),
+                         accepted_at=time.monotonic())
+        self.group.guard()
+        return response, member["json"], reference
 
     def observe_body(self, member: dict, *, notify: bool = True) -> None:
         """Retrieve each original outcome once, including after local abort."""
@@ -639,6 +711,9 @@ class Browser:
         self._stop_success = False
         self._tracker_listeners: list[tuple[Any, str, Any]] = []
         self._sequence = 0
+        self._group_sequence = 0
+        self._document_sequence: int | None = None
+        self._navigation_sequence: int | None = None
         self._lineage: Any = None
         self._navigation: Any = None
         self._url = "about:blank"
@@ -725,6 +800,7 @@ class Browser:
             navigation = main and request.is_navigation_request()
             if navigation:
                 self._navigation = request
+                self._navigation_sequence = self._sequence
             for scope in self._scopes:
                 if navigation:
                     valid = (scope.mode == "new-document" and scope.navigation is None
@@ -734,7 +810,8 @@ class Browser:
                         scope.navigation = request
                     else:
                         scope.invalid = True
-                    scope.note("navigation-request", expected=valid, main_frame=True, method=request.method)
+                    scope.note("navigation-request", expected=valid, main_frame=True, method=request.method,
+                               url=request.url if valid else None, unredirected=request.redirected_from is None)
                 parsed, base = urlsplit(request.url), urlsplit(self.base)
                 if (parsed.scheme, parsed.netloc, parsed.path) != (base.scheme, base.netloc, scope.path):
                     continue
@@ -748,10 +825,18 @@ class Browser:
                         scope.group.fail("duplicate-request-start")
                     else:
                         scope.requests[request] = dict(sequence=self._sequence, response=None,
+                                                      query=parse_qs(parsed.query, keep_blank_values=True,
+                                                                     errors="strict", strict_parsing=True),
+                                                      url=request.url,
                                                       body_task=None, finished=False)
                         scope.group.changed.set()
                 scope.note("request-start", main_frame=main, method=request.method, eligible=eligible,
-                           commit=scope.commit)
+                           request_sequence=self._sequence, commit=scope.commit,
+                           document_sequence=self._document_sequence,
+                           unredirected=request.redirected_from is None and request.redirected_to is None,
+                           url=request.url if query_matches else None,
+                           query=parse_qs(parsed.query, keep_blank_values=True, errors="strict", strict_parsing=True)
+                           if query_matches else None)
         except BaseException as exc:
             self.poison(exc)
 
@@ -772,6 +857,7 @@ class Browser:
                         and request.url == url and request.redirected_from is None and request.redirected_to is None,
                         "unredirected main-frame document commit")
                 self._lineage = request
+                self._document_sequence = self._navigation_sequence
                 self._navigation = None
             self._url = url
             for scope in self._scopes:
@@ -793,7 +879,8 @@ class Browser:
                         if valid and url == scope.target:
                             scope.reached = True
                     scope.invalid |= not valid
-                scope.note("commit" if new else "same-document", expected=valid)
+                scope.note("commit" if new else "same-document", expected=valid,
+                           url=url if valid else None, document_sequence=self._document_sequence)
             self.events.append(dict(event="native-navigation", new_document=new,
                                     sequence=self._sequence, path=urlsplit(url).path))
         except BaseException as exc:
@@ -816,7 +903,10 @@ class Browser:
                          and response.status == 200 and request.redirected_from is None
                          and request.redirected_to is None and member["response"] is None)
                 scope.note("selected" if valid else "ineligible-response", status=response.status,
-                           method=request.method, request_sequence=member["sequence"])
+                           method=request.method, request_sequence=member["sequence"],
+                           request_url=member["url"], response_url=response.url if valid else None,
+                           document_sequence=self._document_sequence, main_frame=True if valid else None,
+                           unredirected=request.redirected_from is None and request.redirected_to is None)
                 if not valid:
                     scope.group.fail("invalid-original-response")
                 else:
@@ -921,7 +1011,8 @@ class Browser:
         self.controller.remaining()
 
     @contextmanager
-    def observation_group(self, expected: dict, *, mode: str, document: str) -> Any:
+    def observation_group(self, expected: dict, *, mode: str, document: str,
+                          checkpoint_site: str | None = None) -> Any:
         c = self.controller
         require(self._group is None and not self._scopes, "one-outer-observation-owner")
         require(mode in {"action", "new-document"} and document.startswith("/orgs/")
@@ -935,6 +1026,7 @@ class Browser:
                     and source.path.startswith("/orgs/") and not source.query and not source.fragment,
                     "action-current-document")
         group = self._group = _ObservationGroup(self, expected, mode, document)
+        group.site = checkpoint_site
         self._group_end = c.observation_end = group.end
         try:
             with c.phase(group.end, native=True):
@@ -1081,73 +1173,105 @@ class Browser:
             want[flag] = False
             self._rendered_once(wanted)
 
-    def open_task(self, org: str, task: str, brief: str, *, expected: dict, ready: Any = None,
+    def open_task(self, org: str, task: str, brief: str, *, expected: dict, roots_expected: dict, ready: Any = None,
                   switch: bool = False, cached_recall: bool = False, alien: str | None = None) -> None:
-        roots = f"/api/v1/orgs/{org}/tasks/roots"
-        with (self.observation_group(expected, mode="action" if switch else "new-document",
-                                     document=f"/orgs/{org}/tasks") as group,
-              self.response(roots, ordinary_roots=True)):
-            if switch:
-                self.page.get_by_role("combobox", name="Active org", exact=True).click(timeout=self.controller.remaining(self.page_timeout)*1000)
-                self.controller.remaining()
-                self.page.get_by_role("option", name=org, exact=True).click(timeout=self.controller.remaining(self.page_timeout)*1000)
-                self.controller.remaining()
-            else:
-                self.page.goto(f"{self.base}/orgs/{org}/tasks", timeout=self.controller.remaining(self.page_timeout)*1000)
-                self.controller.remaining()
-            main = self._task_surface('list')
-            self.rendered(dict(surface='list', org=org, task=task, raw=brief, headline=brief))
-            if alien:
-                expect(main.get_by_text(alien, exact=False)).to_have_count(0, timeout=self.controller.remaining(5)*1000)
-                self.controller.remaining()
-                other = "beta" if org == "alpha" else "alpha"
-                expect(main.locator(f'a[href^="/orgs/{other}/tasks/"]')).to_have_count(0, timeout=self.controller.remaining(5)*1000)
-                self.controller.remaining()
-            link = main.locator(f'a[href="/orgs/{org}/tasks/{task}"]')
-            expect(link).to_be_visible(timeout=self.controller.remaining(5)*1000)
-            self.controller.remaining()
-            require(self.page.url == self.base+f"/orgs/{org}/tasks", "exact-task-list-url")
-            group.checkpoint("1")
-        # IDs2/3 deliberately provide DOM evidence only. Preserve the old
-        # pair's one absolute bound; cached-return passive provenance is weaker.
-        end = min(self.controller.effective_end(), time.monotonic()+self.page_timeout)
-        with self.controller.bounded(end), self.controller.phase(end, native=True):
-            if cached_recall:
-                for path in (f"/api/v1/orgs/{org}/tasks/{task}", f"/api/v1/orgs/{org}/tasks/{task}/recall"):
-                    require(any(row.get("event") == "response" and row.get("path") == path
-                                and row.get("status") == 200 for row in self.events),
-                            "cached detail/Recall has target-org real HTTP provenance", path)
-                self.events.append(dict(event="navigation", action="cached-return", org=org, task=task))
-            link.click(timeout=self.controller.remaining(self.page_timeout)*1000)
-            self.controller.remaining()
-            expect(self.page).to_have_url(self.base+f"/orgs/{org}/tasks/{task}", timeout=self.controller.remaining(5)*1000)
-            self.controller.remaining()
-            self.rendered(dict(surface='detail', org=org, task=task, raw=brief))
-            main = self._task_shell()
-            if ready is not None:
-                ready()
-            else:
-                require(expected["task"]["status"] == "in_progress", "terminal-dom-readiness-required")
-                expect(main.locator("h1").get_by_text("in_progress", exact=False).first).to_be_visible(timeout=self.controller.remaining(5)*1000)
-                self.controller.remaining()
-                self.rendered(dict(surface='recall', org=org, task=task, node=dict(task_id=task,
-                    brief=brief, status='in_progress', assigned_agent='case_manager',
-                    output_summary=None, children=[])))
-                for text in expected["absent"]:
-                    expect(main.get_by_text(text, exact=False)).to_have_count(0, timeout=self.controller.remaining(5)*1000)
+        # Only the populated alpha return shares ONE early selector/list/cache end.
+        # It is released before the original full31s wait; no fresh-R claim here.
+        early_end = min(self.controller.effective_end(), time.monotonic()+self.page_timeout)
+        with (self.controller.bounded(early_end) if cached_recall else nullcontext(),
+              self.controller.phase(early_end, native=True) if cached_recall else nullcontext()):
+            roots = f"/api/v1/orgs/{org}/tasks/roots"
+            with ((nullcontext(None) if cached_recall else self.observation_group(
+                      roots_expected, mode="action" if switch else "new-document",
+                      document=f"/orgs/{org}/tasks")) as group,
+                  (nullcontext(None) if cached_recall else self.response(roots, ordinary_roots=True)) as roots_read):
+                if switch:
+                    self.page.get_by_role("combobox", name="Active org", exact=True).click(timeout=self.controller.remaining(self.page_timeout)*1000)
                     self.controller.remaining()
+                    self.page.get_by_role("option", name=org, exact=True).click(timeout=self.controller.remaining(self.page_timeout)*1000)
+                    self.controller.remaining()
+                else:
+                    self.page.goto(f"{self.base}/orgs/{org}/tasks", timeout=self.controller.remaining(self.page_timeout)*1000)
+                    self.controller.remaining()
+                if roots_read is not None:
+                    roots_read.ready()
+                main = self._task_surface('list')
+                self.rendered(dict(surface='list', org=org, task=task, raw=brief, headline=brief))
+                if alien:
+                    expect(main.get_by_text(alien, exact=False)).to_have_count(0, timeout=self.controller.remaining(5)*1000)
+                    self.controller.remaining()
+                    other = "beta" if org == "alpha" else "alpha"
+                    expect(main.locator(f'a[href^="/orgs/{other}/tasks/"]')).to_have_count(0, timeout=self.controller.remaining(5)*1000)
+                    self.controller.remaining()
+                link = main.locator(f'a[href="/orgs/{org}/tasks/{task}"]')
+                expect(link).to_be_visible(timeout=self.controller.remaining(5)*1000)
+                self.controller.remaining()
+                require(self.page.url == self.base+f"/orgs/{org}/tasks", "exact-task-list-url")
+                if group is not None:
+                    group.checkpoint("1")
+            # IDs2/3 deliberately provide DOM evidence only. Preserve the old
+            # pair's one absolute bound; cached-return passive provenance is weaker.
+            end = min(self.controller.effective_end(), time.monotonic()+self.page_timeout)
+            with self.controller.bounded(end), self.controller.phase(end, native=True):
+                if cached_recall:
+                    for path in (f"/api/v1/orgs/{org}/tasks/{task}", f"/api/v1/orgs/{org}/tasks/{task}/recall"):
+                        require(any(row.get("event") == "response" and row.get("path") == path
+                                    and row.get("status") == 200 for row in self.events),
+                                "cached detail/Recall has target-org real HTTP provenance", path)
+                    self.events.append(dict(event="navigation", action="cached-return", org=org, task=task))
+                link.click(timeout=self.controller.remaining(self.page_timeout)*1000)
+                self.controller.remaining()
+                expect(self.page).to_have_url(self.base+f"/orgs/{org}/tasks/{task}", timeout=self.controller.remaining(5)*1000)
+                self.controller.remaining()
+                self.rendered(dict(surface='detail', org=org, task=task, raw=brief))
+                main = self._task_shell()
+                if ready is not None:
+                    ready()
+                else:
+                    require(expected["task"]["status"] == "in_progress", "terminal-dom-readiness-required")
+                    expect(main.locator("h1").get_by_text("in_progress", exact=False).first).to_be_visible(timeout=self.controller.remaining(5)*1000)
+                    self.controller.remaining()
+                    self.rendered(dict(surface='recall', org=org, task=task, node=dict(task_id=task,
+                        brief=brief, status='in_progress', assigned_agent='case_manager',
+                        output_summary=None, children=[])))
+                    for text in expected["absent"]:
+                        expect(main.get_by_text(text, exact=False)).to_have_count(0, timeout=self.controller.remaining(5)*1000)
+                        self.controller.remaining()
 
-    def revisit_after_cache_expiry(self, org: str, task: str, *, expected: dict, ready: Any) -> None:
+    def revisit_after_cache_expiry(self, org: str, task: str, *, expected: dict, roots_expected: dict,
+                                   alien: str, ready: Any) -> None:
         require(self.controller.remaining(32) >= 31, "cache revisit fits action budget")
         begin = time.monotonic()
         main = self._task_shell()
         expect(main).to_have_count(1, timeout=self.controller.remaining(5)*1000)
         self.controller.remaining()
-        main.locator(f'a[href="/orgs/{org}/tasks"]').click(timeout=self.controller.remaining(self.page_timeout)*1000)
-        self.controller.remaining()
+        source = self.base+f"/orgs/{org}/tasks/{task}"
+        lineage = self._lineage
+        require(self._url == self.page.url == source and lineage is not None, "cache-wait-on-detail")
         self.page.wait_for_timeout(31000)
         self.controller.remaining()
+        require(self._url == self.page.url == source and self._lineage is lineage,
+                "cache-wait-retains-detail-document")
         self.events.append(dict(event="navigation", action="cache-expired-revisit", org=org, task=task))
+        # Moved original ID1: arm once AFTER the on-detail wait, before breadcrumb.
+        # Earlier cache updates can still coalesce reads: missing originals refuse.
+        with (self.observation_group(roots_expected, mode="action", document=f"/orgs/{org}/tasks") as group,
+              self.response(f"/api/v1/orgs/{org}/tasks/roots", ordinary_roots=True) as roots):
+            main.locator(f'a[href="/orgs/{org}/tasks"]').click(timeout=self.controller.remaining(self.page_timeout)*1000)
+            self.controller.remaining()
+            roots.ready()
+            main = self._task_surface('list')
+            brief = roots_expected["task"]["brief"]
+            self.rendered(dict(surface='list', org=org, task=task, raw=brief, headline=brief))
+            expect(main.get_by_text(alien, exact=False)).to_have_count(0, timeout=self.controller.remaining(5)*1000)
+            self.controller.remaining()
+            other = "beta" if org == "alpha" else "alpha"
+            expect(main.locator(f'a[href^="/orgs/{other}/tasks/"]')).to_have_count(0, timeout=self.controller.remaining(5)*1000)
+            self.controller.remaining()
+            expect(main.locator(f'a[href="/orgs/{org}/tasks/{task}"]')).to_be_visible(timeout=self.controller.remaining(5)*1000)
+            self.controller.remaining()
+            require(self.page.url == self.base+f"/orgs/{org}/tasks", "exact-task-list-url")
+            group.checkpoint("1")
         with (
             self.observation_group(expected, mode="action", document=f"/orgs/{org}/tasks/{task}") as group,
             self.response(f"/api/v1/orgs/{org}/tasks/{task}"),
@@ -1585,16 +1709,18 @@ class Browser:
         finally:
             self.page.remove_listener("request",capture)
 
-    def e07_terminal(self, parent: str, child: str, *, expected: dict) -> list[dict]:
+    def e07_terminal(self, parent: str, child: str, *, expected: dict, roots_expected: dict) -> list[dict]:
         c = self.controller
         views = [self.e07_detail(parent,"cancelled","e07-parent.png", expected=expected[parent]),self.e07_detail(child,"cancelled","e07-child.png", expected=expected[child])]
         path = "/api/v1/orgs/alpha/tasks/roots"
         self.page.goto(self.base+"/orgs/alpha/tasks",timeout=c.remaining(4)*1000)
         self.controller.remaining()
-        with (self.observation_group(expected[parent], mode="new-document", document="/orgs/alpha/tasks") as group,
+        with (self.observation_group(roots_expected, mode="new-document", document="/orgs/alpha/tasks",
+                                     checkpoint_site="18") as group,
               self.response(path, capture_json=True, ordinary_roots=True) as roots):
             self.page.reload(timeout=c.remaining(4)*1000)
             self.controller.remaining()
+            roots.ready()
             main = self._task_surface('list')
             # Share the original status operation's four-second cap with
             # shell/list readiness; additional owners cannot extend it.
@@ -1616,8 +1742,9 @@ class Browser:
             self.controller.remaining()
             group.checkpoint("18")
         with c.phase(group.end):
-            record.update(roots_url=roots.value.url, roots=roots.captured_json,
-                          method=roots.value.request.method, status=roots.value.status)
+            response, body, reference = roots.selected({"status": ["cancelled"], "limit": ["50"]})
+            record.update(roots_url=response.url, roots=body, roots_observation=reference,
+                          method=response.request.method, status=response.status)
             c.e07.setdefault("browser_events",[]).append(dict(event="list-reload",**record))
             views.append(record)
             return views

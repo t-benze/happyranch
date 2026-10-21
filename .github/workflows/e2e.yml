@@ -3,7 +3,7 @@ name: Product E2E
 on:
   schedule:
     - cron: '0 19 * * *'
-  # THR291seq247: one root-owned execution after review/QA/merge; no inputs/retry.
+  # THR291seq277: root-owned main-only on-demand verification after reviewed corrections; no blind retry.
   workflow_dispatch:
 
 permissions:

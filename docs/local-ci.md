@@ -18,19 +18,22 @@ behavioral regressions can be detected only later when their coverage executes.
 
 Fresh Product E2E keeps the daily `0 19 * * *` schedule (19:00 UTC /
 03:00 Asia/Shanghai) on immutable default-branch `github.sha`. Founder
-THR291seq247 additionally authorizes **ONE** immediate full main execution under
-sole root TASK-11897 through the reviewed `workflow_dispatch` entry. Manual
-admission requires actual `refs/heads/main`, default branch `main`, and matching
-repository/workflow/run/source identity. This entry is not standing execution
-authority. Baseline56 variants EACH Python3.12/3.14 plus TERM3.12/INT3.14 retain
+THR291seq277 authorizes engineering_manager under sole linked ROOT TASK-12281
+(resolving superseded TASK-12262) to use the existing main-only `workflow_dispatch`
+on demand after concrete reviewed corrections, without per-run approval or a
+nightly wait. Reconcile active owners/runs first; no blind same-source retry loop.
+Manual admission requires actual `refs/heads/main`, default branch `main`, and
+matching repository/workflow/run/source identity. Historical seq247's ONE-run
+allocation to TASK-11897 and its receipts remain history. Baseline56 variants
+EACH Python3.12/3.14 plus TERM3.12/INT3.14 retain
 exactly four execution artifacts and the original bounds. `Daily Product E2E
 Health` remains outside merge checks and reports the actual event, run/attempt,
 SHA and checkout tree; manual receipts are never labeled scheduled.
 There is no local E2E alias, PR/push/release/workflow_call/repository_dispatch
 entry, automatic retry, extra schedule or SLA. Admission, lint and scoped QA
-success do not establish product execution success. The root owns the one
-actual dispatch after independent review/scoped QA, both final-head lints,
-guarded merge and an exact-main receipt.
+success do not establish product execution success. The root owns each actual
+dispatch after full independent review/scoped QA, both final-head lints, normal
+hooks/nonforce publication, guarded merge and an exact-main two-lint receipt.
 Scheduled historical runs38482572306 and38644465643 were observed and failed
 at their own immutable sources. Corrected behavior remains **PENDING** until
 an authorized main run executes the repair; historical3.13

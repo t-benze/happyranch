@@ -2326,9 +2326,14 @@ on disposable GitHub Ubuntu with exact Python/browser inputs, Node24, bounded
 owned-process cleanup and complete variant/cell receipts. Retained pytest
 integration/platform/callback selections keep the existing parent fences.
 `Product E2E` retains the daily default-branch 19:00 UTC schedule under THR-291
-seq69 and admits main-only `workflow_dispatch`. Founder THR291seq247 allocates
-ONE manual full run to sole root TASK-11897 after its independent source gates;
-the entry grants no standing execution/retry authority or local E2E target.
+seq69 and admits main-only `workflow_dispatch`. Founder THR291seq277 authorizes
+engineering_manager under sole linked ROOT TASK-12281 (resolving TASK-12262)
+to verify concrete reviewed corrections on demand without per-run approval or a
+nightly wait, after reconciling active owners/runs. Full independent review,
+scoped QA, normal hooks/nonforce publication, guarded merge and exact-main
+Source Boundary Lint + Web Lint(Node24) remain required. Historical seq247's
+ONE-run allocation to TASK-11897 remains history. No PR-branch/local E2E,
+blind same-source retry, new trigger/schedule or automatic retry is authorized.
 Scheduled runs38482572306 and38644465643 failed at their own sources; corrected
 behavior remains pending an authorized main run. Historical baseline is separate evidence.
 The aggregate also requires real TERM/INT launcher diagnostics with non-success
@@ -2476,20 +2481,23 @@ behavioral regressions can be detected only later when their coverage executes.
 
 Fresh Product E2E keeps the daily `0 19 * * *` schedule (19:00 UTC /
 03:00 Asia/Shanghai) on immutable default-branch `github.sha`. Founder
-THR291seq247 additionally authorizes **ONE** immediate full main execution under
-sole root TASK-11897 through the reviewed `workflow_dispatch` entry. Manual
-admission requires actual `refs/heads/main`, default branch `main`, and matching
-repository/workflow/run/source identity. This entry is not standing execution
-authority. Baseline56 variants EACH Python3.12/3.14 plus TERM3.12/INT3.14 retain
+THR291seq277 authorizes engineering_manager under sole linked ROOT TASK-12281
+(resolving superseded TASK-12262) to use the existing main-only `workflow_dispatch`
+on demand after concrete reviewed corrections, without per-run approval or a
+nightly wait. Reconcile active owners/runs first; no blind same-source retry loop.
+Manual admission requires actual `refs/heads/main`, default branch `main`, and
+matching repository/workflow/run/source identity. Historical seq247's ONE-run
+allocation to TASK-11897 and its receipts remain history. Baseline56 variants
+EACH Python3.12/3.14 plus TERM3.12/INT3.14 retain
 exactly four execution artifacts (`e2e-3.12`, `e2e-3.14`, `e2e-cancel-TERM`,
 `e2e-cancel-INT`) and the original bounds. Product Python support is unchanged.
 `Daily Product E2E Health` remains outside merge checks and reports the actual event, run/attempt,
 SHA and checkout tree; manual receipts are never labeled scheduled.
 There is no local E2E alias, PR/push/release/workflow_call/repository_dispatch
 entry, automatic retry, extra schedule or SLA. Admission, lint and scoped QA
-success do not establish product execution success. The root owns the one
-actual dispatch after independent review/scoped QA, both final-head lints,
-guarded merge and an exact-main receipt.
+success do not establish product execution success. The root owns each actual
+dispatch after full independent review/scoped QA, both final-head lints, normal
+hooks/nonforce publication, guarded merge and an exact-main two-lint receipt.
 Scheduled historical runs38482572306 and38644465643 were observed and failed
 at their own immutable sources. Corrected behavior remains **PENDING** until
 an authorized main run executes the repair; historical3.13
