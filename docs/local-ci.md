@@ -1322,10 +1322,13 @@ M5 full typed publication equality weakening and M6 caller rollback regression.
 Each requires an initial complete GREEN, one intended full-table RED on an owned
 registered guarded local proof commit, byte-exact forward restoration and GREEN.
 Proof mutation remains forbidden until an actual initial complete GREEN exists.
-Observed candidate unreachability remains a gate failure: the bounded attempt
-can complete its observations while its `unproved` entry prevents exit0. It does
-not authorize M1–M6 or remove the requirement for complete GREEN. The final
-candidate still owes complete GREEN plus five fresh-process full-table
+The accepted scoped completion requires all assigned42+14 observations and
+allocated sensitivity/restoration/teardown proof. The authentic original
+candidate8193 native0/verifier2/42-INCOMPLETE receipt remains history, and the
+broader candidate8193 target remains explicitly UNPROVED. Assigned accounting
+and traversal dominance are only a partial prerequisite, never candidate-guard,
+full F5/F8/program/runtime or all-org PASS. Unexpected assigned `unproved` gaps
+still prevent exit0. The final candidate owes complete GREEN plus five fresh-process full-table
 repetitions. Missing proof is review-blocking under test-authoring-evidence-gate;
 no conditional test-authoring PASS follows from source or subset counts.
 
@@ -1350,6 +1353,20 @@ L0 expects one intercepted bwrap attempt and raw verifier2; L1 omitted membershi
 L2 wrong digest and L3 noncanonical alias expect exact setup2 and zero attempts.
 Git source probes are separate. No loader record spawns bwrap or imports product;
 the full qualified reader sibling supplies actual positive namespace execution.
+Each loader record independently projects actual inner `receipt.environment_before`:
+L0 requires its exact canonical loader, both memberships and original digest;
+L1–L3 require the key ABSENT, distinct from present/null/empty/malformed. Revised
+S1 optional fixed-loader admission and S3 alias admission change only
+`admit_loader`; their intended RED observes invalid persisted admission before
+the unchanged later native-alias guard, never an invented bwrap attempt.
+
+Destructive queued observations use pre-read serialized SQLite fixture INPUT,
+with a committed independent baseline and genuine caller BEGIN/uncommitted
+sentinel on the actual disposable connection. Transaction/native-row/integrity
+effects are observed before disposal. Supplied budgets remain the identical
+objects, including across aggregate queued/release phases; isolation does not
+replenish work. Original fixture/savepoints remain independent input for later
+rows, not a product transaction repair or candidate-returned-row oracle.
 
 One shared support scope protects installation, pre-snapshot, actual work,
 post-snapshot/assertions and unconditional detach/disarm/handler restoration.
@@ -1362,6 +1379,11 @@ observes a real post-scope SELECT and a fresh sibling. Both A records observe
 actual aggregate caller snapshots/reader entries under live2s/2048-event bounds,
 with original product/counter/transaction assertions. Independent outer containment
 runs AFTER failed-cleanup observations, never converting cleanup failure to PASS.
+The existing standalone queued row enters the same shared scope before trace
+installation/snapshots/work/observations. An outside standard observer checks
+actual queued/release/snapshot/observation live timers, bounded callback ledger,
+real BEGIN1/ROLLBACK1 and final transaction false; cleanup and actual post-scope
+SELECT/fresh sibling are observed before immutable outer containment.
 Expected negative raw setup2 outcomes remain distinct from support assertion0/1.
 
 Only the allocated M1–M6 product and S1/S2/S3/S4/S5/S6a/S6b/S7/S8 support variants

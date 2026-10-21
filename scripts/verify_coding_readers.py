@@ -172,7 +172,9 @@ class TraceSpy:
         self.installation_timers=[]
         self.calls=0
         self.install_fault=install_fault
+        self.callback=None
     def set_trace_callback(self, callback: object) -> None:
+        self.callback=callback
         self.events.append('detach' if callback is None else 'attach')
         if callback is not None:
             self.installation_timers.append(timer_observation())
@@ -183,6 +185,22 @@ class TraceSpy:
         if callback is not None and self.install_fault:
             self.install_fault=False
             raise LookupError('SUPPORT install')
+
+    @contextmanager
+    def fixture_connection(self, connection: object):
+        # Forward the SAME bounded scope callback while independently owned
+        # fixture input is observed. No timer or allowance is replenished.
+        original=self.connection
+        callback=self.callback
+        original.set_trace_callback(None)
+        self.connection=connection
+        try:
+            self.set_trace_callback(callback)
+            yield
+        finally:
+            connection.set_trace_callback(None)
+            self.connection=original
+            self.set_trace_callback(callback)
 
 
 def timer_observation() -> dict:
@@ -241,10 +259,10 @@ def watched_scope(connection: object, name: str):
         with support_scope(spy) as state:
             sys.setprofile(observer)
             try:
-                yield state
+                yield state,spy
             finally:
                 sys.setprofile(profile)
-            equal(checks,'aggregate pre/post snapshot entries',sum(s['function']=='saved_rows' for s in samples),2)
+            equal(checks,'aggregate pre/post and isolated queued snapshot entries',sum(s['function']=='saved_rows' for s in samples),4)
             equal(checks,'actual queued entry',any(s['function']=='queued_storage' for s in samples),True)
             equal(checks,'actual release entries',any(s['function']=='read_release_import' for s in samples),True)
             equal(checks,'actual trace events retained',len(state['trace']),spy.calls)
@@ -464,9 +482,41 @@ try:
                 state='cache_installed', recovery_owner='synthetic-owner', file_phase_owner=None))
             for table,row in expected:
                 insert(table,row)
+        @contextmanager
+        def independent_input():
+            # Serialize fixed fixture INPUT before any candidate observation,
+            # never reader-returned rows. The original fixture/savepoints are
+            # untouched. A new real connection owns a committed publication
+            # baseline and, when applicable, a genuine caller BEGIN/sentinel.
+            global conn
+            original=conn
+            image=original.serialize()
+            caller=original.in_transaction
+            isolated=sqlite3.connect(':memory:')
+            try:
+                isolated.deserialize(image)
+                isolated.execute('PRAGMA foreign_keys=ON')
+                isolated.commit()
+                conn=isolated
+                db._conn=isolated
+                if caller:
+                    conn.execute('BEGIN')
+                    insert('org_settings',dict(section='synthetic-isolated-sentinel',value_json='{}',
+                        updated_at=stamp,updated_by='synthetic'))
+                yield dict(serialized_input_sha256=digest(image),committed_baseline=True,
+                           caller_begin=caller,sentinel='synthetic-isolated-sentinel' if caller else None)
+            finally:
+                conn=original
+                db._conn=original
+                isolated.close()
         def observe(name: str, action: Callable[[], object], expected_category: str | None = None,
                     expect_import: bool = False, supplied: _Budget | None = None,
                     kind: str | None = None) -> None:
+            with independent_input() as fixture_input:
+                observe_input(name,action,expected_category,expect_import,supplied,kind)
+                result['cases'][-1]['fixture_input']=fixture_input
+        def observe_input(name: str, action: Callable[[], object], expected_category: str | None,
+                          expect_import: bool, supplied: _Budget | None, kind: str | None) -> None:
             checks = []
             phases=[]
             old_profile=sys.getprofile()
@@ -622,8 +672,9 @@ try:
                 raise RuntimeError('old @1 fixture setup did not retain original bytes/pins')
             queued_storage(conn,org)
             return _validate_installed(conn,expected_org_slug=org,validate_data=False)
-        if old_history() != 'J':
-            raise RuntimeError('populated native/document fixture not admitted')
+        with independent_input():
+            if old_history() != 'J':
+                raise RuntimeError('populated native/document fixture not admitted')
         observe('F8-R1c.noncoding-old-history',old_history,kind='schema')
         result['populated_history_rows']=saved_rows(conn)
 
@@ -671,7 +722,7 @@ try:
         native_visits=sum(len(row)+1 for row in native_rows)
         current_proof=provenance
         def aggregate(label: str, target: str) -> None:
-            with watched_scope(conn, 'A-traversal' if target == 'traversed' else 'A-bytes') as scope:
+            with watched_scope(conn, 'A-traversal' if target == 'traversed' else 'A-bytes') as (scope,spy):
                 trace=scope['trace']
                 checks=[]; components=[]
                 before=saved_rows(conn); transaction=conn.in_transaction
@@ -687,7 +738,20 @@ try:
                     prior=vars(b).copy()
                     try:
                         if sequence == 0:
-                            queued_storage(conn,org,budget=b)
+                            with independent_input() as fixture_input:
+                                with spy.fixture_connection(conn):
+                                    queued_before=saved_rows(conn)
+                                    queued_transaction=conn.in_transaction
+                                    try:
+                                        queued_storage(conn,org,budget=b)
+                                    finally:
+                                        # Record actual destructive effects on
+                                        # the SAME connection before disposal.
+                                        equal(checks,'queued phase caller transaction preserved',conn.in_transaction,queued_transaction)
+                                        equal(checks,'queued phase native rows unchanged',digest(canonical(saved_rows(conn))),digest(canonical(queued_before)))
+                                        equal(checks,'queued phase no foreign key violation',list(conn.execute('PRAGMA foreign_key_check')),[])
+                                        equal(checks,'queued phase native integrity',list(conn.execute('PRAGMA integrity_check')),[('ok',)])
+                            result.setdefault('aggregate_fixture_inputs',{})[label]=fixture_input
                         else:
                             read_release_import(conn,expected_org_slug=org,budget=b)
                     except ValueError as exc:
@@ -857,14 +921,45 @@ try:
         conn.execute('ROLLBACK TO refusal');conn.execute('RELEASE refusal')
         conn.rollback()
         observe('F5-R1c.transaction-required',lambda: read_release_import(conn,expected_org_slug=org),invalid)
-        trace=[];conn.set_trace_callback(trace.append)
-        standalone=queued_storage(conn,org)
-        conn.set_trace_callback(None)
-        checks=[]
-        equal(checks,'standalone owns and closes its read',conn.in_transaction,False)
-        equal(checks,'standalone BEGIN count',trace.count('BEGIN'),1)
-        equal(checks,'standalone ROLLBACK count',trace.count('ROLLBACK'),1)
-        result['cases'].append(dict(name='F8-R1c.queued.standalone',checks=checks,trace=trace))
+        checks=[];samples=[];spy=TraceSpy(conn);scope=None
+        previous=signal.getsignal(signal.SIGALRM);profile=sys.getprofile()
+        def standalone_observations(before: dict) -> None:
+            equal(checks,'standalone owns and closes its read',conn.in_transaction,False)
+            equal(checks,'standalone BEGIN count',sum(r['sql']=='BEGIN' for r in scope['trace']),1)
+            equal(checks,'standalone ROLLBACK count',sum(r['sql']=='ROLLBACK' for r in scope['trace']),1)
+            equal(checks,'standalone native rows unchanged',digest(canonical(saved_rows(conn))),digest(canonical(before)))
+            equal(checks,'standalone no foreign key violation',list(conn.execute('PRAGMA foreign_key_check')),[])
+            equal(checks,'standalone native integrity',list(conn.execute('PRAGMA integrity_check')),[('ok',)])
+        def standalone_observer(frame: object, event: str, arg: object) -> None:
+            if event=='call' and frame.f_code.co_name in ('saved_rows','queued_storage','read_release_import','standalone_observations'):
+                if len(samples)>=2048:
+                    raise SupportIncomplete('SUPPORT standalone profile bound')
+                timer=timer_observation()
+                samples.append(dict(function=frame.f_code.co_name,**timer))
+                equal(checks,'standalone live timer at '+frame.f_code.co_name,0<timer['remaining']<=2,True)
+        try:
+            # Observer is outside the scope under test, including installation.
+            sys.setprofile(standalone_observer)
+            with support_scope(spy) as scope:
+                before=saved_rows(conn)
+                standalone=queued_storage(conn,org)
+                standalone_observations(before)
+                check_trace(scope)
+                equal(checks,'standalone snapshot entries',sum(s['function']=='saved_rows' for s in samples),2)
+                for function in ('queued_storage','read_release_import','standalone_observations'):
+                    equal(checks,'standalone actual '+function+' entry',any(s['function']==function for s in samples),True)
+                equal(checks,'standalone actual callbacks retained',len(scope['trace']),spy.calls)
+                equal(checks,'standalone bounded ledger',len(scope['trace'])<=2048,True)
+            after=cleanup_observations(conn,spy,scope,previous,checks)
+        finally:
+            sys.setprofile(profile)
+            # Immutable containment follows actual cleanup observation.
+            signal.setitimer(signal.ITIMER_REAL,0)
+            signal.signal(signal.SIGALRM,previous)
+            conn.set_trace_callback(None)
+        sibling=fresh_sibling(conn,checks)
+        result['cases'].append(dict(name='F8-R1c.queued.standalone',checks=checks,trace=scope['trace'],
+            samples=samples,after=after,events=spy.events,callbacks=spy.calls,sibling=sibling))
     finally:
         db.close()
     module_paths={name:getattr(module,'__file__',None) for name,module in list(sys.modules.items())}
@@ -1068,6 +1163,35 @@ def loader_record(args: argparse.Namespace) -> int:
         'L2':'ValueError: loader digest','L3':'ValueError: loader noncanonical'}[name]
     check('exact setup cause',receipt.get('setup_error'),expected)
     check('no product execution',products,[])
+    # Project the ACTUAL emitted admission record. Presence is independent of
+    # value/type, so null/empty/malformed never masquerades as ABSENT.
+    admission=dict(present='environment_before' in receipt)
+    if admission['present']:
+        admitted=receipt['environment_before']
+        admission['value_type']=type(admitted).__name__
+        if type(admitted) is dict:
+            files=admitted.get('files');natives=admitted.get('native_libraries')
+            admission.update(admitted_loader=admitted.get('admitted_loader'),
+                files_type=type(files).__name__,native_libraries_type=type(natives).__name__,
+                fixed_files_member=type(files) is dict and LOADER in files,
+                fixed_native_member=type(natives) is list and LOADER in natives,
+                fixed_digest=files.get(LOADER) if type(files) is dict else None,
+                alias_files_member=type(files) is dict and LOADER_ALIAS in files,
+                alias_native_member=type(natives) is list and LOADER_ALIAS in natives,
+                alias_digest=files.get(LOADER_ALIAS) if type(files) is dict else None)
+        else:
+            admission['value']=admitted
+    check('emitted admitted environment present',admission['present'],name=='L0')
+    if name=='L0':
+        admitted=receipt.get('environment_before')
+        check('emitted environment is object',type(admitted) is dict,True)
+        admitted=admitted if type(admitted) is dict else {}
+        check('emitted exact canonical admitted loader',admitted.get('admitted_loader'),LOADER)
+        files=admitted.get('files');natives=admitted.get('native_libraries')
+        check('emitted loader files membership',type(files) is dict and LOADER in files,True)
+        check('emitted loader native membership',type(natives) is list and LOADER in natives,True)
+        check('emitted loader independently authenticated digest',files.get(LOADER) if type(files) is dict else None,original['files'][LOADER])
+        check('original loader actual bytes',sha(Path(LOADER)),original['files'][LOADER])
     if name=='L0' and len(attempts)==1:
         argv=attempts[0]
         mounts=[argv[i+1:i+3] for i,x in enumerate(argv) if x=='--ro-bind']
@@ -1076,6 +1200,7 @@ def loader_record(args: argparse.Namespace) -> int:
         check('loader in both collections',LOADER in original['files'] and LOADER in original['native_libraries'],True)
         check('actual admitted loader digest',sha(Path(LOADER)),original['files'][LOADER])
     record=dict(name=name,checks=checks,raw_verifier_exit=raw_exit,raw_setup_error=receipt.get('setup_error'),
+        emitted_admission=admission,
         bwrap_attempts=attempts,product_attempts=products,git_source_probes=probes,
         interpreter_sha256=sha(Path(sys.executable)),subprocess_sha256=sha(popen),
         audit_before_os_spawn=True,controller_exit=1 if any(not c['passed'] for c in checks) else 0)
