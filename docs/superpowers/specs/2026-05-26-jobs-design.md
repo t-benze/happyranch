@@ -78,6 +78,18 @@ no blind append/retry. Local owner release and terminal hint/wake follow COMMIT.
 Notification failure cannot overwrite the result. One durable winner/audit is
 distinct from replayable hints, queue dedupe and genuine task claim.
 
+Output publication is owned by the two stream pumps, each directly awaiting
+one line at a time with a cooperative yield before fresh attachment, original
+owner/preparation/attempt, pump Task and Process checks. No per-line Task,
+intermediate queue or normal-line producer-history replay is created. Full
+durable validation remains at launch, signal, terminal and release boundaries.
+Child exit alone does not cut off buffered output: the actual pumps are joined
+before terminal composition. Error/cancel tails are reconciled; failed or
+unclosed publication retains unknown ownership. A failed live output channel
+is logged and remaining output is captured to the original files; its failure
+cannot replace the actual process result or first cause. This bounds pending
+job-local publications to two, not line length, subscriber buffers or runtime.
+
 Startup retains unproven running rows and reports job_liveness_unknown. Missing
 maps/PID, old daemon death, timeout or absent native layout prove no orphanhood.
 No positive proof producer/consumer, reaper, adoption or historical repair is

@@ -1219,7 +1219,7 @@ async def _run_job_core_impl(
 
     # Registration spans preparation, launch and the committed ownership tail.
     from runtime.daemon.jobs_runner import (register_runner_task, _capture_registration,
-        _validate_registration, _release_registration, JobRunResult)
+        _validate_registration, _validate_output_registration, _release_registration, JobRunResult)
     from runtime.orchestrator.producer_move import _stage_job_terminal_uncommitted, _release_job_terminal, _DeferredJob
 
     def defer_owned_job(registration):
@@ -1236,15 +1236,27 @@ async def _run_job_core_impl(
 
     async def _run_and_persist(registration):
         async def publish_output(evt):
-            require_attachment()
-            if registration.released:
-                return
-            _validate_registration(registration)
-            await org.event_bus.publish(job_topic(job_id), evt)
-
-        def publish_line(evt):
-            # Output events carry no terminal assertion; stale attachments cannot publish.
-            asyncio.create_task(publish_output(evt))
+            # Yield BEFORE fresh identity checks, including for tiny lines in
+            # an already-buffered chunk. Two pumps own at most two awaited
+            # publications. No historical replay, queue or per-line Task.
+            await asyncio.sleep(0)
+            if registration.output_error is not None:
+                return  # failed channel already recorded; disk capture continues
+            try:
+                require_attachment()
+                _validate_output_registration(registration)
+                # Current EventBus acquires/releases its lock without awaiting
+                # inside it, then puts into unbounded subscriber queues. Thus
+                # it cannot suspend after this fence under that contract.
+                await org.event_bus.publish(job_topic(job_id), evt)
+            except Exception as exc:
+                registration.tail_failed = True
+                registration.output_error = exc
+                logging.getLogger(__name__).exception(
+                    'Job output publication failed; retaining unknown tail for %s; '
+                    'remaining output is captured to the original files', job_id)
+                # Keep draining files and preserve the actual execution result
+                # and first cause. Publication failure is not spawn/process failure.
 
         failed_tail = False
         require_attachment()
@@ -1257,7 +1269,7 @@ async def _run_job_core_impl(
                 script_text=record.script_text, interpreter=record.interpreter.value,
                 cwd=str(cwd_resolved), stdout_path=str(stdout_path), stderr_path=str(stderr_path),
                 max_runtime_seconds=timeout, max_output_bytes=record.max_output_bytes,
-                publish=publish_line, task_id=record.task_id,
+                publish=publish_output, task_id=record.task_id,
                 workspace_root=str(workspace_root), move_owner=registration.owner)
         except DeferredTeamMove:
             defer_owned_job(registration)

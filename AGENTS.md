@@ -1011,6 +1011,11 @@ Actual DB attachment/original preparation/attempt/runner/Process fences prevent
 cross-org ID collisions and stale-owner signals/removal/writes. The original job
 row/CAS, one trigger audit, actual producer and strict Pause disposition commit
 before local release/hint/wake; failed tails and descendant uncertainty remain.
+Output is directly awaited by the two owned stream pumps, with fresh identity
+fences and no per-line Task, intermediate queue or durable-history replay.
+Actual buffered tails finish before terminal composition; error/cancel tails
+are joined or retain uncertainty. Failed live publication is logged, preserves
+file capture and the real result/first cause, and cannot certify retirement.
 Wait/SSE use durable terminal reads. Both Web details preserve cached details/logs
 on read failure and offer explicit fresh detail-only Refresh status when streaming
 is unavailable. No automatic reconnect/polling addition; reopen/reload separately.

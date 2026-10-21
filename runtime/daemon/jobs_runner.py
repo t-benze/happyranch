@@ -10,6 +10,7 @@ attribution for Stop, task termination and daemon shutdown.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import os
 import shutil
@@ -17,7 +18,7 @@ import signal
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING, Awaitable, Callable
 
 from runtime.orchestrator.executors import _sanitize_child_env
 from runtime.orchestrator.task_scratch import (
@@ -118,6 +119,9 @@ class _JobRegistration:
     tail_failed: bool = False
     cap_event: asyncio.Event | None = None
     released: bool = False
+    output_tasks: tuple[asyncio.Task, ...] = ()
+    output_process: asyncio.subprocess.Process | None = None
+    output_error: Exception | None = None
 
     @property
     def key(self):
@@ -161,7 +165,7 @@ def _require_job_attachment(db, org_slug):
             raise DeferredTeamMove('job_registration_unavailable')
 
 
-def _validate_registration(registration, *, running_task=False):
+def _validate_registration_identity(registration, *, running_task=False):
     from runtime.orchestrator.producer_move import owner_for
     from runtime.orchestrator.team_move import DeferredTeamMove
     r = registration
@@ -181,12 +185,35 @@ def _validate_registration(registration, *, running_task=False):
                 or admission.live.get(('job', r.job_id)) is not o or not o.owner_live
                 or _attempt_identity(o) != r.attempt):
             raise DeferredTeamMove('job_registration_unavailable')
-        with r.db._lock:
-            states = admission.history_uncommitted()
-            if states.get(('job', r.job_id, o.state.occurrence_id)) != o.state:
-                raise DeferredTeamMove('team_move_producer_evidence_changed')
     record = r.db.get_job(r.job_id)
     if record is None or (record.task_id, record.agent_name) != (r.task_id, r.agent_id):
+        raise DeferredTeamMove('job_registration_unavailable')
+    return r
+
+
+def _validate_registration(registration, *, running_task=False):
+    """Exhaustive durable validation at ownership/lifecycle boundaries."""
+    from runtime.orchestrator.team_move import DeferredTeamMove
+    r = _validate_registration_identity(registration, running_task=running_task)
+    if r.owner is not None:
+        with r.db._lock:
+            states = r.owner.admission.history_uncommitted()
+            if states.get(('job', r.job_id, r.owner.state.occurrence_id)) != r.owner.state:
+                raise DeferredTeamMove('team_move_producer_evidence_changed')
+    return r
+
+
+def _validate_output_registration(registration):
+    """Fresh native identity, not cached history clearance or process liveness.
+
+    Only the two actual owned pumps may publish. A reaped Process may still
+    have buffered output; its registration remains in-flight until pumps join.
+    """
+    from runtime.orchestrator.team_move import DeferredTeamMove
+    r = _validate_registration_identity(registration)
+    if (r.output_process is None or r.process is not r.output_process
+            or _INFLIGHT.get(r.key) is not r
+            or asyncio.current_task() not in r.output_tasks):
         raise DeferredTeamMove('job_registration_unavailable')
     return r
 
@@ -233,7 +260,10 @@ def _signal_registered_job(r, reason, sig=signal.SIGTERM):
 
 
 def _release_registration(r):
+    from runtime.orchestrator.team_move import DeferredTeamMove
     _validate_registration(r, running_task=True)
+    if r.tail_failed or any(not pump.done() for pump in r.output_tasks):
+        raise DeferredTeamMove('job_output_tail_unfinished')
     r.released = True
     if _INFLIGHT.get(r.key) is r:
         del _INFLIGHT[r.key]
@@ -392,7 +422,7 @@ async def _pump_stream(
     stream: asyncio.StreamReader,
     label: str,
     out_path: str,
-    publish: Callable[[dict], None],
+    publish: Callable[[dict], Awaitable[None] | None],
     head_buf: list[bytes],
     head_capped: list[bool],
     byte_counter: list[int],
@@ -422,7 +452,7 @@ async def _pump_stream(
             if not chunk:
                 # EOF — flush any trailing partial line as its own event.
                 if line_buf:
-                    _emit_line(bytes(line_buf), label, publish)
+                    await _emit_line(bytes(line_buf), label, publish)
                     line_buf.clear()
                 return
             f.write(chunk)
@@ -458,15 +488,19 @@ async def _pump_stream(
                     break
                 line = bytes(line_buf[: nl + 1])
                 del line_buf[: nl + 1]
-                _emit_line(line, label, publish)
+                await _emit_line(line, label, publish)
 
 
-def _emit_line(line: bytes, label: str, publish: Callable[[dict], None]) -> None:
+async def _emit_line(line: bytes, label: str, publish: Callable[[dict], Awaitable[None] | None]) -> None:
     try:
         text = line.decode("utf-8", errors="replace").rstrip("\n")
     except Exception:
         text = "<binary>"
-    publish({"kind": "line", "stream": label, "line": text, "ts": _now_iso()})
+    # Existing standalone callbacks may be synchronous. Production awaits its
+    # owned publication directly: no per-line Task or intermediate queue.
+    pending = publish({"kind": "line", "stream": label, "line": text, "ts": _now_iso()})
+    if inspect.isawaitable(pending):
+        await pending
 
 
 async def run_job(
@@ -478,7 +512,7 @@ async def run_job(
     stdout_path: str,
     stderr_path: str,
     max_runtime_seconds: int | None,
-    publish: Callable[[dict], None],
+    publish: Callable[[dict], Awaitable[None] | None],
     max_output_bytes: int | None = None,
     task_id: str | None = None,
     workspace_root: str | None = None,
@@ -593,6 +627,11 @@ async def run_job(
         max_bytes=max_output_bytes, cap_event=cap_event,
     ))
 
+    pumps = (pump_out, pump_err)
+    if registration is not None:
+        registration.output_tasks = pumps
+        registration.output_process = proc
+
     async def _watch_cap() -> None:
         await cap_event.wait()
         if registration is not None and registration.cause is None:
@@ -628,17 +667,12 @@ async def run_job(
             await proc.wait()
         else:
             await asyncio.wait_for(proc.wait(), timeout=max_runtime_seconds)
-        # After SIGKILL the OS closes the child's stdio pipes promptly, so
-        # the gather() resolves quickly. The 5s safety wait_for guards
-        # against pathological pumps blocked on disk.
-        try:
-            pump_results = await asyncio.wait_for(
-                asyncio.gather(pump_out, pump_err, return_exceptions=True), timeout=5)
-            if registration is not None:
-                registration.tail_failed |= any(isinstance(x, BaseException) for x in pump_results)
-        except asyncio.TimeoutError:
-            if registration is not None:
-                registration.tail_failed = True
+        # Child exit does not end owned buffered output. Await the actual
+        # pumps/publications; a fixed drain deadline would cut off a verbose
+        # but legitimate tail. Shutdown/cancellation still reconciles below.
+        pump_results = await asyncio.gather(pump_out, pump_err, return_exceptions=True)
+        if registration is not None:
+            registration.tail_failed |= any(isinstance(x, BaseException) for x in pump_results)
         if cap_event.is_set():
             status = "failed"
             reason = "output_cap"
@@ -675,11 +709,28 @@ async def run_job(
         status = "failed"
         exit_code = proc.returncode
     finally:
+        # A pump owns its awaited publication, including buffered output after
+        # child exit. Error/cancel/timeout must not leave that work detached.
+        # Cancellation during reconciliation propagates without retirement;
+        # the registration and its actual output_tasks remain attributable.
+        for pump in pumps:
+            if not pump.done():
+                if registration is not None:
+                    registration.tail_failed = True
+                pump.cancel()
         watcher.cancel()
         try:
+            pump_results = await asyncio.gather(*pumps, return_exceptions=True)
+            if registration is not None:
+                registration.tail_failed |= any(isinstance(x, BaseException) for x in pump_results)
             await watcher
         except asyncio.CancelledError:
-            pass
+            # Ignore only the watcher's own cancellation, not cancellation of
+            # the runner while joining output work.
+            if asyncio.current_task().cancelling():
+                if registration is not None:
+                    registration.tail_failed = True
+                raise
         if (registration is not None and _INFLIGHT.get(registration.key) is registration
                 and registration.process is proc):
             del _INFLIGHT[registration.key]
