@@ -10,11 +10,14 @@ import base64
 import hashlib
 import sqlite3
 from contextlib import ExitStack, contextmanager
-from typing import Iterator
+from typing import TYPE_CHECKING, Iterator
 
 from runtime.workflows.authority import AuthorityAdmissionCapture, WorkflowAuthorityError
 from runtime.workflows.profile_coordinator import ProfileCoordinatorError
 from runtime.workflows.templates import WorkflowTemplatePrincipal
+
+if TYPE_CHECKING:
+    from runtime.infrastructure.workflow_coding_schema import _CodingInventory
 
 
 class CodingReleaseImportError(ValueError):
@@ -72,9 +75,14 @@ class CodingImportSupport:
             raise CodingReleaseImportError('coding_release_import_schema_reference_unavailable')
         return references
 
-    def _storage(self, conn: sqlite3.Connection, references: tuple[str, ...]) -> None:
-        from runtime.infrastructure.workflow_schema import validate_workflow_schema
-        if validate_workflow_schema(conn, expected_org_slug=self.org.slug) != 'J':
+    def _storage(self, conn: sqlite3.Connection, references: tuple[str, ...]) -> _CodingInventory:
+        from runtime.infrastructure.workflow_schema import _read_workflow_schema
+        # The private result is useful only to a local consumer that still owns
+        # this exact snapshot. Never return an inventory after ending its read.
+        if not conn.in_transaction:
+            raise CodingReleaseImportError('coding_release_import_caller_transaction')
+        layout, coding = _read_workflow_schema(conn, expected_org_slug=self.org.slug)
+        if layout != 'J' or coding is None:
             raise CodingReleaseImportError('coding_release_import_schema_required')
         rows = conn.execute('SELECT sql FROM sqlite_master WHERE sql IS NOT NULL ORDER BY name')
         actual = hashlib.sha256('\n'.join(str(row[0]) for row in rows).encode()).hexdigest()
@@ -82,6 +90,7 @@ class CodingImportSupport:
             raise CodingReleaseImportError('coding_release_import_whole_schema_mismatch')
         # Central validation above includes complete retained setup, import,
         # mapping and source histories; no setup issuance is required.
+        return coding
 
     @contextmanager
     def _read(self, capture: AuthorityAdmissionCapture | None) -> Iterator[tuple[sqlite3.Connection, AuthorityAdmissionCapture | None]]:

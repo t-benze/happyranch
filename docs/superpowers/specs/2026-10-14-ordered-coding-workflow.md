@@ -85,11 +85,28 @@ remain history. They do not waive current allocated M1–M6/S1–S8 sensitivity,
 forward restoration, GREEN/five fresh-process repetitions or independent
 same-head executable QA. See docs/local-ci.md for exact command and exits.
 
-Full
-start_in_writer/support._storage schema/history composition remains unfinished;
-standalone template/source-data/role/import callers retain their defaults. New
-settings/progression and literal @3/team_move readers, repeated-binding inventory
-reuse, cold/recovery/drain integration and native controls remain root-owned
+The start_in_writer/support._storage pre-write composition now consumes the
+internally reconstructed complete-schema mapping/import/queued inventory under
+one cumulative allowance. Native source/result/ancestry and child reads share
+that allowance; separate pre-admission checkpoints retain their own validation.
+The retained source-data checker compares original release rows with that local
+import history instead of reconstructing the history per row. Complete J native
+discrimination is charged even without mappings/runs. No external inventory or
+validation flag is accepted. Local reuse ends at the first write; post-write
+complete validation reconstructs fresh state, and caller-owned transactions stay
+open. Public schema readers retain their layout/None returns. Standalone
+role/import/template readers retain their existing defaults and provenance.
+
+PR1165's prerequisite merged at fee7aa7222dbc80e16492258c15f8fa3214fabad,
+with independent TASK12436 APPROVE and synthetic executable TASK12438 PASS at
+reviewed aa9e64ad3a568b080571f86c6453d191aa6c706b (identical merge tree).
+Those receipts do not cover this new source head. TASK12440's assignment permits
+source/static/publication only: affected common-boundary behavior, sensitivity,
+restoration/repetition and independent executable QA remain UNEXECUTED. The
+existing isolated reader command requires a narrowly allocated extension to
+observe support._storage/start's pre-write composition; no native start or
+readiness override is supplied. New settings/progression and literal @3/team_move
+readers, repeated-binding inventory reuse and native controls remain root-owned
 prerequisites. No complete admission/readiness closure is claimed. The earlier
 SOURCE checkpoint's F5-R1c/F8-R1c UNEXECUTED venue statement is historical.
 TASK12407's42+14 GREEN/five repetitions remain historical, as do its adverse
@@ -99,8 +116,8 @@ actual emitted loader admission and the standalone reader's shared bounded scope
 M6/S1/S3/S4/S7/S8 require full-table intended RED and byte-exact restored GREEN;
 S1/S3 observe invalid admission presence with zero bwrap attempts, retaining the
 later native refusal. Unaffected variants retain original-head attribution.
-Exact final-head42+14 GREEN/five repetitions and independent review/executable QA
-remain mandatory; actual outcomes are in the same PR/task case record.
+PR1165 required exact-final-head42+14 GREEN/five repetitions and independent
+review/executable QA; its actual outcomes remain in that PR/task case record.
 Candidate8193 and broader native/runtime controls remain UNPROVED. Source review
 and static checks are not behavioral or test-authoring acceptance; no old-root
 waiver applies.

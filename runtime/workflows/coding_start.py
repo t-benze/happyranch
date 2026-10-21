@@ -47,7 +47,8 @@ class CodingStartStore:
         self.org, self.db = org, org.db
         self.support = CodingImportSupport(org)
 
-    def _native(self, conn: sqlite3.Connection, claim: RetryClaim, invocation: Any) -> tuple:
+    def _native(self, conn: sqlite3.Connection, claim: RetryClaim, invocation: Any, *,
+                budget: _Budget | None = None) -> tuple:
         _check(not self.org._runner_admission_closed and self.org.orchestrator._db is self.db)
         _check(type(claim.result_row_id) is int and claim.result_row_id > 0
                and self.db._retry_claim_matches(claim))
@@ -66,7 +67,8 @@ class CodingStartStore:
             root_task_id=claim.task_id, result_row_id=claim.result_row_id)
         _check(policy.kind in ('no_v2', 'later', 'reserved')
                or (policy.kind == 'receipt' and policy.decision_state == 'ready'))
-        budget = _Budget()
+        _check(budget is None or type(budget) is _Budget)
+        budget = _Budget() if budget is None else budget
         selected = list(rows(conn, 'tasks', budget, where='id=?', args=(claim.task_id,), maximum=1))
         _check(len(selected) == 1)
         source = selected[0]
@@ -211,16 +213,16 @@ class CodingStartStore:
         """
         _check(conn is self.db._conn and conn.in_transaction)
         from runtime.infrastructure.workflow_schema import validate_workflow_schema
-        self.support._storage(conn, references)
+        inventory = self.support._storage(conn, references)
         command = decision.workflow
         parsed = parse_decision(_canonical(dict(action='workflow_start', workflow=command)))
         _check(self.db.authority_policy_v2_decision_result_report_binds(
             root_task_id=claim.task_id, spending_result_id=claim.result_row_id, report=report))
         # Frozen replay precedes fresh native claim/current capacity checks.
-        from runtime.workflows.coding_start_history import read_queued
-        mappings = read_mapping_storage(conn, expected_org_slug=self.org.slug)
-        imported = read_release_import(conn, expected_org_slug=self.org.slug)
-        saved = read_queued(conn, self.org.slug, _Budget(), mappings, imported)
+        # Complete schema/reference admission reconstructed these histories on
+        # this connection/org/snapshot. Consume locally before any write; the
+        # post-write validator below must reconstruct the changed state anew.
+        mappings, imported, saved = inventory.mappings, inventory.imported, inventory.queued
         for instance, entry in saved.runs.items():
             old = entry['command']
             if (entry['source']['principal'], old['operation_key']) == (claim.assigned_agent, command['operation_key']):
@@ -230,7 +232,8 @@ class CodingStartStore:
                         or old != command):
                     raise CodingStartError('coding_start_operation_conflict')
                 return instance  # No admission/task/counter/event/pointer writes.
-        source_before, callback, actual, native = self._native(conn, claim, invocation)
+        source_before, callback, actual, native = self._native(conn, claim, invocation,
+                                                             budget=inventory.budget)
         checkpoints = [*checkpoints, dict(source=encode_row(source_before), ancestors=native['ancestors'])]
         native['checkpoints'] = checkpoints
         _check(same(actual, parsed) and imported is not None and mappings is not None)
@@ -254,7 +257,7 @@ class CodingStartStore:
             if selector['principal'] != claim.assigned_agent and author_capacity_blocked(conn,
                     author=selector['principal'], task_id=None, active_sessions=active_sessions):
                 raise CodingStartError('coding_start_capacity_unavailable')
-        for child in rows(conn, 'tasks', _Budget(), where='parent_task_id=?', args=(claim.task_id,)):
+        for child in rows(conn, 'tasks', inventory.budget, where='parent_task_id=?', args=(claim.task_id,)):
             _check(child['status'] in ('completed', 'failed', 'cancelled', 'superseded'))
         _check(revise_limit == 0 or claim.revision < revise_limit)
         action_claim = self._claim_result_action_uncommitted(claim)

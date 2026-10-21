@@ -1405,3 +1405,36 @@ is the actual recursively invoked verifier-main result under the immutable veto.
 The physical namespace/controller exits and top-level verifier assertion result
 remain separately recorded. The closed loader selections pass the same interpreter,
 source-script and owned-output admission as the full command before dispatch.
+
+
+### Remaining start-reader source composition (TASK12440 / ROOT12299)
+
+PR1165 is merged at `fee7aa7222dbc80e16492258c15f8fa3214fabad`;
+TASK12436/TASK12438 review/synthetic QA at `aa9e64ad3a568b080571f86c6453d191aa6c706b`
+belong to that prerequisite only. The next source change composes complete
+schema validation and `CodingImportSupport._storage` with start's pre-write
+mapping/import/queued inventory and native/child allowance. Retained source-data
+checks reuse the same local import history with full original-row comparison;
+empty J's native discrimination also consumes the allowance. Public return
+meanings, caller transaction ownership and fresh post-write validation remain.
+
+This assignment allocates only source/static/publication. No tests/assertions,
+verifier support, product imports/SQL/fixtures, native start, readiness override
+or reader campaign is allocated or executed. Existing `release-accounting`
+cases observe standalone queued/import/schema readers, not the whole
+`support._storage`/start pre-write read boundary. Its affected extension must
+stay in this maintained command and conservative import manifest, using the
+same qualified namespace/frozen environment, independently fixed synthetic
+inputs, complete schema/rows, bounded trace/timers and exact clean source.
+It needs an independent query/counter oracle for single history acquisition,
+shared schema/native/child consumption, original-row/provenance refusal and
+fresh reconstruction after writes/snapshots, plus original transaction/replay
+observations. Actual start/native actors cannot be fabricated by synthetic
+fixtures; genuine native-boundary proof needs its separately authorized venue.
+Minimum support/allocation details are returned in TASK12440's source handoff.
+Affected behavioral/sensitivity/restoration/repetition/executable-QA and broader
+candidate8193/runtime/all-org acceptance remain UNEXECUTED/UNPROVED. No old-root
+waiver or historical42+14 campaign covers this source head. Full independent
+review returns directly to ROOT12299; root allocates actual same-head executable
+QA before a later live-manager guarded merge. Local `scripts/local_ci.sh all`
+and the two hosted required checks remain lint/static only.
