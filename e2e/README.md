@@ -10,19 +10,22 @@ separate delivery obligations.
 
 Fresh Product E2E keeps the daily `0 19 * * *` schedule (19:00 UTC /
 03:00 Asia/Shanghai) on immutable default-branch `github.sha`. Founder
-THR291seq247 additionally authorizes **ONE** immediate full main execution under
-sole root TASK-11897 through the reviewed `workflow_dispatch` entry. Manual
-admission requires actual `refs/heads/main`, default branch `main`, and matching
-repository/workflow/run/source identity. This entry is not standing execution
-authority. Baseline56 variants EACH Python3.12/3.14 plus TERM3.12/INT3.14 retain
+THR291seq277 authorizes engineering_manager under sole linked ROOT TASK-12281
+(resolving superseded TASK-12262) to use the existing main-only `workflow_dispatch`
+on demand after concrete reviewed corrections, without per-run approval or a
+nightly wait. Reconcile active owners/runs first; no blind same-source retry loop.
+Manual admission requires actual `refs/heads/main`, default branch `main`, and
+matching repository/workflow/run/source identity. Historical seq247's ONE-run
+allocation to TASK-11897 and its receipts remain history. Baseline56 variants
+EACH Python3.12/3.14 plus TERM3.12/INT3.14 retain
 exactly four execution artifacts and the original bounds. `Daily Product E2E
 Health` remains outside merge checks and reports the actual event, run/attempt,
 SHA and checkout tree; manual receipts are never labeled scheduled.
 There is no local E2E alias, PR/push/release/workflow_call/repository_dispatch
 entry, automatic retry, extra schedule or SLA. Admission, lint and scoped QA
-success do not establish product execution success. The root owns the one
-actual dispatch after independent review/scoped QA, both final-head lints,
-guarded merge and an exact-main receipt.
+success do not establish product execution success. The root owns each actual
+dispatch after full independent review/scoped QA, both final-head lints, normal
+hooks/nonforce publication, guarded merge and an exact-main two-lint receipt.
 
 `run.daily_admission` validates genuine schedule payloads with the exact cron;
 manual payloads carry their actual main ref and no invented schedule. Both
@@ -108,10 +111,23 @@ cleanup budget or server-settlement proof follows. Secondary body/cleanup errors
 retain type-only partial diagnostics and cannot replace the first observed cause.
 Activity after disposal is outside this finite dispatcher-observed guarantee.
 
-All three ordinary roots sites (IDs1/18/19: open_task/e07_terminal/Pause held)
-retain the PR1107 complete decoded query exactly limit=["50"], including blank,
-repetition, fragment and strict parser behavior. Attention status=escalated cannot
-join. Recall requires exactly tree=["true"]; detail/jobs require an empty query;
+All three roots sites (IDs1/18/19: open_task/e07_terminal/Pause held) use ONE
+endpoint scope with seven literal queries: exactly limit=["50"] plus exactly
+one status=[pending/in_progress/escalated/completed/failed/cancelled/superseded].
+Strict parsing retains blanks/multiplicity/UTF8/fragment refusal. Unfiltered,
+cursor/filter/extra-key queries cannot satisfy a member. Ordinary and attention
+escalated requests are indistinguishable; each admitted duplicate independently
+validates, with no hook-owner inference. Every query needs an original body
+while OPEN before DOM/checkpoint/freeze; every admitted body AND successful
+finish must settle before whole-group seal. Missing queries or a failed/late
+member refuse all. No count/first200/quiet shortcut supplies closure.
+Each root has unique identity, null parent and requested status, cursor:null;
+the independently authored target occurs exactly once only in its authored
+status partition, and zero times elsewhere. Empty non-target partitions are
+valid. Complete type-sensitive images compare only within the same query,
+retaining raw array order and unknown fields. The sealed exact-query accessor
+selects that query's earliest original; unqualified multistatus access refuses.
+Recall requires exactly tree=["true"]; detail/jobs require an empty query;
 all reject fragments and use fixed parse-error categories without query text.
 Response admission repeats the query and original Request identity checks.
 Literal harness-only R/D/C/J shapes and independently supplied scenario facts
@@ -138,10 +154,25 @@ At those six sites we deliberately relinquish fresh HTTP, method/query/status,
 original Response/body/finish ownership and failed/conflicting/duplicate
 background-request coverage. DOM content is visible navigation evidence. Later
 reload/API/DB evidence does not prove the removed click transport. Cached-return
-passive target-org path200 provenance remains weaker; the same populated
-alpha-beta-alpha journey, full31s expiry, fresh detail AND Recall observation,
-render/alien checks and completion reload are preserved separately. No accepted
-HTTP record is fabricated for a DOM site.
+passive target-org path200 provenance remains weaker. For the same populated
+alpha-beta-alpha cached return ONLY, Founder THR291seq290 approves moving the
+earlier fresh-list checkpoint and list-before-wait breadcrumb. One fixed early
+E=min(entry effective_end,entry+stored clipped page cap) covers both selector
+actions, initial own/alien list URL/href/render assertions and cached detail/
+Recall/provenance; the original cached-entry inner end can only tighten E.
+Release both before the unchanged31000ms wait ON DETAIL, retaining original
+remaining(32)>=31 admission and enclosing absolute owners. After the wait, arm
+original ID1 once before the ordinary breadcrumb, require seven-query R/list
+proof and whole seal, then separate original fresh D+C(tree=true)/full own/alien
+DOM/Recall/screenshot/mark. Inclusive browser-cache-revisit timing remains.
+Later evidence does not certify the relinquished earlier HTTP checkpoint.
+Existing observations cannot prove complete prewait cache-update age: earlier
+refreshes may finish during the wait, leaving fresh/coalesced keys. No settled
+flag or success guarantee is inferred; missing/ineligible new originals refuse
+within original R/DC, and such refusal is not automatically a product regression.
+No extra wait/retry/reload/eviction/context/fetch/state/clock/product seam or time
+expansion is introduced; other callers keep their original order and caps.
+No accepted HTTP record is fabricated for a DOM site.
 
 Native sites9/12/13/14/17 (Reject, thread list/detail/messages, Cancel) retain
 their original predicates/passive sinks and weaker start/query/ownership limits;
@@ -150,6 +181,19 @@ latches forbidden-overview-read on arrival and remains live through all roots
 body/finish settlement. A final synchronous empty assertion precedes its local
 detach/seal. Arrival after completed disposal remains unobserved. Dashboard503
 and original native error/cleanup evidence remain distinct.
+
+Only ID18 exports every admitted original roots body through the existing
+browser-events artifact. Its group/checkpoint/source/interpreter/boot/origin/
+native-document/arm/freeze/seal/member reference joins views[2] and list-reload.
+aggregate.validate_e07 independently reconstructs the seven literal queries,
+all original body/finish outcomes, per-query full images and earliest cancelled
+representative, binding genuine P/W allocation/cancellation/DB/audit/session
+facts. It compares the complete selected public body/reference in existing
+copies, without importing maker query/image predicates, trusting success labels,
+unioning bodies or stitching groups. Raw SHA identifies private raw bytes only,
+not sanitized JSON. Missing/truncated/unparseable/redacted required content,
+including unknown fields, refuses; four artifacts/export bounds are unchanged.
+100MiB suffix fit, repaired GREEN, flake and sensitivity remain unproved.
 
 These are source contracts, not runtime outcomes. A01–A16 remain the accepted
 four-answer case record in TASK11803; task/PR evidence attributes any isolated
@@ -492,7 +536,7 @@ the accepted case map stay retired; none are recreated, imported or executed.
 | 3 P14b/c same-org progress | `Pause.same-org-unheld`: while original worker/tree held, public distinct NULL-parent root in alpha → genuine launch, CLI callback, durable/public natural done with available capacity. Reads cannot create/update Pause controls. First hold/worker identity remains. Beta baseline remains unchanged. | Org-wide hold, blocked independent capacity, GET creates control or separate tree corrupts results. | Baseline `collisions` covers different orgs; missing two independently active roots in the same org under hold. |
 | 4 P12 drained persistence/P01a finish | `Pause.drained-restart`, `Pause.restart-final`: verified paused/quiescent closure → pidfd TERM/wait on exact owned disposable daemon PID/start, start same shipping executable/same publicly initialized files, no re-init/DB writes. Control/generation/chain/child/results/consumption state exact; pending reviewer still has no launch/admission/SID. CLI Resume → one real reviewer APPROVE and one natural M2 done; original consumed results persist and exact start/end/consumption/chain counts agree. | Restart forgets hold, reaper falsely fails, replay of consumed callback, duplicate reviewer/M2 or no release discovery. | Baseline response-loss and `cancellation_hold` are transport/launcher cleanup; neither restarts the product daemon against retained files. Only this drained Pause window is authored. |
 | 5 P01b separate drain Resume | `Pause.resume-during-drain`, `Pause.drain-final`: separate root/worker; Pause then Resume before worker callback → original PID/start/SID stays alive, hold clears; normal worker completion → exactly one reviewer/M2 path with 4 authentic results and 3 tasks. No restart here. | Resume kills/relaunches worker, callback duplicated, chain wakes manager early or diverges from restart journey. | `scenarios.journey` has no control while its worker is live; distinct from group4's drained restart. |
-| 6 P16/P18 browser/readback/terminal | `Pause.overview-readonly`, `Pause.browser-pausing-en`, `Pause.browser-pausing-zh`, `Pause.browser-paused-en`, `Pause.browser-paused-zh`, `Pause.terminal-denied`: shipping Chromium responses at1440×900, user locale selector, root detail state/blocker/Resume reached through the list row, genuine child inherited/root link with no controls, no browser overview panel, overview read or list-row pause control/label/evidence on the Tasks page (founder THR-292 seq41/seq45), CLI alpha overview/read-only counts and restart limitation, real reload preserves generation1. Terminal browser retains completed and no Pause/Resume; both CLI controls409/task_terminal with unchanged state. `Pause.exact-closure` joins every launch/result/host count. | Synthetic-only UI masks transport drift, child control appears, locale/reload mutates state, GET queues work, missing org isolation/count honesty or terminal revival. | Retained Web `pause.test.tsx` (detail controls), `pause-overview.test.tsx` (list/panel absence, detail focus) and baseline Browser have synthetic projected/UI transport and ordinary live lifecycle evidence; missing actual daemon hold/restart bilingual readback. |
+| 6 P16/P18 browser/readback/terminal | `Pause.overview-readonly`, `Pause.browser-pausing-en`, `Pause.browser-pausing-zh`, `Pause.browser-paused-en`, `Pause.browser-paused-zh`, `Pause.terminal-denied`: shipping Chromium responses at1440×900, user locale selector, root detail state/blocker/Resume reached through the list row, genuine child inherited/root link with no controls. In both held phases, root and child Pause projections require the authored ROOT lifecycle `in_progress`, exact alpha/root/generation1/held/effective_hold/control_state and, when paused, complete evidence/empty blockers. Own task/detail/Recall lifecycle stays separate: root `in_progress`, live worker `in_progress` then `completed`, reviewer `pending` until Resume. No browser overview panel, overview read or list-row pause control/label/evidence on the Tasks page (founder THR-292 seq41/seq45), CLI alpha overview/read-only counts and restart limitation, real reload preserves generation1. Terminal browser retains completed and no Pause/Resume; both CLI controls409/task_terminal with unchanged state. `Pause.exact-closure` joins every launch/result/host count. | Pause lifecycle incorrectly uses child status or a different root; synthetic-only UI masks transport drift, child control appears, locale/reload mutates state, GET queues work, missing org isolation/count honesty or terminal revival. | Retained Web `pause.test.tsx` (detail controls), `pause-overview.test.tsx` (list/panel absence, detail focus) use synthetic projections; root and pausing-worker observations both have `in_progress` and cannot distinguish a pending reviewer from its inherited root Pause lifecycle. Baseline Browser lacks actual daemon hold/restart bilingual readback. |
 
 ### Preserved Pause restart/count boundary
 
@@ -1068,8 +1112,9 @@ sequence remain unchanged.
 The finite body contract admits the audited plain paragraphs, the exact
 `Delegated to case_worker (child=TASK-[0-9]+)` lifecycle paragraph (ASCII digits
 only), and the exact prior-worker context generated for Pause's reviewer. That context renders as
-three h2 blocks, five br elements and zero hr elements, with exact metadata,
-spacing and newline-prefixed post-br text nodes. Unknown Markdown or malformed
+three h2 blocks, five br elements and zero hr elements, with exact metadata
+and spacing. Each br is followed by a standalone LF text node and then a separate
+exact metadata text node; inter-block LFs also remain standalone. Unknown Markdown or malformed
 context explicitly refuses. List titles have a separate contract: a multiline
 headline example is list-only, not a supported detail body. Pause supplies
 rendered expectations from known scenario IDs and states before observation.

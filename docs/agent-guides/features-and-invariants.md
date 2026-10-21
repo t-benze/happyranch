@@ -2078,7 +2078,7 @@ limits. Other authoring, revise, slice and total-step rules stay unchanged.
 - **Retired System Assistant.** Feature routes/CLI/settings/dock are removed. Legacy files, links and historical records remain inert.
 - **Jobs.** Background subprocesses run by the daemon, with automatic admission and independent persistence; content authorization precedes submission in a thread. Spec `docs/superpowers/specs/2026-05-26-jobs-design.md` (current); skill `runtime/skills/bundled/jobs/SKILL.md`; impl `runtime/daemon/routes/jobs.py`, `runtime/daemon/jobs_runner.py`. (Jobs absorbed the earlier "agent script requests" feature, `docs/superpowers/specs/2026-05-23-agent-script-requests-design.md`, now superseded.) See [Jobs](#jobs) below for traps.
 - **Task blocked by job.** A task can self-block on one or more jobs via `tasks.blocked_on_job_ids`; it auto-resumes when all are terminal. Spec `docs/superpowers/specs/2026-05-28-task-blocked-by-job-design.md`. See [Task Blocked By Job](#task-blocked-by-job) below for traps.
-- **PR CI wait / guarded merge.** PR-producing engineering tasks use the jobs + `blocked_on_job_ids` path to wait for GitHub CI outside the agent session. Two CLI entrypoints (`python -m runtime.daemon.pr_ci_waiter` and `python -m runtime.daemon.pr_ci_merge`) wired to real `gh` provide the polling and guarded-merge mechanisms. The poll job (submitted through the existing jobs path with `review_required=false`) polls checks for a pinned PR head SHA, handles no-checks-yet settling, detects stale heads and timeouts, and prints a structured verdict JSON. The poll job performs NO merge. On resume, the task owner triggers `guarded_merge` as a short daemon-run step; it re-enforces all guards (review APPROVE + QA PASS + CI PASS + unchanged SHA + mergeable CLEAN) before merge. No new daemon route, no new task state, and no raw `gh pr merge` permission broadening. Current contract: `docs/agent-guides/orchestrator-contracts.md` (including the **Merge-evidence contract** — the canonical vocabulary `APPROVE | REQUEST_CHANGES | BLOCK | PASS | REVISE | FAIL` and the structured-vs-prose extraction rules: a NON-NULL structured `verdict` is primary; serialized `null`, the durable recall producer's representation of legacy/no-structured rows, uses the strict annotated-prose fallback); implementation: `runtime/daemon/pr_ci_waiter.py`, `runtime/daemon/pr_ci_merge.py`.
+- **PR CI wait / guarded merge.** PR-producing engineering tasks use the jobs + `blocked_on_job_ids` path to wait for GitHub CI outside the agent session. Two CLI entrypoints (`python -m runtime.daemon.pr_ci_waiter` and `python -m runtime.daemon.pr_ci_merge`) wired to real `gh` provide the polling and guarded-merge mechanisms. The poll job (submitted through the existing jobs path with `review_required=false`) polls checks for a pinned PR head SHA, handles no-checks-yet settling, detects stale heads and timeouts, and prints a structured verdict JSON. The poll job performs NO merge. The final assigned manager personally checks settled independent review/QA and exact-head CI, invokes `guarded_merge` in its genuine live session, and observes the actual remote result before its own callback. The guard order is review APPROVE → QA PASS → fresh pinned head → CI PASS → open/non-draft → CLEAN → action; the ordinary action passes full H as `--match-head-commit H`, without `--admin`. Success requires exact remote repository/PR number/URL/head, MERGED state, full lowercase SHA1 commit and timezone-aware remote time. Command failure or unavailable/invalid post-command metadata yields `merge_failed` with actual cause and retained uncertainty; a later read-only confirmation is separate evidence, never a rewritten receipt or permission to remerge. There is no daemon PR finalizer/recovery after callback. No new daemon route, no new task state, and no raw `gh pr merge` permission broadening. Current contract: `docs/agent-guides/orchestrator-contracts.md` (including the **Merge-evidence contract** — the canonical vocabulary `APPROVE | REQUEST_CHANGES | BLOCK | PASS | REVISE | FAIL` and the structured-vs-prose extraction rules: a NON-NULL structured `verdict` is primary; serialized `null`, the durable recall producer's representation of legacy/no-structured rows, uses the strict annotated-prose fallback); implementation: `runtime/daemon/pr_ci_waiter.py`, `runtime/daemon/pr_ci_merge.py`.
 
 ### Collaboration surfaces
 
@@ -2816,6 +2816,30 @@ Traps:
 
 ## Jobs
 
+### Current Stop/status boundary — THR321seq6
+
+Stop200 means an actual owned Stop signal request, never exit. CLI says “Stop
+requested”; inspect show/wait for the actual row/reason/nullable exit and output.
+Running without attributable ownership yields pending/finalizing/unknown/held or
+owner-unavailable409; signal/audit503 states request_issued true/false/null. Do not
+blindly retry. Startup retains unproven running jobs with explicit unknown liveness;
+missing PID/maps, daemon death, timeout and absent native layout prove no orphanhood.
+Actual DB attachment/original preparation/attempt/runner/Process fences prevent
+cross-org ID collisions and stale-owner signals/removal/writes. The original job
+row/CAS, one trigger audit, actual producer and strict Pause disposition commit
+before local release/hint/wake; failed tails and descendant uncertainty remain.
+Output is directly awaited by the two owned stream pumps, with fresh identity
+fences and no per-line Task, intermediate queue or durable-history replay.
+Actual buffered tails finish before terminal composition; error/cancel tails
+are joined or retain uncertainty. Failed live publication is logged, preserves
+file capture and the real result/first cause, and cannot certify retirement.
+Wait/SSE use durable terminal reads. Both Web details preserve cached details/logs
+on read failure and offer explicit fresh detail-only Refresh status when streaming
+is unavailable. No automatic reconnect/polling addition; reopen/reload separately.
+Stop success/error settlement refreshes actual detail/list; locale changes issue
+no requests. A terminal hint alone never verifies [done]. Source publication is separate
+from deployment or historical recovery.
+
 Authorize contents in a thread BEFORE ordinary task/session submission.
 Omitted/false review_required enters automatic admission, rationale optional;
 true refuses422 before allocation (new CLI exit2), never flip/retry. /run is a
@@ -2842,9 +2866,9 @@ Traps:
 - Parsed true review_required refuses422; only omitted/false enters automatic admission. Persistence remains independent.
 - Auto-resume on terminal supersedes founder revisit for blocked-on-job tasks.
 - Graceful daemon teardown stops task-queue admission before signalling jobs.
-  A job actually signalled there persists `failed/daemon_shutdown` with its
-  real exit code; a natural pre-signal exit keeps its natural result and
-  `task_ended` has precedence. Non-JSON `jobs show` prints a non-null reason.
+  The first actual timeout/cap/task/shutdown/Stop cause wins. Genuine terminal
+  composition commits before hint/wake; failed persistence retains unknown
+  ownership, and a natural pre-signal exit keeps its actual result. Non-JSON `jobs show` prints a non-null reason.
 
 ## Task Blocked By Job
 
@@ -2870,7 +2894,7 @@ Traps:
 - "No checks" is not pass. Use required contexts when branch protection provides them, otherwise require explicit expected checks and a bounded settle window.
 - GitHub `mergeable` / `mergeStateStatus` is not CI green. It is one guard in addition to CI pass.
 - Do not use `gh pr merge --auto` as proof of safety while required checks are absent on `main`.
-- Merge completion is allowed only through the guarded helper or an explicitly thread-authorized manager job, not broad worker `gh pr merge` allow-rules.
+- The final assigned manager uses the guarded helper and observes actual remote MERGED/commit/time in its genuine live session before callback. CI poll jobs report readiness only; no completed callback triggers daemon merging. Existing repository/tool entitlement is required.
 - The poll job entrypoint is `python -m runtime.daemon.pr_ci_waiter --repo ... --pr N --head-sha <sha> --expected-check ...`; the merge entrypoint is `python -m runtime.daemon.pr_ci_merge --org ... --repo ... --pr N --head-sha <sha> --merge-method ... --ci-verdict ... --review-task-id ... --qa-task-id ...`. Both print structured JSON to stdout and exit with mapped codes.
 
 ## Reply-delivery compact retry captions

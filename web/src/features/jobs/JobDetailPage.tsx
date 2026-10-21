@@ -310,7 +310,7 @@ export function JobDetailPage(): JSX.Element {
   }
 
   // ── Error ──
-  if (query.isError) {
+  if (query.isError && !job) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-3 p-8">
         <p className="text-text-muted">{t('jobs.detail.loadError', { jobId: jobId ?? '' })}</p>
@@ -429,12 +429,13 @@ export function JobDetailPage(): JSX.Element {
               <LegacyPendingNotice />
             )}
 
-            {/* Running job: stop error feedback (Stop button is in the header) */}
-            {job.status === 'running' && actionError !== null && (
+            {/* Retain Stop feedback even when a fresh read observes terminal. */}
+            {actionError !== null && (
               <p className="text-feedback-danger text-sm">{renderJobError(actionError, t)}</p>
             )}
 
             {/* Output panel */}
+            {query.isError && <p role="alert" className="text-feedback-danger text-sm">{t('jobs.detail.loadError', { jobId: job.id })}</p>}
             <OutputPanel job={job} slug={slug ?? ''} />
           </div>
 

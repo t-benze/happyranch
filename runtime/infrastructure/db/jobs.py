@@ -410,43 +410,38 @@ class JobsMixin:
         stderr_head: str | None,
         reason: str | None = None,
     ) -> None:
+        changed = self._transition_job_to_terminal_uncommitted(
+            job_id, status=status, exit_code=exit_code, finished_at=finished_at,
+            duration_ms=duration_ms, stdout_head=stdout_head, stderr_head=stderr_head,
+            reason=reason)
+        self._conn.commit()
+        if not changed:
+            raise ValueError(f"not_running: job {job_id} cannot transition to terminal")
+
+    def _transition_job_to_terminal_uncommitted(
+        self, job_id: str, *, status: "JobStatus", exit_code: int | None,
+        finished_at: str, duration_ms: int | None, stdout_head: str | None,
+        stderr_head: str | None, reason: str | None = None,
+    ) -> bool:
+        """Running-only CAS; the original job owner composes audit/journals."""
         if status.value not in ("completed", "failed"):
             raise ValueError(f"invalid terminal status: {status.value}")
         cur = self._conn.execute(
-            "UPDATE jobs SET "
-            "status=?, exit_code=?, finished_at=?, duration_ms=?, "
-            "stdout_head=?, stderr_head=?, reason=? "
-            "WHERE id=? AND status='running'",
+            "UPDATE jobs SET status=?, exit_code=?, finished_at=?, duration_ms=?, "
+            "stdout_head=?, stderr_head=?, reason=? WHERE id=? AND status='running'",
             (status.value, exit_code, finished_at, duration_ms,
              stdout_head, stderr_head, reason, job_id),
         )
-        self._conn.commit()
-        if cur.rowcount == 0:
-            raise ValueError(f"not_running: job {job_id} cannot transition to terminal")
+        return cur.rowcount == 1
 
     @_synchronized
     def recover_orphaned_running_jobs(self, *, now_iso: str) -> list[str]:
-        """Force-transition any SR left in 'running' state to 'failed'.
+        """Return retained running IDs with unknown liveness; write nothing.
 
-        Called from the daemon FastAPI lifespan on startup. The subprocess
-        and its parent daemon process are gone; partial output on disk is
-        preserved but the row is marked failed so the founder UI doesn't
-        leave them in a permanent running state.
+        Restart, elapsed time, missing PID/maps and absent native layout do not
+        establish death of a separate process session or its descendants. There
+        is currently no supported positive orphan-proof producer/consumer.
+        ``preserve_uncommitted`` remains the native history/hold protection.
         """
-        rows = self._conn.execute(
-            "SELECT id FROM jobs WHERE status='running'"
-        ).fetchall()
-        admission = native_owner_uncommitted(self)
-        ids = [r['id'] for r in rows if admission is None or not admission.preserve_uncommitted(
-            'job', r['id'], self.get_job(r['id']).agent_name)]
-        if not ids:
-            return []
-        self._conn.executemany(
-            "UPDATE jobs SET status='failed', reason='daemon_crash', finished_at=?, "
-            "duration_ms=COALESCE(duration_ms, 0), "
-            "stderr_head=COALESCE(stderr_head, '') || '\n[daemon restart killed run]' "
-            "WHERE id=?",
-            [(now_iso, job_id) for job_id in ids],
-        )
-        self._conn.commit()
-        return ids
+        rows = self._conn.execute("SELECT id FROM jobs WHERE status='running'").fetchall()
+        return [r['id'] for r in rows]

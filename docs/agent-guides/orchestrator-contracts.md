@@ -3676,9 +3676,11 @@ Example:
 
 Merge-scoped engineering tasks are complete only after the PR is merged. PR creation, review APPROVE, or QA PASS alone are not terminal completion.
 
-Use the first-class PR CI helper to submit a bounded job pinned to the PR head SHA, then block with `waiting_on_job_ids`. On resume, complete only if the job's structured verdict proves the PR was merged at that SHA. If the helper reports stale head, timeout, CI failure, missing checks, non-clean mergeability, or merge failure, re-ground instead of marking done.
+An authorized CI poll job runs `python -m runtime.daemon.pr_ci_waiter`, pinned to the PR head SHA, and reports CI readiness only. It never merges. Use the existing `waiting_on_job_ids` lifecycle where authorized; inspect the actual terminal receipt. The final assigned manager must personally inspect settled independent review/QA results and exact-head checks, invoke `python -m runtime.daemon.pr_ci_merge` in its genuine live session, and observe the actual remote merge result before its own completion callback. A completed manager callback never triggers a daemon PR merge or recovery action.
 
-The helper must enforce: review APPROVE, QA PASS, CI PASS, unchanged head SHA, mergeable CLEAN, open/non-draft PR, configured merge method. It must not rely on `gh pr merge --auto` when branch protection lacks required checks.
+The helper preserves this guard order: review APPROVE, QA PASS, fresh pinned head, CI PASS, open/non-draft PR, then mergeable CLEAN. Its configured ordinary merge method passes the same full pinned head through CLI and action to `gh pr merge --match-head-commit H`, without `--admin`. Success requires read-only remote confirmation of the exact repository/PR number and GitHub URL, pinned head, MERGED state, full lowercase SHA1 merge commit and parseable timezone-aware `mergedAt`; output preserves the actual remote commit and timestamp. Invalid or unavailable metadata after command success is `merge_failed` (exit14), with potential post-effect uncertainty, never an empty commit or locally generated time.
+
+A nonzero or lost merge-command response remains `merge_failed`, retaining the actual cause/exit where available. A separately attributable later read-only confirmation may establish the exact effect, but never rewrites the failed command receipt or authorizes a second merge. Unconfirmed effects stay uncertain. No admin fallback or automatic replay exists; `--auto` is not evidence of safety. Existing JSON keys, audit semantics and legacy verdict extraction remain unchanged.
 
 ## Task/Subtask Terminology
 

@@ -36,10 +36,10 @@ Out of scope:
 The process, as ratified in `protocol/00-completion-contract.md`:
 
 1. The task owner opens a PR (or pushes a final commit) and captures the repository, PR number, and exact PR head SHA.
-2. After review (`APPROVE`) and QA (`PASS`) verdicts are obtained (via the existing chain or manual path), the task owner submits a bounded PR CI / guarded merge job through the first-class helper.
+2. An authorized bounded CI poll job may prepare exact-head readiness through the existing jobs path; it performs no merge.
 3. The task owner reports `status="blocked"` with `waiting_on_job_ids=["JOB-NNN"]`.
 4. The task parks in `in_progress(blocked_on_job)`. The existing all-terminal job predicate resumes the task when the job completes.
-5. On resume, the task owner inspects the structured job verdict. `done` only if `verdict=merged`; anything else triggers revise/fail/escalate.
+5. Inspect the actual CI job receipt. The final assigned manager personally checks settled independent review (`APPROVE`), QA (`PASS`) and successful exact-head checks, invokes the guarded-merge CLI in its genuine live session, and observes actual remote MERGED/commit/time before its own completion callback. The callback never triggers daemon PR merging or recovery.
 
 ## 4. Engine breakdown
 
@@ -89,7 +89,7 @@ The merge guard is conjunctive. Before attempting merge, the engine re-verifies:
 5. PR is open and not draft.
 6. GitHub mergeability is `CLEAN`.
 
-If ALL guards pass, the engine performs the merge using the configured method. Output is a structured final JSON:
+If ALL guards pass, the shipping CLI passes the same full pinned H to the configured ordinary action: `gh pr merge N --repo R --<method> --match-head-commit H`, without `--admin`. A race after the head guard therefore refuses at the action transport. Command success alone is insufficient: read-only `gh pr view N --repo R` must return the exact PR number and `https://github.com/R/pull/N` URL, pinned head, MERGED state, full lowercase SHA1 `mergeCommit.oid` and parseable timezone-aware `mergedAt`. Success preserves these actual remote values. Output is a structured final JSON:
 
 ```json
 {
@@ -102,6 +102,8 @@ If ALL guards pass, the engine performs the merge using the configured method. O
 ```
 
 If any guard fails, the verdict is the specific failure (`stale_head`, `ci_failed`, `checks_missing`, `timeout`, `pr_closed`, `pr_draft`, `github_error`, `merge_guard_review`, `merge_guard_qa`, `merge_guard_mergeable`, `merge_failed`) and the exit code is non-zero. The task owner sees the structured verdict on resume and decides revise/fail/escalate accordingly.
+
+Command nonzero/transport loss remains `merge_failed` (exit14), retaining its actual cause/exit where available and possible-effect uncertainty. Invalid/unavailable metadata after a successful command also yields `merge_failed`, never empty commit/local-time success. A separately attributable later read-only confirmation can establish the exact effect without rewriting the original failed receipt. There is no second merge, admin fallback or automatic replay. Pure-engine guard order, legacy verdict extraction, public JSON keys and audit semantics stay unchanged.
 
 ### 4.3 Verdict vocabulary
 
@@ -119,7 +121,7 @@ If any guard fails, the verdict is the specific failure (`stale_head`, `ci_faile
 | `merge_guard_review` | Review evidence verdict is not APPROVE | Yes | No |
 | `merge_guard_qa` | QA evidence verdict is not PASS | Yes | No |
 | `merge_guard_mergeable` | GitHub mergeability is not CLEAN | Yes | No |
-| `merge_failed` | Merge command returned non-zero | Yes | No |
+| `merge_failed` | Merge command failed/lost response, or remote confirmation invalid/unavailable | Yes | No |
 
 ### 4.4 Daemon route + CLI helper (job creation)
 
@@ -130,7 +132,7 @@ If any guard fails, the verdict is the specific failure (`stale_head`, `ci_faile
 > They were ABANDONED in the founder redesign (THR-047 msg 36) and were NEVER
 > merged to main.
 >
-> **Replacement model (see §8 and `runtime/daemon/pr_ci_waiter.py` / `runtime/daemon/pr_ci_merge.py`):**
+> **Replacement model (ownership clarified by Founder THR320 seq18; see §8 and the current adapters):**
 >
 > - **CI-POLL job:** a `review_required=false` job submitted through the
 >   EXISTING generic `POST /jobs/submit` route.  The job script invokes
@@ -141,16 +143,18 @@ If any guard fails, the verdict is the specific failure (`stale_head`, `ci_faile
 >   job verdict.  The poll job performs **NO merge** — it is strictly a
 >   CI-status poller.
 >
-> - **GUARDED-MERGE step:** triggered by the resumed task (not a separate job)
+> - **GUARDED-MERGE step:** invoked by the final assigned live manager
 >   via a second CLI entrypoint
 >   `python -m runtime.daemon.pr_ci_merge --org ... --repo ... --pr N --head-sha <sha> --merge-method squash --ci-verdict ci_pass --review-task-id TASK-xxx --qa-task-id TASK-yyy`.
 >   This re-enforces all guards (review APPROVE + QA PASS + mergeable CLEAN +
->   unchanged head SHA + open/non-draft) before performing the merge.
+>   unchanged head SHA + open/non-draft) before performing the head-matched
+>   ordinary merge and remote confirmation, all before that manager's callback.
 >
 > **No new daemon route, no new auth surface, no permission-model change.**
 > The poll job is submitted through the existing generic jobs infrastructure;
-> the merge step runs on the daemon authority path — baseline agents never
-> get raw `gh pr merge` grants.
+> the merge step belongs to the genuine live final manager with existing
+> tool/repository entitlement. Completed callbacks trigger no daemon PR effect;
+> baseline agents never get raw `gh pr merge` grants.
 >
 > `protocol/skills/jobs/SKILL.md` and `docs/agent-guides/features-and-invariants.md`
 > now contain the canonical integration — the poll-only job entrypoint
@@ -269,11 +273,11 @@ Do not merge implementation PRs (2-5) until:
 
 The `wait_for_ci` engine is invoked as a plain job submitted through the **existing generic jobs path** (`happyranch jobs submit` / `POST /jobs/submit`, already token-gated, unchanged). A real-`gh`-backed CLI entrypoint (`python -m runtime.daemon.pr_ci_waiter --repo ... --pr N --head-sha <sha> --expected-check ...`) runs the waiter engine with real GitHub callables, prints the structured verdict JSON to stdout, and exits with the mapped code from `VERDICT_EXIT_CODES`. The job is submitted with `review_required=false` so it auto-runs. The job performs **NO merge** — it is strictly a CI-status poller.
 
-### Merge triggered by the resumed task
+### Merge performed by the live final manager
 
-On resume, the task inspects the blocked poll-job verdict. If `ci_pass`, the task owner triggers `guarded_merge` as a **short daemon-run step** via a second CLI entrypoint (`python -m runtime.daemon.pr_ci_merge --org ... --repo ... --pr N --head-sha <sha> --merge-method squash --ci-verdict ci_pass --review-task-id TASK-xxx --qa-task-id TASK-yyy`). This re-enforces all guards (review APPROVE + QA PASS + mergeable CLEAN + unchanged head SHA + open/non-draft) before performing the merge. The merge runs on the daemon-run / EM-authority path — agents never get raw `gh pr merge` grants.
+The final assigned manager inspects actual settled independent results and successful exact-head checks, then invokes `guarded_merge` in its **genuine live session** via a second CLI entrypoint (`python -m runtime.daemon.pr_ci_merge --org ... --repo ... --pr N --head-sha <sha> --merge-method squash --ci-verdict ci_pass --review-task-id TASK-xxx --qa-task-id TASK-yyy`). This re-enforces all guards (review APPROVE + QA PASS + mergeable CLEAN + unchanged head SHA + open/non-draft) before performing the merge. The same manager observes actual remote MERGED/full commit/aware time before its own callback. Completed callbacks trigger no daemon PR finalizer or recovery. Existing entitlement is required; agents never get raw `gh pr merge` grants.
 
-### What was built (PR #4, reworked)
+### Historical implementation evidence (PR #4, reworked)
 
 - `runtime/daemon/pr_ci_waiter.py`: added `__main__` entrypoint with real-`gh` adapters (`_gh_fetch_pr_state`, `_gh_fetch_checks`, `_RealClock`).
 - `runtime/daemon/pr_ci_merge.py`: added `__main__` entrypoint with real-`gh` adapters (`_gh_fetch_pr_state`, `_gh_fetch_mergeable`, `_gh_perform_merge`) and recall-based verdict fetching (`_recall_fetch_verdict` via `happyranch recall`).

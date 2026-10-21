@@ -11,9 +11,11 @@ import hashlib
 import os
 import json as _json
 from collections import deque
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Literal
+import logging
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
@@ -631,56 +633,181 @@ async def tail_job(
     }
 
 
-@dual_router.post("/jobs/{job_id}/stop")
-async def stop_job(
-    slug: str, job_id: str, org: OrgDep,
-    task_id: str | None = None,
-    session_id: str | None = None,
-    has_bearer: bool = optional_bearer(),
-) -> dict:
-    """SIGTERM a running job. Founder via bearer OR agent via session-binding.
+class JobStopResponse(BaseModel):
+    ok: Literal[True]
+    id: str
 
-    The actual terminal state transition flows through the runner's normal
-    exit path. We deposit ``founder_stop``/``agent_stop`` into
-    ``_KILL_REASON_OVERRIDE`` so the row reports who pressed the button.
-    """
+
+class _JobStopNotRunning(BaseModel):
+    code: Literal['not_running']
+    status: JobStatus
+
+
+class _JobStopSessionMismatch(BaseModel):
+    code: Literal['session_mismatch']
+
+
+class _JobStopRunnerState(BaseModel):
+    code: Literal['job_runner_pending', 'job_runner_finalizing', 'job_liveness_unknown']
+    job_id: str
+    status: Literal['running']
+
+
+class _JobStopHeld(BaseModel):
+    code: Literal['team_move_native_held']
+    job_id: str
+    status: JobStatus | None
+    operation_id: str
+
+
+class _JobStopOwnerUnavailable(BaseModel):
+    code: Literal['job_owner_unavailable']
+    job_id: str
+    status: JobStatus | None
+    unavailable_code: str
+
+
+class _JobStopUnknownJob(BaseModel):
+    code: Literal['unknown_job']
+    job_id: str
+
+
+class _JobStopUnknownResponse(BaseModel):
+    detail: _JobStopUnknownJob
+
+
+class JobStopUnavailable(BaseModel):
+    code: Literal['job_stop_unavailable']
+    job_id: str
+    request_issued: bool | None
+    unavailable_code: Literal['signal_failed', 'request_audit_failed']
+
+
+class JobStopConflictResponse(BaseModel):
+    detail: _JobStopNotRunning | _JobStopSessionMismatch | _JobStopRunnerState | _JobStopHeld | _JobStopOwnerUnavailable
+
+
+class JobStopUnavailableResponse(BaseModel):
+    detail: JobStopUnavailable
+
+
+def _stop_disposition(org, job_id, *, signal_missed=False):
+    try:
+        return _classify_job_stop(org, job_id, signal_missed=signal_missed)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logging.getLogger(__name__).exception('Job Stop ownership read unavailable')
+        raise HTTPException(409, detail=dict(code='job_owner_unavailable', job_id=job_id,
+            status=None, unavailable_code='job_registration_unavailable')) from exc
+
+
+def _classify_job_stop(org, job_id, *, signal_missed=False):
+    from runtime.daemon.jobs_runner import _RUNNER_TASKS, _validate_registration
     record = org.db.get_job(job_id)
     if record is None:
-        raise HTTPException(
-            status_code=404, detail={"code": "unknown_job", "job_id": job_id},
-        )
+        raise HTTPException(404, detail={'code': 'unknown_job', 'job_id': job_id})
     if record.status != JobStatus.RUNNING:
-        raise HTTPException(
-            status_code=409,
-            detail={"code": "not_running", "status": record.status.value},
-        )
-    _enforce_session_or_bearer(
-        record, has_bearer=has_bearer,
-        task_id=task_id, session_id=session_id, org=org,
-    )
-    stopped_by = "founder" if has_bearer else "agent"
-
-    # Local import to avoid pulling jobs_runner internals into the module
-    # surface every time this file is imported.
-    from runtime.daemon.jobs_runner import _INFLIGHT, _KILL_REASON_OVERRIDE
-    import os
-    import signal
-
-    proc = _INFLIGHT.get(job_id)
-    if proc is None:
-        # Status said running but no inflight entry — terminal transition is
-        # in flight on the runner. Audit nothing; return a benign ok so the
-        # caller doesn't loop.
-        return {"ok": True, "id": job_id, "already_terminal": True}
-    _KILL_REASON_OVERRIDE[job_id] = f"{stopped_by}_stop"
+        raise HTTPException(409, detail={'code': 'not_running', 'status': record.status.value})
     try:
-        os.killpg(proc.pid, signal.SIGTERM)
-    except ProcessLookupError:
-        pass
-    AuditLogger(org.db).log_job_stopped(
-        job_id=job_id, task_id=record.task_id, stopped_by=stopped_by,
-    )
-    return {"ok": True, "id": job_id}
+        admission = owner_for(org.db)
+        pause = getattr(org.db, '_task_pause_store', None)
+        if admission is not None and pause is None:
+            raise PauseControlError('pause_control_unavailable')
+        with org.db._lock:
+            if pause is not None:
+                root = pause.root_uncommitted(record.task_id)
+                pause.row_uncommitted(root['id'])  # strict history; active Pause permits owned Stop
+            if admission is not None:
+                admission.history_uncommitted()
+        r = _RUNNER_TASKS.get((org.db, job_id))
+        if r is not None:
+            if r.org_slug != org.slug:
+                raise DeferredTeamMove('job_registration_unavailable')
+            _validate_registration(r)
+            if r.task.done():
+                raise DeferredTeamMove('job_registration_unavailable')
+            if r.process is not None and r.process.returncode is None and not signal_missed:
+                return r
+            code = ('job_liveness_unknown' if signal_missed and r.process is not None and r.process.returncode is None
+                    else 'job_runner_finalizing' if r.process is not None else 'job_runner_pending')
+        else:
+            code = 'job_liveness_unknown'
+            if admission is not None:
+                with org.db._lock:
+                    admission.check_job_uncommitted(record)
+                    if ('job', job_id) in admission.live:
+                        raise DeferredTeamMove('job_registration_unavailable')
+                    retained = admission.deferred_jobs.get(job_id)
+                    if retained is not None:
+                        original = retained.owner
+                        state = original.state
+                        if (original.admission is not admission or original.admission.db is not org.db
+                                or state.org_slug != org.slug or state.kind != 'job' or state.source_id != job_id
+                                or (state.task_id, state.agent_id) != (record.task_id, record.agent_name)
+                                or not state.deferred or not state.producer_settled or state.unknown
+                                or admission.history_uncommitted().get(('job', job_id, state.occurrence_id)) != state):
+                            raise DeferredTeamMove('job_registration_unavailable')
+                        code = 'job_runner_pending'
+    except (DeferredTeamMove, PauseControlError) as exc:
+        winner = org.db.get_job(job_id)
+        if winner is not None and winner.status != JobStatus.RUNNING:
+            raise HTTPException(409, detail={'code': 'not_running', 'status': winner.status.value}) from exc
+        detail = dict(code='job_owner_unavailable', job_id=job_id,
+                      status=winner.status.value if winner else None, unavailable_code=exc.code)
+        if isinstance(exc, DeferredTeamMove) and exc.code in {'team_move_native_held', 'team_move_task_held'}:
+            detail = dict(code='team_move_native_held', job_id=job_id, status=detail['status'], operation_id=exc.operation_id)
+        raise HTTPException(409, detail=detail) from exc
+    # A final fresh row read fences the classification too.
+    winner = org.db.get_job(job_id)
+    if winner is not None and winner.status != JobStatus.RUNNING:
+        raise HTTPException(409, detail={'code': 'not_running', 'status': winner.status.value})
+    raise HTTPException(409, detail={'code': code, 'job_id': job_id, 'status': 'running'})
+
+
+@dual_router.post('/jobs/{job_id}/stop', response_model=JobStopResponse, responses={
+    404: {'description': 'Unknown job', 'model': _JobStopUnknownResponse},
+    409: {'description': 'Nonrunning, pending, finalizing, held or unknown owner', 'model': JobStopConflictResponse},
+    503: {'description': 'Signal or request audit unavailable; inspect request_issued', 'model': JobStopUnavailableResponse},
+})
+async def stop_job(
+    slug: str, job_id: str, org: OrgDep,
+    task_id: str | None = None, session_id: str | None = None,
+    has_bearer: bool = optional_bearer(),
+) -> dict:
+    """200 acknowledges a real attributed Stop signal request, never exit."""
+    record = org.db.get_job(job_id)
+    if record is None:
+        raise HTTPException(404, detail={'code': 'unknown_job', 'job_id': job_id})
+    if record.status != JobStatus.RUNNING:
+        raise HTTPException(409, detail={'code': 'not_running', 'status': record.status.value})
+    _enforce_session_or_bearer(record, has_bearer=has_bearer,
+        task_id=task_id, session_id=session_id, org=org)
+    r = _stop_disposition(org, job_id)
+    stopped_by = 'founder' if has_bearer else 'agent'
+    from runtime.daemon.jobs_runner import _signal_registered_job
+    try:
+        issued = _signal_registered_job(r, f'{stopped_by}_stop')
+    except DeferredTeamMove:
+        _stop_disposition(org, job_id, signal_missed=True)
+        raise  # unavailable ownership never signals
+    except OSError as exc:
+        logging.getLogger(__name__).exception('Job Stop signal unavailable')
+        raise HTTPException(503, detail=dict(code='job_stop_unavailable', job_id=job_id,
+            request_issued=False, unavailable_code='signal_failed')) from exc
+    except Exception as exc:
+        logging.getLogger(__name__).exception('Job Stop signal outcome unknown')
+        raise HTTPException(503, detail=dict(code='job_stop_unavailable', job_id=job_id,
+            request_issued=None, unavailable_code='signal_failed')) from exc
+    if not issued:
+        _stop_disposition(org, job_id, signal_missed=True)
+    try:
+        AuditLogger(org.db).log_job_stopped(job_id=job_id, task_id=record.task_id, stopped_by=stopped_by)
+    except Exception as exc:
+        logging.getLogger(__name__).exception('Job Stop request audit unavailable after signal')
+        raise HTTPException(503, detail=dict(code='job_stop_unavailable', job_id=job_id,
+            request_issued=True, unavailable_code='request_audit_failed')) from exc
+    return {'ok': True, 'id': job_id}
 
 
 @dual_router.post("/jobs/{job_id}/wait")
@@ -739,8 +866,9 @@ async def wait_job(
                 break
             next_task = None
             if evt.get("kind") == "terminal":
-                rec_now = org.db.get_job(job_id) or record
-                return rec_now.model_dump() | {"timed_out": False}
+                rec_now = org.db.get_job(job_id)
+                if rec_now is not None and rec_now.status in _TERMINAL_SR_STATUSES:
+                    return rec_now.model_dump() | {"timed_out": False}
             next_task = asyncio.create_task(sub_iter.__anext__())
     finally:
         if next_task is not None and not next_task.done():
@@ -830,22 +958,45 @@ def _authenticated_pending_submission(org, record: JobRecord, entry: dict | None
             and payload.get("submission_digest") == proof["digest"])
 
 
-def _settle_pause_job(org, task_id: str, job_id: str, *, no_launch_proven: bool = False) -> None:
-    store = getattr(org.db, "_task_pause_store", None)
+def _settle_pause_job(db, task_id: str, job_id: str, *, control):
+    """Stage only in the caller's existing job terminal writer."""
+    store = getattr(db, '_task_pause_store', None)
     if store is None:
         return
-    with store.writer(task_id) as (_, row):
-        job = org.db.get_job(job_id)
-        if row is not None and job is not None and job.status.value in {"completed", "failed", "rejected"}:
-            if no_launch_proven:
-                row["journal"]["entries"] = [e for e in row["journal"]["entries"]
-                    if not (e["owner"] == "job" and e["owner_identity"].get("job_id") == job_id)]
-            else:
-                for entry in row["journal"]["entries"]:
-                    if entry["owner"] == "job" and entry["owner_identity"].get("job_id") == job_id:
-                        entry["phase"] = "unknown"
-                        entry["started_at"] = entry["captured_generation"] = None
-            store.save_journal_uncommitted(row)
+    if control is None:
+        raise PauseControlError('pause_control_unavailable')
+    matches = [e for e in control['journal']['entries']
+               if e['owner'] == 'job' and e['owner_identity'].get('job_id') == job_id]
+    if len(matches) != 1 or matches[0]['task_id'] != task_id:
+        raise PauseControlError('pause_control_unavailable')
+    entry = matches[0]
+    entry['phase'] = 'unknown'  # direct exit is not descendant cleanup
+    entry['started_at'] = entry['captured_generation'] = None
+    store.save_journal_uncommitted(control)
+
+
+@contextmanager
+def _job_terminal_writer(org, task_id, registration):
+    db = registration.db
+    if org.db is not db or org.slug != registration.org_slug:
+        raise DeferredTeamMove('job_registration_unavailable')
+    store = getattr(db, '_task_pause_store', None)
+    if store is None and registration.owner is not None:
+        raise PauseControlError('pause_control_unavailable')
+    if store is not None:
+        with store.writer(task_id) as (_, control):
+            yield control
+    else:
+        with db._lock:
+            if db._conn.in_transaction:
+                raise RuntimeError('job_terminal_sql_owner_unavailable')
+            try:
+                db._conn.execute('BEGIN IMMEDIATE')
+                yield None
+                db._conn.commit()
+            except BaseException:
+                db._conn.rollback()
+                raise
 
 
 async def _run_job_core_impl(
@@ -867,7 +1018,21 @@ async def _run_job_core_impl(
       the agent's name, stamps ``reviewed_by=<agent>`` so audit traces stay
       coherent. ``trigger_actor`` is required when trigger="agent".
     """
-    record = org.db.get_job(job_id)
+    job_db, job_slug = org.db, org.slug
+    from runtime.daemon.jobs_runner import _require_job_attachment
+
+    def require_attachment():
+        try:
+            if org.db is not job_db or org.slug != job_slug:
+                raise DeferredTeamMove('job_registration_unavailable')
+            _require_job_attachment(job_db, job_slug)
+        except BaseException:
+            if _move_owner is not None:
+                _move_owner.detached = True  # retain original uncertain owner
+            raise
+
+    require_attachment()
+    record = job_db.get_job(job_id)
     if record is None:
         raise HTTPException(
             status_code=404,
@@ -912,14 +1077,15 @@ async def _run_job_core_impl(
     jobs_dir = org.root / "jobs"
     stdout_path, stderr_path = jobs_dir / f"{job_id}.out", jobs_dir / f"{job_id}.err"
     now = _now_iso()
-    store = getattr(org.db, "_task_pause_store", None)
-    audit = AuditLogger(org.db)
+    store = getattr(job_db, "_task_pause_store", None)
+    audit = AuditLogger(job_db)
     if store is not None:
         async with org.db_lock:
             lease = org.sessions.binding_lease(record.task_id, record.agent_name) if trigger == "agent" else nullcontext()
             with lease:
                 with store.writer(record.task_id) as (root, control):
-                    current = org.db.get_job(job_id)
+                    require_attachment()
+                    current = job_db.get_job(job_id)
                     if current is None or current.status != JobStatus.PENDING:
                         raise HTTPException(status_code=409, detail={"code": "not_pending"})
                     if trigger != "agent":
@@ -930,7 +1096,7 @@ async def _run_job_core_impl(
                     entries = [] if control is None else control["journal"]["entries"]
                     job_entry = next((e for e in entries if e["owner"] == "job"
                                       and e["owner_identity"].get("job_id") == job_id), None)
-                    task = org.db.get_task(record.task_id)
+                    task = job_db.get_task(record.task_id)
                     effective = bool(control and control["held"] and root["status"] not in {"completed", "failed", "cancelled", "superseded"})
                     if trigger == "agent":
                         sid = submit_session_id if submit_session_id is not None else (job_entry["session_id"] if job_entry else None)
@@ -940,7 +1106,7 @@ async def _run_job_core_impl(
                                      and task.status.value in {"pending", "in_progress"}
                                      and task.assigned_agent == record.agent_name)
                         exception = exact and effective and task.current_session_id == sid and any(
-                            e["phase"] == "running" and normal_session_entry(org.db._conn, e)
+                            e["phase"] == "running" and normal_session_entry(job_db._conn, e)
                             and e["task_id"] == record.task_id and e["agent"] == record.agent_name and e["session_id"] == sid
                             and e["captured_generation"] == control["generation"]
                             for e in entries) and org.sessions.get_active(record.task_id, record.agent_name) == sid \
@@ -958,17 +1124,17 @@ async def _run_job_core_impl(
                                 or job_entry["captured_generation"] is not None):
                             raise preflight_error
                         diagnostic = _json.dumps(preflight_error.detail, ensure_ascii=False)[:4096]
-                        if not org.db._fail_unlaunched_job_uncommitted(
+                        if not job_db._fail_unlaunched_job_uncommitted(
                                 job_id, task_id=current.task_id, agent=current.agent_name,
                                 finished_at=_now_iso(), diagnostic=diagnostic):
-                            winner = org.db.get_job(job_id)
+                            winner = job_db.get_job(job_id)
                             raise HTTPException(status_code=409, detail={
                                 "code": "not_pending", "job_id": job_id,
                                 "status": winner.status.value if winner else None,
                             })
                         control["journal"]["entries"].remove(job_entry)
                         store.save_journal_uncommitted(control)
-                        org.db.insert_audit_log_uncommitted(current.task_id, current.agent_name,
+                        job_db.insert_audit_log_uncommitted(current.task_id, current.agent_name,
                             "job_run_failed", {"script_request_id": job_id, "exit_code": None,
                                 "duration_ms": 0, "reason": "spawn_failed"})
                     else:
@@ -985,7 +1151,7 @@ async def _run_job_core_impl(
                             control["journal"]["entries"].append(job_entry)
                         if current is None or current.status != JobStatus.PENDING:
                             raise HTTPException(status_code=409, detail={"code": "not_pending"})
-                        if not org.db._transition_job_to_running_uncommitted(
+                        if not job_db._transition_job_to_running_uncommitted(
                                 job_id, reviewer=reviewer, reviewed_at=now, started_at=now,
                                 cwd_resolved=str(cwd_resolved), max_runtime_seconds=timeout,
                                 stdout_path=str(stdout_path), stderr_path=str(stderr_path)):
@@ -1000,7 +1166,7 @@ async def _run_job_core_impl(
                             payload.update(agent=reviewer, persistent=record.persistent)
                         else:
                             payload.update(reviewer=reviewer)
-                        org.db.insert_audit_log_uncommitted(record.task_id, reviewer,
+                        job_db.insert_audit_log_uncommitted(record.task_id, reviewer,
                             "job_auto_started" if trigger == "agent" else "job_run_started", payload)
         if preflight_error is not None:
             # Writer committed the failed row, audit and proven-no-launch settlement.
@@ -1013,36 +1179,14 @@ async def _run_job_core_impl(
                 # certifies this refusal only, never an HTTP error category.
                 _move_disposition.no_effect_error = refusal
             raise refusal
-        try:
-            jobs_dir.mkdir(parents=True, exist_ok=True)
-            stdout_path.write_bytes(b"")
-            stderr_path.write_bytes(b"")
-        except OSError as exc:
-            org.db.transition_job_to_terminal(job_id, status=JobStatus.FAILED,
-                exit_code=None, finished_at=_now_iso(), duration_ms=0,
-                stdout_head=None, stderr_head=str(exc)[:4096], reason="spawn_failed")
-            _settle_pause_job(org, record.task_id, job_id, no_launch_proven=True)
-            audit.log_job_run_failed(task_id=record.task_id, job_id=job_id,
-                actor=reviewer, reason="spawn_failed")
-            fire_resume_check_for_job(org, job_id)
-            raise HTTPException(status_code=500, detail={
-                "code": "spawn_failed", "job_id": job_id, "status": "failed",
-            }) from exc
     else:
         if preflight_error is not None:
             # Without the authenticated journal there is no settlement authority.
             raise preflight_error
-        # Allocate output paths under <runtime>/orgs/<slug>/jobs/.
-        jobs_dir = org.root / "jobs"
-        jobs_dir.mkdir(parents=True, exist_ok=True)
-        stdout_path = jobs_dir / f"{job_id}.out"
-        stderr_path = jobs_dir / f"{job_id}.err"
-        stdout_path.write_bytes(b"")
-        stderr_path.write_bytes(b"")
-
         now = _now_iso()
+        require_attachment()
         try:
-            org.db.transition_job_to_running(
+            job_db.transition_job_to_running(
                 job_id,
                 reviewer=reviewer,
                 reviewed_at=now,
@@ -1055,7 +1199,7 @@ async def _run_job_core_impl(
         except ValueError:
             raise HTTPException(status_code=409, detail={"code": "not_pending"})
 
-        audit = AuditLogger(org.db)
+        audit = AuditLogger(job_db)
         if trigger == "agent":
             audit.log_job_auto_started(
                 task_id=record.task_id, job_id=job_id, agent=reviewer,
@@ -1073,141 +1217,125 @@ async def _run_job_core_impl(
             )
 
 
-    # Spawn the runner outside the request lifecycle.
-    async def _run_and_persist() -> None:
-        loop = asyncio.get_running_loop()
+    # Registration spans preparation, launch and the committed ownership tail.
+    from runtime.daemon.jobs_runner import (register_runner_task, _capture_registration,
+        _validate_registration, _validate_output_registration, _release_registration, JobRunResult)
+    from runtime.orchestrator.producer_move import _stage_job_terminal_uncommitted, _release_job_terminal, _DeferredJob
 
-        def _sync_publish(evt: dict) -> None:
-            asyncio.run_coroutine_threadsafe(
-                org.event_bus.publish(job_topic(job_id), evt), loop
-            )
+    def defer_owned_job(registration):
+        owner = registration.owner
+        with _job_terminal_writer(org, record.task_id, registration):
+            _validate_registration(registration, running_task=True)
+            candidate = _stage_job_terminal_uncommitted(owner, observed=False, deferred=True)
+        if candidate is not None:
+            owner.state = candidate
+            if candidate.deferred and candidate.producer_settled:
+                owner.admission.deferred_jobs[job_id] = _DeferredJob(owner, owned_run)
+                _release_registration(registration)
+            _release_job_terminal(owner, candidate)
 
-        try:
-            result = await _spawn_job(
-                job_id=job_id,
-                script_text=record.script_text,
-                interpreter=record.interpreter.value,
-                cwd=str(cwd_resolved),
-                stdout_path=str(stdout_path),
-                stderr_path=str(stderr_path),
-                max_runtime_seconds=timeout,
-                max_output_bytes=record.max_output_bytes,
-                publish=_sync_publish,
-                task_id=record.task_id,
-                workspace_root=str(workspace_root),
-                move_owner=_move_owner,
-            )
-        except DeferredTeamMove:
-            raise
-        except FileNotFoundError:
-            finished = _now_iso()
+    async def _run_and_persist(registration):
+        async def publish_output(evt):
+            # Yield BEFORE fresh identity checks, including for tiny lines in
+            # an already-buffered chunk. Two pumps own at most two awaited
+            # publications. No historical replay, queue or per-line Task.
+            await asyncio.sleep(0)
+            if registration.output_error is not None:
+                return  # failed channel already recorded; disk capture continues
             try:
-                org.db.transition_job_to_terminal(
-                    job_id, status=JobStatus.FAILED,
-                    exit_code=None, finished_at=finished, duration_ms=0,
-                    stdout_head=None, stderr_head=None,
-                    reason="spawn_failed",
-                )
-            except ValueError:
-                pass
-            audit.log_job_run_failed(
-                task_id=record.task_id, job_id=job_id, actor=reviewer,
-                reason="spawn_failed",
-            )
-            # Bridge: terminal status committed — resume any tasks blocked on this job.
-            _settle_pause_job(org, record.task_id, job_id)
-            fire_resume_check_for_job(org, job_id)
-            return
+                require_attachment()
+                _validate_output_registration(registration)
+                # Current EventBus acquires/releases its lock without awaiting
+                # inside it, then puts into unbounded subscriber queues. Thus
+                # it cannot suspend after this fence under that contract.
+                await org.event_bus.publish(job_topic(job_id), evt)
+            except Exception as exc:
+                registration.tail_failed = True
+                registration.output_error = exc
+                logging.getLogger(__name__).exception(
+                    'Job output publication failed; retaining unknown tail for %s; '
+                    'remaining output is captured to the original files', job_id)
+                # Keep draining files and preserve the actual execution result
+                # and first cause. Publication failure is not spawn/process failure.
+
+        failed_tail = False
+        require_attachment()
+        _validate_registration(registration, running_task=True)
+        try:
+            jobs_dir.mkdir(parents=True, exist_ok=True)
+            stdout_path.write_bytes(b'')
+            stderr_path.write_bytes(b'')
+            result = await _spawn_job(job_id=job_id, registration=registration,
+                script_text=record.script_text, interpreter=record.interpreter.value,
+                cwd=str(cwd_resolved), stdout_path=str(stdout_path), stderr_path=str(stderr_path),
+                max_runtime_seconds=timeout, max_output_bytes=record.max_output_bytes,
+                publish=publish_output, task_id=record.task_id,
+                workspace_root=str(workspace_root), move_owner=registration.owner)
+        except DeferredTeamMove:
+            defer_owned_job(registration)
+            return None
         except Exception as exc:
-            finished = _now_iso()
+            failed_tail = True
+            result = JobRunResult(status='failed', exit_code=None, duration_ms=None,
+                stdout_head=None, stderr_head=str(exc)[:4096], stdout_bytes=0, stderr_bytes=0,
+                truncated_stdout=False, truncated_stderr=False,
+                reason='spawn_failed' if isinstance(exc, (FileNotFoundError, OSError)) else 'internal_error')
+
+        # Execution handling ends here: publication failures cannot rewrite its result.
+        candidate = None
+        with _job_terminal_writer(org, record.task_id, registration) as control:
+            _validate_registration(registration, running_task=True)
+            changed = job_db._transition_job_to_terminal_uncommitted(job_id,
+                status=JobStatus(result.status), exit_code=result.exit_code,
+                finished_at=_now_iso(), duration_ms=result.duration_ms,
+                stdout_head=result.stdout_head, stderr_head=result.stderr_head, reason=result.reason)
+            if not changed:
+                return job_db.get_job(job_id)  # winner owns every terminal side effect
+            payload = dict(script_request_id=job_id, exit_code=result.exit_code, duration_ms=result.duration_ms)
+            if result.status == 'completed':
+                payload.update(stdout_bytes=result.stdout_bytes, stderr_bytes=result.stderr_bytes,
+                    truncated_stdout=result.truncated_stdout, truncated_stderr=result.truncated_stderr)
+            else:
+                payload['reason'] = result.reason or 'unknown'
+            job_db.insert_audit_log_uncommitted(record.task_id, reviewer,
+                'job_run_completed' if result.status == 'completed' else 'job_run_failed', payload)
+            candidate = _stage_job_terminal_uncommitted(registration.owner,
+                observed=registration.observed, failed=failed_tail or registration.tail_failed)
+            _settle_pause_job(job_db, record.task_id, job_id, control=control)
+        # COMMIT succeeded. Any exception/ambiguous COMMIT above retains unknown
+        # ownership, without blind append/retry, terminal hint or wake.
+        if candidate is not None:
+            registration.owner.state = candidate
+        if (candidate is None and not failed_tail and not registration.tail_failed
+                or candidate is not None and candidate.producer_settled):
+            _release_registration(registration)
+        _release_job_terminal(registration.owner, candidate, callback=owned_run)
+        require_attachment()
+        current = job_db.get_job(job_id)
+        if current is not None and current.status in _TERMINAL_SR_STATUSES:
             try:
-                org.db.transition_job_to_terminal(
-                    job_id, status=JobStatus.FAILED,
-                    exit_code=None, finished_at=finished, duration_ms=0,
-                    stdout_head=None, stderr_head=str(exc),
-                    reason="internal_error",
-                )
-            except ValueError:
-                pass
-            audit.log_job_run_failed(
-                task_id=record.task_id, job_id=job_id, actor=reviewer,
-                reason="internal_error",
-            )
-            # Bridge: terminal status committed — resume any tasks blocked on this job.
-            _settle_pause_job(org, record.task_id, job_id)
-            fire_resume_check_for_job(org, job_id)
-            return
+                await org.event_bus.publish(job_topic(job_id), dict(kind='terminal',
+                    status=current.status.value, exit_code=current.exit_code,
+                    duration_ms=current.duration_ms, reason=current.reason))
+            except Exception:
+                logging.getLogger(__name__).exception('Committed job terminal hint unavailable')
+            try:
+                require_attachment()
+                fire_resume_check_for_job(org, job_id)
+            except Exception:
+                logging.getLogger(__name__).exception('Committed job waiter notification unavailable')
+        return current
 
-        finished = _now_iso()
-        try:
-            org.db.transition_job_to_terminal(
-                job_id,
-                status=JobStatus(result.status),
-                exit_code=result.exit_code,
-                finished_at=finished,
-                duration_ms=result.duration_ms,
-                stdout_head=result.stdout_head,
-                stderr_head=result.stderr_head,
-                reason=result.reason,
-            )
-        except ValueError:
-            return
-
-        # Bridge: terminal status committed — resume any tasks blocked on this job.
-        # The current runner proves its direct process exit only. Its real
-        # result is settled normally while missing tree closure stays unknown.
-        _settle_pause_job(org, record.task_id, job_id)
-        fire_resume_check_for_job(org, job_id)
-
-        if result.status == "completed":
-            audit.log_job_run_completed(
-                task_id=record.task_id, job_id=job_id,
-                actor=reviewer,
-                exit_code=result.exit_code or 0,
-                duration_ms=result.duration_ms,
-                stdout_bytes=result.stdout_bytes,
-                stderr_bytes=result.stderr_bytes,
-                truncated_stdout=result.truncated_stdout,
-                truncated_stderr=result.truncated_stderr,
-            )
-        else:
-            audit.log_job_run_failed(
-                task_id=record.task_id, job_id=job_id,
-                actor=reviewer,
-                exit_code=result.exit_code,
-                duration_ms=result.duration_ms,
-                reason=result.reason or "unknown",
-            )
-
-    from runtime.daemon.jobs_runner import register_runner_task
     async def owned_run(owner):
-        nonlocal _move_owner
-        _move_owner = owner
-        deferred = failed = False
-        primary = None
-        try:
-            await _run_and_persist()
-        except DeferredTeamMove:
-            deferred = True
-        except BaseException as exc:
-            primary = exc
-            failed = True
-            raise
-        finally:
-            if owner is not None:
-                try:
-                    owner.finish(deferred=deferred, failed=failed)
-                except BaseException as settlement:
-                    if primary is None:
-                        raise
-                    primary.add_note(f'job native ownership settlement failed: {settlement}')
-                if deferred:
-                    owner.admission.deferred_jobs[job_id] = owned_run
-                else:
-                    owner.admission.deferred_jobs.pop(job_id, None)
+        registration = _capture_registration(job_db, job_id, owner)
+        # Only the execution boundary above classifies a real deferral. A
+        # finalization/release failure stays unknown, never a second append.
+        return await _run_and_persist(registration)
+
+    task = asyncio.create_task(owned_run(_move_owner))
     if _move_owner is not None:
-        _move_owner.detached = True
-    register_runner_task(job_id, asyncio.create_task(owned_run(_move_owner)))
+        _move_owner.detached = True  # a registration refusal retains this original owner
+    register_runner_task(job_id, task, db=job_db, org_slug=job_slug, move_owner=_move_owner)
 
     return {
         "id": job_id,
@@ -1260,6 +1388,7 @@ def _terminal_frame_from_record(record) -> str:
         "status": record.status.value,
         "exit_code": record.exit_code,
         "duration_ms": record.duration_ms,
+        "reason": record.reason,
     }
     return f"event: terminal\ndata: {_json.dumps(payload)}\n\n"
 
@@ -1305,8 +1434,10 @@ async def job_events_stream(slug: str, job_id: str, org: OrgDep) -> StreamingRes
                     stream_name = evt.get("stream", "stdout")
                     yield f"event: {stream_name}\ndata: {_json.dumps({'line': evt.get('line', ''), 'ts': evt.get('ts')})}\n\n"
                 elif kind == "terminal":
-                    yield f"event: terminal\ndata: {_json.dumps({'status': evt.get('status'), 'exit_code': evt.get('exit_code'), 'duration_ms': evt.get('duration_ms'), 'reason': evt.get('reason')})}\n\n"
-                    return
+                    rec_now = org.db.get_job(job_id)
+                    if rec_now is not None and rec_now.status in _TERMINAL_SR_STATUSES:
+                        yield _terminal_frame_from_record(rec_now)
+                        return
                 next_task = asyncio.create_task(sub_iter.__anext__())
         finally:
             if next_task is not None and not next_task.done():

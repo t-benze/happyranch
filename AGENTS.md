@@ -1000,6 +1000,29 @@ Preserve owner/session/Pause/possible-launch/race winners, existing running CAS,
 limits and all-terminal resumption. No schema/auth/permission/credential/general
 notifier change or deployment follows. Current contract: [Jobs](docs/superpowers/specs/2026-05-26-jobs-design.md).
 
+
+Stop200 means an actual owned Stop signal request, never exit. CLI says “Stop
+requested”; inspect show/wait for the actual row/reason/nullable exit and output.
+Running without attributable ownership yields pending/finalizing/unknown/held or
+owner-unavailable409; signal/audit503 states request_issued true/false/null. Do not
+blindly retry. Startup retains unproven running jobs with explicit unknown liveness;
+missing PID/maps, daemon death, timeout and absent native layout prove no orphanhood.
+Actual DB attachment/original preparation/attempt/runner/Process fences prevent
+cross-org ID collisions and stale-owner signals/removal/writes. The original job
+row/CAS, one trigger audit, actual producer and strict Pause disposition commit
+before local release/hint/wake; failed tails and descendant uncertainty remain.
+Output is directly awaited by the two owned stream pumps, with fresh identity
+fences and no per-line Task, intermediate queue or durable-history replay.
+Actual buffered tails finish before terminal composition; error/cancel tails
+are joined or retain uncertainty. Failed live publication is logged, preserves
+file capture and the real result/first cause, and cannot certify retirement.
+Wait/SSE use durable terminal reads. Both Web details preserve cached details/logs
+on read failure and offer explicit fresh detail-only Refresh status when streaming
+is unavailable. No automatic reconnect/polling addition; reopen/reload separately.
+Stop success/error settlement refreshes actual detail/list; locale changes issue
+no requests. A terminal hint alone never verifies [done]. Source publication is separate
+from deployment or historical recovery.
+
 **Independent THR307 nightly disk sweeper — Founder seq117/134, ROOT TASK12353 recovery.**
 One daemon-wide operator control is `<daemon_home>/disk-sweep/stop.json`.
 Its only supported content is a JSON object containing exactly `stop` with a
@@ -1709,7 +1732,7 @@ Detailed contracts: `docs/agent-guides/agent-executors-and-permissions.md` § "C
 - **Versioned dual-text policy launch binding (THR-229 checkpoint C1, unmerged draft PR878).** This is staged, not shipped: it lands on an open draft feature PR and is not part of the running daemon until a later guarded merge. Eligible manager launch resolution is now selector-family-aware: it resolves the single authenticated team selector (initializing it via the transaction-owning backstop when startup did not), returns the documented static/no-active behavior for an authenticated `empty` selector, resolves a selected `legacy_v1` to exactly that selector's legacy release/activation, and resolves a selected `v2` to its immutable release/activation pair; missing/corrupt/unsupported/mixed selector state refuses rather than falling back to the newest legacy activation. A v2 launch writes one immutable `authority_policy_v2_session_bindings` row (root/team/manager/session, selector id+epoch, release id/version/digest, activation, contract, resolved provider/executor/model); a selected-v1 launch writes the unchanged legacy `authority_policy_session_binding` audit plus the additive `authority_policy_selector_session_binding` supplement in ONE transaction. Exact repeats are idempotent; changed tuples and cross-family collisions refuse. Binding reads authenticate a pin through its own bounded predecessor chain, so a later legitimate activation cannot replace or invalidate an older binding. The v2 prompt renders BOTH immutable texts under distinct `What to escalate` / `What not to escalate` labels with escalation-wins/fail-closed precedence and the exact v2 contract identity, with no clause catalogue/id, canonical continuation phrase, or keyword unlock. Legacy v1 rendering bytes/digests are unchanged. Staged debt still owed (NOT implemented here): candidate/evaluation/continuation consumers, the corrected adverse/partial/raw-DDL diagnostics and recovery/generation admission fences, and the complete editable-pair editor/browser/activation/readback path. C2 versioned strict callback/result admission and result-keyed attempts have since landed on this same branch (see the C2 checkpoint paragraph above), together with the R3 real owned-runtime subprocess shipping fixture. Until the remaining consumers land and merge, the authority hook still fail-closes an unsupported v2 consumer outcome (ESCALATE, no continuation) and the dual-text feature remains unaccepted.
 
 - **Atomic pending parent-wake admission.** Receipt-owned cleanup tails and startup recovery can produce the same bounded parent wake concurrently. Every shipping parent-wake producer and the startup delegated/blocked-job dedupe paths use `TaskQueue.enqueue_if_absent`, which claims an ephemeral per-task reservation under the queue lock, runs generation-aware/DB-aware publication with that lock released, then clears the reservation on success, refusal, or failure. A concurrent bounded producer loses to either the reservation or an actual pending item. Dequeue atomically ends pending suppression so a later legitimate transition can wake the task again; unrelated FIFO ordering and ordinary non-coalescing enqueue are unchanged. Tests join every cleanup worker they create before another sweep, queue assertions, or shared `jobs_runner` restoration because durable settlement is not cleanup completion.
-- **Graceful daemon shutdown preserves blocked-on-job recovery.** Lifespan teardown permanently stops `TaskQueue` consumers and producer admission before signalling in-flight jobs. Every job actually signalled by `terminate_all_inflight` persists `failed` with `reason=daemon_shutdown` and its real exit code; a process that exits naturally before any signal keeps its natural result, and an existing `task_ended` cause wins. The stopped queue refuses `enqueue`, `put_nowait`, and `enqueue_if_absent` (`False`), so a terminal-job hook cannot claim the waiter during teardown. The task stays `in_progress(blocked_on_job)` with its session unchanged and is resumed once on startup through Branch 3 / the lifespan scan plus pending-item dedupe. Resume headers and non-JSON `happyranch jobs show` expose the stored reason and exit code; the existing `task_resumed_from_jobs.job_outcomes` status values remain unchanged.
+- **Graceful daemon shutdown preserves blocked-on-job recovery.** Lifespan teardown permanently stops `TaskQueue` consumers and producer admission before signalling in-flight jobs. A genuinely owned signal request preserves the first actual timeout/cap/task/shutdown/Stop cause; a natural pre-signal exit keeps its result. The original job owner commits its row, terminal audit, producer observation and strict Pause disposition together; persistence failure remains unknown, never a fabricated terminal result. The stopped queue refuses `enqueue`, `put_nowait`, and `enqueue_if_absent` (`False`), so a terminal-job hook cannot claim the waiter during teardown. The task stays `in_progress(blocked_on_job)` with its session unchanged; startup rediscovers only genuine all-terminal waits through Branch 3 / the lifespan scan plus pending-item dedupe, subject to cancellation, Pause and move admission. Unproven running jobs remain running/unknown. Resume headers and non-JSON `happyranch jobs show` expose the stored reason and exit code; the existing `task_resumed_from_jobs.job_outcomes` status values remain unchanged.
 - **Manager authority self-evaluation (THR-181 S6a).** An eligible manager session with an active DB policy must include exactly one strict closed `manager_self_evaluation` beside its completion decision. The authenticated completion/session binding pins root, manager session, immutable release/activation, contract, and the effective manager provider/executor/model; malformed, missing, mismatched, stale, replayed, ambiguous, or low-confidence evidence fails closed with a digest-only durable diagnostic. Production does not launch a second evaluator subprocess. The manager result is advisory semantic evidence only: daemon eligibility, closed-reason and protected/mechanical fences, fresh cancellation/budget checks, single-use envelope, and all candidate/evaluation/CAS/restart rules remain authoritative. Worker and legacy/no-active-policy completions omit the field and keep their prior wire behavior.
 
 - **Generic remote jobs S1 contracts + dark S2 persistence.** `runtime/remote_jobs/` contains
@@ -2356,9 +2379,14 @@ on disposable GitHub Ubuntu with exact Python/browser inputs, Node24, bounded
 owned-process cleanup and complete variant/cell receipts. Retained pytest
 integration/platform/callback selections keep the existing parent fences.
 `Product E2E` retains the daily default-branch 19:00 UTC schedule under THR-291
-seq69 and admits main-only `workflow_dispatch`. Founder THR291seq247 allocates
-ONE manual full run to sole root TASK-11897 after its independent source gates;
-the entry grants no standing execution/retry authority or local E2E target.
+seq69 and admits main-only `workflow_dispatch`. Founder THR291seq277 authorizes
+engineering_manager under sole linked ROOT TASK-12281 (resolving TASK-12262)
+to verify concrete reviewed corrections on demand without per-run approval or a
+nightly wait, after reconciling active owners/runs. Full independent review,
+scoped QA, normal hooks/nonforce publication, guarded merge and exact-main
+Source Boundary Lint + Web Lint(Node24) remain required. Historical seq247's
+ONE-run allocation to TASK-11897 remains history. No PR-branch/local E2E,
+blind same-source retry, new trigger/schedule or automatic retry is authorized.
 Scheduled runs38482572306 and38644465643 failed at their own sources; corrected
 behavior remains pending an authorized main run. Historical baseline is separate evidence.
 The aggregate also requires real TERM/INT launcher diagnostics with non-success
@@ -2506,20 +2534,23 @@ behavioral regressions can be detected only later when their coverage executes.
 
 Fresh Product E2E keeps the daily `0 19 * * *` schedule (19:00 UTC /
 03:00 Asia/Shanghai) on immutable default-branch `github.sha`. Founder
-THR291seq247 additionally authorizes **ONE** immediate full main execution under
-sole root TASK-11897 through the reviewed `workflow_dispatch` entry. Manual
-admission requires actual `refs/heads/main`, default branch `main`, and matching
-repository/workflow/run/source identity. This entry is not standing execution
-authority. Baseline56 variants EACH Python3.12/3.14 plus TERM3.12/INT3.14 retain
+THR291seq277 authorizes engineering_manager under sole linked ROOT TASK-12281
+(resolving superseded TASK-12262) to use the existing main-only `workflow_dispatch`
+on demand after concrete reviewed corrections, without per-run approval or a
+nightly wait. Reconcile active owners/runs first; no blind same-source retry loop.
+Manual admission requires actual `refs/heads/main`, default branch `main`, and
+matching repository/workflow/run/source identity. Historical seq247's ONE-run
+allocation to TASK-11897 and its receipts remain history. Baseline56 variants
+EACH Python3.12/3.14 plus TERM3.12/INT3.14 retain
 exactly four execution artifacts (`e2e-3.12`, `e2e-3.14`, `e2e-cancel-TERM`,
 `e2e-cancel-INT`) and the original bounds. Product Python support is unchanged.
 `Daily Product E2E Health` remains outside merge checks and reports the actual event, run/attempt,
 SHA and checkout tree; manual receipts are never labeled scheduled.
 There is no local E2E alias, PR/push/release/workflow_call/repository_dispatch
 entry, automatic retry, extra schedule or SLA. Admission, lint and scoped QA
-success do not establish product execution success. The root owns the one
-actual dispatch after independent review/scoped QA, both final-head lints,
-guarded merge and an exact-main receipt.
+success do not establish product execution success. The root owns each actual
+dispatch after full independent review/scoped QA, both final-head lints, normal
+hooks/nonforce publication, guarded merge and an exact-main two-lint receipt.
 Scheduled historical runs38482572306 and38644465643 were observed and failed
 at their own immutable sources. Corrected behavior remains **PENDING** until
 an authorized main run executes the repair; historical3.13

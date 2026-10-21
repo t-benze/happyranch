@@ -176,8 +176,39 @@ def descriptor_token(row):
     A['subject_shape'](row['descriptor'])
     return {'schema':'web-subject-token@1','subject_id':row['subject_id'],'descriptor_sha256':sha(canonical(row['descriptor'])),'content':{'size':row['descriptor']['size'],'sha256':row['descriptor']['sha256']}}
 
+
+class SnapshotDiagnostics:
+    """Optional content-free writes to borrowed fd3; never protocol/acceptance."""
+    def __init__(self,call,allowance):
+        self.disabled=True;self.used=0;self.records=0
+        # Invalid/missing private metadata disables diagnostics, not the helper.
+        if not isinstance(call,str) or not re.fullmatch(r'[1-9][0-9]{0,4}',call):return
+        if not isinstance(allowance,str) or not re.fullmatch(r'[1-9][0-9]{0,3}',allowance):return
+        self.call=int(call);self.allowance=int(allowance)
+        if self.call>65536 or self.allowance>3072:return
+        try:os.fstat(3)
+        except (OSError,ValueError):return
+        self.disabled=False
+
+    def mark(self,phase,event):
+        if self.disabled:return
+        try:
+            if phase not in ('bindings','assets','toolchain','source','stdin','mutable','context','create','reply') or event not in ('start','end'):
+                self.disabled=True;return
+            raw=f'[packaging-snapshot] call={self.call} phase={phase} event={event}\n'.encode('ascii')
+            if self.records>=24 or len(raw)>128 or self.used+len(raw)>self.allowance:
+                self.disabled=True;return
+            # Charge attempted bytes before the single write. No retry or close
+            # of borrowed fd3, including on short or failed delivery.
+            self.used+=len(raw);self.records+=1
+            if os.write(3,raw)!=len(raw):self.disabled=True
+        except (OSError,ValueError):self.disabled=True
+
+
 class Session:
-    def __init__(self,binding):
+    def __init__(self,binding,diagnostics=None):
+        self.diagnostics=diagnostics
+        if diagnostics:diagnostics.mark('bindings','start')
         keys(binding,BIND_KEYS);self.binding=binding
         keys(binding['candidate'],A['Candidate'].__dataclass_fields__)
         self.candidate=A['Candidate'](**binding['candidate'])
@@ -189,6 +220,8 @@ class Session:
         need(not any(self.originals.is_relative_to(r) or r.is_relative_to(self.originals) for r in (self.paths.repo,self.paths.output)),'ORIGINAL_ROOT_OVERLAP')
         self.dirs,self.owner,self.preflight=A['bindings'](self.candidate,self.paths,self.run)
         self.binding_sha=sha(canonical(binding));self.subjects=[];self.subject_index={}
+        if diagnostics:diagnostics.mark('bindings','end')
+        if diagnostics:diagnostics.mark('assets','start')
         if binding['venue']=='native':
             need(sys.platform=='darwin' and __import__('platform').machine()=='arm64','NATIVE_PLATFORM_REQUIRED')
             for f in ('asset_context_sha256','asset_source_sha256','toolchains_sha256'):digest_shape(binding[f])
@@ -198,9 +231,13 @@ class Session:
         else:
             need(binding['asset_context_sha256'] is None and binding['asset_source_sha256'] is None,'PORTABLE_NATIVE_PREFIX_FORBIDDEN')
             digest_shape(binding['toolchains_sha256'])
+        if diagnostics:diagnostics.mark('assets','end')
+        if diagnostics:diagnostics.mark('toolchain','start')
         with A['root_for'](self.paths.evidence_dir) as root:
             row=A['read_subject'](root,'toolchains.txt',A['TOOLCHAINS'])
         need(row['sha256']==binding['toolchains_sha256'],'TOOLCHAINS_MISMATCH')
+        if diagnostics:diagnostics.mark('toolchain','end')
+        if diagnostics:diagnostics.mark('source','start')
         need(A['git'](self.paths,'rev-parse',self.candidate.source_sha+'^{tree}',cap=128).decode().strip()==self.candidate.source_tree,'SOURCE_TREE_MISMATCH')
         # The invoked implementation must be the pinned exported implementation,
         # even when the native wrapper calls its adjacent repository copy.
@@ -210,6 +247,7 @@ class Session:
             exported=A['read_subject'](root,'app/mac/scripts/web_evidence.py')
             A['verify_git_subject'](self.candidate,self.paths,root,'app/mac/scripts/web_evidence.py',exported)
         need(actual['sha256']==exported['sha256'] and actual['size']==exported['size'],'HELPER_SOURCE_MISMATCH')
+        if diagnostics:diagnostics.mark('source','end')
 
     def envelope(self,kind,payload,upstream):
         return {'schema':'web-evidence@1','kind':kind,'candidate':asdict(self.candidate),'run_id':self.run,'roots':A['paths_dict'](self.paths),'owner':self.owner,'preflight':self.preflight,'asset_context_sha256':self.binding['asset_context_sha256'],'toolchains_sha256':self.binding['toolchains_sha256'],'upstream':upstream,'payload':payload}
@@ -924,15 +962,21 @@ def css_read(s,context,preparation,request,index=None):
 
 
 def snapshot(s,context,preparation,index,raw):
+    if s.diagnostics:s.diagnostics.mark('mutable','start')
     mutable_web(s)
+    if s.diagnostics:s.diagnostics.mark('mutable','end')
     # Direct context token authenticates this write, without rereading every
     # registry subject for each intermediate. Final publisher reopens all.
+    if s.diagnostics:s.diagnostics.mark('context','start')
     context_record=s.load('context',context)
     need(context_record['payload']['preparation']==preparation,'PREPARATION_BINDING')
+    if s.diagnostics:s.diagnostics.mark('context','end')
     js_size(index,MAX_ROWS);need(index>0 and len(raw)<=CAP,'BLOB_CAP')
     name='css/'+f'{index:06d}'+'.bin'
+    if s.diagnostics:s.diagnostics.mark('create','start')
     with A['root_for'](s.paths.evidence_dir) as root:
         row=A['create_once'](root,name,raw,A['ReadDomain'](CAP))
+    if s.diagnostics:s.diagnostics.mark('create','end')
     return {'path':name,'size':row['size'],'sha256':row['sha256'],'descriptor_sha256':sha(canonical(row))}
 
 
@@ -1586,10 +1630,12 @@ def verify_arguments(args):
 def main():
     p=argparse.ArgumentParser(allow_abbrev=False);p.add_argument('stage',choices=['prepare','begin','compile-begin','compile-end','read-input','snapshot','publish-build','complete-build','accept-build','seal-dist','notices','verify','fail','token-field'])
     p.add_argument('--caller');p.add_argument('--context');p.add_argument('--preparation');p.add_argument('--build');p.add_argument('--dist');p.add_argument('--notices');p.add_argument('--asset-dist');p.add_argument('--asset-app');p.add_argument('--index',type=int);p.add_argument('--token');p.add_argument('--field');p.add_argument('--original-exit',type=int);p.add_argument('--completion-leaf',default=COMPLETION_LEAF)
+    p.add_argument('--snapshot-diagnostic-call',nargs='?');p.add_argument('--snapshot-diagnostic-bytes',nargs='?')
     a=p.parse_args()
     if a.stage=='token-field':
         token=parse(a.token.encode(),4096);value=token[a.field];print(json.dumps(value,separators=(',',':')) if isinstance(value,(dict,list)) else value);return
-    s=Session(parse(a.caller.encode(),256*1024))
+    diagnostics=SnapshotDiagnostics(a.snapshot_diagnostic_call,a.snapshot_diagnostic_bytes) if a.stage=='snapshot' else None
+    s=Session(parse(a.caller.encode(),256*1024),diagnostics)
     try:
         return dispatch(s,a)
     except (OSError,ValueError,KeyError,tarfile.TarError) as primary:
@@ -1603,12 +1649,17 @@ def dispatch(s: Session,a: argparse.Namespace) -> None:
     def request() -> dict:
         raw=sys.stdin.buffer.read(4097);s.request_bytes=len(raw)
         return parse(raw,4096)
+    def snapshot_request():
+        if s.diagnostics:s.diagnostics.mark('stdin','start')
+        raw=sys.stdin.buffer.read(CAP+1)
+        if s.diagnostics:s.diagnostics.mark('stdin','end')
+        return raw
     if a.stage=='prepare':result=prepare_esbuild_alias(s)
     elif a.stage=='begin':result=begin_web(s,a.preparation,a.completion_leaf)
     elif a.stage in ('compile-begin','compile-end'):
         result=compile_event(s,a.context,a.preparation,a.index,a.stage.replace('-','_'),request())
     elif a.stage=='read-input':result=css_read(s,a.context,a.preparation,request(),a.index)
-    elif a.stage=='snapshot':result=snapshot(s,a.context,a.preparation,a.index,sys.stdin.buffer.read(CAP+1))
+    elif a.stage=='snapshot':result=snapshot(s,a.context,a.preparation,a.index,snapshot_request())
     elif a.stage=='publish-build':result=publish_build(s,a.context,a.preparation,parse(sys.stdin.buffer.read(BUILD_INPUT+1),BUILD_INPUT,build=True))
     elif a.stage=='complete-build':
         result=complete_build(s,a.context,a.preparation,parse(sys.stdin.buffer.read(4097),4096),a.completion_leaf)
@@ -1618,8 +1669,10 @@ def dispatch(s: Session,a: argparse.Namespace) -> None:
         mapping=parse(sys.stdin.buffer.read(8*MiB+1),8*MiB);rows,token=retain_web_notices(s,a.context,a.preparation,a.build,a.dist,a.asset_app,mapping['components']);result={'rows':rows,'token':token}
     elif a.stage=='verify':result=verify_web(s,a.context,a.preparation,a.build,a.dist,a.notices,a.asset_app,parse(sys.stdin.buffer.read(8*MiB+1),8*MiB) if a.notices else None)
     else:result=s.write('failure',{'original_exit':a.original_exit,'stage':os.environ.get('STAGE','web')})
+    if s.diagnostics:s.diagnostics.mark('reply','start')
     sys.stdout.buffer.write(canonical(result,32*MiB if a.stage=='read-input' else CAP)+b'\n')
     sys.stdout.buffer.flush()
+    if s.diagnostics:s.diagnostics.mark('reply','end')
 
 if __name__=='__main__':
     try:main()
