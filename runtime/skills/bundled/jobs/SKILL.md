@@ -388,7 +388,7 @@ successful operation. The blocked-report and lasting-grant rules live in the
 
 ## PR CI / guarded merge helper
 
-For PR-producing engineering tasks, do not hand-roll CI polling scripts. Submit a poll job and use the guarded-merge entrypoint on task resume.
+For PR-producing engineering tasks, use the existing authorized CI poll mechanism. The poll job reports readiness only. The final assigned manager performs the guarded action and remote observation in its genuine live session before its own completion callback.
 
 **Poll job:** submit a `review_required=false` job through the existing jobs path whose script invokes the poller entrypoint:
 
@@ -418,7 +418,7 @@ Other repositories use their own current check policy.
 
 This polls GitHub checks for the pinned head SHA and prints a structured verdict JSON to stdout. It exits 0 for `ci_pass`, non-zero for all other verdicts. **The poll job performs NO merge.**
 
-After the poll job completes, the resumed task inspects the verdict. If `ci_pass`, the task owner triggers the guarded-merge entrypoint as a short daemon-run step:
+After an authorized poll job completes, inspect its actual terminal receipt. The final assigned manager personally checks settled independent review/QA results and successful exact-head checks, then invokes the guarded-merge entrypoint in its genuine live session before its own completion callback:
 
 ```bash
 python -m runtime.daemon.pr_ci_merge \
@@ -431,11 +431,12 @@ The merge guard is conjunctive — all must pass before the engine attempts merg
 
 - review verdict is `APPROVE`;
 - QA verdict is `PASS`;
+- fresh PR head SHA equals the pinned SHA;
 - CI verdict is `ci_pass` for the pinned SHA;
-- PR head SHA is unchanged at merge time;
-- GitHub mergeability is `CLEAN`;
 - the PR is still open and not draft;
-- the helper uses the configured merge method.
+- GitHub mergeability is `CLEAN`;
+- the configured ordinary merge method sends the same full pinned head to
+  `gh pr merge --match-head-commit H`, without `--admin`.
 
 The guarded-merge implementation validates review/QA evidence (canonical vocabulary
 `APPROVE | REQUEST_CHANGES | BLOCK | PASS | REVISE | FAIL`; NON-NULL structured
@@ -444,9 +445,11 @@ representation of legacy/no-structured rows — uses the strict annotated
 prose `Verdict: PASS — rationale` fallback; missing/contradictory/malformed/
 ambiguous evidence fails closed).
 
-It exits successfully only when the PR is merged after all merge guards pass. It exits non-zero for CI failure, stale PR head, timeout, missing checks after settle, non-clean mergeability, rejected job, or failed merge.
+Success requires actual read-only remote confirmation: exact addressed repository/PR number and GitHub URL, pinned head, MERGED state, full lowercase SHA1 merge commit and parseable timezone-aware `mergedAt`. Output retains the remote commit and time. Missing/invalid metadata or query failure after command success yields `merge_failed` (exit14) with post-effect uncertainty. No empty commit or local-time fallback exists.
 
-The poll job can auto-run without founder interaction. The merge runs inside the guarded-merge entrypoint on the daemon-run / EM-authority path; do not ask for raw `gh pr merge` permission or run arbitrary merge shell from a worker prompt.
+A nonzero/lost command response remains failed/uncertain, preserving its actual cause/exit where available. Later read-only confirmation can separately establish the exact effect; it never rewrites that receipt or permits a second merge. There is no admin fallback or automatic replay. Guard order, verdict/JSON/audit shapes and legacy evidence extraction are unchanged.
+
+An authorized poll job may auto-run through existing admission. The live final manager owns the merge and remote observation before callback; callback completion never triggers daemon PR finalization or recovery. Existing tool/repository entitlement remains required. Do not ask for raw `gh pr merge` permission or run arbitrary merge shell from a worker prompt.
 
 ## Cleanup
 

@@ -1073,3 +1073,82 @@ and static checks are not behavioral PASS. All five historical custom-harness
 runs remain FAILED; broader restart, simultaneous-race, process-tree and
 scheduler proof remains UNPROVEN. No general integration/E2E/protected proof,
 Jenkins, deployment, automatic trigger, retry or notification is added.
+
+## Explicitly selected guarded-merge CLI acceptance
+
+Sole ROOT TASK-12299 releases this manual support for PR1159's adapter repair:
+
+```bash
+python -I -S scripts/verify_guarded_merge_cli.py \
+  --source-root /absolute/pinned-worktree \
+  --expected-head FULL_SOURCE_COMMIT \
+  --output-dir /absolute/owned-task-scratch/new-run
+```
+
+Use a new output directory with an existing canonical parent outside the source
+worktree. The stdlib-only parent checks the actual commit/tree and exact committed
+bytes before and after execution; fixture head `aaaaaaaa…` is a separate synthetic
+subject. Exit0 means all51 finite assertions cases passed, exit1 is contract RED,
+and exit2 is incomplete/setup/isolation failure, never regression evidence.
+`receipt.json` records source hashes, exact commands, assertions, observed/expected
+values and exits; each case retains original CLI stdout/stderr/exit, transport
+argv/order/responses, environment observation and any separately attributed read.
+
+This requires Linux `/usr/bin/bwrap` and a supported executor admission for each
+actual command. A successful prior probe confers no transferable permission. A
+namespace refusal stops before product execution; jobs do not bypass refusal.
+Every case uses fresh user/mount/network/PID/IPC/UTS/cgroup namespaces and disposable
+cwd/home/tmp. Read-only `/usr`, `/lib`, `/lib64` provide the system interpreter,
+stdlib and dynamic loader only; no host home, `/etc`, `/run`, repository `.git`,
+runtime data/config/store/credentials or daemon socket is mounted. Private proc/dev
+support Python and isolation observation. Before product execution the driver
+records changed namespace identities, loopback-only interfaces, absent host paths,
+closed environment and empty cwd. These are scoped venue observations, not a
+security certification against hostile same-user source changes.
+
+Only `runtime/__init__.py`, `runtime/daemon/__init__.py`, `pr_ci_merge.py` and
+`pr_ci_waiter.py` are mounted at their package paths. Parent AST/import inspection
+refuses an expanded import closure. The actual shipping CLI runs under absolute
+`/usr/bin/python3 -S -m runtime.daemon.pr_ci_merge`, with only `/src` added to
+PYTHONPATH, no site/user startup and a closed environment. Disposable fake-only
+PATH resolves gh/happyranch to owned deterministic executable transports; no live
+runtime/provider/GitHub interaction or callback occurs. Fakes return observations;
+the real CLI, guard, verdict extractor and adapter make decisions.
+
+The table covers A1 action-time H→H2 rejection, A2 protection refusal, A3 exact
+remote success values, A4 native nonzero/signal/exec failures, A5 independently
+varied invalid metadata/query failures, A6 lost action response followed by a
+separate read-only `_gh_fetch_merge_result` observation, and one earlier extractor
+conflict. A6 compares independent CLI failure/exit/absent merged metadata and
+native cause against the observer's successful actual remote values and the
+combined one-action ledger. Raw process receipts stay separate; rereading a
+harness-owned receipt file supplies no product immutability evidence. Each case
+is bounded at5s, the invocation at60s, with fixed51 cases,
+128KiB per-file output limits, CPU/memory bounds and owned process teardown.
+No real timeout sleep, retry, second action or production injection seam exists.
+
+ROOT TASK-12299 step5 additionally allocates eight finite scratch-only production
+regressions: M1 permissive review conflict, M2 QA before review, M3 duplicate
+successful action, M4 replay failed action, M5 failed action promoted by remote
+confirmation, M6 lost native action exit/cause, M7 lost action transport details,
+and M8 lost confirmation cause/uncertainty. Each gets one full existing table RED
+and byte-exact forward restoration/GREEN in a registered guarded scratch worktree,
+using clean local-only commits as expected heads. Only `pr_ci_merge.py` is mutated;
+the source identity fence and other three modules remain exact. Never publish
+proof commits. Reuse attributable pre-fix570b1c30 evidence for the original fix.
+The final candidate also gets one full-table GREEN and five process/order
+repetitions. This is a bounded allocation, not standing mutation authority.
+
+This selected CLI acceptance stays outside automated all/hooks/PR/main checks.
+It restores no retired units and invokes no general integration (INCLUDING
+callback, SKIPPED24342), E2E or build. The PR body carries four authoring answers,
+case attribution and actual evidence. The consolidated A6 harness self-comparison
+is owned by retained keepers `CLI exit`, `CLI verdict`, `actual remote commit or
+absent failed receipt`, `actual remote time or absent failed receipt`, `original
+native failure cause preserved`, `complete transport order/no replay`, and the
+later observation checks. M5 must make the failed-CLI keepers RED while the
+separate observer still reports its actual remote values; restoration must be
+byte-exact and GREEN. Fresh full independent review and same-final-head QA,
+exact-head two lints and the live manager's genuine merge/remote observation remain
+required. Fixture success establishes neither real GitHub enforcement nor live
+manager interruption/cold/runtime/merge acceptance.
