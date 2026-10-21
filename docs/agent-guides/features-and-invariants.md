@@ -2320,6 +2320,19 @@ locked publication rereads and control invariants retain exact record equality.
 Serving movement still requires one fresh complete stable pair under the shared
 budgets below; an earlier failed pair never supplies an accepted half.
 
+Completed file, cohort, comparison and validation work is checked against the
+same original deadline before successful serving/report/preparation/current-epoch
+returns, including no-control and HTTP cutoff paths. Both full internal snapshots
+must validate every required counter/digest/reference/seal field before movement
+can retry; the abbreviated public boot projection has a separate validation mode.
+Retry requires a full write and flush of the raw pair through an existing standard
+synchronous stream/file log sink, with filters and formatting applied. Disabled,
+filtered, unavailable, short or failed delivery without another acknowledged sink
+refuses; a normal warning return is insufficient. Serialization and formatted
+bytes consume the original aggregate budget. This establishes synchronous delivery,
+not crash/fsync durability or hard OS-I/O timing. Deadline checks precede successful
+read results and never reclassify an already successful publication COMMIT.
+
 Existing public audit/task list/detail/default recall and keyed job reads use
 finite scan/row/byte/decode and lock budgets before their coherent read views;
 exhaustion refuses with HTTP503. Job output/receipt reads retain totals and

@@ -3917,7 +3917,22 @@ profile/provider/path drift refuse immediately. A held metadata lock, exhausted
 DB allowance/deadline, pending preparation/writer or unresolved movement withholds
 `data_through`. Failure is local to
 this read and cannot poison launch/callback/startup outcomes. A stable cutoff is
-source evidence only. G1 epoch references are projected only after complete
+source evidence only.
+
+Completed file, cohort, comparison and validation work is checked against the
+same original deadline before successful serving/report/preparation/current-epoch
+returns, including no-control and HTTP cutoff paths. Both full internal snapshots
+must validate every required counter/digest/reference/seal field before movement
+can retry; the abbreviated public boot projection has a separate validation mode.
+Retry requires a full write and flush of the raw pair through an existing standard
+synchronous stream/file log sink, with filters and formatting applied. Disabled,
+filtered, unavailable, short or failed delivery without another acknowledged sink
+refuses; a normal warning return is insufficient. Serialization and formatted
+bytes consume the original aggregate budget. This establishes synchronous delivery,
+not crash/fsync durability or hard OS-I/O timing. Deadline checks precede successful
+read results and never reclassify an already successful publication COMMIT.
+
+G1 epoch references are projected only after complete
 original acceptance and current-health validation, with stable evidence/source
 bookends and zero reader writes. Both successful `_log_step_result` arms
 reconcile their exact admitted row after existing completion logging; failure

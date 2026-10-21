@@ -203,6 +203,19 @@ logs/screenshots/review packets to Shared Artifacts as an ownership workaround.
    Missing/invalid/equal/reverse changed stamps or movement of only one stamp
    refuse. Preserve raw tasks and exact locked publication/control checks.
 
+   Completed file, cohort, comparison and validation work is checked against the
+   same original deadline before successful serving/report/preparation/current-epoch
+   returns, including no-control and HTTP cutoff paths. Both full internal snapshots
+   must validate every required counter/digest/reference/seal field before movement
+   can retry; the abbreviated public boot projection has a separate validation mode.
+   Retry requires a full write and flush of the raw pair through an existing standard
+   synchronous stream/file log sink, with filters and formatting applied. Disabled,
+   filtered, unavailable, short or failed delivery without another acknowledged sink
+   refuses; a normal warning return is insufficient. Serialization and formatted
+   bytes consume the original aggregate budget. This establishes synchronous delivery,
+   not crash/fsync durability or hard OS-I/O timing. Deadline checks precede successful
+   read results and never reclassify an already successful publication COMMIT.
+
 
 3. **Consult the knowledge base.** Before planning, check for durable knowledge relevant to this task.
 

@@ -959,6 +959,7 @@ class _CensusBudget:
         self.bytes += size
         if size > MAX_CENSUS_ROW_BYTES or self.rows > self.max_rows or self.bytes > self.max_bytes:
             raise CensusReadUnavailable("census_read_size_limit")
+        self.check()
 
     def step(self) -> None:
         self.check()
@@ -1017,7 +1018,7 @@ def _scope_references(value: Any) -> tuple[set[str], set[str]]:
 
 def _boot_boundary(view: dict, intents: list[dict]) -> str:
     from runtime.infrastructure.memory_telemetry_report import aware_utc
-    _check_serving_snapshot(view)
+    _check_serving_snapshot(view, complete=False)
     first = _one([row for row in intents if row["payload"].get("boot_id") == view["boot_id"]
                   and row["payload"].get("ordinal") == 1], "census_boot_boundary_missing")
     if view["assigned_intents"] == 0:
@@ -1474,9 +1475,11 @@ def _identity_bytes(path: Path, budget: list[int], *, limit: int = MAX_IDENTITY_
                 != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns)
                 or path.stat() != after):
             raise IdentityUnavailable("identity_file_moving")
-        return data
     finally:
         os.close(fd)
+    if acquisition is not None:
+        acquisition.check()
+    return data
 
 
 def _identity_file_hash(path: Path, budget: list[int]) -> str:
@@ -1507,9 +1510,12 @@ def _identity_file_hash(path: Path, budget: list[int]) -> str:
                 or (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns)
                 != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns)):
             raise IdentityUnavailable("identity_file_moving")
-        return digest.hexdigest()
+        result = digest.hexdigest()
     finally:
         os.close(fd)
+    if acquisition is not None:
+        acquisition.check()
+    return result
 
 
 def _hash_metadata(value: Any) -> str:
@@ -1582,7 +1588,7 @@ def loaded_identity(org: Any, *, budget: list[int] | None = None) -> dict:
                  CollectionObserver.snapshot, CollectionObserver._snapshot,
                  CollectionObserver._record, CollectionObserver._persist, CollectionObserver._seal,
                  _identity_bytes, _identity_file_hash, _hash_metadata, _code_projection, _find_code, _serving_snapshot,
-                 _serving_revision, _check_serving_snapshot, _now, serving_observation, loaded_identity]
+                 _serving_revision, _check_serving_snapshot, _retain_failed_pair, _now, serving_observation, loaded_identity]
     from runtime.infrastructure.memory_telemetry_report import reduce_report, reduce_collection_report, _session_diagnostics, aware_utc
     from runtime.orchestrator.run_step import _run_step_body
     from runtime.orchestrator.run_step import run_step_impl
@@ -1800,37 +1806,123 @@ def _serving_revision(observer: CollectionObserver) -> tuple[int, int, int]:
         raise
 
 
-def _check_serving_snapshot(snapshot: dict) -> None:
+def _check_serving_snapshot(snapshot: dict, *, complete: bool = True) -> None:
+    """Validate full producer snapshots; only public boot views are projected."""
+    from runtime.infrastructure.memory_telemetry_report import aware_utc
     def integer(value: Any) -> bool:
         return type(value) is int and value >= 0
     def digest(value: Any) -> bool:
         return isinstance(value, str) and len(value) == 64 and all(c in "0123456789abcdef" for c in value)
-    if (type(snapshot["contract_version"]) is not int or snapshot["contract_version"] != 1
-            or not isinstance(snapshot["boot_id"], str)
-            or str(uuid.UUID(snapshot["boot_id"])) != snapshot["boot_id"]
-            or not integer(snapshot["generation"]) or not integer(snapshot["assigned_intents"])
-            or not digest(snapshot["intent_digest"])
-            or (snapshot["latest_seal_audit_id"] is not None
-                and (not integer(snapshot["latest_seal_audit_id"]) or snapshot["latest_seal_audit_id"] == 0))
-            or set(snapshot["phase_counts"]) != set(PHASES)
-            or set(snapshot["phase_digests"]) != set(PHASES)):
-        raise IdentityUnavailable("observer_snapshot_invalid")
-    if "writer_active" in snapshot and (
-            type(snapshot["writer_active"]) is not bool
-            or not integer(snapshot["pending_observations"])
-            or not integer(snapshot["seal_attempts"]) or not integer(snapshot["seal_persisted"])
-            or not digest(snapshot["seal_digest"])
-            or not isinstance(snapshot["active_references"], list)
-            or not isinstance(snapshot["active_preparations"], list)):
-        raise IdentityUnavailable("observer_snapshot_invalid")
-    if snapshot.get("observation_error") is not None and (
-            type(snapshot["observation_error"]) is not str or not snapshot["observation_error"]):
-        raise IdentityUnavailable("observer_snapshot_invalid")
-    for phase in PHASES:
-        counts, digests = snapshot["phase_counts"][phase], snapshot["phase_digests"][phase]
-        if (set(counts) != {"attempted", "persisted"} or not all(integer(v) for v in counts.values())
-                or set(digests) != {"attempted", "persisted"} or not all(digest(v) for v in digests.values())):
+    def references(value: Any) -> bool:
+        if not isinstance(value, list):
+            return False
+        for row in value:
+            if (not isinstance(row, dict)
+                    or set(row) != {"ordinal", "task_id", "agent", "session_id", "expectation_known"}
+                    or not integer(row["ordinal"]) or row["ordinal"] == 0
+                    or not isinstance(row["task_id"], str) or re.fullmatch(r"TASK-[0-9]{3,}", row["task_id"]) is None
+                    or not isinstance(row["agent"], str) or not row["agent"].strip()
+                    or (row["session_id"] is not None and
+                        (not isinstance(row["session_id"], str) or not row["session_id"].strip()))
+                    or type(row["expectation_known"]) is not bool):
+                return False
+        return True
+    required = {"contract_version", "org", "boot_id", "generation", "assigned_intents", "intent_digest",
+                "phase_counts", "phase_digests", "latest_seal_audit_id", "active_preparations",
+                "observation_error", "sampled_at"}
+    if complete:
+        required |= {"root", "writer_active", "pending_observations", "seal_attempts", "seal_persisted",
+                     "seal_digest", "active_references"}
+    try:
+        if (not isinstance(snapshot, dict) or not required <= snapshot.keys()
+                or type(snapshot["contract_version"]) is not int or snapshot["contract_version"] != 1
+                or not isinstance(snapshot["org"], str) or not snapshot["org"].strip()
+                or not isinstance(snapshot["boot_id"], str)
+                or str(uuid.UUID(snapshot["boot_id"])) != snapshot["boot_id"]
+                or not integer(snapshot["generation"]) or not integer(snapshot["assigned_intents"])
+                or not digest(snapshot["intent_digest"])
+                or (snapshot["latest_seal_audit_id"] is not None
+                    and (not integer(snapshot["latest_seal_audit_id"]) or snapshot["latest_seal_audit_id"] == 0))
+                or not isinstance(snapshot["phase_counts"], dict) or set(snapshot["phase_counts"]) != set(PHASES)
+                or not isinstance(snapshot["phase_digests"], dict) or set(snapshot["phase_digests"]) != set(PHASES)
+                or not isinstance(snapshot["sampled_at"], str)
+                or not references(snapshot["active_preparations"])
+                or (snapshot["observation_error"] is not None and
+                    (type(snapshot["observation_error"]) is not str or not snapshot["observation_error"]))):
             raise IdentityUnavailable("observer_snapshot_invalid")
+        aware_utc(snapshot["sampled_at"])
+        if complete and (
+                not isinstance(snapshot["root"], str) or not Path(snapshot["root"]).is_absolute()
+                or type(snapshot["writer_active"]) is not bool
+                or not integer(snapshot["pending_observations"])
+                or not integer(snapshot["seal_attempts"]) or not integer(snapshot["seal_persisted"])
+                or not digest(snapshot["seal_digest"]) or not references(snapshot["active_references"])):
+            raise IdentityUnavailable("observer_snapshot_invalid")
+        for phase in PHASES:
+            counts, digests = snapshot["phase_counts"][phase], snapshot["phase_digests"][phase]
+            if (not isinstance(counts, dict) or set(counts) != {"attempted", "persisted"}
+                    or not all(integer(v) for v in counts.values())
+                    or not isinstance(digests, dict) or set(digests) != {"attempted", "persisted"}
+                    or not all(digest(v) for v in digests.values())):
+                raise IdentityUnavailable("observer_snapshot_invalid")
+    except (KeyError, TypeError, ValueError, AttributeError, OverflowError) as exc:
+        raise IdentityUnavailable("observer_snapshot_invalid") from exc
+
+
+def _retain_failed_pair(attempt: dict, budget: _CensusBudget) -> None:
+    """Acknowledge a complete write/flush to an existing synchronous log sink.
+
+    StreamHandler.emit swallows sink errors, so logger.warning returning is not
+    evidence of delivery. Unknown/asynchronous handlers cannot acknowledge it.
+    No logging configuration is changed and no crash/fsync durability is claimed.
+    """
+    budget.record(attempt)
+    raw = json.dumps(attempt, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
+    if not logger.isEnabledFor(logging.WARNING):
+        raise IdentityUnavailable("observation_evidence_unavailable")
+    record = logger.makeRecord(logger.name, logging.WARNING, __file__, 0,
+                               "Memory serving observation moving: %s", (raw,), None)
+    admitted = logger.filter(record)
+    if not admitted:
+        raise IdentityUnavailable("observation_evidence_unavailable")
+    if isinstance(admitted, logging.LogRecord):
+        record = admitted
+    owner = logger
+    while owner is not None:
+        budget.step()
+        for handler in owner.handlers:
+            budget.step()
+            # Only the existing standard synchronous stream/file path is known
+            # to retain these bytes here. Queue/custom handlers are unproven.
+            if type(handler) not in {logging.StreamHandler, logging.FileHandler} or record.levelno < handler.level:
+                continue
+            admitted = handler.filter(record)
+            if not admitted:
+                continue
+            selected = admitted if isinstance(admitted, logging.LogRecord) else record
+            handler.acquire()
+            try:
+                message = handler.format(selected) + handler.terminator
+                if raw not in message or handler.stream is None:
+                    continue
+                budget.record({"log_record": message})
+                # Call the actual sink directly: standard emit catches OSError
+                # and ignores short writes. Neither is delivery acknowledgement.
+                written = handler.stream.write(message)
+                handler.flush()
+                if type(written) is int and written == len(message):
+                    budget.check()
+                    return
+            except (CensusReadUnavailable, IdentityUnavailable):
+                raise
+            except Exception:
+                pass  # Another existing synchronous sink may still retain it.
+            finally:
+                handler.release()
+        if not owner.propagate:
+            break
+        owner = owner.parent
+    raise IdentityUnavailable("observation_evidence_unavailable")
 
 
 def serving_observation(org: Any) -> dict:
@@ -1922,18 +2014,20 @@ def serving_observation(org: Any) -> dict:
                             view["observation_error"] = "observation_pending"
                         if view["observation_error"] is None:
                             view["data_through"] = cutoff
+                        budget.check()
                         break
                     # Only complete, source/context-compatible concurrent-write
                     # movement retries. Charge retained raw pairs before logging;
                     # log/size/deadline failure refuses, never silently drops them.
-                    budget.record(attempt)
-                    if not logger.isEnabledFor(logging.WARNING):
-                        raise IdentityUnavailable("observation_evidence_unavailable")
-                    logger.warning("Memory serving observation moving: %s", json.dumps(attempt, ensure_ascii=False, allow_nan=False, separators=(",", ":")))
+                    _retain_failed_pair(attempt, budget)
                 except Exception:
-                    # Partial/hard failures never become a new retry baseline.
-                    budget.record(attempt)
-                    logger.warning("Memory serving observation failed: %s", json.dumps(attempt, ensure_ascii=False, allow_nan=False, separators=(",", ":")))
+                    # Diagnostics must not replace the original hard refusal,
+                    # including when serialization/budget/logging is unavailable.
+                    try:
+                        budget.record(attempt)
+                        logger.warning("Memory serving observation failed: %s", json.dumps(attempt, ensure_ascii=False, allow_nan=False, separators=(",", ":")))
+                    except Exception:
+                        pass
                     raise
     except (IdentityUnavailable, CensusReadUnavailable) as exc:
         view["observation_error"] = view["observation_error"] or str(exc)
@@ -2669,7 +2763,7 @@ def _registered_cohort(org: Any) -> list[dict]:
 
 
 def prepare_acceptance(org: Any, result_id: int) -> dict:
-    with _census_budget(captures=2):
+    with _census_budget(captures=2) as budget:
         # Ordinary callbacks are not collection candidates. Inspect their exact
         # keyed carrier before source/file/census acquisition; the admitted carrier
         # and complete membership are still reread during preparation and commit.
@@ -2703,7 +2797,9 @@ def prepare_acceptance(org: Any, result_id: int) -> dict:
                 or (invalidation and roles != _registered_cohort(org))
                 or (not invalidation and outputs != _local_job_outputs(org, tables))):
             raise AcceptanceUnavailable("acceptance_acquisition_moving")
-        return {**prepared, "view": opening, "tables": tables, "outputs": outputs, "registered_cohort": roles}
+        result = {**prepared, "view": opening, "tables": tables, "outputs": outputs, "registered_cohort": roles}
+        budget.check()
+        return result
 
 
 def reconcile_acceptance(org: Any, result_id: int) -> dict | None:
@@ -2715,7 +2811,7 @@ def reconcile_acceptance(org: Any, result_id: int) -> dict | None:
 
 
 def acquire_collection_report(org: Any, *, current_time: datetime | None = None) -> tuple[dict, dict, dict, datetime]:
-    with _census_budget(captures=2):
+    with _census_budget(captures=2) as budget:
         from runtime.infrastructure.memory_telemetry_report import aware_utc, ReportAcquisitionUnavailable
         try:
             opening = serving_observation(org)
@@ -2726,6 +2822,7 @@ def acquire_collection_report(org: Any, *, current_time: datetime | None = None)
             if not _semantic_evidence_projection(tables, closing_tables) or _view_projection(opening) != _view_projection(closing) or outputs != _local_job_outputs(org, tables):
                 raise ReportAcquisitionUnavailable()
             cutoff = aware_utc(current_time) if current_time is not None else aware_utc(opening["data_through"] or opening["sampled_at"])
+            budget.check()
             return tables, opening, outputs, cutoff
         except Exception as exc:
             raise ReportAcquisitionUnavailable() from exc
@@ -2897,26 +2994,28 @@ def _http_collection_capture(client: Any, org: str, *, budget: _CensusBudget | N
 
 def acquire_http_collection_report(client: Any, org: str, *, current_time: datetime | None = None) -> tuple[dict, dict, dict, datetime]:
     from runtime.infrastructure.memory_telemetry_report import aware_utc, ReportAcquisitionUnavailable
-    try:
-        budget = _CensusBudget(captures=2)
-        opening = _http_collection_capture(client, org, budget=budget)
-        closing = _http_collection_capture(client, org, budget=budget)
-        if (not _semantic_evidence_projection(opening[0], closing[0])
-                or opening[2] != closing[2] or _view_projection(opening[1]) != _view_projection(closing[1])):
-            raise ReportAcquisitionUnavailable()
-        cutoff = aware_utc(current_time) if current_time is not None else aware_utc(opening[1]["data_through"] or opening[1]["sampled_at"])
-        return *opening, cutoff
-    except Exception as exc:
-        raise ReportAcquisitionUnavailable() from exc
+    with _census_budget(captures=2) as budget:
+        try:
+            opening = _http_collection_capture(client, org, budget=budget)
+            closing = _http_collection_capture(client, org, budget=budget)
+            if (not _semantic_evidence_projection(opening[0], closing[0])
+                    or opening[2] != closing[2] or _view_projection(opening[1]) != _view_projection(closing[1])):
+                raise ReportAcquisitionUnavailable()
+            cutoff = aware_utc(current_time) if current_time is not None else aware_utc(opening[1]["data_through"] or opening[1]["sampled_at"])
+            budget.check()
+            return *opening, cutoff
+        except Exception as exc:
+            raise ReportAcquisitionUnavailable() from exc
 
 
 def current_epoch_references(org: Any, view: dict) -> dict:
     """Project references only after actual current evidence validation; zero writes."""
-    with _census_budget(captures=2):
+    with _census_budget(captures=2) as budget:
         try:
             tables = org.db.read_memory_collection_evidence(view=view)
             controls = [row for row in tables["audit_log"] if row["action"] in CONTROL_ACTIONS]
             if not controls:
+                budget.check()
                 return view
             last = controls[-1]["payload"]
             head = collection_control_head(controls, org.slug, last["operational_root_task_id"])
@@ -2940,6 +3039,8 @@ def current_epoch_references(org: Any, view: dict) -> dict:
             if (_view_projection(closing) != _view_projection(view)
                     or not _semantic_evidence_projection(tables, org.db.read_memory_collection_evidence(view=view)) or outputs != _local_job_outputs(org, tables)):
                 return {**view, "observation_error": view["observation_error"] or "observation_moving", "data_through": None}
-            return {**view, "epoch_id": head["payload"]["epoch_id"], "epoch_audit_id": head["id"]}
+            result = {**view, "epoch_id": head["payload"]["epoch_id"], "epoch_audit_id": head["id"]}
+            budget.check()
+            return result
         except Exception:
             return {**view, "observation_error": view["observation_error"] or "epoch_validation_unavailable", "data_through": None}

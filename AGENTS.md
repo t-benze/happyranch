@@ -2585,6 +2585,19 @@ file allowances never replenish per attempt. Source/lint evidence is not loaded
 qualification, health, B/C acceptance or epoch start. Cooperative work checks
 provide no hard OS-I/O/RSS guarantee.
 
+Completed file, cohort, comparison and validation work is checked against the
+same original deadline before successful serving/report/preparation/current-epoch
+returns, including no-control and HTTP cutoff paths. Both full internal snapshots
+must validate every required counter/digest/reference/seal field before movement
+can retry; the abbreviated public boot projection has a separate validation mode.
+Retry requires a full write and flush of the raw pair through an existing standard
+synchronous stream/file log sink, with filters and formatting applied. Disabled,
+filtered, unavailable, short or failed delivery without another acknowledged sink
+refuses; a normal warning return is insufficient. Serialization and formatted
+bytes consume the original aggregate budget. This establishes synchronous delivery,
+not crash/fsync durability or hard OS-I/O timing. Deadline checks precede successful
+read results and never reclassify an already successful publication COMMIT.
+
 ## Commands
 
 PR1022's TASK10553 continuation retains all 224 C4 parameters and the finite
