@@ -235,13 +235,15 @@ try:
                     expect_import: bool = False, supplied: _Budget | None = None,
                     kind: str | None = None) -> None:
             checks, trace = [], []
+            trace_overflow = [False]
             signal.signal(signal.SIGALRM,lambda *_: (_ for _ in ()).throw(TimeoutError('2s case bound')))
             signal.setitimer(signal.ITIMER_REAL,2)
             before = saved_rows(conn)
             transaction = conn.in_transaction
             def traced(statement: str) -> None:
                 if len(trace) >= 2048:
-                    raise RuntimeError('case trace bound')
+                    trace_overflow[0]=True
+                    return
                 raw = statement.encode()
                 trace.append(dict(sql=statement[:320], bytes=len(raw), sha256=digest(raw)))
             conn.set_trace_callback(traced)
@@ -265,6 +267,8 @@ try:
                         equal(checks, 'six full typed publication rows', actual, oracle)
                 except ValueError as exc:
                     category = str(exc)
+                if trace_overflow[0]:
+                    raise RuntimeError('case trace bound')
                 equal(checks, 'category-only outcome', category, expected_category)
                 equal(checks, 'caller transaction preserved', conn.in_transaction, transaction)
                 equal(checks, 'all native rows unchanged', digest(canonical(saved_rows(conn))), digest(canonical(before)))
@@ -423,7 +427,7 @@ try:
             visits=(1+3+6*(tokens(proof)+1)+1+2*(tokens(json.loads(raw_command))+1)+
                 1+8*(tokens(json.loads(snap))+1)+1+2*(tokens(json.loads(raw_command))+1)+2+
                 38+21+3+2*(tokens(json.loads(definition))+1)+192+
-                sum(4*len(row)+4 for _,row in fixed)+4)
+                sum(4*len(row)+4 for _,row in fixed)+2)  # two empty SELECT probes, one visit each
             return dict(accepted_rows=12,consumed=copies,traversed=visits)
         native_rows=list(conn.execute('SELECT * FROM task_results WHERE decision_json IS NOT NULL'))
         native_bytes=sum(len(v.encode() if type(v) is str else v) for row in native_rows for v in row if type(v) in (str,bytes))

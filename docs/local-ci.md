@@ -1177,7 +1177,14 @@ compose actual queued/release readers with their original allowances; every
 component has an immediate independently admitted positive sibling. Candidate
 attempts retain the actual earlier stopping bound if traversal/bytes prevent
 8193 candidates. Such a measured gap is non-success, never candidate acceptance.
-No counter is preset to exhaustion and no default limit is lowered.
+No counter is preset to exhaustion and no default limit is lowered. Each
+successful aggregate component also compares its exact candidate/byte/visit delta
+with independently fixed input arithmetic: full row/string sizes, canonical JSON
+member/delimiter counts and the original reservation contract. The schema has
+its own positive/refusal byte and traversal siblings: an individually admitted
+release component plus real populated native-result work crosses one shared
+allowance only in the complete J(data=False) reader. A second reader call never
+supplies a numeric expected-value oracle.
 
 TASK12380's native namespace refusal and unexecuted evidence remain historical.
 ROOT's later successful product-free probe grants no campaign permission. Each
@@ -1272,7 +1279,8 @@ supplied budget's prior work and wrong-type categories; foreign-org, malformed,
 full-row/storage/command/admission/journal, extra and orphan siblings; queued and
 complete J `validate_data=False` success/refusal; caller transaction and prior
 uncommitted native noncoding work; and standalone queued transaction closure.
-Each records actual SELECT trace, native rows/integrity/FKs, in_transaction and
+Each records bounded actual SQL statement prefixes plus whole-statement hashes/byte
+lengths, native rows/integrity/FKs, in_transaction and
 available actual budget counters. Prior-consumption/lower-bound assertions are
 optional-path coverage only, never aggregate-composition acceptance. Populated old-history uses the actual version-aware @1 template reader,
 ordinary native task/result constructors and complete-J/queued readers; exact
@@ -1300,7 +1308,10 @@ M5 full typed publication equality weakening and M6 caller rollback regression.
 Each requires an initial complete GREEN, one intended full-table RED on an owned
 registered guarded local proof commit, byte-exact forward restoration and GREEN.
 Proof mutation remains forbidden until an actual initial complete GREEN exists.
-The final candidate still owes complete GREEN plus five fresh-process full-table
+Observed candidate unreachability remains a gate failure: the bounded attempt
+can complete its observations while its `unproved` entry prevents exit0. It does
+not authorize M1–M6 or remove the requirement for complete GREEN. The final
+candidate still owes complete GREEN plus five fresh-process full-table
 repetitions. Missing proof is review-blocking under test-authoring-evidence-gate;
 no conditional test-authoring PASS follows from source or subset counts.
 
