@@ -5,9 +5,10 @@ phases, checks, Git and removal. No cursor/count cap or fairness guarantee.
 All blocking work runs in an owned worker process group: cancellation of a
 Python thread would not stop deletion. Public manual entry is DRY RUN ONLY:
     python -m runtime.daemon.disk_sweeper --dry-run --runtime-root /absolute/runtime
-Default org disk_sweep.mode is dry_run; off does no inventory. No legacy cleanup
-code/flags are invoked. Output is never a candidate. See the maintained THR307
-spec for filesystem observation scope and nonpreemptible kernel-I/O limitations.
+Scheduled deletion applies to every admitted org (THR307 seq134); obsolete org
+disk_sweep input is ignored. Explicit manual dry run remains nonmutating. No
+legacy cleanup code/flags are invoked. Output is never a candidate. See the
+maintained THR307 spec for filesystem observation scope and nonpreemptible kernel-I/O limitations.
 """
 from __future__ import annotations
 
@@ -525,9 +526,6 @@ def sweep_org(org: Path, deadline: float, *, mode: str, checkpoint=lambda: None,
     result = result if result is not None else {}
     result.update(org=org.name, mode=mode, outcome='incomplete', discovery='unknown', candidates=[], unreached=None,
                   phases={p: dict(measured_allocated_bytes=0, removed_attributable_bytes=0, attribution_unknown=False) for p in ('scratch', 'worktree')})
-    if mode == 'off':
-        result.update(outcome='off', discovery='not_performed')
-        return result
     def report_checkpoint() -> None:
         _summarize_org(result)
         checkpoint()
@@ -537,11 +535,6 @@ def sweep_org(org: Path, deadline: float, *, mode: str, checkpoint=lambda: None,
     removed_inodes = removal_seen if removal_seen is not None else set()
     uncertain_repos = set()
 
-    def on_config():
-        from runtime.orchestrator.org_config import load_org_config
-        from runtime.orchestrator._paths import OrgPaths
-        if load_org_config(OrgPaths(org)).disk_sweep_mode != 'on':
-            raise Retain('configuration_no_longer_on')
     try:
         candidates = discover(org, deadline, inventory=result, checkpoint=report_checkpoint)
         report_checkpoint()
@@ -569,9 +562,7 @@ def sweep_org(org: Path, deadline: float, *, mode: str, checkpoint=lambda: None,
                 candidate['state'] = 'mutation_in_flight'
                 phase['attribution_unknown'] = True
                 report_checkpoint()
-                on_config()
                 fresh = admit(candidate, evidence, deadline, now=now)
-                on_config()
                 if {k: signature(v) for k, v in tree.items()} != {k: signature(v) for k, v in fresh.items()}:
                     raise Retain('tree_changed_before_mutation')
                 if candidate['phase'] == 'scratch':
@@ -579,7 +570,7 @@ def sweep_org(org: Path, deadline: float, *, mode: str, checkpoint=lambda: None,
                     mutate(Path(candidate['path']), fresh, deadline, remove=True)
                 else:
                     repo, path = Path(candidate['repo']), Path(candidate['path'])
-                    # Last local metadata check after config/tree comparisons;
+                    # Last local metadata check after fresh tree comparisons;
                     # Git must never consume a known redirected registration.
                     registrations(repo, deadline)
                     mutation_started = True
@@ -591,13 +582,10 @@ def sweep_org(org: Path, deadline: float, *, mode: str, checkpoint=lambda: None,
                         # contained repair AND again before Git retry. Own
                         # permission/partial changes count as recent and may
                         # conservatively refuse that retry.
-                        on_config()
                         retry_tree = admit(candidate, evidence, deadline, now=now)
-                        on_config()
                         registrations(repo, deadline)
                         repairs = mutate(path, retry_tree, deadline, remove=False)
                         admit(candidate, evidence, deadline, now=now, repairs=repairs)
-                        on_config()
                         registrations(repo, deadline)
                         candidate['retry_count'] = 1
                         git(repo, deadline, 'worktree', 'remove', str(path))
@@ -633,7 +621,6 @@ def sweep_org(org: Path, deadline: float, *, mode: str, checkpoint=lambda: None,
         if mode == 'on' and result['discovery'] == 'complete':
             for repo in sorted({c['repo'] for c in candidates if 'repo' in c}):
                 try:
-                    on_config()
                     rows = registrations(Path(repo), deadline)
                 except _RegistrationUnknown as exc:
                     result['discovery_scopes'].append(dict(path=repo, reason=str(exc), candidate_count=None))
@@ -703,10 +690,11 @@ def sweep(roots: list[str], deadline: float, summary: Path, *, dry_run: bool, sc
             checkpoint()
             try:
                 config_path = Path(root) / 'org/config.yaml'
-                cfg = load_org_config(OrgPaths(Path(root)))
+                load_org_config(OrgPaths(Path(root)))
                 item['config_sha256'] = hashlib.sha256(config_path.read_bytes() if config_path.exists() else b'').hexdigest()
-                item['configured_mode'] = cfg.disk_sweep_mode
-                mode = 'off' if cfg.disk_sweep_mode == 'off' else 'dry_run' if dry_run else cfg.disk_sweep_mode
+                # Policy is independent of org config; loading above preserves
+                # unrelated validation. Only explicit preview suppresses writes.
+                mode = 'dry_run' if dry_run else 'on'
                 sweep_org(Path(root), deadline, mode=mode, checkpoint=checkpoint, result=item, measurement_seen=measurement_seen, removal_seen=removal_seen,
                           writer_id=(native_writers or {}).get(root))
             except Expired:
@@ -714,7 +702,7 @@ def sweep(roots: list[str], deadline: float, summary: Path, *, dry_run: bool, sc
             except Exception as exc:
                 item.update(outcome='error', error=str(exc) or type(exc).__name__)
             checkpoint()
-        report['outcome'] = 'complete' if all(o['outcome'] in ('complete', 'off') for o in report['orgs']) else 'incomplete'
+        report['outcome'] = 'complete' if all(o['outcome'] == 'complete' for o in report['orgs']) else 'incomplete'
     except Expired as exc:
         report['error'] = str(exc)
     report['finished_at'] = datetime.now().astimezone().isoformat()
@@ -839,8 +827,8 @@ async def _run_scheduled_worker(state, summary: Path, date: str) -> dict:
         for slug, disposition in dispositions.items():
             items = [item for item in report.get('orgs', []) if item.get('org') == slug]
             if (len(items) == 1
-                    and (items[0].get('mode') in ('dry_run', 'off')
-                         or items[0].get('outcome') == 'complete')
+                    and items[0].get('mode') == 'on'
+                    and items[0].get('outcome') == 'complete'
                     and not report.get('interruption')
                     and report.get('worker_group_stop')
                     and not any(c.get('state') in ('mutation_in_flight', 'partial_or_unknown')
@@ -910,8 +898,7 @@ async def disk_sweeper_loop(state) -> None:
             # below-20% context is carried in this audit/JSON, as approved.
             for slug, org in sorted(state.orgs.items()):
                 item = next((r for r in report.get('orgs', []) if r['org'] == slug), None)
-                if item is None or item.get('mode') != 'off':
-                    await asyncio.to_thread(org.db.insert_audit_log, '', 'daemon', 'disk_sweep_summary', _audit_payload(report, item, summary))
+                await asyncio.to_thread(org.db.insert_audit_log, '', 'daemon', 'disk_sweep_summary', _audit_payload(report, item, summary))
             if cancelled is not None:
                 raise cancelled
         except asyncio.CancelledError:
@@ -949,8 +936,6 @@ def _manual_audit(report: dict, roots: list[str], summary: Path) -> None:
 
     for root in roots:
         item = next((o for o in report.get('orgs', []) if o['org'] == Path(root).name), None)
-        if item is not None and item.get('mode') == 'off':
-            continue
         conn = sqlite3.connect((Path(root) / 'happyranch.db').as_uri() + '?mode=rw', uri=True, timeout=.1)
         try:
             SummaryWriter(conn).insert_audit_log('', 'daemon', 'disk_sweep_summary', _audit_payload(report, item, summary))

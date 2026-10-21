@@ -1827,10 +1827,14 @@ machine-local time — host-local night, as intended.)
 
 ## Independent nightly disk sweep (THR307)
 
-The new `disk_sweep: {mode: "dry_run"}` org block defaults to dry run; only quoted
-`"off"`, `"dry_run"`, `"on"` are accepted. This is independent of `workspace_cleanup`
-and its unchanged legacy scheduler/reclamation flag. Machine-local03:00 (not org
-timezone), next future occurrence only, sequential org order and one1800s monotonic
+Founder THR307seq134/136 makes scheduled deletion effective for EVERY normally
+admitted org, including missing config, legacy off/dry_run/on and newly admitted
+orgs. The obsolete `disk_sweep` key is ignored regardless of shape/value; there is
+no per-org opt-out or replacement setting. Unrelated config validation remains.
+Reports carry actual `mode` (scheduled on, explicit preview dry_run), config digest
+and no `configured_mode`. Explicit manual preview inventories even legacy off.
+This is independent of `workspace_cleanup` and its unchanged legacy settings.
+Machine-local03:00 (not org timezone), next future occurrence only, sequential org order and one1800s monotonic
 batch budget. No cursor/rotation or candidate count cap. Unknown eligibility and
 unreached scope retain; the owned worker process group is stopped on deadline or
 shutdown. `output/` and durable scratch manifest/lock siblings stay excluded.
@@ -1871,8 +1875,10 @@ gates are unchanged. Ended tasks/root status does not prove OS-process quiescenc
 
 See the [full current contract](../superpowers/specs/2026-10-15-nightly-disk-sweeper.md)
 for evidence semantics, limitations, finite disposable verification and staged
-operational acceptance. The current bounded selector is `--corrections-only`: one case per approved
-correction with paired refusals; C3 asserts no process-inspection calls at Python
+operational acceptance. The bounded `--corrections-only` lane now runs C1–C7,
+with finding-specific selection through `--correction-cases`; C4–C7 cover all-org
+deletion, every legacy preview, fresh admission/retry and partial/native reporting.
+C3 retains its no-process-inspection assertions at Python
 syscall boundaries while allowing real self mountinfo reads. Task/job/clock inputs
 are synthetic; filesystem/Git/config/JSON/audit projection are real. Historical case9/10
 terminal-lineage expectations are superseded; active/unknown refusals remain.
@@ -1880,8 +1886,13 @@ The mount/process-root isolation fixtures remain SKIPPED/UNEXECUTED under seq62.
 The separate historical isolation source supports disposable namespace boundaries. Run as the ordinary user; only its
 private helper is mapped root. Missing capabilities return77/UNAVAILABLE, never
 PASS; no privileged fallback or new automated check is authorized. Source
-publication does not activate deletion. Existing seven agent sessions remain until seven actual approved on-night observations
-and a separately approved cutover; no automatic manual-script fallback.
+publication alone does not change loaded code. Root TASK12280 owns reviewed
+delivery, normal rollout/serving verification and seven actual scheduled on-night
+receipts. Founder seq134/136 already authorizes all-org activation after delivery,
+without another activation decision. Original TASK11742/JOB4898 recovery and
+root11948/PR1128 keep their separate ownership/evidence. Seven legacy agent
+sessions remain until seven actual approved on-night observations and separately
+approved cutover; no manual cleanup fallback.
 
 ## Org Config: Workspace Cleanup
 
@@ -3108,8 +3119,9 @@ An installed layout with missing/unknown ownership refuses before mutation; abse
 layout preserves native behavior. Missing/incomplete effect closure, interruption
 and partial mutation retain unknown writer evidence; a clean later provider result
 cannot erase it. The common1800-second window includes reservation admission.
-Off/default dry_run, metadata/process/age/containment safeguards and manual dry-run
-remain; no cleanup/activation authority follows. These source changes have no
+THR307seq134 scheduled deletion covers every admitted org; metadata/jobs/age/
+containment safeguards and explicit manual dry-run remain. This C3 source
+checkpoint grants no live cleanup authority. These source changes have no
 behavioral/migration/recovery proof; integration INCLUDING callback SKIPPED24342,
 Python units RETIRED. That C3 checkpoint had no COMPLETE writer; current D/E/F
 source and independent gates are described above. No live capability follows.

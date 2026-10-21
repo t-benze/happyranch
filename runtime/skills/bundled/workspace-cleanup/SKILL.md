@@ -170,11 +170,13 @@ No history deletion, automatic recovery, apply or execution authority follows.
 
 An online team-move hold reserves affected agents and source/target membership. The native cleanup trigger defers before work allocation, without advancing an occurrence; real cleanup tasks and unknown process/workspace tails block the move. Never delete another owner’s workspace, clear uncertainty or fabricate settlement to free a hold. Existing cleanup authority and all preservation gates remain. Apply is unavailable; behavior remains UNEXECUTED.
 
-THR307's independent daemon disk sweeper defaults to dry_run and has its own
-ended-task/ended-structural-root, fresh jobs, recursive-age and containment
-contract. Under Founder seq117 it does not inspect OS-process usage: once both
-the task and its structural root have ended, nightly sweeping may remove their
-task scratch and eligible worktrees. Stop and reap task-owned processes before
+Under Founder THR307seq134, the independent daemon disk sweeper deletes eligible
+scratch/worktrees for every normally admitted org on its nightly schedule. There
+is no per-org opt-out; obsolete disk_sweep config is ignored. Explicit manual
+--dry-run remains a nonmutating preview. The sweeper keeps its own ended-task/
+ended-structural-root, fresh jobs, recursive-age and containment contract. Under
+Founder seq117 it does not inspect OS-process usage: once both the task and its
+structural root have ended, nightly sweeping may remove their task scratch and eligible worktrees. Stop and reap task-owned processes before
 successful completion; do not rely on those folders afterward. Settle owned jobs;
 genuine authorized native job waits keep the existing blocked/wait callbacks,
 never fake completion. Filesystem mount containment remains in force.
@@ -183,8 +185,8 @@ none of this skill's legacy gates, and disables none of the seven nightly agent
 sessions. Other cleanup owners' process gates and old flags remain unchanged.
 Durable output and sibling task-scratch manifests/locks stay excluded. Put
 regenerable fixture/cache trees in runtime task-tmp; retain only concise evidence
-in output. Do not run historical cleanup, activate on-mode, or use a manual
-fallback on this note's authority.
+in output. Do not run historical cleanup, change live configuration, deploy/
+restart, or use a manual cleanup fallback on this note's authority.
 
 The one shared workspace-cleanup skill for every agent, including no-repo
 agents. It is invoked two ways, and both use exactly this contract:
@@ -905,8 +907,9 @@ An installed layout with missing/unknown ownership refuses before mutation; abse
 layout preserves native behavior. Missing/incomplete effect closure, interruption
 and partial mutation retain unknown writer evidence; a clean later provider result
 cannot erase it. The common1800-second window includes reservation admission.
-Off/default dry_run, metadata/process/age/containment safeguards and manual dry-run
-remain; no cleanup/activation authority follows. These source changes have no
+THR307seq134 scheduled deletion covers every admitted org; metadata/jobs/age/
+containment safeguards and explicit manual dry-run remain. This C3 source
+checkpoint grants no live cleanup authority. These source changes have no
 behavioral/migration/recovery proof; integration INCLUDING callback SKIPPED24342,
 Python units RETIRED. That C3 checkpoint had no COMPLETE writer; current D/E/F
 source and independent gates are described above. No live capability follows.

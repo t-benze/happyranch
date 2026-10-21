@@ -1042,17 +1042,33 @@ def c22():
         return dict(primary_only_absent_admin='complete; independent scratch removed',locked='retained',metadata_enumeration='original deadline; globally stopped; later org unreached',seconds=time.monotonic()-start)
 
 
+POLICY_CONFIGS = (
+    ('missing_file', None), ('absent_block', ''),
+    ('legacy_off', 'disk_sweep: {mode: "off"}'),
+    ('legacy_dry_run', 'disk_sweep: {mode: "dry_run"}'),
+    ('legacy_on', 'disk_sweep: {mode: "on"}'),
+    ('obsolete_null', 'disk_sweep: null'),
+    ('obsolete_boolean', 'disk_sweep: {mode: true}'),
+    ('obsolete_unknown', 'disk_sweep: {mode: bad}'),
+    ('obsolete_extra', 'disk_sweep: {extra: 1}'),
+    ('obsolete_scalar', 'disk_sweep: retired'),
+)
+
+
 def config_checks():
-    assert OrgConfig.load_from_text('').disk_sweep_mode=='dry_run'
-    for mode in ('off','dry_run','on'):assert OrgConfig.load_from_text('disk_sweep: {mode: "'+mode+'"}').disk_sweep_mode==mode
-    for text in ('disk_sweep: null','disk_sweep: {mode: true}','disk_sweep: {mode: bad}','disk_sweep: {extra: 1}'):
-        try:OrgConfig.load_from_text(text)
-        except OrgConfigError:continue
-        raise AssertionError(text)
-    with fixture() as f:
-        p=f.scratch('TASK-1')
-        with patch.object(ds,'discover',side_effect=AssertionError('off inventory')):assert f.sweep('off')['outcome']=='off'
-        assert p.exists()
+    for label, text in POLICY_CONFIGS:
+        try:
+            cfg = OrgConfig.load_from_text((text or '') + '\ntimezone: Asia/Shanghai\nworkspace_cleanup: {enabled: false}\n')
+        except OrgConfigError as exc:
+            raise AssertionError(dict(config=label, expected='obsolete setting ignored', observed=str(exc))) from exc
+        assert cfg.timezone == 'Asia/Shanghai' and cfg.workspace_cleanup_enabled is False, label
+    for text in ('session_timeout_seconds: true', 'workspace_cleanup: {enabled: bad}'):
+        try:
+            OrgConfig.load_from_text('disk_sweep: null\n' + text)
+        except OrgConfigError as exc:
+            assert text.split(':')[0] in str(exc), str(exc)
+        else:
+            raise AssertionError(dict(expected='unrelated validation refuses', observed=text))
     from datetime import datetime
     for hour in (2,3,23):
         now=datetime.now().astimezone().replace(hour=hour)
@@ -1206,7 +1222,7 @@ def correction_processes():
             assert report['outcome'] == 'complete' and report['unreached_orgs'] == []
             assert report['selected_org_roots'] == [str(f.org)] and len(report['orgs']) == 1
             result = report['orgs'][0]
-            assert result['org'] == f.org.name and result['configured_mode'] == 'on' and result['mode'] == 'dry_run'
+            assert result['org'] == f.org.name and 'configured_mode' not in result and result['mode'] == 'dry_run', result
             assert result['process_scope'] == expected_scope and result['process_exemptions'] == []
             assert all(not c.get('process_exemptions') for c in result['candidates'])
             assert all(phase['removed_attributable_bytes'] == 0 for phase in result['phases'].values())
@@ -1241,10 +1257,231 @@ def correction_processes():
                     limits='Python syscall sentinels only; no actual host namespace or OS-denial proof; no process started or inspected')
 
 
+def policy_config(f, text):
+    path = f.org / 'org/config.yaml'
+    if text is None:
+        path.unlink()
+    else:
+        path.write_text(text + '\n')
+
+
+def policy_sweep(f, *, dry_run=False, discover=False):
+    summary = f.base / 'policy-summary.json'
+    with patch.object(time, 'time', return_value=NOW):
+        report = ds.sweep([] if discover else [str(f.org)], time.monotonic() + 12, summary,
+                          dry_run=dry_run, scheduled_date=None if dry_run else 'fixture-date',
+                          revision='policy-fixture', runtime_root=f.base / 'runtime' if discover else None)
+    assert json.loads(summary.read_text()) == report
+    return report, summary
+
+
+def correction_policy():
+    observations = []
+    for label, text in POLICY_CONFIGS:
+        with fixture() as f:
+            policy_config(f, text)
+            p = f.scratch('TASK-1'); repo, q = f.worktree('TASK-2')
+            output = f.workspace / 'output/TASK-1'; output.mkdir(parents=True)
+            (output / 'keep').write_text('durable output')
+            sidecars = f.workspace / '.happyranch/task-scratch-manifests'
+            excluded = candidate_contents(output, sidecars)
+            branches = f.git(repo, 'show-ref', '--heads')
+            report, summary = policy_sweep(f, discover=label == 'missing_file')
+            item = report['orgs'][0]
+            assert item.get('mode') == 'on', dict(config=label, expected='on', observed=item)
+            assert 'configured_mode' not in item, item
+            assert report['outcome'] == item['outcome'] == 'complete', report
+            assert report['selected_org_roots'] == [str(f.org)] and report['unreached_orgs'] == []
+            assert row(item, p)['state'] == row(item, q)['state'] == 'removed', item
+            assert not p.exists() and not q.exists()
+            assert str(q) not in f.git(repo, 'worktree', 'list', '--porcelain')
+            assert f.git(repo, 'show-ref', '--heads') == branches
+            assert all(v['removed_attributable_bytes'] > 0 for v in item['phases'].values()), item
+            assert candidate_contents(output, sidecars) == excluded
+            audit = ds._audit_payload(report, item, summary)
+            assert audit['org'] == item and audit['outcome'] == 'complete', audit
+            observations.append(dict(config=label, report=report, audit=audit, retained_local_branches=True))
+    config_checks()
+    return dict(variants=observations, unrelated_config_validation='retained',
+                discovery='missing-file org discovered through actual runtime wrapper; no OrgState admission claim')
+
+
+def correction_preview():
+    observations = []
+    for label, text in POLICY_CONFIGS:
+        with fixture() as f:
+            policy_config(f, text)
+            p = f.scratch('TASK-1'); repo, q = f.worktree('TASK-2')
+            (p / 'nested').chmod(0o555)
+            output = f.workspace / 'output/TASK-1'; output.mkdir(parents=True)
+            (output / 'keep').write_text('durable output')
+            sidecars = f.workspace / '.happyranch/task-scratch-manifests'
+            before = candidate_contents(p, q, output, sidecars)
+            registrations = f.git(repo, 'worktree', 'list', '--porcelain')
+            branches = f.git(repo, 'show-ref', '--heads')
+            with refuse_mutations():
+                report, summary = policy_sweep(f, dry_run=True)
+                ds._manual_audit(report, [str(f.org)], summary)
+            item = report['orgs'][0]
+            assert item.get('mode') == 'dry_run', dict(config=label, expected='dry_run', observed=item)
+            assert report['outcome'] == item['outcome'] == 'complete', report
+            assert row(item, p)['state'] == row(item, q)['state'] == 'eligible', item
+            assert all(v['removed_attributable_bytes'] == 0 and v['measured_allocated_bytes'] > 0 for v in item['phases'].values()), item
+            saved = f.db.execute("SELECT task_id,agent,payload FROM audit_log WHERE action='disk_sweep_summary'").fetchall()
+            assert len(saved) == 1 and saved[0][:2] == ('', 'daemon'), saved
+            payload = json.loads(saved[0][2])
+            assert payload['org'] == item and payload['org']['mode'] == 'dry_run'
+            assert payload['outcome'] == 'complete' and payload['revision'] == 'policy-fixture'
+            assert payload['scheduled_date'] is None and payload['summary_path'] == str(summary)
+            assert payload['unreached_orgs'] == [] and payload['interruption'] is None
+            if label == 'legacy_off':
+                command = [sys.executable, '-m', 'runtime.daemon.disk_sweeper', '--dry-run', '--runtime-root', str(f.base / 'runtime')]
+                cli = subprocess.run(command, env={**os.environ, 'HAPPYRANCH_DAEMON_HOME': str(f.base / 'daemon')}, capture_output=True, text=True, timeout=12)
+                assert cli.returncode == 0, cli.stderr
+                cli_report = json.loads(cli.stdout)['report']
+                assert cli_report['orgs'][0]['mode'] == 'dry_run' and cli_report['orgs'][0]['discovery'] == 'complete', cli_report
+                # Child clock is real: these newly created fixtures are recent.
+                assert all(c['state'] == 'retained' for c in cli_report['orgs'][0]['candidates']), cli_report
+                denied = subprocess.run(command[:3] + ['--runtime-root', str(f.base / 'runtime')], capture_output=True, text=True, timeout=5)
+                assert denied.returncode == 2 and 'manual use requires --dry-run' in denied.stderr, denied.stderr
+            assert candidate_contents(p, q, output, sidecars) == before
+            assert f.git(repo, 'worktree', 'list', '--porcelain') == registrations
+            assert f.git(repo, 'show-ref', '--heads') == branches
+            observations.append(dict(config=label, report=report, audit=json.loads(saved[0][2]), mutations=0))
+    return dict(variants=observations, cli='legacy off inventories; no dry-run flag refuses exit2',
+                limits='child CLI uses real clock; in-process preview uses synthetic old-ctime clock')
+
+
+def correction_fresh_policy():
+    observations = []
+    for transition in ('owner_active', 'root_active', 'active_job', 'unknown_job', 'legacy_off'):
+        with fixture() as f:
+            p = f.scratch('TASK-1'); repo, q = f.worktree('TASK-2'); f.task('TASK-3')
+            f.db.execute("UPDATE tasks SET parent_task_id='TASK-3' WHERE id IN ('TASK-1','TASK-2')"); f.db.commit()
+            before = candidate_contents(p, q)
+            original = ds.atomic_json; changed = []
+            def checkpoint(path, report):
+                original(path, report)
+                if changed or not report['orgs']:
+                    return
+                if not any(c['state'] == 'mutation_in_flight' for c in report['orgs'][0].get('candidates', [])):
+                    return
+                changed.append(transition)
+                if transition == 'owner_active':
+                    f.db.execute("UPDATE tasks SET status='in_progress' WHERE id IN ('TASK-1','TASK-2')")
+                elif transition == 'root_active':
+                    f.db.execute("UPDATE tasks SET status='in_progress' WHERE id='TASK-3'")
+                elif transition in ('active_job', 'unknown_job'):
+                    f.db.execute('INSERT INTO jobs VALUES(?,?)', ('TASK-3', 'running' if transition == 'active_job' else 'alien'))
+                else:
+                    policy_config(f, 'disk_sweep: {mode: "off"}')
+                f.db.commit()
+            with patch.object(ds, 'atomic_json', checkpoint):
+                report, _ = policy_sweep(f)
+            assert changed == [transition], changed
+            item = report['orgs'][0]
+            if transition == 'legacy_off':
+                assert row(item, p)['state'] == row(item, q)['state'] == 'removed', dict(expected='legacy config cannot veto fresh admission', observed=item)
+                assert not p.exists() and not q.exists()
+            else:
+                reason = 'task_or_root_not_terminal' if transition in ('owner_active', 'root_active') else 'active_job' if transition == 'active_job' else 'unknown_job_status'
+                retained(item, p, reason); retained(item, q, reason)
+                assert candidate_contents(p, q) == before
+                assert all(v['removed_attributable_bytes'] == 0 for v in item['phases'].values()), item
+            observations.append(dict(transition=transition, report=report))
+    for transition in ('legacy_off', 'obsolete_null', 'active_job'):
+        with fixture() as f:
+            repo, q = f.worktree('TASK-1')
+            q.chmod(0o555)
+            before = candidate_contents(q)
+            real = ds.git; removes = []; repairs = []
+            real_mutate = ds.mutate
+            def git(root, deadline, *args):
+                if args[:2] == ('worktree', 'remove'):
+                    removes.append(args)
+                    if len(removes) == 1:
+                        if transition == 'active_job':
+                            f.db.execute("INSERT INTO jobs VALUES('TASK-1','running')"); f.db.commit()
+                        else:
+                            policy_config(f, 'disk_sweep: {mode: "off"}' if transition == 'legacy_off' else 'disk_sweep: null')
+                        return real(root, deadline, '--THR307-controlled-invalid-option')
+                return real(root, deadline, *args)
+            def mutate(*args, **kwargs):
+                repairs.append(kwargs['remove'])
+                return real_mutate(*args, **kwargs)
+            with patch.object(ds, 'git', git), patch.object(ds, 'mutate', mutate):
+                report, _ = policy_sweep(f)
+            item = row(report['orgs'][0], q)
+            if transition == 'active_job':
+                assert item['state'] == 'partial_or_unknown' and 'active_job' in item['reason'], item
+                assert len(removes) == 1 and repairs == [] and candidate_contents(q) == before
+                assert report['outcome'] == 'incomplete' and report['orgs'][0]['phases']['worktree']['attribution_unknown'], report
+            else:
+                assert item['state'] == 'removed' and item.get('retry_count') == 1, dict(expected='one policy-independent repair/retry', observed=item)
+                assert len(removes) == 2 and repairs == [False] and not q.exists()
+            assert 'task/TASK-1' in f.git(repo, 'branch', '--list')
+            observations.append(dict(retry_transition=transition, report=report, remove_calls=len(removes), repair_calls=len(repairs)))
+    return dict(transitions=observations, seam='actual persisted mutation checkpoint and actual first Git exit129; no gate mutation')
+
+
+def correction_policy_reporting():
+    from types import SimpleNamespace
+    import threading
+    from runtime.orchestrator import producer_move
+    observations = []
+    for partial in (True, False):
+        with fixture() as f, fixture() as deferred:
+            policy_config(f, 'disk_sweep: {mode: "dry_run"}')
+            p = f.scratch('TASK-1')
+            if partial:
+                (f.workspace / 'repos/not-git').mkdir(parents=True)
+            # Real owner_for refuses an installed-but-unowned optional layout.
+            # No live schema installation: minimal disposable refusal fixture.
+            deferred.db.execute('CREATE TABLE team_move_operations(active_slot INTEGER)'); deferred.db.commit()
+            deferred_root = deferred.org.with_name('zz-deferred')
+            deferred.org.rename(deferred_root)
+            def org(root, conn):
+                return SimpleNamespace(root=root, db=SimpleNamespace(_conn=conn, _lock=threading.RLock()))
+            state = SimpleNamespace(orgs={f.org.name: org(f.org, f.db), 'zz-deferred': org(deferred_root, deferred.db)})
+            dispositions = []
+            actual_disposition = producer_move.NativeWriterDisposition
+            def disposition():
+                value = actual_disposition(); dispositions.append(value); return value
+            async def in_process(roots, summary, **kwargs):
+                assert kwargs['dry_run'] is False and kwargs['scheduled_date'] == 'fixture-date', kwargs
+                assert roots == [str(f.org)], roots
+                with patch.object(time, 'time', return_value=NOW):
+                    report = ds.sweep(roots, time.monotonic() + kwargs['budget'], summary,
+                                      dry_run=False, scheduled_date=kwargs['scheduled_date'], revision='policy-fixture',
+                                      native_writers=kwargs['native_writers'])
+                report['worker_group_stop'] = 'SIMULATED supervision only; actual in-process sweep'
+                ds.atomic_json(summary, report)
+                return report
+            summary = f.base / 'scheduled-summary.json'
+            with patch.object(producer_move, 'NativeWriterDisposition', disposition), patch.object(ds, 'run_worker', in_process):
+                report = asyncio.run(ds._run_scheduled_worker(state, summary, 'fixture-date'))
+            assert len(dispositions) == 2 and dispositions[0].uncertain is partial, dict(expected_uncertain=partial, observed=[v.uncertain for v in dispositions], report=report)
+            assert report['outcome'] == 'incomplete' and report['move_deferred_orgs'] == {'zz-deferred': 'team_move_native_owner_unavailable'}, report
+            assert report['selected_org_roots'] == [str(f.org)] and report['unreached_orgs'] == []
+            assert json.loads(summary.read_text()) == report
+            item = report['orgs'][0]
+            assert item['mode'] == 'on' and 'configured_mode' not in item, item
+            assert row(item, p)['state'] == 'removed' and not p.exists(), item
+            assert item['discovery'] == ('partial' if partial else 'complete'), item
+            if partial:
+                assert item['unreached'] is None and item['discovery_scopes'], item
+            audit = ds._audit_payload(report, item, summary)
+            assert audit['move_deferred_orgs'] == report['move_deferred_orgs'] and audit['outcome'] == 'incomplete'
+            assert ds._audit_payload(report, None, summary)['org'] is None
+            observations.append(dict(partial=partial, report=report, audit=audit, native_uncertain=dispositions[0].uncertain))
+    return dict(runs=observations, limits='actual native reservation and missing-owner refusal; no installed-layout success or worker process supervision proof')
+
+
 if __name__=='__main__':
     parser=argparse.ArgumentParser(description=__doc__)
     selection=parser.add_mutually_exclusive_group()
-    selection.add_argument('--corrections-only', action='store_true', help='THR307seq117: exactly C1 jobs, C2 superseded, C3 ended trees without process inspection; no historical/config/isolation cases')
+    selection.add_argument('--corrections-only', action='store_true', help='THR307seq117/134: C1-C7 corrections; no historical/isolation cases')
+    selection.add_argument('--correction-cases', type=int, nargs='+', choices=range(1, 8), help='select finite cases within the corrections lane')
     selection.add_argument('--cases',type=int,nargs='+',choices=range(1,23))
     selection.add_argument('--isolation-case',choices=('mount','root'),help='only the private executable namespace fixture; exit77 if unavailable')
     args=parser.parse_args()
@@ -1253,9 +1490,11 @@ if __name__=='__main__':
     if os.geteuid()==0: parser.error('run this driver as an unprivileged user')
     status=0
     try:
-        if args.corrections_only:
-            for number, purpose, fn in ((1, 'Finished jobs before lineage', correction_jobs), (2, 'Superseded owner and structural root', correction_superseded), (3, 'Ended trees without process inspection and truthful reporting', correction_processes)):
-                case(number, purpose, fn)
+        if args.corrections_only or args.correction_cases:
+            corrections = ((1, 'Finished jobs before lineage', correction_jobs), (2, 'Superseded owner and structural root', correction_superseded), (3, 'Ended trees without process inspection and truthful reporting', correction_processes), (4, 'All-org policy and obsolete config compatibility', correction_policy), (5, 'Explicit preview for every legacy policy', correction_preview), (6, 'Fresh admission and bounded retry independent of policy', correction_fresh_policy), (7, 'Actual reporting and native deferred/partial disposition', correction_policy_reporting))
+            for number, purpose, fn in corrections:
+                if args.correction_cases is None or number in args.correction_cases:
+                    case(number, purpose, fn)
         elif args.isolation_case:
             detail=isolated_boundary(args.isolation_case)
             RESULTS.append(dict(case=args.isolation_case,result=detail['result'],observations=detail))

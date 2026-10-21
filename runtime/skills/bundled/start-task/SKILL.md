@@ -17,11 +17,13 @@ transport remains `@founder`. Metadata failure gives ID-only context.
 # start-task
 
 
-THR307's independent daemon disk sweeper defaults to dry_run and has its own
-ended-task/ended-structural-root, fresh jobs, recursive-age and containment
-contract. Under Founder seq117 it does not inspect OS-process usage: once both
-the task and its structural root have ended, nightly sweeping may remove their
-task scratch and eligible worktrees. Stop and reap task-owned processes before
+Under Founder THR307seq134, the independent daemon disk sweeper deletes eligible
+scratch/worktrees for every normally admitted org on its nightly schedule. There
+is no per-org opt-out; obsolete disk_sweep config is ignored. Explicit manual
+--dry-run remains a nonmutating preview. The sweeper keeps its own ended-task/
+ended-structural-root, fresh jobs, recursive-age and containment contract. Under
+Founder seq117 it does not inspect OS-process usage: once both the task and its
+structural root have ended, nightly sweeping may remove their task scratch and eligible worktrees. Stop and reap task-owned processes before
 successful completion; do not rely on those folders afterward. Settle owned jobs;
 genuine authorized native job waits keep the existing blocked/wait callbacks,
 never fake completion. Filesystem mount containment remains in force.
@@ -30,8 +32,8 @@ none of this skill's legacy gates, and disables none of the seven nightly agent
 sessions. Other cleanup owners' process gates and old flags remain unchanged.
 Durable output and sibling task-scratch manifests/locks stay excluded. Put
 regenerable fixture/cache trees in runtime task-tmp; retain only concise evidence
-in output. Do not run historical cleanup, activate on-mode, or use a manual
-fallback on this note's authority.
+in output. Do not run historical cleanup, change live configuration, deploy/
+restart, or use a manual cleanup fallback on this note's authority.
 
 ## THR-247 recovery-turn exception
 

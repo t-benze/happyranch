@@ -1000,11 +1000,11 @@ Preserve owner/session/Pause/possible-launch/race winners, existing running CAS,
 limits and all-terminal resumption. No schema/auth/permission/credential/general
 notifier change or deployment follows. Current contract: [Jobs](docs/superpowers/specs/2026-05-26-jobs-design.md).
 
-**Independent THR307 nightly disk sweeper — Founder seq117, ROOT TASK11742.**
-`runtime/daemon/disk_sweeper.py` adds machine-local03:00, default-dry-run, sequential
-org sweeping under one1800s monotonic batch window, with an owned stoppable worker
-process group. Only actual terminal-owner/terminal-root scratch and registered
-clean retained-ref worktrees can pass fresh jobs/recursive-age/containment
+**Independent THR307 nightly disk sweeper — Founder seq117/134, ROOT TASK12280 policy.**
+`runtime/daemon/disk_sweeper.py` runs machine-local03:00 deletion for every normally
+admitted org, sequentially under one1800s monotonic batch window, with an owned
+stoppable worker process group. Only actual terminal-owner/terminal-root scratch
+and registered clean retained-ref worktrees can pass fresh jobs/recursive-age/containment
 checks; unknown retains. THR307seq85/88 includes superseded for BOTH owner/root
 and skips recognized finished jobs before owner-lineage lookup. Founder seq117
 removes OS-process eligibility for this nightly sweeper, including namespace,
@@ -1017,7 +1017,13 @@ branches. No legacy receipt/count/rotation policy is imported into this new
 mechanism; legacy cleanup, flags and seven sessions are unchanged. Dry run never
 chmods/removes/prunes. One JSON/existing-shaped audit reports attributable allocated
 removals and unknown/partial/unreached scope, never physical freed-byte invention.
-No activation/deployment follows source delivery. Read the [current contract](docs/superpowers/specs/2026-10-15-nightly-disk-sweeper.md)
+Obsolete `disk_sweep` input of any shape is ignored; unrelated config validation
+stays active. Effective `mode` is on for scheduled work and dry_run only for an
+explicit preview; reports no longer carry `configured_mode`. Founder seq134/136
+authorizes all-org activation after reviewed delivery without another activation
+decision; root TASK12280 owns normal rollout/serving verification and seven actual
+on-night receipts. Source publication alone does not change loaded code. Original
+TASK11742/JOB4898 recovery and root11948/PR1128 remain separate. Read the [current contract](docs/superpowers/specs/2026-10-15-nightly-disk-sweeper.md)
 and runtime guide before changing it; independent review/scoped disposable QA and
 normal hooks/static checks remain mandatory. Python units stay retired.
 
@@ -3520,8 +3526,9 @@ An installed layout with missing/unknown ownership refuses before mutation; abse
 layout preserves native behavior. Missing/incomplete effect closure, interruption
 and partial mutation retain unknown writer evidence; a clean later provider result
 cannot erase it. The common1800-second window includes reservation admission.
-Off/default dry_run, metadata/process/age/containment safeguards and manual dry-run
-remain; no cleanup/activation authority follows. These source changes have no
+THR307seq134 scheduled deletion covers every admitted org; metadata/jobs/age/
+containment safeguards and explicit manual dry-run remain. This C3 source
+checkpoint grants no live cleanup authority. These source changes have no
 behavioral/migration/recovery proof; integration INCLUDING callback SKIPPED24342,
 Python units RETIRED. That C3 checkpoint had no COMPLETE writer; current D/E/F
 source and independent gates are described above. No live capability follows.

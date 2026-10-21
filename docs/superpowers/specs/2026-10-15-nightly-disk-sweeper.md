@@ -5,7 +5,11 @@ seq50; original delivery root TASK-11518. Founder seq85/88 authorizes the
 three bounded corrections under continuation root TASK-11742; TASK-11518 remains
 cancelled. Founder seq117 removes OS-process eligibility under the SAME
 continuation root TASK-11742, superseding seq85/88 four-name and PR1110 zombie
-handling for this independent sweeper only. This new mechanism replaces the unimplemented
+handling for this independent sweeper only. Founder seq134/136 directs scheduled
+deletion for every admitted org without per-org configuration or another
+activation decision after delivery. Root TASK12280 owns this policy and normal
+rollout; original TASK11742/JOB4898 recovery12279 and orphan-process root11948/
+PR1128 keep their separate scope and evidence. This mechanism replaces the unimplemented
 capacity/rotation proposal, not any legacy cleanup implementation or its rules.
 The operator disk/output reports are inputs, not independent feature evidence.
 Retry counts in those reports are not distinct removed-root counts. No operator
@@ -60,18 +64,20 @@ The existing supervisor conservatively retains `partial_mutation: unknown` for
 a nonzero worker exit, even when an incomplete report was fully written; this
 field is not evidence of deletion.
 
-```yaml
-# <runtime>/orgs/<slug>/org/config.yaml
-# Quote on/off: YAML 1.1 parses unquoted tokens as booleans, which are rejected.
-disk_sweep:
-  mode: "dry_run"  # "off" | "dry_run" | "on"; absent defaults dry_run
-```
+Scheduled deletion is enabled for **every normally admitted org**. Missing config
+files, absent blocks, old off/dry_run/on and newly discovered/admitted orgs all
+use the same policy. The obsolete `disk_sweep` key is ignored in every YAML
+shape/value; it cannot strand startup or veto fresh admission, contained repair,
+the single Git retry or prune. No replacement opt-in, config rewrite or migration
+is required. Unrelated configuration validation still refuses invalid settings.
+Org discovery/admission, native writer/team-move gates and complete fresh
+task/job/Git/age/containment checks remain controlling; refused/broken/unloaded/
+deferred orgs never become successful admitted orgs through mode selection.
 
-Only `mode` is accepted in this block; invalid/missing evidence fails safely.
-Off performs no candidate inventory or cleanup. Dry run performs no chmod,
-unlink/rmdir, Git remove or prune. Mode is re-read before each on-mode mutation
-and retry; disabling prevents later admissions, not revocation of an admitted
-syscall. Summaries/audits are permitted reporting writes.
+Explicit manual `--dry-run` inventories even an org with obsolete off config and
+performs no chmod, unlink/rmdir, Git remove or prune. Summaries/audits are permitted
+reporting writes. `mode` reports actual on/dry_run execution; retired
+`configured_mode` is absent. The config digest remains observational.
 
 Blocking work belongs to a separate, owned process group. Git inherits the group
 and has a maximum15s lifetime clipped to remaining budget. The parent kills the
@@ -189,7 +195,7 @@ One JSON under `<daemon_home>/disk-sweep/<scheduled-date>.json`, and one existin
 shaped `disk_sweep_summary` audit per swept org (no table/column change). Manual
 runs use a unique manual filename and one permitted audit per applicable org.
 Audits keep existing empty task scope/daemon attribution. No per-candidate receipts
-or new ledger. Summary includes actual executing source hash, config digest/mode,
+or new ledger. Summary includes actual executing source hash, config digest/effective mode,
 zone/window/date, discovery status, outcome, retained reasons/paths, dirty paths,
 known eligible leftovers, unreached counts/orgs and errors. In-flight checkpoint
 survives ordinary worker interruption; report failure is never fabricated success.
@@ -213,17 +219,18 @@ python -m runtime.daemon.disk_sweeper --dry-run --runtime-root /absolute/runtime
 
 `task_scratch_reclamation.py`, `workspace_cleanup.reclamation_actions_enabled`,
 legacy cleanup procedures and seven nightly agent cleanup sessions are unchanged.
-No production cleanup, schema/auth/permission change, deployment, restart or
-activation follows from this source delivery. Manager owns reviewed merge,
-exact-merge static checks and approved dry-run deployment/restart, serving-source/
-config verification and the first **scheduled** dry-run. Founder decides on-mode
-activation explicitly. Seven actual on-night records of attributable results,
-retained/unknown/eligible backlog and errors precede separately approved cutover.
+The maker performs no live cleanup, config write, deployment or restart. Root
+TASK12280 owns reviewed guarded merge, exact-main static checks, normal rollout
+and serving-source verification that every admitted org uses scheduled deletion
+independently of config. Founder seq134/136 already authorizes activation after
+delivery, without another decision; source publication alone does not prove
+loaded-source activation or actual reclamation. No manual cleanup proof follows.
+Seven actual on-night records of attributable results, retained/unknown/eligible backlog and errors precede separately approved cutover.
 ~50GiB is provisional; output growth or operator deletions cannot determine PASS.
 
 ## Finite disposable verification
 
-Historical broader driver (not authorized for the seq117 three-case delivery):
+Historical broader driver (not authorized for the current policy delivery):
 `.venv/bin/python scripts/verify_disk_sweeper.py` after `uv sync --frozen`.
 This standalone script imports no retired unit selection and uses real files,
 Git and processes with synthetic task/job/audit projections. An advanced wall
@@ -272,8 +279,9 @@ Founder seq85. The maintained case9/10 lineage refusal helpers now cover active
 jobs only; their other unknown-status, active scope and retry checks remain.
 These broad historical cases are NOT authorized for this correction delivery.
 
-Current bounded execution is exactly three cases, with paired assertions inside
-one case per correction:
+The current corrections lane retains C1–C3 (seq117) and adds the finite C4–C7
+policy cases (seq134). Run from the guarded worktree after
+`uv sync --frozen --python 3.14`, with task-owned disposable scratch:
 
 ```bash
 TMPDIR=/absolute/actual-child-task-tmp PYTHONDONTWRITEBYTECODE=1 .venv/bin/python scripts/verify_disk_sweeper.py --corrections-only
@@ -295,14 +303,41 @@ stay unchanged by each sweep. The actual JSON and org/audit projection report
 process usage unchecked with no applied exemptions. C1/C2 keep their task/job
 semantics without the obsolete synthetic proc-reader dependency. Task/job SQLite
 inputs and the advanced wall clock are synthetic; filesystem/Git/config gates,
-JSON serialization and audit projection are real. No actual host namespace,
-OS-denial, on-mode behavior or operational acceptance is established.
-Missing baseline/defect/repetition proof stays UNEXECUTED, not test-authoring PASS.
-The selector skips config checks and all historical/isolation cases. General
+JSON serialization and audit projection are real. C1–C3 establish no actual host
+namespace, OS-denial, on-mode behavior or operational acceptance. Their historical
+missing baseline/defect/repetition proof stays UNEXECUTED, not test-authoring PASS.
+The corrections selector excludes all historical/isolation cases. C4 exercises
+retired-config compatibility checks; C1–C3 retain their original behavioral
+contracts, with C3 metadata updated to the actual effective-mode contract. General
 integration SKIPPED24342; seq62 mount/process-root fixtures SKIPPED/UNEXECUTED.
 
+C4 uses the production parser and sweep wrapper across missing/absent/legacy
+off/dry_run/on and obsolete null/boolean/unknown/extra/scalar input. Both aged
+scratch and registered clean local-ref-backed worktrees are actually removed;
+branches, output and manifest/lock siblings survive. The missing-file org is
+discovered by the actual runtime-root wrapper. Unrelated config errors refuse.
+C5 checks every variant as explicit preview with zero chmod/remove/prune, actual
+serialized JSON and persisted existing-shaped audit, plus byte/mode/registration/
+branch/output/sidecar snapshots and public legacy-off CLI dry-run/refusal.
+C6 changes task/root/job facts at the real persisted pre-mutation checkpoint,
+proving fresh refusal. Obsolete config changes cannot veto valid admission or
+contained repair/the one retry after an actual controlled Git exit129; a new
+active job still refuses repair/retry and preserves partial attribution.
+C7 uses actual scheduled reservation and missing-native-owner deferral plus
+actual partial discovery/serialized JSON/audit projection. A partial run keeps
+its native disposition uncertain; successful per-org closure can settle while
+a separate deferred org leaves the batch incomplete. Worker process supervision
+is explicitly simulated for this in-process fixture, not verified.
+
+For a finding-specific selection use `--correction-cases 4 5 6 7` in the same
+corrections lane. These standalone commands are not automatic PR/merge tests.
+Synthetic task/job rows and old-ctime wall clock are labeled; Git/filesystem/
+parser/summary/audit work is real. Finite RED against unchanged pre-policy
+production and candidate GREEN are required in the PR case record; no protected
+gate-mutation campaign, historical process/mount fixtures or broad suite follows.
+
 The following existing isolation source describes separate historical coverage;
-it is not execution authority for this three-case delivery.
+it is not execution authority for this policy delivery.
 
 Historical isolation source below describes actual executable fixtures, not
 `unshare true`. The process-root expectation is SUPERSEDED by seq117; supported
@@ -367,8 +402,9 @@ An installed layout with missing/unknown ownership refuses before mutation; abse
 layout preserves native behavior. Missing/incomplete effect closure, interruption
 and partial mutation retain unknown writer evidence; a clean later provider result
 cannot erase it. The common1800-second window includes reservation admission.
-Off/default dry_run, metadata/jobs/age/containment safeguards and manual dry-run
-remain; no cleanup/activation authority follows. These source changes have no
+THR307seq134 scheduled deletion covers every admitted org; metadata/jobs/age/
+containment safeguards and explicit manual dry-run remain. This C3 source
+checkpoint grants no live cleanup authority. These source changes have no
 behavioral/migration/recovery proof; integration INCLUDING callback SKIPPED24342,
 Python units RETIRED. APPLY_AVAILABLE=false, no COMPLETE writer; D/E/F remain root-owned.
 
