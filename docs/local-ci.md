@@ -96,7 +96,8 @@ each final deadline, measured from the original invocation start. Readiness
 proves process-local subreaper SET/GET plus exact P/Q adoption and specific wait
 before orphan cases. F remains driver/reaper; controlled W provides independent
 bounded rescue. Limits: eight fixture processes including F,32 threads,1024
-observer events,1MiB combined stdout+stderr+report,64MiB scratch;24s action for C4 only and20s for every other variant, plus10s cleanup
+observer events,1MiB combined stdout+stderr+report,64MiB scratch;24s action for C4
+only and20s for every other variant, plus10s cleanup
 per variant. Dispatch establishes each action BEFORE probe/setup and clamps it
 to rescue; readiness15s and final15s reserve remain unchanged. C5’s two fault inputs share
 one action budget. Record backend evidence before separately labeled fixture
@@ -219,7 +220,7 @@ Missing/failed production completion preserves those mismatches and its own erro
 invalidates `failure_interval_complete` and fatally stops later cases/inputs;
 subsequent fixture rescue cannot backfill it. Normal C4 runs release promptly
 without requesting sensitivity. Infeasible admission or no attributable wrong
-value in the finite C window is missing sensitivity, never timeout-as-RED. These
+value in the finite C window is missing sensitivity, never timeout-as-RED.
 Neither clock resets at hold admission. B retains its real12s communicator
 timeout, which can still expire; wrong terminal reasons/timeouts or missing normal
 settlement are actual failures. These conditional caps guarantee no timing;
