@@ -74,7 +74,17 @@ Caller-owned transactions remain open; only standalone queued reads close their
 own read snapshot. Inventories are reconstructed internally on that exact
 connection/org/snapshot, without caller-trusted DTOs or global caches.
 
-This is the partial SOURCE prerequisite under sole ROOT TASK-12299. Full
+This is the partial SOURCE prerequisite under sole ROOT TASK-12299.
+Current step17 manual observations distinguish assigned cumulative candidate
+accounting/traversal dominance (component C413/T9601, combined C771/T16385)
+and14 loader/resource safeguards from broader candidate8193 UNPROVED.
+The native-only18-column overflow lower bound155649 visits is grammar-specific;
+no global infeasibility, candidate-guard/full F5/F8/program/runtime PASS follows.
+Historical native0/verifier2/42-INCOMPLETE and earlier ROOT10693 source waivers
+remain history. They do not waive current allocated M1–M6/S1–S8 sensitivity,
+forward restoration, GREEN/five fresh-process repetitions or independent
+same-head executable QA. See docs/local-ci.md for exact command and exits.
+ Full
 start_in_writer/support._storage schema/history composition remains unfinished;
 standalone template/source-data/role/import callers retain their defaults. New
 settings/progression and literal @3/team_move readers, repeated-binding inventory

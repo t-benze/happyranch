@@ -7,6 +7,7 @@ namespace. Exit 2 includes missing assigned evidence, even if a subset passes.
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 import ast
 import hashlib
 import gzip
@@ -26,6 +27,9 @@ import zipfile
 LIMIT = 2 * 1024 * 1024
 NAMESPACES = ('user', 'mnt', 'net', 'pid', 'ipc', 'uts', 'cgroup')
 INVENTORY = 'scripts/coding_reader_verification_manifest.json'
+LOADER = '/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2'
+LOADER_ALIAS = '/lib64/ld-linux-x86-64.so.2'
+SUPPORT_CASES = tuple([f'L{i}' for i in range(4)]+[f'R{i}' for i in range(8)]+['A-traversal','A-bytes'])
 # Completion is tied to executed stable case IDs, never the absence of a TODO.
 REQUIRED_CASES = (
     'F5-R1c.absent.omitted', 'F5-R1c.absent.none',
@@ -53,10 +57,11 @@ REQUIRED_CASES = (
 DRIVER = r'''
 from __future__ import annotations
 import base64, gzip, hashlib, json, os, signal, socket, sqlite3, sys, time
+from contextlib import contextmanager
 from collections.abc import Callable
 from pathlib import Path
 cfg = json.loads(Path('/fixture/config.json').read_text())
-result = {'origin':'SYNTHETIC', 'cases':[], 'unproved':{}, 'required_cases':cfg['required_cases'], 'complete':False}
+result = {'origin':'SYNTHETIC', 'cases':[], 'unproved':{}, 'required_cases':cfg['required_cases'], 'complete':False, 'support':[], 'outstanding_broader_targets':{'candidate8193':{'status':'UNPROVED','target':8193,'native18_overflow_visit_lower_bound':155649}}}
 qualified = False
 
 def save() -> None:
@@ -106,6 +111,226 @@ def schema(conn: sqlite3.Connection) -> list:
         objects.append(item)
     return objects
 
+# One resource scope for every reader, aggregate and finite support observation.
+class SupportIncomplete(RuntimeError):
+    pass
+
+
+def check_trace(state: dict) -> None:
+    if state['overflow']:
+        raise SupportIncomplete('SUPPORT trace bound')
+
+
+@contextmanager
+def support_scope(connection: object):
+    state=dict(trace=[], count=0, overflow=False)
+    previous=signal.getsignal(signal.SIGALRM)
+    def alarm(*_: object) -> None:
+        raise SupportIncomplete('SUPPORT delivered alarm')
+    def traced(sql: str) -> None:
+        state['count']=min(2049,state['count']+1)
+        if len(state['trace']) >= 2048:
+            state['overflow']=True
+            return
+        raw=sql.encode()
+        state['trace'].append(dict(sql=sql[:320],bytes=len(raw),sha256=digest(raw)))
+    # Protection precedes even partial installation and every fallible snapshot.
+    try:
+        signal.signal(signal.SIGALRM,alarm)
+        signal.setitimer(signal.ITIMER_REAL,2)
+        connection.set_trace_callback(traced)
+        yield state
+        check_trace(state)  # sqlite3 deliberately swallows callback exceptions
+    finally:
+        try:
+            connection.set_trace_callback(None)
+        finally:
+            try:
+                signal.setitimer(signal.ITIMER_REAL,0)
+            finally:
+                signal.signal(signal.SIGALRM,previous)
+
+
+@contextmanager
+def contained_scope(connection: object):
+    previous=signal.getsignal(signal.SIGALRM)
+    try:
+        with support_scope(connection) as state:
+            yield state
+    finally:
+        # Independent immutable outer containment; R/A records observe first.
+        signal.setitimer(signal.ITIMER_REAL,0)
+        signal.signal(signal.SIGALRM,previous)
+        connection.set_trace_callback(None)
+
+
+class TraceSpy:
+    # SUPPORT-only forwarding observer; readers keep the original connection.
+    def __init__(self, connection: object, install_fault: bool = False) -> None:
+        self.connection=connection
+        self.events=[]
+        self.calls=0
+        self.install_fault=install_fault
+    def set_trace_callback(self, callback: object) -> None:
+        self.events.append('detach' if callback is None else 'attach')
+        def forward(sql: str) -> None:
+            self.calls+=1
+            callback(sql)
+        self.connection.set_trace_callback(None if callback is None else forward)
+        if callback is not None and self.install_fault:
+            self.install_fault=False
+            raise LookupError('SUPPORT install')
+
+
+def timer_observation() -> dict:
+    remaining,interval=signal.getitimer(signal.ITIMER_REAL)
+    return dict(remaining=remaining,interval=interval,handler=repr(signal.getsignal(signal.SIGALRM)))
+
+
+def cleanup_observations(connection: object, spy: TraceSpy, state: dict | None,
+                         previous: object, checks: list) -> dict:
+    # Independent observation BEFORE immutable outer containment repairs leaks.
+    after=timer_observation()
+    equal(checks,'scope timer disarmed',list(signal.getitimer(signal.ITIMER_REAL)),[0.0,0.0])
+    equal(checks,'previous handler restored',signal.getsignal(signal.SIGALRM)==previous,True)
+    equal(checks,'actual detach observed',spy.events[-1:] ,['detach'])
+    before_calls=spy.calls
+    before_ledger=None if state is None else len(state['trace'])
+    connection.execute('SELECT 73').fetchall()
+    equal(checks,'post-scope SELECT detached',spy.calls,before_calls)
+    if state is not None:
+        equal(checks,'closed ledger unchanged',len(state['trace']),before_ledger)
+    return after
+
+
+def fresh_sibling(connection: object, checks: list) -> dict:
+    # Immutable controller containment runs BEFORE this scope, not as its proof.
+    spy=TraceSpy(connection)
+    previous=signal.getsignal(signal.SIGALRM)
+    try:
+        with support_scope(spy) as sibling:
+            timer=timer_observation()
+            equal(checks,'fresh sibling timer armed',0<timer['remaining']<=2,True)
+            connection.execute('SELECT 79').fetchall()
+            equal(checks,'fresh sibling actual callbacks',spy.calls,1)
+            equal(checks,'fresh sibling retained events',len(sibling['trace']),1)
+            equal(checks,'fresh sibling no sticky predecessor',sibling['overflow'],False)
+        after=cleanup_observations(connection,spy,sibling,previous,checks)
+        return dict(timer=timer,after=after,events=spy.events,callbacks=spy.calls)
+    finally:
+        # Never mutate this controller containment for S7/S8.
+        signal.setitimer(signal.ITIMER_REAL,0)
+        signal.signal(signal.SIGALRM,previous)
+        connection.set_trace_callback(None)
+
+
+@contextmanager
+def watched_scope(connection: object, name: str):
+    checks=[]; samples=[]; spy=TraceSpy(connection)
+    previous=signal.getsignal(signal.SIGALRM); profile=sys.getprofile()
+    state=None
+    def observer(frame: object, event: str, arg: object) -> None:
+        if event == 'call' and frame.f_code.co_name in ('saved_rows','queued_storage','read_release_import'):
+            timer=timer_observation()
+            samples.append(dict(function=frame.f_code.co_name,**timer))
+            equal(checks,'live timer at '+frame.f_code.co_name,0<timer['remaining']<=2,True)
+    try:
+        with support_scope(spy) as state:
+            sys.setprofile(observer)
+            try:
+                yield state
+            finally:
+                sys.setprofile(profile)
+            equal(checks,'aggregate pre/post snapshot entries',sum(s['function']=='saved_rows' for s in samples),2)
+            equal(checks,'actual queued entry',any(s['function']=='queued_storage' for s in samples),True)
+            equal(checks,'actual release entries',any(s['function']=='read_release_import' for s in samples),True)
+            equal(checks,'actual trace events retained',len(state['trace']),spy.calls)
+            equal(checks,'bounded ledger',len(state['trace'])<=2048,True)
+        after=cleanup_observations(connection,spy,state,previous,checks)
+    finally:
+        sys.setprofile(profile)
+        # Immutable controller containment, after scope evidence is captured.
+        signal.setitimer(signal.ITIMER_REAL,0)
+        signal.signal(signal.SIGALRM,previous)
+        connection.set_trace_callback(None)
+    sibling=fresh_sibling(connection,checks)
+    result['support'].append(dict(name=name,checks=checks,samples=samples,after=after,
+        events=spy.events,callbacks=spy.calls,sibling=sibling,raw_exit=0))
+
+
+def resource_records() -> None:
+    for index in range(8):
+        connection=sqlite3.connect(':memory:')
+        checks=[]; samples=[]; state=None; cause=None; entries=0
+        spy=TraceSpy(connection,install_fault=index==7)
+        previous=signal.getsignal(signal.SIGALRM)
+        before=timer_observation()
+        delivery=[]
+        old_profile=sys.getprofile()
+        def delivered(frame: object, event: str, arg: object) -> None:
+            if event=='call' and frame.f_code.co_name=='alarm':
+                delivery.append('SIGALRM')
+        try:
+            try:
+                with support_scope(spy) as state:
+                    sys.setprofile(delivered)
+                    samples.append(timer_observation())  # pre-snapshot boundary
+                    if index==5:
+                        raise LookupError('SUPPORT pre-snapshot')
+                    entries+=1
+                    samples.append(timer_observation())
+                    if index==1:
+                        raise ValueError('SUPPORT refusal')
+                    if index==2:
+                        signal.raise_signal(signal.SIGALRM)
+                    total=2048 if index==3 else 2050 if index==4 else 1
+                    for event in range(total):
+                        connection.execute('SELECT 71').fetchall()
+                        if index==4 and event in (2048,2049):
+                            samples.append(dict(event=event+1,count=state['count'],
+                                retained=len(state['trace']),overflow=state['overflow']))
+                    if index==6:
+                        raise LookupError('SUPPORT post-reader')
+                    samples.append(timer_observation())  # post-snapshot boundary
+            except (SupportIncomplete,ValueError,LookupError) as exc:
+                cause=type(exc).__name__+': '+str(exc)
+            finally:
+                sys.setprofile(old_profile)
+            expected={1:'ValueError: SUPPORT refusal',2:'SupportIncomplete: SUPPORT delivered alarm',
+                4:'SupportIncomplete: SUPPORT trace bound',5:'LookupError: SUPPORT pre-snapshot',
+                6:'LookupError: SUPPORT post-reader',7:'LookupError: SUPPORT install'}.get(index)
+            equal(checks,'exact original SUPPORT cause',cause,expected)
+            equal(checks,'actual reader/action entry',entries,0 if index in (5,7) else 1)
+            for sample in samples:
+                if 'remaining' in sample:
+                    equal(checks,'positive live timer',0<sample['remaining']<=2,True)
+            if index==2:
+                equal(checks,'one actual delivered handler',delivery,['SIGALRM'])
+            if index in (3,4):
+                equal(checks,'independent SQLite callbacks',spy.calls,2048 if index==3 else 2050)
+                equal(checks,'retained boundary',len(state['trace']),2048)
+                equal(checks,'bounded count',state['count'],2048 if index==3 else 2049)
+                equal(checks,'sticky overflow',state['overflow'],index==4)
+                if index==4:
+                    equal(checks,'2049 plus fixed extra event sticky',[s for s in samples if 'event' in s],
+                        [dict(event=n,count=2049,retained=2048,overflow=True) for n in (2049,2050)])
+            after=cleanup_observations(connection,spy,state,previous,checks)
+        finally:
+            # Immutable outer containment: record failed cleanup first, then repair.
+            sys.setprofile(old_profile)
+            signal.setitimer(signal.ITIMER_REAL,0)
+            signal.signal(signal.SIGALRM,previous)
+            connection.set_trace_callback(None)
+        try:
+            sibling=fresh_sibling(connection,checks)
+            result['support'].append(dict(name='R'+str(index),checks=checks,before=before,
+                inside=samples,after=after,cause=cause,raw_exit=2 if cause else 0,
+                entries=entries,delivery=delivery,events=spy.events,callbacks=spy.calls,
+                trace=None if state is None else dict(count=state['count'],retained=len(state['trace']),overflow=state['overflow']),
+                sibling=sibling))
+        finally:
+            connection.close()
+
 try:
     observation = dict(cwd=os.getcwd(), cwd_entries=os.listdir('.'), env=dict(os.environ),
         interfaces=socket.if_nameindex(), python=sys.version, executable=sys.executable,
@@ -143,6 +368,7 @@ try:
         if event in ('subprocess.Popen','os.system','os.exec','os.fork','os.posix_spawn','socket.connect','socket.bind'):
             raise RuntimeError('product external effect refused: '+event)
     sys.addaudithook(audit)
+    resource_records()
     from runtime.infrastructure.database import Database
     from runtime.infrastructure.workflow_schema import initialize_complete_org_schema, _validate_installed
     from runtime.workflows._coding_release_history import read_release_import
@@ -236,22 +462,24 @@ try:
         def observe(name: str, action: Callable[[], object], expected_category: str | None = None,
                     expect_import: bool = False, supplied: _Budget | None = None,
                     kind: str | None = None) -> None:
-            checks, trace = [], []
-            trace_overflow = [False]
-            signal.signal(signal.SIGALRM,lambda *_: (_ for _ in ()).throw(TimeoutError('2s case bound')))
-            signal.setitimer(signal.ITIMER_REAL,2)
-            before = saved_rows(conn)
-            transaction = conn.in_transaction
-            def traced(statement: str) -> None:
-                if len(trace) >= 2048:
-                    trace_overflow[0]=True
-                    return
-                raw = statement.encode()
-                trace.append(dict(sql=statement[:320], bytes=len(raw), sha256=digest(raw)))
-            conn.set_trace_callback(traced)
-            try:
+            checks = []
+            phases=[]
+            old_profile=sys.getprofile()
+            def phase(frame: object, event: str, arg: object) -> None:
+                if (supplied is not None and 'aggregate-candidates' in name and event in ('call','return')
+                        and frame.f_code.co_name=='read_release_import'):
+                    phases.append(dict(event=event,counters=vars(supplied).copy(),
+                        forwarded=frame.f_locals.get('budget') is supplied))
+            with contained_scope(conn) as scope:
+                trace = scope['trace']
+                before = saved_rows(conn)
+                transaction = conn.in_transaction
                 try:
-                    value = action()
+                    sys.setprofile(phase)
+                    try:
+                        value = action()
+                    finally:
+                        sys.setprofile(old_profile)
                     category = None
                     if kind == 'absent':
                         equal(checks,'complete absent import',value,None)
@@ -269,18 +497,20 @@ try:
                         equal(checks, 'six full typed publication rows', actual, oracle)
                 except ValueError as exc:
                     category = str(exc)
-                if trace_overflow[0]:
-                    raise RuntimeError('case trace bound')
+                if supplied is not None and 'aggregate-candidates' in name:
+                    equal(checks,'real release phase count',len(phases),2)
+                    if len(phases)==2:
+                        equal(checks,'real release candidate delta',phases[1]['counters']['accepted_rows']-phases[0]['counters']['accepted_rows'],12)
+                        equal(checks,'real release uses caller allowance',[p['forwarded'] for p in phases],[True,True])
+                check_trace(scope)
                 equal(checks, 'category-only outcome', category, expected_category)
                 equal(checks, 'caller transaction preserved', conn.in_transaction, transaction)
                 equal(checks, 'all native rows unchanged', digest(canonical(saved_rows(conn))), digest(canonical(before)))
                 equal(checks, 'no foreign key violation', list(conn.execute('PRAGMA foreign_key_check')), [])
                 equal(checks, 'native integrity', list(conn.execute('PRAGMA integrity_check')), [('ok',)])
-            finally:
-                conn.set_trace_callback(None)
-                signal.setitimer(signal.ITIMER_REAL,0)
+                check_trace(scope)
             result['cases'].append(dict(name=name, checks=checks, trace=trace,
-                counters=None if supplied is None else vars(supplied).copy()))
+                counters=None if supplied is None else vars(supplied).copy(),phases=phases))
             save()
         invalid = 'coding_release_import_history_invalid'
         conn.execute('BEGIN')
@@ -436,14 +666,13 @@ try:
         native_visits=sum(len(row)+1 for row in native_rows)
         current_proof=provenance
         def aggregate(label: str, target: str) -> None:
-            checks=[]; components=[]; trace=[]
-            before=saved_rows(conn); transaction=conn.in_transaction
-            b=_Budget()
-            expected_work=release_work(current_proof)
-            conn.set_trace_callback(lambda sql: trace.append(dict(sql=sql[:180],bytes=len(sql.encode()),
-                                                                  sha256=digest(sql.encode()))))
-            category=None
-            try:
+            with watched_scope(conn, 'A-traversal' if target == 'traversed' else 'A-bytes') as scope:
+                trace=scope['trace']
+                checks=[]; components=[]
+                before=saved_rows(conn); transaction=conn.in_transaction
+                b=_Budget()
+                expected_work=release_work(current_proof)
+                category=None
                 # queued's real mapping/import/native owners first, followed
                 # by ordinary release reads using the identical actual budget.
                 for sequence in range(24):
@@ -490,8 +719,7 @@ try:
                             target=8193,observed=vars(b).copy(),components=len(components),
                             source_bounds='8192 candidates,16384 visits,16MiB; each release component has 12 candidates plus lexical/column visits; singleton fixed-release grammar; queued native rows visit every column')
                     equal(checks,'attempt reached actual earlier traversal bound',b.traversed,16385)
-            finally:
-                conn.set_trace_callback(None)
+                check_trace(scope)
             result['cases'].append(dict(name=label,checks=checks,components=components,expected_work=expected_work,
                 trace=trace,counters=vars(b).copy(),target=target))
             save()
@@ -511,6 +739,8 @@ try:
             cb=_Budget()
             observe('F5-R1c.aggregate-candidates.component-'+label+'.positive',
                 lambda:queued_storage(conn,org,budget=cb),supplied=cb,kind='queued')
+            equal(result['cases'][-1]['checks'],'input-derived cumulative candidates',cb.accepted_rows,12+401)
+            equal(result['cases'][-1]['checks'],'input-derived cumulative traversal',cb.traversed,1982+19*401)
             conn.execute('ROLLBACK TO candidate_component');conn.execute('RELEASE candidate_component')
         conn.execute('SAVEPOINT candidate_combined')
         candidate_group('a');candidate_group('b')
@@ -518,11 +748,13 @@ try:
         observe('F5-R1c.aggregate-candidates',lambda:queued_storage(conn,org,budget=cb),
             'coding_authority_history_invalid',supplied=cb)
         equal(result['cases'][-1]['checks'],'actual earlier traversal bound',cb.traversed,16385)
+        equal(result['cases'][-1]['checks'],'input-derived partial candidate accumulation',cb.accepted_rows,771)
+        equal(result['cases'][-1]['checks'],'candidate guard not reached',cb.accepted_rows<8193,True)
+        equal(result['cases'][-1]['checks'],'bytes not first',cb.consumed<=16777216,True)
         result['cases'][-1]['input_components']=dict(first=400,second=400,existing=1,native_columns=18)
-        result['unproved']['F5-R1c.aggregate-candidates']=dict(
-            reason='The actual combined native components reach traversal before8193 candidates; candidate boundary NOT proved',
-            target=8193,observed=vars(cb).copy(),input_components=[400,400],
-            source_bounds='Original8192 candidates/16384 visits/16MiB. Each ordinary task_results candidate visits18 columns plus its page; 8193 such candidates require at least155667 visits. Fixed release singleton contributes12 candidates/1977 visits. No limit changed.')
+        result['outstanding_broader_targets']['candidate8193'].update(
+            observed=vars(cb).copy(),input_components=[400,400],
+            grammar='ordinary18-column task_results plus fixed release; no global infeasibility claim')
         conn.execute('ROLLBACK TO candidate_combined');conn.execute('RELEASE candidate_combined')
         # A fixed larger VALID v1 snapshot exercises actual nested base64,
         # canonical UTF8 and hex copies without adding lexical member visits.
@@ -640,7 +872,14 @@ try:
     names=[case['name'] for case in result['cases']]
     result['missing_cases']=sorted(set(cfg['required_cases'])-set(names))
     result['duplicate_cases']=sorted(name for name in set(names) if names.count(name)!=1)
-    result['complete'] = not result['unproved'] and not result['missing_cases'] and not result['duplicate_cases']
+    result['unknown_cases']=sorted(set(names)-set(cfg['required_cases']))
+    support_names=[row['name'] for row in result['support']]
+    result['missing_support']=sorted(set(cfg['native_support_cases'])-set(support_names))
+    result['duplicate_support']=sorted(n for n in set(support_names) if support_names.count(n)!=1)
+    result['unknown_support']=sorted(set(support_names)-set(cfg['native_support_cases']))
+    result['assigned_completion']=dict(reader=not result['unproved'] and not result['missing_cases'] and not result['duplicate_cases'] and not result['unknown_cases'],
+        support=not result['missing_support'] and not result['duplicate_support'] and not result['unknown_support'])
+    result['complete'] = all(result['assigned_completion'].values())
 except BaseException as exc:
     import traceback
     result['setup_error'] = type(exc).__name__+': '+str(exc)
@@ -742,6 +981,128 @@ def source_identity(root: Path, head: str) -> dict:
     return dict(head=head,tree=git(root,'rev-parse','HEAD^{tree}'),files=files,inventory=manifest)
 
 
+def admit_loader(value: dict) -> str:
+    files=value['files']; natives=value['native_libraries']
+    if LOADER_ALIAS in files or LOADER_ALIAS in natives:
+        raise ValueError('loader noncanonical')
+    selected=LOADER
+    if selected not in files or selected not in natives:
+        raise ValueError('loader membership')
+    if Path(selected).resolve() != Path(selected):
+        raise ValueError('loader noncanonical')
+    if sha(Path(selected)) != files[selected]:
+        raise ValueError('loader digest')
+    return selected
+
+
+def loader_record(args: argparse.Namespace) -> int:
+    """Fresh stdlib controller; its synchronous audit veto is immutable."""
+    name=args.case_set.removeprefix('loader-')
+    root=canonical_path(args.source_root)
+    source=source_identity(root,args.expected_head)
+    original=json.loads(args.environment_manifest.read_text())
+    environment_identity(args.environment_manifest,source['files']['uv.lock'],root)
+    # Establish the actual interpreter audit-before-spawn boundary as source.
+    popen=Path(subprocess.__file__)
+    popen_bytes=popen.read_bytes()
+    body=popen_bytes[popen_bytes.index(b'            sys.audit("subprocess.Popen"'):]
+    if not (body.index(b'sys.audit(')<body.index(b'self._posix_spawn(')<body.index(b'_fork_exec(')):
+        raise RuntimeError('audit-before-OS-spawn unavailable')
+    out=canonical_path(args.output_dir)
+    if out.exists():
+        raise ValueError('fresh loader controller output required')
+    out.mkdir(mode=0o700)
+    value=json.loads(json.dumps(original))
+    if name=='L1':
+        value['files'].pop(LOADER)
+        value['native_libraries'].remove(LOADER)
+    elif name=='L2':
+        value['files'][LOADER]='0'*64 if value['files'][LOADER]!='0'*64 else '1'*64
+    elif name=='L3':
+        value['files'][LOADER_ALIAS]=value['files'].pop(LOADER)
+        value['native_libraries']=[LOADER_ALIAS if p==LOADER else p for p in value['native_libraries']]
+    manifest=out/'environment.json'
+    manifest.write_text(json.dumps(value))
+    probes=[]; attempts=[]; products=[]
+    def veto(event: str, operands: tuple) -> None:
+        # NEVER mutate this independent veto in loader support variants.
+        if event=='subprocess.Popen':
+            executable,argv,*_=operands
+            if executable=='/usr/bin/bwrap':
+                attempts.append(list(argv))
+                raise RuntimeError('SUPPORT immutable bwrap audit veto')
+            if executable!='/usr/bin/git':
+                raise RuntimeError('SUPPORT non-git process refused')
+            probes.append(list(argv))
+        if event=='import' and operands[0].split('.')[0] in ('runtime','cli'):
+            products.append(dict(event=event,name=operands[0]))
+            raise RuntimeError('SUPPORT product import refused')
+        if event=='exec' and '/runtime/' in getattr(operands[0],'co_filename',''):
+            products.append(dict(event=event,path=operands[0].co_filename))
+            raise RuntimeError('SUPPORT product exec refused')
+    sys.addaudithook(veto)  # before the ACTUAL verifier main, not a fake planner
+    original_argv=sys.argv
+    sys.argv=[str(root/'scripts/verify_coding_readers.py'), '--source-root',str(root),
+        '--expected-head',args.expected_head,'--case-set','release-accounting',
+        '--history-manifest',str(args.history_manifest),'--environment-manifest',str(manifest),
+        '--output-dir',str(out/'verifier')]
+    try:
+        # The inner actual main needs its L campaign suppressed to avoid recursion.
+        raw_exit=main(loader_vetoed=True)
+    finally:
+        sys.argv=original_argv
+    receipt=json.loads((out/'verifier/receipt.json').read_text())
+    checks=[]
+    def check(label: str, actual: object, expected: object) -> None:
+        checks.append(dict(assertion=label,actual=actual,expected=expected,passed=actual==expected))
+    check('raw verifier setup exit',raw_exit,2)
+    check('bwrap audit attempts',len(attempts),1 if name=='L0' else 0)
+    expected={'L0':'RuntimeError: SUPPORT immutable bwrap audit veto','L1':'ValueError: loader membership',
+        'L2':'ValueError: loader digest','L3':'ValueError: loader noncanonical'}[name]
+    check('exact setup cause',receipt.get('setup_error'),expected)
+    check('no product execution',products,[])
+    if name=='L0' and len(attempts)==1:
+        argv=attempts[0]
+        mounts=[argv[i+1:i+3] for i,x in enumerate(argv) if x=='--ro-bind']
+        check('canonical loader mounted', [LOADER,LOADER] in mounts,True)
+        check('alias derived from admitted loader',[LOADER,LOADER_ALIAS] in mounts,True)
+        check('loader in both collections',LOADER in original['files'] and LOADER in original['native_libraries'],True)
+        check('actual admitted loader digest',sha(Path(LOADER)),original['files'][LOADER])
+    record=dict(name=name,checks=checks,raw_verifier_exit=raw_exit,raw_setup_error=receipt.get('setup_error'),
+        bwrap_attempts=attempts,product_attempts=products,git_source_probes=probes,
+        interpreter_sha256=sha(Path(sys.executable)),subprocess_sha256=sha(popen),
+        audit_before_os_spawn=True,controller_exit=1 if any(not c['passed'] for c in checks) else 0)
+    (out/'loader-record.json').write_text(json.dumps(record,indent=2))
+    return record['controller_exit']
+
+
+def loader_campaign(args: argparse.Namespace, out: Path, started: float) -> list:
+    records=[]
+    for name in ('L0','L1','L2','L3'):
+        target=out/name
+        argv=[sys.executable,'-I','-S',str(args.source_root/'scripts/verify_coding_readers.py'),
+            '--source-root',str(args.source_root),'--expected-head',args.expected_head,
+            '--case-set','loader-'+name,'--history-manifest',str(args.history_manifest),
+            '--environment-manifest',str(args.environment_manifest),'--output-dir',str(target)]
+        process=None
+        try:
+            with (out/(name+'.stdout')).open('wb') as stdout,(out/(name+'.stderr')).open('wb') as stderr:
+                process=subprocess.Popen(argv,env={},stdin=subprocess.DEVNULL,stdout=stdout,stderr=stderr,
+                    close_fds=True,start_new_session=True,preexec_fn=limits)
+                code=process.wait(timeout=max(.01,55-(time.monotonic()-started)))
+            if code not in (0,1) or not (target/'loader-record.json').exists():
+                raise RuntimeError('loader controller incomplete: '+name)
+            record=json.loads((target/'loader-record.json').read_text())
+            if record['controller_exit']!=code:
+                raise RuntimeError('loader controller exit mismatch')
+            records.append(record)
+        finally:
+            if process is not None and process.poll() is None:
+                os.killpg(process.pid,signal.SIGKILL)
+                process.wait()
+    return records
+
+
 def environment_identity(path: Path, lock: str, root: Path) -> dict:
     canonical_path(path)
     if path.stat().st_size > LIMIT:
@@ -752,6 +1113,7 @@ def environment_identity(path: Path, lock: str, root: Path) -> dict:
         raise ValueError('closed environment manifest required')
     if value['format'] != 'coding-reader-frozen-environment@1' or value['lock_sha256'] != lock:
         raise ValueError('environment lock/version mismatch')
+    admitted_loader=admit_loader(value)
     envroot=canonical_path(Path(value['environment_root']))
     if '.happyranch/task-tmp/TASK-' not in str(envroot):
         raise ValueError('environment must be task-owned scratch')
@@ -822,19 +1184,19 @@ def environment_identity(path: Path, lock: str, root: Path) -> dict:
     if any(p.is_symlink() for p in site.rglob('*')) or {k:v for k,v in files.items() if k.startswith(str(site)+'/')} != actual_site:
         raise ValueError('environment inventory/symlink drift')
     for name,expected in files.items():
-        file=canonical_path(Path(name))
+        file=Path(name) if name == admitted_loader else canonical_path(Path(name))
         allowed=file in (python,envroot/'pyvenv.cfg') or stdlib in file.parents or site in file.parents or name in value['native_libraries']
-        if not allowed or sha(file) != expected:
+        if not allowed or (name != admitted_loader and sha(file) != expected):
             raise ValueError('environment file mismatch/unadmitted path')
     if str(python) not in files or not all(x in files for x in value['native_libraries']):
         raise ValueError('missing interpreter/native hashes')
     for native in value['native_libraries']:
-        if not native.startswith(('/usr/lib/x86_64-linux-gnu/','/usr/lib64/')):
+        if native != admitted_loader and not native.startswith(('/usr/lib/x86_64-linux-gnu/','/usr/lib64/')):
             raise ValueError('unadmitted native library root')
     for name in value['distributions']:
         if name.lower() in {'pytest','pytest-asyncio','happyranch','pyinstaller'}:
             raise ValueError('development/project environment refused')
-    return dict(manifest_sha256=sha(path),**value)
+    return dict(manifest_sha256=sha(path),admitted_loader=admitted_loader,**value)
 
 
 def limits() -> None:
@@ -845,16 +1207,18 @@ def limits() -> None:
     resource.setrlimit(resource.RLIMIT_CORE,(0,0))
 
 
-def main() -> int:
+def main(*, loader_vetoed: bool = False) -> int:
     started=time.monotonic()
     parser=argparse.ArgumentParser(description=__doc__,allow_abbrev=False)
     parser.add_argument('--source-root',required=True,type=Path)
     parser.add_argument('--expected-head',required=True)
-    parser.add_argument('--case-set',required=True,choices=['release-accounting'])
+    parser.add_argument('--case-set',required=True,choices=['release-accounting','reader-support',*(f'loader-L{i}' for i in range(4))])
     parser.add_argument('--history-manifest',required=True,type=Path)
     parser.add_argument('--environment-manifest',required=True,type=Path)
     parser.add_argument('--output-dir',required=True,type=Path)
     args=parser.parse_args()
+    if args.case_set.startswith('loader-'):
+        return loader_record(args)
     if not sys.flags.isolated or not sys.flags.no_site or sys.version_info[:2] != (3,14):
         parser.error('Python3.14 -I -S required')
     if not re.fullmatch('[0-9a-f]{40}',args.expected_head):
@@ -866,7 +1230,7 @@ def main() -> int:
             or out.parent.stat().st_uid != os.getuid() or '.happyranch/task-tmp/TASK-' not in str(out)):
         parser.error('fresh output outside source with existing canonical parent required')
     out.mkdir(mode=0o700)
-    receipt=dict(argv=sys.argv,cwd=os.getcwd(),parent_python=sys.version,complete=False,
+    receipt=dict(argv=sys.argv,cwd=os.getcwd(),parent_python=sys.version,complete=False,case_set=args.case_set,
                  origin='SYNTHETIC',required_cases=REQUIRED_CASES,children_reaped=True)
     process=None
     before=None
@@ -886,6 +1250,8 @@ def main() -> int:
                 or history['org_slug'] != 'synthetic-reader'):
             raise ValueError('only the closed allocated SYNTHETIC fixture input is supported')
         receipt['input']=dict(sha256=input_hash,manifest=history)
+        if not loader_vetoed:
+            receipt['loader_support']=loader_campaign(args,out,started)
         environment=environment_identity(args.environment_manifest,before['files']['uv.lock'],args.source_root)
         receipt['environment_before']=environment
         fixture=out/'fixture';fixture.mkdir(mode=0o700)
@@ -894,7 +1260,8 @@ def main() -> int:
         product_files={k:v for k,v in before['files'].items() if k.startswith(('runtime/','cli/'))}
         cfg=dict(org_slug=history['org_slug'],env=closed_env,required_cases=REQUIRED_CASES,
                  host_ns={n:os.readlink('/proc/self/ns/'+n) for n in NAMESPACES},
-                 source_files=product_files,modules=before['inventory']['modules'])
+                 source_files=product_files,modules=before['inventory']['modules'],
+                 native_support_cases=[f'R{i}' for i in range(8)]+['A-traversal','A-bytes'])
         (fixture/'driver.py').write_text(DRIVER)
         (fixture/'config.json').write_text(json.dumps(cfg))
         command=['/usr/bin/bwrap','--unshare-all','--new-session','--die-with-parent','--unshare-cgroup','--cap-drop','ALL','--clearenv']
@@ -908,8 +1275,7 @@ def main() -> int:
                 mounts[name]=name
         for name,destination in mounts.items():
             command+=['--ro-bind',name,destination]
-        command+=['--ro-bind','/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2',
-                  '/lib64/ld-linux-x86-64.so.2']
+        command+=['--ro-bind',environment['admitted_loader'],LOADER_ALIAS]
         command+=['--ro-bind',environment['site_packages'],'/deps']
         for rel in sorted(product_files):
             command+=['--ro-bind',str(args.source_root/rel),'/src/'+rel]
@@ -950,6 +1316,8 @@ def main() -> int:
             raise RuntimeError('qualification/import/fixture incomplete, never RED')
         receipt['failed_assertions']=[dict(case=row['name'],**c) for row in observation['cases']
                                       for c in row['checks'] if not c['passed']]
+        receipt['failed_assertions'] += [dict(case=row['name'],**c) for row in receipt['loader_support'] for c in row['checks'] if not c['passed']]
+        receipt['failed_assertions'] += [dict(case=row['name'],**c) for row in observation['support'] for c in row['checks'] if not c['passed']]
         receipt['complete']=observation['complete'] and not observation['unproved']
     except Exception as exc:
         receipt['setup_error']=type(exc).__name__+': '+str(exc)
