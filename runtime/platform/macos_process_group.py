@@ -283,18 +283,17 @@ class MacOSProcessGroupBackend:
             # Finish owns this same lock through terminal observation/retirement.
             # A read already in flight settles before finish; a late captured
             # reference can neither recreate a token nor change terminal facts.
-            if session.retired:
-                return ResourceSample(sampled_at=self._monotonic(),
-                                      provenance=MeasurementProvenance.UNAVAILABLE)
-            try:
-                members = self._snapshot_members(session)
-            except Exception as exc:
-                session.observation_error = str(exc)
-                raise
-            if session.observation_error is not None:
-                raise ProcessObservationUnavailable(session.observation_error)
-            with self._lock:
-                self._sessions[running.token] = session
+            with session.lock:
+                if session.retired:
+                    return ResourceSample(sampled_at=self._monotonic(),
+                                          provenance=MeasurementProvenance.UNAVAILABLE)
+                try:
+                    members = self._snapshot_members(session)
+                except Exception as exc:
+                    session.observation_error = str(exc)
+                    raise
+                if session.observation_error is not None:
+                    raise ProcessObservationUnavailable(session.observation_error)
             rss = sum(o.rss_bytes for o in members.values() if o.rss_bytes is not None)
             cpu = sum(o.cpu_seconds for o in members.values() if o.cpu_seconds is not None)
             return ResourceSample(
