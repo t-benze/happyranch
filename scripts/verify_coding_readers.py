@@ -169,10 +169,13 @@ class TraceSpy:
     def __init__(self, connection: object, install_fault: bool = False) -> None:
         self.connection=connection
         self.events=[]
+        self.installation_timers=[]
         self.calls=0
         self.install_fault=install_fault
     def set_trace_callback(self, callback: object) -> None:
         self.events.append('detach' if callback is None else 'attach')
+        if callback is not None:
+            self.installation_timers.append(timer_observation())
         def forward(sql: str) -> None:
             self.calls+=1
             callback(sql)
@@ -314,6 +317,8 @@ def resource_records() -> None:
                 if index==4:
                     equal(checks,'2049 plus fixed extra event sticky',[s for s in samples if 'event' in s],
                         [dict(event=n,count=2049,retained=2048,overflow=True) for n in (2049,2050)])
+            for timer in spy.installation_timers:
+                equal(checks,'timer during actual trace installation',0<timer['remaining']<=2,True)
             after=cleanup_observations(connection,spy,state,previous,checks)
         finally:
             # Immutable outer containment: record failed cleanup first, then repair.
@@ -324,7 +329,7 @@ def resource_records() -> None:
         try:
             sibling=fresh_sibling(connection,checks)
             result['support'].append(dict(name='R'+str(index),checks=checks,before=before,
-                inside=samples,after=after,cause=cause,raw_exit=2 if cause else 0,
+                inside=samples,installation_timers=spy.installation_timers,after=after,cause=cause,raw_exit=2 if cause else 0,
                 entries=entries,delivery=delivery,events=spy.events,callbacks=spy.calls,
                 trace=None if state is None else dict(count=state['count'],retained=len(state['trace']),overflow=state['overflow']),
                 sibling=sibling))
@@ -1001,7 +1006,7 @@ def loader_record(args: argparse.Namespace) -> int:
     root=canonical_path(args.source_root)
     source=source_identity(root,args.expected_head)
     original=json.loads(args.environment_manifest.read_text())
-    environment_identity(args.environment_manifest,source['files']['uv.lock'],root)
+    opening_environment=environment_identity(args.environment_manifest,source['files']['uv.lock'],root)
     # Establish the actual interpreter audit-before-spawn boundary as source.
     popen=Path(subprocess.__file__)
     popen_bytes=popen.read_bytes()
@@ -1052,6 +1057,8 @@ def loader_record(args: argparse.Namespace) -> int:
     finally:
         sys.argv=original_argv
     receipt=json.loads((out/'verifier/receipt.json').read_text())
+    if source_identity(root,args.expected_head)!=source or environment_identity(args.environment_manifest,source['files']['uv.lock'],root)!=opening_environment:
+        raise RuntimeError('loader controller bookend movement')
     checks=[]
     def check(label: str, actual: object, expected: object) -> None:
         checks.append(dict(assertion=label,actual=actual,expected=expected,passed=actual==expected))
@@ -1231,7 +1238,7 @@ def main(*, loader_vetoed: bool = False) -> int:
         parser.error('fresh output outside source with existing canonical parent required')
     out.mkdir(mode=0o700)
     receipt=dict(argv=sys.argv,cwd=os.getcwd(),parent_python=sys.version,complete=False,case_set=args.case_set,
-                 origin='SYNTHETIC',required_cases=REQUIRED_CASES,children_reaped=True)
+                 origin='SYNTHETIC',required_cases=REQUIRED_CASES,required_support=SUPPORT_CASES,children_reaped=True)
     process=None
     before=None
     environment=None
@@ -1318,7 +1325,12 @@ def main(*, loader_vetoed: bool = False) -> int:
                                       for c in row['checks'] if not c['passed']]
         receipt['failed_assertions'] += [dict(case=row['name'],**c) for row in receipt['loader_support'] for c in row['checks'] if not c['passed']]
         receipt['failed_assertions'] += [dict(case=row['name'],**c) for row in observation['support'] for c in row['checks'] if not c['passed']]
-        receipt['complete']=observation['complete'] and not observation['unproved']
+        support_names=[r['name'] for r in receipt['loader_support']+observation['support']]
+        receipt['missing_support']=sorted(set(SUPPORT_CASES)-set(support_names))
+        receipt['unknown_support']=sorted(set(support_names)-set(SUPPORT_CASES))
+        receipt['duplicate_support']=sorted(n for n in set(support_names) if support_names.count(n)!=1)
+        receipt['complete']=(observation['complete'] and not observation['unproved'] and
+            not receipt['missing_support'] and not receipt['unknown_support'] and not receipt['duplicate_support'])
     except Exception as exc:
         receipt['setup_error']=type(exc).__name__+': '+str(exc)
     finally:
