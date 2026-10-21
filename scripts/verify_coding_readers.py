@@ -41,6 +41,8 @@ REQUIRED_CASES = (
     'F8-R1c.noncoding-old-history',
     'F5-R1c.aggregate-candidates', 'F5-R1c.aggregate-intermediate-bytes',
     'F5-R1c.aggregate-traversal',
+    'F8-R1c.schema.aggregate-traversal.positive', 'F8-R1c.schema.aggregate-traversal.refusal',
+    'F8-R1c.schema.aggregate-bytes.positive', 'F8-R1c.schema.aggregate-bytes.refusal',
 )
 
 
@@ -388,10 +390,50 @@ try:
         # change an allowance. Every component has an immediately admitted
         # fresh-budget positive sibling. The expected limits are the original
         # contract constants, not inferred from a second product call.
+        def tokens(value: object) -> int:
+            # Independent grammar arithmetic for canonical fixture inputs:
+            # braces/brackets, separators, keys and scalar values, no regex
+            # from the product or second reader invocation as numeric oracle.
+            if type(value) is dict:
+                return 2+max(0,len(value)-1)+2*len(value)+sum(tokens(v) for v in value.values())
+            if type(value) is list:
+                return 2+max(0,len(value)-1)+sum(tokens(v) for v in value)
+            return 1
+        def release_work(proof: dict) -> dict:
+            cap=proof['admission']['capture']
+            snap=base64.b64decode(cap['snapshot_bytes_base64'])
+            raw_command=base64.b64decode(proof['command_bytes_base64'])
+            published=canonical(proof)
+            fixed=[(t,dict(row)) for t,row in expected]
+            fixed[1][1]['author_principal']=published.decode()
+            fixed[2][1]['published_by']=published.decode()
+            journal=dict(id='synthetic-journal',namespace=pin['namespace'],generation=1,expected_generation=0,
+                snapshot_bytes=snap,snapshot_digest=digest(snap),publisher='human:founder',
+                publisher_invocation='synthetic-invocation',profile_fence=0,state='cache_installed',
+                recovery_owner='synthetic-owner',file_phase_owner=None)
+            def raw_bytes(row: dict) -> int:
+                return sum(len(v.encode() if type(v) is str else v) for v in row.values() if type(v) in (str,bytes))
+            admission_strings=sum(len(v.encode()) for v in admission.values() if type(v) is str)
+            journal_strings=sum(len(v.encode()) for v in journal.values() if type(v) is str)
+            copies=(21*len(published)+16*len(proof['command_bytes_base64'])+
+                12*len(raw_command)+12*len(cap['snapshot_bytes_base64'])+10*len(snap)+
+                2*(admission_strings+journal_strings)+raw_bytes(admission)+raw_bytes(journal)+
+                5*len(definition)+4096+
+                sum(raw_bytes(row)+4*sum(len(v) for v in row.values() if type(v) is str) for _,row in fixed))
+            visits=(1+3+6*(tokens(proof)+1)+1+2*(tokens(json.loads(raw_command))+1)+
+                1+8*(tokens(json.loads(snap))+1)+1+2*(tokens(json.loads(raw_command))+1)+2+
+                38+21+3+2*(tokens(json.loads(definition))+1)+192+
+                sum(4*len(row)+4 for _,row in fixed)+4)
+            return dict(accepted_rows=12,consumed=copies,traversed=visits)
+        native_rows=list(conn.execute('SELECT * FROM task_results WHERE decision_json IS NOT NULL'))
+        native_bytes=sum(len(v.encode() if type(v) is str else v) for row in native_rows for v in row if type(v) in (str,bytes))
+        native_visits=sum(len(row)+1 for row in native_rows)
+        current_proof=provenance
         def aggregate(label: str, target: str) -> None:
             checks=[]; components=[]; trace=[]
             before=saved_rows(conn); transaction=conn.in_transaction
             b=_Budget()
+            expected_work=release_work(current_proof)
             conn.set_trace_callback(lambda sql: trace.append(dict(sql=sql[:180],bytes=len(sql.encode()),
                                                                   sha256=digest(sql.encode()))))
             category=None
@@ -411,6 +453,14 @@ try:
                     except ValueError as exc:
                         category=str(exc)
                     components.append(dict(sequence=sequence,before=prior,after=vars(b).copy(),category=category))
+                    if category is None:
+                        delta={k:vars(b)[k]-prior[k] for k in vars(b)}
+                        oracle=dict(expected_work)
+                        if sequence == 0:
+                            oracle['accepted_rows']+=len(native_rows)
+                            oracle['consumed']+=native_bytes
+                            oracle['traversed']+=5+native_visits
+                        equal(checks,'component '+str(sequence)+' independently accounted work',delta,oracle)
                     if category is not None:
                         break
                 equal(checks,'exact category-only refusal',category,invalid)
@@ -436,7 +486,7 @@ try:
                     equal(checks,'attempt reached actual earlier traversal bound',b.traversed,16385)
             finally:
                 conn.set_trace_callback(None)
-            result['cases'].append(dict(name=label,checks=checks,components=components,
+            result['cases'].append(dict(name=label,checks=checks,components=components,expected_work=expected_work,
                 trace=trace,counters=vars(b).copy(),target=target))
             save()
         aggregate('F5-R1c.aggregate-traversal','traversed')
@@ -469,8 +519,60 @@ try:
         result['aggregate_byte_inputs']=dict(snapshot_bytes=len(large_raw),provenance_bytes=len(large_pub.encode()),
             snapshot_base64_bytes=len(large_capture['snapshot_bytes_base64']),snapshot_hex_bytes=len(large_raw.hex()),
             per_component_minimum=12*len(large_pub.encode())+8*len(large_raw)+12*len(large_capture['snapshot_bytes_base64']))
+        current_proof=large_provenance
         aggregate('F5-R1c.aggregate-intermediate-bytes','consumed')
         conn.execute('ROLLBACK TO larger_snapshot');conn.execute('RELEASE larger_snapshot')
+        def snapshot_variant(rules: list[str]) -> dict:
+            value=json.loads(large_raw)
+            value['agents'][0]['allow_rules']=rules
+            raw=canonical(value);sdigest=digest(raw)
+            proof=json.loads(pub);cap=proof['admission']['capture']
+            cap['pin']['snapshot_digest']=sdigest
+            cap['snapshot_bytes_base64']=base64.b64encode(raw).decode()
+            cap['profile_evidence']['ready'].update(snapshot_digest=sdigest,snapshot_bytes_hex=raw.hex())
+            cap['profile_evidence']['pointer']['snapshot_digest']=sdigest
+            return proof
+        def schema_variant(name: str, proof: dict, category: str | None) -> None:
+            conn.execute('SAVEPOINT schema_variant')
+            try:
+                cap=proof['admission']['capture'];raw=base64.b64decode(cap['snapshot_bytes_base64'])
+                published=canonical(proof).decode()
+                for table,column in [('workflow_template_versions','published_by'),('workflow_template_drafts','author_principal')]:
+                    conn.execute('UPDATE '+table+' SET '+column+'=? WHERE namespace=?',(published,namespace))
+                conn.execute('UPDATE workflow_publication_journals SET snapshot_bytes=?,snapshot_digest=? WHERE id=?',
+                             (raw,digest(raw),'synthetic-journal'))
+                conn.execute('UPDATE workflow_authority_pointers SET snapshot_digest=? WHERE namespace=?',
+                             (digest(raw),pin['namespace']))
+                work=release_work(proof)
+                # Independent admission of the component is SETUP, never RED.
+                value=read_release_import(conn,expected_org_slug=org)
+                if value is None or value.command_bytes != command:
+                    raise RuntimeError('schema aggregate release component unavailable')
+                observe(name,lambda:_validate_installed(conn,expected_org_slug=org,validate_data=False),
+                        category,kind='schema' if category is None else None)
+                result['cases'][-1]['independent_release_work']=work
+            finally:
+                conn.execute('ROLLBACK TO schema_variant');conn.execute('RELEASE schema_variant')
+        schema_variant('F8-R1c.schema.aggregate-traversal.positive',snapshot_variant(['x']*864),None)
+        schema_variant('F8-R1c.schema.aggregate-traversal.refusal',snapshot_variant(['x']*867),'coding_authority_history_invalid')
+        # Select the byte sibling using ONLY fixed input arithmetic. The
+        # release component remains individually below16MiB; the real queued
+        # native row bytes in the schema call must cross that same allowance.
+        low,high=20000,200000
+        while low+1<high:
+            middle=(low+high)//2
+            if release_work(snapshot_variant(['x'*middle]))['consumed']<=16777216:
+                low=middle
+            else:
+                high=middle
+        byte_proof=snapshot_variant(['x'*low])
+        byte_work=release_work(byte_proof)
+        if byte_work['consumed']+native_bytes<=16777216:
+            result['unproved']['F8-R1c.schema.aggregate-bytes.refusal']=dict(
+                reason='Fixed input byte granularity cannot reach schema-only crossing',
+                release=byte_work,native_bytes=native_bytes,rule_bytes=low)
+        schema_variant('F8-R1c.schema.aggregate-bytes.positive',snapshot_variant(['x'*(low-2)]),None)
+        schema_variant('F8-R1c.schema.aggregate-bytes.refusal',byte_proof,'coding_authority_history_invalid')
         conn.commit()
         # Caller-owned noncoding work uses a real native table; exact actual
         # schema columns are inspected rather than creating a harness store.
