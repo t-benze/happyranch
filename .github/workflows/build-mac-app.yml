@@ -23,6 +23,9 @@ jobs:
   build:
     name: Build HappyRanch.app (macOS arm64, unsigned)
     runs-on: macos-15
+    # Explicit steps total at most 80 minutes, leaving 10 for action finalization.
+    # Runner loss/job cancellation can still prevent diagnostics from uploading.
+    timeout-minutes: 90
     env:
       # Stay on the pinned graph's Go 1.23 line; see the maintenance limit in
       # app/mac/README.md. Never auto-download a substitute toolchain.
@@ -30,12 +33,14 @@ jobs:
       GOTOOLCHAIN: local
     steps:
       - name: Checkout exact candidate
+        timeout-minutes: 5
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           ref: ${{ inputs.source_sha || github.sha }}
 
       - name: Reserve private candidate run directory
         id: run_paths
+        timeout-minutes: 1
         run: |
           set -euo pipefail
           umask 077
@@ -45,20 +50,24 @@ jobs:
           printf 'Run directory allocated; candidate build not started.\n' > "$run_root/setup-status.txt"
 
       - name: Select Xcode 16
+        timeout-minutes: 2
         run: sudo xcode-select -s /Applications/Xcode_16.app
 
       - name: Install uv and native Python
+        timeout-minutes: 5
         uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
         with:
           enable-cache: false
           python-version: '3.12'
 
       - name: Set up Node
+        timeout-minutes: 5
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 24
 
       - name: Set up exact native Go
+        timeout-minutes: 5
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: ${{ env.NATIVE_GO_VERSION }}
@@ -67,6 +76,7 @@ jobs:
           cache: false
 
       - name: Verify effective native Go before packaging
+        timeout-minutes: 2
         run: |
           set -euo pipefail
           printf 'PATH=%s\n' "$PATH"
@@ -84,6 +94,9 @@ jobs:
           [ "$(go env GOTOOLCHAIN)" = local ] || { echo GO_TOOLCHAIN_MISMATCH >&2; exit 1; }
 
       - name: Build and inspect exact unsigned candidate
+        id: build_candidate
+        # Includes original preparation, packaging and its bounded diagnostics.
+        timeout-minutes: 45
         env:
           RUN_ROOT: ${{ steps.run_paths.outputs.root }}
           CANDIDATE_OUTPUT: ${{ steps.run_paths.outputs.output }}
@@ -113,20 +126,28 @@ jobs:
             --source-sha "$sha" --source-tree "$tree" --arch arm64 \
             --web-tool-originals "$originals" \
             --output-dir "$CANDIDATE_OUTPUT"
+          candidate_zip="$CANDIDATE_OUTPUT/HappyRanch-${version}-${build}-arm64.zip"
+          [ -f "$candidate_zip" ] && [ -f "$CANDIDATE_OUTPUT/build-receipt.json" ] || {
+            echo CANDIDATE_OUTPUT_MISSING >&2; exit 1;
+          }
+          printf 'candidate_zip=%s\n' "$candidate_zip" >> "$GITHUB_OUTPUT"
 
       - name: Upload successful internal candidate and exact inner receipt
-        if: success()
+        if: ${{ success() && !cancelled() && steps.build_candidate.outcome == 'success' && steps.build_candidate.outputs.candidate_zip != '' }}
+        timeout-minutes: 5
         uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
         with:
           name: HappyRanch-unsigned-${{ github.run_id }}-${{ github.run_attempt }}
           if-no-files-found: error
           path: |
-            ${{ steps.run_paths.outputs.output }}/HappyRanch-*.zip
+            ${{ steps.build_candidate.outputs.candidate_zip }}
             ${{ steps.run_paths.outputs.output }}/build-receipt.json
             ${{ steps.run_paths.outputs.output }}/diagnostics/*.json
 
       - name: Retain bounded failure diagnostics
-        if: failure() && steps.run_paths.outputs.root != ''
+        # Best effort: cancellation or runner loss may interrupt packaging/upload.
+        if: ${{ (failure() || cancelled()) && steps.run_paths.outputs.root != '' }}
+        timeout-minutes: 5
         uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
         with:
           name: HappyRanch-diagnostics-only-${{ github.run_id }}-${{ github.run_attempt }}

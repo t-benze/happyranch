@@ -1,0 +1,46 @@
+# Internal Mac workflow time limits and diagnostics
+
+`.github/workflows/build-mac-app.yml` is an internal unsigned candidate venue.
+Its workflow definition ref and digest are separate from the explicitly reviewed
+checkout SHA and tree. Record both identities before a confirmation run.
+
+The job has a 90-minute limit. Checkout, uv, Node and Go setup each have five
+minutes; private directory reservation has one, Xcode selection and Go validation
+each have two. Build and inspect has 45 minutes, including original preparation,
+packaging and the helper's existing bounded diagnostic packaging. Each artifact
+upload has five minutes. These explicit limits total 80 minutes, leaving ten
+minutes for action finalization within the job budget. This is an upper budget,
+not an expected build duration or a guarantee that finalization completes.
+
+After successful packaging, the build step exposes only its exact candidate ZIP
+path. The success upload requires workflow success, a successful build-step
+outcome, a nonempty candidate path and no cancellation. It uploads that ZIP, the
+inner receipt and the existing diagnostic JSON files. A missing candidate or
+receipt fails the build step before it exposes an upload path. A diagnostic ZIP
+cannot substitute for the candidate through a
+wildcard match.
+
+Failure or cancellation makes the separate diagnostics-only upload eligible when
+the private run root was reserved. It selects only the setup status, preflight
+and existing bounded diagnostic files; it never publishes an app candidate.
+Before reservation, no diagnostic root exists. Before the build, setup status may
+be the only available file. Missing diagnostic files are reported by the upload
+action; upload failure remains a failure and does not establish candidate success.
+
+Step timeout can leave time for this upload if the runner remains available.
+Explicit cancellation, job timeout, runner loss, or interrupted helper diagnostic
+packaging can prevent or interrupt uploads. Cancellation diagnostics are best
+effort. These workflow limits do not establish helper child-process cleanup;
+named helper limits and owned-child cleanup belong to the package delivery owner.
+Automatic action finalization remains subject to runner and job availability.
+
+For an interrupted run, retain the actual GitHub run/attempt conclusion, raw logs
+and any available artifacts. A cancellation request acknowledgement is not a
+terminal conclusion. Read back the same run; do not dispatch another run to
+resolve ambiguity. Record skipped/unavailable diagnostics explicitly. Source
+review, lint and collected logs do not establish a valid app, notices, installation
+or public release.
+
+GitHub documents [workflow cancellation](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-cancellation),
+[status expressions](https://docs.github.com/en/actions/reference/workflows-and-actions/expressions#status-check-functions)
+and [workflow timeout syntax](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax).
