@@ -120,6 +120,7 @@ try:
         if event == 'open' and isinstance(args[0], str):
             p = Path(args[0])
             if str(p).startswith('/src/') and str(p)[5:] not in admitted_source:
+                result.setdefault('audit_refusals',[]).append(dict(event=event,path=str(p)))
                 raise RuntimeError('unlisted source/resource access: '+str(p))
             opened.add(str(p))
         if event == 'import':
@@ -141,6 +142,13 @@ try:
     # independent whole release reference is constructed from pristine source.
     reference_digest = _release_schema_digest('J', 'fresh', 0)
     if reference_digest == 'unavailable':
+        # Surface ordinary constructor failure hidden by the production
+        # reference's category-only unavailable return. Still never admit it.
+        diagnostic = Database(Path('/work/reference-diagnostic.db'))
+        try:
+            initialize_complete_org_schema(diagnostic, expected_org_slug='release-reference', layout='J')
+        finally:
+            diagnostic.close()
         raise RuntimeError('independent whole-native J reference unavailable')
     db = Database(Path('/work/fixture.db'))
     try:
@@ -492,7 +500,9 @@ try:
     result['duplicate_cases']=sorted(name for name in set(names) if names.count(name)!=1)
     result['complete'] = not result['unproved'] and not result['missing_cases'] and not result['duplicate_cases']
 except BaseException as exc:
+    import traceback
     result['setup_error'] = type(exc).__name__+': '+str(exc)
+    result['setup_traceback'] = traceback.format_exc(limit=12)
 finally:
     result['qualified'] = qualified
     save()
