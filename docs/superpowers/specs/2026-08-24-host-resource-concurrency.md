@@ -234,6 +234,12 @@ concurrency (1 worker) and row lifecycle.
   values); the probe proves the enforcement machinery itself.
 - `runtime/platform/macos_process_group.py` — the honestly capped
   process-group backend (also eligible on Linux when systemd is unavailable).
+  Its operational probe runs short-lived sleep directly in a new session/group,
+  retains group/identity checks, and bounds the direct-child wait after TERM and
+  fallback KILL. Failed or unknown helper disposal refuses healthy status and
+  retains the original probe failure; enumeration alone is not cleanup proof.
+  This nonforking-helper check grants no arbitrary descendant reaping or hard
+  containment guarantee.
   THR307seq117 corrects its production sampler wiring and per-attempt ownership:
   the default factory selects its existing sampler at the existing1s cadence;
   samples retain authenticated `(pid,start)` history and merge a fresh terminal

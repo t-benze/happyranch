@@ -113,14 +113,16 @@ class MacOSProcessGroupBackend:
     def probe(self) -> CapabilityReport:
         """Operationally verify process-group + census machinery.
 
-        Creates one disposable child in a new session/group, verifies the
-        group id, verifies ``killpg`` reaches it, reaps it, and verifies the
-        identity-safe census reader works. Leaves no residue. Reports
+        Runs sleep directly in a new session/group, verifies the group id
+        and ``killpg`` reachability, and waits for that nonforking child after
+        TERM or fallback KILL. Unknown disposal refuses health; census
+        enumeration alone does not prove cleanup. Reports
         ``best_effort`` cleanup/reporting and ``unavailable`` limits."""
         started = self._monotonic()
+        probe_error = None
         try:
             child = subprocess.Popen(
-                ["sh", "-c", "sleep 0.2"],
+                ["sleep", "0.2"],
                 start_new_session=True,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
@@ -128,21 +130,32 @@ class MacOSProcessGroupBackend:
             try:
                 pgid = os.getpgid(child.pid)
                 if pgid != child.pid:
-                    return self._unhealthy(
-                        started, f"new session group mismatch: pgid={pgid} pid={child.pid}"
+                    raise RuntimeError(
+                        f"new session group mismatch: pgid={pgid} pid={child.pid}"
                     )
                 # killpg(0) must not raise for a live group we own.
                 os.killpg(child.pid, 0)
                 self._census.start_identity(child.pid)
+            except Exception as exc:  # retain the probe failure through disposal
+                probe_error = exc
             finally:
                 try:
-                    child.terminate()
-                    child.wait(timeout=5)
-                except (ProcessLookupError, subprocess.TimeoutExpired, OSError):
                     try:
-                        os.killpg(child.pid, signal.SIGKILL)
-                    except (ProcessLookupError, OSError):
-                        pass
+                        child.terminate()
+                    except ProcessLookupError:
+                        pass  # Already exited still requires a direct wait.
+                    child.wait(timeout=5)
+                except (subprocess.TimeoutExpired, OSError):
+                    try:
+                        try:
+                            child.kill()
+                        except ProcessLookupError:
+                            pass
+                    finally:
+                        # Even a failed KILL must attempt the bounded direct wait.
+                        child.wait(timeout=5)
+            if probe_error is not None:
+                raise probe_error
             # A live census read proves enumeration is usable on this host.
             self._census.descendants(os.getpid())
             return CapabilityReport(
@@ -155,15 +168,19 @@ class MacOSProcessGroupBackend:
                     Capability.REPORTS_PROCESS_PEAK: CapabilityLevel.BEST_EFFORT,
                 },
                 evidence=(
-                    "probe: created + signaled + reaped a disposable process "
-                    "group; identity-safe census enumerated the live process "
+                    "probe: directly launched nonforking sleep in a new group; "
+                    "signaled and waited for the direct child; "
+                    "identity-safe census enumerated the live process "
                     "table"
                 ),
                 probed_at=started,
                 healthy=True,
             )
         except Exception as exc:  # noqa: BLE001 — probe must degrade honestly
-            return self._unhealthy(started, f"probe failed: {exc}")
+            reason = f"probe failed: {exc}"
+            if probe_error is not None and exc is not probe_error:
+                reason = f"probe failed: {probe_error}; helper disposal failed: {exc}"
+            return self._unhealthy(started, reason)
 
     def _unhealthy(self, started: float, reason: str) -> CapabilityReport:
         return CapabilityReport(

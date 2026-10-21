@@ -104,6 +104,12 @@ missing or foreign acknowledgement stops acceptance. The protected observation
 interval closes after the last acceptance fact, including root/descendant and
 sentinel observations; the ordered W check rejects matching rescue decisions
 through that cutoff. An earlier receipt freeze alone cannot establish acceptance.
+The operational process-group probe launches its short-lived sleep directly in a
+new session, preserving group/identity checks. TERM and fallback KILL both require
+a bounded direct-child wait; failed or unknown disposal refuses healthy status,
+preserving any original probe failure. This covers the nonforking probe helper,
+not arbitrary descendant reaping or hard containment. Census enumeration alone
+is not disposal evidence; fallback error branches require their own observations.
 Before providers launch, `probe_report` events retain the actual original backend
 report at `backend_report` (before observer postconditions) and the actual cached
 or returned supervisor report at `supervisor_return`. Each contains the real
