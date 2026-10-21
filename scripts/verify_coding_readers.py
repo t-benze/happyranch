@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import ast
 import hashlib
+import gzip
 import importlib.metadata
 import json
 import os
@@ -47,7 +48,7 @@ REQUIRED_CASES = (
 # precedes sys.path changes and the first product import/SQL constructor.
 DRIVER = r'''
 from __future__ import annotations
-import base64, hashlib, json, os, signal, socket, sqlite3, sys, time
+import base64, gzip, hashlib, json, os, signal, socket, sqlite3, sys, time
 from collections.abc import Callable
 from pathlib import Path
 cfg = json.loads(Path('/fixture/config.json').read_text())
@@ -55,7 +56,13 @@ result = {'origin':'SYNTHETIC', 'cases':[], 'unproved':{}, 'required_cases':cfg[
 qualified = False
 
 def save() -> None:
-    Path('/result/observations.json').write_text(json.dumps(result, indent=2))
+    raw=canonical(result)
+    if len(raw)>16*1024*1024:
+        raise RuntimeError('expanded observation bound')
+    payload=gzip.compress(raw,mtime=0)
+    if len(payload)>2*1024*1024:
+        raise RuntimeError('compressed observation bound')
+    Path('/result/observations.json.gz').write_bytes(payload)
 
 def equal(checks: list, name: str, actual: object, expected: object) -> None:
     checks.append(dict(assertion=name, actual=actual, expected=expected, passed=actual == expected))
@@ -789,8 +796,21 @@ def main() -> int:
             receipt['children_reaped']=True
         if receipt['native_exit'] != 0:
             raise RuntimeError('native/isolation/fixture setup failure, never RED')
-        observation=json.loads((result/'observations.json').read_text())
-        receipt['observations']=observation
+        observation_path=result/'observations.json.gz'
+        with gzip.open(observation_path,'rb') as stream:
+            raw=stream.read(16*1024*1024+1)
+        if len(raw)>16*1024*1024:
+            raise RuntimeError('expanded observation bound')
+        observation=json.loads(raw)
+        # The complete raw schema, rows, queries and assertions remain in the
+        # bounded compressed original artifact. Receipt keeps a concise index.
+        receipt['observations']={k:v for k,v in observation.items()
+            if k not in ('fixture_schema','initial_rows','populated_history_rows','cases','module_paths','opened')}
+        receipt['observation_artifact']=dict(path=str(observation_path),sha256=sha(observation_path),
+            compressed_bytes=observation_path.stat().st_size,expanded_bytes=len(raw))
+        receipt['observations']['cases']=[dict(name=c['name'],checks=len(c['checks']),
+            passed=all(x['passed'] for x in c['checks']),counters=c.get('counters'),
+            components=c.get('components')) for c in observation['cases']]
         if not observation.get('qualified') or observation.get('setup_error'):
             raise RuntimeError('qualification/import/fixture incomplete, never RED')
         receipt['failed_assertions']=[dict(case=row['name'],**c) for row in observation['cases']

@@ -1287,7 +1287,10 @@ setup/isolation/input/fixture/dependency failure and never RED. Any observed rea
 wait at most55s, each observed case at2s, CPU40s, address space768MiB, per-child
 file2MiB and128 descriptors. No sleep/hang/retry is used. Timeout kills and reaps
 the owned process group; namespace teardown owns private fixture storage. Output
-retains `receipt.json`, native stdout/stderr and original driver observations.
+retains `receipt.json`, native stdout/stderr and complete original driver observations
+in deterministic `observations.json.gz` (2MiB compressed/16MiB expanded bounds).
+The concise receipt indexes cases and failed assertions; full schema/rows/query
+traces remain in that compressed artifact. Compression preserves the file bound.
 Source/input/environment identities are checked again on refusal as well as
 success. Existing output is never reused or removed. No historical cleanup runs.
 
