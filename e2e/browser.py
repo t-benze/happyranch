@@ -1245,8 +1245,13 @@ class Browser:
         main = self._task_shell()
         expect(main).to_have_count(1, timeout=self.controller.remaining(5)*1000)
         self.controller.remaining()
+        source = self.base+f"/orgs/{org}/tasks/{task}"
+        lineage = self._lineage
+        require(self._url == self.page.url == source and lineage is not None, "cache-wait-on-detail")
         self.page.wait_for_timeout(31000)
         self.controller.remaining()
+        require(self._url == self.page.url == source and self._lineage is lineage,
+                "cache-wait-retains-detail-document")
         self.events.append(dict(event="navigation", action="cache-expired-revisit", org=org, task=task))
         # Moved original ID1: arm once AFTER the on-detail wait, before breadcrumb.
         # Earlier cache updates can still coalesce reads: missing originals refuse.
