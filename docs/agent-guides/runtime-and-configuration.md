@@ -1827,6 +1827,30 @@ machine-local time — host-local night, as intended.)
 
 ## Independent nightly disk sweep (THR307)
 
+One daemon-wide operator control is `<daemon_home>/disk-sweep/stop.json`.
+Its only supported content is a JSON object containing exactly `stop` with a
+real Boolean: `{"stop":true}` suspends scheduled deletion for all orgs;
+`{"stop":false}` or a genuinely absent literal file permits the default policy.
+The control is read afresh once per regular scheduled attempt, after the normal
+same-night reservation and before native writer reservation or worker launch,
+inside the shared1800s budget. Invalid/unreadable/oversized/truncated/changed
+content, wrong/extra/duplicate keys or types, invalid UTF8, symlinks (including
+dangling links or aliased parents), hardlinks, directories and special files
+visibly suspend. Only final-file ENOENT means absent; other I/O failures suspend.
+Malformed control does not prevent daemon/org startup. Operators alone write or
+remove this local file; there is no per-org override, setting/API or new schedule.
+Suspension logs its cause and writes `outcome: suspended` with daemon-scoped
+`scheduled_admission` (`path,state,reason` and an error when invalid) in the
+existing summary/audit payload. All orgs remain unreached, with no worker/PID,
+reaping, removal-byte or successful-sweep claim. The existing audit empty-task/
+daemon envelope and org ordering remain. Publication failure is visible and
+never permits deletion. Manual `--dry-run` remains usable and nonmutating with
+true, invalid or absent control; it may write its existing reports/audits.
+Removing/fixing the file affects the NEXT existing scheduled attempt only:
+no same-night catchup/retry or marker reset. This is a run-admission boundary;
+writing stop does not cancel an already launched worker or promise a hard
+real-time stop. Existing deletion/ownership/age/containment gates still apply.
+
 Founder THR307seq134/136 makes scheduled deletion effective for EVERY normally
 admitted org, including missing config, legacy off/dry_run/on and newly admitted
 orgs. The obsolete `disk_sweep` key is ignored regardless of shape/value; there is

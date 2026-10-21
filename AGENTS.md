@@ -1000,7 +1000,31 @@ Preserve owner/session/Pause/possible-launch/race winners, existing running CAS,
 limits and all-terminal resumption. No schema/auth/permission/credential/general
 notifier change or deployment follows. Current contract: [Jobs](docs/superpowers/specs/2026-05-26-jobs-design.md).
 
-**Independent THR307 nightly disk sweeper — Founder seq117/134, ROOT TASK12280 policy.**
+**Independent THR307 nightly disk sweeper — Founder seq117/134, ROOT TASK12353 recovery.**
+One daemon-wide operator control is `<daemon_home>/disk-sweep/stop.json`.
+Its only supported content is a JSON object containing exactly `stop` with a
+real Boolean: `{"stop":true}` suspends scheduled deletion for all orgs;
+`{"stop":false}` or a genuinely absent literal file permits the default policy.
+The control is read afresh once per regular scheduled attempt, after the normal
+same-night reservation and before native writer reservation or worker launch,
+inside the shared1800s budget. Invalid/unreadable/oversized/truncated/changed
+content, wrong/extra/duplicate keys or types, invalid UTF8, symlinks (including
+dangling links or aliased parents), hardlinks, directories and special files
+visibly suspend. Only final-file ENOENT means absent; other I/O failures suspend.
+Malformed control does not prevent daemon/org startup. Operators alone write or
+remove this local file; there is no per-org override, setting/API or new schedule.
+Suspension logs its cause and writes `outcome: suspended` with daemon-scoped
+`scheduled_admission` (`path,state,reason` and an error when invalid) in the
+existing summary/audit payload. All orgs remain unreached, with no worker/PID,
+reaping, removal-byte or successful-sweep claim. The existing audit empty-task/
+daemon envelope and org ordering remain. Publication failure is visible and
+never permits deletion. Manual `--dry-run` remains usable and nonmutating with
+true, invalid or absent control; it may write its existing reports/audits.
+Removing/fixing the file affects the NEXT existing scheduled attempt only:
+no same-night catchup/retry or marker reset. This is a run-admission boundary;
+writing stop does not cancel an already launched worker or promise a hard
+real-time stop. Existing deletion/ownership/age/containment gates still apply.
+
 `runtime/daemon/disk_sweeper.py` runs machine-local03:00 deletion for every normally
 admitted org, sequentially under one1800s monotonic batch window, with an owned
 stoppable worker process group. Only actual terminal-owner/terminal-root scratch
@@ -1021,7 +1045,7 @@ Obsolete `disk_sweep` input of any shape is ignored; unrelated config validation
 stays active. Effective `mode` is on for scheduled work and dry_run only for an
 explicit preview; reports no longer carry `configured_mode`. Founder seq134/136
 authorizes all-org activation after reviewed delivery without another activation
-decision; root TASK12280 owns normal rollout/serving verification and seven actual
+decision; root TASK12353 owns normal rollout/serving verification and seven actual
 on-night receipts. Source publication alone does not change loaded code. Original
 TASK11742/JOB4898 recovery and root11948/PR1128 remain separate. Read the [current contract](docs/superpowers/specs/2026-10-15-nightly-disk-sweeper.md)
 and runtime guide before changing it; independent review/scoped disposable QA and

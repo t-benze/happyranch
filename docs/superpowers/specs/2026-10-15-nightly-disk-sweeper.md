@@ -7,8 +7,9 @@ cancelled. Founder seq117 removes OS-process eligibility under the SAME
 continuation root TASK-11742, superseding seq85/88 four-name and PR1110 zombie
 handling for this independent sweeper only. Founder seq134/136 directs scheduled
 deletion for every admitted org without per-org configuration or another
-activation decision after delivery. Root TASK12280 owns this policy and normal
-rollout; original TASK11742/JOB4898 recovery12279 and orphan-process root11948/
+activation decision after delivery. Failed TASK12280 remains historical;
+ROOT TASK12353 owns this same-PR recovery and normal rollout. Engineering
+seq141/151 committed the daemon-wide stop described below within Founder134; original TASK11742/JOB4898 recovery12279 and orphan-process root11948/
 PR1128 keep their separate scope and evidence. This mechanism replaces the unimplemented
 capacity/rotation proposal, not any legacy cleanup implementation or its rules.
 The operator disk/output reports are inputs, not independent feature evidence.
@@ -16,6 +17,30 @@ Retry counts in those reports are not distinct removed-root counts. No operator
 reclamation is attributed to this feature.
 
 ## Schedule, configuration and lifecycle
+
+One daemon-wide operator control is `<daemon_home>/disk-sweep/stop.json`.
+Its only supported content is a JSON object containing exactly `stop` with a
+real Boolean: `{"stop":true}` suspends scheduled deletion for all orgs;
+`{"stop":false}` or a genuinely absent literal file permits the default policy.
+The control is read afresh once per regular scheduled attempt, after the normal
+same-night reservation and before native writer reservation or worker launch,
+inside the shared1800s budget. Invalid/unreadable/oversized/truncated/changed
+content, wrong/extra/duplicate keys or types, invalid UTF8, symlinks (including
+dangling links or aliased parents), hardlinks, directories and special files
+visibly suspend. Only final-file ENOENT means absent; other I/O failures suspend.
+Malformed control does not prevent daemon/org startup. Operators alone write or
+remove this local file; there is no per-org override, setting/API or new schedule.
+Suspension logs its cause and writes `outcome: suspended` with daemon-scoped
+`scheduled_admission` (`path,state,reason` and an error when invalid) in the
+existing summary/audit payload. All orgs remain unreached, with no worker/PID,
+reaping, removal-byte or successful-sweep claim. The existing audit empty-task/
+daemon envelope and org ordering remain. Publication failure is visible and
+never permits deletion. Manual `--dry-run` remains usable and nonmutating with
+true, invalid or absent control; it may write its existing reports/audits.
+Removing/fixing the file affects the NEXT existing scheduled attempt only:
+no same-night catchup/retry or marker reset. This is a run-admission boundary;
+writing stop does not cancel an already launched worker or promise a hard
+real-time stop. Existing deletion/ownership/age/containment gates still apply.
 
 `runtime/daemon/disk_sweeper.py` registers through `app._lifespan`. Once at the
 next future **03:00 daemon-machine local time**, orgs run sequentially in lexical
@@ -192,7 +217,7 @@ pruned, and missing/prunable directories contribute no removed bytes.
 ## Reports and operational acceptance
 
 One JSON under `<daemon_home>/disk-sweep/<scheduled-date>.json`, and one existing-
-shaped `disk_sweep_summary` audit per swept org (no table/column change). Manual
+shaped `disk_sweep_summary` audit per loaded org (also when globally suspended) (no table/column change). Manual
 runs use a unique manual filename and one permitted audit per applicable org.
 Audits keep existing empty task scope/daemon attribution. No per-candidate receipts
 or new ledger. Summary includes actual executing source hash, config digest/effective mode,
@@ -274,13 +299,30 @@ review and independently executed scoped QA remain required after publication.
 
 ### Focused recovery fixtures and isolated boundaries
 
+ROOT12353 correction cases8–12 use isolated daemon_home and multiple disposable
+admitted orgs: S1 absent/false default deletion across legacy off/missing/new;
+S2 true gives zero reservation/worker/mutation plus actual scheduled-loop marker
+and persisted audit; S3 strict JSON/type/key/UTF8/size, OS denial, aliases/special
+files and controlled changed/short/read-error observations suspend with a cause;
+S4 true/invalid repair affects a separate next admission, with the first result
+retained; S5 actual manual subprocess previews with true/invalid/absent controls
+stay nonmutating. C5 continues to own eligible preview mutation sentinels. S1/S4
+use actual disposable sweep/Git effects with SIMULATED worker supervision, not
+native startup or installed-layout acceptance. S2 uses the actual audit writer.
+Controlled OS errors are test-side only and distinguished from real unreadable
+file denial. No live file/activation/cleanup, new schedule, in-flight-stop claim,
+retired units, historical full driver or mount/process-root execution is involved.
+The finite cases/four answers and causal RED/GREEN/repetitions are maker evidence;
+independent FULL review/scoped behavioral QA and root rollout remain separate.
+
 Historical QA TASK11530 terminal-job lineage refusals are superseded by
 Founder seq85. The maintained case9/10 lineage refusal helpers now cover active
 jobs only; their other unknown-status, active scope and retry checks remain.
 These broad historical cases are NOT authorized for this correction delivery.
 
 The current corrections lane retains C1–C3 (seq117) and adds the finite C4–C7
-policy cases (seq134). Run from the guarded worktree after
+policy cases (seq134), plus S1–S5 (selector8–12) for scheduled control admission.
+S6 reuses C1–C7 safety assertions. Run from the guarded worktree after
 `uv sync --frozen --python 3.14`, with task-owned disposable scratch:
 
 ```bash

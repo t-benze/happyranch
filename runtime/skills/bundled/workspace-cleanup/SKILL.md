@@ -170,6 +170,30 @@ No history deletion, automatic recovery, apply or execution authority follows.
 
 An online team-move hold reserves affected agents and source/target membership. The native cleanup trigger defers before work allocation, without advancing an occurrence; real cleanup tasks and unknown process/workspace tails block the move. Never delete another owner’s workspace, clear uncertainty or fabricate settlement to free a hold. Existing cleanup authority and all preservation gates remain. Apply is unavailable; behavior remains UNEXECUTED.
 
+One daemon-wide operator control is `<daemon_home>/disk-sweep/stop.json`.
+Its only supported content is a JSON object containing exactly `stop` with a
+real Boolean: `{"stop":true}` suspends scheduled deletion for all orgs;
+`{"stop":false}` or a genuinely absent literal file permits the default policy.
+The control is read afresh once per regular scheduled attempt, after the normal
+same-night reservation and before native writer reservation or worker launch,
+inside the shared1800s budget. Invalid/unreadable/oversized/truncated/changed
+content, wrong/extra/duplicate keys or types, invalid UTF8, symlinks (including
+dangling links or aliased parents), hardlinks, directories and special files
+visibly suspend. Only final-file ENOENT means absent; other I/O failures suspend.
+Malformed control does not prevent daemon/org startup. Operators alone write or
+remove this local file; there is no per-org override, setting/API or new schedule.
+Suspension logs its cause and writes `outcome: suspended` with daemon-scoped
+`scheduled_admission` (`path,state,reason` and an error when invalid) in the
+existing summary/audit payload. All orgs remain unreached, with no worker/PID,
+reaping, removal-byte or successful-sweep claim. The existing audit empty-task/
+daemon envelope and org ordering remain. Publication failure is visible and
+never permits deletion. Manual `--dry-run` remains usable and nonmutating with
+true, invalid or absent control; it may write its existing reports/audits.
+Removing/fixing the file affects the NEXT existing scheduled attempt only:
+no same-night catchup/retry or marker reset. This is a run-admission boundary;
+writing stop does not cancel an already launched worker or promise a hard
+real-time stop. Existing deletion/ownership/age/containment gates still apply.
+
 Under Founder THR307seq134, the independent daemon disk sweeper deletes eligible
 scratch/worktrees for every normally admitted org on its nightly schedule. There
 is no per-org opt-out; obsolete disk_sweep config is ignored. Explicit manual
@@ -907,7 +931,8 @@ An installed layout with missing/unknown ownership refuses before mutation; abse
 layout preserves native behavior. Missing/incomplete effect closure, interruption
 and partial mutation retain unknown writer evidence; a clean later provider result
 cannot erase it. The common1800-second window includes reservation admission.
-THR307seq134 scheduled deletion covers every admitted org; metadata/jobs/age/
+THR307seq134 scheduled deletion covers every admitted org when the daemon-wide
+stop admission above permits; metadata/jobs/age/
 containment safeguards and explicit manual dry-run remain. This C3 source
 checkpoint grants no live cleanup authority. These source changes have no
 behavioral/migration/recovery proof; integration INCLUDING callback SKIPPED24342,

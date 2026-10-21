@@ -797,10 +797,79 @@ async def run_worker(roots: list[str], summary: Path, *, dry_run: bool, schedule
     return report
 
 
+def _scheduled_admission(deadline: float) -> dict:
+    """Observe the daemon-wide stop once, before any scheduled writer work.
+
+    Only a missing literal file or the exact Boolean false allows admission.
+    This is an ordinary bounded filesystem observation, not an in-flight fence.
+    """
+    from runtime.runtime import daemon_home
+    path = daemon_home() / 'disk-sweep/stop.json'
+    admission = dict(scope='daemon', path=str(path), state='suspended', reason='invalid_control')
+    try:
+        with directory(path.parent, deadline) as parent:
+            parent_identity = identity(os.fstat(parent))
+            try:
+                before = os.stat(path.name, dir_fd=parent, follow_symlinks=False)
+            except FileNotFoundError:
+                # ENOENT on this final literal name only; parent failure is not
+                # absence. Reopen parents to reject aliases/replacement.
+                with directory(path.parent, deadline) as current:
+                    if identity(os.fstat(current)) != parent_identity:
+                        raise Retain('stop_parent_changed')
+                check(deadline)
+                return dict(admission, state='allowed', reason='absent')
+            if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
+                raise Retain('stop_not_regular_or_hardlinked')
+            fd = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
+            try:
+                if signature(os.fstat(fd)) != signature(before):
+                    raise Retain('stop_changed_before_read')
+                raw = os.read(fd, 65537)
+                if len(raw) > 65536 or len(raw) != before.st_size:
+                    raise Retain('stop_oversized_or_short_read')
+                if signature(os.fstat(fd)) != signature(before):
+                    raise Retain('stop_changed_during_read')
+                if signature(os.stat(path.name, dir_fd=parent, follow_symlinks=False)) != signature(before):
+                    raise Retain('stop_replaced_during_read')
+                with directory(path.parent, deadline) as current:
+                    if identity(os.fstat(current)) != parent_identity:
+                        raise Retain('stop_parent_changed')
+                check(deadline)
+            finally:
+                os.close(fd)
+        # Retain duplicate keys as pairs, so even duplicate identical false
+        # values cannot silently pass the closed one-key object contract.
+        pairs = json.loads(raw.decode('utf-8', errors='strict'), object_pairs_hook=lambda value: value)
+        if (not isinstance(pairs, list) or len(pairs) != 1
+                or not isinstance(pairs[0], tuple) or pairs[0][0] != 'stop'
+                or type(pairs[0][1]) is not bool):
+            raise Retain('stop_requires_only_boolean_stop')
+        check(deadline)
+        return dict(admission, state='suspended' if pairs[0][1] else 'allowed',
+                    reason='stop_true' if pairs[0][1] else 'stop_false')
+    except Exception as exc:
+        return dict(admission, error=f'{type(exc).__name__}: {exc}')
+
+
 async def _run_scheduled_worker(state, summary: Path, date: str) -> dict:
     from runtime.orchestrator.producer_move import native_writer
     from runtime.orchestrator.team_move import DeferredTeamMove
-    deadline = time.monotonic() + BUDGET_SECONDS
+    started = time.monotonic()
+    started_at = datetime.now().astimezone().isoformat()
+    deadline = started + BUDGET_SECONDS
+    admission = await asyncio.to_thread(_scheduled_admission, deadline)
+    if admission['state'] == 'suspended':
+        report = dict(format='disk-sweep@1', revision=_revision(), scheduled_date=date,
+                      timezone=datetime.now().astimezone().tzname(), timezone_offset=datetime.now().astimezone().strftime('%z'),
+                      started_at=started_at, finished_at=datetime.now().astimezone().isoformat(),
+                      deadline_monotonic=deadline, budget_seconds=BUDGET_SECONDS,
+                      process_scope=PROCESS_SCOPE, outcome='suspended', orgs=[],
+                      unreached_orgs=[str(org.root) for _, org in sorted(state.orgs.items())],
+                      scheduled_admission=admission)
+        LOG.warning('Disk sweep globally suspended: %s', admission)
+        await asyncio.to_thread(atomic_json, summary, report)
+        return report
     # Reservations span filesystem/process work; their short gate/transaction
     # does not. Retain active evidence on process loss; D reads the same history.
     with ExitStack() as stack:
@@ -824,6 +893,10 @@ async def _run_scheduled_worker(state, summary: Path, date: str) -> dict:
         check(deadline)
         report = await run_worker(roots, summary, dry_run=False, scheduled_date=date,
                                   native_writers=writers, budget=deadline - time.monotonic())
+        report['scheduled_admission'] = admission
+        if deferred:
+            report.update(outcome='incomplete', move_deferred_orgs=deferred)
+        await asyncio.to_thread(atomic_json, summary, report)
         for slug, disposition in dispositions.items():
             items = [item for item in report.get('orgs', []) if item.get('org') == slug]
             if (len(items) == 1
@@ -834,9 +907,6 @@ async def _run_scheduled_worker(state, summary: Path, date: str) -> dict:
                     and not any(c.get('state') in ('mutation_in_flight', 'partial_or_unknown')
                                 for c in items[0].get('candidates', []))):
                 disposition.uncertain = False
-        if deferred:
-            report.update(outcome='incomplete', move_deferred_orgs=deferred)
-            await asyncio.to_thread(atomic_json, summary, report)
         return report
 
 
@@ -891,7 +961,9 @@ async def disk_sweeper_loop(state) -> None:
                     raise
                 cancelled = exc
             if state.broken_orgs:
-                report.update(outcome='incomplete', unloaded_orgs_unknown=sorted(state.broken_orgs))
+                report.update(unloaded_orgs_unknown=sorted(state.broken_orgs))
+                if report.get('outcome') != 'suspended':
+                    report['outcome'] = 'incomplete'
                 await asyncio.to_thread(atomic_json, summary, report)
             # Existing audit interface and row shape, one summary per swept org.
             # No notification interface suitable for a disk alert exists here;
@@ -914,6 +986,7 @@ def _audit_payload(report: dict, item: dict | None, summary: Path) -> dict:
         'timezone': report.get('timezone'), 'timezone_offset': report.get('timezone_offset'),
         'started_at': report.get('started_at'), 'finished_at': report.get('finished_at'),
         'budget_seconds': report.get('budget_seconds'), 'outcome': report.get('outcome'),
+        'scheduled_admission': report.get('scheduled_admission'),
         'org': item, 'unreached_orgs': report.get('unreached_orgs'),
         'interruption': report.get('interruption'),
         'move_deferred_orgs': report.get('move_deferred_orgs'),
