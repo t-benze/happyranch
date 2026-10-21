@@ -134,30 +134,30 @@ try:
     sys.addaudithook(audit)
     from runtime.infrastructure.database import Database
     from runtime.infrastructure.workflow_schema import initialize_complete_org_schema, _validate_installed
-    from runtime.orchestrator.authority import _release_schema_digest
     from runtime.workflows._coding_release_history import read_release_import
     from runtime.workflows.coding_authority_history import _Budget
     from runtime.workflows.coding_start import queued_storage
     # Fixtures use the ordinary full native and complete J initializer. The
     # independent whole release reference is constructed from pristine source.
-    reference_digest = _release_schema_digest('J', 'fresh', 0)
-    if reference_digest == 'unavailable':
-        # Surface ordinary constructor failure hidden by the production
-        # reference's category-only unavailable return. Still never admit it.
-        diagnostic = Database(Path('/work/reference-diagnostic.db'))
-        try:
-            initialize_complete_org_schema(diagnostic, expected_org_slug='release-reference', layout='J')
-        finally:
-            diagnostic.close()
-        raise RuntimeError('independent whole-native J reference unavailable')
-    db = Database(Path('/work/fixture.db'))
+    # Separate pristine full Database/J construction, never copied from the
+    # candidate schema. In-memory SQLite avoids WAL scratch expansion under
+    # the unchanged 2MiB per-file bound; both complete constructors are real.
+    reference = Database(Path(':memory:'))
+    try:
+        initialize_complete_org_schema(reference, expected_org_slug='release-reference', layout='J')
+        reference_schema = schema(reference._conn)
+        reference_digest = digest('\n'.join(str(r[0]) for r in reference._conn.execute(
+            'SELECT sql FROM sqlite_master WHERE sql IS NOT NULL ORDER BY name')).encode())
+    finally:
+        reference.close()
+    db = Database(Path(':memory:'))
     try:
         initialize_complete_org_schema(db, expected_org_slug=cfg['org_slug'], layout='J')
         conn = db._conn
         conn.row_factory = None
         actual_digest = digest('\n'.join(str(r[0]) for r in conn.execute(
             'SELECT sql FROM sqlite_master WHERE sql IS NOT NULL ORDER BY name')).encode())
-        if actual_digest != reference_digest or _validate_installed(
+        if schema(conn) != reference_schema or actual_digest != reference_digest or _validate_installed(
                 conn, expected_org_slug=cfg['org_slug'], validate_data=False) != 'J':
             raise RuntimeError('complete independent J recognition failed')
         result['fixture_schema'] = schema(conn)

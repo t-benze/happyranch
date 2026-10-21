@@ -1255,8 +1255,11 @@ agree with the inventory. These are bounded synthetic observations, not hostile
 same-user security certification or hard OS-I/O timing guarantees.
 
 The embedded driver uses the ordinary full native Database and complete J fresh
-initializer, checks the independent pristine whole release reference, and retains
-all schema definitions/columns/FKs/index metadata and saved native rows. Its
+initializer on separate ordinary in-memory SQLite connections, checks the independently
+constructed pristine whole native/J reference, and retains
+all schema definitions/columns/FKs/index metadata and saved native rows. In-memory
+storage avoids native WAL scratch expansion under the unchanged 2MiB file bound;
+it neither reduces the schema nor uses the candidate as the reference. Its
 synthetic fixed publication uses separately retained fixture inputs and compares
 returned identity/version/original command and six full typed rows. It does not
 call the publication constructor to derive its oracle. Human-looking strings
