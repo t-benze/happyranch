@@ -143,7 +143,7 @@ Path('/result/effects.json').write_text(json.dumps({
 }))
 if cfg['mode'] == 'lost':
     if cfg['has_observer']:
-        # A separate read-only process never rewrites the original CLI receipt.
+        # Observe the shipping read-only helper in a separate process/receipt.
         observation = run(['/usr/bin/python3','-S','-c',
             'from runtime.daemon.pr_ci_merge import _gh_fetch_merge_result; '
             'import json; from dataclasses import asdict; '
@@ -305,6 +305,8 @@ def check_case(case: dict, result: Path) -> list[dict]:
                  "query-signal": "exit -15"}.get(mode, "remote confirmation failed")
         equal("original native failure cause preserved", cause in error, True)
         equal("uncertainty/no retry instruction", "do not repeat merge" in error, True)
+        if mode in {"race", "protection", "nonzero", "signal", "lost"}:
+            equal("native action exit preserved", f"exit {actions[0]['exit']}" in error, True)
     if mode == "race":
         equal("head changed at action", json.loads((result / "effects.json").read_text())["head"], H2)
         equal("native action rejected", actions[0]["exit"], 23)
@@ -319,7 +321,6 @@ def check_case(case: dict, result: Path) -> list[dict]:
             observed = None
         equal("later observation preserves actual remote values", observed,
               {"merged_sha": COMMIT, "merged_at": STAMP})
-        equal("original failure receipt retained", json.loads((result / "cli.json").read_text()), cli)
     return checks
 
 

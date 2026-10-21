@@ -1119,18 +1119,35 @@ The table covers A1 action-time H→H2 rejection, A2 protection refusal, A3 exac
 remote success values, A4 native nonzero/signal/exec failures, A5 independently
 varied invalid metadata/query failures, A6 lost action response followed by a
 separate read-only `_gh_fetch_merge_result` observation, and one earlier extractor
-conflict. Each case is bounded at5s, the invocation at60s, with fixed51 cases,
+conflict. A6 compares independent CLI failure/exit/absent merged metadata and
+native cause against the observer's successful actual remote values and the
+combined one-action ledger. Raw process receipts stay separate; rereading a
+harness-owned receipt file supplies no product immutability evidence. Each case is bounded at5s, the invocation at60s, with fixed51 cases,
 128KiB per-file output limits, CPU/memory bounds and owned process teardown.
 No real timeout sleep, retry, second action or production injection seam exists.
 
-Allocation is ONE immutable pre-fix570b1c30 RED/final-support-head GREEN campaign
-and five clean process/order repetitions per explicitly assigned maker and later
-independent QA. This is selected CLI acceptance, outside automated all/hooks/PR/
-main checks. It restores no retired units and invokes no general integration
-(INCLUDING callback, SKIPPED24342), E2E or build. No deliberate product mutations
-are allocated; report sensitivity proof not supplied by the actual pre-fix bug.
-The PR body carries the four authoring answers and actual evidence. No deletion
-or keeper claim applies. Fresh full independent review and same-final-head QA,
+ROOT TASK-12299 step5 additionally allocates eight finite scratch-only production
+regressions: M1 permissive review conflict, M2 QA before review, M3 duplicate
+successful action, M4 replay failed action, M5 failed action promoted by remote
+confirmation, M6 lost native action exit/cause, M7 lost action transport details,
+and M8 lost confirmation cause/uncertainty. Each gets one full existing table RED
+and byte-exact forward restoration/GREEN in a registered guarded scratch worktree,
+using clean local-only commits as expected heads. Only `pr_ci_merge.py` is mutated;
+the source identity fence and other three modules remain exact. Never publish
+proof commits. Reuse attributable pre-fix570b1c30 evidence for the original fix.
+The final candidate also gets one full-table GREEN and five process/order
+repetitions. This is a bounded allocation, not standing mutation authority.
+
+This selected CLI acceptance stays outside automated all/hooks/PR/main checks.
+It restores no retired units and invokes no general integration (INCLUDING
+callback, SKIPPED24342), E2E or build. The PR body carries four authoring answers,
+case attribution and actual evidence. The consolidated A6 harness self-comparison
+is owned by retained keepers `CLI exit`, `CLI verdict`, `actual remote commit or
+absent failed receipt`, `actual remote time or absent failed receipt`, `original
+native failure cause preserved`, `complete transport order/no replay`, and the
+later observation checks. M5 must make the failed-CLI keepers RED while the
+separate observer still reports its actual remote values; restoration must be
+byte-exact and GREEN. Fresh full independent review and same-final-head QA,
 exact-head two lints and the live manager's genuine merge/remote observation remain
 required. Fixture success establishes neither real GitHub enforcement nor live
 manager interruption/cold/runtime/merge acceptance.
