@@ -3928,14 +3928,36 @@ nested reads share its original budget and restore connection settings. Limits
 never authorize a prefix, clear a sticky error or change producer behavior.
 
 The seal-action audit GET reads the actual serving OrgState through its
-`memory_collection_observation` accessor. Nonblocking short observer snapshots
+`memory_collection_observation` accessor. Short nonblocking observer snapshots
 and database-revision reads bracket bounded interpreter/source/registry/file
-identity acquisition; no database-held callback enters the observer, no metadata
-lock spans file reads, and GET never reseals or writes collection history.
-A held metadata/database lock, pending preparation/writer, sticky error, changed
-boot/context or moving bookends withholds `data_through`. Failure is local to
+identity acquisition. DB admission waits at most0.5s CUMULATIVE across both
+bookends/all attempts within the ORIGINAL deadline; nested reads share accounting.
+No database-held callback enters the observer, no metadata lock spans file reads,
+and GET never reseals or writes collection history. Concurrent-write movement
+alone retries a wholly new complete pair under unchanged aggregate SQL/file/work
+limits, retaining charged raw failed pairs in existing bounded logs. One complete
+stable pair supplies acceptance; no halves are combined. Hard errors, sticky or
+malformed state, observer replacement and original identity/source/boot/cohort/
+profile/provider/path drift refuse immediately. A held metadata lock, exhausted
+DB allowance/deadline, pending preparation/writer or unresolved movement withholds
+`data_through`. Failure is local to
 this read and cannot poison launch/callback/startup outcomes. A stable cutoff is
-source evidence only. G1 epoch references are projected only after complete
+source evidence only.
+
+Completed file, cohort, comparison and validation work is checked against the
+same original deadline before successful serving/report/preparation/current-epoch
+returns, including no-control and HTTP cutoff paths. Both full internal snapshots
+must validate every required counter/digest/reference/seal field before movement
+can retry; the abbreviated public boot projection has a separate validation mode.
+Retry requires a full write and flush of the raw pair through an existing standard
+synchronous stream/file log sink, with filters and formatting applied. Disabled,
+filtered, unavailable, short or failed delivery without another acknowledged sink
+refuses; a normal warning return is insufficient. Serialization and formatted
+bytes consume the original aggregate budget. This establishes synchronous delivery,
+not crash/fsync durability or hard OS-I/O timing. Deadline checks precede successful
+read results and never reclassify an already successful publication COMMIT.
+
+G1 epoch references are projected only after complete
 original acceptance and current-health validation, with stable evidence/source
 bookends and zero reader writes. Both successful `_log_step_result` arms
 reconcile their exact admitted row after existing completion logging; failure

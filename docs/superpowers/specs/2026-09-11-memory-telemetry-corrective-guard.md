@@ -217,15 +217,20 @@ unimplemented here. Existing backend and canonical CLI guards remain
 `insufficient_instrumentation` with `thresholds_met=false`; no collection/epoch
 transition, deployment, tuning or 48-hour clock starts from this source unit.
 
-Canonical CLI task sweeps and HTTP list/detail/two-capture comparisons share one
-semantic task projection. It excludes only valid rendering timestamps at
+Capture task comparisons use one ordered pair relation (THR-091 seq557/559/560).
+The unary projection excludes only valid rendering timestamps at
 `pause.observed_at`, `pause.blockers[*].observed_at` and `child_wait.observed_at`.
-Malformed timestamps/structures, unknown fields and every other `observed_at`
-remain evidence. Raw acquired records remain intact. Task lifecycle/owner/SID/
-lineage/content, pause/wait states, result/job bytes, roles and all serving
-counts/digests/seals/errors/generations remain compared. Real serving movement
-(including generation53->54, seal312201->312222 and terminal6->7) refuses;
-timestamp equality cannot retroactively qualify an earlier moving capture.
+An otherwise equal pair may additionally advance BOTH `last_heartbeat` and its
+accompanying `updated_at`: all four stamps must be present aware strings and
+both later instants must be strictly forward. Updated-at-only, heartbeat-only,
+equal/reverse or missing/malformed/naive changed stamps refuse. Exact unchanged
+projected pairs remain equal; malformed/unknown values never disappear or
+justify a changed pair. All other fields, membership and JSON scalar types stay
+significant. Raw tasks remain intact. Native/HTTP reports, repeated dependency
+captures, acceptance preparation and current-epoch captures share this relation;
+locked publication rereads and control invariants retain exact record equality.
+Serving movement still requires one fresh complete stable pair under the shared
+budgets below; an earlier failed pair never supplies an accepted half.
 
 The existing task invocation-exception catch logs only task/agent/reserved runtime
 SID (or explicit unavailable), exception class and at most eight bounded frame
@@ -303,13 +308,43 @@ are `source_root`, `runtime_root`, `org_root`, `package_version`, `python`,
   and does not claim backend health or enforcement beyond its existing report.
 
 Acquisition is zero durable writes and no reseal/full-history reconciliation.
-Nonblocking short observer/Database lock admissions preserve observer -> Database
-ordering; no Database-held callback acquires observer lock, and file acquisition
-holds neither lock. Two identity reads plus observer semantic and database
-revision bookends must match. Pending preparation/writer, sticky errors, failed
-reads or movement withhold data_through; stable cutoff is evidence to a future
-validator, not collection health. Work is limited to 64 agents/teams (64 workers
-per team), 96 regular files and 1 GiB total per identity read; declared
+Short observer admission remains nonblocking. Founder THR091seq557/559/560
+permits at most0.5s CUMULATIVE DB-lock admission waiting across both revision
+bookends and all attempts, clipped by the ORIGINAL enclosing acquisition
+deadline. Nested/reentrant reads share admission and SQL accounting. DB ownership
+is released before any observer metadata, loaded identity/file or network work;
+a caller already owning the DB lock cannot request a serving observation.
+Each attempt obtains a NEW complete opening snapshot/revision -> identity ->
+identity -> revision/closing snapshot pair. Only concurrent-write revision or
+observer movement retries; all original checks run again. Raw unsuccessful pairs
+are charged and retained through existing bounded module logging; retention or
+resource failure refuses. Accept one wholly stable pair, never splice halves.
+
+Completed file, cohort, comparison and validation work is checked against the
+same original deadline before successful serving/report/preparation/current-epoch
+returns, including no-control and HTTP cutoff paths. Both full internal snapshots
+must validate every required counter/digest/reference/seal field before movement
+can retry; the abbreviated public boot projection has a separate validation mode.
+Retry requires a full write and flush of the raw pair through an existing standard
+synchronous stream/file log sink, with filters and formatting applied. Disabled,
+filtered, unavailable, short or failed delivery without another acknowledged sink
+refuses; a normal warning return is insufficient. Serialization and formatted
+bytes consume the original aggregate budget. This establishes synchronous delivery,
+not crash/fsync durability or hard OS-I/O timing. Deadline checks precede successful
+read results and never reclassify an already successful publication COMMIT.
+The ORIGINAL identity/source/boot/context fence survives attempts. Changed or
+unavailable identity, cohort/profile/provider/path drift, observer replacement,
+malformed state, sticky producer errors and other hard errors refuse immediately.
+One original30s cooperative acquisition deadline, shared0.5s admission allowance,
+original aggregate row/byte/closure/request/transport and SQL work allowances
+span all attempts. The original two identity-read file/byte allowances are each
+shared across retries, never renewed. SQL scopes share50M VM instructions,
+100000 fetched rows/64MiB and3s cumulative cooperative SQL/admission time,
+clipped by that enclosing deadline; time outside DB ownership is not SQL time.
+Pending preparation/writer and any exhausted/unresolved acquisition withhold
+data_through. A stable cutoff is evidence to a future validator, not health.
+Work is limited to64 agents/teams (64 workers per team),96 regular files and
+1GiB total per identity-read allowance across all attempts; declared
 executables are streamed in at most 256 KiB chunks with a 512 MiB/file bound
 (the actual registered Claude/Codex binaries exceed 200 MiB). Metadata/source/
 registry/agent files are capped at 1 MiB, custom dependencies at 16,
@@ -368,8 +403,9 @@ per-capture record/byte work allocation. HTTP streams refuse nonidentity content
 encoding, malformed UTF8/JSON/duplicate keys, cursors, ordering and incomplete
 original output. A request has at most a five-second socket timeout and the
 remaining acquisition budget; client refusal does not cancel an already-running
-server query. Native SELECT/publication use 0.5-second DB-lock admission,
-50000000 SQLite VM instructions and a three-second cooperative lock deadline;
+server query. Native SELECT/publication use the shared cumulative0.5-second DB-lock admission,
+50000000 SQLite VM instructions and three-second cumulative cooperative SQL
+allowance described above, all clipped by the original enclosing deadline;
 publication checks the deadline again before commit. SQLite progress interrupts
 SQL, not Python/OS scheduling. The same private budget encloses existing public
 /audit (including optional enrichment), task list/detail/default recall and
@@ -398,10 +434,11 @@ window through existing assigned_agent task pages; probe roots retain all direct
 children. Claimed receipt IDs alone cannot establish slot uniqueness. Roles
 bracket the report.
 Native snapshots are coherent; paired HTTP captures compare full membership,
-raw records/outputs and semantic task/serving bookends. Only valid rendering
-timestamps at pause.observed_at, pause.blockers[*].observed_at and
-child_wait.observed_at are normalized. Malformed/unknown fields remain evidence.
-A moving/refused capture yields acquisition_unavailable, CLI exit1 and no partial
+raw records/outputs and ordered task/serving bookends using the relation above.
+Only the three valid rendering timestamp paths have unary exclusions; heartbeat
+and accompanying updated_at movement is a checked ordered-pair exception.
+Malformed/unknown fields remain evidence. An unresolved moving/refused capture
+yields acquisition_unavailable, CLI exit1 and no partial
 stdout. Sizing/source checks do not qualify installed readers, repair a sticky
 observation failure, accept B/C or start/reset an epoch.
 

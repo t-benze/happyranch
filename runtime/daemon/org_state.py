@@ -307,8 +307,9 @@ class OrgState:
     def memory_collection_observation(self) -> dict:
         """Read this serving org; observation failure never changes launch state."""
         try:
-            from runtime.infrastructure.memory_collection import serving_observation, current_epoch_references
-            return current_epoch_references(self, serving_observation(self))
+            from runtime.infrastructure.memory_collection import serving_observation, current_epoch_references, _census_budget
+            with _census_budget(captures=2):
+                return current_epoch_references(self, serving_observation(self))
         except Exception:
             # Module/constructor acquisition can itself be unavailable. Keep the
             # ordinary audit route usable without importing a second observer.

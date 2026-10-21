@@ -1406,39 +1406,43 @@ class Database(
         original work/deadline; no callback, file or network I/O belongs here.
         SQLite VM sampling and cooperative checks are not hard wall/RSS bounds.
         """
+        from runtime.infrastructure.memory_collection import _census_budget
+        with _census_budget() as budget:
+            yield from self._memory_collection_read_scope(budget, publication=publication)
+
+    def _memory_collection_read_scope(self, budget, *, publication: bool):
+        """Existing connection owner; released SQL scopes share cumulative work."""
         from runtime.infrastructure.memory_collection import (
             CensusReadUnavailable, MAX_CENSUS_READ_ROWS, MAX_CENSUS_READ_BYTES,
-            MAX_CENSUS_ROW_BYTES,
+            MAX_CENSUS_ROW_BYTES, MAX_CENSUS_SECONDS,
         )
-        if not self._lock.acquire(timeout=0.5):
-            raise CensusReadUnavailable("census_database_busy")
+        admitted = _time.monotonic()
+        deadline = min(budget.started + MAX_CENSUS_SECONDS, admitted + max(0.0, 3.0 - budget.sql_seconds))
+        budget.acquire(self._lock, deadline)
         nested = getattr(self, "_collection_read_deadline", None) is not None
         old_factory = self._conn.row_factory
         old_length = old_timeout = None
         try:
             if not nested:
-                self._collection_read_deadline = _time.monotonic() + 3.0
+                self._collection_read_deadline = deadline
                 old_timeout = self._conn.execute("PRAGMA busy_timeout").fetchone()[0]
                 self._conn.execute("PRAGMA busy_timeout=100")
                 old_length = self._conn.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, MAX_CENSUS_ROW_BYTES)
-                work = rows = size = 0
 
                 def progress() -> int:
-                    nonlocal work
-                    work += 1000
-                    return int(work > 50_000_000 or _time.monotonic() > self._collection_read_deadline)
+                    budget.sql_work += 1000
+                    return int(budget.sql_work > 50_000_000 or _time.monotonic() > self._collection_read_deadline)
 
                 def bounded_row(cursor: sqlite3.Cursor, values: tuple) -> object:
-                    nonlocal rows, size
                     # SQLite's length limit rejects huge TEXT/BLOB/records before
                     # Python allocation. Charge every fetched row before caller
                     # JSON/Pydantic decoding, including nested projections.
                     amount = sum(len(v.encode("utf-8")) if isinstance(v, str)
                                  else len(v) if isinstance(v, bytes) else 8 for v in values)
-                    rows += 1
-                    size += amount
-                    if (amount > MAX_CENSUS_ROW_BYTES or rows > MAX_CENSUS_READ_ROWS
-                            or size > MAX_CENSUS_READ_BYTES):
+                    budget.sql_rows += 1
+                    budget.sql_bytes += amount
+                    if (amount > MAX_CENSUS_ROW_BYTES or budget.sql_rows > MAX_CENSUS_READ_ROWS
+                            or budget.sql_bytes > MAX_CENSUS_READ_BYTES):
                         raise CensusReadUnavailable("census_database_size_limit")
                     if _time.monotonic() > self._collection_read_deadline:
                         raise CensusReadUnavailable("census_database_deadline")
@@ -1471,6 +1475,7 @@ class Database(
                     if old_timeout is not None:
                         self._conn.execute(f"PRAGMA busy_timeout={int(old_timeout)}")
                     self._collection_read_deadline = None
+                    budget.sql_seconds += _time.monotonic() - admitted
             finally:
                 self._lock.release()
 
@@ -1481,16 +1486,15 @@ class Database(
         Native retry verification remains separate and retains its authority.
         """
         from runtime.infrastructure.memory_collection import (
-            _CensusBudget, _scoped_collection_evidence, _strict_json,
-            MAX_CENSUS_READ_ROWS, CensusReadUnavailable,
+            _scoped_collection_evidence, _strict_json,
+            MAX_CENSUS_READ_ROWS, CensusReadUnavailable, _census_budget,
         )
         if view is None:
             org = getattr(self, "_memory_collection_context", None)
             if org is None or org.memory_collection is None:
                 raise CensusReadUnavailable("census_context_missing")
             view = org.memory_collection.snapshot()  # before DB lock: observer -> DB
-        budget = _CensusBudget()
-        with self._memory_collection_read_budget(), self.coherent_read_view() as conn:
+        with _census_budget() as budget, self._memory_collection_read_budget(), self.coherent_read_view() as conn:
             def read(sql, params=()):
                 budget.check()
                 cursor = conn.execute(sql, params)
