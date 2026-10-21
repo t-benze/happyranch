@@ -1112,8 +1112,9 @@ sequence remain unchanged.
 The finite body contract admits the audited plain paragraphs, the exact
 `Delegated to case_worker (child=TASK-[0-9]+)` lifecycle paragraph (ASCII digits
 only), and the exact prior-worker context generated for Pause's reviewer. That context renders as
-three h2 blocks, five br elements and zero hr elements, with exact metadata,
-spacing and newline-prefixed post-br text nodes. Unknown Markdown or malformed
+three h2 blocks, five br elements and zero hr elements, with exact metadata
+and spacing. Each br is followed by a standalone LF text node and then a separate
+exact metadata text node; inter-block LFs also remain standalone. Unknown Markdown or malformed
 context explicitly refuses. List titles have a separate contract: a multiline
 headline example is list-only, not a supported detail body. Pause supplies
 rendered expectations from known scenario IDs and states before observation.
