@@ -1,8 +1,8 @@
 # PyInstaller custody input
 
 This internal repack retains distribution/version `pyinstaller 6.21.0` and uses
-wheel build tag `1happyranchcustody4`. It is not an upstream release. The source
-changes include HappyRanch custody revision 4, dated 2026-10-21. A later
+wheel build tag `1happyranchcustody5`. It is not an upstream release. The source
+changes include HappyRanch custody revision 5, dated 2026-10-21. A later
 content revision requires a new build tag/path, identities, lock and review.
 
 The original wheel is 1,052,350 bytes, SHA256
@@ -42,6 +42,10 @@ precede exclusive creation. Every helper write/readback/load/reference and
 standalone/nested fragment read is charged without nested reset/path discounts;
 ordinary reads8GiB/snapshots2GiB/members16384/names8MiB stay independent. The
 helper's copy record references the actual stored digest-bound output bytes.
+Revision 5 adds the missing module-global `hashlib` import in `api.py` for
+the existing COLLECT consumed-ledger digest. The COLLECT reader and all bounds
+remain unchanged. Build14 failed at that missing binding after both EXEs built;
+app inspection was not reached. This repair has source/repack evidence only.
 No loader, bootloader, compiler or configuration source changes. Bootloader
 binaries are unchanged. Native operations are observed at their existing call
 sites, without repeating transformations or adding process supervision.
@@ -68,7 +72,7 @@ original RECORD/inventory/notices, the exact two-path patch, resulting source
 identities, the five-member allowlist, regenerated RECORD, replacement inventory
 and expected wheel digest. Git applies only inside new private staging trees;
 no download, build backend, package import/install, index upload or native tool
-runs. The original, historical custody2/custody3 and active custody4 wheels and patch are
+runs. The original, historical custody2/custody3/custody4 and active custody5 wheels and patch are
 committed in full. Historical wheel bytes and receipts retain their original
 identity. `provenance.json` pins actual inputs, preparer, per-member outputs and
 wheel identities; it has no
@@ -83,8 +87,8 @@ Installed RECORD is retained separately because installers can regenerate it.
 No patch-after-install or runtime monkey patch supplies this API. Linux resolver
 and portable parser observations establish no Darwin install/runtime behavior.
 
-The active custody4 replacement is 2,828,479 bytes, SHA256
-`1fa23b6af3cc9a99569ddd6758f1d92ccbe423cc03bee20c1543d2fcec5001c4`.
+The active custody5 replacement is 2,828,548 bytes, SHA256
+`b6a3b002ea09381eaee8443add2e08ae44513721ab8b01f02c7f74c7dd2828cb`.
 Two guarded preparations and verification establish source-repack reproduction
 only. These are finite capacities, not a measurement of build13 (exact rejected size
 and contents UNKNOWN), guaranteed native headroom, or hard RSS/time limits. The

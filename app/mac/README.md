@@ -407,8 +407,12 @@ is supplied. See accepted TASK11214 C01–C18 for the full independent contract.
 The freezer operation observer uses the original-backed PyInstaller input and
 bounded independent archive reader described in
 [the freezer contract](../../packaging/README.md#freezer-operation-custody).
-Darwin selects custody revision 4 (`1happyranchcustody4`) with descriptor-relative
-snapshot writes and ZIP metadata budgets enforced before allocation. The original
+Darwin selects custody revision 5 (`1happyranchcustody5`) with descriptor-relative
+snapshot writes and ZIP metadata budgets enforced before allocation. Revision 5
+adds the missing `api.py` module-global `hashlib` import for the existing COLLECT
+ledger digest, preserving its reader and limits. Build14 failed there after both
+EXEs built; app inspection was not reached. Custody5 has source/repack evidence
+only, with native confirmation still unexecuted. The original
 base-library producer sorts modules by name before each original lane capture,
 with or without custody. It retains membership, cached-code selection,
 optimization and ZIP member bytes.
