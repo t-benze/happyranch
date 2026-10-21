@@ -715,13 +715,13 @@ try:
                 supplied=options.get('budget'),kind='complete',original_rows=[])
         conn.execute('SAVEPOINT empty_native')
         insert('audit_log',dict(timestamp=stamp,agent='synthetic',action='synthetic_observation',
-            task_id=None,payload='{"note":"ordinary"}'))
+            task_id='SYNTHETIC-EMPTY-TASK',payload='{"note":"ordinary"}'))
         empty_budget=_Budget(consumed=17,accepted_rows=3,traversed=5)
         observe('F8-R1c.complete.empty.native.positive',
             lambda:_read_workflow_schema(conn,expected_org_slug=org,budget=empty_budget),
             supplied=empty_budget,kind='complete',original_rows=[])
         equal(result['cases'][-1]['checks'],'empty native bytes retain prior work',
-            empty_budget.consumed>=17+len(stamp)+len('synthetic')+len('synthetic_observation')+len('{"note":"ordinary"}'),True)
+            empty_budget.consumed>=17+len(stamp)+len('synthetic')+len('synthetic_observation')+len('SYNTHETIC-EMPTY-TASK')+len('{"note":"ordinary"}'),True)
         equal(result['cases'][-1]['checks'],'empty native candidates retain prior work',empty_budget.accepted_rows,4)
         for label,column,value,category in [
             ('storage','agent',b'synthetic','coding_authority_history_invalid'),
