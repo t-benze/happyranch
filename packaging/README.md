@@ -722,3 +722,38 @@ The embedded notice collector enters the existing 192 MiB JSON web budget before
 parsing the caller and constructing its Session. Nested native asset work retains
 the persistent 32 MiB asset submeter; neither budget is reset or enlarged. Notice
 tokens leave the wrapper only after the complete mapping is successfully written.
+
+### Bounded web packaging progress
+
+The existing packaging custody observer emits content-free progress directly to
+stderr with synchronous writes before each actual parent helper spawn and after
+its return or failure. Selected `renderStart`, `renderChunk`, `generateBundle`,
+`writeBundle` and `closeBundle` wrappers mark observation, original-hook completion
+and settlement; `renderChunk` selects the first and every 32nd call per plugin.
+The observer's own final write/close, measurement and serialization are marked,
+with helper markers covering publish/completion. Fixed event/boundary/stage names,
+numeric ordinal/call/plugin numbers and monotonic elapsed milliseconds identify
+these boundaries. Caller JSON, tokens, payloads, source/module/chunk names, paths,
+environment values and error text/stacks are never included in these diagnostics.
+Load/transform/moduleParsed calls have no progress logging.
+
+One custody instance shares a 64 KiB total diagnostic budget, including a single
+suppression notice. Exhaustion suppresses diagnostics only; short or failed writes
+disable them without changing build/tool errors or successful build results.
+There is no retained stream queue, timer, monitor or deadline guarantee for OS
+stderr I/O. A start without its matching end identifies only a selected boundary;
+it does not identify an exact inner cause, and suppression, I/O failure or
+cancellation can also omit an end. Hook promise identity/lifetime/order, helper
+capture/transport limits, native source validation and build acceptance stay as
+before. Ordinary builds retain the existing null packaging-custody path.
+
+Native build16 (`39521557858`, attempt 1, source `a17cf29`) completed both EXEs and
+COLLECT, then logged Vite's 4695 modules before silence and six-hour cancellation;
+artifacts were absent and cause remains UNKNOWN. The unchanged-source portable
+JOB5026 at `d723ad06` completed the actual npm producer with exit 0 in 111.3826 s
+and accept-build with exit 0 in 16.7244 s on Linux Node 24.19.0/npm 11.17.0.
+Its retained helper timing included 153 snapshots (19.4324 s total), publish-build
+(29.1517 s) and complete-build (23.6445 s); these externally traced intervals
+include startup/validation/tracing overhead. Native-only asset context/source
+validation was unexercised. This evidence does not establish native root cause,
+a performance fix, Darwin timing or package/launch acceptance.

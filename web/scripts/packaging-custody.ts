@@ -1,9 +1,10 @@
 /** Private, invocation-bound packaging observations. No release/rights predicate. */
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { createHash } from 'node:crypto';
-import { spawnSync } from 'node:child_process';
+import { spawnSync, type SpawnSyncReturns } from 'node:child_process';
 import path from 'node:path';
 import { createRequire } from 'node:module';
+import { writeSync } from 'node:fs';
 import type { Plugin, ResolvedConfig } from 'vite';
 
 type Bytes = { size: number; sha256: string };
@@ -20,6 +21,13 @@ const BUILD_INPUT = 96 * 1024 ** 2;
 const BUILD_NODES = 12582912;
 const BODY_WORK = 1024 * 1024 ** 2;
 const NAME_FIELDS = new Set(['importer','selected','execPath','loaded','request','path','preliminary_path','sourcemap_path','chunk_id','document_id','reference_id','declared_file_name','resolved_file_name','names','original_names','watch_ids','module_ids','id','source','module','file','base','from','relative','relative_path','filename','cssAssetName','originalFileName','source_site','config_dependencies','input','root','dir','outDir','assetsDir','name']);
+const OUTPUT_HOOKS = ['renderStart', 'renderChunk', 'generateBundle', 'writeBundle', 'closeBundle'] as const;
+const HELPER_STAGES = ['read-input', 'compile-begin', 'compile-end', 'snapshot', 'publish-build', 'complete-build', 'fail'] as const;
+type ProgressStage = typeof OUTPUT_HOOKS[number] | typeof HELPER_STAGES[number] | 'measure' | 'serialize' | 'other';
+type ProgressBoundary = 'helper' | 'observe' | 'hook' | 'settle' | 'custody';
+type ProgressStamp = { started: bigint; ordinal: number; boundary: ProgressBoundary; stage: ProgressStage; call: number; plugin: number };
+const PROGRESS_CAP = 64 * 1024;
+const PROGRESS_SUPPRESSED = '[packaging-custody] event=suppressed reason=byte_cap\n';
 type Measure = { bytes: number; nodes: number; names: number };
 
 // Validate/count before emission or retention; no stringify-to-discover overflow.
@@ -143,6 +151,50 @@ export class PackagingCustody {
   private readonly compiles = new Map<string, { parent: Row; reads: Row[]; ended: boolean }>();
   private metadata = measure({ resource_profile: 'web-private-plain@2', complete: true, profile: null, observations: [], css_operations: [], modules: [], final_bundle: [], counts: { observations: 0, operations: 0, processed_bytes: 0, transport_bytes: 0 } }, BUILD_INPUT, BUILD_NODES, true);
   private callMemberships = 0;
+  private progressBytes = 0;
+  private progressOrdinal = 0;
+  private progressDisabled = false;
+
+  // No stream queue or asynchronous error channel. Reserve the single notice
+  // within the same byte cap; short/failed writes disable diagnostics only.
+  private progressWrite(line: string): void {
+    if (this.progressDisabled) return;
+    try {
+      if (this.progressBytes + Buffer.byteLength(line) > PROGRESS_CAP - Buffer.byteLength(PROGRESS_SUPPRESSED)) {
+        this.progressDisabled = true;
+        writeSync(2, PROGRESS_SUPPRESSED);
+        return;
+      }
+      this.progressBytes += Buffer.byteLength(line);
+      if (writeSync(2, line) !== Buffer.byteLength(line)) this.progressDisabled = true;
+    } catch { this.progressDisabled = true; }
+  }
+
+  private progressBegin(boundary: ProgressBoundary, stage: ProgressStage, call = 0, plugin = 0): ProgressStamp | null {
+    if (this.progressDisabled) return null;
+    try {
+      const stamp = { started: process.hrtime.bigint(), ordinal: ++this.progressOrdinal, boundary, stage, call, plugin };
+      this.progressMark('start', stamp);
+      return stamp;
+    } catch { this.progressDisabled = true; return null; }
+  }
+
+  private progressMark(event: 'start' | 'end' | 'failed', stamp: ProgressStamp | null): void {
+    if (!stamp || this.progressDisabled) return;
+    try {
+      const elapsed = Number((process.hrtime.bigint() - stamp.started) / 1000000n);
+      this.progressWrite(`[packaging-custody] event=${event} boundary=${stamp.boundary} stage=${stamp.stage} ordinal=${stamp.ordinal} call=${stamp.call} plugin=${stamp.plugin} elapsed_ms=${elapsed}\n`);
+    } catch { this.progressDisabled = true; }
+  }
+
+  private progressRun<T>(boundary: ProgressBoundary, stage: ProgressStage, action: () => T, call = 0): T {
+    const stamp = this.progressBegin(boundary, stage, call);
+    try {
+      const result = action();
+      this.progressMark('end', stamp);
+      return result;
+    } catch (error) { this.progressMark('failed', stamp); throw error; }
+  }
 
   constructor() {
     if (Number(process.versions.node.split('.')[0]) !== 24) throw new Error('WEB_NODE24_REQUIRED');
@@ -199,7 +251,13 @@ export class PackagingCustody {
     const args = [this.helper, stage, '--caller', this.caller, '--context', this.context, '--preparation', this.preparation, '--completion-leaf', this.completionLeaf];
     if (index !== undefined) args.push('--index', String(index));
     const capture = stage === 'read-input' ? 32 * 1024 ** 2 : 256 * 1024;
-    const result = spawnSync(this.python, args, { input, maxBuffer: capture, stdio: ['pipe', 'pipe', 'pipe'] });
+    const progressStage = HELPER_STAGES.find(name => name === stage) ?? 'other';
+    const helperProgress = this.progressBegin('helper', progressStage, this.helperCalls);
+    let result: SpawnSyncReturns<Buffer>;
+    try {
+      result = spawnSync(this.python, args, { input, maxBuffer: capture, stdio: ['pipe', 'pipe', 'pipe'] });
+    } catch (error) { this.progressMark('failed', helperProgress); throw error; }
+    this.progressMark(result.error || result.status !== 0 ? 'failed' : 'end', helperProgress);
     if (result.error) { this.sticky ??= result.error; throw result.error; }
     if (result.status !== 0) { const error = new Error(`WEB_HELPER_${stage}:${result.status}:${result.stderr.toString('utf8')}`); this.sticky ??= error; throw error; }
     if (result.stderr.length > 256 * 1024) throw new Error('WEB_HELPER_STDERR_CAP');
@@ -431,8 +489,15 @@ export class PackagingCustody {
     const descriptor = plugin[hook];
     const original = typeof descriptor === 'function' ? descriptor : descriptor.handler;
     const self = this;
+    const selectedHook = OUTPUT_HOOKS.find(name => name === hook);
+    let outputCalls = 0;
     const handler = function(this: any, ...args: any[]): any {
       let row: Row | null = null;
+      const outputCall = selectedHook ? ++outputCalls : 0;
+      // Render chunks recur across plugins: sample the first and each 32nd
+      // call, leaving room for final custody/helper boundaries in typical builds.
+      const progressHook = selectedHook === 'renderChunk' && outputCall !== 1 && outputCall % 32 !== 0 ? undefined : selectedHook;
+      const observationProgress = progressHook ? self.progressBegin('observe', progressHook, outputCall, ordinal) : null;
       self.observe(() => {
         const chunk = hook === 'renderChunk' ? args[1].fileName : null;
         if (hook === 'renderChunk' && !self.chunkSeen.has(chunk)) {
@@ -447,13 +512,20 @@ export class PackagingCustody {
         const id = hook === 'moduleParsed' ? args[0].id : hook === 'transform' ? args[1] : hook === 'load' ? args[0] : null;
         if (id) self.retainModule(id, row);
       });
-      const settle = (value: any, failed = false) => self.observe(() => {
-        if (!row) return;
-        const text = codeOf(value);
-        self.update(row, { result: text === null ? null : self.capture(text), status: failed ? 'failed' : value === null || value === undefined ? 'no_result' : 'returned' });
-        self.pending.delete(row);
-        if (hook === 'generateBundle' && !failed) self.bundleBefore = self.next('bundle_delta', { call_id: row.id, before_snapshot_id: self.bundleBefore, after_entries: self.entries(args[1]) }).id;
-      });
+      self.progressMark(self.sticky ? 'failed' : 'end', observationProgress);
+      const hookProgress = progressHook ? self.progressBegin('hook', progressHook, outputCall, ordinal) : null;
+      const settle = (value: any, failed = false) => {
+        self.progressMark(failed ? 'failed' : 'end', hookProgress);
+        const settlementProgress = progressHook ? self.progressBegin('settle', progressHook, outputCall, ordinal) : null;
+        self.observe(() => {
+          if (!row) return;
+          const text = codeOf(value);
+          self.update(row, { result: text === null ? null : self.capture(text), status: failed ? 'failed' : value === null || value === undefined ? 'no_result' : 'returned' });
+          self.pending.delete(row);
+          if (hook === 'generateBundle' && !failed) self.bundleBefore = self.next('bundle_delta', { call_id: row.id, before_snapshot_id: self.bundleBefore, after_entries: self.entries(args[1]) }).id;
+        });
+        self.progressMark(self.sticky ? 'failed' : 'end', settlementProgress);
+      };
       try {
         const result: any = row ? self.scope.run(row, () => Reflect.apply(original, self.facade(this), args)) : Reflect.apply(original, this, args);
         if (result && typeof result.then === 'function') {
@@ -514,23 +586,27 @@ export class PackagingCustody {
       },
       buildEnd(error) { if (error) self.failOriginal(); },
       writeBundle: { order: 'post', sequential: true, handler(_options, bundle) {
-        if (!self.writeSeen) { self.writeSeen = true; self.core('write_input', self.entries(bundle)); }
-        const final = self.entries(bundle); self.retain([], final); self.finalBundle = final;
-        for (const row of self.observations) if (row.kind === 'plugin_emission') self.update(row, { resolved_file_name: this.getFileName(row.reference_id) });
+        return self.progressRun('custody', 'writeBundle', () => {
+          if (!self.writeSeen) { self.writeSeen = true; self.core('write_input', self.entries(bundle)); }
+          const final = self.entries(bundle); self.retain([], final); self.finalBundle = final;
+          for (const row of self.observations) if (row.kind === 'plugin_emission') self.update(row, { resolved_file_name: this.getFileName(row.reference_id) });
+        });
       } },
       closeBundle: { order: 'post', sequential: true, handler() {
-        // Preserve the original rejected/thrown tool error during cleanup.
-        // The native caller's finish path records failure, never a completion.
-        if (self.originalFailed) return;
-        if (self.sticky) throw self.sticky;
-        if ([...self.compiles.values()].some(state => !state.ended) || self.pending.size || self.completion || !self.writeSeen) throw new Error('WEB_CALL_INCOMPLETE');
-        const payload = { resource_profile: 'web-private-plain@2', complete: true, profile: self.profile, observations: self.observations, css_operations: self.operations, modules: [...self.modules.values()], final_bundle: self.finalBundle, counts: { observations: self.observations.length, operations: self.operations.length, processed_bytes: self.processed, transport_bytes: self.transportBytes } };
-        const measured = measure(payload, BUILD_INPUT, BUILD_NODES, true);
-        if (Object.keys(measured).some(key => measured[key as keyof Measure] !== self.metadata[key as keyof Measure])) throw new Error('WEB_METADATA_ACCOUNTING_MISMATCH');
-        const encoded = boundedJson(payload, BUILD_INPUT, BUILD_NODES);
-        const token = self.request('publish-build', encoded);
-        self.request('complete-build', token);
-        self.completion = true;
+        return self.progressRun('custody', 'closeBundle', () => {
+          // Preserve the original rejected/thrown tool error during cleanup.
+          // The native caller's finish path records failure, never a completion.
+          if (self.originalFailed) return;
+          if (self.sticky) throw self.sticky;
+          if ([...self.compiles.values()].some(state => !state.ended) || self.pending.size || self.completion || !self.writeSeen) throw new Error('WEB_CALL_INCOMPLETE');
+          const payload = { resource_profile: 'web-private-plain@2', complete: true, profile: self.profile, observations: self.observations, css_operations: self.operations, modules: [...self.modules.values()], final_bundle: self.finalBundle, counts: { observations: self.observations.length, operations: self.operations.length, processed_bytes: self.processed, transport_bytes: self.transportBytes } };
+          const measured = self.progressRun('custody', 'measure', () => measure(payload, BUILD_INPUT, BUILD_NODES, true));
+          if (Object.keys(measured).some(key => measured[key as keyof Measure] !== self.metadata[key as keyof Measure])) throw new Error('WEB_METADATA_ACCOUNTING_MISMATCH');
+          const encoded = self.progressRun('custody', 'serialize', () => boundedJson(payload, BUILD_INPUT, BUILD_NODES));
+          const token = self.request('publish-build', encoded);
+          self.request('complete-build', token);
+          self.completion = true;
+        });
       } },
     };
     return [html('pre'), html('post'), observer];
