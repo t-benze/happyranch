@@ -691,10 +691,35 @@ rows and prepared recovery/retry owners; absence of first launch is no proof of
 preparation cleanup. Unknown deferred entries cannot authorize a fresh launch.
 Native pre-effect source/artifact validation, repo-scan and missing launch-seam refusals
 retain their no-effect disposition. Automatic repository refresh admits only ONE
-effective byte-exact `+refs/heads/*:refs/remotes/origin/*` origin fetch rule,
+raw byte-exact `+refs/heads/*:refs/remotes/origin/*` origin fetch rule,
 ONE checked-branch remote=origin and merge=refs/heads/<same branch>, with exact
 usable refs/remotes/origin/<same branch> upstream (slash names included).
 Applicable scopes/includes count; duplicate/extra/negative/custom mappings skip.
+Configuration identity uses ONE `git --no-lazy-fetch config --includes --null
+--show-scope --show-origin --get-regexp SELECTOR` per identity, filtered by Git
+before the unchanged complete4096B capture. SELECTOR retains only the exact
+checked branch's remote/merge/rebase/mergeoptions (subsection escaped as POSIX
+ERE data, case preserved), and whole canonical families: remote, remotes, url, http,
+ssh, credential, protocol, promisor, core, extensions, safe, feature, index,
+checkout, filter, diff, fsck, attr, splitindex, reftable, fetch, transfer, pack,
+repack, gc, maintenance, commitgraph, bundle, clone, pull, merge, rebase,
+submodule, rerere, apply, stash, hook, user, author, committer, commit, gpg, i18n.
+Every `remotes.*` record participates because `fetch -- origin` can resolve
+`origin` as a remote group before remote fallback; Git interprets group values.
+The entire ordered selected scope/origin/key/raw-value NUL-triple stream joins
+B/L/object-format/exact-upstream-name/transport equality; shadowed duplicates
+and provenance are retained. Known scopes, nonempty opaque origins, canonical
+selected keys, complete triples and final NUL are required; first LF separates
+key/value, distinguishing absent, valueless and explicit-empty. Exact raw
+single support values remain mandatory across scopes/includes; scalar last-value
+and Git-typed prechecks retain admitted semantic-failure timing. Unrelated
+branch/custom size or drift does not consume the selected bound or equality;
+relevant-family overflow/incomplete/malformed controls refuse, including after
+fetch with retained effects/uncertainty and no merge. This finite inventory is
+not universal config safety or a hard bound on Git's own parsing memory. Root
+config equality does not snapshot nested repos, hook/filter/include file content,
+external state, environment or backend files; cooperative ABA/final-window limits
+remain. No new log, warning, credential mechanism or lock is introduced.
 Unsupported config, missing/detached/unborn/unreadable/no-upstream or absent exact
 source stays false/stale before mutation, with a fixed safe reason and no newly
 latched failed_cleanup solely for that refusal. Existing uncertainty stays sticky.

@@ -637,6 +637,24 @@ retain their no-effect disposition. Existing retry/recovery IDs, frozen budgets,
 INTEGER callbacks and authority-v2 are preserved. No new persisted field/journal, history
 backfill, compensation or clearance writer is introduced. Behavior UNEXECUTED.
 
+Repository-refresh config identity selects the checked branch's four pull/upstream
+keys plus the finite command-dependency families documented in AGENTS.md's
+repository-refresh contract, including attr/splitindex/reftable and every
+`remotes.*` record: `fetch -- origin` can resolve `origin` as a remote group
+before remote fallback; Git interprets group values. ONE scoped/origin
+`config --includes --null --show-scope --show-origin --get-regexp SELECTOR`
+observation per identity is Git-filtered before the unchanged complete4096B cap;
+branch subsection is escaped POSIX ERE data. Ordered raw triples retain duplicate
+and include/scope/provenance semantics; first-LF values distinguish absent,
+valueless and empty. Unrelated branch/custom bloat or drift cannot block standard
+refresh. Relevant overflow/malformed/incomplete controls refuse; post-fetch drift
+retains fetch effects/uncertainty without merge. Exact single raw support values,
+Git typed/last-value admitted prechecks, original shared deadline, pinned U and
+final B/L/U/F oracle remain. The finite inventory is cooperative: ABA/final-window,
+nested repositories/files, external/environment/backend state and Git's own
+parsing memory remain outside its guarantee. Native lifecycle proof is not
+established by these helper-local disposable observations.
+
 Async thread/dream/wake/Todo repository refresh runs off-loop with its SAME
 native owner and a joined worker. A private org lifetime begins before native
 reservation and ends after native finish, including failure. Ordinary unload
