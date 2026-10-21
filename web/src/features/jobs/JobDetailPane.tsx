@@ -70,7 +70,7 @@ export function JobDetailPane({ jobId }: JobDetailPaneProps): JSX.Element {
   return (
     <>
       <Drawer open onOpenChange={(o) => !o && onClose()}>
-        <DrawerContent className="flex flex-col">
+        <DrawerContent className="flex max-w-[100vw] flex-col">
           {/* ── Header ── */}
           <header className="border-border-default shrink-0 border-b p-4">
             <DrawerTitle className="text-text-primary font-display flex items-center gap-2 text-lg">
