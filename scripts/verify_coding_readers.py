@@ -32,6 +32,7 @@ LOADER_ALIAS = '/lib64/ld-linux-x86-64.so.2'
 SUPPORT_CASES = tuple([f'L{i}' for i in range(4)]+[f'R{i}' for i in range(8)]+['A-traversal','A-bytes'])
 # Completion is tied to executed stable case IDs, never the absence of a TODO.
 REQUIRED_CASES = (
+    'F8-R1c.complete.constructor',
     'F5-R1c.absent.omitted', 'F5-R1c.absent.none',
     'F5-R1c.valid.omitted', 'F5-R1c.valid.none', 'F5-R1c.supplied.prior-work',
     'F5-R1c.wrong-budget', 'F5-R1c.foreign-org',
@@ -119,6 +120,9 @@ def schema(conn: sqlite3.Connection) -> list:
 
 # One resource scope for every reader, aggregate and finite support observation.
 class SupportIncomplete(RuntimeError):
+    pass
+
+class ConstructorContractFailure(RuntimeError):
     pass
 
 
@@ -414,7 +418,42 @@ try:
     # the unchanged 2MiB per-file bound; both complete constructors are real.
     reference = Database(Path(':memory:'))
     try:
-        initialize_complete_org_schema(reference, expected_org_slug='release-reference', layout='J')
+        # Observe actual full construction before any dependent fixture use.
+        # A contract assertion failure is distinct from import/setup failure.
+        constructor_checks=[]
+        native_before=saved_rows(reference._conn)
+        schema_before=schema(reference._conn)
+        transaction_before=reference._conn.in_transaction
+        constructor_error=None;constructor_return=None;constructor_layout=None
+        try:
+            constructor_return=initialize_complete_org_schema(
+                reference, expected_org_slug='release-reference', layout='J')
+            constructor_layout=validate_workflow_schema(
+                reference._conn, expected_org_slug='release-reference')
+        except Exception as exc:
+            constructor_error=type(exc).__name__+': '+str(exc)
+        equal(constructor_checks,'pristine complete-J constructor exception',constructor_error,None)
+        equal(constructor_checks,'pristine complete-J constructor return',constructor_return,None)
+        equal(constructor_checks,'pristine complete-J recognized layout',constructor_layout,'J')
+        equal(constructor_checks,'constructor transaction ownership',
+            reference._conn.in_transaction,transaction_before)
+        native_after=saved_rows(reference._conn)
+        equal(constructor_checks,'constructor preserves all original native rows',
+            {name:native_after.get(name) for name in native_before},native_before)
+        schema_after={row['name']:row for row in schema(reference._conn)}
+        equal(constructor_checks,'constructor preserves original native schema',
+            [schema_after.get(row['name']) for row in schema_before],schema_before)
+        equal(constructor_checks,'constructor installs four complete coding tables',
+            sorted(name for name in schema_after if name.startswith('workflow_coding_')),
+            ['workflow_coding_attempts','workflow_coding_events','workflow_coding_mappings','workflow_coding_runs'])
+        equal(constructor_checks,'constructor foreign keys',
+            [tuple(r) for r in reference._conn.execute('PRAGMA foreign_key_check')],[])
+        equal(constructor_checks,'constructor native integrity',
+            [tuple(r) for r in reference._conn.execute('PRAGMA integrity_check')],[('ok',)])
+        result['cases'].append(dict(name='F8-R1c.complete.constructor',checks=constructor_checks))
+        if not all(check['passed'] for check in constructor_checks):
+            result['missing_cases']=sorted(set(cfg['required_cases'])-{'F8-R1c.complete.constructor'})
+            raise ConstructorContractFailure('pristine complete-J constructor assertion failed')
         reference_schema = schema(reference._conn)
         reference_digest = digest('\n'.join(str(r[0]) for r in reference._conn.execute(
             'SELECT sql FROM sqlite_master WHERE sql IS NOT NULL ORDER BY name')).encode())
@@ -1274,6 +1313,8 @@ try:
     result['assigned_completion']=dict(reader=not result['unproved'] and not result['missing_cases'] and not result['duplicate_cases'] and not result['unknown_cases'],
         support=not result['missing_support'] and not result['duplicate_support'] and not result['unknown_support'])
     result['complete'] = all(result['assigned_completion'].values())
+except ConstructorContractFailure as exc:
+    result['contract_error']=str(exc)
 except BaseException as exc:
     import traceback
     result['setup_error'] = type(exc).__name__+': '+str(exc)
