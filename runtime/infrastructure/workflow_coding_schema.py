@@ -431,7 +431,9 @@ def _validate_coding_data(conn: sqlite3.Connection, *, layout: str,
             'workflow_coding_mappings', 'workflow_admission_records', 'audit_log', 'workflow_authorization_revisions')
         native_queued = queued is not None and table in (
             *queued.admitted.keys(), *CODING_TABLES)
-        if native_setup or native_import or native_mapping or native_queued:
+        # Bounded audit prefetch owns the original six-column native storage
+        # contract even without a mapping; observe every cell on that allowance.
+        if native_setup or native_import or native_mapping or native_queued or (bounded_coding and table == 'audit_log'):
             selected_columns = columns
         if not selected_columns:
             continue
