@@ -737,13 +737,17 @@ these boundaries. Caller JSON, tokens, payloads, source/module/chunk names, path
 environment values and error text/stacks are never included in these diagnostics.
 Load/transform/moduleParsed calls have no progress logging.
 
-One custody instance shares a 64 KiB total diagnostic budget, including a single
-suppression notice. Before each snapshot launch, it reserves 3072 bytes from that
-same budget while retaining the suppression allowance. Unused or partially
-written child bytes are never refunded. If the reservation cannot fit, the
-existing suppression notice disables further diagnostics and the original helper
-runs without the extension. An unavailable stderr descriptor also disables the
-extension. Exhaustion, short or failed writes affect diagnostics only.
+One custody instance shares the original 65536-byte total diagnostic budget,
+including the existing single suppression notice. At construction it charges a
+1024-byte terminal complete-build grant, even if never spent. Ordinary progress
+and each 3072-byte snapshot grant use the remainder while retaining the notice.
+Unused or partially written grants are never refunded, reset or replenished.
+If a snapshot grant cannot fit, the existing notice suppresses ordinary progress
+and snapshot diagnostics; the upfront terminal grant survives. Unavailable stderr
+retains the original three-pipe helper fallback. Short or failed writes affect
+only diagnostics. The previous 47546-byte reservation through call 22 (14 snapshot
+grants plus parent records and notice) becomes 48570 bytes including the terminal
+grant, still within the same 65536 bytes. Later suppression may occur earlier.
 
 A reserved snapshot maps fixed child fd3 directly to the parent's existing stderr,
 so its lines remain visible while the original synchronous spawn is blocked.
@@ -785,6 +789,40 @@ success is a baseline only; its 788662-byte blob 14 is not known to equal native
 input, and an earlier portable blob was larger. JOB5031 exit 0 is collection
 only. Native artifacts were absent; archive/receipt/final metadata, manifest
 notices/hash/ZIP and install/launch acceptance remain unverified.
+
+Native build18 (`39630410187`, attempt 1, checkout `49a30dfe`, workflow definition
+`be36c7a`) completed both EXEs, COLLECT and the Vite body, then complete-build
+refused `AGGREGATE_READ_CAP_EXCEEDED: web-evidence-v1`. Call 22 returned all nine
+snapshot phase pairs; progress was suppressed at call 28. The failed native
+read/phase, enclosing counters and record closure remain UNKNOWN. Native used
+Node 24.20.0/npm 11.19.0/CPython 3.12.10. Collection JOB5055 exit 0 supplies no
+package acceptance and is not a successful build.
+
+Portable original-helper JOB5058 exit 0 measured accept-build in 49.6917 seconds:
+regular 527830544/536870912 (9040368 bytes headroom), JSON 79744940, sticky failure
+null. Each of its two full context passes charged 174139703 regular bytes;
+the build load charged 136247034 regular and 68123517 JSON bytes. Linux used
+Node 24.19.0/npm 11.17.0/Python 3.14.4. This is portable accept evidence, not
+native complete-build reproduction or grounds to remove either context pass.
+
+The upfront terminal grant uses the same optional borrowed fd3 transport with
+checked integer call/grant metadata. It permits one `[packaging-complete]` line
+of at most 1024 bytes, including newline, on actual failure or success while the
+SAME original command budget is active. Fixed phase/operation vocabulary separates
+admission, prefix context, checked-build record load, validation context and
+subsequent validation, completion write and reply. A failed subject import also
+reports its ordinal and declared size. Regular/JSON counters come from the
+existing enclosing and asset-lane read-only views after attempted charging;
+`-1` means an unavailable lane. These counters may exceed a refused cap. No paths,
+subject/caller bodies, environment, secrets or exception text are emitted.
+Local annotations do not change read/charge/validation order, both full context
+loads or context/plan prefix import timing. The terminal failure line precedes
+outer failure handling and preserves the original exception/status and sticky
+refusal; it cannot become a receipt. Missing/invalid metadata, unavailable fd3,
+short/failed output or a line exceeding its grant disable only diagnostics,
+without retry or alternate output. Failure/refusal paths remain source-audited
+and UNEXECUTED here. Native attribution and cap resolution remain UNVERIFIED;
+portable success cannot establish native/package/archive/install/launch acceptance.
 
 Native build16 (`39521557858`, attempt 1, source `a17cf29`) completed both EXEs and
 COLLECT, then logged Vite's 4695 modules before silence and six-hour cancellation;
