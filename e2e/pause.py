@@ -349,8 +349,10 @@ def exercise(c: Controller) -> None:
                     effective_hold=True, control_state=hold_state)
         if hold_state == "paused":
             hold.update(evidence_complete=True, blockers=[])
+        # Pause describes the authored in_progress root, including on children;
+        # core/recall above retain each task's own lifecycle separately.
         result = {name: dict(task=core(task_id), recall=recall(task_id),
-                             pause=dict(hold, lifecycle_status=by_id[task_id]["status"]))
+                             pause=dict(hold, lifecycle_status="in_progress"))
                   for name, task_id in (("root", root), ("child", child_id))}
         if hold_state == "pausing":
             result["root"]["blocker_task"] = worker["task"]
