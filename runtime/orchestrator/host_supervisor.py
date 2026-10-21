@@ -1085,7 +1085,8 @@ class _AttemptContext:
         the primary terminal reason is preserved separately). Concurrent
         callers (finish/cancel race) wait for the in-flight finish and see
         the same receipt."""
-        return self._finish_after_sample(backend, grace_seconds)
+        with self._sample_lock:
+            return self._finish_after_sample(backend, grace_seconds)
 
     def _finish_after_sample(
         self, backend: SessionBackend, grace_seconds: float | None
