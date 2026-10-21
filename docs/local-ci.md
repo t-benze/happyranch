@@ -1219,12 +1219,17 @@ The separately retained environment manifest is closed too. Its keys are
 `interpreter` (canonical `/usr/bin/python3.14`), `stdlib`
 (`/usr/lib/python3.14`), `site_packages` (canonical private env path), `files`
 (absolute-path→SHA256 for the entire site tree and explicitly selected stdlib,
-interpreter and native-library files), `native_libraries` (explicit canonical
+interpreter, pyvenv.cfg and native-library files), `native_libraries` (explicit canonical
 system library paths), `distributions` (installed name→version), `wheels`
 (distribution→hash of its installed WHEEL metadata), and `metadata` (interpreter
-`version` integer array and recorded runtime/lock/install provenance). Record
-actual locked archive digests separately from installed WHEEL metadata hashes;
-metadata alone is not original downloaded-archive custody proof. Every mounted
+`version` integer array, runtime/lock/install provenance, explicit native SONAME
+aliases, and `wheel_archives`). `wheel_archives` maps EVERY installed normalized
+name to the closed `{path, sha256, filename}` of an actual owned `.whl` beneath
+the environment's task-scratch parent. Acquire only existing locked wheel
+artifacts outside isolation. The parent verifies their actual SHA256 against
+uv.lock and compares archive payload files with installed bytes (installation
+RECORD is separately inventoried); unsupported wheel data paths refuse. Installed
+WHEEL metadata alone is insufficient and refuses before product execution. Every mounted
 file must have a retained digest. The exact stdlib/native closure is explicit,
 with no broad `/usr`, `/lib` or host-home mount. The loader's `/lib64` operand is
 bound explicitly to its hashed canonical system file. Missing native dependencies

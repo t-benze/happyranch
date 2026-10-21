@@ -20,6 +20,7 @@ import subprocess
 import sys
 import time
 import tomllib
+import zipfile
 
 LIMIT = 2 * 1024 * 1024
 NAMESPACES = ('user', 'mnt', 'net', 'pid', 'ipc', 'uts', 'cgroup')
@@ -464,8 +465,46 @@ def environment_identity(path: Path, lock: str, root: Path) -> dict:
                     for d in importlib.metadata.distributions(path=[str(site)])}
     if wheel_metadata != value['wheels']:
         raise ValueError('installed wheel metadata mismatch')
+    archives=value['metadata'].get('wheel_archives')
+    if type(archives) is not dict or set(archives) != set(installed):
+        raise ValueError('complete locked wheel archives required; metadata alone is insufficient')
+    covered=set()
+    for name,artifact in archives.items():
+        if set(artifact) != {'path','sha256','filename'}:
+            raise ValueError('closed wheel artifact required')
+        archive=canonical_path(Path(artifact['path']))
+        if (envroot.parent not in archive.parents or archive.name != artifact['filename']
+                or archive.suffix != '.whl' or archive.stat().st_size > 20*1024*1024
+                or sha(archive) != artifact['sha256']):
+            raise ValueError('wheel artifact identity mismatch')
+        package=next(p for p in locked if (p['name'],p['version']) == (name,installed[name]))
+        if not any(w['hash'] == 'sha256:'+artifact['sha256']
+                   and w['url'].rsplit('/',1)[-1] == archive.name for w in package['wheels']):
+            raise ValueError('wheel archive absent from pinned lock')
+        with zipfile.ZipFile(archive) as wheel:
+            entries=wheel.infolist()
+            if len(entries)>4096 or sum(e.file_size for e in entries)>128*1024*1024:
+                raise ValueError('wheel expansion bound')
+            for entry in entries:
+                if entry.is_dir():
+                    continue
+                member=Path(entry.filename)
+                if member.is_absolute() or '..' in member.parts or '.data' in entry.filename:
+                    raise ValueError('unsupported wheel data path')
+                target=site/member
+                canonical_path(target)
+                covered.add(str(target))
+                if entry.filename.endswith('.dist-info/RECORD'):
+                    continue
+                if not target.is_file() or target.read_bytes() != wheel.read(entry):
+                    raise ValueError('installed dependency differs from locked archive')
     files=value['files']
     actual_site={str(p):sha(p) for p in site.rglob('*') if p.is_file()}
+    extras=set(actual_site)-covered
+    if any(Path(name).relative_to(site).as_posix() not in {'_virtualenv.py','_virtualenv.pth'}
+           and re.fullmatch(r'[^/]+[.]dist-info/(INSTALLER|REQUESTED|RECORD|uv_cache[.]json)',
+                            Path(name).relative_to(site).as_posix()) is None for name in extras):
+        raise ValueError('unarchived environment file; ambient/generated code refused')
     if any(p.is_symlink() for p in site.rglob('*')) or {k:v for k,v in files.items() if k.startswith(str(site)+'/')} != actual_site:
         raise ValueError('environment inventory/symlink drift')
     for name,expected in files.items():
@@ -506,6 +545,8 @@ def main() -> int:
         parser.error('Python3.14 -I -S required')
     if not re.fullmatch('[0-9a-f]{40}',args.expected_head):
         parser.error('full lowercase source commit required')
+    if Path(__file__).resolve() != args.source_root/'scripts/verify_coding_readers.py':
+        parser.error('execute the verifier from the selected source worktree')
     out=canonical_path(args.output_dir)
     if (out.exists() or not out.parent.is_dir() or args.source_root == out or args.source_root in out.parents
             or out.parent.stat().st_uid != os.getuid() or '.happyranch/task-tmp/TASK-' not in str(out)):
