@@ -1717,10 +1717,11 @@ def run_case(v, case, api, fault=None):
                 barrier_end = entry["t"] + 12
                 require(now < barrier_end and not observer.read_release.is_set(),
                         "C captured-read barrier already expired/released")
-                r12, r20 = barrier_end - now, v.case_deadline - now
-                h_max = max(0, min(8, r12 - 1, r20 - 14))
+                r12, r_action = barrier_end - now, v.case_deadline - now
+                h_max = max(0, min(8, r12 - 1, r_action - 14))
                 record["C_hold"] = {"read_entry": entry, "admission_t": now,
-                                    "R12": r12, "R20": r20, "h_max": h_max,
+                                    "R12": r12, "R_action": r_action,
+                                    "action_limit_seconds": v.case_action_limit_seconds, "h_max": h_max,
                                     "minimum_opportunity": 5.5, "release_margin": 1,
                                     "reserve": {"A": 9, "B": 2, "final": 2, "slack": 1},
                                     "selected_sensitivity": api.selection == "C"}
@@ -2130,7 +2131,9 @@ def main():
     args.scratch_root.mkdir(parents=True, exist_ok=True)
     import tempfile
     scratch = Path(tempfile.mkdtemp(prefix="lifecycle-", dir=args.scratch_root))
-    v = Venue(scratch, args.output, 15 + 30 * len(cases) + 15, invocation_started)
+    v = Venue(scratch, args.output,
+              15 + 30 * len(cases) + (4 if "C4-owner-isolation" in cases else 0) + 15,
+              invocation_started)
     v.diagnostic = diagnostic
     v.report.update({"mode": args.mode, "source": str(source),
                      "selection": args.selection, "selected_cases": cases, "diagnostic": diagnostic,
@@ -2163,7 +2166,8 @@ def main():
         v.sentinel("J")
         v.report["readiness"] = "PASS"
         for case in cases:
-            v.case_deadline = min(time.monotonic() + 20, v.rescue_deadline)
+            v.case_action_limit_seconds = 24 if case == "C4-owner-isolation" else 20
+            v.case_deadline = min(time.monotonic() + v.case_action_limit_seconds, v.rescue_deadline)
             if case == "C5-unreadable":
                 inputs = []
                 for fault in ("permission", "cap"):

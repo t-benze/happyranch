@@ -72,7 +72,7 @@ python scripts/verify_session_lifecycle.py --mode candidate \
 ```
 
 Default baseline selects C1-escaped-known/C3-reused-identity only (90s total);
-default candidate selects the thirteen accepted variants (420s total). A mutually
+default candidate selects the thirteen accepted variants (424s total). A mutually
 exclusive `--case` selects one of those existing variants. `--selection` accepts
 only B/H/K/W/T/C/R/E/L/F1/S/U: B is the baseline pair; H escaped-known; K group-builtin,
 group-custom, cancel, timeout-pipe and root-gone; W shutdown-bind; T timeout-pipe;
@@ -89,13 +89,16 @@ both but must fatally stop during permission and report cap as unexecuted.
 Every source still requires a clean tracked immutable HEAD, tree and three runtime
 hashes; source/observer/Python provenance remains in the raw report. A changed
 verifier cannot inherit an old verifier's GREEN or sensitivity evidence. Selected
-bounds are15s readiness +30s per selected variant +15s final: single60s, B90s,
-K180s, F1 pair90s, full420s, with global rescue15s before each final deadline. Readiness
+bounds are15s readiness +30s per selected variant +4s ONCE if the selection
+contains C4-owner-isolation +15s final: C-only64s/rescue49s, other single60s,
+B90s, K180s, F1 pair90s, full424s/rescue409s. Global rescue remains15s before
+each final deadline, measured from the original invocation start. Readiness
 proves process-local subreaper SET/GET plus exact P/Q adoption and specific wait
 before orphan cases. F remains driver/reaper; controlled W provides independent
 bounded rescue. Limits: eight fixture processes including F,32 threads,1024
-observer events,1MiB combined stdout+stderr+report,64MiB scratch;20s action plus10s cleanup per variant,
-readiness15s and final15s reserve, global rescue by405s. C5’s two fault inputs share
+observer events,1MiB combined stdout+stderr+report,64MiB scratch;24s action for C4 only and20s for every other variant, plus10s cleanup
+per variant. Dispatch establishes each action BEFORE probe/setup and clamps it
+to rescue; readiness15s and final15s reserve remain unchanged. C5’s two fault inputs share
 one action budget. Record backend evidence before separately labeled fixture
 rescue; an outer timeout never proves cleanup. Any unsafe residual stops later
 cases. Each W command/reply carries case/input/generation/sequence and monotonic
@@ -190,7 +193,11 @@ receipt/gate contradiction before the retained structural fresh-observation chec
 
 Explicit C sensitivity timestamps the genuine captured A read BEFORE its event
 and12s barrier. B admission/readiness/control time is charged to both that barrier
-and the original20s action. At admission `h_max=max(0,min(8,R12-1,R20-14))`, with
+and the original24s C4 action established at dispatch BEFORE probe/setup. New
+verifier records explicitly emit `action_limit_seconds=24` and remaining
+`R_action`; historical `R20` records and their fixed readers retain their old
+interpretation. Attribute new-format records only to the new pinned verifier hash.
+At admission `h_max=max(0,min(8,R12-1,R_action-14))`, with
 at least5.5s opportunity required. The14s post-release reserve plans A9s (unchanged
 5s TERM +2s KILL/direct wait +2s sampler/control), B2s normal completion, final
 observations/W2s and1s slack. During holding, both remaining times are recomputed;
@@ -213,7 +220,10 @@ invalidates `failure_interval_complete` and fatally stops later cases/inputs;
 subsequent fixture rescue cannot backfill it. Normal C4 runs release promptly
 without requesting sensitivity. Infeasible admission or no attributable wrong
 value in the finite C window is missing sensitivity, never timeout-as-RED. These
-conditional caps guarantee no timing; phase overruns/missing completion retain
+Neither clock resets at hold admission. B retains its real12s communicator
+timeout, which can still expire; wrong terminal reasons/timeouts or missing normal
+settlement are actual failures. These conditional caps guarantee no timing;
+phase overruns/missing completion retain
 actual failure and only bounded safety rescue, never extended deadlines.
 
 S delegates the actual first-input heartbeat read beside a genuine permission
