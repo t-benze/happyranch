@@ -639,7 +639,9 @@ backfill, compensation or clearance writer is introduced. Behavior UNEXECUTED.
 
 Repository-refresh config identity selects the checked branch's four pull/upstream
 keys plus the finite command-dependency families documented in AGENTS.md's
-repository-refresh contract, including attr/splitindex/reftable. ONE scoped/origin
+repository-refresh contract, including attr/splitindex/reftable and every
+`remotes.*` record: `fetch -- origin` can resolve `origin` as a remote group
+before remote fallback; Git interprets group values. ONE scoped/origin
 `config --includes --null --show-scope --show-origin --get-regexp SELECTOR`
 observation per identity is Git-filtered before the unchanged complete4096B cap;
 branch subsection is escaped POSIX ERE data. Ordered raw triples retain duplicate

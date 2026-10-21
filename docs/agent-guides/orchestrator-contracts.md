@@ -639,11 +639,13 @@ Configuration identity uses ONE `git --no-lazy-fetch config --includes --null
 --show-scope --show-origin --get-regexp SELECTOR` per identity, filtered by Git
 before the unchanged complete4096B capture. SELECTOR retains only the exact
 checked branch's remote/merge/rebase/mergeoptions (subsection escaped as POSIX
-ERE data, case preserved), and whole canonical families: remote, url, http,
+ERE data, case preserved), and whole canonical families: remote, remotes, url, http,
 ssh, credential, protocol, promisor, core, extensions, safe, feature, index,
 checkout, filter, diff, fsck, attr, splitindex, reftable, fetch, transfer, pack,
 repack, gc, maintenance, commitgraph, bundle, clone, pull, merge, rebase,
 submodule, rerere, apply, stash, hook, user, author, committer, commit, gpg, i18n.
+Every `remotes.*` record participates because `fetch -- origin` can resolve
+`origin` as a remote group before remote fallback; Git interprets group values.
 The entire ordered selected scope/origin/key/raw-value NUL-triple stream joins
 B/L/object-format/exact-upstream-name/transport equality; shadowed duplicates
 and provenance are retained. Known scopes, nonempty opaque origins, canonical

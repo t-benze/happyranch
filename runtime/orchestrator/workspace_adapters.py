@@ -2104,7 +2104,7 @@ def _repo_refresh_oid(value: str, object_format: str) -> str:
 # Finite command-dependency inventory, not a universal Git config interpreter.
 # Keep entire families, including shadowed/inactive members, in raw order.
 _REPO_REFRESH_CONFIG_FAMILIES = (
-    "remote", "url", "http", "ssh", "credential", "protocol", "promisor",
+    "remote", "remotes", "url", "http", "ssh", "credential", "protocol", "promisor",
     "core", "extensions", "safe", "feature", "index", "checkout", "filter", "diff", "fsck",
     "attr", "splitindex", "reftable",
     "fetch", "transfer", "pack", "repack", "gc", "maintenance", "commitgraph", "bundle", "clone",
