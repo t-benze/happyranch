@@ -258,7 +258,7 @@ def watched_scope(connection: object, name: str):
         connection.set_trace_callback(None)
     sibling=fresh_sibling(connection,checks)
     result['support'].append(dict(name=name,checks=checks,samples=samples,after=after,
-        events=spy.events,callbacks=spy.calls,sibling=sibling,raw_exit=0))
+        events=spy.events,callbacks=spy.calls,sibling=sibling,scope_outcome_code=0))
 
 
 def resource_records() -> None:
@@ -329,7 +329,7 @@ def resource_records() -> None:
         try:
             sibling=fresh_sibling(connection,checks)
             result['support'].append(dict(name='R'+str(index),checks=checks,before=before,
-                inside=samples,installation_timers=spy.installation_timers,after=after,cause=cause,raw_exit=2 if cause else 0,
+                inside=samples,installation_timers=spy.installation_timers,after=after,cause=cause,scope_outcome_code=2 if cause else 0,
                 entries=entries,delivery=delivery,events=spy.events,callbacks=spy.calls,
                 trace=None if state is None else dict(count=state['count'],retained=len(state['trace']),overflow=state['overflow']),
                 sibling=sibling))
@@ -1224,8 +1224,6 @@ def main(*, loader_vetoed: bool = False) -> int:
     parser.add_argument('--environment-manifest',required=True,type=Path)
     parser.add_argument('--output-dir',required=True,type=Path)
     args=parser.parse_args()
-    if args.case_set.startswith('loader-'):
-        return loader_record(args)
     if not sys.flags.isolated or not sys.flags.no_site or sys.version_info[:2] != (3,14):
         parser.error('Python3.14 -I -S required')
     if not re.fullmatch('[0-9a-f]{40}',args.expected_head):
@@ -1236,6 +1234,8 @@ def main(*, loader_vetoed: bool = False) -> int:
     if (out.exists() or not out.parent.is_dir() or args.source_root == out or args.source_root in out.parents
             or out.parent.stat().st_uid != os.getuid() or '.happyranch/task-tmp/TASK-' not in str(out)):
         parser.error('fresh output outside source with existing canonical parent required')
+    if args.case_set.startswith('loader-'):
+        return loader_record(args)
     out.mkdir(mode=0o700)
     receipt=dict(argv=sys.argv,cwd=os.getcwd(),parent_python=sys.version,complete=False,case_set=args.case_set,
                  origin='SYNTHETIC',required_cases=REQUIRED_CASES,required_support=SUPPORT_CASES,children_reaped=True)
@@ -1365,7 +1365,8 @@ def main(*, loader_vetoed: bool = False) -> int:
     code=2 if receipt.get('setup_error') or not receipt['complete'] else (1 if receipt.get('failed_assertions') else 0)
     print(json.dumps(dict(exit=code,complete=receipt['complete'],receipt=str(out/'receipt.json'),
                           setup_error=receipt.get('setup_error'),unproved=receipt.get('observations',{}).get('unproved',{}),
-                          missing_cases=receipt.get('observations',{}).get('missing_cases',list(REQUIRED_CASES)))))
+                          missing_cases=receipt.get('observations',{}).get('missing_cases',sorted(set(REQUIRED_CASES)-
+                              {c['name'] for c in receipt.get('observations',{}).get('cases',[])})))))
     return code
 
 

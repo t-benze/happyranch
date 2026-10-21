@@ -1375,3 +1375,11 @@ verifier2/42-INCOMPLETE is unchanged. Source review and independent same-head
 executable QA are separate gates. Python units are RETIRED; general integration
 INCLUDING callback SKIPPED24342. Old ROOT10693 waivers are historical, and do not
 waive this current finite campaign or establish authentic/live readiness.
+
+
+R/A `scope_outcome_code` records the caught SUPPORT-scope outcome (2 refusal,
+0 normal return); it is not a separate OS process exit. L `raw_verifier_exit`
+is the actual recursively invoked verifier-main result under the immutable veto.
+The physical namespace/controller exits and top-level verifier assertion result
+remain separately recorded. The closed loader selections pass the same interpreter,
+source-script and owned-output admission as the full command before dispatch.
