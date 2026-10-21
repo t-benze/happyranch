@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useRef } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useJobOutput } from '@/hooks/jobs';
 import { useTranslation } from '@/hooks/i18n';
+import { Button } from '@/design-system/primitives/Button';
 // eslint-disable-next-line no-restricted-imports -- no @/hooks accessor exposes the job tail/SSE helpers; routed direct per THR-011 founder ruling (option 3), pending a future hook
-import { jobEventsPath, tailJob } from '@/lib/api/jobs';
+import { getJob, jobEventsPath, tailJob } from '@/lib/api/jobs';
 import { useJobEventStream } from './jobEventsHook';
 import type { JobRecord } from '@/lib/api/types';
 
@@ -35,11 +36,27 @@ export function OutputPanel({ job, slug }: Props): JSX.Element | null {
     staleTime: Infinity, // one-shot seed; never refetch automatically
   });
 
-  const { events, terminal } = useJobEventStream(
-    isLive ? jobEventsPath(slug, job.id) : null,
+  const { events, terminal, unavailable } = useJobEventStream(
+    jobEventsPath(slug, job.id),
     isLive,
   );
 
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshFailed, setRefreshFailed] = useState(false);
+  useEffect(() => { setRefreshFailed(false); }, [slug, job.id]);
+  const refresh = async () => {
+    setRefreshing(true);
+    setRefreshFailed(false);
+    try {
+      await qc.fetchQuery({ queryKey: ['job', slug, job.id],
+        queryFn: () => getJob(slug, job.id), staleTime: 0, retry: false });
+      void qc.invalidateQueries({ queryKey: ['jobs', slug] });
+    } catch {
+      setRefreshFailed(true);
+    } finally {
+      setRefreshing(false);
+    }
+  };
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -51,10 +68,7 @@ export function OutputPanel({ job, slug }: Props): JSX.Element | null {
     }
   }, [events.length, seedQuery.data]);
 
-  // When the SSE stream reports terminal, the row in the DB has flipped to
-  // terminal too. Invalidate the cached job record so the drawer's header,
-  // action bar, and (after this remount) the terminal-output fetch reflect
-  // the new state without the user reloading.
+  // A terminal frame is a hint. Only a successful detail read owns status/actions.
   useEffect(() => {
     if (terminal) {
       qc.invalidateQueries({ queryKey: ['job', slug, job.id] });
@@ -85,7 +99,17 @@ export function OutputPanel({ job, slug }: Props): JSX.Element | null {
         {t('jobs.output.title')}
       </h3>
 
-      {isLive && (
+      {unavailable && isLive && (
+        <div className="mb-2 space-y-2 text-sm">
+          <p>{t('jobs.output.unavailable')}</p>
+          <Button variant="secondary" size="sm" disabled={refreshing} onClick={refresh}>
+            {t('jobs.output.refresh')}
+          </Button>
+        </div>
+      )}
+      {refreshFailed && <p role="alert" className="text-feedback-danger mb-2 text-sm">{t('jobs.output.refreshFailed')}</p>}
+      {!isLive && outputQuery.isError && <p role="alert" className="text-feedback-danger mb-2 text-sm">{t('jobs.output.failed')}</p>}
+      {(isLive || !outputQuery.data) && (
         <div
           ref={containerRef}
           className="bg-surface-sunken border-border-default h-64 overflow-y-auto rounded-lg border p-3 font-mono text-xs whitespace-pre-wrap"
@@ -103,10 +127,8 @@ export function OutputPanel({ job, slug }: Props): JSX.Element | null {
               {e.line}
             </div>
           ))}
-          {terminal && (
-            <div className="text-text-muted mt-2">
-              [done] {terminal.status} exit={terminal.exit_code ?? 'n/a'}
-            </div>
+          {!isLive && (seedLines.length > 0 || events.length > 0) && (
+            <p className="text-text-muted mt-2">{t('jobs.output.lastReceived')}</p>
           )}
         </div>
       )}

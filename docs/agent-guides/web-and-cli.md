@@ -810,6 +810,25 @@ INCLUDING callback SKIPPED24342, Python units RETIRED. No new cases or campaign.
 
 ## Jobs — automatic admission (THR309seq1)
 
+### Current Stop/status boundary — THR321seq6
+
+Stop200 means an actual owned Stop signal request, never exit. CLI says “Stop
+requested”; inspect show/wait for the actual row/reason/nullable exit and output.
+Running without attributable ownership yields pending/finalizing/unknown/held or
+owner-unavailable409; signal/audit503 states request_issued true/false/null. Do not
+blindly retry. Startup retains unproven running jobs with explicit unknown liveness;
+missing PID/maps, daemon death, timeout and absent native layout prove no orphanhood.
+Actual DB attachment/original preparation/attempt/runner/Process fences prevent
+cross-org ID collisions and stale-owner signals/removal/writes. The original job
+row/CAS, one trigger audit, actual producer and strict Pause disposition commit
+before local release/hint/wake; failed tails and descendant uncertainty remain.
+Wait/SSE use durable terminal reads. Both Web details preserve cached details/logs
+on read failure and offer explicit fresh detail-only Refresh status when streaming
+is unavailable. No automatic reconnect/polling addition; reopen/reload separately.
+Stop success/error settlement refreshes actual detail/list; locale changes issue
+no requests. A terminal hint alone never verifies [done]. Source publication is separate
+from deployment or historical recovery.
+
 Both detail surfaces omit callable Run/Approve actions, dialogs and providers;
 pending retains explicit one-ID reasoned Reject, running retains Stop/output,
 and historical review fields remain readable. Lists count only legacy

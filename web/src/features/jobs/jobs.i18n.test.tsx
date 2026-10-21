@@ -19,6 +19,14 @@ import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { AppRoutes } from '@/routes';
+import { Route, Routes } from 'react-router-dom';
+import { JobDetailPane } from './JobDetailPane';
+import { fetchEventSource } from '@microsoft/fetch-event-source';
+
+vi.mock('@microsoft/fetch-event-source', async (original) => {
+  const actual = await original<typeof import('@microsoft/fetch-event-source')>();
+  return { ...actual, fetchEventSource: vi.fn(actual.fetchEventSource) };
+});
 import { LocaleTestSwitch, renderWithProviders, savedLocaleAdapter } from '@/test/render';
 import { server } from '@/test/server';
 import type { JobRecord } from '@/lib/api/types';
@@ -446,5 +454,111 @@ describe('Job dialogs i18n', () => {
     expect(await screen.findByText('此作业未在运行。')).toBeInTheDocument();
     await switchLocale('en');
     await waitFor(() => expect(screen.getByText('This job is not running.')).toBeInTheDocument());
+  });
+});
+
+// C7/C11: fixture presentation/HTTP/cache observations, not daemon liveness proof.
+describe('job unavailable stream recovery', () => {
+  test.each([['page', 'en'], ['page', 'zh-CN'], ['pane', 'en'], ['pane', 'zh-CN']] as const)(
+    '%s %s fresh refresh preserves cached detail and received logs through failure and terminal', async (surface, locale) => {
+      // Only external SSE transport is isolated: the real hook owns state,
+      // unavailable classification, intentional abort and retained output.
+      vi.mocked(fetchEventSource).mockImplementationOnce(async (_path, options) => {
+        options?.onmessage?.({ event: 'stdout', data: '{"line":"received before disconnect"}', id: '' });
+        options?.onclose?.();
+      });
+      let record = job({ status: 'running', started_at: '2026-05-23T12:00:00Z' });
+      let failRead = false;
+      let reads = 0;
+      let outputReads = 0;
+      stubDetail(record);
+      server.use(
+        http.get(`/api/v1/orgs/${SLUG}/jobs/${JOB.id}`, () => {
+          reads++;
+          return failRead ? HttpResponse.json({ detail: 'read unavailable' }, { status: 503 }) : HttpResponse.json(record);
+        }),
+        http.get(`/api/v1/orgs/${SLUG}/jobs/${JOB.id}/events`, () =>
+          HttpResponse.text('event: stdout\ndata: {"line":"received before disconnect"}\n\n',
+            { headers: { 'content-type': 'text/event-stream' } })),
+        http.get(`/api/v1/orgs/${SLUG}/jobs/${JOB.id}/output`, () => {
+          outputReads++;
+          return HttpResponse.json({ detail: 'output unavailable' }, { status: 503 });
+        }),
+      );
+      const content = surface === 'page' ? <AppRoutes /> :
+        <Routes><Route path="/orgs/:slug/jobs/:job_id" element={<JobDetailPane jobId={JOB.id} />} /></Routes>;
+      renderWithProviders(<>{content}<LocaleTestSwitch to="en" /><LocaleTestSwitch to="zh-CN" /></>,
+        { route: `/orgs/${SLUG}/jobs/${JOB.id}`, i18n: { adapter: savedLocaleAdapter(locale) } });
+      const refreshCopy = locale === 'en' ? 'Refresh status' : '刷新状态';
+      const stopCopy = locale === 'en' ? 'Stop' : '停止';
+      const refresh = await screen.findByRole('button', { name: refreshCopy });
+      expect(await screen.findByText('received before disconnect')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: stopCopy })).toBeInTheDocument();
+      expect(screen.queryByText(/\[done\]/)).not.toBeInTheDocument();
+      const localeRequests = await countRequests(async () => {
+        await switchLocale(locale === 'en' ? 'zh-CN' : 'en');
+        await switchLocale(locale);
+      });
+      expect(localeRequests).toEqual([]);
+      failRead = true;
+      const user = userEvent.setup();
+      await user.click(refresh);
+      expect(await screen.findByText(locale === 'en'
+        ? 'Could not refresh status. Showing the last known status and received output.'
+        : '无法刷新状态，当前显示上次已知状态和已接收的输出。')).toBeInTheDocument();
+      expect(screen.getByText(JOB.title)).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: stopCopy })).toBeInTheDocument();
+      expect(screen.getByText('received before disconnect')).toBeInTheDocument();
+      expect(reads).toBe(2);
+      failRead = false;
+      // Terminal hint alone has never supplied this row: this GET owns the header.
+      record = { ...record, status: 'failed', reason: 'timeout', finished_at: '2026-05-23T12:01:00Z' };
+      await user.click(screen.getByRole('button', { name: refreshCopy }));
+      await waitFor(() => expect(screen.queryByRole('button', { name: stopCopy })).not.toBeInTheDocument());
+      expect(screen.getByText('failed')).toBeInTheDocument();
+      expect(screen.getByText('received before disconnect')).toBeInTheDocument();
+      expect(await screen.findByText(locale === 'en'
+        ? 'Could not load output. Showing the last received output.'
+        : '无法加载输出，当前显示上次接收的输出。')).toBeInTheDocument();
+      expect(reads).toBe(3);
+      expect(outputReads).toBe(1);
+    });
+
+  test('terminal hint keeps actual running status and logs without verified done or unavailable abort', async () => {
+    vi.mocked(fetchEventSource).mockImplementationOnce(async (_path, options) => {
+      options?.onmessage?.({ event: 'stdout', data: '{"line":"actual received line"}', id: '' });
+      options?.onmessage?.({ event: 'terminal', data: '{"status":"completed","exit_code":0}', id: '' });
+      options?.onclose?.();
+    });
+    stubDetail(job({ status: 'running' }));
+    mount(`/orgs/${SLUG}/jobs/${JOB.id}`, 'en');
+    expect(await screen.findByText('actual received line')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Stop' })).toBeInTheDocument();
+    expect(screen.getByText('running')).toBeInTheDocument();
+    expect(screen.queryByText(/\[done\]/)).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Refresh status' })).not.toBeInTheDocument();
+  });
+
+  test.each([['page', 409], ['page', 503], ['pane', 409], ['pane', 503]] as const)('%s Stop HTTP%s settlement retains its error while refreshing actual detail', async (surface, status) => {
+    let reads = 0;
+    let record = job({ status: 'running' });
+    stubDetail(record);
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/jobs/${JOB.id}`, () => { reads++; return HttpResponse.json(record); }),
+      http.post(`/api/v1/orgs/${SLUG}/jobs/${JOB.id}/stop`, () => {
+        record = { ...record, status: 'completed', exit_code: null, duration_ms: null };
+        return HttpResponse.json(
+          { detail: { code: status === 409 ? 'not_running' : 'job_stop_unavailable', request_issued: true } }, { status });
+      }),
+    );
+    if (surface === 'page') mount(`/orgs/${SLUG}/jobs/${JOB.id}`, 'en');
+    else renderWithProviders(<Routes><Route path='/orgs/:slug/jobs/:job_id' element={<JobDetailPane jobId={JOB.id}/>} /></Routes>,
+      { route: `/orgs/${SLUG}/jobs/${JOB.id}`, i18n: { adapter: savedLocaleAdapter('en') } });
+    await userEvent.setup().click(await screen.findByRole('button', { name: 'Stop' }));
+    await waitFor(() => expect(screen.getByText('completed')).toBeInTheDocument());
+    expect(screen.getByText(status === 409 ? 'This job is not running.'
+      : 'Stop outcome is unavailable. Refresh status before trying again. (request_issued=true)')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Stop' })).not.toBeInTheDocument();
+    expect(reads).toBe(2);
   });
 });

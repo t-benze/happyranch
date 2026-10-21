@@ -84,6 +84,13 @@ settled known-quiescent original adds no unknown blocker; an unclaimed
 recovery alone is not execution, while actual recovery launch has its own
 drain evidence.
 Passthrough receipts describe absence of containment, not descendant cleanup.
+The original job owner commits its running-only terminal row, one original-trigger
+audit, actual producer observation and this strict Pause entry disposition in one
+short root-gated DB writer; local release and durable hint/wake follow COMMIT.
+Lost CAS has no duplicate effects; rollback/ambiguous COMMIT retains unknown
+ownership. Stop200 is a real owned signal request, never terminal or hold clearance.
+Startup retains unproven running jobs rather than inventing orphan/cleanup proof.
+
 The existing job runner returns its genuine process status and streams, without a containment/tree receipt. Its terminal result settles normally while missing descendant closure remains an unknown job blocker. A failure before runner entry can discharge the proven no-launch reservation. Direct process communicate/wait closes that process only; missing tree evidence
 remains an explicit unknown blocker, including after terminal lifecycle or
 restart. Interrupted possible launch or cleanup ACTION never becomes safe zero

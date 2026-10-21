@@ -4943,7 +4943,7 @@ def _kill_jobs_for_terminating_task(
                     db._lock.release()
                 authority._publisher_lock.release()
             try:
-                await terminate_jobs_for_task(task_id, inflight_to_task=inflight_map)
+                await terminate_jobs_for_task(task_id, db=orch._db, org_slug=orch._slug, inflight_to_task=inflight_map)
             except asyncio.CancelledError:
                 operation.finish("recovery_required")
                 return
@@ -4961,7 +4961,7 @@ def _kill_jobs_for_terminating_task(
                 return
         drain_failed = False
         try:
-            await terminate_jobs_for_task(task_id, inflight_to_task=inflight_map)
+            await terminate_jobs_for_task(task_id, db=orch._db, org_slug=orch._slug, inflight_to_task=inflight_map)
             # Backstop DB update — guarded by status='running' so we don't trample
             # the runner's own terminal write if it got there first.  The database
             # helper owns only this short transaction; never hold its lock across

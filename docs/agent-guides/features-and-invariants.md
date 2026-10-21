@@ -2816,6 +2816,30 @@ Traps:
 
 ## Jobs
 
+### Current Stop/status boundary — THR321seq6
+
+Stop200 means an actual owned Stop signal request, never exit. CLI says “Stop
+requested”; inspect show/wait for the actual row/reason/nullable exit and output.
+Running without attributable ownership yields pending/finalizing/unknown/held or
+owner-unavailable409; signal/audit503 states request_issued true/false/null. Do not
+blindly retry. Startup retains unproven running jobs with explicit unknown liveness;
+missing PID/maps, daemon death, timeout and absent native layout prove no orphanhood.
+Actual DB attachment/original preparation/attempt/runner/Process fences prevent
+cross-org ID collisions and stale-owner signals/removal/writes. The original job
+row/CAS, one trigger audit, actual producer and strict Pause disposition commit
+before local release/hint/wake; failed tails and descendant uncertainty remain.
+Output is directly awaited by the two owned stream pumps, with fresh identity
+fences and no per-line Task, intermediate queue or durable-history replay.
+Actual buffered tails finish before terminal composition; error/cancel tails
+are joined or retain uncertainty. Failed live publication is logged, preserves
+file capture and the real result/first cause, and cannot certify retirement.
+Wait/SSE use durable terminal reads. Both Web details preserve cached details/logs
+on read failure and offer explicit fresh detail-only Refresh status when streaming
+is unavailable. No automatic reconnect/polling addition; reopen/reload separately.
+Stop success/error settlement refreshes actual detail/list; locale changes issue
+no requests. A terminal hint alone never verifies [done]. Source publication is separate
+from deployment or historical recovery.
+
 Authorize contents in a thread BEFORE ordinary task/session submission.
 Omitted/false review_required enters automatic admission, rationale optional;
 true refuses422 before allocation (new CLI exit2), never flip/retry. /run is a
@@ -2842,9 +2866,9 @@ Traps:
 - Parsed true review_required refuses422; only omitted/false enters automatic admission. Persistence remains independent.
 - Auto-resume on terminal supersedes founder revisit for blocked-on-job tasks.
 - Graceful daemon teardown stops task-queue admission before signalling jobs.
-  A job actually signalled there persists `failed/daemon_shutdown` with its
-  real exit code; a natural pre-signal exit keeps its natural result and
-  `task_ended` has precedence. Non-JSON `jobs show` prints a non-null reason.
+  The first actual timeout/cap/task/shutdown/Stop cause wins. Genuine terminal
+  composition commits before hint/wake; failed persistence retains unknown
+  ownership, and a natural pre-signal exit keeps its actual result. Non-JSON `jobs show` prints a non-null reason.
 
 ## Task Blocked By Job
 
