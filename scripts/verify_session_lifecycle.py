@@ -2207,7 +2207,7 @@ def main():
         v.report["status"] = "PASS" if (len(v.results) == expected and all(r["status"] == "PASS" for r in v.results)
             and v.report.get("fixture_cleanup") == "SETTLED" and "fatal" not in v.report
             and not v.safety_violations and not v.stopped) else "FAIL"
-        encoded = json.dumps(v.report, indent=2) + "\n"
+        encoded = json.dumps(v.report, separators=(",", ":")) + "\n"
         require(len(encoded.encode()) <= 1048576, "observer output cap exceeded")
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(encoded)

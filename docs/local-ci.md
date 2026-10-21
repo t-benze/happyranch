@@ -98,7 +98,33 @@ before orphan cases. F remains driver/reaper; controlled W provides independent
 bounded rescue. Limits: eight fixture processes including F,32 threads,1024
 observer events,1MiB combined stdout+stderr+report,64MiB scratch;24s action for C4
 only and20s for every other variant, plus10s cleanup
-per variant. Dispatch establishes each action BEFORE probe/setup and clamps it
+per variant. The entire report uses compact ordinary JSON, retaining every key,
+value, array order, repeated frozen snapshot, code descriptor and trace event.
+No compression, deduplication or truncation is applied. The report-only1MiB
+writer check does not prove combined output fit. Actual complete collection
+requires whole report+merged output strictly below1044480B, emitted receipt
+at most4096B INSIDE the shared1048576B cap, zero drops/errors/caps and both EOFs.
+Oversize/transport refusal is a charged failed attempt: stop FIRST, no retry or
+behavioral credit. Retained isolate sizes do not certify full-default capacity.
+
+The existing full-row collector template has prospective opportunities of10s
+setup, F424s/rescue409s,55s drain and11s receipt construction/exact writes/close/
+stdout emission, all clipped to ONE original monotonic500s deadline, nested
+inside supported native600s. It checks elapsed again after emission before a
+successful exit and rejects short writes. A provisional pre-emission COMPLETE
+receipt is retained unchanged after any later failure; parent acceptance also
+requires genuine native exit0, complete emitted bytes and a conservative native
+duration covering emission within500s, plus report/frozen/disposal checks.
+Current native duration_ms is a floored UTC timestamp difference, without a
+clock-adjustment bound; a conservative monotonic upper bound remains UNAVAILABLE
+from those fields alone. These checks are cooperative: blocking I/O, admission,
+Jobs locks/COMMIT, output delivery and callbacks have no hard timing guarantee.
+Deadline exhaustion latches failure; direct F polling/draining retains ownership
+until it exits, with no successful unbounded wait or added signaling/reaper.
+Unresolved work uses existing genuine supported Jobs wait/block/terminal handling
+and never establishes disposal. No full-row execution allocation follows.
+
+Dispatch establishes each action BEFORE probe/setup and clamps it
 to rescue; readiness15s and final15s reserve remain unchanged. C5’s two fault inputs share
 one action budget. Record backend evidence before separately labeled fixture
 rescue; an outer timeout never proves cleanup. Any unsafe residual stops later
