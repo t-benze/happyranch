@@ -387,21 +387,27 @@ class CodingStartStore:
             readiness=readiness())).model_dump()
 
 
-def queued_storage(conn: sqlite3.Connection, org: str) -> Any:
-    """Caller owns a coherent complete J snapshot. No schema recursion."""
+def queued_storage(conn: sqlite3.Connection, org: str, *, budget: _Budget | None = None) -> Any:
+    """Compose one complete J snapshot and cumulative caller allowance.
+
+    Only internally reconstructed inventories are reused within this call.
+    Caller-owned transactions are never ended; no schema recursion/cache.
+    """
     from runtime.workflows.coding_start_history import read_queued
     from runtime.workflows._coding_mapping_admission import _MappingCaptures
     from runtime.workflows.coding_authority_history import _SetupHistoryReader
     from runtime.workflows.coding_mapping_history import _read_mapping_storage
+    if budget is not None and type(budget) is not _Budget:
+        raise CodingStartError('coding_start_history_invalid')
+    budget = _Budget() if budget is None else budget
     owned = not conn.in_transaction
     if owned:
         conn.execute('BEGIN')
     try:
-        budget = _Budget()
         captures = _MappingCaptures(conn, org, budget)
         mappings, _ = _read_mapping_storage(conn, expected_org_slug=org, budget=budget,
                                           setups=_SetupHistoryReader(conn, org, budget), captures=captures)
-        imported = read_release_import(conn, expected_org_slug=org)
+        imported = read_release_import(conn, expected_org_slug=org, budget=budget)
         return read_queued(conn, org, budget, mappings, imported)
     finally:
         if owned:

@@ -60,10 +60,32 @@ original validity. Running/count/identity checks use original frozen evidence;
 later native journal phase or current authority is not substituted for that
 admission. This correction adds no native lifecycle writer or execution proof.
 
-Complete mixed historical and queued readers share the enclosing row/raw-byte/
-step budget, including schema(data=False), cold/reopen, templates, activation and
-context pins, recovery and cutover drain. No schema DDL/reference changes, startup
-upgrade, old-byte rewrite, custody Q/U/P issuance, R2 or daemon Git/object probe.
+The queued inventory and complete J schema reader (including data=False) now
+forward one cumulative row/byte/step budget through the fixed release import.
+Omitted/None import or queued budgets create one standalone allowance; a supplied
+actual budget retains prior consumption and wrong types refuse categorically.
+Release discovery, full typed publication/admission/journal reconstruction and
+absence/unsupported-activation probes participate. Native rows gate their whole
+payload before fetch; conservative UTF8/JSON/canonical/base64/hex intermediates
+and traversal are reserved before nested pure parsing/reconstruction. Existing
+stricter per-value/parser/ancestry limits and provenance checks remain. These
+are cooperative finite-work limits, not hard process/SQL memory or time bounds.
+Caller-owned transactions remain open; only standalone queued reads close their
+own read snapshot. Inventories are reconstructed internally on that exact
+connection/org/snapshot, without caller-trusted DTOs or global caches.
+
+This is the partial SOURCE prerequisite under sole ROOT TASK-12299. Full
+start_in_writer/support._storage schema/history composition remains unfinished;
+standalone template/source-data/role/import callers retain their defaults. New
+settings/progression and literal @3/team_move readers, repeated-binding inventory
+reuse, cold/recovery/drain integration and native controls remain root-owned
+prerequisites. No complete admission/readiness closure is claimed. F5-R1c/F8-R1c
+standalone/composed, aggregate candidate/intermediate-byte/traversal, transaction
+and strict provenance controls remain UNEXECUTED pending a maintained, explicitly
+allocated isolated reader venue; source review/static checks supply no behavioral
+or test-authoring acceptance and no old-root testing waiver is used here.
+No schema DDL/reference changes, startup upgrade, old-byte rewrite, custody Q/U/P
+issuance, R2 or daemon Git/object probe follows.
 Future event families and partial/orphan/foreign/dual-owner graphs refuse. Valid
 `coding_source_waiting`, `coding_carrier`, `coding_attempt` ownership cannot launch
 through queue, draft/F5, ordinary chain/fanout/recovery or parent wake. Pause/move
