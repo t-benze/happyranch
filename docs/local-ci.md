@@ -1198,8 +1198,9 @@ ordinary native result output values: release and the complete queued/native
 component each fit independently, while their complete-schema composition crosses
 16MiB. No production result or observed counter selects a fixture size.
 
-ROOT12299 step25 extends the same case table with23 complete-reader rows, for65
-assigned reader observations plus the unchanged14 safeguards. Full populated
+ROOT12299 step25 extends the same case table with23 complete-reader rows (65
+reader observations). Step26 / TASK12457 adds the pristine complete-J constructor
+sibling, for66 assigned reader observations plus the unchanged14 safeguards. Full populated
 release/old-document/native fixtures inspect original identity/version/command,
 six typed rows, absent mapping prefix and complete queued outcomes; separate public
 `validate_workflow_schema`/`_validate_installed(data=False)`/`validate_coding_data`
@@ -1445,31 +1446,47 @@ checks reuse the same local import history with full original-row comparison;
 empty J's native discrimination also consumes the allowance. Public return
 meanings, caller transaction ownership and fresh post-write validation remain.
 
-TASK12440 allocated source/static/publication only. TASK12448 / step25 adds the
-complete-reader assertions above. The first qualified invocation at0b021bf5
-returned native0/verifier2 before any reader case: unchanged production
-`initialize_complete_org_schema` refuses in `_validate_coding_data` because the
-empty-J audit projection has two selected columns and a six-column type vector.
-This is an indispensable production correction outside the support-only radius,
-not RED or behavioral acceptance. No further dependent campaign runs or proof
-mutants were executed. All65 reader observations, intended sensitivity,
-byte-exact restoration, GREEN/five repetitions and same-head executable QA remain
-missing; the new support source is unqualified. The frozen venue qualified and
-was reaped; no alternate schema/host/permission fallback was used. Native start
-and readiness overrides remain excluded. Existing `release-accounting`
+TASK12440 allocated source/static/publication only. TASK12448 / step25 added the
+complete-reader assertions above; its qualified0b021bf5 invocation returned
+native0/verifier2 before any reader case. That unchanged production initializer's
+two-column audit projection/six-column type mismatch remains setup INCOMPLETE,
+never sensitivity RED. ROOT12299 step26 / TASK12457 corrects only bounded-J audit
+selection to all SIX original columns with the same strict native storage types
+and cumulative allowance. Legacy/unscoped/unbounded audit behavior is unchanged.
+
+The nearest existing pristine complete-J construction now has a stable observable
+constructor sibling before dependent use: exception versus independent success,
+literal J, original native schema/rows, transaction ownership, installed coding
+tables, FKs and integrity. A failed constructor assertion records contract_error
+and missing dependent IDs; ordinary import/setup crashes remain setup_error.
+Neither becomes a successful row. Existing65 reader IDs/14 safeguards remain.
+Native audit fixture task_id uses a nonnull synthetic scope; its bytes are charged.
+Aggregate original-row oracles use the fixed variant provenance, independently of
+returned inventory/counters. No limit/type/schema/reference/manifest is weakened.
+
+TASK12457's same-command maker record retains actual constructor RED/GREEN,
+intended audit-storage/duplicate-acquisition/allowance-reset/comparison-charge/
+retained-equality/stale-snapshot/caller-rollback RED and byte-exact restored full
+GREEN, with local proof commits never published. Final-head full GREEN and five
+fresh-process full/sibling repetitions retain exact source/input/environment
+bookends, assertions, native/verifier exits and reap evidence in its task/PR case
+record. These are manual SYNTHETIC observations, separate from independent QA and
+lint-only automated checks. Native start and readiness overrides remain excluded.
+Existing `release-accounting`
 cases observe standalone queued/import/schema readers, not the whole
 `support._storage`/start pre-write read boundary. Its affected extension stays
 in this maintained command and conservative import manifest, using the
 same qualified namespace/frozen environment, independently fixed synthetic
 inputs, complete schema/rows, bounded trace/timers and exact clean source.
-It needs an independent query/counter oracle for single history acquisition,
+It uses an independent query/counter oracle for single history acquisition,
 shared schema/native/child consumption, original-row/provenance refusal and
 fresh reconstruction after writes/snapshots, plus original transaction/replay
 observations. Actual start/native actors cannot be fabricated by synthetic
 fixtures; genuine native-boundary proof needs its separately authorized venue.
 Minimum support/allocation details are returned in TASK12440's source handoff.
-Affected behavioral/sensitivity/restoration/repetition/executable-QA and broader
-candidate8193/runtime/all-org acceptance remain UNEXECUTED/UNPROVED. No old-root
+Affected private-reader maker proof is recorded separately from the still-missing
+genuine support/start/native venue and independent same-head executable QA; broader
+candidate8193/full F5/F8/runtime/all-org acceptance remains UNPROVED. No old-root
 waiver or historical42+14 campaign covers this source head. Full independent
 review returns directly to ROOT12299; root allocates actual same-head executable
 QA before a later live-manager guarded merge. Local `scripts/local_ci.sh all`

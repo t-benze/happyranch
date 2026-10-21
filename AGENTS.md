@@ -100,18 +100,31 @@ role/import/template readers retain their existing defaults and provenance.
 PR1165's prerequisite merged at fee7aa7222dbc80e16492258c15f8fa3214fabad,
 with independent TASK12436 APPROVE and synthetic executable TASK12438 PASS at
 reviewed aa9e64ad3a568b080571f86c6453d191aa6c706b (identical merge tree).
-Those receipts do not cover this new source head. TASK12440's assignment permits
-source/static/publication only: affected common-boundary behavior, sensitivity,
-restoration/repetition and independent executable QA remain UNEXECUTED. ROOT12299 step25 / TASK12448 adds the maintained complete-private-reader and
-public-sibling assertions, with65+14 assigned synthetic observations. Its first
-qualified invocation at0b021bf5 returned native0/verifier2 before every reader
-case: the unchanged production fresh-J initializer refuses an audit projection/
-type-arity mismatch. This is setup failure, never sensitivity RED or GREEN.
-The extension is unqualified pending the separately owned production correction;
-all intended proof/restoration/repetitions and same-head executable QA remain
-missing. No production blob, import/resource radius or allowance is changed.
-Actual support._storage/start/native positives still require a separately
-allocated genuine owner venue; no native start or readiness override is supplied. New settings/progression and literal @3/team_move
+Those receipts retain their original-head attribution. TASK12440 supplied the
+source composition; TASK12448 added65 reader/14 safeguard observations, but its
+first qualified0b021bf5 invocation returned native0/verifier2 before every reader
+case. That audit projection/type-arity failure remains setup INCOMPLETE, never
+sensitivity RED. ROOT12299 step26 / TASK12457 aligns bounded complete-J audit
+prefetch with all SIX original native columns and their unchanged strict storage
+types on the SAME allowance. Earlier-layout/unscoped/unbounded scanning is unchanged.
+
+The same maintained driver adds one pristine complete-J constructor assertion,
+for66 reader observations plus the unchanged14 safeguards. Constructor exception,
+layout/schema/native state and caller transaction are explicit observations before
+dependent use; failed constructor assertions leave dependent rows unexecuted and
+remain distinct from import/setup errors. Synthetic audit input uses its native
+nonnull task scope, and aggregate typed-row expectations follow independently fixed
+variant provenance. TASK12457 records attributable constructor RED/GREEN, allocated
+local-only sensitivity/restoration and actual full/sibling repetition evidence;
+its raw commands/heads/exits retain their own attribution. No inventory/resource,
+allowance/type/schema/reference or native-owner radius is expanded.
+
+Private-reader synthetic evidence does not establish actual
+support._storage/start/native positives; those still require a separately
+allocated genuine owner venue. Fresh FULL independent review and actual
+same-final-head executable QA remain gates before live-manager guarded merge;
+no native start or readiness override is supplied.
+New settings/progression and literal @3/team_move
 readers, repeated-binding inventory reuse and native controls remain root-owned
 prerequisites. No complete admission/readiness closure is claimed. The earlier
 SOURCE checkpoint's F5-R1c/F8-R1c UNEXECUTED venue statement is historical.
