@@ -762,11 +762,45 @@ def zip_metadata(raw, budget):
     return count, cd_start
 
 
+class _MappedZipReader(io.IOBase):
+    """Borrow the caller-held mmap without copying it or taking ownership.
+
+    ZipFile's member reader needs seekable(), absent from CPython 3.12 mmap.
+    Its cursor stays on that same mapping; seek() returns the file position
+    even on Python versions where mmap.seek() returns None. Closing this
+    interface leaves the mapping and stable descriptor with container_subject.
+    """
+    def __init__(self, mapping):
+        super().__init__()
+        self._mapping = mapping
+
+    def readable(self):
+        self._checkClosed()
+        return not self._mapping.closed
+
+    def seekable(self):
+        self._checkClosed()
+        return not self._mapping.closed
+
+    def read(self, size=-1):
+        self._checkClosed()
+        return self._mapping.read(size)
+
+    def seek(self, offset, whence=os.SEEK_SET):
+        self._checkClosed()
+        self._mapping.seek(offset, whence)
+        return self._mapping.tell()
+
+    def tell(self):
+        self._checkClosed()
+        return self._mapping.tell()
+
+
 def zip_members(raw, magic, budget):
     rows, seen, total = [], set(), 0
     count, cd_start = zip_metadata(raw, budget)
     intervals = []
-    with zipfile.ZipFile(io.BytesIO(raw) if isinstance(raw,bytes) else raw) as archive:
+    with (io.BytesIO(raw) if isinstance(raw,bytes) else _MappedZipReader(raw)) as source, zipfile.ZipFile(source) as archive:
         need(len(archive.infolist()) == count and archive.start_dir == cd_start
              and not archive.comment, 'ZIP_METADATA_MISMATCH')
         for entry in archive.infolist():

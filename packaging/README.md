@@ -528,13 +528,26 @@ refuse. Central extras/comments and local extras share an 8MiB per-archive cap;
 extra fields must be structurally complete. Existing payload CRC, expansion,
 duplicate, local-range and complete-coverage checks remain independent. Logical
 member/name budgets are charged once in admission, cumulatively across archives.
+The ZIP reader borrows the held snapshot mmap through a read-only seekable file
+interface compatible with CPython3.12 ZipFile, supplying read/seek/tell/seekable
+without a whole-container copy or path reopen. Reads cover ZipFile's admitted
+metadata and bounded member chunks; seek returns the actual mapping position.
+The interface closes before the enclosing snapshot context releases the mapping
+and stable descriptor; it does not close either owner. Bytes inputs retain the
+BytesIO reader, and metadata admission still precedes either reader's allocation.
 The Darwin input is custody revision 5, build tag `1happyranchcustody5`, pinned
 through the local wheel, provenance, lock, wrapper and reader contract. Historical
 revision 1/2/3/4 wheels and receipts retain only their original input and head.
 Revision 5 adds only the missing `api.py` module-global `hashlib` binding for
 the existing COLLECT ledger digest; its reader and limits are unchanged. Build14
 failed at this binding after both EXEs built, before app inspection. Custody5
-source/repack evidence does not establish a Mac/package pass.
+build15 (`39518819733`, attempt1, input
+`a9970abb52e3a444c7172674a1eca360a08f8c00`) completed both EXEs and COLLECT,
+then failed in `finish_freeze` / `archive_observations` / `zip_members` when
+CPython3.12.10's ZipFile member reader requested the mmap's missing `seekable`.
+The secondary `FREEZER_FAILURE_PERSISTENCE:FileExistsError` remains diagnostic.
+Native acceptance of the seekable-interface repair remains UNEXECUTED;
+source/repack evidence and build15's earlier success do not establish a Mac/package pass.
 Revision 3 sorts base-library modules by name at the original ZIP producer before
 each original lane observation. It preserves module membership, cached-code
 lookup, optimization, headers and deterministic ZipInfo. Equal content no longer
@@ -544,7 +557,7 @@ occurrences and fresh readers remain. Exact-byte and kind collisions, missing
 inputs and live generation drift still refuse; no captured ZIP is rewritten or
 later generation substituted. Build12's exact changed subject and bytes remain
 unknown. Guarded deterministic wheel reproduction validates source repack only;
-new Darwin installation, actual equal lane ZIPs and mismatch/fresh-reader behavior
+changed-helper Darwin compatibility, actual equal lane ZIPs and mismatch/fresh-reader behavior
 remain UNEXECUTED/UNVERIFIED. App/archive/receipt and final manifest-based notices
 remain NOT_REACHED.
 
