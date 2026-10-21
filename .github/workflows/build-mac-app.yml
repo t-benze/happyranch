@@ -150,6 +150,7 @@ jobs:
             ${{ steps.run_paths.outputs.output }}/diagnostics/*.json
 
       - name: Retain bounded failure diagnostics
+        id: failure_diagnostics
         # Best effort: cancellation or runner loss may interrupt packaging/upload.
         if: failure() && steps.run_paths.outputs.root != ''
         timeout-minutes: 5
@@ -163,9 +164,10 @@ jobs:
             ${{ steps.run_paths.outputs.output }}/diagnostics/bounded/*
 
       - name: Retain bounded cancellation diagnostics
-        # Failure already selects the preceding upload; never write it twice.
+        # Cancellation can replace failure status; use the recorded step outcome.
+        # Any preceding upload attempt excludes a second write to this artifact.
         # Best effort: cancellation or runner loss may interrupt packaging/upload.
-        if: ${{ cancelled() && !failure() && steps.run_paths.outputs.root != '' }}
+        if: ${{ cancelled() && steps.failure_diagnostics.outcome == 'skipped' && steps.run_paths.outputs.root != '' }}
         timeout-minutes: 5
         uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
         with:

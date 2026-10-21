@@ -22,8 +22,13 @@ ZIP prevents success upload. The existing portable layout verifier retains its
 failure-step condition and path format; these checks add no helper or test seam.
 
 Failure makes the failure diagnostics upload eligible when the private run root
-was reserved. A separate cancellation diagnostics step covers cancellation when
-no failure has selected that upload. The steps share the diagnostics-only
+was reserved. A separate cancellation diagnostics step requires cancellation and
+the preceding failure upload's recorded outcome to be `skipped`. Cancellation can
+replace the current failure status, so status alone cannot establish whether an
+upload was attempted. A preceding upload with outcome `success`, `failure` or
+`cancelled`, or an unavailable outcome, excludes the cancellation upload. This
+also excludes a second attempt when cancellation interrupts the first upload or
+arrives after it finishes. The steps share the diagnostics-only
 artifact name and select only the setup status, preflight and existing bounded
 diagnostic files; neither publishes an app candidate. Their conditions avoid
 writing the same artifact twice. A failed diagnostics upload remains a failure;
@@ -47,5 +52,6 @@ review, lint and collected logs do not establish a valid app, notices, installat
 or public release.
 
 GitHub documents [workflow cancellation](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-cancellation),
+[step outcomes](https://docs.github.com/en/actions/reference/workflows-and-actions/contexts#steps-context),
 [status expressions](https://docs.github.com/en/actions/reference/workflows-and-actions/expressions#status-check-functions)
 and [workflow timeout syntax](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax).
