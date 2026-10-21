@@ -532,6 +532,7 @@ try:
             phases=[]; acquisition=[]; allowances=[]; inventories=[]; changes=[]
             complete=kind in ('complete','public-complete','installed-complete','coding-data')
             oracle_rows=expected if original_rows is None else original_rows
+            prior_work=None if supplied is None else vars(supplied).copy()
             old_profile=sys.getprofile()
             def phase(frame: object, event: str, arg: object) -> None:
                 if (supplied is not None and 'aggregate-candidates' in name and event in ('call','return')
@@ -544,7 +545,7 @@ try:
                     return
                 if event=='call' and function in ('_read_coding_data','read_release_import',
                         '_read_mapping_storage','source_storage','read_queued'):
-                    acquisition.append(dict(module=module,function=function))
+                    acquisition.append(dict(module=module,source=frame.f_code.co_filename,function=function))
                 if event=='call' and function in ('read_release_import','_read_mapping_storage',
                         'source_storage','read_queued','_bounded_rows','_refuse_coding_metadata'):
                     budget=frame.f_locals.get('budget')
@@ -598,6 +599,8 @@ try:
                                 all(a['identity']==id(inventory.budget) for a in allowances),True)
                             if supplied is not None:
                                 equal(checks,'supplied allowance identity',inventory.budget is supplied,True)
+                                equal(checks,'inherited work reaches first native acquisition',
+                                    allowances[0]['counters'],prior_work)
                             if not oracle_rows:
                                 equal(checks,'complete absent publication',inventory.imported,None)
                             else:
@@ -647,9 +650,13 @@ try:
                 if complete:
                     schema_after=[tuple(r) for r in conn.execute(
                         'SELECT type,name,tbl_name,sql FROM sqlite_schema ORDER BY type,name')]
-                    equal(checks,'complete original schema unchanged',schema_after,schema_before)
-                    equal(checks,'independent whole native schema',schema_after,
-                        [(r['kind'],r['name'],r['table'],r['sql']) for r in reference_schema])
+                    # Full raw schema is retained ONCE in fixture_schema;
+                    # whole-byte bookends avoid duplicating it per case under
+                    # the unchanged expanded/compressed observation bounds.
+                    equal(checks,'complete original schema unchanged',
+                        digest(canonical(schema_after)),digest(canonical(schema_before)))
+                    equal(checks,'independent whole native schema',digest(canonical(schema_after)),
+                        digest(canonical([(r['kind'],r['name'],r['table'],r['sql']) for r in reference_schema])))
                     if not transaction:
                         equal(checks,'standalone complete BEGIN',sum(r['sql']=='BEGIN' for r in trace),1)
                         equal(checks,'standalone complete ROLLBACK',sum(r['sql']=='ROLLBACK' for r in trace),1)

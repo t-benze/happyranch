@@ -102,10 +102,16 @@ with independent TASK12436 APPROVE and synthetic executable TASK12438 PASS at
 reviewed aa9e64ad3a568b080571f86c6453d191aa6c706b (identical merge tree).
 Those receipts do not cover this new source head. TASK12440's assignment permits
 source/static/publication only: affected common-boundary behavior, sensitivity,
-restoration/repetition and independent executable QA remain UNEXECUTED. The
-existing isolated reader command requires a narrowly allocated extension to
-observe support._storage/start's pre-write composition; no native start or
-readiness override is supplied. New settings/progression and literal @3/team_move
+restoration/repetition and independent executable QA remain UNEXECUTED. ROOT12299 step25 / TASK12448 adds the maintained complete-private-reader and
+public-sibling assertions, with65+14 assigned synthetic observations. Its first
+qualified invocation at0b021bf5 returned native0/verifier2 before every reader
+case: the unchanged production fresh-J initializer refuses an audit projection/
+type-arity mismatch. This is setup failure, never sensitivity RED or GREEN.
+The extension is unqualified pending the separately owned production correction;
+all intended proof/restoration/repetitions and same-head executable QA remain
+missing. No production blob, import/resource radius or allowance is changed.
+Actual support._storage/start/native positives still require a separately
+allocated genuine owner venue; no native start or readiness override is supplied. New settings/progression and literal @3/team_move
 readers, repeated-binding inventory reuse and native controls remain root-owned
 prerequisites. No complete admission/readiness closure is claimed. The earlier
 SOURCE checkpoint's F5-R1c/F8-R1c UNEXECUTED venue statement is historical.

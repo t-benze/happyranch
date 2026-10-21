@@ -1434,7 +1434,7 @@ remain separately recorded. The closed loader selections pass the same interpret
 source-script and owned-output admission as the full command before dispatch.
 
 
-### Remaining start-reader source composition (TASK12440 / ROOT12299)
+### Start-reader source composition and blocked support (ROOT12299)
 
 PR1165 is merged at `fee7aa7222dbc80e16492258c15f8fa3214fabad`;
 TASK12436/TASK12438 review/synthetic QA at `aa9e64ad3a568b080571f86c6453d191aa6c706b`
@@ -1445,12 +1445,21 @@ checks reuse the same local import history with full original-row comparison;
 empty J's native discrimination also consumes the allowance. Public return
 meanings, caller transaction ownership and fresh post-write validation remain.
 
-This assignment allocates only source/static/publication. No tests/assertions,
-verifier support, product imports/SQL/fixtures, native start, readiness override
-or reader campaign is allocated or executed. Existing `release-accounting`
+TASK12440 allocated source/static/publication only. TASK12448 / step25 adds the
+complete-reader assertions above. The first qualified invocation at0b021bf5
+returned native0/verifier2 before any reader case: unchanged production
+`initialize_complete_org_schema` refuses in `_validate_coding_data` because the
+empty-J audit projection has two selected columns and a six-column type vector.
+This is an indispensable production correction outside the support-only radius,
+not RED or behavioral acceptance. No further dependent campaign runs or proof
+mutants were executed. All65 reader observations, intended sensitivity,
+byte-exact restoration, GREEN/five repetitions and same-head executable QA remain
+missing; the new support source is unqualified. The frozen venue qualified and
+was reaped; no alternate schema/host/permission fallback was used. Native start
+and readiness overrides remain excluded. Existing `release-accounting`
 cases observe standalone queued/import/schema readers, not the whole
-`support._storage`/start pre-write read boundary. Its affected extension must
-stay in this maintained command and conservative import manifest, using the
+`support._storage`/start pre-write read boundary. Its affected extension stays
+in this maintained command and conservative import manifest, using the
 same qualified namespace/frozen environment, independently fixed synthetic
 inputs, complete schema/rows, bounded trace/timers and exact clean source.
 It needs an independent query/counter oracle for single history acquisition,
