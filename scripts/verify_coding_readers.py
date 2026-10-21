@@ -1195,9 +1195,14 @@ try:
                 expected_component['traversed']+=5+sum(len(r)+1 for r in native)
                 if vars(queued)!=dict(admitted={},runs={},owners={},callbacks={}):
                     raise RuntimeError('schema aggregate native component unavailable')
+                # Expected original rows follow this fixed fixture variant,
+                # independently of the acquired inventory and its counters.
+                variant_rows=[(table,dict(row)) for table,row in expected]
+                variant_rows[1][1]['author_principal']=published
+                variant_rows[2][1]['published_by']=published
                 budget=_Budget()
                 observe(name,lambda:_read_workflow_schema(conn,expected_org_slug=org,budget=budget),
-                        category,kind='complete',supplied=budget)
+                        category,kind='complete',supplied=budget,original_rows=variant_rows)
                 row=result['cases'][-1]
                 row.update(independent_release_work=release_work(proof),independent_complete_work=work,
                     native_input=dict(rows=len(native),bytes=sum(raw_size(r) for r in native),summary_size=summary_size))
