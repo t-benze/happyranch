@@ -42,6 +42,13 @@ entry refuses without writing through that path. Scheduled work never creates
 a missing control parent. Refusal is visible through the existing daemon log;
 a summary or org audit may be unavailable and must not be claimed as persisted.
 Only manual preview can create missing report parents, with no-follow traversal.
+After the single stop observation, the actual initial date summary is published
+before any native writer reservation. Allowed admission initially records
+`incomplete`, empty org results and all orgs unreached, without a finished/PID or
+mutation claim. Unsafe date-summary or pending metadata therefore refuses with
+zero reservations or worker effects. Later checkpoint/publication failures after
+genuine reservation retain native uncertainty; this initial observation is not
+a fence against subsequent filesystem changes.
 These are filesystem observations, not a racing-rename fence or hard real-time
 certification. Publication failure never permits deletion. Manual `--dry-run` remains usable and nonmutating with
 true, invalid or absent control; it may write its existing reports/audits.
@@ -330,8 +337,16 @@ These broad historical cases are NOT authorized for this correction delivery.
 
 The current corrections lane retains C1–C3 (seq117) and adds the finite C4–C7
 policy cases (seq134), plus S1–S5 (selector8–12) for scheduled control admission.
-S3 also exercises the real scheduler with its actual date-summary/marker paths,
-parent and ancestor aliases into disposable ended-task scratch, ambiguous marker/
+S3 also exercises the real scheduler with its actual date-summary/marker paths.
+Its existing publication table covers final summary symlink/dangling/hardlink
+and existing summary-pending symlink/dangling/hardlink/regular/FIFO entries,
+each with false and genuinely absent stop control, through both the shipping
+loop and direct scheduled entry. Delegating observers count actual native writer
+entries; every unsafe case requires zero reservations/worker effects, unchanged
+candidate bytes/modes/refs/registrations and sidecar identities, visible refusal,
+and no fictitious summary/audit. The loop retains its date marker. Separate
+worker-entry rows retain their independent pre-spawn checkpoint risk.
+It also covers parent and ancestor aliases into disposable ended-task scratch, ambiguous marker/
 pending entries, and separate scheduled/worker-entry publication refusal. Candidate
 bytes/modes, sidecars, refs/registrations and absence of native work remain observed;
 unavailable summaries/audits are not claimed. S6 reuses C1–C7 safety assertions. Run from the guarded worktree after

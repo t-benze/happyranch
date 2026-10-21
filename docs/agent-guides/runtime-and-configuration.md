@@ -1851,6 +1851,13 @@ entry refuses without writing through that path. Scheduled work never creates
 a missing control parent. Refusal is visible through the existing daemon log;
 a summary or org audit may be unavailable and must not be claimed as persisted.
 Only manual preview can create missing report parents, with no-follow traversal.
+After the single stop observation, the actual initial date summary is published
+before any native writer reservation. Allowed admission initially records
+`incomplete`, empty org results and all orgs unreached, without a finished/PID or
+mutation claim. Unsafe date-summary or pending metadata therefore refuses with
+zero reservations or worker effects. Later checkpoint/publication failures after
+genuine reservation retain native uncertainty; this initial observation is not
+a fence against subsequent filesystem changes.
 These are filesystem observations, not a racing-rename fence or hard real-time
 certification. Publication failure never permits deletion. Manual `--dry-run` remains usable and nonmutating with
 true, invalid or absent control; it may write its existing reports/audits.

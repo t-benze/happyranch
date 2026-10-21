@@ -912,16 +912,21 @@ async def _run_scheduled_worker(state, summary: Path, date: str) -> dict:
     started_at = datetime.now().astimezone().isoformat()
     deadline = started + BUDGET_SECONDS
     admission = await asyncio.to_thread(_scheduled_admission, deadline)
+    report = dict(format='disk-sweep@1', revision=_revision(), scheduled_date=date,
+                  timezone=datetime.now().astimezone().tzname(), timezone_offset=datetime.now().astimezone().strftime('%z'),
+                  started_at=started_at, deadline_monotonic=deadline, budget_seconds=BUDGET_SECONDS,
+                  process_scope=PROCESS_SCOPE, outcome='incomplete', orgs=[],
+                  unreached_orgs=[str(org.root) for _, org in sorted(state.orgs.items())],
+                  scheduled_admission=admission)
     if admission['state'] == 'suspended':
-        report = dict(format='disk-sweep@1', revision=_revision(), scheduled_date=date,
-                      timezone=datetime.now().astimezone().tzname(), timezone_offset=datetime.now().astimezone().strftime('%z'),
-                      started_at=started_at, finished_at=datetime.now().astimezone().isoformat(),
-                      deadline_monotonic=deadline, budget_seconds=BUDGET_SECONDS,
-                      process_scope=PROCESS_SCOPE, outcome='suspended', orgs=[],
-                      unreached_orgs=[str(org.root) for _, org in sorted(state.orgs.items())],
-                      scheduled_admission=admission)
+        report.update(outcome='suspended', finished_at=datetime.now().astimezone().isoformat())
         LOG.warning('Disk sweep globally suspended: %s', admission)
-        await asyncio.to_thread(atomic_json, summary, report)
+    # Publish the actual initial summary before ANY durable native reservation.
+    # An unsafe target/pending inode must refuse while all orgs are unstarted.
+    # Worker checkpoints still publish independently; a later failure retains
+    # genuine reservation uncertainty rather than claiming this check fences it.
+    await asyncio.to_thread(atomic_json, summary, report)
+    if admission['state'] == 'suspended':
         return report
     # Reservations span filesystem/process work; their short gate/transaction
     # does not. Retain active evidence on process loss; D reads the same history.
