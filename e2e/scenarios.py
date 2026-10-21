@@ -108,7 +108,11 @@ def journey(c: Controller, *, lost: bool) -> None:
     task = c.create("alpha", prefix + "_ROOT")
     m1 = c.start("alpha", task, "case_manager")
     if not lost:
-        c.browser.open_task("alpha", task, "ALPHA_ROOT", expected=dict(
+        roots_expected = dict(org="alpha", task=dict(task_id=task, brief="ALPHA_ROOT", team="engineering",
+            status="in_progress", parent_task_id=None, assigned_agent="case_manager", block_kind=None,
+            current_session_id=m1["session"], note=None), severity_rollup="in_progress",
+            forbidden=["ALPHA_ROOT_SENTINEL", "ALPHA_CHILD_SENTINEL", "ALPHA_CHILD_OUTCOME"])
+        c.browser.open_task("alpha", task, "ALPHA_ROOT", roots_expected=roots_expected, expected=dict(
             task=dict(task_id=task, brief="ALPHA_ROOT", team="engineering", status="in_progress",
                       parent_task_id=None, assigned_agent="case_manager", block_kind=None,
                       current_session_id=m1["session"]),
@@ -166,7 +170,10 @@ def journey(c: Controller, *, lost: bool) -> None:
         deny(c, "E06.literal-terminal", "alpha", final, 409, terminal)
         deny(c, "E06.changed-terminal", "alpha", changed, 409, terminal)
     else:
-        c.browser.open_task("alpha", task, "LOSS_ROOT", expected=expected, ready=lambda:
+        roots_expected = dict(org="alpha", task=dict(task_id=task, brief="LOSS_ROOT", team="engineering",
+            status="completed", parent_task_id=None, assigned_agent="case_manager", block_kind=None,
+            current_session_id=m2["session"], note="LOSS_ROOT_SENTINEL"), severity_rollup="completed")
+        c.browser.open_task("alpha", task, "LOSS_ROOT", expected=expected, roots_expected=roots_expected, ready=lambda:
             c.browser.completed("alpha", task, "LOSS_ROOT", "LOSS_ROOT_SENTINEL", child=worker["task"],
                                 child_summary="LOSS_CHILD_OUTCOME", shot="response-loss"))
         c.mark("E06.committed-response-lost", dict(first=first_record, replay=replay))
@@ -192,14 +199,20 @@ def exercise(c: Controller) -> None:
         expected = dict(task={key: closure["public"]["task"][key] for key in (
             "task_id", "brief", "team", "status", "parent_task_id", "assigned_agent", "block_kind", "current_session_id", "note")},
             recall=closure["recall"], result_ids=[r["id"] for r in closure["public"]["results"]], forbidden=[alien])
-        c.browser.open_task(org, task, org.upper() + "_COLLISION", switch=index > 0,
+        own_start = next(row for row in c.starts if row["org"] == org and row["task"] == task)
+        roots_expected = dict(org=org, task=dict(task_id=task, brief=org.upper()+"_COLLISION", team="engineering",
+            status="completed", parent_task_id=None, assigned_agent="case_manager", block_kind=None,
+            current_session_id=own_start["session"], note=org.upper()+"_COLLISION_OUTCOME"),
+            severity_rollup="completed", forbidden=[alien])
+        c.browser.open_task(org, task, org.upper() + "_COLLISION", roots_expected=roots_expected, switch=index > 0,
                             cached_recall=index == 2, alien=alien, expected=expected, ready=lambda:
             c.browser.completed(org, task, org.upper() + "_COLLISION", org.upper() + "_COLLISION_OUTCOME",
                                 alien=alien, shot=f"org-switch-{index}"))
         if index == 2:
             # First prove the populated-cache return, then also preserve the
             # accepted fresh target-org HTTP + rendered-content oracle.
-            c.browser.revisit_after_cache_expiry(org, task, expected=expected, ready=lambda:
+            c.browser.revisit_after_cache_expiry(org, task, expected=expected, roots_expected=roots_expected,
+                                                  alien=alien, ready=lambda:
                 c.browser.completed(org, task, "ALPHA_COLLISION", "ALPHA_COLLISION_OUTCOME",
                                     alien=alien, shot="org-switch-return-revalidated"))
         c.mark(("E03.browser-alpha", "E03.browser-beta", "E03.browser-alpha-return")[index])

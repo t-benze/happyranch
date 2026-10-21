@@ -62,14 +62,15 @@ class PauseBrowser:
                 overview_reads.append(request.url)
                 group.fail("forbidden-overview-read")
 
-        with (self.b.observation_group(expected["root"], mode="new-document", document="/orgs/alpha/tasks") as group,
-              self.b.response(roots_path, ordinary_roots=True)):
+        with (self.b.observation_group(expected["roots"], mode="new-document", document="/orgs/alpha/tasks") as group,
+              self.b.response(roots_path, ordinary_roots=True) as roots):
             emitter = page._impl_obj
             emitter.on("request", record_overview)
             group.final_checks.append(lambda: require(overview_reads == [], "forbidden-overview-read"))
             group.disposals.append(lambda: self.b._detach(emitter, "request", record_overview))
             page.goto(f"{self.b.base}/orgs/alpha/tasks", timeout=self.c.remaining(self.b.page_timeout)*1000)
             self.c.remaining()
+            roots.ready()
             main = self.b._task_surface('list')
             self.b.rendered(dict(surface='list', org='alpha', task=root, locale=locale,
                                  raw='PAUSE_RESTART_ROOT', headline='PAUSE_RESTART_ROOT'))

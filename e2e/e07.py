@@ -462,7 +462,14 @@ def exercise(c: Controller) -> None:
         connection.close()
 
         phase("terminal-ui-and-refusals",36)
-        c.e07["views"] = c.browser.e07_terminal(P,W, expected=browser_expected(freeze))
+        roots_expected = dict(org="alpha", task=dict(task_id=P, brief="E07_CANCEL_PARENT", team="engineering",
+            status="cancelled", parent_task_id=None, assigned_agent="case_manager", block_kind=None,
+            current_session_id=parent["session"], note="cancelled by founder: E07_CANCEL_TREE"),
+            severity_rollup="cancelled", pause=dict(org_slug="alpha", root_task_id=P,
+                lifecycle_status="cancelled", held=False, effective_hold=False, control_state="unheld",
+                generation=0, paused_at=None, resumed_at=None),
+            forbidden=[W])
+        c.e07["views"] = c.browser.e07_terminal(P,W, expected=browser_expected(freeze), roots_expected=roots_expected)
         for view, task in zip(c.e07["views"][:2], (P,W)):
             require(detail_content(view["detail"]) == detail_content(freeze["public"][task][""])
                     and view["recall"] == freeze["public"][task]["/recall?tree=true"], "C complete browser terminal content")

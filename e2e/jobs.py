@@ -554,7 +554,10 @@ def exercise(c: Controller) -> None:
             expected = dict(task=dict(task_id=task, brief=variant, team="engineering", status="completed",
                 parent_task_id=None, assigned_agent="case_manager", block_kind=None,
                 current_session_id=second["session"], note=final_row["note"]))
-            c.browser.open_task("alpha", task, variant, expected=expected, ready=lambda:
+            roots_expected = dict(org="alpha", task=dict(task_id=task, brief=variant, team="engineering", status="completed",
+                parent_task_id=None, assigned_agent="case_manager", block_kind=None,
+                current_session_id=second["session"], note=summary), severity_rollup="completed")
+            c.browser.open_task("alpha", task, variant, expected=expected, roots_expected=roots_expected, ready=lambda:
                 c.browser.completed("alpha", task, variant, summary, shot="e04-task-" + str(index)))
             record["task_browser"] = dict(text=c.browser.page.get_by_role("main").inner_text(timeout=c.remaining(c.browser.page_timeout)*1000),
                                           screenshot=f"e04-task-{index}.png", at=time.monotonic())

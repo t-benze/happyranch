@@ -354,6 +354,16 @@ def exercise(c: Controller) -> None:
                   for name, task_id in (("root", root), ("child", child_id))}
         if hold_state == "pausing":
             result["root"]["blocker_task"] = worker["task"]
+        # R is declared from authored phase/actions and genuine launch/control IDs,
+        # separately from the preserved detail/Recall snapshot expectations above.
+        result["roots"] = dict(org="alpha", task=dict(task_id=root, brief="PAUSE_RESTART_ROOT", team="engineering",
+            status="in_progress", parent_task_id=None, assigned_agent="case_manager", block_kind="delegated",
+            current_session_id=manager["session"], note=f"Delegated to case_worker (child={worker['task']})",
+            child_wait_state="waiting_children" if hold_state == "pausing" else "pending_children"),
+            severity_rollup="in_progress", pause=dict(hold, lifecycle_status="in_progress"),
+            forbidden=["PAUSE_RESTART_DONE"])
+        if hold_state == "pausing":
+            result["roots"]["blocker_task"] = worker["task"]
         return result
     # Rendered expectations are scenario facts, separate from browser_expected's
     # untouched prearm transport snapshot. Never use returned notes/briefs as an oracle.
