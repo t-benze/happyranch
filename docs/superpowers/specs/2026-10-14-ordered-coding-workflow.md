@@ -60,10 +60,52 @@ original validity. Running/count/identity checks use original frozen evidence;
 later native journal phase or current authority is not substituted for that
 admission. This correction adds no native lifecycle writer or execution proof.
 
-Complete mixed historical and queued readers share the enclosing row/raw-byte/
-step budget, including schema(data=False), cold/reopen, templates, activation and
-context pins, recovery and cutover drain. No schema DDL/reference changes, startup
-upgrade, old-byte rewrite, custody Q/U/P issuance, R2 or daemon Git/object probe.
+The queued inventory and complete J schema reader (including data=False) now
+forward one cumulative row/byte/step budget through the fixed release import.
+Omitted/None import or queued budgets create one standalone allowance; a supplied
+actual budget retains prior consumption and wrong types refuse categorically.
+Release discovery, full typed publication/admission/journal reconstruction and
+absence/unsupported-activation probes participate. Native rows gate their whole
+payload before fetch; conservative UTF8/JSON/canonical/base64/hex intermediates
+and traversal are reserved before nested pure parsing/reconstruction. Existing
+stricter per-value/parser/ancestry limits and provenance checks remain. These
+are cooperative finite-work limits, not hard process/SQL memory or time bounds.
+Caller-owned transactions remain open; only standalone queued reads close their
+own read snapshot. Inventories are reconstructed internally on that exact
+connection/org/snapshot, without caller-trusted DTOs or global caches.
+
+This is the partial SOURCE prerequisite under sole ROOT TASK-12299.
+Current step17 manual observations distinguish assigned cumulative candidate
+accounting/traversal dominance (component C413/T9601, combined C771/T16385)
+and14 loader/resource safeguards from broader candidate8193 UNPROVED.
+The native-only18-column overflow lower bound155649 visits is grammar-specific;
+no global infeasibility, candidate-guard/full F5/F8/program/runtime PASS follows.
+Historical native0/verifier2/42-INCOMPLETE and earlier ROOT10693 source waivers
+remain history. They do not waive current allocated M1–M6/S1–S8 sensitivity,
+forward restoration, GREEN/five fresh-process repetitions or independent
+same-head executable QA. See docs/local-ci.md for exact command and exits.
+
+Full
+start_in_writer/support._storage schema/history composition remains unfinished;
+standalone template/source-data/role/import callers retain their defaults. New
+settings/progression and literal @3/team_move readers, repeated-binding inventory
+reuse, cold/recovery/drain integration and native controls remain root-owned
+prerequisites. No complete admission/readiness closure is claimed. The earlier
+SOURCE checkpoint's F5-R1c/F8-R1c UNEXECUTED venue statement is historical.
+TASK12407's42+14 GREEN/five repetitions remain historical, as do its adverse
+M6 partial27/native0/incomplete2 and S1/S3 cause-only results. Accepted step18
+and TASK12419 repair the affected proof: independent queued fixture inputs,
+actual emitted loader admission and the standalone reader's shared bounded scope.
+M6/S1/S3/S4/S7/S8 require full-table intended RED and byte-exact restored GREEN;
+S1/S3 observe invalid admission presence with zero bwrap attempts, retaining the
+later native refusal. Unaffected variants retain original-head attribution.
+Exact final-head42+14 GREEN/five repetitions and independent review/executable QA
+remain mandatory; actual outcomes are in the same PR/task case record.
+Candidate8193 and broader native/runtime controls remain UNPROVED. Source review
+and static checks are not behavioral or test-authoring acceptance; no old-root
+waiver applies.
+No schema DDL/reference changes, startup upgrade, old-byte rewrite, custody Q/U/P
+issuance, R2 or daemon Git/object probe follows.
 Future event families and partial/orphan/foreign/dual-owner graphs refuse. Valid
 `coding_source_waiting`, `coding_carrier`, `coding_attempt` ownership cannot launch
 through queue, draft/F5, ordinary chain/fanout/recovery or parent wake. Pause/move

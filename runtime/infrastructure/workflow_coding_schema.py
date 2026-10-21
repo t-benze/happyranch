@@ -346,7 +346,7 @@ def _validate_coding_data(conn: sqlite3.Connection, *, layout: str,
         setups = _SetupHistoryReader(conn, expected_org_slug, budget)
         storage = _read_setup_storage(conn, expected_org_slug=expected_org_slug, reader=setups)
         from runtime.workflows._coding_release_history import read_release_import
-        imported = read_release_import(conn, expected_org_slug=expected_org_slug)
+        imported = read_release_import(conn, expected_org_slug=expected_org_slug, budget=budget)
         from runtime.workflows.coding_mapping_history import _read_mapping_storage
         from runtime.workflows._coding_mapping_admission import _MappingCaptures
         from runtime.workflows._coding_source_admission import source_storage

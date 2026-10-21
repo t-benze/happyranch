@@ -1152,3 +1152,256 @@ byte-exact and GREEN. Fresh full independent review and same-final-head QA,
 exact-head two lints and the live manager's genuine merge/remote observation remain
 required. Fixture success establishes neither real GitHub enforcement nor live
 manager interruption/cold/runtime/merge acceptance.
+
+## Explicit manual coding-reader and safeguard observations
+
+ROOT TASK-12299 steps12/13/17 allocate F5-R1c/F8-R1c SYNTHETIC reader mechanics,
+separately from the four-module adapter lane above. The maintained parent is:
+
+```bash
+python -I -S scripts/verify_coding_readers.py \
+  --source-root /absolute/registered/clean/task-worktree \
+  --expected-head FULL_40_HEX_COMMIT \
+  --case-set release-accounting \
+  --history-manifest /absolute/owned/history.json \
+  --environment-manifest /absolute/owned/frozen-environment.json \
+  --output-dir /absolute/owned/task-scratch/new-run
+```
+
+**Acceptance is incomplete until actual complete observations and proof exist.**
+The driver now names every required F5-R1c/F8-R1c case and refuses missing or
+duplicate or unknown executed case IDs and setup/teardown failure. Assigned
+completion and outstanding broader targets are separate explicit fields.
+It includes populated literal @1 template/native task/result history and natural
+shared-budget aggregate attempts. Traversal and intermediate-copy byte cases
+compose actual queued/release readers with their original allowances; every
+component has an immediate independently admitted positive sibling. Candidate
+attempts combine two400-row ordinary native-history components, each first
+admitted independently, through the actual queued owner. They retain the actual
+earlier stopping bound if traversal/bytes prevent8193 candidates. The native
+18-column reader spends at least19 visits per candidate, so its original16384
+visit bound is stricter than8193 candidates in this named fixture family. The
+component input arithmetic is C413/T9601; the combination observes C771/T16385.
+The native-only18-column candidate8193 overflow lower bound is155649 visits
+(8192*19+1), with no global infeasibility claim. Assigned cumulative accounting
+and traversal dominance may complete; `outstanding_broader_targets.candidate8193`
+stays UNPROVED, never candidate-guard/full F5/F8/program/runtime PASS.
+No counter is preset to exhaustion and no default limit is lowered. Each
+successful aggregate component also compares its exact candidate/byte/visit delta
+with independently fixed input arithmetic: full row/string sizes, canonical JSON
+member/delimiter counts and the original reservation contract. The schema has
+its own positive/refusal byte and traversal siblings: an individually admitted
+release component plus real populated native-result work crosses one shared
+allowance only in the complete J(data=False) reader. A second reader call never
+supplies a numeric expected-value oracle.
+
+TASK12380's native namespace refusal and unexecuted evidence remain historical.
+ROOT's later successful product-free probe grants no campaign permission. Each
+concrete verifier invocation needs its own standard narrowly reviewed command
+admission where required, exact clean source commit and hash-pinned inputs/env.
+An unavailable/rejected operation stops; no job/executor/host fallback. Source
+inspection and frozen dependency hashes are not executable qualification.
+
+The host requires Linux x86-64, effective Python3.14 with `-I -S`, `/usr/bin/bwrap`,
+and an independently admitted namespace venue for each actual invocation.
+Namespace refusal stops execution; do not retry through a job, a host import,
+a reduced schema, module mocks or a different isolation mechanism. Source must
+be a registered non-primary worktree at the supplied clean actual commit;
+proof variants likewise require their own real clean local commits. The explicit
+inventory names the existing conservative212-module closure, package ancestors,
+two literal dynamic import targets and fixed `coding.v1.json` resource. Hashes
+are derived from actual committed source before/after each invocation, allowing
+an allocated proof commit without replacing its expected head or byte fence.
+Unknown static/dynamic imports, resource access, escaped paths or drift refuse.
+The inventory is conservative source analysis, not executable reachability proof.
+
+Prepare a NEW production-only frozen environment outside isolation, beneath
+actual task scratch, with the existing supported tool:
+
+```bash
+env -u VIRTUAL_ENV UV_PROJECT_ENVIRONMENT=/absolute/owned/task-scratch/env \
+  UV_CACHE_DIR=/absolute/owned/task-scratch/uv-cache \
+  uv sync --project /absolute/registered/clean/task-worktree \
+  --frozen --no-dev --no-install-project --no-build --no-python-downloads \
+  --python /usr/bin/python3.14
+```
+
+This installs existing locked binary dependencies only, without installing the
+project. Do not reuse the shared development environment or change the lock.
+An unavailable wheel/interpreter/build requirement stops execution. Retain the
+actual command, tool/interpreter versions and native exit. Hashing and static
+native-dependency inspection may occur on host; no product import, constructor,
+SQL fixture preparation or reader call may occur there.
+
+Input JSON is closed and accepts only this allocation's synthetic origin:
+
+```json
+{"format":"coding-reader-history-input@1","origin":"SYNTHETIC","org_slug":"synthetic-reader","fixture":"full-j-release-v1","source_head":"FULL_40_HEX_COMMIT"}
+```
+
+The separately retained environment manifest is closed too. Its keys are
+`format` (`coding-reader-frozen-environment@1`), `lock_sha256`, `environment_root`,
+`interpreter` (canonical `/usr/bin/python3.14`), `stdlib`
+(`/usr/lib/python3.14`), `site_packages` (canonical private env path), `files`
+(absolute-path→SHA256 for the entire site tree and explicitly selected stdlib,
+interpreter, pyvenv.cfg and native-library files), `native_libraries` (explicit canonical
+system library paths), `distributions` (installed name→version), `wheels`
+(distribution→hash of its installed WHEEL metadata), and `metadata` (interpreter
+`version` integer array, runtime/lock/install provenance, explicit native SONAME
+aliases, and `wheel_archives`). `wheel_archives` maps EVERY installed normalized
+name to the closed `{path, sha256, filename}` of an actual owned `.whl` beneath
+the environment's task-scratch parent. Acquire only existing locked wheel
+artifacts outside isolation. The parent verifies their actual SHA256 against
+uv.lock and compares archive payload files with installed bytes (installation
+RECORD is separately inventoried); unsupported wheel data paths refuse. Installed
+WHEEL metadata alone is insufficient and refuses before product execution. Every mounted
+file must have a retained digest. The exact stdlib/native closure is explicit,
+with no broad `/usr`, `/lib` or host-home mount. The loader's `/lib64` operand is
+derived only from the canonical loader admitted in BOTH `files` and
+`native_libraries`, with its actual digest checked before command construction
+and again in the closing environment bookend. Missing native dependencies
+or environment metadata are setup failure, never a reader observation.
+
+The parent has closed options, a fresh output directory and closed child env/fds.
+The child gets new user/mount/network/PID/IPC/UTS/cgroup namespaces; source,
+interpreter, dependencies and resources are read-only. Only its owned `/work`,
+`/tmp` and result paths are writable. It records namespace deltas, loopback-only
+interfaces, environment, interpreter, absent host home/runtime/config/socket
+paths and an empty cwd **before** adding product paths or importing product code.
+Product subprocess/network operations are refused. Import/resource tracing must
+agree with the inventory. These are bounded synthetic observations, not hostile
+same-user security certification or hard OS-I/O timing guarantees.
+
+The embedded driver uses the ordinary full native Database and complete J fresh
+initializer on separate ordinary in-memory SQLite connections, checks the independently
+constructed pristine whole native/J reference, and retains
+all schema definitions/columns/FKs/index metadata and saved native rows. In-memory
+storage avoids native WAL scratch expansion under the unchanged 2MiB file bound;
+it neither reduces the schema nor uses the candidate as the reference. Its
+synthetic fixed publication uses separately retained fixture inputs and compares
+returned identity/version/original command and six full typed rows. It does not
+call the publication constructor to derive its oracle. Human-looking strings
+in these disposable rows prove no actual Founder action, task/SID, native launch,
+current grant or authentic publication. Authentic history is not an input in this
+allocation. Complete fixture recognition must succeed before negative siblings.
+
+Implemented observations cover absent/valid omitted and explicit None; actual
+supplied budget's prior work and wrong-type categories; foreign-org, malformed,
+full-row/storage/command/admission/journal, extra and orphan siblings; queued and
+complete J `validate_data=False` success/refusal; caller transaction and prior
+uncommitted native noncoding work; and standalone queued transaction closure.
+Each records bounded actual SQL statement prefixes plus whole-statement hashes/byte
+lengths, native rows/integrity/FKs, in_transaction and
+available actual budget counters. Prior-consumption/lower-bound assertions are
+optional-path coverage only, never aggregate-composition acceptance. Populated old-history uses the actual version-aware @1 template reader,
+ordinary native task/result constructors and complete-J/queued readers; exact
+bytes, pins, typed rows and caller ownership remain observable. Natural aggregate
+attempts record per-component before/after counters and bounded actual SQL trace,
+with input-derived intermediate-copy sizes. Real release entry/return observations
+also assert cumulative candidate deltas and forwarding through the supplied budget.
+Candidate8193 remains an explicit outstanding broader target even on scoped GREEN.
+
+Exit0 requires the complete assigned observation table and teardown; exit1 is
+contract assertion RED with observed/expected values; exit2 is incomplete,
+setup/isolation/input/fixture/dependency failure and never RED. Missing assigned
+observations or unexpected unproved gaps force exit2; the explicitly outstanding
+broader candidate8193 target remains visible independently of assigned completion. The foreground invocation is bounded at60s, native
+wait at most55s, each observed case at2s, CPU40s, address space768MiB, per-child
+file2MiB and128 descriptors. No sleep/hang/retry is used. Timeout kills and reaps
+the owned process group; namespace teardown owns private fixture storage. Output
+retains `receipt.json`, native stdout/stderr and complete original driver observations
+in deterministic `observations.json.gz` (2MiB compressed/16MiB expanded bounds).
+The concise receipt indexes cases and failed assertions; full schema/rows/query
+traces remain in that compressed artifact. Compression preserves the file bound.
+Source/input/environment identities are checked again on refusal as well as
+success. Existing output is never reused or removed. No historical cleanup runs.
+
+Step12 separately allocates M1 release budget reset, M2 queued forwarding loss,
+M3 complete-J forwarding loss, M4 nested byte/traversal reservation loss,
+M5 full typed publication equality weakening and M6 caller rollback regression.
+Each requires an initial complete GREEN, one intended full-table RED on an owned
+registered guarded local proof commit, byte-exact forward restoration and GREEN.
+Proof mutation remains forbidden until an actual initial complete GREEN exists.
+The accepted scoped completion requires all assigned42+14 observations and
+allocated sensitivity/restoration/teardown proof. The authentic original
+candidate8193 native0/verifier2/42-INCOMPLETE receipt remains history, and the
+broader candidate8193 target remains explicitly UNPROVED. Assigned accounting
+and traversal dominance are only a partial prerequisite, never candidate-guard,
+full F5/F8/program/runtime or all-org PASS. Unexpected assigned `unproved` gaps
+still prevent exit0. The final candidate owes complete GREEN plus five fresh-process full-table
+repetitions. Missing proof is review-blocking under test-authoring-evidence-gate;
+no conditional test-authoring PASS follows from source or subset counts.
+
+The PR case record retains each assertion's four authoring answers and actual
+attribution. Full independent review and genuine FAILED12291-linked same-final-head
+QA remain root-owned, followed by two exact-head lints and genuine live-manager
+guarded merge/remote observation. Python units stay RETIRED; general integration
+INCLUDING callback is SKIPPED THR243seq42; E2E/build/native lifecycle tests are not
+selected. Full consume/support/settings/@3/team_move and actual actors/scopes,
+release import, installed/serving runtime, scratch merge/rollback/two-org/backup
+remain separate unfinished prerequisites. No coding readiness or live operation
+follows from this support.
+
+
+Step17 adds exactly14 safeguards in the same command: L0–L3, R0–R7,
+A-traversal and A-bytes. `--case-set reader-support` selects their proof disposition
+while retaining the real reader siblings and aggregate fixtures; no automatic
+CI/hook/merge lane is added. The closed `loader-L0` through `loader-L3` selections
+are fresh stdlib controllers for those four records, not arbitrary script selectors.
+A standard immutable synchronous Popen audit veto precedes actual verifier main.
+L0 expects one intercepted bwrap attempt and raw verifier2; L1 omitted membership,
+L2 wrong digest and L3 noncanonical alias expect exact setup2 and zero attempts.
+Git source probes are separate. No loader record spawns bwrap or imports product;
+the full qualified reader sibling supplies actual positive namespace execution.
+Each loader record independently projects actual inner `receipt.environment_before`:
+L0 requires its exact canonical loader, both memberships and original digest;
+L1–L3 require the key ABSENT, distinct from present/null/empty/malformed. Revised
+S1 optional fixed-loader admission and S3 alias admission change only
+`admit_loader`; their intended RED observes invalid persisted admission before
+the unchanged later native-alias guard, never an invented bwrap attempt.
+
+Destructive queued observations use pre-read serialized SQLite fixture INPUT,
+with a committed independent baseline and genuine caller BEGIN/uncommitted
+sentinel on the actual disposable connection. Transaction/native-row/integrity
+effects are observed before disposal. Supplied budgets remain the identical
+objects, including across aggregate queued/release phases; isolation does not
+replenish work. Original fixture/savepoints remain independent input for later
+rows, not a product transaction repair or candidate-returned-row oracle.
+
+One shared support scope protects installation, pre-snapshot, actual work,
+post-snapshot/assertions and unconditional detach/disarm/handler restoration.
+R0 normal/R1 refusal/R2 delivered alarm/R3 exactly2048 real trace events/R4 sticky
+2049 plus one extra event/R5 pre-snapshot/R6 post-reader/R7 partial-install fault
+record actual timer/handler/callback state and cause. SQLite callback exceptions
+may be swallowed; sticky overflow is checked outside the callback. R2 proves
+arming/delivery only, never elapsed expiry or a hard wall. Every resource record
+observes a real post-scope SELECT and a fresh sibling. Both A records observe
+actual aggregate caller snapshots/reader entries under live2s/2048-event bounds,
+with original product/counter/transaction assertions. Independent outer containment
+runs AFTER failed-cleanup observations, never converting cleanup failure to PASS.
+The existing standalone queued row enters the same shared scope before trace
+installation/snapshots/work/observations. An outside standard observer checks
+actual queued/release/snapshot/observation live timers, bounded callback ledger,
+real BEGIN1/ROLLBACK1 and final transaction false; cleanup and actual post-scope
+SELECT/fresh sibling are observed before immutable outer containment.
+Expected negative raw setup2 outcomes remain distinct from support assertion0/1.
+
+Only the allocated M1–M6 product and S1/S2/S3/S4/S5/S6a/S6b/S7/S8 support variants
+may establish sensitivity, one at a time in guarded registered clean proof
+worktrees. Each needs full assigned intended assertion RED1, normal forward
+byte-exact restoration and GREEN; setup/import/oracle failures are not RED.
+The loader audit veto, outer containment and source/dependency fences remain
+immutable. Final restored reader/support GREEN and five fresh-process repetitions
+remain required. Preserve every failed/incomplete receipt; historical native0/
+verifier2/42-INCOMPLETE is unchanged. Source review and independent same-head
+executable QA are separate gates. Python units are RETIRED; general integration
+INCLUDING callback SKIPPED24342. Old ROOT10693 waivers are historical, and do not
+waive this current finite campaign or establish authentic/live readiness.
+
+
+R/A `scope_outcome_code` records the caught SUPPORT-scope outcome (2 refusal,
+0 normal return); it is not a separate OS process exit. L `raw_verifier_exit`
+is the actual recursively invoked verifier-main result under the immutable veto.
+The physical namespace/controller exits and top-level verifier assertion result
+remain separately recorded. The closed loader selections pass the same interpreter,
+source-script and owned-output admission as the full command before dispatch.

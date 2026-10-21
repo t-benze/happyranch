@@ -12,7 +12,7 @@ import re
 import sqlite3
 from dataclasses import dataclass
 
-from runtime.workflows.coding_authority_history import _Budget, _capture_admission, _rows
+from runtime.workflows.coding_authority_history import _Budget, _bounded_rows, _capture_admission, _rows
 from runtime.workflows.coding_saved_records import _Ancestry, _capture, _json, _timestamp
 from runtime.workflows.release_templates import (
     CODING_DEFINITION_DIGEST, validate_coding_release,
@@ -23,6 +23,80 @@ NAMESPACE = 'release/happyranch'
 PINS = ('workflow-coding-compiler@1', 'workflow-coding-validator@1', 'release-input@1')
 PUBLISHER = dict(principal_kind='human', principal_id='founder', proof_kind='founder_bearer')
 COMMAND_LIMIT = 1024
+_VALUE_LIMIT = 1048576
+# Lexical reservation only. The original strict parsers still decide grammar,
+# duplicate keys, canonical bytes and all historical meanings. In particular,
+# matching a token here does not admit malformed JSON or escaped controls.
+_JSON_TOKEN = re.compile(rb'"(?:[^"\\]|\\[\s\S])*"|[^"{}\[\],:\s]+|[{}\[\],:]|\s+')
+
+
+def _steps(budget: _Budget, count: int) -> None:
+    for _ in range(count):
+        budget.step()
+
+
+def _copies(budget: _Budget, size: int) -> None:
+    _check(0 <= size <= budget.remaining_bytes)
+    budget.consumed += size
+
+
+def _json_work(raw: bytes, budget: _Budget, *, copies: int, passes: int) -> None:
+    """Reserve serialized intermediates and visits BEFORE the pure reader.
+
+    Tokens include every member/key/value, delimiter and whitespace run, even
+    in a malformed prefix. Strings stay one lexical token; their whole byte
+    length participates in the copy allowance. No decoded tree or token list
+    is built here. Copies conservatively include UTF8/JSON/canonical buffers;
+    this is finite cooperative work, not a process/SQL memory or time bound.
+    """
+    _check(type(raw) is bytes and 0 < len(raw) <= _VALUE_LIMIT)
+    _copies(budget, copies * len(raw))
+    offset = 0
+    while True:
+        _steps(budget, passes)  # includes terminal and invalid-token attempts
+        if offset == len(raw):
+            return
+        token = _JSON_TOKEN.match(raw, offset)
+        _check(token is not None)
+        offset = token.end()
+
+
+def _base64_work(value: object, budget: _Budget, *, limit: int, copies: int) -> bytes:
+    _check(type(value) is str and 0 < len(value) <= 4 * ((limit + 2) // 3))
+    # Each copy allows ASCII input, decoded bytes, canonical re-encoding and
+    # its ASCII text. Charge before even the local preflight decode.
+    _copies(budget, copies * 4 * len(value))
+    budget.step()
+    raw = base64.b64decode(value, validate=True)
+    _check(0 < len(raw) <= limit and base64.b64encode(raw).decode('ascii') == value)
+    return raw
+
+
+def _capture_work(capture: dict, budget: _Budget) -> None:
+    # Preflight + _capture + _capture_admission all decode the snapshot. The
+    # nested _json/_snapshot/native snapshot validator/_profiles reconstruct
+    # and traverse it; eight lexical passes/copies conservatively cover those
+    # visits/serializations, including policy models and sorted projections.
+    snapshot = _base64_work(capture['snapshot_bytes_base64'], budget,
+                            limit=_VALUE_LIMIT, copies=3)
+    _json_work(snapshot, budget, copies=8, passes=8)
+    grant = _base64_work(capture['grant_bytes_base64'], budget,
+                         limit=_VALUE_LIMIT, copies=2)
+    _json_work(grant, budget, copies=4, passes=2)
+    encoded = capture['profile_evidence']['ready']['snapshot_bytes_hex']
+    _check(type(encoded) is str and 0 < len(encoded) <= 2 * _VALUE_LIMIT)
+    # Both _profiles and _capture_admission reconstruct hex bytes. Their
+    # original lowercase/even-length/value-equality checks remain decisive.
+    _copies(budget, len(encoded))
+    _steps(budget, 2)
+
+
+def _absent(conn: sqlite3.Connection, table: str, column: str, value: str,
+            budget: _Budget) -> None:
+    # Fixed internal declarations only; include empty and rejected probes.
+    budget.step()
+    _check(not list(_rows(conn, f'SELECT 1 FROM {table} WHERE {column}=? LIMIT 1',
+                          (value,), 1, budget)))
 
 
 def canonical(value: object) -> bytes:
@@ -111,44 +185,59 @@ def publication_rows(*, org_slug: str, definition: bytes, provenance: dict) -> R
 def _fetch(conn: sqlite3.Connection, table: str, expected: dict, where: str,
            args: tuple, budget: _Budget) -> list[dict]:
     # Table/column/where fragments are exclusively internal fixed declarations.
-    projections, types = [], []
-    for column, value in expected.items():
-        kind = {str: 'text', bytes: 'blob', int: 'integer'}[type(value)]
-        bound = f' AND length(CAST("{column}" AS BLOB))<=1048576' if kind != 'integer' else ''
-        projections.append(f'CASE WHEN typeof("{column}")=\'{kind}\'{bound} THEN "{column}" ELSE NULL END')
-        types.append(kind)
-    query = 'SELECT ' + ','.join(projections + [f'typeof("{key}")' for key in expected])
-    query += f' FROM {table} WHERE {where} LIMIT 2'
-    return [dict(zip(expected, budget.row(row, tuple(types), counted=True), strict=True))
-            for row in _rows(conn, query, args, 1, budget)]
+    _steps(budget, 2 * len(expected) + 1)
+    types = tuple({str: 'text', bytes: 'blob', int: 'integer'}[type(value)]
+                  for value in expected.values())
+    # Gate the WHOLE row against remaining shared bytes/candidates before
+    # fetching. Invalid native classes and the overflow candidate still refuse.
+    result = []
+    for row in _bounded_rows(conn, table, tuple(expected),
+            tuple((kind,) for kind in types), budget, where=where, args=args, maximum=1):
+        # row() retains its strict positive-value contract and computes UTF8
+        # lengths again. Reserve that additional encoding before calling it.
+        _steps(budget, len(expected))
+        _copies(budget, sum(4 * len(value) for value in row[:len(expected)] if type(value) is str))
+        result.append(dict(zip(expected, budget.row(row, types, counted=True, charged=True), strict=True)))
+    return result
 
 
-def read_release_import(conn: sqlite3.Connection, *, expected_org_slug: str | None) -> ReleaseImportHistory | None:
+def read_release_import(conn: sqlite3.Connection, *, expected_org_slug: str | None,
+                        budget: _Budget | None = None) -> ReleaseImportHistory | None:
     """Prove the whole immutable import, including native admission/publication.
 
     No ID exemptions: every supported row must equal its independently derived
     full typed row. Orphan/extra release drafts, versions, links and operations
     refuse. Revoked present authority never invalidates genuine old history.
+    Omitted/None owns one allowance; a supplied actual _Budget stays cumulative.
+    Local pre-accounting reserves nested pure-reader work before expansion;
+    their independent stricter parser/value/ancestry limits remain in force.
     """
     try:
         _check(type(conn) is sqlite3.Connection and conn.in_transaction)
-        budget = _Budget()
+        _check(budget is None or type(budget) is _Budget)
+        budget = _Budget() if budget is None else budget
+        budget.step()
         # Seed discovery is bounded before fetch; no compiler-pin-only admission.
-        seed = list(_rows(conn, "SELECT CASE WHEN typeof(published_by)='text' "
-            "AND length(CAST(published_by AS BLOB))<=1048576 THEN published_by ELSE NULL END,"
-            "typeof(published_by) FROM workflow_template_versions WHERE namespace=? LIMIT 2",
-            (NAMESPACE,), 1, budget))
+        seed = list(_bounded_rows(conn, 'workflow_template_versions', ('published_by',),
+            (('text',),), budget, where='namespace=?', args=(NAMESPACE,), maximum=1))
         if not seed:
             for table in ('workflow_template_drafts', 'workflow_template_identities'):
-                _check(conn.execute(f'SELECT 1 FROM {table} WHERE namespace=? LIMIT 1',
-                                    (NAMESPACE,)).fetchone() is None)
+                _absent(conn, table, 'namespace', NAMESPACE, budget)
+            _steps(budget, 8)
+            _copies(budget, 512)  # fixed stable-ID canonical preimage/result
             identity = _stable_id('workflow-template', NAMESPACE, 'coding')
             for table in ('workflow_template_identity_versions', 'workflow_template_publish_operations'):
-                _check(conn.execute(f'SELECT 1 FROM {table} WHERE template_identity_id=? LIMIT 1',
-                                    (identity,)).fetchone() is None)
+                _absent(conn, table, 'template_identity_id', identity, budget)
             return None
-        (text,) = budget.row(seed[0], ('text',), counted=True)
-        provenance = _json(text.encode('utf8'), 1048576)
+        _copies(budget, 4 * len(seed[0][0]))  # row()'s extra UTF8 length encoding
+        (text,) = budget.row(seed[0], ('text',), counted=True, charged=True)
+        _copies(budget, 4 * len(text))  # before UTF8 expansion, even invalid text
+        provenance_raw = text.encode('utf8')
+        # Reserve outer JSON/canonicalization, capture/pin/profile traversal,
+        # both admission canonicals and publication provenance reconstruction.
+        # Encoded snapshot/grant JSON is accounted separately before _capture.
+        _json_work(provenance_raw, budget, copies=12, passes=6)
+        provenance = _json(provenance_raw, _VALUE_LIMIT)
         _check(set(provenance) == {'format', 'org_slug', 'publisher', 'command_bytes_base64',
                                  'command_digest', 'admission', 'created_at'})
         _check(provenance['format'] == 'workflow-coding-release-import-provenance@1'
@@ -157,25 +246,58 @@ def read_release_import(conn: sqlite3.Connection, *, expected_org_slug: str | No
         _check(type(org_slug) is str and re.fullmatch(r'[a-z][a-z0-9-]{0,62}', org_slug) is not None
                and (expected_org_slug is None or org_slug == expected_org_slug))
         _timestamp(provenance['created_at'])
-        raw = base64.b64decode(provenance['command_bytes_base64'], validate=True)
-        _check(base64.b64encode(raw).decode('ascii') == provenance['command_bytes_base64'])
+        raw = _base64_work(provenance['command_bytes_base64'], budget,
+                           limit=COMMAND_LIMIT, copies=2)
+        _json_work(raw, budget, copies=8, passes=2)  # now and publication_rows
         parse_import_command(raw)
         _check(provenance['command_digest'] == _digest(raw))
         admission = provenance['admission']
         _check(type(admission) is dict and set(admission) == {'record', 'capture'})
+        _capture_work(admission['capture'], budget)
         grant, _ = _capture(admission['capture'], org_slug, _Ancestry())
         capture = admission['capture']
         expected_admission = dict(id=capture['admission_record_id'], namespace=capture['pin']['namespace'],
             generation=capture['pin']['generation'], request_digest=_digest(raw), admitted_by='human:founder')
         _check(grant == raw and canonical(admission['record']) == canonical(expected_admission))
+        # The shared native helper re-encodes TEXT for row()/strict text
+        # checks. Its original journal publisher/invocation/recovery fields
+        # are not all in the capture. Read only bounded integer lengths first,
+        # charging those candidates too; never fetch private payloads and then
+        # charge their expansion after the helper has already performed it.
+        ready = capture['profile_evidence']['ready']
+        pointer = capture['profile_evidence']['pointer']
+        for table, columns, where, args in (
+            ('workflow_admission_records', ('id', 'namespace', 'request_digest', 'admitted_by'),
+             'id=?', (expected_admission['id'],)),
+            ('workflow_publication_journals', ('id', 'namespace', 'snapshot_digest', 'publisher',
+                'publisher_invocation', 'state', 'recovery_owner', 'file_phase_owner'),
+             'id=? OR (namespace=? AND generation=? AND snapshot_digest=?)',
+             (pointer['journal_id'], ready['namespace'], ready['generation'], ready['snapshot_digest'])),
+        ):
+            _steps(budget, 2 * len(columns) + 1)
+            sizes = ','.join(f'CASE WHEN typeof("{column}")=\'text\' '
+                f'THEN length(CAST("{column}" AS BLOB)) ELSE 0 END' for column in columns)
+            for lengths in _rows(conn, f'SELECT {sizes} FROM {table} WHERE {where} LIMIT 2',
+                                  args, 1, budget):
+                _steps(budget, len(columns))
+                _check(all(type(size) is int and 0 <= size <= _VALUE_LIMIT for size in lengths))
+                _copies(budget, 2 * sum(lengths))
         _capture_admission(conn, expected_admission, capture, budget)
         # The release is already saved; validation uses its bytes, not package I/O.
-        definition_rows = list(_rows(conn, "SELECT CASE WHEN typeof(definition_bytes)='blob' "
-            "AND length(definition_bytes)=634 THEN definition_bytes ELSE NULL END,typeof(definition_bytes) "
-            'FROM workflow_template_versions WHERE namespace=? LIMIT 2', (NAMESPACE,), 1, budget))
-        (definition,) = budget.row(definition_rows[0], ('blob',), counted=True)
+        definition_rows = list(_bounded_rows(conn, 'workflow_template_versions', ('definition_bytes',),
+            (('blob',),), budget, where='namespace=?', args=(NAMESPACE,), maximum=1, value_limit=634))
+        (definition,) = budget.row(definition_rows[0], ('blob',), counted=True, charged=True)
+        _check(len(definition) == 634)
+        _json_work(definition, budget, copies=4, passes=2)
+        # Six fixed row dictionaries (at most 13 columns each), three stable
+        # IDs/digests and their bounded literals/scalars. Dynamic provenance,
+        # command and definition intermediates were reserved above. Include
+        # the six-row matches traversal, before constructing any returned row.
+        _steps(budget, 6 * 32)
+        _copies(budget, 4096)
         history = publication_rows(org_slug=org_slug, definition=definition, provenance=provenance)
         for table, expected in history.rows:
+            budget.step()
             if table in ('workflow_template_drafts', 'workflow_template_versions', 'workflow_template_identities'):
                 where, args = 'namespace=? OR id=?', (NAMESPACE, expected['id'])
             elif table in ('workflow_template_identity_versions', 'workflow_template_publish_operations'):
@@ -187,8 +309,7 @@ def read_release_import(conn: sqlite3.Connection, *, expected_org_slug: str | No
         # Unsupported activations/bindings cannot use import as execution authority.
         for table, column in (('workflow_activations', 'template_version_id'),
                               ('workflow_binding_snapshots', 'template_version_id')):
-            _check(conn.execute(f'SELECT 1 FROM {table} WHERE {column}=? LIMIT 1',
-                                (history.version_id,)).fetchone() is None)
+            _absent(conn, table, column, history.version_id, budget)
         return history
-    except (ValueError, TypeError, KeyError, IndexError, UnicodeError, RecursionError, sqlite3.Error):
+    except (ValueError, TypeError, KeyError, IndexError, UnicodeError, RecursionError, OverflowError, sqlite3.Error):
         raise ValueError('coding_release_import_history_invalid') from None
