@@ -411,8 +411,15 @@ Darwin selects custody revision 5 (`1happyranchcustody5`) with descriptor-relati
 snapshot writes and ZIP metadata budgets enforced before allocation. Revision 5
 adds the missing `api.py` module-global `hashlib` import for the existing COLLECT
 ledger digest, preserving its reader and limits. Build14 failed there after both
-EXEs built; app inspection was not reached. Custody5 has source/repack evidence
-only, with native confirmation still unexecuted. The original
+EXEs built; app inspection was not reached. Custody5 build15
+(`39518819733`, attempt1, input `a9970abb52e3a444c7172674a1eca360a08f8c00`)
+completed both EXEs and COLLECT, then failed in the base-library ZIP observer:
+CPython3.12.10's ZipFile member reader requires `seekable()`, absent on mmap.
+The observer now borrows the held snapshot mapping through a seekable read
+interface, without a whole-container copy or path reopen. Metadata admission
+still precedes ZipFile allocation; closing the interface leaves mapping and
+descriptor ownership with the enclosing snapshot context. Native confirmation
+of this helper repair remains UNEXECUTED; build15 is not a package pass. The original
 base-library producer sorts modules by name before each original lane capture,
 with or without custody. It retains membership, cached-code selection,
 optimization and ZIP member bytes.
@@ -444,8 +451,9 @@ rejected size/content remain UNKNOWN; finite capacities do not guarantee native
 success. Original schema/notice/guard/default/occurrence semantics remain.
 The new wheel/provenance/lock/wrapper/reader pins agree; historical revision 1/2/3
 evidence and retained wheels keep their original identities. Deterministic
-source-repack reproduction is separate from Darwin install/compatibility, actual
-lane equality and fresh-reader behavior, which remain UNEXECUTED/UNVERIFIED.
+source-repack reproduction and build15's EXE/COLLECT success do not establish
+changed-helper Darwin compatibility, complete lane equality or fresh-reader
+behavior, which remain UNEXECUTED/UNVERIFIED.
 App/archive/receipt and final manifest notices remain NOT_REACHED; original-backed
 notice precedence, unsafe-original refusal, exact missing-original fallback and
 both-lane interpreter/RECORD/native ownership obligations are unchanged.
