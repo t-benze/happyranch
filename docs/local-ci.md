@@ -1122,7 +1122,8 @@ separate read-only `_gh_fetch_merge_result` observation, and one earlier extract
 conflict. A6 compares independent CLI failure/exit/absent merged metadata and
 native cause against the observer's successful actual remote values and the
 combined one-action ledger. Raw process receipts stay separate; rereading a
-harness-owned receipt file supplies no product immutability evidence. Each case is bounded at5s, the invocation at60s, with fixed51 cases,
+harness-owned receipt file supplies no product immutability evidence. Each case
+is bounded at5s, the invocation at60s, with fixed51 cases,
 128KiB per-file output limits, CPU/memory bounds and owned process teardown.
 No real timeout sleep, retry, second action or production injection seam exists.
 
