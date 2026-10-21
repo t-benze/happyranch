@@ -25,12 +25,23 @@ import zipfile
 LIMIT = 2 * 1024 * 1024
 NAMESPACES = ('user', 'mnt', 'net', 'pid', 'ipc', 'uts', 'cgroup')
 INVENTORY = 'scripts/coding_reader_verification_manifest.json'
-UNPROVED = {
-    'F5-R1c.aggregate-candidates': 'No admitted multi-owner aggregate fixture/calibration yet.',
-    'F5-R1c.aggregate-intermediate-bytes': 'No admitted multi-owner decoded/canonical/base64/hex crossing yet.',
-    'F5-R1c.aggregate-traversal': 'No admitted multi-owner traversal crossing yet.',
-    'F8-R1c.noncoding-old-history': 'Populated historical/noncoding siblings remain unimplemented.',
-}
+# Completion is tied to executed stable case IDs, never the absence of a TODO.
+REQUIRED_CASES = (
+    'F5-R1c.absent.omitted', 'F5-R1c.absent.none',
+    'F5-R1c.valid.omitted', 'F5-R1c.valid.none', 'F5-R1c.supplied.prior-work',
+    'F5-R1c.wrong-budget', 'F5-R1c.foreign-org',
+    *(f'F5-R1c.{control}.{outcome}' for control in
+      ('malformed','full-row','strict-storage','command','journal','admission','extra','orphan')
+      for outcome in ('positive','refusal')),
+    'F8-R1c.queued.caller-success', 'F8-R1c.queued.supplied',
+    'F8-R1c.schema.data-false', 'F8-R1c.queued.caller-uncommitted',
+    'F8-R1c.queued.wrong-budget', 'F8-R1c.queued.caller-refusal',
+    'F8-R1c.schema.refusal', 'F5-R1c.transaction-required', 'F8-R1c.queued.standalone',
+    'F8-R1c.noncoding-old-history',
+    'F5-R1c.aggregate-candidates', 'F5-R1c.aggregate-intermediate-bytes',
+    'F5-R1c.aggregate-traversal',
+)
+
 
 # This driver is data in the host parent, never exec/imported there. Qualification
 # precedes sys.path changes and the first product import/SQL constructor.
@@ -40,7 +51,7 @@ import base64, hashlib, json, os, signal, socket, sqlite3, sys, time
 from collections.abc import Callable
 from pathlib import Path
 cfg = json.loads(Path('/fixture/config.json').read_text())
-result = {'origin':'SYNTHETIC', 'cases':[], 'unproved':cfg['unproved'], 'complete':False}
+result = {'origin':'SYNTHETIC', 'cases':[], 'unproved':{}, 'required_cases':cfg['required_cases'], 'complete':False}
 qualified = False
 
 def save() -> None:
@@ -99,6 +110,9 @@ try:
         raise RuntimeError('isolation qualification refused')
     qualified = True
     save()  # durable pre-import qualification observation
+    # Redirect importlib's absent bytecode probes away from the sealed source.
+    # -B still forbids writes; no cached bytecode is mounted or admitted.
+    sys.pycache_prefix = '/tmp/absent-bytecode'
     sys.path[:0] = ['/src', '/deps']
     opened, imported = set(), set()
     admitted_source = set(cfg['source_files'])
@@ -106,7 +120,7 @@ try:
         if event == 'open' and isinstance(args[0], str):
             p = Path(args[0])
             if str(p).startswith('/src/') and str(p)[5:] not in admitted_source:
-                raise RuntimeError('unlisted source/resource access')
+                raise RuntimeError('unlisted source/resource access: '+str(p))
             opened.add(str(p))
         if event == 'import':
             name = args[0]
@@ -208,7 +222,12 @@ try:
             signal.setitimer(signal.ITIMER_REAL,2)
             before = saved_rows(conn)
             transaction = conn.in_transaction
-            conn.set_trace_callback(trace.append)
+            def traced(statement: str) -> None:
+                if len(trace) >= 2048:
+                    raise RuntimeError('case trace bound')
+                raw = statement.encode()
+                trace.append(dict(sql=statement[:320], bytes=len(raw), sha256=digest(raw)))
+            conn.set_trace_callback(traced)
             try:
                 try:
                     value = action()
@@ -231,7 +250,7 @@ try:
                     category = str(exc)
                 equal(checks, 'category-only outcome', category, expected_category)
                 equal(checks, 'caller transaction preserved', conn.in_transaction, transaction)
-                equal(checks, 'all native rows unchanged', saved_rows(conn), before)
+                equal(checks, 'all native rows unchanged', digest(canonical(saved_rows(conn))), digest(canonical(before)))
                 equal(checks, 'no foreign key violation', list(conn.execute('PRAGMA foreign_key_check')), [])
                 equal(checks, 'native integrity', list(conn.execute('PRAGMA integrity_check')), [('ok',)])
             finally:
@@ -297,6 +316,146 @@ try:
                     for v in row.values() if isinstance(v,(str,bytes)))
         equal(result['cases'][-1]['checks'],'release raw bytes charged to caller',qb.consumed >= 17+minimum,True)
         observe('F8-R1c.schema.data-false',lambda: _validate_installed(conn,expected_org_slug=org,validate_data=False),kind='schema')
+        # Populated literal @1 history and ordinary native rows. The public
+        # native constructors run only here, after qualification. None is an
+        # authentic actor/callback/publication claim or grants live authority.
+        from runtime.models import TaskRecord, TaskStatus
+        from runtime.workflows.templates import WorkflowTemplateStore
+        from datetime import datetime, timezone
+        native_stamp = datetime(2001,2,3,4,5,6,tzinfo=timezone.utc)
+        conn.commit()
+        db.insert_task(TaskRecord(id='SYNTHETIC-OLD-TASK', status=TaskStatus.COMPLETED,
+            assigned_agent='synthetic_worker', team='synthetic', brief='SYNTHETIC ordinary old task',
+            created_at=native_stamp, updated_at=native_stamp, completed_at=native_stamp))
+        db.insert_task_result(task_id='SYNTHETIC-OLD-TASK', agent='synthetic_worker',
+            session_id='SYNTHETIC-OLD-SID', output_summary='SYNTHETIC old noncoding result',
+            confidence_score=0, learnings='literal prose ☃\n', decision_json='{"action":"done"}')
+        conn.execute('BEGIN')
+        old_definition = canonical(dict(kind='product-design', schema_version=1,
+            description='SYNTHETIC preserved @1 document',
+            author=dict(role='product-lead',kind='agent',artifact='immutable-prd-revision'),
+            reviewers=[dict(role='founder',kind='human'),dict(role='implementer',kind='agent'),
+                       dict(role='tester',kind='agent')],
+            approval=dict(mode='all',revision='current',required_roles=['founder','implementer','tester']),
+            request_changes=dict(action='return-to-author')))
+        old_ns='org/'+org+'/team/synthetic'
+        old_identity=stable('workflow-template',old_ns,'legacy-document')
+        old_draft='SYNTHETIC-OLD-DRAFT';old_version='SYNTHETIC-OLD-VERSION'
+        old_publisher=canonical(dict(principal_kind='human',principal_id='founder',proof_kind='founder_bearer')).decode()
+        old_common=dict(namespace=old_ns,template_name='legacy-document',definition_bytes=old_definition,
+            definition_digest=digest(old_definition),compiler_pin='workflow-compiler@1',
+            validator_pin='workflow-validator@1',source_pin='operator-input@1')
+        insert('workflow_template_identities',dict(id=old_identity,namespace=old_ns,
+            template_name='legacy-document',current_version=1,status='active',created_at=stamp))
+        insert('workflow_template_drafts',dict(id=old_draft,**old_common,author_principal=old_publisher,created_at=stamp))
+        insert('workflow_template_versions',dict(id=old_version,draft_id=old_draft,version=1,
+            **old_common,published_by=old_publisher,published_at=stamp))
+        insert('workflow_template_identity_versions',dict(template_identity_id=old_identity,version=1,
+            template_version_id=old_version,content_digest=digest(old_definition)))
+        def old_history() -> str:
+            # The actual version-aware template parser validates literal @1.
+            conn.row_factory=sqlite3.Row
+            try:
+                template=WorkflowTemplateStore(db).get(org_slug=org,namespace=old_ns,
+                    template_name='legacy-document',version=1)
+            finally:
+                conn.row_factory=None
+            if template.definition_bytes != old_definition or template.compiler_pin != 'workflow-compiler@1':
+                raise RuntimeError('old @1 fixture setup did not retain original bytes/pins')
+            queued_storage(conn,org)
+            return _validate_installed(conn,expected_org_slug=org,validate_data=False)
+        if old_history() != 'J':
+            raise RuntimeError('populated native/document fixture not admitted')
+        observe('F8-R1c.noncoding-old-history',old_history,kind='schema')
+        result['populated_history_rows']=saved_rows(conn)
+
+        # Natural prior reader work: never preset an exhausted counter or
+        # change an allowance. Every component has an immediately admitted
+        # fresh-budget positive sibling. The expected limits are the original
+        # contract constants, not inferred from a second product call.
+        def aggregate(label: str, target: str) -> None:
+            checks=[]; components=[]; trace=[]
+            before=saved_rows(conn); transaction=conn.in_transaction
+            b=_Budget()
+            conn.set_trace_callback(lambda sql: trace.append(dict(sql=sql[:180],bytes=len(sql.encode()),
+                                                                  sha256=digest(sql.encode()))))
+            category=None
+            try:
+                # queued's real mapping/import/native owners first, followed
+                # by ordinary release reads using the identical actual budget.
+                for sequence in range(24):
+                    positive=read_release_import(conn,expected_org_slug=org)
+                    if positive is None or positive.command_bytes != command:
+                        raise RuntimeError('aggregate positive setup unavailable')
+                    prior=vars(b).copy()
+                    try:
+                        if sequence == 0:
+                            queued_storage(conn,org,budget=b)
+                        else:
+                            read_release_import(conn,expected_org_slug=org,budget=b)
+                    except ValueError as exc:
+                        category=str(exc)
+                    components.append(dict(sequence=sequence,before=prior,after=vars(b).copy(),category=category))
+                    if category is not None:
+                        break
+                equal(checks,'exact category-only refusal',category,invalid)
+                equal(checks,'whole allowance never reset',all(
+                    c['after'][key]>=c['before'][key] for c in components for key in vars(b)),True)
+                equal(checks,'at least two individually admitted components',len(components)>=2,True)
+                equal(checks,'caller transaction preserved',conn.in_transaction,transaction)
+                equal(checks,'whole native typed rows preserved',digest(canonical(saved_rows(conn))),digest(canonical(before)))
+                if target == 'traversed':
+                    equal(checks,'original traversal allowance crossed',b.traversed,16385)
+                    equal(checks,'byte allowance not first',b.consumed<=16777216,True)
+                elif target == 'consumed':
+                    # _copies checks before increment: the failing reservation
+                    # can leave consumed below the limit. Its concrete next
+                    # input-derived reservation is separately retained.
+                    equal(checks,'traversal allowance not first',b.traversed<=16384,True)
+                    equal(checks,'prior bytes actually consumed',b.consumed>8388608,True)
+                else:
+                    if b.accepted_rows <=8192:
+                        result['unproved'][label]=dict(reason='Traversal/byte refusal precedes candidate target; no candidate aggregate PASS',
+                            target=8193,observed=vars(b).copy(),components=len(components),
+                            source_bounds='8192 candidates,16384 visits,16MiB; each release component has 12 candidates plus lexical/column visits; singleton fixed-release grammar; queued native rows visit every column')
+                    equal(checks,'attempt reached actual earlier traversal bound',b.traversed,16385)
+            finally:
+                conn.set_trace_callback(None)
+            result['cases'].append(dict(name=label,checks=checks,components=components,
+                trace=trace,counters=vars(b).copy(),target=target))
+            save()
+        aggregate('F5-R1c.aggregate-traversal','traversed')
+        aggregate('F5-R1c.aggregate-candidates','accepted_rows')
+        # A fixed larger VALID v1 snapshot exercises actual nested base64,
+        # canonical UTF8 and hex copies without adding lexical member visits.
+        conn.execute('SAVEPOINT larger_snapshot')
+        large_snapshot=json.loads(snapshot)
+        large_snapshot['agents']=[dict(name='synthetic_manager',role='manager',team='synthetic',status='active',
+            executor='synthetic',model=None,repos={},allow_rules=['x'*20000],
+            description_digest='0'*64,system_prompt_digest='0'*64)]
+        large_snapshot['teams']=[dict(name='synthetic',manager='synthetic_manager',workers=[])]
+        large_snapshot['active_policy_selectors']=[dict(team='synthetic',selector=None)]
+        large_raw=canonical(large_snapshot);large_digest=digest(large_raw)
+        large_provenance=json.loads(pub)
+        large_capture=large_provenance['admission']['capture']
+        large_capture['pin']['snapshot_digest']=large_digest
+        large_capture['snapshot_bytes_base64']=base64.b64encode(large_raw).decode()
+        large_capture['profile_evidence']['ready'].update(snapshot_digest=large_digest,snapshot_bytes_hex=large_raw.hex())
+        large_capture['profile_evidence']['pointer']['snapshot_digest']=large_digest
+        large_pub=canonical(large_provenance).decode()
+        for table,column in [('workflow_template_versions','published_by'),('workflow_template_drafts','author_principal')]:
+            conn.execute('UPDATE '+table+' SET '+column+'=? WHERE namespace=?',(large_pub,namespace))
+        conn.execute('UPDATE workflow_publication_journals SET snapshot_bytes=?,snapshot_digest=? WHERE id=?',
+                     (large_raw,large_digest,'synthetic-journal'))
+        conn.execute('UPDATE workflow_authority_pointers SET snapshot_digest=? WHERE namespace=?',
+                     (large_digest,pin['namespace']))
+        # Input-derived conservative copies LOWER bound, independent of the
+        # observed counter. No second invocation supplies a numeric oracle.
+        result['aggregate_byte_inputs']=dict(snapshot_bytes=len(large_raw),provenance_bytes=len(large_pub.encode()),
+            snapshot_base64_bytes=len(large_capture['snapshot_bytes_base64']),snapshot_hex_bytes=len(large_raw.hex()),
+            per_component_minimum=12*len(large_pub.encode())+8*len(large_raw)+12*len(large_capture['snapshot_bytes_base64']))
+        aggregate('F5-R1c.aggregate-intermediate-bytes','consumed')
+        conn.execute('ROLLBACK TO larger_snapshot');conn.execute('RELEASE larger_snapshot')
         conn.commit()
         # Caller-owned noncoding work uses a real native table; exact actual
         # schema columns are inspected rather than creating a harness store.
@@ -328,7 +487,10 @@ try:
     result['module_paths']=module_paths
     result['imports'] = sorted(imported)
     result['opened'] = sorted(opened)
-    result['complete'] = not result['unproved']
+    names=[case['name'] for case in result['cases']]
+    result['missing_cases']=sorted(set(cfg['required_cases'])-set(names))
+    result['duplicate_cases']=sorted(name for name in set(names) if names.count(name)!=1)
+    result['complete'] = not result['unproved'] and not result['missing_cases'] and not result['duplicate_cases']
 except BaseException as exc:
     result['setup_error'] = type(exc).__name__+': '+str(exc)
 finally:
@@ -553,7 +715,7 @@ def main() -> int:
         parser.error('fresh output outside source with existing canonical parent required')
     out.mkdir(mode=0o700)
     receipt=dict(argv=sys.argv,cwd=os.getcwd(),parent_python=sys.version,complete=False,
-                 origin='SYNTHETIC',unproved=UNPROVED,children_reaped=True)
+                 origin='SYNTHETIC',required_cases=REQUIRED_CASES,children_reaped=True)
     process=None
     before=None
     environment=None
@@ -578,7 +740,7 @@ def main() -> int:
         result=out/'result';result.mkdir(mode=0o700)
         closed_env={'HOME':'/work/home','PATH':'/no-executables','LC_ALL':'C.UTF-8','PWD':'/work'}
         product_files={k:v for k,v in before['files'].items() if k.startswith(('runtime/','cli/'))}
-        cfg=dict(org_slug=history['org_slug'],env=closed_env,unproved=UNPROVED,
+        cfg=dict(org_slug=history['org_slug'],env=closed_env,required_cases=REQUIRED_CASES,
                  host_ns={n:os.readlink('/proc/self/ns/'+n) for n in NAMESPACES},
                  source_files=product_files,modules=before['inventory']['modules'])
         (fixture/'driver.py').write_text(DRIVER)
@@ -657,7 +819,8 @@ def main() -> int:
         (out/'receipt.json').write_text(payload)
     code=2 if receipt.get('setup_error') or not receipt['complete'] else (1 if receipt.get('failed_assertions') else 0)
     print(json.dumps(dict(exit=code,complete=receipt['complete'],receipt=str(out/'receipt.json'),
-                          setup_error=receipt.get('setup_error'),unproved=receipt.get('unproved',UNPROVED))))
+                          setup_error=receipt.get('setup_error'),unproved=receipt.get('observations',{}).get('unproved',{}),
+                          missing_cases=receipt.get('observations',{}).get('missing_cases',list(REQUIRED_CASES)))))
     return code
 
 

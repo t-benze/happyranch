@@ -1168,14 +1168,23 @@ python -I -S scripts/verify_coding_readers.py \
   --output-dir /absolute/owned/task-scratch/new-run
 ```
 
-**This increment is incomplete.** Its admitted multi-owner aggregate candidate,
-intermediate-byte and traversal fixtures and populated noncoding/old-history
-siblings remain unimplemented/unproved. They are explicit `unproved` entries;
-passing the implemented subset cannot return exit0. Actual TASK12380 native
-namespace admission refused before product execution, so none of the new driver
-observations, full fixture, import closure or cleanup behavior has executable
-qualification. Source inspection and a frozen install are not qualification.
-Do not use this command as a merge/behavioral PASS or as an automatic check.
+**Acceptance is incomplete until actual complete observations and proof exist.**
+The driver now names every required F5-R1c/F8-R1c case and refuses missing or
+duplicate executed case IDs, setup failure, or any concrete reachability gap.
+It includes populated literal @1 template/native task/result history and natural
+shared-budget aggregate attempts. Traversal and intermediate-copy byte cases
+compose actual queued/release readers with their original allowances; every
+component has an immediate independently admitted positive sibling. Candidate
+attempts retain the actual earlier stopping bound if traversal/bytes prevent
+8193 candidates. Such a measured gap is non-success, never candidate acceptance.
+No counter is preset to exhaustion and no default limit is lowered.
+
+TASK12380's native namespace refusal and unexecuted evidence remain historical.
+ROOT's later successful product-free probe grants no campaign permission. Each
+concrete verifier invocation needs its own standard narrowly reviewed command
+admission where required, exact clean source commit and hash-pinned inputs/env.
+An unavailable/rejected operation stops; no job/executor/host fallback. Source
+inspection and frozen dependency hashes are not executable qualification.
 
 The host requires Linux x86-64, effective Python3.14 with `-I -S`, `/usr/bin/bwrap`,
 and an independently admitted namespace venue for each actual invocation.
@@ -1262,13 +1271,16 @@ complete J `validate_data=False` success/refusal; caller transaction and prior
 uncommitted native noncoding work; and standalone queued transaction closure.
 Each records actual SELECT trace, native rows/integrity/FKs, in_transaction and
 available actual budget counters. Prior-consumption/lower-bound assertions are
-optional-path coverage only, never aggregate-composition acceptance. The remaining
-aggregate and populated-history cases retain their explicit missing status.
+optional-path coverage only, never aggregate-composition acceptance. Populated old-history uses the actual version-aware @1 template reader,
+ordinary native task/result constructors and complete-J/queued readers; exact
+bytes, pins, typed rows and caller ownership remain observable. Natural aggregate
+attempts record per-component before/after counters and bounded actual SQL trace,
+with input-derived intermediate-copy sizes. A stricter earlier limit remains an
+explicit unproved case even though the attempt executed.
 
 Exit0 requires the complete assigned observation table and teardown; exit1 is
 contract assertion RED with observed/expected values; exit2 is incomplete,
-setup/isolation/input/fixture/dependency failure and never RED. The current
-unproved entries force exit2. The foreground invocation is bounded at60s, native
+setup/isolation/input/fixture/dependency failure and never RED. Any observed reachability gap or missing assigned case forces exit2. The foreground invocation is bounded at60s, native
 wait at most55s, each observed case at2s, CPU40s, address space768MiB, per-child
 file2MiB and128 descriptors. No sleep/hang/retry is used. Timeout kills and reaps
 the owned process group; namespace teardown owns private fixture storage. Output
@@ -1281,7 +1293,7 @@ M3 complete-J forwarding loss, M4 nested byte/traversal reservation loss,
 M5 full typed publication equality weakening and M6 caller rollback regression.
 Each requires an initial complete GREEN, one intended full-table RED on an owned
 registered guarded local proof commit, byte-exact forward restoration and GREEN.
-No proof mutation has been performed here: initial complete GREEN is unavailable.
+Proof mutation remains forbidden until an actual initial complete GREEN exists.
 The final candidate still owes complete GREEN plus five fresh-process full-table
 repetitions. Missing proof is review-blocking under test-authoring-evidence-gate;
 no conditional test-authoring PASS follows from source or subset counts.
