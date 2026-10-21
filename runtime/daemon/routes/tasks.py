@@ -245,6 +245,7 @@ def _task_to_dict(t: TaskRecord, org: OrgState, budget: ChildWaitBudget) -> dict
     # their own helpers. Rename here so list + detail responses match.
     d = t.model_dump(exclude={"executor_pid"})
     d["task_id"] = d.pop("id")
+    d.update(org.db.get_task_thread_origin(t.id))
     d["child_wait"] = derive_child_wait(org.db, t, budget)
     return d
 

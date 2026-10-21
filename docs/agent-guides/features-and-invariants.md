@@ -3800,3 +3800,25 @@ and same-final-head scoped SOURCE QA are still required. Python units RETIRED;
 integration INCLUDING callback SKIPPED24342; behavioral/security/cleanup proof
 UNEXECUTED/FOUNDER-WAIVED139429/430, never PASS. No live operation follows.
 <!-- /TASK11932 current-ancestor correction and owner support boundary -->
+
+
+## Root retry source-thread association
+
+Task details, lists and roots expose additive nullable `originating_thread_id`
+and `originating_task_id`, derived from the complete root-only `revisit_of_task_id`
+chain (at most200 nodes). The original root must carry a literal thread dispatch;
+missing predecessors, cycles, children, overlong chains or conflicting literal
+thread IDs yield null derived fields. Brief text supplies no association.
+`dispatched_from_thread_id` retains genuine creation provenance, including null
+on existing revisits; nothing is written or backfilled. These fields confer no
+execution, dispatch, retry or notification authority.
+
+`GET /threads/{thread_id}/tasks` preserves its list/summary contract and direct
+rows, adds valid root revisits, deduplicates and sorts newest-first (ID breaks
+created-at ties). Summary rows also include literal dispatch and derived origin
+fields. Ordinary delegated children are not discovered through revisit traversal.
+Task UI thread grouping/column/detail use the derived origin with literal fallback
+for older servers; the detail rail and linked-task retry chips cite the original
+task with a revisit arrow. CLI details distinguishes `Thread`/`Origin task` from
+literal `Dispatched`. Existing terminal follow-up routing remains unchanged: it
+uses the original root's real `thread_dispatch` audit/dispatcher, not these fields.

@@ -1497,7 +1497,7 @@ async def list_thread_tasks_endpoint(
     thread_id: str,
     org: OrgDep,
 ) -> list[dict]:
-    """Return the tasks dispatched from a thread, newest-first."""
+    """Return direct dispatches and associated root revisits, newest-first."""
     t = org.db.get_thread(thread_id)
     if t is None:
         raise HTTPException(status_code=404, detail={"code": "not_found"})

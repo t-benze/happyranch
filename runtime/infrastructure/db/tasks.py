@@ -893,32 +893,74 @@ class TasksMixin:
         ]
 
     @_synchronized
-    def list_tasks_by_thread(
-        self, thread_id: str,
-    ) -> list[dict]:
-        """Return tasks dispatched from a thread, newest-first.
+    def get_task_thread_origin(self, task_id: str) -> dict:
+        """Derive a root's original thread without changing dispatch provenance.
 
-        Uses the existing idx_tasks_dispatched_from_thread_id partial index.
-        Returns lightweight summary dicts with the fields the frontend needs:
-        id, status, brief, assigned_agent, created_at, parent_task_id.
+        A complete root-only revisit chain is required. Missing/cyclic/overlong
+        history and conflicting literal dispatches yield no derived association.
+        This read model grants no dispatch, retry or follow-up authority.
         """
-        cursor = self._conn.execute(
-            "SELECT id, status, brief, assigned_agent, created_at, parent_task_id "
-            "FROM tasks WHERE dispatched_from_thread_id = ? "
-            "ORDER BY created_at DESC",
-            (thread_id,),
-        )
-        return [
-            {
-                "id": row["id"],
-                "status": row["status"],
-                "brief": row["brief"],
-                "assigned_agent": row["assigned_agent"],
-                "created_at": row["created_at"],
-                "parent_task_id": row["parent_task_id"],
-            }
-            for row in cursor.fetchall()
-        ]
+        absent = {"originating_thread_id": None, "originating_task_id": None}
+        with self.coherent_read_view():
+            seen: set[str] = set()
+            dispatches: set[str] = set()
+            current_id = task_id
+            # Match the existing terminal follow-up's historical lineage bound.
+            for _ in range(200):
+                if current_id in seen:
+                    return absent
+                seen.add(current_id)
+                row = self._conn.execute(
+                    "SELECT id, parent_task_id, revisit_of_task_id, "
+                    "dispatched_from_thread_id FROM tasks WHERE id = ?",
+                    (current_id,),
+                ).fetchone()
+                if row is None or row["parent_task_id"] is not None:
+                    return absent
+                thread_id = row["dispatched_from_thread_id"]
+                if thread_id is not None:
+                    if not thread_id:
+                        return absent
+                    dispatches.add(thread_id)
+                predecessor = row["revisit_of_task_id"]
+                if predecessor is None:
+                    if thread_id is None or dispatches != {thread_id}:
+                        return absent
+                    return {"originating_thread_id": thread_id,
+                            "originating_task_id": row["id"]}
+                current_id = predecessor
+        return absent
+
+    @_synchronized
+    def list_tasks_by_thread(self, thread_id: str) -> list[dict]:
+        """Return direct dispatches and their valid root revisits, newest-first.
+
+        Reverse traversal uses the existing dispatch/revisit indexes and a
+        200-node depth bound. Forward validation refuses partial/conflicting
+        lineage; UNION/IN deduplicate roots with multiple discovery paths.
+        Existing direct rows and summary fields remain, with additive provenance.
+        """
+        with self.coherent_read_view():
+            rows = self._conn.execute(
+                "WITH RECURSIVE linked(id, depth) AS ("
+                " SELECT id, 1 FROM tasks WHERE dispatched_from_thread_id = ?"
+                " AND parent_task_id IS NULL"
+                " UNION SELECT t.id, l.depth + 1 FROM tasks t JOIN linked l"
+                " ON t.revisit_of_task_id = l.id"
+                " WHERE t.parent_task_id IS NULL AND l.depth < 200"
+                ") SELECT id, status, brief, assigned_agent, created_at,"
+                " parent_task_id, dispatched_from_thread_id FROM tasks"
+                " WHERE dispatched_from_thread_id = ? OR id IN (SELECT id FROM linked)"
+                " ORDER BY created_at DESC, id DESC",
+                (thread_id, thread_id),
+            ).fetchall()
+            result = []
+            for row in rows:
+                origin = self.get_task_thread_origin(row["id"])
+                if (row["dispatched_from_thread_id"] == thread_id
+                        or origin["originating_thread_id"] == thread_id):
+                    result.append({**dict(row), **origin})
+            return result
 
     @_synchronized
     def get_direct_revisits(self, task_id: str) -> list[str]:

@@ -3768,3 +3768,10 @@ E2E/protected/executable-QA/test-authoring proof UNEXECUTED/FOUNDER-WAIVED139429
 Fresh FULL independent review then same-final-head scoped SOURCE QA return to
 ROOT10693; K3 controls/recovery/K4–K6 and operational acceptance remain root-owned.
 <!-- /K3b native service attribution: TASK12034 / ROOT10693 step93 -->
+
+
+**Root retry source-thread association.** Task details/lists/roots expose nullable
+`originating_thread_id`/`originating_task_id` from complete root revisit lineage;
+thread linked-task reads include valid root retries. Literal dispatch provenance
+and terminal routing stay unchanged; no backfill or authority follows. See
+[the read contract](docs/agent-guides/features-and-invariants.md#root-retry-source-thread-association).

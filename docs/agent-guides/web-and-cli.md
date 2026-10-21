@@ -4018,3 +4018,15 @@ E2E/protected/executable-QA/test-authoring proof UNEXECUTED/FOUNDER-WAIVED139429
 Fresh FULL independent review then same-final-head scoped SOURCE QA return to
 ROOT10693; K3 controls/recovery/K4–K6 and operational acceptance remain root-owned.
 <!-- /K3b native service attribution: TASK12034 / ROOT10693 step93 -->
+
+
+## Root retry source-thread association
+
+Task details/list/roots and thread linked-task summaries carry nullable
+`originating_thread_id`/`originating_task_id`; literal `dispatched_from_thread_id`
+keeps its creation meaning. Task grouping/column/detail use origin with literal
+fallback for older servers. The detail rail and linked-task retry chips cite the
+original task with a revisit arrow. CLI details separates `Thread`/`Origin task`
+from literal `Dispatched`. Summary fields are additive; the existing dict responses
+have no property schema in the path/method/parameter/status OpenAPI snapshot.
+See [the complete lineage/read contract](features-and-invariants.md#root-retry-source-thread-association).
