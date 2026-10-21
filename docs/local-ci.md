@@ -1175,8 +1175,11 @@ It includes populated literal @1 template/native task/result history and natural
 shared-budget aggregate attempts. Traversal and intermediate-copy byte cases
 compose actual queued/release readers with their original allowances; every
 component has an immediate independently admitted positive sibling. Candidate
-attempts retain the actual earlier stopping bound if traversal/bytes prevent
-8193 candidates. Such a measured gap is non-success, never candidate acceptance.
+attempts combine two400-row ordinary native-history components, each first
+admitted independently, through the actual queued owner. They retain the actual
+earlier stopping bound if traversal/bytes prevent8193 candidates. The native
+18-column reader spends at least19 visits per candidate, so its original16384
+visit bound is stricter than8193 candidates in this fixture family. Such a measured gap is non-success, never candidate acceptance.
 No counter is preset to exhaustion and no default limit is lowered. Each
 successful aggregate component also compares its exact candidate/byte/visit delta
 with independently fixed input arithmetic: full row/string sizes, canonical JSON

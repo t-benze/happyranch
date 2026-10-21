@@ -41,6 +41,8 @@ REQUIRED_CASES = (
     'F8-R1c.noncoding-old-history',
     'F5-R1c.aggregate-candidates', 'F5-R1c.aggregate-intermediate-bytes',
     'F5-R1c.aggregate-traversal',
+    'F5-R1c.aggregate-candidates.component-a.positive',
+    'F5-R1c.aggregate-candidates.component-b.positive',
     'F8-R1c.schema.aggregate-traversal.positive', 'F8-R1c.schema.aggregate-traversal.refusal',
     'F8-R1c.schema.aggregate-bytes.positive', 'F8-R1c.schema.aggregate-bytes.refusal',
 )
@@ -494,7 +496,34 @@ try:
                 trace=trace,counters=vars(b).copy(),target=target))
             save()
         aggregate('F5-R1c.aggregate-traversal','traversed')
-        aggregate('F5-R1c.aggregate-candidates','accepted_rows')
+        # Two native ordinary-history components each fit independently;
+        # together they expose which unchanged whole-call limit stops first.
+        # All result rows are synthetic fixture data via the ordinary native
+        # caller-owned constructor, never report-completion or genuine proof.
+        def candidate_group(label: str) -> None:
+            for i in range(400):
+                db._insert_task_result(task_id='SYNTHETIC-OLD-TASK',agent='synthetic_worker',
+                    session_id='SYNTHETIC-'+label+'-'+str(i),output_summary='SYNTHETIC ordinary history',
+                    confidence_score=0,decision_json='{"action":"done"}')
+        for label in ('a','b'):
+            conn.execute('SAVEPOINT candidate_component')
+            candidate_group(label)
+            cb=_Budget()
+            observe('F5-R1c.aggregate-candidates.component-'+label+'.positive',
+                lambda:queued_storage(conn,org,budget=cb),supplied=cb,kind='queued')
+            conn.execute('ROLLBACK TO candidate_component');conn.execute('RELEASE candidate_component')
+        conn.execute('SAVEPOINT candidate_combined')
+        candidate_group('a');candidate_group('b')
+        cb=_Budget()
+        observe('F5-R1c.aggregate-candidates',lambda:queued_storage(conn,org,budget=cb),
+            'coding_authority_history_invalid',supplied=cb)
+        equal(result['cases'][-1]['checks'],'actual earlier traversal bound',cb.traversed,16385)
+        result['cases'][-1]['input_components']=dict(first=400,second=400,existing=1,native_columns=18)
+        result['unproved']['F5-R1c.aggregate-candidates']=dict(
+            reason='The actual combined native components reach traversal before8193 candidates; candidate boundary NOT proved',
+            target=8193,observed=vars(cb).copy(),input_components=[400,400],
+            source_bounds='Original8192 candidates/16384 visits/16MiB. Each ordinary task_results candidate visits18 columns plus its page; 8193 such candidates require at least155667 visits. Fixed release singleton contributes12 candidates/1977 visits. No limit changed.')
+        conn.execute('ROLLBACK TO candidate_combined');conn.execute('RELEASE candidate_combined')
         # A fixed larger VALID v1 snapshot exercises actual nested base64,
         # canonical UTF8 and hex copies without adding lexical member visits.
         conn.execute('SAVEPOINT larger_snapshot')
