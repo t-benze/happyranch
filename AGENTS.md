@@ -2551,14 +2551,39 @@ pending/moving/error or all-failure evidence refuses. Normal exposed/in-flight
 checks, temporal post-retirement zero, source/boot/cohort, original epoch/reset
 contract and thresholds remain. Classification grants no B/C/health acceptance.
 
-Canonical CLI and HTTP task comparisons exclude only valid rendering timestamps
-at pause.observed_at, pause.blockers[*].observed_at and child_wait.observed_at.
-Raw evidence, unknown/malformed fields, lifecycle/pause/wait state, results/jobs,
-roles and all serving generation/count/digest/seal/error facts remain intact.
+Capture task comparisons use one ordered pair relation (THR-091 seq557/559/560).
+The unary projection excludes only valid rendering timestamps at
+pause.observed_at, pause.blockers[*].observed_at and child_wait.observed_at.
+An otherwise equal pair may additionally advance BOTH last_heartbeat and its
+accompanying updated_at: all four stamps must be present aware strings and
+both later instants must be strictly forward. Updated-at-only, heartbeat-only,
+equal/reverse or missing/malformed/naive changed stamps refuse. Exact unchanged
+projected pairs remain equal; malformed/unknown values never disappear or
+justify a changed pair. All other fields, membership and JSON scalar types stay
+significant. Raw tasks remain intact. Native/HTTP reports, repeated dependency
+captures, acceptance preparation and current-epoch captures share this relation;
+locked publication rereads and control invariants retain exact record equality.
+Serving movement still requires one fresh complete stable pair under the shared
+budgets below; an earlier failed pair never supplies an accepted half.
 Invocation-exception diagnostics add only correlated class/bounded frame-location
 metadata; no exception messages/source lines/locals are added. Existing failure,
 terminal, wake/thread and control effects remain. Original launch cause is unknown.
 See the corrective memory spec and the maintained agent guides.
+
+Founder THR091seq557/559/560 permits at most0.5s CUMULATIVE DB-lock
+admission wait across BOTH revision bookends and ALL whole-pair attempts,
+clipped by the ORIGINAL enclosing acquisition deadline. Nested reads share
+admission and SQL work, and release DB ownership before metadata/file/network
+work. Only concurrent-write movement retries a wholly NEW opening snapshot/
+revision -> identity -> identity -> revision/closing snapshot pair. The original
+source/identity/boot/context fence survives retries; hard errors, malformed or
+sticky state, observer replacement and cohort/profile/provider/path drift refuse
+without another attempt. Failed raw pairs use existing bounded logging, charged
+against the same work/byte budget. One stable complete pair is accepted with no
+stitching. Deadline, SQL VM/rows/bytes, closure/request/transport and per-identity
+file allowances never replenish per attempt. Source/lint evidence is not loaded
+qualification, health, B/C acceptance or epoch start. Cooperative work checks
+provide no hard OS-I/O/RSS guarantee.
 
 ## Commands
 

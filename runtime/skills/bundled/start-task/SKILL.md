@@ -188,6 +188,20 @@ logs/screenshots/review packets to Shared Artifacts as an ownership workaround.
    limit; related contradictions and missing evidence still refuse. Both reports
    share closing/commit membership recomputation. Bounded refusal or source sizing
    is not healthy observation, installed qualification or collection acceptance.
+   THR091seq557/559/560 allows0.5s CUMULATIVE DB admission waiting across
+   both serving revision bookends and every whole-pair attempt, clipped by the
+   ORIGINAL acquisition deadline. All attempts share SQL/work/file/row/byte and
+   transport limits; nested reads do not replenish them. Release DB ownership
+   before metadata/identity/file/network work. Only concurrent-write movement
+   retries a completely new pair; retain charged raw failed pairs in existing
+   bounded logs and accept one stable pair without stitching. Hard errors,
+   malformed/sticky state, observer replacement or source/identity/boot/cohort/
+   profile/provider/path drift refuse without retry. Capture task comparisons
+   may accept strictly forward aware-string last_heartbeat AND accompanying
+   updated_at only with every other projected field/membership/type identical;
+   unchanged pairs and valid rendering-time exclusions keep their meanings.
+   Missing/invalid/equal/reverse changed stamps or movement of only one stamp
+   refuse. Preserve raw tasks and exact locked publication/control checks.
 
 
 3. **Consult the knowledge base.** Before planning, check for durable knowledge relevant to this task.

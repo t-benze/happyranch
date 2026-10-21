@@ -2305,15 +2305,20 @@ Withdrawal remains possible after stale or unhealthy proof. Damaged, lost,
 ambiguous, partial or moving evidence closes collection with no latest fallback.
 Readers never write, reseal, repair, invalidate or start epochs.
 
-Canonical CLI task sweeps and HTTP list/detail/two-capture comparisons share one
-semantic task projection. It excludes only valid rendering timestamps at
+Capture task comparisons use one ordered pair relation (THR-091 seq557/559/560).
+The unary projection excludes only valid rendering timestamps at
 `pause.observed_at`, `pause.blockers[*].observed_at` and `child_wait.observed_at`.
-Malformed timestamps/structures, unknown fields and every other `observed_at`
-remain evidence. Raw acquired records remain intact. Task lifecycle/owner/SID/
-lineage/content, pause/wait states, result/job bytes, roles and all serving
-counts/digests/seals/errors/generations remain compared. Real serving movement
-(including generation53->54, seal312201->312222 and terminal6->7) refuses;
-timestamp equality cannot retroactively qualify an earlier moving capture.
+An otherwise equal pair may additionally advance BOTH `last_heartbeat` and its
+accompanying `updated_at`: all four stamps must be present aware strings and
+both later instants must be strictly forward. Updated-at-only, heartbeat-only,
+equal/reverse or missing/malformed/naive changed stamps refuse. Exact unchanged
+projected pairs remain equal; malformed/unknown values never disappear or
+justify a changed pair. All other fields, membership and JSON scalar types stay
+significant. Raw tasks remain intact. Native/HTTP reports, repeated dependency
+captures, acceptance preparation and current-epoch captures share this relation;
+locked publication rereads and control invariants retain exact record equality.
+Serving movement still requires one fresh complete stable pair under the shared
+budgets below; an earlier failed pair never supplies an accepted half.
 
 Existing public audit/task list/detail/default recall and keyed job reads use
 finite scan/row/byte/decode and lock budgets before their coherent read views;

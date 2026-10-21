@@ -10,6 +10,8 @@ from __future__ import annotations
 import ast
 import copy
 from collections import deque
+from contextlib import contextmanager
+from contextvars import ContextVar
 import hashlib
 import inspect
 import json
@@ -917,10 +919,38 @@ class _CensusBudget:
         self.max_bytes = MAX_CENSUS_READ_BYTES * captures
         self.started = time.monotonic()
         self.rows = self.bytes = self.requests = self.transport = self.steps = 0
+        self.lock_wait = self.sql_seconds = 0.0
+        self.sql_work = self.sql_rows = self.sql_bytes = 0
 
     def check(self) -> None:
         if time.monotonic() - self.started > MAX_CENSUS_SECONDS:
             raise CensusReadUnavailable("census_read_deadline")
+
+    def acquire(self, lock: Any, deadline: float) -> None:
+        """One cumulative admission allowance, including unsuccessful waits.
+
+        Reentrant/free acquisitions do not wait or replenish the allowance.
+        The original enclosing deadline also bounds every attempted wait.
+        """
+        self.check()
+        if time.monotonic() >= deadline:
+            raise CensusReadUnavailable("census_database_deadline")
+        if lock.acquire(blocking=False):
+            return
+        remaining = min(0.5 - self.lock_wait, deadline - time.monotonic(),
+                        MAX_CENSUS_SECONDS - (time.monotonic() - self.started))
+        if remaining <= 0:
+            raise CensusReadUnavailable("census_database_busy")
+        started = time.monotonic()
+        try:
+            acquired = lock.acquire(timeout=remaining)
+        finally:
+            self.lock_wait += time.monotonic() - started
+        if not acquired:
+            raise CensusReadUnavailable("census_database_busy")
+        if self.lock_wait > 0.5 or time.monotonic() >= deadline:
+            lock.release()
+            raise CensusReadUnavailable("census_database_busy" if self.lock_wait > 0.5 else "census_database_deadline")
 
     def record(self, row: dict) -> None:
         self.check()
@@ -942,6 +972,26 @@ class _CensusBudget:
         if self.requests > MAX_CENSUS_REQUESTS:
             raise CensusReadUnavailable("census_request_limit")
         return min(5.0, MAX_CENSUS_SECONDS - (time.monotonic() - self.started))
+
+
+# Private, invocation-local accounting only. Never retain a DB lock in this
+# context: it spans file/network work and successive released SQL read views.
+_CENSUS_BUDGET: ContextVar[_CensusBudget | None] = ContextVar("memory_census_budget", default=None)
+
+
+@contextmanager
+def _census_budget(*, captures: int = 1):
+    current = _CENSUS_BUDGET.get()
+    if current is not None:
+        current.check()
+        yield current
+        return
+    budget = _CensusBudget(captures=captures)
+    token = _CENSUS_BUDGET.set(budget)
+    try:
+        yield budget
+    finally:
+        _CENSUS_BUDGET.reset(token)
 
 
 def _scope_references(value: Any) -> tuple[set[str], set[str]]:
@@ -1052,8 +1102,9 @@ def _scoped_collection_evidence(view: dict, audit: Any, task: Any, job: Any, can
                 raise CensusReadUnavailable("census_task_identity")
             prior = tables["tasks"].get(tid)
             if prior is not None:
-                same = (semantic_task_projection(owner) == semantic_task_projection(prior) if set(owner) == set(prior)
-                        else all(owner.get(key) == value for key, value in prior.items()))
+                same = (_same_task_capture(prior, owner) if set(owner) == set(prior)
+                        else semantic_task_projection(prior) == semantic_task_projection(
+                            {key: owner[key] for key in prior if key in owner}))
                 if not same:
                     raise CensusReadUnavailable("census_task_promotion_changed")
                 del tables["tasks"][tid]
@@ -1173,9 +1224,39 @@ def semantic_task_projection(task: dict) -> str:
     return json.dumps(projected, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
 
 
-def _semantic_evidence_projection(tables: dict) -> str:
-    return json.dumps({**tables, "tasks": [semantic_task_projection(task) for task in tables["tasks"]]},
-                      sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
+def _same_task_capture(earlier: dict, later: dict) -> bool:
+    """Ordered capture relation; raw tasks and the unary projection stay intact.
+
+    Exact projected equality remains ordinary equality. A changed pair needs
+    BOTH present aware string stamps to advance, with every other field exact.
+    Missing/invalid stamps never justify any change or lose their significance.
+    """
+    before, after = semantic_task_projection(earlier), semantic_task_projection(later)
+    if before == after:
+        return True
+    from runtime.infrastructure.memory_telemetry_report import aware_utc
+    try:
+        for key in ("last_heartbeat", "updated_at"):
+            if (type(earlier[key]) is not str or type(later[key]) is not str
+                    or aware_utc(later[key]) <= aware_utc(earlier[key])):
+                return False
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return False
+    left, right = json.loads(before), json.loads(after)
+    for key in ("last_heartbeat", "updated_at"):
+        del left[key]
+        del right[key]
+    return semantic_task_projection(left) == semantic_task_projection(right)
+
+
+def _semantic_evidence_projection(earlier: dict, later: dict) -> bool:
+    """Compare ordered captures, preserving exact membership and other tables."""
+    if (collection_record_projection({**earlier, "tasks": []})
+            != collection_record_projection({**later, "tasks": []})):
+        return False
+    before, after = earlier["tasks"], later["tasks"]
+    return (len(before) == len(after)
+            and all(_same_task_capture(left, right) for left, right in zip(before, after)))
 
 
 def validate_census(snapshot: dict, rows: list[dict], *, require_seal: bool = True,
@@ -1372,6 +1453,9 @@ class IdentityUnavailable(Exception):
 
 
 def _identity_bytes(path: Path, budget: list[int], *, limit: int = MAX_IDENTITY_FILE_BYTES) -> bytes:
+    acquisition = _CENSUS_BUDGET.get()
+    if acquisition is not None:
+        acquisition.check()
     flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0)
     fd = os.open(path, flags)
     try:
@@ -1397,6 +1481,9 @@ def _identity_bytes(path: Path, budget: list[int], *, limit: int = MAX_IDENTITY_
 
 def _identity_file_hash(path: Path, budget: list[int]) -> str:
     """Stream only a declared executable, bounded by bytes/files; no tree walk."""
+    acquisition = _CENSUS_BUDGET.get()
+    if acquisition is not None:
+        acquisition.check()
     fd = os.open(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0))
     try:
         before = os.fstat(fd)
@@ -1408,6 +1495,8 @@ def _identity_file_hash(path: Path, budget: list[int]) -> str:
         budget[1] += 1
         digest, remaining = hashlib.sha256(), before.st_size
         while remaining:
+            if acquisition is not None:
+                acquisition.check()
             chunk = os.read(fd, min(256 * 1024, remaining))
             if not chunk:
                 raise IdentityUnavailable("identity_file_moving")
@@ -1454,13 +1543,13 @@ def _find_code(code: CodeType, qualname: str) -> CodeType:
     raise LookupError(qualname)
 
 
-def loaded_identity(org: Any) -> dict:
+def loaded_identity(org: Any, *, budget: list[int] | None = None) -> dict:
     """Actual interpreter/imported code and authoritative metadata, never attestation.
 
     Source is compiled without executing it, solely to compare declared loaded
     function fingerprints. No second checkout is imported to supply identity.
     """
-    budget = [0, 0]
+    budget = budget if budget is not None else [0, 0]
     files: dict[str, str] = {}
     def read(path: Path, *, limit: int = MAX_IDENTITY_FILE_BYTES) -> bytes:
         path = path.resolve(strict=True)
@@ -1505,7 +1594,7 @@ def loaded_identity(org: Any) -> dict:
     functions.extend([org.orchestrator._log_step_result, org.memory_collection.reconcile_acceptance,
                       org.memory_collection.context.memory_collection_observation,
                       Database.read_memory_collection_evidence, Database.append_memory_collection_transition,
-                      Database._memory_collection_read_budget.__wrapped__,
+                      Database._memory_collection_read_budget.__wrapped__, Database._memory_collection_read_scope,
                       inspect.unwrap(Database.verify_retry_link), Database._retry_object, Database._retry_audits,
                       Database._retry_require_audit, Database._retry_manager_edge,
                       Database._retry_escalation_edge, Database._retry_dispatch_edge,
@@ -1525,9 +1614,9 @@ def loaded_identity(org: Any) -> dict:
                       TaskInvocation.started, TaskInvocation.record_preparation_cause, TaskInvocation.failed_cleanup,
                       launch_refusals.safe_cause, launch_refusals._logical_owner, launch_refusals._current,
                       launch_refusals.record_started, launch_refusals.settle_refusal, run_step_impl,
-                      semantic_task_projection, _semantic_evidence_projection, aware_utc, _run_step_body,
+                      semantic_task_projection, _same_task_capture, _semantic_evidence_projection, _census_budget.__wrapped__, aware_utc, _run_step_body,
                       _result, _advance, _projection, CollectionObserver._read_revision,
-                      _CensusBudget.__init__, _CensusBudget.check, _CensusBudget.record, _CensusBudget.step, _CensusBudget.request,
+                      _CensusBudget.__init__, _CensusBudget.check, _CensusBudget.acquire, _CensusBudget.record, _CensusBudget.step, _CensusBudget.request,
                       _scope_references, _boot_boundary, _scoped_collection_evidence, _collection_get, _collection_task_candidates,
                       _collection_pages, _http_collection_capture, acquire_http_collection_report,
                       current_epoch_references, reduce_report, reduce_collection_report, _session_diagnostics, AuditLogger.compute_memory_telemetry_report,
@@ -1700,14 +1789,15 @@ def _serving_snapshot(observer: CollectionObserver) -> dict:
 
 
 def _serving_revision(observer: CollectionObserver) -> tuple[int, int, int]:
-    # SELECT executes only after nonblocking admission to the existing DB lock;
-    # release it before acquiring observer metadata or reading any files.
-    if not observer.db._lock.acquire(blocking=False):
-        raise IdentityUnavailable("observation_database_busy")
+    # The existing SQL owner shares admission/VM/row work with nested reads.
+    # All ownership is released before observer metadata or identity/file work.
     try:
-        return observer._read_revision()
-    finally:
-        observer.db._lock.release()
+        with observer.db._memory_collection_read_budget():
+            return observer._read_revision()
+    except CensusReadUnavailable as exc:
+        if exc.category == "census_database_busy":
+            raise IdentityUnavailable("observation_database_busy") from exc
+        raise
 
 
 def _check_serving_snapshot(snapshot: dict) -> None:
@@ -1724,6 +1814,17 @@ def _check_serving_snapshot(snapshot: dict) -> None:
                 and (not integer(snapshot["latest_seal_audit_id"]) or snapshot["latest_seal_audit_id"] == 0))
             or set(snapshot["phase_counts"]) != set(PHASES)
             or set(snapshot["phase_digests"]) != set(PHASES)):
+        raise IdentityUnavailable("observer_snapshot_invalid")
+    if "writer_active" in snapshot and (
+            type(snapshot["writer_active"]) is not bool
+            or not integer(snapshot["pending_observations"])
+            or not integer(snapshot["seal_attempts"]) or not integer(snapshot["seal_persisted"])
+            or not digest(snapshot["seal_digest"])
+            or not isinstance(snapshot["active_references"], list)
+            or not isinstance(snapshot["active_preparations"], list)):
+        raise IdentityUnavailable("observer_snapshot_invalid")
+    if snapshot.get("observation_error") is not None and (
+            type(snapshot["observation_error"]) is not str or not snapshot["observation_error"]):
         raise IdentityUnavailable("observer_snapshot_invalid")
     for phase in PHASES:
         counts, digests = snapshot["phase_counts"][phase], snapshot["phase_digests"][phase]
@@ -1749,33 +1850,97 @@ def serving_observation(org: Any) -> dict:
         view["observation_error"] = org.memory_collection_unavailable or "observer_unavailable"
         return view
     try:
-        if observer.org != org.slug or observer.root != str(org.root.resolve()) or observer.db is not org.db:
-            raise IdentityUnavailable("observer_context_mismatch")
-        opening = _serving_snapshot(observer)
-        _check_serving_snapshot(opening)
-        for key in ("boot_id", "generation", "assigned_intents", "intent_digest", "phase_counts",
-                    "phase_digests", "active_preparations", "latest_seal_audit_id", "sampled_at", "observation_error"):
-            view[key] = opening[key]
-        revision = _serving_revision(observer)
-        identity = loaded_identity(org)
-        cutoff = _now()
-        closing_identity = loaded_identity(org)
-        closing_revision = _serving_revision(observer)
-        closing = _serving_snapshot(observer)
-        if (org.memory_collection is not observer or revision != closing_revision
-                or identity != closing_identity
-                or {k: v for k, v in opening.items() if k != "sampled_at"}
-                != {k: v for k, v in closing.items() if k != "sampled_at"}):
-            raise IdentityUnavailable("observation_moving")
-        view["installed_identity"] = identity
-        if opening["writer_active"] or opening["pending_observations"] or opening["active_preparations"]:
-            view["observation_error"] = opening["observation_error"] or "observation_pending"
-        if view["observation_error"] is None:
-            view["data_through"] = cutoff
-    except IdentityUnavailable as exc:
+        with _census_budget() as budget:
+            # A caller-owned DB lock could outlive a bookend into identity or
+            # metadata acquisition. Refuse instead of silently retaining it.
+            if org.db._lock._is_owned():
+                raise IdentityUnavailable("observation_database_owned")
+            context = (org.slug, str(org.root.resolve()), org.db)
+            if (observer.org, observer.root, observer.db) != context:
+                raise IdentityUnavailable("observer_context_mismatch")
+            # Original per-identity file/byte allowances span ALL attempts.
+            opening_files, closing_files = [0, 0], [0, 0]
+            baseline_identity = baseline_boot = None
+            while True:
+                budget.step()  # finite even if revisions move without sleeping
+                attempt = {}
+                try:
+                    if (org.memory_collection is not observer
+                            or (org.slug, str(org.root.resolve()), org.db) != context
+                            or (observer.org, observer.root, observer.db) != context):
+                        raise IdentityUnavailable("observer_context_mismatch")
+                    opening = _serving_snapshot(observer)
+                    budget.record(opening)
+                    attempt["opening"] = opening
+                    _check_serving_snapshot(opening)
+                    if baseline_boot is None:
+                        baseline_boot = opening["boot_id"]
+                    if (opening["boot_id"] != baseline_boot
+                            or (opening["org"], opening["root"]) != context[:2]):
+                        raise IdentityUnavailable("observer_context_mismatch")
+                    for key in ("boot_id", "generation", "assigned_intents", "intent_digest", "phase_counts",
+                                "phase_digests", "active_preparations", "latest_seal_audit_id", "sampled_at", "observation_error"):
+                        view[key] = opening[key]
+                    if opening["observation_error"] is not None:
+                        raise IdentityUnavailable(opening["observation_error"])
+                    revision = _serving_revision(observer)
+                    attempt["revision"] = revision
+                    identity = loaded_identity(org, budget=opening_files)
+                    budget.record(identity)
+                    attempt["identity"] = identity
+                    _identity_schema(identity)
+                    if baseline_identity is None:
+                        baseline_identity = identity
+                    if identity != baseline_identity:
+                        raise IdentityUnavailable("observation_identity_moving")
+                    cutoff = _now()
+                    closing_identity = loaded_identity(org, budget=closing_files)
+                    budget.record(closing_identity)
+                    attempt["closing_identity"] = closing_identity
+                    _identity_schema(closing_identity)
+                    if identity != closing_identity:
+                        raise IdentityUnavailable("observation_identity_moving")
+                    closing_revision = _serving_revision(observer)
+                    attempt["closing_revision"] = closing_revision
+                    closing = _serving_snapshot(observer)
+                    budget.record(closing)
+                    attempt["closing"] = closing
+                    _check_serving_snapshot(closing)
+                    if (org.memory_collection is not observer
+                            or (org.slug, str(org.root.resolve()), org.db) != context
+                            or (observer.org, observer.root, observer.db) != context
+                            or (closing["org"], closing["root"], closing["boot_id"]) != (*context[:2], baseline_boot)):
+                        raise IdentityUnavailable("observer_context_mismatch")
+                    if closing["observation_error"] is not None:
+                        raise IdentityUnavailable(closing["observation_error"])
+                    budget.check()
+                    if (revision == closing_revision
+                            and {k: v for k, v in opening.items() if k != "sampled_at"}
+                            == {k: v for k, v in closing.items() if k != "sampled_at"}):
+                        view["installed_identity"] = identity
+                        if opening["writer_active"] or opening["pending_observations"] or opening["active_preparations"]:
+                            view["observation_error"] = "observation_pending"
+                        if view["observation_error"] is None:
+                            view["data_through"] = cutoff
+                        break
+                    # Only complete, source/context-compatible concurrent-write
+                    # movement retries. Charge retained raw pairs before logging;
+                    # log/size/deadline failure refuses, never silently drops them.
+                    budget.record(attempt)
+                    if not logger.isEnabledFor(logging.WARNING):
+                        raise IdentityUnavailable("observation_evidence_unavailable")
+                    logger.warning("Memory serving observation moving: %s", json.dumps(attempt, ensure_ascii=False, allow_nan=False, separators=(",", ":")))
+                except Exception:
+                    # Partial/hard failures never become a new retry baseline.
+                    budget.record(attempt)
+                    logger.warning("Memory serving observation failed: %s", json.dumps(attempt, ensure_ascii=False, allow_nan=False, separators=(",", ":")))
+                    raise
+    except (IdentityUnavailable, CensusReadUnavailable) as exc:
         view["observation_error"] = view["observation_error"] or str(exc)
+        view["installed_identity"] = view["data_through"] = None
     except Exception:
         view["observation_error"] = view["observation_error"] or "observation_unavailable"
+        view["installed_identity"] = view["data_through"] = None
     return view
 
 
@@ -2504,40 +2669,41 @@ def _registered_cohort(org: Any) -> list[dict]:
 
 
 def prepare_acceptance(org: Any, result_id: int) -> dict:
-    # Ordinary callbacks are not collection candidates. Inspect their exact
-    # keyed carrier before source/file/census acquisition; the admitted carrier
-    # and complete membership are still reread during preparation and commit.
-    with org.db._memory_collection_read_budget():
-        carrier = org.db.fetch_one_readonly("SELECT output_summary FROM task_results WHERE id=?", (result_id,))
-    parsed = parse_acceptance(carrier["output_summary"]) if carrier is not None else None
-    if parsed is None or parsed["kind"] != "manager_acceptance":
-        raise AcceptanceUnavailable("acceptance_manager_carrier")
-    opening = serving_observation(org)
-    tables = org.db.read_memory_collection_evidence(view=opening, result_row_id=result_id)
-    selected = _one([row for row in tables["task_results"] if row["id"] == result_id], "acceptance_manager_result")
-    parsed = parse_acceptance(selected["output_summary"])
-    invalidation = parsed is not None and parsed.get("action") == "invalidate"
-    roles = _registered_cohort(org) if invalidation else None
-    outputs = {} if invalidation else _local_job_outputs(org, tables)
-    candidate = normalize_own_reference(parsed, selected) if parsed is not None else None
-    original = equivalent_collection_control(tables, candidate) if candidate is not None else None
-    from runtime.infrastructure.memory_telemetry_report import aware_utc
-    admission_time = aware_utc(original["timestamp"]) if original is not None else datetime.now(timezone.utc)
-    if original is not None and not invalidation:
-        validate_epoch_candidate(tables, original, opening, outputs, current_time=datetime.now(timezone.utc),
-                                 retry_verifier=org.db.verify_retry_link)
-    prepared = validate_acceptance_evidence(tables, result_id, opening, outputs,
-                                            current_time=admission_time, registered_cohort=roles,
-                                            retry_verifier=org.db.verify_retry_link)
-    closing = serving_observation(org)
-    if (collection_record_projection(tables) != collection_record_projection(
-                org.db.read_memory_collection_evidence(view=closing, result_row_id=result_id))
-            or _view_projection(opening) != _view_projection(closing)
-            or _view_projection(opening) != _view_projection(serving_observation(org))
-            or (invalidation and roles != _registered_cohort(org))
-            or (not invalidation and outputs != _local_job_outputs(org, tables))):
-        raise AcceptanceUnavailable("acceptance_acquisition_moving")
-    return {**prepared, "view": opening, "tables": tables, "outputs": outputs, "registered_cohort": roles}
+    with _census_budget(captures=2):
+        # Ordinary callbacks are not collection candidates. Inspect their exact
+        # keyed carrier before source/file/census acquisition; the admitted carrier
+        # and complete membership are still reread during preparation and commit.
+        with org.db._memory_collection_read_budget():
+            carrier = org.db.fetch_one_readonly("SELECT output_summary FROM task_results WHERE id=?", (result_id,))
+        parsed = parse_acceptance(carrier["output_summary"]) if carrier is not None else None
+        if parsed is None or parsed["kind"] != "manager_acceptance":
+            raise AcceptanceUnavailable("acceptance_manager_carrier")
+        opening = serving_observation(org)
+        tables = org.db.read_memory_collection_evidence(view=opening, result_row_id=result_id)
+        selected = _one([row for row in tables["task_results"] if row["id"] == result_id], "acceptance_manager_result")
+        parsed = parse_acceptance(selected["output_summary"])
+        invalidation = parsed is not None and parsed.get("action") == "invalidate"
+        roles = _registered_cohort(org) if invalidation else None
+        outputs = {} if invalidation else _local_job_outputs(org, tables)
+        candidate = normalize_own_reference(parsed, selected) if parsed is not None else None
+        original = equivalent_collection_control(tables, candidate) if candidate is not None else None
+        from runtime.infrastructure.memory_telemetry_report import aware_utc
+        admission_time = aware_utc(original["timestamp"]) if original is not None else datetime.now(timezone.utc)
+        if original is not None and not invalidation:
+            validate_epoch_candidate(tables, original, opening, outputs, current_time=datetime.now(timezone.utc),
+                                     retry_verifier=org.db.verify_retry_link)
+        prepared = validate_acceptance_evidence(tables, result_id, opening, outputs,
+                                                current_time=admission_time, registered_cohort=roles,
+                                                retry_verifier=org.db.verify_retry_link)
+        closing = serving_observation(org)
+        if (not _semantic_evidence_projection(tables,
+                    org.db.read_memory_collection_evidence(view=closing, result_row_id=result_id))
+                or _view_projection(opening) != _view_projection(closing)
+                or _view_projection(opening) != _view_projection(serving_observation(org))
+                or (invalidation and roles != _registered_cohort(org))
+                or (not invalidation and outputs != _local_job_outputs(org, tables))):
+            raise AcceptanceUnavailable("acceptance_acquisition_moving")
+        return {**prepared, "view": opening, "tables": tables, "outputs": outputs, "registered_cohort": roles}
 
 
 def reconcile_acceptance(org: Any, result_id: int) -> dict | None:
@@ -2549,19 +2715,20 @@ def reconcile_acceptance(org: Any, result_id: int) -> dict | None:
 
 
 def acquire_collection_report(org: Any, *, current_time: datetime | None = None) -> tuple[dict, dict, dict, datetime]:
-    from runtime.infrastructure.memory_telemetry_report import aware_utc, ReportAcquisitionUnavailable
-    try:
-        opening = serving_observation(org)
-        tables = org.db.read_memory_collection_evidence(view=opening)
-        outputs = _local_job_outputs(org, tables)
-        closing_tables = org.db.read_memory_collection_evidence(view=opening)
-        closing = serving_observation(org)
-        if tables != closing_tables or _view_projection(opening) != _view_projection(closing) or outputs != _local_job_outputs(org, tables):
-            raise ReportAcquisitionUnavailable()
-        cutoff = aware_utc(current_time) if current_time is not None else aware_utc(opening["data_through"] or opening["sampled_at"])
-        return tables, opening, outputs, cutoff
-    except Exception as exc:
-        raise ReportAcquisitionUnavailable() from exc
+    with _census_budget(captures=2):
+        from runtime.infrastructure.memory_telemetry_report import aware_utc, ReportAcquisitionUnavailable
+        try:
+            opening = serving_observation(org)
+            tables = org.db.read_memory_collection_evidence(view=opening)
+            outputs = _local_job_outputs(org, tables)
+            closing_tables = org.db.read_memory_collection_evidence(view=opening)
+            closing = serving_observation(org)
+            if not _semantic_evidence_projection(tables, closing_tables) or _view_projection(opening) != _view_projection(closing) or outputs != _local_job_outputs(org, tables):
+                raise ReportAcquisitionUnavailable()
+            cutoff = aware_utc(current_time) if current_time is not None else aware_utc(opening["data_through"] or opening["sampled_at"])
+            return tables, opening, outputs, cutoff
+        except Exception as exc:
+            raise ReportAcquisitionUnavailable() from exc
 
 
 def _collection_get(client: Any, org: str, path: str, params: dict | None, budget: _CensusBudget) -> dict:
@@ -2734,7 +2901,7 @@ def acquire_http_collection_report(client: Any, org: str, *, current_time: datet
         budget = _CensusBudget(captures=2)
         opening = _http_collection_capture(client, org, budget=budget)
         closing = _http_collection_capture(client, org, budget=budget)
-        if (_semantic_evidence_projection(opening[0]) != _semantic_evidence_projection(closing[0])
+        if (not _semantic_evidence_projection(opening[0], closing[0])
                 or opening[2] != closing[2] or _view_projection(opening[1]) != _view_projection(closing[1])):
             raise ReportAcquisitionUnavailable()
         cutoff = aware_utc(current_time) if current_time is not None else aware_utc(opening[1]["data_through"] or opening[1]["sampled_at"])
@@ -2745,33 +2912,34 @@ def acquire_http_collection_report(client: Any, org: str, *, current_time: datet
 
 def current_epoch_references(org: Any, view: dict) -> dict:
     """Project references only after actual current evidence validation; zero writes."""
-    try:
-        tables = org.db.read_memory_collection_evidence(view=view)
-        controls = [row for row in tables["audit_log"] if row["action"] in CONTROL_ACTIONS]
-        if not controls:
-            return view
-        last = controls[-1]["payload"]
-        head = collection_control_head(controls, org.slug, last["operational_root_task_id"])
-        if head["action"] != "memory_collection_epoch_started" or head["payload"]["boot_id"] != view["boot_id"]:
-            raise AcceptanceUnavailable("acceptance_epoch_inactive")
-        outputs = _local_job_outputs(org, tables)
-        # The serving view was acquired before this separate evidence SELECT.
-        # Detect a terminal/seal arriving between them before validating an
-        # opening census against later rows. Actual evidence damage remains a
-        # validation failure; only measured bookend movement is transient.
-        closing = serving_observation(org)
-        if (_view_projection(closing) != _view_projection(view)
-                or tables != org.db.read_memory_collection_evidence(view=view) or outputs != _local_job_outputs(org, tables)):
-            return {**view, "observation_error": view["observation_error"] or "observation_moving", "data_through": None}
-        candidate = validate_epoch_candidate(tables, head, view, outputs,
-                                             current_time=datetime.now(timezone.utc),
-                                             retry_verifier=org.db.verify_retry_link)["candidate"]
-        closing = serving_observation(org)
-        if candidate != head["payload"]["projection"]:
-            raise AcceptanceUnavailable("epoch_projection_changed")
-        if (_view_projection(closing) != _view_projection(view)
-                or tables != org.db.read_memory_collection_evidence(view=view) or outputs != _local_job_outputs(org, tables)):
-            return {**view, "observation_error": view["observation_error"] or "observation_moving", "data_through": None}
-        return {**view, "epoch_id": head["payload"]["epoch_id"], "epoch_audit_id": head["id"]}
-    except Exception:
-        return {**view, "observation_error": view["observation_error"] or "epoch_validation_unavailable", "data_through": None}
+    with _census_budget(captures=2):
+        try:
+            tables = org.db.read_memory_collection_evidence(view=view)
+            controls = [row for row in tables["audit_log"] if row["action"] in CONTROL_ACTIONS]
+            if not controls:
+                return view
+            last = controls[-1]["payload"]
+            head = collection_control_head(controls, org.slug, last["operational_root_task_id"])
+            if head["action"] != "memory_collection_epoch_started" or head["payload"]["boot_id"] != view["boot_id"]:
+                raise AcceptanceUnavailable("acceptance_epoch_inactive")
+            outputs = _local_job_outputs(org, tables)
+            # The serving view was acquired before this separate evidence SELECT.
+            # Detect a terminal/seal arriving between them before validating an
+            # opening census against later rows. Actual evidence damage remains a
+            # validation failure; only measured bookend movement is transient.
+            closing = serving_observation(org)
+            if (_view_projection(closing) != _view_projection(view)
+                    or not _semantic_evidence_projection(tables, org.db.read_memory_collection_evidence(view=view)) or outputs != _local_job_outputs(org, tables)):
+                return {**view, "observation_error": view["observation_error"] or "observation_moving", "data_through": None}
+            candidate = validate_epoch_candidate(tables, head, view, outputs,
+                                                 current_time=datetime.now(timezone.utc),
+                                                 retry_verifier=org.db.verify_retry_link)["candidate"]
+            closing = serving_observation(org)
+            if candidate != head["payload"]["projection"]:
+                raise AcceptanceUnavailable("epoch_projection_changed")
+            if (_view_projection(closing) != _view_projection(view)
+                    or not _semantic_evidence_projection(tables, org.db.read_memory_collection_evidence(view=view)) or outputs != _local_job_outputs(org, tables)):
+                return {**view, "observation_error": view["observation_error"] or "observation_moving", "data_through": None}
+            return {**view, "epoch_id": head["payload"]["epoch_id"], "epoch_audit_id": head["id"]}
+        except Exception:
+            return {**view, "observation_error": view["observation_error"] or "epoch_validation_unavailable", "data_through": None}
