@@ -84,16 +84,21 @@ Historical native0/verifier2/42-INCOMPLETE and earlier ROOT10693 source waivers
 remain history. They do not waive current allocated M1–M6/S1–S8 sensitivity,
 forward restoration, GREEN/five fresh-process repetitions or independent
 same-head executable QA. See docs/local-ci.md for exact command and exits.
- Full
+
+Full
 start_in_writer/support._storage schema/history composition remains unfinished;
 standalone template/source-data/role/import callers retain their defaults. New
 settings/progression and literal @3/team_move readers, repeated-binding inventory
 reuse, cold/recovery/drain integration and native controls remain root-owned
-prerequisites. No complete admission/readiness closure is claimed. F5-R1c/F8-R1c
-standalone/composed, aggregate candidate/intermediate-byte/traversal, transaction
-and strict provenance controls remain UNEXECUTED pending a maintained, explicitly
-allocated isolated reader venue; source review/static checks supply no behavioral
-or test-authoring acceptance and no old-root testing waiver is used here.
+prerequisites. No complete admission/readiness closure is claimed. The earlier
+SOURCE checkpoint's F5-R1c/F8-R1c UNEXECUTED venue statement is historical.
+TASK12407 now records42 scoped SYNTHETIC reader observations and14 safeguards
+GREEN with five fresh-process repetitions. M1–M5 and seven support variants reach
+intended RED/restored GREEN. M6 lacks complete intended RED after fixture rollback;
+S1/S3 reach other guards, leaving their intended pre-spawn sensitivity MISSING.
+These gaps block acceptance; candidate8193 and broader native/runtime controls
+remain UNPROVED. Source review/static checks are not behavioral or test-authoring
+acceptance, and no old-root testing waiver is used here.
 No schema DDL/reference changes, startup upgrade, old-byte rewrite, custody Q/U/P
 issuance, R2 or daemon Git/object probe follows.
 Future event families and partial/orphan/foreign/dual-owner graphs refuse. Valid
