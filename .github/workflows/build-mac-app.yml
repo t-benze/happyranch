@@ -23,9 +23,9 @@ jobs:
   build:
     name: Build HappyRanch.app (macOS arm64, unsigned)
     runs-on: macos-15
-    # Explicit steps total at most 80 minutes, leaving 10 for action finalization.
+    # Explicit steps total at most 85 minutes, leaving 10 for action finalization.
     # Runner loss/job cancellation can still prevent diagnostics from uploading.
-    timeout-minutes: 90
+    timeout-minutes: 95
     env:
       # Stay on the pinned graph's Go 1.23 line; see the maintenance limit in
       # app/mac/README.md. Never auto-download a substitute toolchain.
@@ -130,23 +130,42 @@ jobs:
           [ -f "$candidate_zip" ] && [ -f "$CANDIDATE_OUTPUT/build-receipt.json" ] || {
             echo CANDIDATE_OUTPUT_MISSING >&2; exit 1;
           }
-          printf 'candidate_zip=%s\n' "$candidate_zip" >> "$GITHUB_OUTPUT"
+          # Keep the documented upload path; admit exactly the expected ZIP.
+          # A second candidate-like ZIP, including diagnostics, fails closed.
+          set -- "$CANDIDATE_OUTPUT"/HappyRanch-*.zip
+          [ "$#" -eq 1 ] && [ "$1" = "$candidate_zip" ] || {
+            echo CANDIDATE_ZIP_SELECTION_INVALID >&2; exit 1;
+          }
 
       - name: Upload successful internal candidate and exact inner receipt
-        if: ${{ success() && !cancelled() && steps.build_candidate.outcome == 'success' && steps.build_candidate.outputs.candidate_zip != '' }}
+        if: ${{ success() && !cancelled() && steps.build_candidate.outcome == 'success' }}
         timeout-minutes: 5
         uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
         with:
           name: HappyRanch-unsigned-${{ github.run_id }}-${{ github.run_attempt }}
           if-no-files-found: error
           path: |
-            ${{ steps.build_candidate.outputs.candidate_zip }}
+            ${{ steps.run_paths.outputs.output }}/HappyRanch-*.zip
             ${{ steps.run_paths.outputs.output }}/build-receipt.json
             ${{ steps.run_paths.outputs.output }}/diagnostics/*.json
 
       - name: Retain bounded failure diagnostics
         # Best effort: cancellation or runner loss may interrupt packaging/upload.
-        if: ${{ (failure() || cancelled()) && steps.run_paths.outputs.root != '' }}
+        if: failure() && steps.run_paths.outputs.root != ''
+        timeout-minutes: 5
+        uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
+        with:
+          name: HappyRanch-diagnostics-only-${{ github.run_id }}-${{ github.run_attempt }}
+          if-no-files-found: warn
+          path: |
+            ${{ steps.run_paths.outputs.root }}/setup-status.txt
+            ${{ steps.run_paths.outputs.output }}/preflight.json
+            ${{ steps.run_paths.outputs.output }}/diagnostics/bounded/*
+
+      - name: Retain bounded cancellation diagnostics
+        # Failure already selects the preceding upload; never write it twice.
+        # Best effort: cancellation or runner loss may interrupt packaging/upload.
+        if: ${{ cancelled() && !failure() && steps.run_paths.outputs.root != '' }}
         timeout-minutes: 5
         uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
         with:

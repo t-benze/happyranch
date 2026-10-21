@@ -4,25 +4,30 @@
 Its workflow definition ref and digest are separate from the explicitly reviewed
 checkout SHA and tree. Record both identities before a confirmation run.
 
-The job has a 90-minute limit. Checkout, uv, Node and Go setup each have five
+The job has a 95-minute limit. Checkout, uv, Node and Go setup each have five
 minutes; private directory reservation has one, Xcode selection and Go validation
 each have two. Build and inspect has 45 minutes, including original preparation,
 packaging and the helper's existing bounded diagnostic packaging. Each artifact
-upload has five minutes. These explicit limits total 80 minutes, leaving ten
+upload has five minutes. These explicit limits total 85 minutes, leaving ten
 minutes for action finalization within the job budget. This is an upper budget,
 not an expected build duration or a guarantee that finalization completes.
 
-After successful packaging, the build step exposes only its exact candidate ZIP
-path. The success upload requires workflow success, a successful build-step
-outcome, a nonempty candidate path and no cancellation. It uploads that ZIP, the
-inner receipt and the existing diagnostic JSON files. A missing candidate or
-receipt fails the build step before it exposes an upload path. A diagnostic ZIP
-cannot substitute for the candidate through a
-wildcard match.
+After successful packaging, the build step requires the exact candidate ZIP and
+inner receipt. It also requires the documented `HappyRanch-*.zip` upload pattern
+to match exactly that one expected ZIP; an extra matching ZIP fails the step.
+The success upload requires workflow success, a successful build-step outcome
+and no cancellation. It uploads the admitted ZIP, inner receipt and existing
+diagnostic JSON files. Missing candidate/receipt or an extra matching diagnostic
+ZIP prevents success upload. The existing portable layout verifier retains its
+failure-step condition and path format; these checks add no helper or test seam.
 
-Failure or cancellation makes the separate diagnostics-only upload eligible when
-the private run root was reserved. It selects only the setup status, preflight
-and existing bounded diagnostic files; it never publishes an app candidate.
+Failure makes the failure diagnostics upload eligible when the private run root
+was reserved. A separate cancellation diagnostics step covers cancellation when
+no failure has selected that upload. The steps share the diagnostics-only
+artifact name and select only the setup status, preflight and existing bounded
+diagnostic files; neither publishes an app candidate. Their conditions avoid
+writing the same artifact twice. A failed diagnostics upload remains a failure;
+the cancellation step does not retry it.
 Before reservation, no diagnostic root exists. Before the build, setup status may
 be the only available file. Missing diagnostic files are reported by the upload
 action; upload failure remains a failure and does not establish candidate success.
