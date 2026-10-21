@@ -2072,7 +2072,7 @@ class _RepoRefreshIdentity:
     head: str
     upstream: str
     object_format: str
-    config: bytes
+    config: bytes  # Complete ordered selected scope/origin/key-first-LF-value triples.
     transport: bytes
 
 
@@ -2101,14 +2101,44 @@ def _repo_refresh_oid(value: str, object_format: str) -> str:
     return value
 
 
-def _repo_refresh_config_values(config: bytes, key: str) -> list[bytes | None]:
-    if not config.endswith(b"\0"):
-        raise ValueError("repository_refresh_invalid_config")
+# Finite command-dependency inventory, not a universal Git config interpreter.
+# Keep entire families, including shadowed/inactive members, in raw order.
+_REPO_REFRESH_CONFIG_FAMILIES = (
+    "remote", "url", "http", "ssh", "credential", "protocol", "promisor",
+    "core", "extensions", "safe", "feature", "index", "checkout", "filter", "diff", "fsck",
+    "attr", "splitindex", "reftable",
+    "fetch", "transfer", "pack", "repack", "gc", "maintenance", "commitgraph", "bundle", "clone",
+    "pull", "merge", "rebase", "submodule", "rerere", "apply", "stash", "hook",
+    "user", "author", "committer", "commit", "gpg", "i18n",
+)
+_REPO_REFRESH_BRANCH_KEYS = ("remote", "merge", "rebase", "mergeoptions")
+
+
+def _repo_refresh_config_selector(branch: str) -> str:
+    # POSIX ERE metacharacters only: branch subsection case and bytes are data.
+    # re.escape also escapes non-ERE punctuation; do not pass those escapes to Git.
+    escaped = "".join("\\" + c if c in r"\.^$*+?{}[]|()" else c for c in branch)
+    return (r"^(" + "|".join(_REPO_REFRESH_CONFIG_FAMILIES) + r")\."
+            + r"|^branch\." + escaped + r"\.(" + "|".join(_REPO_REFRESH_BRANCH_KEYS) + r")$")
+
+
+def _repo_refresh_config_values(config: bytes, key: str, *, branch: str) -> list[bytes | None]:
+    """Validate the entire selected scope/origin/key-value stream before use."""
+    if not config.endswith(b"\0") or len(config) > _REPO_PULL_CAPTURE_BYTES:
+        raise subprocess.SubprocessError("repository_refresh_invalid_config")
+    fields = config[:-1].split(b"\0")
+    if len(fields) % 3:
+        raise subprocess.SubprocessError("repository_refresh_invalid_config")
+    selector = _repo_refresh_config_selector(branch).encode("utf8")
     values: list[bytes | None] = []
-    for entry in config[:-1].split(b"\0"):
+    for offset in range(0, len(fields), 3):
+        scope, origin, entry = fields[offset:offset + 3]
         name, separator, value = entry.partition(b"\n")
-        if not name:
-            raise ValueError("repository_refresh_invalid_config")
+        if (scope not in {b"system", b"global", b"local", b"worktree", b"command"}
+                or not origin
+                or re.fullmatch(rb"[a-z0-9-]+(?:\.[^\n]+)?\.[a-z][a-z0-9-]*", name) is None
+                or re.match(selector, name) is None):
+            raise subprocess.SubprocessError("repository_refresh_invalid_config")
         if name == key.encode("utf8"):
             values.append(value if separator else None)
     return values
@@ -2130,16 +2160,18 @@ def _repo_refresh_identity(
         ["rev-parse", "--verify", "--quiet", "HEAD"])), object_format)
     if observe(["cat-file", "-t", head]) != b"commit\n":
         raise ValueError("repository_refresh_commit_unavailable")
-    # --list reads applicable scopes/includes. NUL separates entries, the first
-    # newline separates name/value, so embedded newlines cannot hide cardinality.
-    config = observe(["config", "--null", "--list"])
+    # Git selects BEFORE bounded capture. Keep complete ordered scope/origin/raw
+    # values for equality; unrelated branches/custom bloat cannot consume the cap.
+    # One observation includes all applicable scopes/includes; no value regexp.
+    config = observe(["config", "--includes", "--null", "--show-scope", "--show-origin",
+                      "--get-regexp", _repo_refresh_config_selector(branch)])
     for key, expected in (
         ("remote.origin.fetch", b"+refs/heads/*:refs/remotes/origin/*"),
         (f"branch.{branch}.remote", b"origin"),
         (f"branch.{branch}.merge", branch_ref.encode("utf8")),
     ):
-        if _repo_refresh_config_values(config, key) != [expected]:
-            raise ValueError("unsupported_refresh_configuration")
+        if _repo_refresh_config_values(config, key, branch=branch) != [expected]:
+            raise subprocess.SubprocessError("unsupported_refresh_configuration")
     upstream = _repo_refresh_line(observe(
         ["rev-parse", "--symbolic-full-name", "--verify", "@{upstream}"]))
     if upstream != f"refs/remotes/origin/{branch}":
@@ -2198,19 +2230,22 @@ def _repo_refresh_precheck(
 
     def boolean(key: str) -> bool | None:
         result = observe(["config", "--null", "--type=bool", "--get-all", key], (0, 1))
-        if result.returncode == 1 and not result.stdout:
+        if result.returncode == 1:
+            if result.stdout:
+                raise subprocess.SubprocessError("repository_refresh_invalid_setting")
             return None
         values = result.stdout.split(b"\0")
-        if values[-1] != b"" or any(value not in {b"true", b"false"} for value in values[:-1]):
-            raise ValueError("repository_refresh_invalid_setting")
+        if (len(values) < 2 or values[-1] != b""
+                or any(value not in {b"true", b"false"} for value in values[:-1])):
+            raise subprocess.SubprocessError("repository_refresh_invalid_setting")
         return values[-2] == b"true"
 
     branch = identity.branch_ref[len("refs/heads/"):]
     key = f"branch.{branch}.rebase"
-    values = _repo_refresh_config_values(identity.config, key)
+    values = _repo_refresh_config_values(identity.config, key, branch=branch)
     if not values:
         key = "pull.rebase"
-        values = _repo_refresh_config_values(identity.config, key)
+        values = _repo_refresh_config_values(identity.config, key, branch=branch)
     rebase = False
     if values:
         if values[-1] in {b"merges", b"m", b"interactive", b"i"}:
@@ -2219,7 +2254,7 @@ def _repo_refresh_precheck(
             # Use Git's boolean parser rather than approximate numeric/case rules.
             result = observe(["config", "--type=bool", "--get", key])
             if result.stdout not in {b"true\n", b"false\n"}:
-                raise ValueError("repository_refresh_invalid_setting")
+                raise subprocess.SubprocessError("repository_refresh_invalid_setting")
             rebase = result.stdout == b"true\n"
     # pull validates these settings even when a later override makes one unused.
     rebase_autostash = boolean("rebase.autostash") or False
