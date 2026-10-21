@@ -29,6 +29,7 @@ type ProgressStamp = { started: bigint; ordinal: number; boundary: ProgressBound
 const PROGRESS_CAP = 64 * 1024;
 const PROGRESS_SUPPRESSED = '[packaging-custody] event=suppressed reason=byte_cap\n';
 const SNAPSHOT_PROGRESS_CAP = 3072; // Child: at most 24 lines, each at most 128 bytes.
+const COMPLETE_PROGRESS_CAP = 1024; // One terminal line, reserved before any progress.
 type Measure = { bytes: number; nodes: number; names: number };
 
 // Validate/count before emission or retention; no stringify-to-discover overflow.
@@ -152,7 +153,8 @@ export class PackagingCustody {
   private readonly compiles = new Map<string, { parent: Row; reads: Row[]; ended: boolean }>();
   private metadata = measure({ resource_profile: 'web-private-plain@2', complete: true, profile: null, observations: [], css_operations: [], modules: [], final_bundle: [], counts: { observations: 0, operations: 0, processed_bytes: 0, transport_bytes: 0 } }, BUILD_INPUT, BUILD_NODES, true);
   private callMemberships = 0;
-  private progressBytes = 0;
+  private progressBytes = COMPLETE_PROGRESS_CAP;
+  private completeProgressAvailable = true;
   private progressOrdinal = 0;
   private progressDisabled = false;
 
@@ -187,6 +189,14 @@ export class PackagingCustody {
       this.progressBytes += SNAPSHOT_PROGRESS_CAP;
       return true;
     } catch { this.progressDisabled = true; return false; }
+  }
+
+  private borrowCompleteProgress(): boolean {
+    // This grant was charged at construction, even if never spent. Ordinary
+    // progress suppression cannot consume it; no late reservation or refund.
+    if (!this.completeProgressAvailable) return false;
+    this.completeProgressAvailable = false;
+    try { fstatSync(2); return true; } catch { return false; }
   }
 
   private progressBegin(boundary: ProgressBoundary, stage: ProgressStage, call = 0, plugin = 0): ProgressStamp | null {
@@ -274,9 +284,11 @@ export class PackagingCustody {
     const helperProgress = this.progressBegin('helper', progressStage, this.helperCalls);
     const snapshotProgress = stage === 'snapshot' && this.reserveSnapshotProgress();
     if (snapshotProgress) args.push('--snapshot-diagnostic-call', String(this.helperCalls), '--snapshot-diagnostic-bytes', String(SNAPSHOT_PROGRESS_CAP));
+    const completeProgress = stage === 'complete-build' && this.borrowCompleteProgress();
+    if (completeProgress) args.push('--complete-diagnostic-call', String(this.helperCalls), '--complete-diagnostic-bytes', String(COMPLETE_PROGRESS_CAP));
     let result: SpawnSyncReturns<Buffer>;
     try {
-      result = spawnSync(this.python, args, { input, maxBuffer: capture, stdio: snapshotProgress ? ['pipe', 'pipe', 'pipe', 2] : ['pipe', 'pipe', 'pipe'] });
+      result = spawnSync(this.python, args, { input, maxBuffer: capture, stdio: snapshotProgress || completeProgress ? ['pipe', 'pipe', 'pipe', 2] : ['pipe', 'pipe', 'pipe'] });
     } catch (error) { this.progressMark('failed', helperProgress); throw error; }
     this.progressMark(result.error || result.status !== 0 ? 'failed' : 'end', helperProgress);
     if (result.error) { this.sticky ??= result.error; throw result.error; }
