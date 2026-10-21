@@ -121,9 +121,9 @@ def _rendered_shape(raw: str) -> list:
         'ALPHA_COLLISION_OUTCOME', 'BETA_COLLISION_OUTCOME',
         'PAUSE_RESTART_ROOT', 'PAUSE_RESTART_WORKER', 'PAUSE_RESTART_DELEGATE',
         'PAUSE_RESTART_WORKER_OUTCOME', 'PAUSE_RESTART_DONE', 'PAUSE_RESTART_REVIEW_APPROVED',
-        'E04.approve-exit0', 'E04.reject', 'E04.completed-exit7', 'E04.failed-timeout',
+        'E04.approve-exit0', 'E04.review-required-refused', 'E04.completed-exit7', 'E04.failed-timeout',
         'E04.two-jobs-A-first', 'E04.two-jobs-B-first', 'E04_OK completed exit0',
-        'E04_REJECT rejected E04_REJECTED_BY_REVIEW', 'E04_EXIT7 completed exit7; operation nonzero',
+        'E04_REVIEW_REQUIRED_REFUSED no job submitted', 'E04_EXIT7 completed exit7; operation nonzero',
         'E04_TIMEOUT failed timeout exit-9', 'E04_PAIR A completed exit0; B completed exit7',
     }
     if raw in plain or raw in {'A' * n for n in (240, 241, 600, 601)} or raw in {

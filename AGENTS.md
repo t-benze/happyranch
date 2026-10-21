@@ -2437,7 +2437,7 @@ owned-process cleanup and complete variant/cell receipts. Retained pytest
 integration/platform/callback selections keep the existing parent fences.
 `Product E2E` retains the daily default-branch 19:00 UTC schedule under THR-291
 seq69 and admits main-only `workflow_dispatch`. Founder THR291seq277 authorizes
-engineering_manager under sole linked ROOT TASK-12281 (resolving TASK-12262)
+engineering_manager under sole linked ROOT TASK-12445 (resolving superseded TASK-12281/TASK-12262)
 to verify concrete reviewed corrections on demand without per-run approval or a
 nightly wait, after reconciling active owners/runs. Full independent review,
 scoped QA, normal hooks/nonforce publication, guarded merge and exact-main
@@ -2591,8 +2591,8 @@ behavioral regressions can be detected only later when their coverage executes.
 
 Fresh Product E2E keeps the daily `0 19 * * *` schedule (19:00 UTC /
 03:00 Asia/Shanghai) on immutable default-branch `github.sha`. Founder
-THR291seq277 authorizes engineering_manager under sole linked ROOT TASK-12281
-(resolving superseded TASK-12262) to use the existing main-only `workflow_dispatch`
+THR291seq277 authorizes engineering_manager under sole linked ROOT TASK-12445
+(resolving superseded TASK-12281/TASK-12262) to use the existing main-only `workflow_dispatch`
 on demand after concrete reviewed corrections, without per-run approval or a
 nightly wait. Reconcile active owners/runs first; no blind same-source retry loop.
 Manual admission requires actual `refs/heads/main`, default branch `main`, and
@@ -2601,6 +2601,14 @@ allocation to TASK-11897 and its receipts remain history. Baseline56 variants
 EACH Python3.12/3.14 plus TERM3.12/INT3.14 retain
 exactly four execution artifacts (`e2e-3.12`, `e2e-3.14`, `e2e-cancel-TERM`,
 `e2e-cancel-INT`) and the original bounds. Product Python support is unchanged.
+Founder THR291seq301(b)/303 replaces only slot44/index43 with
+`E04.review-required-refused`: genuine local CLI exit2 plus separate public422,
+no effects, then same-SID completed result. No legacy fixture or rejection/wake
+parity keeper; other automatic-job wake assertions remain. Current composition
+is38 starts=A12+B26,23 tasks/31 results, seven jobs/seven scripts,27 E04 anchors.
+Native replacement/protected/sensitivity/full-suffix proof remains UNEXECUTED.
+Retain historical hashes/failures/receipts and unknown native ownership.
+
 `Daily Product E2E Health` remains outside merge checks and reports the actual event, run/attempt,
 SHA and checkout tree; manual receipts are never labeled scheduled.
 There is no local E2E alias, PR/push/release/workflow_call/repository_dispatch

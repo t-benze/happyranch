@@ -260,6 +260,224 @@ def cancellation_controls() -> dict:
     return results
 
 
+def validate_review_refusal(row: dict, observations: dict, directory: Path, record: dict, positive: dict) -> None:
+    """Independently reconstruct the two refusals and original-SID continuation."""
+    import hashlib
+
+    def check(ok: bool, label: str) -> None:
+        if not ok:
+            raise ValueError("E04 refusal content: " + label)
+
+    start, = record["starts"]
+    task, refusal = record["task"], record["refusal"]
+    check(start == observations["starts"][20] and start["task"] == task and start["org"] == "alpha"
+          and start["agent"] == "case_manager" and start["pid_start"] is not None and record["jobs"] == [], "one actual alpha provider/zero jobs")
+    commands = observations["provider_commands"][record["commands_begin"]:record["commands_end"]]
+    check([cmd["action"] for cmd in commands] == ["jobs-refuse-review", "jobs-final"]
+          and commands == [refusal["cli"], record["final_callback"]]
+          and [cmd for cmd in observations["provider_commands"] if cmd["provider"]["session"] == start["session"]] == commands,
+          "closed first-refusal/final-only protocol")
+    command, final = commands
+    check(not any(c.get("provider", {}).get("session") == start["session"] for c in observations["thread_commands"] + observations["e07_commands"]), "no mixed-mode commands")
+    manifest = next(d["executable_manifest"] for d in observations["durable"] if "executable_manifest" in d)
+    root = Path(manifest["root"])
+    check(command["argv"][:6] == [manifest["callback"], "jobs", "submit", "--org", "alpha", "--from-file"]
+          and len(command["argv"]) == 8 and command["argv"][-1] == "--json", "real shipping submit argv")
+    file = command["payload_file"]
+    raw = file["text"].encode("utf-8")
+    payload = json.loads(raw)
+    digest = hashlib.sha256(raw).hexdigest()
+    check(file == dict(path=str(root/"coord"/(digest+".json")), text=raw.decode("utf-8"), bytes=len(raw), sha256=digest)
+          and file["path"] == command["argv"][-2] and command["payload"] == payload
+          and raw == json.dumps(payload,sort_keys=True).encode("utf-8"), "actual UTF8 payload file entity/path/hash")
+    token = hashlib.sha256((row["source_sha"]+start["session"]+"REFUSED").encode()).hexdigest()[:24]
+    sentinel, socket_path = str(root/"coord"/(token+".started")), str(root/"coord/jobs.sock")
+    # The program is independently authored here; no scenario oracle is imported.
+    program = f'''import json, os, signal, socket, sys, time
+from pathlib import Path
+Path({sentinel!r}).write_text(json.dumps(dict(token={token!r}, pid=os.getpid())))
+sys.stdout.write('E04_REFUSED_OUT\\n'); sys.stdout.flush()
+sys.stderr.write('E04_REFUSED_ERR\\n'); sys.stderr.flush()
+end = {refusal["effective_end"]!r}
+def remaining():
+    value = end - time.monotonic()
+    if value <= 0:
+        raise TimeoutError("E04 script absolute deadline")
+    return min(20, value)
+with socket.socket(socket.AF_UNIX) as peer:
+    peer.settimeout(remaining())
+    peer.connect({socket_path!r})
+    peer.settimeout(remaining())
+    peer.sendall((json.dumps(dict(token={token!r}, pid=os.getpid())) + "\\n").encode())
+    remaining()
+    if False:
+        while True:
+            signal.pause()
+    peer.settimeout(remaining())
+    released = peer.recv(1)
+    remaining()
+    if released != b"R":
+        raise RuntimeError("missing external release")
+raise SystemExit(0)
+'''
+    check(record["entered"] < refusal["effective_end"] <= record["deadline"] and refusal["token"] == token and refusal["sentinel"] == sentinel and refusal["script"] == program
+          and payload == dict(task_id=task, session_id=start["session"], title="E04 review refusal", rationale="Authorization mode removed",
+              script=program, interpreter="python3", cwd_hint=None, review_required=True, persistent=False, max_runtime_seconds=30)
+          and payload["review_required"] is True and payload["persistent"] is False and type(payload["max_runtime_seconds"]) is int,
+          "independent valid sentinel-first bounded true payload")
+    expected_stderr = (f"Error reading scripts-submit file {file['path']}: review_required_removed: obtain any required authorization in a thread before submitting; "
+        "upgrade old clients and omit review_required or set it to false. This request was not submitted.\n")
+    check(command["exit"] == 2 and command["stdout"] == "" and command["stderr"] == expected_stderr
+          and command["timed_out"] is False and command["wire"] == [], "exact local refusal before HTTP")
+    attempt, = [a for a in observations["provider_attempts"] if a["command_index"] == record["commands_begin"]]
+    check(attempt["wire_begin"] == attempt["wire_end"] and "expected_exit" not in attempt["instruction"]
+          and attempt["provider"] == start, "unchanged real relay interval/no arbitrary exit")
+    check(all("expected_exit" not in a["instruction"] for a in observations["provider_attempts"]), "no caller-selected exceptional exit")
+    for cmd in commands:
+        check(cmd["provider"] == {k:start[k] for k in ("task","session","agent","org","pid")}
+              and cmd["python"] == manifest["python"] and cmd["source_sha"] == row["source_sha"]
+              and cmd["callback_sha256"] == manifest["callback_sha256"] and cmd["child_start"] is not None, "actual executable/PID/start/source binding")
+        child_fields = cmd["child_stat"].rsplit(")",1)[1].split()
+        check(int(cmd["child_stat"].split("(",1)[0]) == cmd["child_pid"] and child_fields[19] == cmd["child_start"]
+              and int(child_fields[1]) == cmd["child_parent"] == start["pid"], "raw actual CLI child PID/start/parent")
+        argv_hash = hashlib.sha256(json.dumps(cmd["argv"][1:]).encode()).hexdigest()
+        witnesses = [w for w in observations["launch_witnesses"] if w["kind"] == "callback" and w["pid"] == cmd["child_pid"]]
+        check(len(witnesses) == 1 and witnesses[0]["ppid"] == start["pid"] and witnesses[0]["argv_sha256"] == argv_hash
+              and witnesses[0]["source_sha"] == row["source_sha"]
+              and witnesses[0]["cli_sha256"] == hashlib.sha256((Path(__file__).resolve().parents[1]/"cli/main.py").read_bytes()).hexdigest(), "real intended CLI child witness")
+    frames = refusal["frames"]
+    check(len(frames) == 5 and refusal["closure"] == frames[3] and refusal["final_drain"] == frames[4], "complete before/after/closure/drain frames")
+    before, after_cli, after_api = frames[:3]
+    index = refusal["http_index"]
+    http = observations["http"]
+    api = http[index]
+    check(type(index) is int and sum(h.get("capture") == "E04.review-required-refused" for h in http) == 1
+          and api["index"] == index and api["capture"] == "E04.review-required-refused"
+          and api["method"] == "POST" and api["path"] == "/api/v1/orgs/alpha/jobs/submit"
+          and api["payload_file"] == file and api["request_text"] == raw.decode("utf-8")
+          and api["request_bytes"] == len(raw) and api["request_sha256"] == digest and "error" not in api, "unique real identical-entity public POST")
+    check(api["source_sha"] == row["source_sha"] and api["boot"] == observations["boots"][1]
+          and api["daemon_pid"] == api["boot"]["pid"] and api["daemon_start"] == api["boot"]["start"] is not None
+          and api["destination"]["host"] == "127.0.0.1" and api["destination"]["port"] in api["boot"]["discovered_ports"]
+          and api["peer"] == ["127.0.0.1",api["destination"]["port"]], "actual loopback peer/daemon/boot source")
+    response_raw = api["response_text"].encode("utf-8")
+    check(api["status"] == 422 and api["response_bytes"] == len(response_raw)
+          and api["response_sha256"] == hashlib.sha256(response_raw).hexdigest()
+          and api["response"] == json.loads(response_raw) == {"detail":{"code":"review_required_removed","message":
+              "Obtain any required authorization in a thread before submitting; omit review_required or set it to false. This request was not submitted."}}, "exact raw/parsed public refusal, no earlier guard")
+    check(record["entered"] <= before["entered"] <= before["finished"] <= command["entered"] <= command["finished"]
+          <= after_cli["entered"] <= after_cli["finished"] <= api["entered"] <= api["send"] <= api["response_at"] <= api["finished"]
+          <= after_api["entered"] <= after_api["finished"] <= final["entered"] <= final["finished"] <= frames[3]["entered"]
+          <= frames[3]["finished"] <= record["anchors"][-1]["entered"] < record["finished"] <= frames[4]["entered"], "monotonic real causal intervals")
+    control_sentinel = positive["jobs"][0]["sentinel"]
+    for i, frame in enumerate(frames):
+        check(frame["coord_entries"] == sorted(set(frame["coord_entries"])) and Path(sentinel).name not in frame["coord_entries"]
+              and Path(control_sentinel).name in frame["coord_entries"] and frame["socket"]["path"] == socket_path
+              and type(frame["socket"]["fd"]) is int and frame["socket"]["fd"] >= 0 and frame["peer_ready"] == []
+              and frame["sentinel_absent"] is True and frame["peer_pending"] is False
+              and frame["provider_start"] == (start["pid_start"] if i < 3 else None), "sentinel/socket absence and live-then-gone original SID")
+        for org in ("alpha","beta"):
+            part, files = frame["sql"][org], frame["job_files"][org]
+            check(frame["entered"] <= part["entered"] <= part["finished"] <= files["entered"] <= files["finished"] <= frame["finished"],
+                  "coherent reopened SQL/file observation intervals, no claimed atomic files")
+            content = part["content"]
+            check({"tasks","task_results","audit_log","jobs","task_pause_controls"} <= set(content["tables"]), "complete relevant tables/control journal")
+            check(all(r["review_required"] == 0 and r["status"] != "pending" for r in content["tables"]["jobs"]), "global no pending review row")
+            check(not any(r["task_id"] == task for r in content["tables"]["jobs"]), "task no job allocation")
+            for f in files["files"]:
+                data = bytes.fromhex(f["hex"])
+                check(f["bytes"] == len(data) and f["sha256"] == hashlib.sha256(data).hexdigest()
+                      and dict(path="jobs/"+f["path"], bytes=len(data), sha256=f["sha256"]) in content["files"], "actual full job/output bytes and Store hashes")
+            check(len(files["files"]) == sum(f["path"].startswith("jobs/") for f in content["files"]), "whole output file membership")
+        procs = frame["processes"]
+        check(frame["entered"] <= procs["entered"] <= procs["finished"] <= frame["finished"] and len(procs["rows"]) < 512
+              and len({r["pid"] for r in procs["rows"]}) == len(procs["rows"]), "bounded actual descendant census")
+        by_pid = {r["pid"]:r for r in procs["rows"]}
+        check(api["daemon_pid"] in by_pid and by_pid[api["daemon_pid"]]["start"] == api["daemon_start"], "same daemon process")
+        for r in procs["rows"]:
+            fields = r["stat"].rsplit(")",1)[1].split()
+            check(int(r["stat"].split("(",1)[0]) == r["pid"] and fields[19] == r["start"] and int(fields[1]) == r["ppid"]
+                  and r["root_marker"] == f"E2E_ROOT={root}", "raw owned process identity")
+            check(r["start"] is not None and all(child in by_pid and by_pid[child]["ppid"] == r["pid"] for child in r["children"]), "closed known descendant ownership")
+        check((start["pid"] in by_pid) == (i < 3) and not any(cmd["child_pid"] in by_pid for cmd in commands), "intended CLI children separately accounted and gone")
+    def unchanged(a: dict, b: dict) -> None:
+        for org in ("alpha","beta"):
+            left, right = a["sql"][org]["content"], b["sql"][org]["content"]
+            check(left.keys() == right.keys() and left["files"] == right["files"] and left["tables"].keys() == right["tables"].keys()
+                  and a["job_files"][org]["files"] == b["job_files"][org]["files"], "no product file or table membership change")
+            for table, old_rows in left["tables"].items():
+                new_rows = right["tables"][table]
+                check(len(old_rows) == len(new_rows), "no row allocation " + table)
+                for old,new in zip(old_rows,new_rows):
+                    if org == "alpha" and table == "tasks" and old["id"] == task:
+                        check(old.keys() == new.keys() and all(old[k] == new[k] for k in old if k not in {"last_heartbeat","updated_at"}), "exact current task unchanged")
+                        pairs = [[datetime.fromisoformat(r[k]) for k in ("last_heartbeat","updated_at")] for r in (old,new)]
+                        check(all(v.tzinfo is not None and v.utcoffset() is not None for pair in pairs for v in pair)
+                              and all(pair[1] >= pair[0] for pair in pairs), "initialized valid aware heartbeat pairs")
+                        check((all(old[k] == new[k] for k in ("last_heartbeat","updated_at")))
+                              or all(y > x for x,y in zip(*pairs)), "only BOTH timestamps strictly forward")
+                    else:
+                        check(old == new, "no refusal SQL/audit/control/wait/result side effect " + table)
+        keys = ("pid","start","ppid","children","root_marker")
+        check([{k:r[k] for k in keys} for r in a["processes"]["rows"]] ==
+              [{k:r[k] for k in keys} for r in b["processes"]["rows"]], "no refused descendant launch")
+    unchanged(before,after_cli)
+    unchanged(after_cli,after_api)
+    baseline_tables = before["sql"]["alpha"]["content"]["tables"]
+    baseline_task, = [t for t in baseline_tables["tasks"] if t["id"] == task]
+    check(baseline_task["status"] == "in_progress" and baseline_task["current_session_id"] == start["session"]
+          and baseline_task["assigned_agent"] == "case_manager" and baseline_task["orchestration_step_count"] == 1
+          and baseline_task["parent_task_id"] is None and all(baseline_task[k] is None for k in ("block_kind","blocked_on_job_ids","active_chain","active_fanout"))
+          and not any(r["task_id"] == task for r in baseline_tables["task_results"]), "valid initialized live ordinary task before refusal")
+    check(refusal["positive_case"] == 0 and positive["index"] == 0 and positive["finished"] <= record["entered"]
+          and len(positive["jobs"]) == 1, "immediately preceding genuine automatic positive")
+    control = positive["jobs"][0]
+    check(refusal["positive_job"] == control["id"] and refusal["positive_peer"] == control["peer"]
+          and refusal["positive_oracle"] == control["oracle"] and json.loads(refusal["positive_sentinel"]) == control["peer"]["hello"]
+          == {"token":control["token"],"pid":control["peer"]["pid"]}
+          and control["peer"]["start"] is not None and control["code"] == control["oracle"]["row"]["exit_code"] == 0
+          and control["oracle"]["outputs"][0]["text"] == "E04_OK_OUT\n"
+          and [a["action"] for a in control["oracle"]["audits"]] == ["job_submitted","job_auto_started","job_run_completed"], "positive script/sentinel/socket/PID/output/audit control")
+    summary = "E04_REVIEW_REQUIRED_REFUSED no job submitted"
+    done = dict(action="done",summary=summary)
+    expected_callback = dict(task_id=task,session_id=start["session"],agent="case_manager",status="completed",confidence=90,summary=summary,decision=done)
+    check(final["payload"] == expected_callback and final["exit"] == 0 and not final["timed_out"]
+          and final["argv"] == [manifest["callback"],"report-completion","--org","alpha","--from-file",final["payload_file"]["path"]], "genuine last final CLI callback")
+    final_wire = [w for w in final["wire"] if w["method"] == "POST" and w["path"] == f"/api/v1/orgs/alpha/tasks/{task}/completion"]
+    check(len(final_wire) == 1 and final_wire[0]["status"] == 200 and final_wire[0]["response"] == {"ok":True}
+          and final_wire[0]["dropped"] is False and final_wire[0] in observations["relay"], "actual accepted callback200")
+    snap = record["final_snapshot"]
+    task_row, = snap["tasks"]
+    result, = snap["results"]
+    check(task_row["id"] == task and task_row["status"] == "completed" and task_row["completed_at"] is not None
+          and task_row["parent_task_id"] is None and task_row["assigned_agent"] == "case_manager"
+          and task_row["current_session_id"] == start["session"] and task_row["orchestration_step_count"] == 1
+          and all(task_row[k] is None for k in ("block_kind","blocked_on_job_ids","active_chain","active_fanout")) and snap["jobs"] == [], "one-generation final no-wait task")
+    check(type(result["id"]) is int and result["id"] > 0 and result["session_id"] == start["session"] and result["task_id"] == task
+          and result["agent"] == "case_manager" and result["status"] == "completed" and type(result["confidence_score"]) is int
+          and result["confidence_score"] == 90 and result["output_summary"] == summary and result["verdict"] is None
+          and result["waiting_on_job_ids"] is None and json.loads(result["decision_json"]) == done, "actual positive INTEGER single truthful result")
+    kinds = ("session_start","session_end","completion_report","orchestration_step","task_blocked_on_jobs","task_resumed_from_jobs")
+    actions = {kind:[a for a in snap["audit"] if a["action"] == kind] for kind in kinds}
+    check([len(actions[k]) for k in kinds] == [1,1,1,1,0,0] and len({a["id"] for a in snap["audit"]}) == len(snap["audit"])
+          and all(type(a["id"]) is int and a["id"] > 0 for a in snap["audit"]), "one complete lifecycle/no park/wake")
+    a,b,d,step = [actions[k][0] for k in kinds[:4]]
+    consumed = json.loads(d["payload"])
+    expanded = dict(done,then=[],children=[],**{k:None for k in ("agent","prompt","expect_verdict","width_cap_ack","revisit_of_task_id","attachments","join_summary","reason","successor_brief","rationale","attestation")})
+    check(a["id"] < b["id"] < d["id"] < step["id"] and all(x["task_id"] == task for x in (a,b,d,step))
+          and all(x["agent"] == "case_manager" for x in (a,b,d)) and step["agent"] == "orchestrator"
+          and json.loads(a["payload"])["session_id"] == start["session"] and consumed["task_id"] == task and consumed["agent"] == "case_manager"
+          and consumed["status"] == "completed" and type(consumed["confidence"]) is int and consumed["confidence"] == 90
+          and consumed["output_summary"] == summary and consumed["verdict"] is None and consumed["waiting_on_job_ids"] == []
+          and consumed["decision"] == expanded and json.loads(step["payload"]) == dict(step_number=1,decision=dict(done,then=[],children=[])), "ordered full callback consumption and step1")
+    final_by_id = {a["id"]:a for a in snap["audit"]}
+    check(all(final_by_id[a["id"]] == a for a in baseline_tables["audit_log"] if a["task_id"] == task), "all original lifecycle bytes retained")
+    check([r for r in frames[3]["sql"]["alpha"]["content"]["tables"]["task_results"] if r["task_id"] == task] == [result], "closure retains same result")
+    rendered = record["task_browser"]
+    check(all(t in rendered["text"] for t in (summary,"Recall tree","Outcome","completed"))
+          and rendered["screenshot"] == "e04-task-1.png" and (directory/"e04-task-1.png").read_bytes().startswith(b"\x89PNG\r\n\x1a\n"), "actual final task/list/Recall screenshot")
+
+
 def validate_e04(row: dict, observations: dict, browser: list[dict], directory: Path) -> None:
     """Recompute actual artifact content independently of the scenario driver.
 
@@ -267,6 +485,7 @@ def validate_e04(row: dict, observations: dict, browser: list[dict], directory: 
     The metadata-only controls above do not establish this oracle's sensitivity.
     """
     import hashlib
+    from collections import Counter
     from urllib.parse import parse_qs, urlsplit
 
     def check(condition: bool, message: str) -> None:
@@ -277,18 +496,15 @@ def validate_e04(row: dict, observations: dict, browser: list[dict], directory: 
           "scenario/observation disagreement or observer failure")
     starts, commands = observations["starts"], observations["provider_commands"]
     durable, observer = observations["durable"], observations["provider_observer"]
-    missing_legacy = [r for d in durable for r in d.get("jobs_cases", [])
-                      if r.get("variant") == "E04.reject" and "missing_prerequisite" in r]
-    check(not missing_legacy, "E04.reject MISSING authorized legacy pending reviewed-job fixture with genuine eligible waiter provenance; rejection/wake UNEXECUTED")
-    check(len(starts) == 39 and len({s["session"] for s in starts[:30]}) == 30, "retained30 genuine prefix providers;39 C composition")
+    check(len(starts) == 38 and len({s["session"] for s in starts[:29]}) == 29, "retained29 genuine prefix providers;38 C composition")
     check(len(observer) >= 2 and all(0 < b["at"] - a["at"] <= 1 for a, b in zip(observer, observer[1:])),
           "continuous provider observer interval")
     check(all(a["stubs"] <= b["stubs"] and a["calls"] <= b["calls"] for a, b in zip(observer, observer[1:])),
           "observer counter rollback")
-    check(observer[-1]["stubs"] == 39 and not observer[-1]["pending"], "observer composed final closure")
+    check(observer[-1]["stubs"] == 38 and not observer[-1]["pending"], "observer composed final closure")
     http = observations["http"]
     anchors = [r["jobs_anchor"] for r in durable if "jobs_anchor" in r and not r["jobs_anchor"]["name"].startswith("E05:")]
-    check(len(anchors) == 28 and len({a["name"] for a in anchors}) == 28, "complete unique boot/case/drain anchors")
+    check(len(anchors) == 27 and len({a["name"] for a in anchors}) == 27, "complete unique boot/case/drain anchors")
     by_name = {a["name"]: a for a in anchors}
 
     def anchor_content(a: dict, total: int, count: int, previous: dict | None = None) -> None:
@@ -349,7 +565,7 @@ def validate_e04(row: dict, observations: dict, browser: list[dict], directory: 
           and restart["old"] != restart["new"] and archive["finished"] < boot_b["entered"], "actual old/new boot binding")
     for key, expected in (("final_snapshot", {"alpha": (6, 8), "beta": (1, 1)}),
                           ("pause_final_org", {"alpha": (13, 17), "beta": (1, 1)}),
-                          ("jobs_final_org", {"alpha": (19, 29), "beta": (1, 1)})):
+                          ("jobs_final_org", {"alpha": (19, 28), "beta": (1, 1)})):
         records = [d for d in durable if key in d]
         check(len(records) == 2, "retained full original and final org snapshots")
         for d in records:
@@ -359,9 +575,9 @@ def validate_e04(row: dict, observations: dict, browser: list[dict], directory: 
                   and all(t["status"] == "completed" for t in snap["tasks"]), "literal org task/result closure")
     case_rows = [d["jobs_cases"] for d in durable if "jobs_cases" in d]
     check(len(case_rows) == 1 and len(case_rows[0]) == 6, "six actual case records")
-    expected_variants = ["E04.approve-exit0", "E04.reject", "E04.completed-exit7", "E04.failed-timeout",
+    expected_variants = ["E04.approve-exit0", "E04.review-required-refused", "E04.completed-exit7", "E04.failed-timeout",
                          "E04.two-jobs-A-first", "E04.two-jobs-B-first"]
-    expected_codes = [[0], [None], [7], [-9], [0, 7], [7, 0]]
+    expected_codes = [[0], [], [7], [-9], [0, 7], [7, 0]]
     all_jobs, peer_count, previous = [], 0, pause
     for index, record in enumerate(case_rows[0]):
         variant = expected_variants[index]
@@ -370,7 +586,17 @@ def validate_e04(row: dict, observations: dict, browser: list[dict], directory: 
               and row["variants"][variant]["evidence"]["host_cleanup_attribution"] == record, "actual variant evidence reference")
         check(record["entered"] <= record["finished"] < record["deadline"]
               and record["deadline"] <= record["entered"] + [20, 15, 20, 25, 25, 25][index], "case bound")
-        check(record["starts"] == starts[18 + index * 2:20 + index * 2], "two actual sequential provider references")
+        begin, end = ((18,20),(20,21),(21,23),(23,25),(25,27),(27,29))[index]
+        check(record["starts"] == starts[begin:end], "actual sequential provider references")
+        if index == 1:
+            checkpoints = record["anchors"]
+            check([a["name"] for a in checkpoints] == [variant+":pre",variant+":final"]
+                  and all(by_name[a["name"]] == a for a in checkpoints), "refusal two settled anchors")
+            anchor_content(checkpoints[0], 8, 20, previous)
+            anchor_content(checkpoints[1], 9, 21, checkpoints[0])
+            validate_review_refusal(row, observations, directory, record, case_rows[0][0])
+            previous = checkpoints[1]
+            continue
         first, second = record["starts"]
         task = record["task"]
         check(first["task"] == second["task"] == task and first["org"] == second["org"] == "alpha"
@@ -382,7 +608,7 @@ def validate_e04(row: dict, observations: dict, browser: list[dict], directory: 
         names += [variant + ":final"]
         check([a["name"] for a in checkpoints] == names and all(by_name[a["name"]] == a for a in checkpoints), "complete causal checkpoint references")
         for i, a in enumerate(checkpoints):
-            count = 18 + index * 2 + (0 if i == 0 else 2 if i == len(checkpoints) - 1 else 1)
+            count = begin + (0 if i == 0 else 2 if i == len(checkpoints) - 1 else 1)
             anchor_content(a, count - 12, count, previous)
             previous = a
         jobs = record["jobs"]
@@ -573,7 +799,7 @@ def validate_e04(row: dict, observations: dict, browser: list[dict], directory: 
                           and payload["truncated_stdout"] is False and payload["truncated_stderr"] is False, "terminal audit exact bytes")
         # Independent reconstruction from serialized frames and original
         # commands. Never import the maker oracle or trust its validation flag.
-        summary = ["E04_OK completed exit0", "E04_REJECT rejected E04_REJECTED_BY_REVIEW",
+        summary = ["E04_OK completed exit0", "E04_REVIEW_REQUIRED_REFUSED no job submitted",
                    "E04_EXIT7 completed exit7; operation nonzero", "E04_TIMEOUT failed timeout exit-9",
                    "E04_PAIR A completed exit0; B completed exit7", "E04_PAIR A completed exit0; B completed exit7"][index]
         compact_done = {"action": "done", "summary": summary}
@@ -722,8 +948,8 @@ def validate_e04(row: dict, observations: dict, browser: list[dict], directory: 
               and json.loads(snap["results"][1]["decision_json"]) == own[-1]["payload"]["decision"], "last real final callback")
         check([x["action"] for x in own if x["provider"]["session"] == first["session"]] == [*["jobs-submit"] * len(jobs), "jobs-block"], "S1 final CLI action")
         check([x["action"] for x in own if x["provider"]["session"] == second["session"]] == [*["jobs-read"] * (5 * len(jobs)), "jobs-final"], "S2 reads before final callback")
-    check(len(all_jobs) == len(set(all_jobs)) == 8 and peer_count == 7, "eight jobs/seven scripts")
-    anchor_content(by_name["final-drain-B"], 18, 30, previous)
+    check(len(all_jobs) == len(set(all_jobs)) == 7 and peer_count == 7, "seven jobs/seven scripts")
+    anchor_content(by_name["final-drain-B"], 17, 29, previous)
     final_witness = [d["jobs_final_witnesses"] for d in durable if "jobs_final_witnesses" in d]
     check(len(final_witness) == 1, "actual final witness artifact content")
     check(observations["launch_witnesses"][:len(final_witness[0])] == final_witness[0]
@@ -738,14 +964,17 @@ def validate_e04(row: dict, observations: dict, browser: list[dict], directory: 
                   and c["execution_deadline"] == a["instruction"]["execution_deadline"] == a["instruction"]["deadline"] - 1
                   and a["entered"] <= c["entered"] <= c["finished"] <= a["finished"] < a["instruction"]["deadline"]
                   <= a["entered"] + 10 for a, c in zip(attempts, commands)), "all CLI attempts accounted")
+    check(len(commands) == 54 and Counter(c["action"] for c in commands) ==
+          {"jobs-submit":7,"jobs-refuse-review":1,"jobs-block":5,"jobs-final":6,"jobs-read":35}, "exact54 provider command inventory")
     calls = [w for w in final_witness[0] if w["kind"] == "callback"]
     stubs = [w for w in final_witness[0] if w["kind"] == "stub"]
-    check(len(calls) == len(prefix_commands) + len(commands) and len(stubs) == 30
+    check(len(calls) == len(prefix_commands) + len(commands) and len(stubs) == 29
           and all(w["source_sha"] == row["source_sha"] for w in calls + stubs), "all authentic source-bound executable witnesses")
     for command in commands:
-        check(command["exit"] == 0 and command["timed_out"] is False and command["source_sha"] == row["source_sha"]
+        refused = command["action"] == "jobs-refuse-review"
+        check(command["exit"] == (2 if refused else 0) and command["timed_out"] is False and command["source_sha"] == row["source_sha"]
               and command["entered"] <= command["finished"]
-              and command["wire"] and all(w in observations["relay"] and w["dropped"] is False for w in command["wire"]), "actual CLI/wire record")
+              and (command["wire"] == [] if refused else bool(command["wire"])) and all(w in observations["relay"] and w["dropped"] is False for w in command["wire"]), "actual CLI/wire record")
         if command["action"] in {"jobs-block", "jobs-final"}:
             callbacks = [w for w in command["wire"] if w["method"] == "POST" and w["path"] == f"/api/v1/orgs/alpha/tasks/{command['provider']['task']}/completion"]
             check(len(callbacks) == 1 and callbacks[0]["status"] == 200 and callbacks[0]["response"] == {"ok": True}, "actual callback200")
@@ -775,15 +1004,15 @@ def validate_e05(row: dict, observations: dict, directory: Path) -> None:
     check([g["name"] for g in groups] == ["C", "N", "D"], "exact finite group order")
     C, N, D = groups
     starts = observations["starts"]
-    check(len(starts) == 39 and len({s["session"] for s in starts[:37]}) == 37, "37 unique prefix sessions;39 C composition")
+    check(len(starts) == 38 and len({s["session"] for s in starts[:36]}) == 36, "36 unique prefix sessions;38 C composition")
     providers = C["providers"] + N["providers"] + D["providers"]
     check(len(providers) == 6 and len({p["token_sha256"] for p in providers}) == 6
-          and {s["session"] for s in starts[30:37]} == {p["session"] for p in providers + [D["task"]]}, "six genuine thread tokens and one task")
+          and {s["session"] for s in starts[29:36]} == {p["session"] for p in providers + [D["task"]]}, "six genuine thread tokens and one task")
     check(all(p in starts and p["org"] == "alpha" and p["pid_start"] for p in providers), "actual thread socket identities")
     anchors = [d["jobs_anchor"] for d in durable if "jobs_anchor" in d]
     previous = next(a for a in anchors if a["name"] == "final-drain-B")
     check(len([a for a in anchors if a["name"].startswith("E05:")]) == 4, "four E05 group/drain boundaries")
-    for group, total, count, allowance in zip(groups, (21,22,25), (33,34,37), (18,8,25)):
+    for group, total, count, allowance in zip(groups, (20,21,24), (32,33,36), (18,8,25)):
         check(group["entered"] <= group["finished"] <= group["deadline"] <= group["entered"] + allowance,
               "original finite group allowance")
         a = group["anchor"]
@@ -817,10 +1046,10 @@ def validate_e05(row: dict, observations: dict, directory: Path) -> None:
         previous = a
     final_anchor = case["final_anchor"]
     check(final_anchor in anchors and final_anchor["name"] == "E05:final" and final_anchor["projection"] == previous["projection"]
-          and final_anchor["provider_count"] == 37 and final_anchor["entered"] >= previous["finished"], "unchanged final drain")
+          and final_anchor["provider_count"] == 36 and final_anchor["entered"] >= previous["finished"], "unchanged final drain")
     check(len(final_anchor["samples"]) >= 2 and all(s["metrics"]["host_sessions"]["receipts"] == previous["projection"]["receipts"]
               for s in final_anchor["samples"][-2:]), "actual final rereads")
-    check(Counter(x["invocation_kind"] for x in final_anchor["projection"]["receipts"]["recent"]) == {"task":19,"thread":6}, "B25 canonical task/thread mix")
+    check(Counter(x["invocation_kind"] for x in final_anchor["projection"]["receipts"]["recent"]) == {"task":18,"thread":6}, "B24 canonical task/thread mix")
 
     final = case["final"]["content"]
     expected_sources = ("e2e/threads.py", "e2e/thread_provider.py", "e2e/provider.py", "e2e/controller.py", "e2e/browser.py",
@@ -833,8 +1062,8 @@ def validate_e05(row: dict, observations: dict, directory: Path) -> None:
     check(case["source_hashes"] == {name:hashlib.sha256((source_root/name).read_bytes()).hexdigest() for name in expected_sources}, "actual immutable producer/consumer source bytes")
     beta = [d["threads_beta"] for d in durable if "threads_beta" in d]
     check(len(beta) == 1 and not any(beta[0][k] for k in beta[0] if k.startswith("thread") or k in {"jobs","files"}), "beta has no thread/job/file effects")
-    check(len(final["jobs"]) == 8 and {j["id"] for j in final["jobs"]} == {
-        j["id"] for d in durable if "jobs_cases" in d for r in d["jobs_cases"] for j in r["jobs"]}, "unchanged eight prior jobs")
+    check(len(final["jobs"]) == 7 and {j["id"] for j in final["jobs"]} == {
+        j["id"] for d in durable if "jobs_cases" in d for r in d["jobs_cases"] for j in r["jobs"]}, "unchanged seven prior jobs")
     check(len(case["final"]["samples"]) >= 2 and case["final"]["samples"][-1]["content"]
           == case["final"]["samples"][-2]["content"] == final, "coherent final rereads")
     check([len(final[k]) for k in ("threads","thread_participants","thread_messages","thread_invocations","thread_reply_delivery_state")]
@@ -935,7 +1164,7 @@ def validate_e05(row: dict, observations: dict, directory: Path) -> None:
     check(len(commands) == len(attempts) == 11 and [a["command_index"] for a in attempts] == list(range(11)), "finite eleven provider CLI actions")
     boundary = observations["e07"]["prefix"]
     witnesses = observations["launch_witnesses"][:boundary["witness_records"]]
-    check(case["witnesses"] == witnesses and len([w for w in witnesses if w["kind"] == "stub"]) == 37, "complete actual executable witnesses")
+    check(case["witnesses"] == witnesses and len([w for w in witnesses if w["kind"] == "stub"]) == 36, "complete actual executable witnesses")
     calls = [w for w in witnesses if w["kind"] == "callback"]
     check(len(calls) == boundary["command_count"]+len(observations["provider_commands"])+len(commands), "every CLI accounted")
     closures = [d["thread_process_closed"] for d in durable if "thread_process_closed" in d]
@@ -949,8 +1178,8 @@ def validate_e05(row: dict, observations: dict, directory: Path) -> None:
               for ch,cmd in zip(closure["children"],own)), "actual provider and CLI child PID/start closure")
         paths = [cmd["argv"][cmd["argv"].index("--from-file")+1] for cmd in own if "--from-file" in cmd["argv"]]
         check(closure["private_files"] == [dict(path=path,exists=False) for path in paths], "actual named private payload absence")
-    for barrier, admitted, released, command_start in ((C["worker_closed"],20,19,C["reply"]["entered"]),
-                                                      (D["dispatcher_closed"],24,23,D["denial"]["command"]["entered"])):
+    for barrier, admitted, released, command_start in ((C["worker_closed"],19,18,C["reply"]["entered"]),
+                                                      (D["dispatcher_closed"],23,22,D["denial"]["command"]["entered"])):
         check(barrier in [d["thread_live_boundary"] for d in durable if "thread_live_boundary" in d]
               and barrier["finished"] <= command_start and len(barrier["samples"]) >= 2, "actual intermediate host barrier")
         for sample in barrier["samples"][-2:]:
@@ -1232,9 +1461,9 @@ def validate_e05(row: dict, observations: dict, directory: Path) -> None:
     final_orgs = [d for d in durable if "threads_final_org" in d]
     check(len(final_orgs) == 2 and {d["threads_final_org"] for d in final_orgs} == {"alpha","beta"}, "both final orgs")
     for d in final_orgs:
-        expected = (20,30) if d["threads_final_org"] == "alpha" else (1,1)
+        expected = (20,29) if d["threads_final_org"] == "alpha" else (1,1)
         check((len(d["snapshot"]["tasks"]),len(d["snapshot"]["results"])) == expected
-              and all(t["status"] == "completed" for t in d["snapshot"]["tasks"]), "global21tasks31results")
+              and all(t["status"] == "completed" for t in d["snapshot"]["tasks"]), "global21tasks30results")
 
 
 def e07_sql_date(value: str | None) -> str | None:
@@ -1335,16 +1564,16 @@ def validate_e07(row: dict, observations: dict, directory: Path) -> None:
     archive_raw = (directory/"e07-prefix.json").read_bytes()
     archive = json.loads(archive_raw)
     check(hashlib.sha256(archive_raw).hexdigest() == boundary["archive_sha256"]
-          and archive["starts"] == observations["starts"][:37]
+          and archive["starts"] == observations["starts"][:36]
           and archive["commands"] == observations["commands"][:boundary["command_count"]]
           and archive["provider_commands"] == observations["provider_commands"]
           and archive["thread_commands"] == observations["thread_commands"]
           and archive["provider_observer"] == observations["provider_observer"][:boundary["observer_end"]]
           and archive["variants"] == {k:observations["variants"][k] for k in boundary["variants"]},
           "actual pre-C archived original53 outcomes and command/observer prefix")
-    check(case["anchors"] == [dict(name="E05-end-B25",samples=[case["baseline"]]),
-          dict(name="P-success-W-live-B26",samples=case["live"]),dict(name="cancelled-B27",samples=case["freeze"]),
-          dict(name="final-B27",samples=[case["final"]])], "dedicated complete E07 boundary content")
+    check(case["anchors"] == [dict(name="E05-end-B24",samples=[case["baseline"]]),
+          dict(name="P-success-W-live-B25",samples=case["live"]),dict(name="cancelled-B26",samples=case["freeze"]),
+          dict(name="final-B26",samples=[case["final"]])], "dedicated complete E07 boundary content")
     raw = (directory / "launch-witnesses.jsonl").read_bytes()
     check(raw.endswith(b"\n") and len(raw) == observations["witness_bytes"]
           and hashlib.sha256(raw).hexdigest() == observations["witness_sha256"], "complete actual final append-only bytes")
@@ -1356,15 +1585,15 @@ def validate_e07(row: dict, observations: dict, directory: Path) -> None:
           and all_witness == observations["launch_witnesses"] and observations["witness_incomplete_line"] is False,
           "genuine E05 byte/record boundary with exact original content")
     check(boundary["e05_finished"] == e05["finished"] <= case["entered"]
-          and observations["provider_observer"][boundary["observer_end"]-1]["stubs"] == 37,
-          "original E05 observer boundary, no final39 substitution")
+          and observations["provider_observer"][boundary["observer_end"]-1]["stubs"] == 36,
+          "original E05 observer boundary, no final38 substitution")
     starts = observations["starts"]
     parent,worker = case["parent"],case["worker"]
     P,W = parent["task"],worker["task"]
-    check(len(starts) == len({s["session"] for s in starts}) == 39 and starts[37:] == [parent,worker]
+    check(len(starts) == len({s["session"] for s in starts}) == 38 and starts[36:] == [parent,worker]
           and P != W and parent["agent"] == "case_manager" and worker["agent"] == "case_worker"
           and parent["org"] == worker["org"] == "alpha", "exact two genuine suffix starts")
-    check(Counter(w["kind"] for w in all_witness) == {"stub":39,"callback":len(observations["commands"])+len(observations["provider_commands"])+len(observations["thread_commands"])+4}, "all old/new executable witnesses accounted")
+    check(Counter(w["kind"] for w in all_witness) == {"stub":38,"callback":len(observations["commands"])+len(observations["provider_commands"])+len(observations["thread_commands"])+4}, "all old/new executable witnesses accounted")
     commands = observations["e07_commands"]
     check(commands == case["commands"] and [c["action"] for c in commands] == ["e07-parent","e07-held","terminal-cancel","terminal-cancel"], "dedicated exact four-command ledger")
     suffix = all_witness[boundary["witness_records"]:]
@@ -1510,7 +1739,8 @@ def validate_e07(row: dict, observations: dict, directory: Path) -> None:
 
     live = case["live"]
     prior = e05["final_anchor"]["projection"]["receipts"]
-    check(len(live) == 2 and projection(live[0],27,26,1,prior) == projection(live[1],27,26,1,prior), "two B27/26/26/1 projections")
+    projection(case["baseline"],24,24,0,prior)
+    check(len(live) == 2 and projection(live[0],26,25,1,prior) == projection(live[1],26,25,1,prior), "two B26/25/25/1 projections")
     check(live[1]["metrics"]["host_sessions"]["receipts"]["recent"][0]["terminal_reason"] == "success", "P success distinct from active cancellation")
     result = case["parent_result"]
     check(type(result["id"]) is int and result["task_id"] == P and result["session_id"] == parent["session"]
@@ -1520,13 +1750,13 @@ def validate_e07(row: dict, observations: dict, directory: Path) -> None:
     check(live_tasks[P]["status"] == live_tasks[W]["status"] == "in_progress" and live_tasks[P]["block_kind"] == "delegated"
           and live_tasks[W]["block_kind"] is None and live_tasks[W]["parent_task_id"] == P, "actual parked/live tree")
     freeze,second = case["freeze"]
-    check(projection(freeze,27,27,0,live[1]["metrics"]["host_sessions"]["receipts"]) == projection(second,27,27,0,live[1]["metrics"]["host_sessions"]["receipts"]), "two settled B27 projections")
+    check(projection(freeze,26,26,0,live[1]["metrics"]["host_sessions"]["receipts"]) == projection(second,26,26,0,live[1]["metrics"]["host_sessions"]["receipts"]), "two settled B26 projections")
     newest = freeze["metrics"]["host_sessions"]["receipts"]["recent"][0]
     check(newest["terminal_reason"] == "cancelled" and newest["invocation_kind"] == "task", "one W active cancellation receipt")
     tables = freeze["sql"]["alpha"]["tables"]
     tasks = {t["id"]:t for t in tables["tasks"]}
-    check(len(tasks) == 22 and len(tables["task_results"]) == 31 and Counter(t["status"] for t in tasks.values()) == {"completed":20,"cancelled":2}
-          and len(freeze["sql"]["beta"]["tables"]["tasks"]) == len(freeze["sql"]["beta"]["tables"]["task_results"]) == 1, "global23/32 and21completed/two cancelled")
+    check(len(tasks) == 22 and len(tables["task_results"]) == 30 and Counter(t["status"] for t in tasks.values()) == {"completed":20,"cancelled":2}
+          and len(freeze["sql"]["beta"]["tables"]["tasks"]) == len(freeze["sql"]["beta"]["tables"]["task_results"]) == 1, "global23/31 and21completed/two cancelled")
     for task,start in ((P,parent),(W,worker)):
         t = tasks[task]
         check(t["status"] == "cancelled" and t["block_kind"] is None and t["note"] == "cancelled by founder: E07_CANCEL_TREE"
@@ -1565,10 +1795,10 @@ def validate_e07(row: dict, observations: dict, directory: Path) -> None:
             check([r for r in now if r.get("task_id",r.get("root_task_id")) not in (P,W)] == old, "full old task lineage/control prefix " + name)
         else:
             check(now == old, "unchanged entire jobs/thread/delivery content " + name)
-    check(len(tables["jobs"]) == 8 and freeze["sql"]["alpha"]["files"] == baseline["alpha"]["files"], "unchanged8 jobs/seven scripts and product files")
+    check(len(tables["jobs"]) == 7 and freeze["sql"]["alpha"]["files"] == baseline["alpha"]["files"], "unchanged7 jobs/seven scripts and product files")
     for sample in [second,case["after_refusals"],*case["window"]["samples"],case["final"]]:
         check(sample["sql"] == freeze["sql"] and e07_public_state(sample, observations["http"]) == e07_public_state(freeze, observations["http"]), "full task/result/audit/lineage/job/thread/public unchanged")
-        projection(sample,27,27,0,freeze["metrics"]["host_sessions"]["receipts"])
+        projection(sample,26,26,0,freeze["metrics"]["host_sessions"]["receipts"])
     tree = case["tree"]
     check(tree["chain"][0]["pid"] == worker["pid"] and tree["chain"][-1]["pid"] == tree["launch_pid"] == live_tasks[W]["executor_pid"]
           and tree["launch_pid"] != worker["pid"] and all(a["ppid"] == b["pid"] for a,b in zip(tree["chain"],tree["chain"][1:])), "separate real launch root/plan ancestry")
