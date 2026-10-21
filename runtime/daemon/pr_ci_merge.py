@@ -380,54 +380,119 @@ def _gh_fetch_mergeable(repo: str, pr_number: int) -> MergeableState:
     return MergeableState(mergeable=raw, detail=detail)
 
 
-def _gh_perform_merge(repo: str, pr_number: int, merge_method: str) -> MergeResult:
-    """Perform the merge via `gh pr merge`.
-
-    Returns MergeResult with merged_sha and merged_at.
-    Raises RuntimeError on failure.
-    """
+def _gh_fetch_merge_result(
+    repo: str, pr_number: int, expected_head_sha: str,
+) -> MergeResult:
+    """Read exact remote merge evidence without performing another action."""
     import datetime
     import json
     import subprocess
 
     result = subprocess.run(
         [
-            "gh", "pr", "merge", str(pr_number),
-            "--repo", repo,
-            f"--{merge_method}",
-            "--admin",
-        ],
-        capture_output=True,
-        text=True,
-        timeout=60,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(
-            f"gh pr merge failed (exit {result.returncode}): {result.stderr.strip()}"
-        )
-    # After merge, fetch the merge commit SHA
-    sha_result = subprocess.run(
-        [
             "gh", "pr", "view", str(pr_number),
             "--repo", repo,
-            "--json", "mergeCommit",
+            "--json", "number,url,headRefOid,state,mergeCommit,mergedAt",
         ],
         capture_output=True,
         text=True,
         timeout=30,
     )
-    merged_sha = ""
-    if sha_result.returncode == 0:
-        try:
-            data = json.loads(sha_result.stdout)
-            merged_sha = data.get("mergeCommit", {}).get("oid", "")
-        except (json.JSONDecodeError, KeyError):
-            pass
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"gh pr view (merge confirmation) failed (exit {result.returncode}): "
+            f"{result.stderr.strip() or result.stdout.strip()}"
+        )
+    data = json.loads(result.stdout)
+    if not isinstance(data, dict):
+        raise RuntimeError("gh pr view (merge confirmation) returned a non-object")
+    expected_url = f"https://github.com/{repo}/pull/{pr_number}"
+    if (
+        type(data.get("number")) is not int
+        or data["number"] != pr_number
+        or data.get("url") != expected_url
+    ):
+        raise RuntimeError(
+            "gh pr view (merge confirmation) subject mismatch: "
+            f"expected {expected_url!r}, got number={data.get('number')!r}, "
+            f"url={data.get('url')!r}"
+        )
+    if data.get("state") != "MERGED" or data.get("headRefOid") != expected_head_sha:
+        raise RuntimeError(
+            "gh pr view (merge confirmation) state/head mismatch: "
+            f"expected MERGED/{expected_head_sha}, "
+            f"got {data.get('state')!r}/{data.get('headRefOid')!r}"
+        )
+    commit = data.get("mergeCommit")
+    merged_sha = commit.get("oid") if isinstance(commit, dict) else None
+    if (
+        not isinstance(merged_sha, str)
+        or re.fullmatch(r"[0-9a-f]{40}", merged_sha) is None
+    ):
+        raise RuntimeError(
+            f"gh pr view (merge confirmation) invalid full SHA1 mergeCommit: {commit!r}"
+        )
+    merged_at = data.get("mergedAt")
+    try:
+        if not isinstance(merged_at, str) or not merged_at:
+            raise ValueError("missing or non-string mergedAt")
+        timestamp = datetime.datetime.fromisoformat(merged_at)
+        if timestamp.utcoffset() is None:
+            raise ValueError("mergedAt has no timezone")
+    except ValueError as exc:
+        raise RuntimeError(
+            f"gh pr view (merge confirmation) invalid mergedAt {merged_at!r}: {exc}"
+        ) from exc
+    return MergeResult(merged_sha=merged_sha, merged_at=merged_at)
 
-    return MergeResult(
-        merged_sha=merged_sha,
-        merged_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
-    )
+
+def _gh_perform_merge(
+    repo: str, pr_number: int, merge_method: str, *, expected_head_sha: str,
+) -> MergeResult:
+    """Perform one ordinary head-pinned merge, then confirm its remote effect.
+
+    A command failure remains failed even if a separate later read confirms an
+    effect. Missing confirmation after command success retains uncertainty; it
+    never authorizes another merge attempt.
+    """
+    import subprocess
+
+    if (
+        not isinstance(expected_head_sha, str)
+        or re.fullmatch(r"[0-9a-f]{40}", expected_head_sha) is None
+    ):
+        raise RuntimeError("merge requires a full lowercase SHA1 expected head")
+    try:
+        result = subprocess.run(
+            [
+                "gh", "pr", "merge", str(pr_number),
+                "--repo", repo,
+                f"--{merge_method}",
+                "--match-head-commit", expected_head_sha,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise RuntimeError(
+            f"gh pr merge transport failed; outcome uncertain; do not repeat merge: {exc}; "
+            f"stderr={getattr(exc, 'stderr', None)!r}; "
+            f"stdout={getattr(exc, 'stdout', None)!r}"
+        ) from exc
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"gh pr merge failed (exit {result.returncode}): "
+            f"{result.stderr.strip() or result.stdout.strip()}; "
+            "remote effect unconfirmed; do not repeat merge"
+        )
+    try:
+        return _gh_fetch_merge_result(repo, pr_number, expected_head_sha)
+    except Exception as exc:
+        raise RuntimeError(
+            "gh pr merge succeeded but remote confirmation failed; "
+            f"outcome uncertain; do not repeat merge: {exc}"
+        ) from exc
 
 
 def _recall_fetch_verdict(org: str, task_id: str, verdict_key: str) -> str:
@@ -657,7 +722,9 @@ if __name__ == "__main__":
         fetch_qa_verdict=lambda: _recall_fetch_verdict(
             args.org, args.qa_task_id, "qa"
         ),
-        perform_merge=lambda m: _gh_perform_merge(args.repo, args.pr, m),
+        perform_merge=lambda m: _gh_perform_merge(
+            args.repo, args.pr, m, expected_head_sha=args.head_sha
+        ),
     )
 
     # Print structured JSON verdict to stdout
