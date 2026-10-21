@@ -72,11 +72,12 @@ python scripts/verify_session_lifecycle.py --mode candidate \
 ```
 
 Default baseline selects C1-escaped-known/C3-reused-identity only (90s total);
-default candidate selects the twelve accepted variants (390s total). A mutually
+default candidate selects the thirteen accepted variants (420s total). A mutually
 exclusive `--case` selects one of those existing variants. `--selection` accepts
-only B/H/K/W/T/C/R/E/L/S/U: B is the baseline pair; H escaped-known; K group-builtin,
+only B/H/K/W/T/C/R/E/L/F1/S/U: B is the baseline pair; H escaped-known; K group-builtin,
 group-custom, cancel, timeout-pipe and root-gone; W shutdown-bind; T timeout-pipe;
-C owner-isolation; R unreadable; E teardown-error; L late-in-group; S unreadable
+C owner-isolation; R unreadable; E teardown-error; L late-in-group; F1 exactly
+C2-cancel/C2-cancel-publish-error in that order; S unreadable
 with the explicit heartbeat diagnostic; U group-builtin with the explicit W
 deadline diagnostic. B requires baseline mode and its exact accepted design HEAD;
 all other selections require candidate mode. Invalid/conflicting selectors refuse
@@ -89,12 +90,12 @@ Every source still requires a clean tracked immutable HEAD, tree and three runti
 hashes; source/observer/Python provenance remains in the raw report. A changed
 verifier cannot inherit an old verifier's GREEN or sensitivity evidence. Selected
 bounds are15s readiness +30s per selected variant +15s final: single60s, B90s,
-K180s, full390s, with global rescue15s before each final deadline. Readiness
+K180s, F1 pair90s, full420s, with global rescue15s before each final deadline. Readiness
 proves process-local subreaper SET/GET plus exact P/Q adoption and specific wait
 before orphan cases. F remains driver/reaper; controlled W provides independent
 bounded rescue. Limits: eight fixture processes including F,32 threads,1024
 observer events,1MiB combined stdout+stderr+report,64MiB scratch;20s action plus10s cleanup per variant,
-readiness15s and final15s reserve, global rescue by375s. C5’s two fault inputs share
+readiness15s and final15s reserve, global rescue by405s. C5’s two fault inputs share
 one action budget. Record backend evidence before separately labeled fixture
 rescue; an outer timeout never proves cleanup. Any unsafe residual stops later
 cases. Each W command/reply carries case/input/generation/sequence and monotonic
@@ -144,6 +145,31 @@ requires terminal TIMEOUT, a typed LaunchResult with timed_out true and success
 false, and its typed ExecutorResult payload with failure_category provider_timeout
 and success false, retained in timeout_result. Rescue joins actual production
 workers before any fixture waits, within the original cleanup bound.
+The two F1 cancellation cases share the existing provider mode and real factory,
+communicator, cancellation, finish and account paths. Hold the real body return
+and the cancellation-owned publisher after actual account return; release only
+the body until the competing finalizer actually returns prematurely or calls
+Condition.wait directly on that same attempt/condition. A filtered thread-local
+trace in the existing run/control workers records loaded code/frame/receipt
+identities, calls, normal returns, exceptions and unwind; it refuses prior trace
+ownership, restores in worker finally and latches observer/cap errors without
+injecting them into subject code. A None return alone is not unwind evidence.
+The held snapshot records actual terminal/released/outcome/active values against
+0/0/absent/1 while publication is unfinished. Callback completion is distinct from
+entry; release_committed follows delegated real admission mutation. Real account,
+publisher completion/error handling, competitor completion, terminal-hook argument,
+committed release and run return establish the final ordering and same receipt.
+Normal cancellation has one successful publication; the error sibling has zero
+successes and one actual contained sentinel, and must also settle its waiter
+within the original action deadline. Both retain all former C2 safety, history,
+direct-wait, winner, quiescence/residue and exactly-once assertions.
+A saved premature external mismatch is emitted only AFTER normal dependency
+release, real run/control/sampler settlement and full frozen D1/LAST plus ordered
+W acceptance. Fixture rescue cannot establish F1 production settlement or
+failure_interval_complete. Observer/setup/health/deadline/settlement failure is
+never intended RED; stop the affected selection on its first failed case. No
+owner-function-return-before-waiter-return guarantee is asserted. Unproposed
+no-receipt/reentry/other exceptional branches remain source-reviewed UNVERIFIED.
 Setup/assertion failure retains its primary exception type/message/trace and
 assertion identity separately from finalization/safety/cleanup failures. Named
 target mismatches retain actual observed values and independently specified

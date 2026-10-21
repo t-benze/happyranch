@@ -3102,6 +3102,11 @@ advancement and restart policy are unchanged.
 
 The shared host-session owner (task/thread/dream/wake/schedule) finishes,
 reconciles/publishes and invokes the producer terminal hook before lease release.
+Concurrent run/cancel callers share one accounting/publication attempt; a different
+thread waits for settlement, including contained publisher Exception handling,
+before terminal/release. Same-thread claimed callback reentry remains a no-op.
+The condition never spans callbacks; every owner exit settles/notifies, without
+retrying callbacks or copying owner errors to waiters.
 THR307seq117 wires the process-group backend’s1s sampler and retains authenticated
 identity history through fresh terminal observation. A current original or
 previously authenticated live same-group witness is required before each group

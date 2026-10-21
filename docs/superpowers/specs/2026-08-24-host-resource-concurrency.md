@@ -99,7 +99,13 @@ by every later wiring slice):
    included, in the fixed order: freeze terminal result → collect receipt →
    backend finish (tree teardown + quiescence check) → capability-appropriate
    residue accounting/reconciliation → publish bounded receipt → release lease
-   (exactly once, in `finally`).
+   (exactly once, in `finally`). Concurrent run/cancel finalizers claim one
+   accounting/publication attempt under the existing condition. Different-thread
+   callers wait in a predicate loop for settlement, including contained publisher
+   Exception handling; same-thread claimed callback reentry is a no-op. Callbacks
+   run outside the condition, and every owner exit settles/notifies without
+   callback retries or copying owner errors to waiters. Settlement does not mean
+   successful publication when that callback failed.
 4. **Cleanup errors never replace the primary terminal reason.** Both travel
    in the outcome; the lease is still released exactly once.
 5. **Residue consequences are capability-conditional.** Guaranteed-cleanup

@@ -14,6 +14,7 @@ import argparse
 import builtins
 import ctypes
 import dataclasses
+import dis
 import hashlib
 import io
 import json
@@ -26,7 +27,7 @@ import sys
 import threading
 import time
 import traceback
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from types import SimpleNamespace
 
 RAW_OPEN = builtins.open
@@ -37,11 +38,13 @@ RAW_GETPGID = os.getpgid
 TLS = threading.local()
 CASES = (
     "C1-group-builtin", "C1-group-custom", "C1-escaped-known", "C1-late-in-group",
-    "C2-cancel", "C2-timeout-pipe", "C2-shutdown-bind", "C3-root-gone",
+    "C2-cancel", "C2-cancel-publish-error", "C2-timeout-pipe", "C2-shutdown-bind", "C3-root-gone",
     "C3-reused-identity", "C4-owner-isolation", "C5-unreadable", "C5-teardown-error",
 )
 BASELINE_CASES = ("C1-escaped-known", "C3-reused-identity")
+F1_CASES = ("C2-cancel", "C2-cancel-publish-error")
 SELECTIONS = {
+    "F1": F1_CASES,
     "B": BASELINE_CASES,
     "H": ("C1-escaped-known",),
     "K": ("C1-group-builtin", "C1-group-custom", "C2-cancel", "C2-timeout-pipe", "C3-root-gone"),
@@ -59,6 +62,176 @@ class ContractMismatch(AssertionError):
         self.observed = observed
         self.expected = expected
         self.explicit_values = explicit_values
+
+
+class FinalizationObserver:
+    """Bounded, observation-only tracing in the two existing F1 workers.
+
+    Calls establish identities/opportunity, never the external assertion. No
+    target call, IPC or test gate runs under the observer lock. Observer errors
+    are latched rather than thrown into the subject's callback/error handling.
+    """
+
+    def __init__(self, venue, backend_observer, supervisor, publisher):
+        from runtime.orchestrator.host_supervisor import _AttemptContext
+        self.v, self.backend = venue, backend_observer
+        self.accountant = supervisor._residue
+        self.codes = {_AttemptContext.finalize_once.__code__: "finalize",
+                      threading.Condition.wait.__code__: "wait",
+                      threading.Condition.notify_all.__code__: "notify",
+                      type(self.accountant).account.__code__: "account",
+                      publisher.__code__: "publisher"}
+        self.attempt = self.condition = None
+        self.frames, self.workers = {}, {}
+        self.lock = threading.RLock()
+        self.errors = []
+        self.callback = self.trace
+        self.count = 0
+
+    def latch(self, error):
+        # Bounded first error; the trace never delegates to raising Venue.event.
+        if not self.errors:
+            self.errors.append(str(error)[:256])
+
+    def emit(self, **fields):
+        event = {"t": round(time.monotonic() - self.v.started, 6),
+                 "kind": "F1_trace", **self.v.scope, **fields}
+        with self.v.lock:
+            if self.count >= 256 or len(self.v.events) >= 900:
+                self.latch("F1 trace retention cap; no observer credit")
+                return
+            self.v.events.append(event)
+            self.count += 1
+
+    def bind(self, attempt):
+        conditions = [value for value in vars(attempt).values()
+                      if isinstance(value, threading.Condition)]
+        require(self.attempt is None and len(conditions) == 1,
+                "F1 attempt lacks one actual condition")
+        self.attempt, self.condition = attempt, conditions[0]
+
+    @staticmethod
+    def argument(frame, position):
+        # Loaded parameter positions, with no proposed state-field dependency.
+        return frame.f_locals[frame.f_code.co_varnames[position]]
+
+    def trace(self, frame, event, arg):
+        try:
+            with self.lock:
+                return self.observe_trace(frame, event, arg)
+        except BaseException as exc:
+            self.latch(f"F1 observer synchronization failure: {type(exc).__name__}: {exc}")
+            return self.callback
+
+    def observe_trace(self, frame, event, arg):
+        try:
+            target = self.codes.get(frame.f_code)
+            if target is None:
+                return None
+            tid = threading.get_ident()
+            key = (tid, id(frame))
+            if event == "call":
+                if self.attempt is None or tid not in self.workers:
+                    return None
+                parent = frame.f_back
+                parent_state = self.frames.get((tid, id(parent)))
+                if target == "finalize":
+                    if self.argument(frame, 0) is not self.attempt:
+                        return None
+                    # Ignore synchronous claimed reentry on the owner's stack.
+                    if any(k[0] == tid and state["target"] == "finalize"
+                           for k, state in self.frames.items()):
+                        return None
+                    if self.argument(frame, 1) is not self.accountant:
+                        self.latch("F1 finalizer accountant identity mismatch")
+                        return None
+                else:
+                    if (parent_state is None or parent_state["frame"] is not parent
+                            or parent_state["target"] != "finalize"):
+                        return None
+                    if target in ("wait", "notify"):
+                        if self.argument(frame, 0) is not self.condition:
+                            return None
+                    elif target == "account":
+                        if (self.argument(frame, 0) is not self.accountant
+                                or self.argument(frame, 1) is not self.backend.final_receipt):
+                            self.latch("F1 real accountant/receipt identity mismatch")
+                            return None
+                    elif self.argument(frame, 0) is not self.backend.final_receipt:
+                        self.latch("F1 publisher receipt identity mismatch")
+                        return None
+                if len(self.frames) >= 16:
+                    self.latch("F1 active frame cap")
+                    return None
+                frame.f_trace_lines = False
+                frame.f_trace_opcodes = False
+                state = {"frame": frame, "target": target,
+                         "worker": self.workers[tid]["role"], "exception": None}
+                self.frames[key] = state
+                self.emit(target=target, phase="call", worker=state["worker"],
+                          thread=tid, frame=id(frame), caller=id(parent),
+                          attempt=id(self.attempt), condition=id(self.condition),
+                          accountant=id(self.accountant), receipt_identity=id(self.backend.final_receipt))
+            else:
+                state = self.frames.get(key)
+                if state is None or state["frame"] is not frame:
+                    return None
+                if event == "exception":
+                    exception = arg[1]
+                    state["exception"] = id(exception)
+                    self.emit(target=target, phase="exception", worker=state["worker"],
+                              thread=tid, frame=id(frame), exception_identity=id(exception),
+                              exception_type=type(exception).__name__, message=str(exception)[:128])
+                elif event == "return":
+                    # An exceptional unwind also sends return(None). Inspect
+                    # the actual return opcode, not that ambiguous value or a
+                    # source line. Caught exceptions can still return normally.
+                    opcode = dis.opname[frame.f_code.co_code[frame.f_lasti]]
+                    normal = opcode in ("RETURN_VALUE", "RETURN_CONST")
+                    if not normal and state["exception"] is None:
+                        self.latch("F1 unwind lacks its exception event")
+                    self.emit(target=target, phase="return" if normal else "unwind",
+                              worker=state["worker"], thread=tid, frame=id(frame),
+                              opcode=opcode, exception_identity=state["exception"],
+                              receipt_identity=id(self.backend.final_receipt))
+                    del self.frames[key]
+            return self.callback
+        except BaseException as exc:
+            self.latch(f"F1 observer failure: {type(exc).__name__}: {exc}")
+            return self.callback
+
+    @contextmanager
+    def worker(self, role):
+        previous = sys.gettrace()
+        require(previous is None, "F1 refuses prior worker trace ownership")
+        tid = threading.get_ident()
+        with self.lock:
+            self.workers[tid] = {"role": role, "thread": tid, "previous": None,
+                                 "owned": False, "restored": False}
+        try:
+            sys.settrace(self.callback)
+            self.workers[tid]["owned"] = sys.gettrace() is self.callback
+            require(self.workers[tid]["owned"], "F1 trace installation not owned")
+            yield
+        finally:
+            if sys.gettrace() is not self.callback:
+                self.latch("F1 trace ownership replaced")
+            sys.settrace(previous)
+            self.workers[tid]["restored"] = sys.gettrace() is previous
+            if not self.workers[tid]["restored"]:
+                self.latch("F1 trace restoration failed")
+
+    def snapshot(self):
+        with self.lock, self.v.lock:
+            return {"errors": list(self.errors), "workers": [dict(w) for w in self.workers.values()],
+                    "codes": {kind: {"identity": id(code), "filename": code.co_filename,
+                                     "qualname": code.co_qualname} for code, kind in self.codes.items()},
+                    "active_frames": [{"thread": k[0], "frame": k[1], "target": s["target"]}
+                                      for k, s in self.frames.items()],
+                    "attempt": id(self.attempt), "condition": id(self.condition),
+                    "accountant": id(self.accountant), "receipt_identity": id(self.backend.final_receipt),
+                    "events": [dict(e) for e in self.v.events
+                               if e["kind"] == "F1_trace" and e["generation"] == self.v.scope["generation"]]}
 
 
 UNRECORDED = object()
@@ -754,6 +927,8 @@ class BackendObserver:
             raise
         self.v.event("finish_return", owner=owner, receipt=dataclasses.asdict(receipt),
                      receipt_identity=id(receipt))
+        if self.case in F1_CASES:
+            self.final_receipt = receipt
         return receipt
 
     def history_has(self, pid, start=None):
@@ -925,10 +1100,28 @@ def run_case(v, case, api, fault=None):
     backend = api.backend()
     observer = BackendObserver(v, backend, case)
     publications, terminals, results, errors = [], [], {}, []
+    f1_case = case in F1_CASES
+    body_held, body_release = (threading.Event(), threading.Event()) if f1_case else (None, None)
+    publisher_held, publisher_release = (threading.Event(), threading.Event()) if f1_case else (None, None)
+    publication_error = RuntimeError("F1 contained publication sentinel") if f1_case else None
+    f1 = None
+
+    def publish(receipt):
+        publications.append(receipt)
+        v.event("publish", token=receipt.invocation_kind, receipt_identity=id(receipt))
+        if f1_case:
+            v.event("F1_publisher_held", thread=threading.get_ident(), receipt_identity=id(receipt))
+            publisher_held.set()
+            require(publisher_release.wait(max(0, v.case_deadline - time.monotonic())),
+                    "F1 held publisher exceeded action deadline")
+            if case == "C2-cancel-publish-error":
+                raise publication_error
+
     # Real operational probe occurs before providers/overlap, never bypassed.
-    supervisor = api.factory(backend=observer, publisher=lambda receipt: (
-        publications.append(receipt), v.event("publish", token=receipt.invocation_kind,
-                                              receipt_identity=id(receipt))))
+    supervisor = api.factory(backend=observer, publisher=publish)
+    if f1_case:
+        observer.final_receipt = None
+        f1 = FinalizationObserver(v, observer, supervisor, publish)
     probe_report = supervisor.probe()
     v.event("probe_report", stage="supervisor_return", report=dataclasses.asdict(probe_report))
     if not probe_report.healthy:
@@ -940,6 +1133,9 @@ def run_case(v, case, api, fault=None):
     def released(lease):
         v.event("lease_release", logical_id=lease.ctx._logical_id)
         original_release(lease)
+        if f1_case:
+            v.event("release_committed", logical_id=lease.ctx._logical_id,
+                    active=supervisor.active_count(), released=supervisor._admission.released_total())
 
     supervisor._admission._release = released
     original_finish = supervisor._finish_and_reconcile
@@ -974,7 +1170,7 @@ def run_case(v, case, api, fault=None):
     communicate_ready = threading.Event()
 
     def start(owner="A", mode=None):
-        mode = mode or case
+        mode = mode or ("C2-cancel" if f1_case else case)
         directory = v.scratch / (case + ("-" + fault if fault else "") + "-" + owner)
         directory.mkdir()
         case_dirs[owner] = directory
@@ -1017,17 +1213,33 @@ def run_case(v, case, api, fault=None):
                                           running=running, throttle_backoff_seconds=())
             v.event("communicate_result", owner=owner, success=result.success,
                     failure_category=result.failure_category, error=result.error)
+            if f1_case:
+                v.event("F1_body_held", owner=owner, thread=threading.get_ident())
+                body_held.set()
+                require(body_release.wait(max(0, v.case_deadline - time.monotonic())),
+                        "F1 held launch-body return exceeded action deadline")
             return api.result(success=result.success, duration_seconds=result.duration_seconds,
                               returncode=result.returncode, error=result.error,
                               timed_out=result.failure_category == "provider_timeout", payload=result)
 
         def target():
             try:
-                results[owner] = supervisor.run(request, launch_spec=spec, launch_body=body,
-                    pre_launch_validator=(lambda: require(custom.verify_launch_ready() is None,
-                                                         "custom prelaunch readiness")) if custom else None,
-                    on_terminal=lambda outcome: (terminals.append(owner), v.event("terminal_hook", owner=owner)),
-                    timeout=3, allow_retries=False)
+                def terminal(outcome):
+                    terminals.append(owner)
+                    fields = ({"receipt_identity": id(outcome.receipt) if outcome else None,
+                               "receipt": dataclasses.asdict(outcome.receipt) if outcome and outcome.receipt else None,
+                               "terminal_reason": outcome.terminal_reason.value if outcome else None}
+                              if f1_case else {})
+                    v.event("terminal_hook", owner=owner, **fields)
+
+                with f1.worker("run") if f1 else nullcontext():
+                    results[owner] = supervisor.run(request, launch_spec=spec, launch_body=body,
+                        pre_launch_validator=(lambda: require(custom.verify_launch_ready() is None,
+                                                             "custom prelaunch readiness")) if custom else None,
+                        on_terminal=terminal, timeout=3, allow_retries=False)
+                    if f1_case:
+                        v.event("run_return", owner=owner, receipt_identity=id(results[owner].receipt),
+                                terminal_reason=results[owner].terminal_reason.value)
             except BaseException as exc:
                 errors.append(f"{type(exc).__name__}: {exc}")
 
@@ -1047,6 +1259,165 @@ def run_case(v, case, api, fault=None):
 
     record = {**v.scope, "status": "MISSING", "assertions": []}
     retained_identities = {}
+    f1_mismatches = []
+
+    def f1_events(target, phase, worker=None):
+        return [e for e in f1.snapshot()["events"] if e["target"] == target
+                and e["phase"] == phase and (worker is None or e["worker"] == worker)]
+
+    def f1_overlap():
+        contexts = supervisor._admission.ownerships_snapshot()
+        require(len(contexts) == 1 and contexts[0].running() is observer.running["A"],
+                "F1 lacks its actual bound attempt")
+        f1.bind(contexts[0])
+
+        def cancel():
+            try:
+                with f1.worker("control"):
+                    request.cancellation.cancel()
+            except BaseException as exc:
+                errors.append(f"{type(exc).__name__}: {exc}")
+
+        control = threading.Thread(target=cancel, name="lifecycle-cancel")
+        v.threads.append(control)
+        control.start()
+        v.wait(lambda: body_held.is_set() and publisher_held.is_set(),
+               "F1 body-return/publisher held acknowledgements missing")
+        observed = f1.snapshot()
+        record["F1_acknowledgements"] = observed
+        require(not observed["errors"] and len(observed["workers"]) == 2
+                and all(w["owned"] for w in observed["workers"]), "F1 trace ownership unavailable")
+        require(len(f1_events("account", "call", "control")) == 1
+                and len(f1_events("account", "return", "control")) == 1
+                and len(f1_events("publisher", "call", "control")) == 1
+                and not f1_events("publisher", "return") and not f1_events("publisher", "unwind")
+                and observer.final_receipt is not None
+                and publications == [observer.final_receipt]
+                and not body_release.is_set() and not publisher_release.is_set(),
+                "F1 held publication lacks real account/receipt/control attribution")
+        v.event("F1_body_release_input")
+        body_release.set()  # Release only the real launch-body return.
+        v.wait(lambda: bool(f1_events("finalize", "return", "run")
+                            or f1_events("wait", "call", "run") or f1.snapshot()["errors"]),
+               "F1 competing finalizer opportunity missing")
+        require(not f1.snapshot()["errors"], "F1 trace refused overlap evidence")
+        premature = bool(f1_events("finalize", "return", "run"))
+        if premature:
+            v.wait(lambda: not thread.is_alive(), "F1 premature caller did not return its real outcome")
+            thread.join()
+        require(not publisher_release.is_set() and not f1_events("publisher", "return")
+                and not f1_events("publisher", "unwind"), "F1 publisher already finished at overlap cut")
+        held = {"terminals": len(terminals), "released": supervisor._admission.released_total(),
+                "outcome_present": "A" in results, "active": supervisor.active_count()}
+        expected = {"terminals": 0, "released": 0, "outcome_present": False, "active": 1}
+        record["F1_held"] = {"opportunity": "premature-return" if premature else "same-condition-wait",
+                             "observed": held, "expected": expected, "trace": f1.snapshot(),
+                             "publisher_release_input": publisher_release.is_set(),
+                             "body_held": body_held.is_set(), "publisher_held": publisher_held.is_set(),
+                             "receipt": dataclasses.asdict(observer.final_receipt)}
+        freeze_backend("F1_held_snapshot")
+        if held != expected:
+            mismatch = ContractMismatch("premature terminal/release with unfinished publication", held, expected, True)
+            f1_mismatches.append(mismatch)
+            record["F1_saved_mismatch"] = {"assertion": mismatch.assertion,
+                                           "observed": held, "expected": expected}
+        v.event("F1_publisher_release_input")
+        publisher_release.set()  # Normal dependency input, never completion proof.
+        v.wait(lambda: all(not w.is_alive() for w in v.threads) and observer.active_samplers == 0,
+               "F1 real run/control/sampler did not settle after publication release")
+        control.join()
+        thread.join()
+
+    def f1_production_settlement():
+        proof = {"complete": False, "workers": {w.name: w.is_alive() for w in v.threads},
+                 "active_samplers": observer.active_samplers, "errors": list(errors),
+                 "trace": f1.snapshot(), "active": supervisor.active_count(),
+                 "released": supervisor._admission.released_total()}
+        record["F1_production_settlement"] = proof
+        require(not proof["errors"] and not any(proof["workers"].values())
+                and proof["active_samplers"] == 0 and proof["active"] == 0 and proof["released"] == 1,
+                "F1 lacks normal production settlement before rescue", observed=proof,
+                expected="real run/control/sampler returned; one released lease; no errors")
+        trace = proof["trace"]
+        require(not trace["errors"] and not trace["active_frames"] and len(trace["workers"]) == 2
+                and {w["role"] for w in trace["workers"]} == {"run", "control"}
+                and all(w["owned"] and w["restored"] for w in trace["workers"]),
+                "F1 observer ownership/restoration/event completeness refused", observed=trace,
+                expected="two owned/restored worker traces, no frames/errors")
+        evidence = v.events[start_index:]
+        indices = {kind: [i for i, e in enumerate(evidence) if e["kind"] == kind]
+                   for kind in ("finish_enter", "finish_return", "publish", "terminal_hook",
+                                "release_committed", "run_return")}
+        require(all(len(items) == 1 for items in indices.values()), "F1 completion counts not exactly once",
+                observed=indices, expected="one finish/account/publication attempt/terminal/release/outcome")
+        receipt = results["A"].receipt
+        identity = id(receipt)
+        require(receipt is observer.final_receipt and publications == [receipt]
+                and all(evidence[indices[kind][0]]["receipt_identity"] == identity
+                        for kind in ("finish_return", "publish", "terminal_hook", "run_return"))
+                and results["A"].terminal_reason.value == "cancelled"
+                and evidence[indices["terminal_hook"][0]]["terminal_reason"] == "cancelled",
+                "F1 actual receipt/terminal-hook argument/winner mismatch")
+        for target in ("account", "publisher"):
+            require(len(f1_events(target, "call", "control")) == 1,
+                    "F1 missing/duplicate real control-owned callback attempt")
+        require(len(f1_events("account", "return", "control")) == 1
+                and not f1_events("account", "exception") and not f1_events("account", "unwind"),
+                "F1 actual account did not return exactly once")
+        error_case = case == "C2-cancel-publish-error"
+        completed = f1_events("publisher", "unwind" if error_case else "return", "control")
+        exceptions = f1_events("publisher", "exception", "control")
+        require(len(completed) == 1
+                and len(f1_events("publisher", "return")) == (0 if error_case else 1)
+                and len(f1_events("publisher", "unwind")) == (1 if error_case else 0)
+                and len(exceptions) == (1 if error_case else 0)
+                and (not error_case or exceptions[0]["exception_identity"] == id(publication_error))
+                and len(f1_events("finalize", "return", "control")) == 1
+                and len(f1_events("finalize", "return", "run")) == 1
+                and not f1_events("finalize", "unwind"),
+                "F1 publisher success/error containment or caller liveness incomplete")
+        finalizer_exceptions = f1_events("finalize", "exception", "control")
+        require(len(finalizer_exceptions) == (1 if error_case else 0)
+                and (not error_case or finalizer_exceptions[0]["exception_identity"] == id(publication_error)),
+                "F1 real sentinel was not contained by the actual owner finalizer")
+        if record["F1_held"]["opportunity"] == "same-condition-wait":
+            require(len(f1_events("wait", "call", "run")) >= 1
+                    and len(f1_events("wait", "call", "run")) == len(f1_events("wait", "return", "run"))
+                    and not f1_events("wait", "exception") and not f1_events("wait", "unwind")
+                    and len(f1_events("notify", "call", "control")) == 1
+                    and len(f1_events("notify", "return", "control")) == 1,
+                    "F1 same-condition wait/notify event completeness missing")
+        # Actual finish/direct wait, account return and callback entry must be
+        # ordered even for a RED. Premature external completion is saved below,
+        # never made into a fake normal-settlement prerequisite.
+        account_return = next(i for i, e in enumerate(evidence) if e["kind"] == "F1_trace"
+                              and e["target"] == "account" and e["phase"] == "return")
+        publisher_call = next(i for i, e in enumerate(evidence) if e["kind"] == "F1_trace"
+                             and e["target"] == "publisher" and e["phase"] == "call")
+        require(indices["finish_return"][0] < account_return < publisher_call,
+                "F1 finish/account/publication entry order missing")
+        proof.update(complete=True, receipt_identity=identity, receipt=dataclasses.asdict(receipt),
+                     publication_attempts=len(f1_events("publisher", "call")),
+                     publication_successes=len(f1_events("publisher", "return")),
+                     sentinel_exceptions=len(exceptions), event_indices=indices,
+                     completed_t=time.monotonic())
+        # Compare actual event positions (timestamps can round equal). Do not
+        # impose owner-function return before the notified waiter's return.
+        publication_end = next(
+            i for i, e in enumerate(evidence) if e["kind"] == "F1_trace"
+            and e["target"] == "publisher" and e["phase"] in ("return", "unwind"))
+        competitor_end = next(i for i, e in enumerate(evidence) if e["kind"] == "F1_trace"
+                              and e["target"] == "finalize" and e["worker"] == "run" and e["phase"] == "return")
+        ordered = publication_end < competitor_end < indices["terminal_hook"][0] < indices["release_committed"][0] < indices["run_return"][0]
+        handling_settled = [i for i, e in enumerate(evidence) if e["kind"] == "F1_trace"
+                            and e["target"] == "notify" and e["worker"] == "control" and e["phase"] == "return"]
+        if record["F1_held"]["opportunity"] == "same-condition-wait":
+            ordered = ordered and len(handling_settled) == 1 and publication_end < handling_settled[0] < competitor_end
+        proof["external_order"] = {"publication_end": publication_end, "competitor_end": competitor_end,
+                                    "owner_handling_settled": handling_settled, **indices, "ordered": ordered}
+        if not ordered and not f1_mismatches:
+            f1_mismatches.append(ContractMismatch("F1 publication settlement before external completion",
+                                                 proof["external_order"], "publication end < competitor < terminal < committed release < run return", True))
 
     def failure(exc):
         details = {"type": type(exc).__name__, "message": str(exc),
@@ -1099,6 +1470,9 @@ def run_case(v, case, api, fault=None):
                     "stopped": v.stopped,
                     "event_range": [start_index, len(v.events)],
                     "safety_violations": list(v.safety_violations)}
+        if f1_case:
+            snapshot["F1"] = {"held": record.get("F1_held"), "trace": f1.snapshot(),
+                              "normal_settlement": record.get("F1_production_settlement")}
         # LAST observation: materialize every independent acceptance fact above
         # before reading this cutoff. The event below only labels frozen data.
         snapshot["t"] = time.monotonic() - v.started
@@ -1206,6 +1580,12 @@ def run_case(v, case, api, fault=None):
                     "C acceptance unavailable without proved normal A/B production settlement",
                     observed=record.get("C_production_settlement"),
                     expected="both returned outcomes and ordered production completion proof before rescue")
+        if f1_case:
+            require(record.get("F1_production_settlement", {}).get("complete") is True
+                    and "F1_normal_settlement_failure" not in record,
+                    "F1 acceptance unavailable without real normal production settlement",
+                    observed=record.get("F1_production_settlement"),
+                    expected="actual run/control/sampler and callback settlement before rescue")
         after = v.sentinel_snapshot()
         require(before_sentinels is not None, "acceptance lacks initial sentinel observations")
         v.sentinel_progress(before_sentinels, after)
@@ -1429,12 +1809,8 @@ def run_case(v, case, api, fault=None):
                     record["missing_sensitivity"] = "no attributable wrong completion/value in finite held-read window"
                     require(False, record["missing_sensitivity"], observed=record["C_hold"],
                             expected="admitted >=5.5s opportunity and attributable C mismatch; no timeout-as-RED")
-            elif case == "C2-cancel":
-                control = threading.Thread(target=request.cancellation.cancel, name="lifecycle-cancel")
-                v.threads.append(control)
-                control.start()
-                v.wait(lambda: not control.is_alive(), "cancel cleanup did not settle")
-                control.join()
+            elif f1_case:
+                f1_overlap()
             else:
                 if fault:
                     observer.fault = fault
@@ -1582,7 +1958,7 @@ def run_case(v, case, api, fault=None):
                             "bind gate did not skip body/on_started/sampler")
                     require(any(e["kind"] == "backend_direct_wait" and e["operation"] == "finish" for e in evidence),
                             "backend wait missing from skipped-body cut")
-                if case == "C2-cancel":
+                if f1_case:
                     require(outcome.terminal_reason.value == "cancelled", "cancel winner lost")
                     require(any(s["signal"] == signal.SIGKILL for s in observer.signal_attempts), "KILL escalation missing")
                 if case == "C2-timeout-pipe":
@@ -1612,7 +1988,11 @@ def run_case(v, case, api, fault=None):
                 v.heartbeat_fault_armed = True
             if v.diagnostic == "U":
                 watchdog_diagnostic()
+            if f1_case:
+                f1_production_settlement()
             acceptance_finalizer()
+            if f1_mismatches:
+                raise f1_mismatches[0]
             record["status"] = "PASS"
         except Exception as exc:
             record.update(status="FAIL", error=f"{type(exc).__name__}: {exc}", primary_failure=failure(exc))
@@ -1622,6 +2002,11 @@ def run_case(v, case, api, fault=None):
                 record["C_normal_settlement_failure"] = record.get("C_production_settlement", {}).get(
                     "failure", {"message": "normal A/B production completion not established before rescue",
                                 "cause": record["primary_failure"]})
+                v.stopped = True
+            if f1_case and not record.get("F1_production_settlement", {}).get("complete"):
+                record["F1_normal_settlement_failure"] = {
+                    "message": "real F1 run/control/sampler/callback settlement not established before rescue",
+                    "cause": record["primary_failure"]}
                 v.stopped = True
             v.event("case_failure", error=record["error"])
         finally:
@@ -1661,6 +2046,9 @@ def run_case(v, case, api, fault=None):
                     v.stopped = True
             observer.read_release.set()
             observer.launch_release.set()
+            if f1_case:
+                body_release.set()
+                publisher_release.set()
             try:
                 for owner, running in tuple(observer.running.items()):
                     if running.process not in direct:
@@ -1692,7 +2080,10 @@ def run_case(v, case, api, fault=None):
                 and not v.stopped and not v.safety_violations and "settlement_error" not in record
                 and (case != "C4-owner-isolation" or (
                     record.get("C_production_settlement", {}).get("complete") is True
-                    and "C_normal_settlement_failure" not in record)))
+                    and "C_normal_settlement_failure" not in record))
+                and (not f1_case or (
+                    record.get("F1_production_settlement", {}).get("complete") is True
+                    and "F1_normal_settlement_failure" not in record)))
             record["sensitivity"] = "UNASSESSED: requires named target/source attribution; FAIL is never GREEN"
             # Retain completed cleanup-path events as separately labelled data;
             # they cannot replace missing before-rescue backend proof.
@@ -1710,7 +2101,7 @@ def main():
     selection = parser.add_mutually_exclusive_group()
     selection.add_argument("--case", choices=CASES, help="one existing variant, with both normal C5 inputs")
     selection.add_argument("--selection", choices=tuple(SELECTIONS),
-                           help="accepted B/H/K/W/T/C/R/E/L selection, or explicit S/U negative diagnostic")
+                           help="accepted B/H/K/W/T/C/R/E/L/F1 selection, or explicit S/U negative diagnostic")
     args = parser.parse_args()
     # Validate selectors BEFORE even the source-admission Git subprocesses,
     # imports, scratch creation, readiness or fixture/backend probe.
@@ -1751,6 +2142,18 @@ def main():
                          for name in ("runtime/orchestrator/host_supervisor.py", "runtime/platform/macos_process_group.py",
                                       "runtime/platform/process_census.py")},
                      "native_journal": "SOURCE-MAPPED ONLY; UNPROVEN", "historical_ownership": "UNPROVEN"})
+    if any(case in F1_CASES for case in cases):
+        loaded = {}
+        for name in v.report["source_sha256"]:
+            module = sys.modules[name[:-3].replace("/", ".")]
+            path = Path(module.__file__).resolve(strict=True)
+            require(path == (source / name).resolve(strict=True), "F1 loaded runtime path mismatch")
+            raw = path.read_bytes()
+            digest = hashlib.sha256(raw).hexdigest()
+            require(digest == v.report["source_sha256"][name], "F1 loaded runtime byte mismatch")
+            loaded[name] = {"path": str(path), "sha256": digest, "bytes": len(raw),
+                            "mode": oct(path.stat().st_mode & 0o777)}
+        v.report["F1_loaded_runtime"] = loaded
     try:
         v.readiness()
         executable = scratch / "provider"
@@ -1776,6 +2179,9 @@ def main():
                 v.results.append(run_case(v, case, api))
             if v.stopped:
                 v.report["stopped_after"] = dict(v.scope)
+                break
+            if case in F1_CASES and v.results[-1]["status"] != "PASS":
+                v.report["halted_after_F1_failure"] = dict(v.scope)
                 break
             # Baseline expected product failures do not authorize retries.
     except BaseException as exc:
