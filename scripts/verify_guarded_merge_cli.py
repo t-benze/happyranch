@@ -115,7 +115,8 @@ assert observed['cwd'] == '/work'
 assert observed['interfaces'] == [(1,'lo')]
 assert all(observed['absent'].values())
 assert all(observed['namespaces'][n] != old for n,old in cfg['host_ns'].items())
-assert set(os.environ) <= {'HOME','PATH','LC_ALL'}
+assert dict(os.environ) == {'HOME':'/work/home','PATH':'/fixture/bin',
+                            'LC_ALL':'C.UTF-8','PWD':'/work'}
 assert not Path('/work/.git').exists()
 assert not list(Path('/work').iterdir())
 Path('/work/home').mkdir()
