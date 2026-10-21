@@ -484,15 +484,53 @@ def discover(org: Path, deadline: float, *, inventory: dict | None = None, check
     return candidates
 
 
+def _read_json(path: Path) -> dict:
+    """Read reports/markers through literal parents and one regular inode."""
+    with directory(path.parent, float('inf')) as parent:
+        fd = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
+        with os.fdopen(fd) as stream:
+            before = os.fstat(stream.fileno())
+            if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
+                raise Retain('ambiguous_disk_sweep_metadata')
+            value = json.load(stream)
+            if (signature(os.fstat(stream.fileno())) != signature(before)
+                    or signature(os.stat(path.name, dir_fd=parent, follow_symlinks=False)) != signature(before)):
+                raise Retain('disk_sweep_metadata_changed')
+            with directory(path.parent, float('inf')) as current:
+                if identity(os.fstat(current)) != identity(os.fstat(parent)):
+                    raise Retain('disk_sweep_parent_changed')
+            return value
+
+
 def atomic_json(path: Path, value: dict) -> None:
-    # Summary only, never candidate/cursor state. Fixed owned daemon directory.
-    path.parent.mkdir(parents=True, exist_ok=True)
-    pending = path.with_suffix(path.suffix + '.pending')
-    fd = os.open(pending, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
-    with os.fdopen(fd, 'w') as stream:
-        json.dump(value, stream, sort_keys=True, indent=2)
-        stream.flush()
-    os.replace(pending, path)
+    # Every caller, including the schedule marker, uses literal parents. Never
+    # create a missing scheduled control parent or truncate an unowned pending
+    # inode (which could be a hardlink into a candidate). Ambiguity refuses.
+    with directory(path.parent, float('inf')) as parent:
+        def target_signature():
+            try:
+                observed = os.stat(path.name, dir_fd=parent, follow_symlinks=False)
+            except FileNotFoundError:
+                return None
+            if not stat.S_ISREG(observed.st_mode) or observed.st_nlink != 1:
+                raise Retain('ambiguous_disk_sweep_publication_target')
+            return signature(observed)
+        before = target_signature()
+        pending = path.name + '.pending'
+        fd = os.open(pending, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=parent)
+        # Retain a pending file on failure as uncertainty; never retry or remove
+        # someone else's pending evidence. Successful replace consumes ours.
+        with os.fdopen(fd, 'w') as stream:
+            json.dump(value, stream, sort_keys=True, indent=2)
+            stream.flush()
+            with directory(path.parent, float('inf')) as current:
+                if identity(os.fstat(current)) != identity(os.fstat(parent)):
+                    raise Retain('disk_sweep_publication_parent_changed')
+            if (target_signature() != before
+                    or signature(os.stat(pending, dir_fd=parent, follow_symlinks=False)) != signature(os.fstat(stream.fileno()))
+                    or os.fstat(stream.fileno()).st_nlink != 1):
+                raise Retain('disk_sweep_publication_changed')
+            os.replace(pending, path.name, src_dir_fd=parent, dst_dir_fd=parent)
 
 
 def _summarize_org(result: dict) -> None:
@@ -744,6 +782,21 @@ async def run_worker(roots: list[str], summary: Path, *, dry_run: bool, schedule
                    started_at=datetime.now().astimezone().isoformat(),
                    timezone=datetime.now().astimezone().tzname(),
                    timezone_offset=datetime.now().astimezone().strftime('%z'))
+    def preview_parents():
+        # Public preview remains usable with no control directory. Creation is
+        # manual-only and descriptor-relative; aliases still refuse before write.
+        for component in reversed((summary.parent, *summary.parent.parents)):
+            if component == component.parent:
+                continue
+            with directory(component.parent, deadline) as parent:
+                try:
+                    os.mkdir(component.name, 0o700, dir_fd=parent)
+                except FileExistsError:
+                    pass
+                with directory(component, deadline):
+                    pass
+    if dry_run:
+        await asyncio.to_thread(preview_parents)
     await asyncio.to_thread(atomic_json, summary, initial)
     spawn = asyncio.create_task(asyncio.create_subprocess_exec(
         *argv, start_new_session=True, stdin=subprocess.DEVNULL,
@@ -779,7 +832,7 @@ async def run_worker(roots: list[str], summary: Path, *, dry_run: bool, schedule
         await process.wait()
     def finish():
         try:
-            report = json.loads(summary.read_text())
+            report = _read_json(summary)
         except Exception:
             report = dict(format='disk-sweep@1', orgs=[], unreached_orgs=roots, revision=revision)
         for item in report.get('orgs', []):
@@ -940,8 +993,17 @@ async def disk_sweeper_loop(state) -> None:
         def reserve():
             # Mark BEFORE launching. An interrupted night's partial run is not
             # retried after restart. Corrupt metadata refuses, never duplicates.
-            if marker.exists():
-                old = json.loads(marker.read_text())
+            # Validate literal parents BEFORE interpreting final-file ENOENT.
+            # No marker/control directory creation on the scheduled path.
+            with directory(data, float('inf')):
+                try:
+                    old = _read_json(marker)
+                except FileNotFoundError:
+                    old = None
+                else:
+                    if not isinstance(old, dict):
+                        raise ValueError('invalid disk sweep date metadata')
+            if old is not None:
                 if not isinstance(old.get('scheduled_date'), str):
                     raise ValueError('invalid disk sweep date metadata')
                 if old['scheduled_date'] >= date:

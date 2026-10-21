@@ -30,12 +30,20 @@ dangling links or aliased parents), hardlinks, directories and special files
 visibly suspend. Only final-file ENOENT means absent; other I/O failures suspend.
 Malformed control does not prevent daemon/org startup. Operators alone write or
 remove this local file; there is no per-org override, setting/API or new schedule.
-Suspension logs its cause and writes `outcome: suspended` with daemon-scoped
-`scheduled_admission` (`path,state,reason` and an error when invalid) in the
-existing summary/audit payload. All orgs remain unreached, with no worker/PID,
-reaping, removal-byte or successful-sweep claim. The existing audit empty-task/
-daemon envelope and org ordering remain. Publication failure is visible and
-never permits deletion. Manual `--dry-run` remains usable and nonmutating with
+Suspension logs its cause and, when publication is safe, writes `outcome:
+suspended` with daemon-scoped `scheduled_admission` (`path,state,reason` and an
+error when invalid) in the existing summary/audit payload. All orgs remain
+unreached, with no worker/PID, reaping, removal-byte or successful-sweep claim.
+The existing audit empty-task/daemon envelope and org ordering remain. Marker
+and report reads/writes traverse literal no-follow parents; publication uses a
+new exclusive pending inode and descriptor-relative replacement. A missing or
+aliased parent, aliased/hardlinked/special final metadata or existing pending
+entry refuses without writing through that path. Scheduled work never creates
+a missing control parent. Refusal is visible through the existing daemon log;
+a summary or org audit may be unavailable and must not be claimed as persisted.
+Only manual preview can create missing report parents, with no-follow traversal.
+These are filesystem observations, not a racing-rename fence or hard real-time
+certification. Publication failure never permits deletion. Manual `--dry-run` remains usable and nonmutating with
 true, invalid or absent control; it may write its existing reports/audits.
 Removing/fixing the file affects the NEXT existing scheduled attempt only:
 no same-night catchup/retry or marker reset. This is a run-admission boundary;
@@ -245,7 +253,7 @@ python -m runtime.daemon.disk_sweeper --dry-run --runtime-root /absolute/runtime
 `task_scratch_reclamation.py`, `workspace_cleanup.reclamation_actions_enabled`,
 legacy cleanup procedures and seven nightly agent cleanup sessions are unchanged.
 The maker performs no live cleanup, config write, deployment or restart. Root
-TASK12280 owns reviewed guarded merge, exact-main static checks, normal rollout
+TASK12353 owns reviewed guarded merge, exact-main static checks, normal rollout
 and serving-source verification that every admitted org uses scheduled deletion
 independently of config. Founder seq134/136 already authorizes activation after
 delivery, without another decision; source publication alone does not prove
@@ -322,7 +330,11 @@ These broad historical cases are NOT authorized for this correction delivery.
 
 The current corrections lane retains C1–C3 (seq117) and adds the finite C4–C7
 policy cases (seq134), plus S1–S5 (selector8–12) for scheduled control admission.
-S6 reuses C1–C7 safety assertions. Run from the guarded worktree after
+S3 also exercises the real scheduler with its actual date-summary/marker paths,
+parent and ancestor aliases into disposable ended-task scratch, ambiguous marker/
+pending entries, and separate scheduled/worker-entry publication refusal. Candidate
+bytes/modes, sidecars, refs/registrations and absence of native work remain observed;
+unavailable summaries/audits are not claimed. S6 reuses C1–C7 safety assertions. Run from the guarded worktree after
 `uv sync --frozen --python 3.14`, with task-owned disposable scratch:
 
 ```bash

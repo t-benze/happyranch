@@ -14,6 +14,7 @@ import asyncio
 import builtins
 import io
 import json
+import logging
 import os
 import shutil
 import signal
@@ -1623,7 +1624,95 @@ def correction_stop_true():
         return dict(report=report, audit=audits[0], persisted_audits=len(audits), marker=marker, same_night_retry=False, candidate_changes=False)
 
 
+def publication_refusal(entry, variant='parent_alias'):
+    """S3 shipping publication paths; clock/sentinels observe, never decide."""
+    from runtime.orchestrator import producer_move
+    with scheduled_fixture() as (f, orgs, state, stop, summary, paths, refs), ExitStack() as fixture_stack:
+        date = ds.next_night(ds.datetime.now().astimezone()).date().isoformat()
+        summary = stop.with_name(date + '.json')
+        marker = stop.with_name('last-scheduled.json')
+        target = paths[0]
+        if variant == 'parent_alias':
+            stop.parent.rmdir()
+            stop.parent.symlink_to(target, target_is_directory=True)
+        elif variant == 'ancestor_alias':
+            stop.parent.rmdir(); stop.parent.parent.rmdir()
+            (target / 'disk-sweep').mkdir()
+            stop.parent.parent.symlink_to(target, target_is_directory=True)
+        elif variant == 'parent_missing':
+            stop.parent.rmdir()
+        elif variant in ('marker_alias', 'marker_dangling', 'marker_hardlink', 'pending_hardlink', 'pending_alias', 'pending_regular', 'pending_fifo', 'summary_alias'):
+            payload = target / 'publication-target'
+            payload.write_text('{"scheduled_date":"2000-01-01"}')
+            slot = (summary if variant == 'summary_alias' else
+                    marker.with_suffix('.json.pending') if variant.startswith('pending_') else marker)
+            if variant in ('marker_hardlink', 'pending_hardlink'): os.link(payload, slot)
+            elif variant == 'pending_regular': slot.write_text('unowned pending evidence')
+            elif variant == 'pending_fifo':
+                os.mkfifo(slot)
+                # A reader lets the pre-fix writer return for causal inspection;
+                # this does not implement publication policy or change the FIFO.
+                fifo_reader = os.open(slot, os.O_RDONLY | os.O_NONBLOCK)
+                fixture_stack.callback(os.close, fifo_reader)
+            else: slot.symlink_to(target / 'missing' if variant == 'marker_dangling' else payload)
+        else: raise AssertionError(variant)
+        before = candidate_contents(*paths, *(repo / '.git' for repo, _, _ in refs))
+        # Also preserve final/pending sidecars when literal directory is trusted.
+        sidecars = {str(p): (p.lstat(), os.readlink(p) if p.is_symlink() else p.read_bytes() if p.is_file() else None)
+                    for p in (marker, marker.with_suffix('.json.pending'), summary) if p.exists() or p.is_symlink()}
+        calls, sleeps = [], []
+        async def sleep(_):
+            sleeps.append(1)
+            if len(sleeps) > 1: raise asyncio.CancelledError
+        def forbidden(*a, **kw):
+            calls.append('reservation_or_worker')
+            raise AssertionError('unexpected reservation/worker')
+        async def forbidden_spawn(*a, **kw):
+            calls.append('worker_spawn')
+            raise OSError('forbidden worker spawn sentinel')
+        messages = io.StringIO()
+        handler = logging.StreamHandler(messages)
+        ds.LOG.addHandler(handler)
+        error = None
+        try:
+            with patch.object(ds.asyncio, 'sleep', sleep), patch.object(producer_move, 'native_writer', forbidden), patch.object(ds, 'run_worker', forbidden) if entry != 'worker' else patch.object(ds.asyncio, 'create_subprocess_exec', forbidden_spawn):
+                try:
+                    if entry == 'loop': asyncio.run(ds.disk_sweeper_loop(state))
+                    elif entry == 'scheduled': asyncio.run(ds._run_scheduled_worker(state, summary, date))
+                    elif entry == 'worker': asyncio.run(ds.run_worker([], summary, dry_run=False, scheduled_date=date))
+                    else: raise AssertionError(entry)
+                except asyncio.CancelledError:
+                    assert entry == 'loop'
+                except (OSError, fs.Retain) as exc:
+                    error = type(exc).__name__ + ': ' + str(exc)
+        finally:
+            ds.LOG.removeHandler(handler)
+        after = candidate_contents(*paths, *(repo / '.git' for repo, _, _ in refs))
+        assert after == before, dict(expected='candidate/sidecar/permission/ref/registration nonmutation',
+                                     entry=entry, variant=variant, changed=[p for p in before.keys() | after.keys() if before.get(p) != after.get(p)])
+        if variant == 'parent_missing':
+            assert not stop.parent.exists(), 'scheduled attempt created missing control parent'
+        for path, (observed, content) in sidecars.items():
+            p = Path(path)
+            assert os.path.lexists(p), dict(expected='unchanged publication sidecar exists', observed='missing', path=path)
+            assert fs.signature(p.lstat()) == fs.signature(observed), dict(expected='unchanged publication sidecar', path=path, before=fs.signature(observed), observed=fs.signature(p.lstat()))
+            assert (os.readlink(p) if p.is_symlink() else p.read_bytes() if p.is_file() else None) == content
+        assert calls == [], calls
+        for g, (repo, branches, registration) in zip(orgs, refs):
+            assert g.git(repo, 'show-ref', '--heads') == branches and g.git(repo, 'worktree', 'list', '--porcelain') == registration
+            assert g.db.execute("SELECT COUNT(*) FROM audit_log WHERE action='disk_sweep_summary'").fetchone()[0] == 0
+        visible = messages.getvalue()
+        if entry == 'loop':
+            assert 'Disk sweep incomplete; no same-night automatic retry' in visible, visible
+        else: assert error, dict(expected='publication visibly refused', observed=visible)
+        return dict(entry=entry, variant=variant, calls=calls, candidate_changes=False,
+                    refusal=visible if entry == 'loop' else error, persisted_summary_or_audit=False)
+
+
 def correction_stop_invalid():
+    publication = [publication_refusal('loop', variant) for variant in ('parent_alias', 'ancestor_alias', 'parent_missing', 'marker_alias', 'marker_dangling', 'marker_hardlink', 'pending_hardlink', 'pending_alias', 'pending_regular', 'pending_fifo')]
+    publication += [publication_refusal(entry) for entry in ('scheduled', 'worker')]
+    publication.append(publication_refusal('worker', 'summary_alias'))
     variants = [('empty', b''), ('malformed', b'{'), ('oversized', b' ' * 65537), ('utf8', b'\xff'),
                 *[(v, v.encode()) for v in ('null', '"x"', '1', '[]', 'true', '{}', '{"stop":null}', '{"stop":1}', '{"stop":"false"}', '{"stop":[]}', '{"stop":false,"extra":0}', '{"stop":false,"stop":false}')],
                 *[(v, None) for v in ('unreadable', 'symlink', 'dangling', 'directory', 'fifo', 'hardlink', 'parent_alias', 'changed_read', 'replaced_read', 'read_error', 'short_read', 'parent_missing')]]
@@ -1641,9 +1730,8 @@ def correction_stop_invalid():
             elif label == 'hardlink': os.link(stop, stop.with_name('alias'))
             elif label == 'parent_alias':
                 parent = stop.parent; moved = parent.with_name('real-disk-sweep'); parent.rename(moved); parent.symlink_to(moved, target_is_directory=True)
-                summary = f.base / 'outside-summary.json'
             elif label == 'parent_missing':
-                stop.unlink(); stop.parent.rmdir(); summary = f.base / 'outside-summary.json'
+                stop.unlink(); stop.parent.rmdir()
             elif label in ('changed_read', 'replaced_read', 'read_error', 'short_read'):
                 real = os.read
                 control_identity = fs.identity(stop.stat())
@@ -1658,6 +1746,15 @@ def correction_stop_invalid():
                     return raw
                 stack.enter_context(patch.object(ds.os, 'read', read))
             before = candidate_contents(*paths, *(repo / '.git' for repo, _, _ in refs))
+            if label in ('parent_alias', 'parent_missing'):
+                try: scheduled_attempt(state, summary, forbidden=True)
+                except OSError as exc:
+                    expected_type = NotADirectoryError if label == 'parent_alias' else FileNotFoundError
+                    assert isinstance(exc, expected_type), exc
+                else: raise AssertionError('untrusted publication parent accepted')
+                assert candidate_contents(*paths, *(repo / '.git' for repo, _, _ in refs)) == before
+                observations.append(dict(control=label, publication='refused without persisted summary; real loop covered above'))
+                continue
             report, calls = scheduled_attempt(state, summary, forbidden=True)
             stack.close()
             assert_suspended(report, 'invalid_control', summary)
@@ -1684,7 +1781,7 @@ def correction_stop_invalid():
             except OSError as exc: assert 'summary publication failure' in str(exc)
             else: raise AssertionError('publication error swallowed')
         assert candidate_contents(*paths, *(repo / '.git' for repo, _, _ in refs)) == before
-    return dict(variants=observations, publication_failure='visible; zero reservation/worker')
+    return dict(variants=observations, publication=publication, publication_failure='visible; zero reservation/worker')
 
 
 def correction_stop_recovery():

@@ -1839,12 +1839,20 @@ dangling links or aliased parents), hardlinks, directories and special files
 visibly suspend. Only final-file ENOENT means absent; other I/O failures suspend.
 Malformed control does not prevent daemon/org startup. Operators alone write or
 remove this local file; there is no per-org override, setting/API or new schedule.
-Suspension logs its cause and writes `outcome: suspended` with daemon-scoped
-`scheduled_admission` (`path,state,reason` and an error when invalid) in the
-existing summary/audit payload. All orgs remain unreached, with no worker/PID,
-reaping, removal-byte or successful-sweep claim. The existing audit empty-task/
-daemon envelope and org ordering remain. Publication failure is visible and
-never permits deletion. Manual `--dry-run` remains usable and nonmutating with
+Suspension logs its cause and, when publication is safe, writes `outcome:
+suspended` with daemon-scoped `scheduled_admission` (`path,state,reason` and an
+error when invalid) in the existing summary/audit payload. All orgs remain
+unreached, with no worker/PID, reaping, removal-byte or successful-sweep claim.
+The existing audit empty-task/daemon envelope and org ordering remain. Marker
+and report reads/writes traverse literal no-follow parents; publication uses a
+new exclusive pending inode and descriptor-relative replacement. A missing or
+aliased parent, aliased/hardlinked/special final metadata or existing pending
+entry refuses without writing through that path. Scheduled work never creates
+a missing control parent. Refusal is visible through the existing daemon log;
+a summary or org audit may be unavailable and must not be claimed as persisted.
+Only manual preview can create missing report parents, with no-follow traversal.
+These are filesystem observations, not a racing-rename fence or hard real-time
+certification. Publication failure never permits deletion. Manual `--dry-run` remains usable and nonmutating with
 true, invalid or absent control; it may write its existing reports/audits.
 Removing/fixing the file affects the NEXT existing scheduled attempt only:
 no same-night catchup/retry or marker reset. This is a run-admission boundary;
@@ -1899,7 +1907,7 @@ gates are unchanged. Ended tasks/root status does not prove OS-process quiescenc
 
 See the [full current contract](../superpowers/specs/2026-10-15-nightly-disk-sweeper.md)
 for evidence semantics, limitations, finite disposable verification and staged
-operational acceptance. The bounded `--corrections-only` lane now runs C1–C7,
+operational acceptance. The bounded `--corrections-only` lane now runs C1–C7 plus S1–S5 (cases8–12),
 with finding-specific selection through `--correction-cases`; C4–C7 cover all-org
 deletion, every legacy preview, fresh admission/retry and partial/native reporting.
 C3 retains its no-process-inspection assertions at Python
@@ -1910,7 +1918,7 @@ The mount/process-root isolation fixtures remain SKIPPED/UNEXECUTED under seq62.
 The separate historical isolation source supports disposable namespace boundaries. Run as the ordinary user; only its
 private helper is mapped root. Missing capabilities return77/UNAVAILABLE, never
 PASS; no privileged fallback or new automated check is authorized. Source
-publication alone does not change loaded code. Root TASK12280 owns reviewed
+publication alone does not change loaded code. Root TASK12353 owns reviewed
 delivery, normal rollout/serving verification and seven actual scheduled on-night
 receipts. Founder seq134/136 already authorizes all-org activation after delivery,
 without another activation decision. Original TASK11742/JOB4898 recovery and
