@@ -1827,10 +1827,53 @@ machine-local time — host-local night, as intended.)
 
 ## Independent nightly disk sweep (THR307)
 
-The new `disk_sweep: {mode: "dry_run"}` org block defaults to dry run; only quoted
-`"off"`, `"dry_run"`, `"on"` are accepted. This is independent of `workspace_cleanup`
-and its unchanged legacy scheduler/reclamation flag. Machine-local03:00 (not org
-timezone), next future occurrence only, sequential org order and one1800s monotonic
+One daemon-wide operator control is `<daemon_home>/disk-sweep/stop.json`.
+Its only supported content is a JSON object containing exactly `stop` with a
+real Boolean: `{"stop":true}` suspends scheduled deletion for all orgs;
+`{"stop":false}` or a genuinely absent literal file permits the default policy.
+The control is read afresh once per regular scheduled attempt, after the normal
+same-night reservation and before native writer reservation or worker launch,
+inside the shared1800s budget. Invalid/unreadable/oversized/truncated/changed
+content, wrong/extra/duplicate keys or types, invalid UTF8, symlinks (including
+dangling links or aliased parents), hardlinks, directories and special files
+visibly suspend. Only final-file ENOENT means absent; other I/O failures suspend.
+Malformed control does not prevent daemon/org startup. Operators alone write or
+remove this local file; there is no per-org override, setting/API or new schedule.
+Suspension logs its cause and, when publication is safe, writes `outcome:
+suspended` with daemon-scoped `scheduled_admission` (`path,state,reason` and an
+error when invalid) in the existing summary/audit payload. All orgs remain
+unreached, with no worker/PID, reaping, removal-byte or successful-sweep claim.
+The existing audit empty-task/daemon envelope and org ordering remain. Marker
+and report reads/writes traverse literal no-follow parents; publication uses a
+new exclusive pending inode and descriptor-relative replacement. A missing or
+aliased parent, aliased/hardlinked/special final metadata or existing pending
+entry refuses without writing through that path. Scheduled work never creates
+a missing control parent. Refusal is visible through the existing daemon log;
+a summary or org audit may be unavailable and must not be claimed as persisted.
+Only manual preview can create missing report parents, with no-follow traversal.
+After the single stop observation, the actual initial date summary is published
+before any native writer reservation. Allowed admission initially records
+`incomplete`, empty org results and all orgs unreached, without a finished/PID or
+mutation claim. Unsafe date-summary or pending metadata therefore refuses with
+zero reservations or worker effects. Later checkpoint/publication failures after
+genuine reservation retain native uncertainty; this initial observation is not
+a fence against subsequent filesystem changes.
+These are filesystem observations, not a racing-rename fence or hard real-time
+certification. Publication failure never permits deletion. Manual `--dry-run` remains usable and nonmutating with
+true, invalid or absent control; it may write its existing reports/audits.
+Removing/fixing the file affects the NEXT existing scheduled attempt only:
+no same-night catchup/retry or marker reset. This is a run-admission boundary;
+writing stop does not cancel an already launched worker or promise a hard
+real-time stop. Existing deletion/ownership/age/containment gates still apply.
+
+Founder THR307seq134/136 makes scheduled deletion effective for EVERY normally
+admitted org, including missing config, legacy off/dry_run/on and newly admitted
+orgs. The obsolete `disk_sweep` key is ignored regardless of shape/value; there is
+no per-org opt-out or replacement setting. Unrelated config validation remains.
+Reports carry actual `mode` (scheduled on, explicit preview dry_run), config digest
+and no `configured_mode`. Explicit manual preview inventories even legacy off.
+This is independent of `workspace_cleanup` and its unchanged legacy settings.
+Machine-local03:00 (not org timezone), next future occurrence only, sequential org order and one1800s monotonic
 batch budget. No cursor/rotation or candidate count cap. Unknown eligibility and
 unreached scope retain; the owned worker process group is stopped on deadline or
 shutdown. `output/` and durable scratch manifest/lock siblings stay excluded.
@@ -1871,8 +1914,10 @@ gates are unchanged. Ended tasks/root status does not prove OS-process quiescenc
 
 See the [full current contract](../superpowers/specs/2026-10-15-nightly-disk-sweeper.md)
 for evidence semantics, limitations, finite disposable verification and staged
-operational acceptance. The current bounded selector is `--corrections-only`: one case per approved
-correction with paired refusals; C3 asserts no process-inspection calls at Python
+operational acceptance. The bounded `--corrections-only` lane now runs C1–C7 plus S1–S5 (cases8–12),
+with finding-specific selection through `--correction-cases`; C4–C7 cover all-org
+deletion, every legacy preview, fresh admission/retry and partial/native reporting.
+C3 retains its no-process-inspection assertions at Python
 syscall boundaries while allowing real self mountinfo reads. Task/job/clock inputs
 are synthetic; filesystem/Git/config/JSON/audit projection are real. Historical case9/10
 terminal-lineage expectations are superseded; active/unknown refusals remain.
@@ -1880,8 +1925,13 @@ The mount/process-root isolation fixtures remain SKIPPED/UNEXECUTED under seq62.
 The separate historical isolation source supports disposable namespace boundaries. Run as the ordinary user; only its
 private helper is mapped root. Missing capabilities return77/UNAVAILABLE, never
 PASS; no privileged fallback or new automated check is authorized. Source
-publication does not activate deletion. Existing seven agent sessions remain until seven actual approved on-night observations
-and a separately approved cutover; no automatic manual-script fallback.
+publication alone does not change loaded code. Root TASK12353 owns reviewed
+delivery, normal rollout/serving verification and seven actual scheduled on-night
+receipts. Founder seq134/136 already authorizes all-org activation after delivery,
+without another activation decision. Original TASK11742/JOB4898 recovery and
+root11948/PR1128 keep their separate ownership/evidence. Seven legacy agent
+sessions remain until seven actual approved on-night observations and separately
+approved cutover; no manual cleanup fallback.
 
 ## Org Config: Workspace Cleanup
 
@@ -3108,8 +3158,9 @@ An installed layout with missing/unknown ownership refuses before mutation; abse
 layout preserves native behavior. Missing/incomplete effect closure, interruption
 and partial mutation retain unknown writer evidence; a clean later provider result
 cannot erase it. The common1800-second window includes reservation admission.
-Off/default dry_run, metadata/process/age/containment safeguards and manual dry-run
-remain; no cleanup/activation authority follows. These source changes have no
+THR307seq134 scheduled deletion covers every admitted org; metadata/jobs/age/
+containment safeguards and explicit manual dry-run remain. This C3 source
+checkpoint grants no live cleanup authority. These source changes have no
 behavioral/migration/recovery proof; integration INCLUDING callback SKIPPED24342,
 Python units RETIRED. That C3 checkpoint had no COMPLETE writer; current D/E/F
 source and independent gates are described above. No live capability follows.

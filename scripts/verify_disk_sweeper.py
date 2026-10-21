@@ -14,6 +14,7 @@ import asyncio
 import builtins
 import io
 import json
+import logging
 import os
 import shutil
 import signal
@@ -96,7 +97,9 @@ def fixture():
     base = Path(tempfile.mkdtemp(prefix='disk-sweep-disposable-'))
     f = Fixture(base)
     try:
-        yield f
+        with patch.dict(os.environ, HAPPYRANCH_DAEMON_HOME=str(base / 'daemon')):
+            (base / 'daemon/disk-sweep').mkdir(parents=True)
+            yield f
     finally:
         f.db.close()
         # Only this newly created fixture is cleaned by the harness.
@@ -1042,17 +1045,33 @@ def c22():
         return dict(primary_only_absent_admin='complete; independent scratch removed',locked='retained',metadata_enumeration='original deadline; globally stopped; later org unreached',seconds=time.monotonic()-start)
 
 
+POLICY_CONFIGS = (
+    ('missing_file', None), ('absent_block', ''),
+    ('legacy_off', 'disk_sweep: {mode: "off"}'),
+    ('legacy_dry_run', 'disk_sweep: {mode: "dry_run"}'),
+    ('legacy_on', 'disk_sweep: {mode: "on"}'),
+    ('obsolete_null', 'disk_sweep: null'),
+    ('obsolete_boolean', 'disk_sweep: {mode: true}'),
+    ('obsolete_unknown', 'disk_sweep: {mode: bad}'),
+    ('obsolete_extra', 'disk_sweep: {extra: 1}'),
+    ('obsolete_scalar', 'disk_sweep: retired'),
+)
+
+
 def config_checks():
-    assert OrgConfig.load_from_text('').disk_sweep_mode=='dry_run'
-    for mode in ('off','dry_run','on'):assert OrgConfig.load_from_text('disk_sweep: {mode: "'+mode+'"}').disk_sweep_mode==mode
-    for text in ('disk_sweep: null','disk_sweep: {mode: true}','disk_sweep: {mode: bad}','disk_sweep: {extra: 1}'):
-        try:OrgConfig.load_from_text(text)
-        except OrgConfigError:continue
-        raise AssertionError(text)
-    with fixture() as f:
-        p=f.scratch('TASK-1')
-        with patch.object(ds,'discover',side_effect=AssertionError('off inventory')):assert f.sweep('off')['outcome']=='off'
-        assert p.exists()
+    for label, text in POLICY_CONFIGS:
+        try:
+            cfg = OrgConfig.load_from_text((text or '') + '\ntimezone: Asia/Shanghai\nworkspace_cleanup: {enabled: false}\n')
+        except OrgConfigError as exc:
+            raise AssertionError(dict(config=label, expected='obsolete setting ignored', observed=str(exc))) from exc
+        assert cfg.timezone == 'Asia/Shanghai' and cfg.workspace_cleanup_enabled is False, label
+    for text in ('session_timeout_seconds: true', 'workspace_cleanup: {enabled: bad}'):
+        try:
+            OrgConfig.load_from_text('disk_sweep: null\n' + text)
+        except OrgConfigError as exc:
+            assert text.split(':')[0] in str(exc), str(exc)
+        else:
+            raise AssertionError(dict(expected='unrelated validation refuses', observed=text))
     from datetime import datetime
     for hour in (2,3,23):
         now=datetime.now().astimezone().replace(hour=hour)
@@ -1206,7 +1225,7 @@ def correction_processes():
             assert report['outcome'] == 'complete' and report['unreached_orgs'] == []
             assert report['selected_org_roots'] == [str(f.org)] and len(report['orgs']) == 1
             result = report['orgs'][0]
-            assert result['org'] == f.org.name and result['configured_mode'] == 'on' and result['mode'] == 'dry_run'
+            assert result['org'] == f.org.name and 'configured_mode' not in result and result['mode'] == 'dry_run', result
             assert result['process_scope'] == expected_scope and result['process_exemptions'] == []
             assert all(not c.get('process_exemptions') for c in result['candidates'])
             assert all(phase['removed_attributable_bytes'] == 0 for phase in result['phases'].values())
@@ -1241,10 +1260,605 @@ def correction_processes():
                     limits='Python syscall sentinels only; no actual host namespace or OS-denial proof; no process started or inspected')
 
 
+def policy_config(f, text):
+    path = f.org / 'org/config.yaml'
+    if text is None:
+        path.unlink()
+    else:
+        path.write_text(text + '\n')
+
+
+def policy_sweep(f, *, dry_run=False, discover=False):
+    summary = f.base / 'policy-summary.json'
+    with patch.object(time, 'time', return_value=NOW):
+        report = ds.sweep([] if discover else [str(f.org)], time.monotonic() + 12, summary,
+                          dry_run=dry_run, scheduled_date=None if dry_run else 'fixture-date',
+                          revision='policy-fixture', runtime_root=f.base / 'runtime' if discover else None)
+    assert json.loads(summary.read_text()) == report
+    return report, summary
+
+
+def correction_policy():
+    observations = []
+    for label, text in POLICY_CONFIGS:
+        with fixture() as f:
+            policy_config(f, text)
+            p = f.scratch('TASK-1'); repo, q = f.worktree('TASK-2')
+            output = f.workspace / 'output/TASK-1'; output.mkdir(parents=True)
+            (output / 'keep').write_text('durable output')
+            sidecars = f.workspace / '.happyranch/task-scratch-manifests'
+            excluded = candidate_contents(output, sidecars)
+            branches = f.git(repo, 'show-ref', '--heads')
+            report, summary = policy_sweep(f, discover=label == 'missing_file')
+            item = report['orgs'][0]
+            assert item.get('mode') == 'on', dict(config=label, expected='on', observed=item)
+            assert 'configured_mode' not in item, item
+            assert report['outcome'] == item['outcome'] == 'complete', report
+            assert report['selected_org_roots'] == [str(f.org)] and report['unreached_orgs'] == []
+            assert row(item, p)['state'] == row(item, q)['state'] == 'removed', item
+            assert not p.exists() and not q.exists()
+            assert str(q) not in f.git(repo, 'worktree', 'list', '--porcelain')
+            assert f.git(repo, 'show-ref', '--heads') == branches
+            assert all(v['removed_attributable_bytes'] > 0 for v in item['phases'].values()), item
+            assert candidate_contents(output, sidecars) == excluded
+            audit = ds._audit_payload(report, item, summary)
+            assert audit['org'] == item and audit['outcome'] == 'complete', audit
+            observations.append(dict(config=label, report=report, audit=audit, retained_local_branches=True))
+    config_checks()
+    return dict(variants=observations, unrelated_config_validation='retained',
+                discovery='missing-file org discovered through actual runtime wrapper; no OrgState admission claim')
+
+
+def correction_preview():
+    observations = []
+    for label, text in POLICY_CONFIGS:
+        with fixture() as f:
+            policy_config(f, text)
+            p = f.scratch('TASK-1'); repo, q = f.worktree('TASK-2')
+            (p / 'nested').chmod(0o555)
+            output = f.workspace / 'output/TASK-1'; output.mkdir(parents=True)
+            (output / 'keep').write_text('durable output')
+            sidecars = f.workspace / '.happyranch/task-scratch-manifests'
+            before = candidate_contents(p, q, output, sidecars)
+            registrations = f.git(repo, 'worktree', 'list', '--porcelain')
+            branches = f.git(repo, 'show-ref', '--heads')
+            with refuse_mutations():
+                report, summary = policy_sweep(f, dry_run=True)
+                ds._manual_audit(report, [str(f.org)], summary)
+            item = report['orgs'][0]
+            assert item.get('mode') == 'dry_run', dict(config=label, expected='dry_run', observed=item)
+            assert report['outcome'] == item['outcome'] == 'complete', report
+            assert row(item, p)['state'] == row(item, q)['state'] == 'eligible', item
+            assert all(v['removed_attributable_bytes'] == 0 and v['measured_allocated_bytes'] > 0 for v in item['phases'].values()), item
+            saved = f.db.execute("SELECT task_id,agent,payload FROM audit_log WHERE action='disk_sweep_summary'").fetchall()
+            assert len(saved) == 1 and saved[0][:2] == ('', 'daemon'), saved
+            payload = json.loads(saved[0][2])
+            assert payload['org'] == item and payload['org']['mode'] == 'dry_run'
+            assert payload['outcome'] == 'complete' and payload['revision'] == 'policy-fixture'
+            assert payload['scheduled_date'] is None and payload['summary_path'] == str(summary)
+            assert payload['unreached_orgs'] == [] and payload['interruption'] is None
+            if label == 'legacy_off':
+                command = [sys.executable, '-m', 'runtime.daemon.disk_sweeper', '--dry-run', '--runtime-root', str(f.base / 'runtime')]
+                cli = subprocess.run(command, env={**os.environ, 'HAPPYRANCH_DAEMON_HOME': str(f.base / 'daemon')}, capture_output=True, text=True, timeout=12)
+                assert cli.returncode == 0, cli.stderr
+                cli_report = json.loads(cli.stdout)['report']
+                assert cli_report['orgs'][0]['mode'] == 'dry_run' and cli_report['orgs'][0]['discovery'] == 'complete', cli_report
+                # Child clock is real: these newly created fixtures are recent.
+                assert all(c['state'] == 'retained' for c in cli_report['orgs'][0]['candidates']), cli_report
+                denied = subprocess.run(command[:3] + ['--runtime-root', str(f.base / 'runtime')], capture_output=True, text=True, timeout=5)
+                assert denied.returncode == 2 and 'manual use requires --dry-run' in denied.stderr, denied.stderr
+            assert candidate_contents(p, q, output, sidecars) == before
+            assert f.git(repo, 'worktree', 'list', '--porcelain') == registrations
+            assert f.git(repo, 'show-ref', '--heads') == branches
+            observations.append(dict(config=label, report=report, audit=json.loads(saved[0][2]), mutations=0))
+    return dict(variants=observations, cli='legacy off inventories; no dry-run flag refuses exit2',
+                limits='child CLI uses real clock; in-process preview uses synthetic old-ctime clock')
+
+
+def correction_fresh_policy():
+    observations = []
+    for transition in ('owner_active', 'root_active', 'active_job', 'unknown_job', 'legacy_off'):
+        with fixture() as f:
+            p = f.scratch('TASK-1'); repo, q = f.worktree('TASK-2'); f.task('TASK-3')
+            f.db.execute("UPDATE tasks SET parent_task_id='TASK-3' WHERE id IN ('TASK-1','TASK-2')"); f.db.commit()
+            before = candidate_contents(p, q)
+            original = ds.atomic_json; changed = []
+            def checkpoint(path, report):
+                original(path, report)
+                if changed or not report['orgs']:
+                    return
+                if not any(c['state'] == 'mutation_in_flight' for c in report['orgs'][0].get('candidates', [])):
+                    return
+                changed.append(transition)
+                if transition == 'owner_active':
+                    f.db.execute("UPDATE tasks SET status='in_progress' WHERE id IN ('TASK-1','TASK-2')")
+                elif transition == 'root_active':
+                    f.db.execute("UPDATE tasks SET status='in_progress' WHERE id='TASK-3'")
+                elif transition in ('active_job', 'unknown_job'):
+                    f.db.execute('INSERT INTO jobs VALUES(?,?)', ('TASK-3', 'running' if transition == 'active_job' else 'alien'))
+                else:
+                    policy_config(f, 'disk_sweep: {mode: "off"}')
+                f.db.commit()
+            with patch.object(ds, 'atomic_json', checkpoint):
+                report, _ = policy_sweep(f)
+            assert changed == [transition], changed
+            item = report['orgs'][0]
+            if transition == 'legacy_off':
+                assert row(item, p)['state'] == row(item, q)['state'] == 'removed', dict(expected='legacy config cannot veto fresh admission', observed=item)
+                assert not p.exists() and not q.exists()
+            else:
+                reason = 'task_or_root_not_terminal' if transition in ('owner_active', 'root_active') else 'active_job' if transition == 'active_job' else 'unknown_job_status'
+                retained(item, p, reason); retained(item, q, reason)
+                assert candidate_contents(p, q) == before
+                assert all(v['removed_attributable_bytes'] == 0 for v in item['phases'].values()), item
+            observations.append(dict(transition=transition, report=report))
+    for transition in ('legacy_off', 'obsolete_null', 'active_job'):
+        with fixture() as f:
+            repo, q = f.worktree('TASK-1')
+            q.chmod(0o555)
+            before = candidate_contents(q)
+            real = ds.git; removes = []; repairs = []
+            real_mutate = ds.mutate
+            def git(root, deadline, *args):
+                if args[:2] == ('worktree', 'remove'):
+                    removes.append(args)
+                    if len(removes) == 1:
+                        if transition == 'active_job':
+                            f.db.execute("INSERT INTO jobs VALUES('TASK-1','running')"); f.db.commit()
+                        else:
+                            policy_config(f, 'disk_sweep: {mode: "off"}' if transition == 'legacy_off' else 'disk_sweep: null')
+                        return real(root, deadline, '--THR307-controlled-invalid-option')
+                return real(root, deadline, *args)
+            def mutate(*args, **kwargs):
+                repairs.append(kwargs['remove'])
+                return real_mutate(*args, **kwargs)
+            with patch.object(ds, 'git', git), patch.object(ds, 'mutate', mutate):
+                report, _ = policy_sweep(f)
+            item = row(report['orgs'][0], q)
+            if transition == 'active_job':
+                assert item['state'] == 'partial_or_unknown' and 'active_job' in item['reason'], item
+                assert len(removes) == 1 and repairs == [] and candidate_contents(q) == before
+                assert report['outcome'] == 'incomplete' and report['orgs'][0]['phases']['worktree']['attribution_unknown'], report
+            else:
+                assert item['state'] == 'removed' and item.get('retry_count') == 1, dict(expected='one policy-independent repair/retry', observed=item)
+                assert len(removes) == 2 and repairs == [False] and not q.exists()
+            assert 'task/TASK-1' in f.git(repo, 'branch', '--list')
+            observations.append(dict(retry_transition=transition, report=report, remove_calls=len(removes), repair_calls=len(repairs)))
+    return dict(transitions=observations, seam='actual persisted mutation checkpoint and actual first Git exit129; no gate mutation')
+
+
+def correction_policy_reporting():
+    from types import SimpleNamespace
+    import threading
+    from runtime.orchestrator import producer_move
+    observations = []
+    for partial in (True, False):
+        with fixture() as f, fixture() as deferred:
+            policy_config(f, 'disk_sweep: {mode: "dry_run"}')
+            p = f.scratch('TASK-1')
+            if partial:
+                (f.workspace / 'repos/not-git').mkdir(parents=True)
+            # Real owner_for refuses an installed-but-unowned optional layout.
+            # No live schema installation: minimal disposable refusal fixture.
+            deferred.db.execute('CREATE TABLE team_move_operations(active_slot INTEGER)'); deferred.db.commit()
+            deferred_root = deferred.org.with_name('zz-deferred')
+            deferred.org.rename(deferred_root)
+            def org(root, conn):
+                return SimpleNamespace(root=root, db=SimpleNamespace(_conn=conn, _lock=threading.RLock()))
+            state = SimpleNamespace(orgs={f.org.name: org(f.org, f.db), 'zz-deferred': org(deferred_root, deferred.db)})
+            dispositions = []
+            actual_disposition = producer_move.NativeWriterDisposition
+            def disposition():
+                value = actual_disposition(); dispositions.append(value); return value
+            async def in_process(roots, summary, **kwargs):
+                assert kwargs['dry_run'] is False and kwargs['scheduled_date'] == 'fixture-date', kwargs
+                assert roots == [str(f.org)], roots
+                with patch.object(time, 'time', return_value=NOW):
+                    report = ds.sweep(roots, time.monotonic() + kwargs['budget'], summary,
+                                      dry_run=False, scheduled_date=kwargs['scheduled_date'], revision='policy-fixture',
+                                      native_writers=kwargs['native_writers'])
+                report['worker_group_stop'] = 'SIMULATED supervision only; actual in-process sweep'
+                ds.atomic_json(summary, report)
+                return report
+            summary = f.base / 'scheduled-summary.json'
+            with patch.object(producer_move, 'NativeWriterDisposition', disposition), patch.object(ds, 'run_worker', in_process):
+                report = asyncio.run(ds._run_scheduled_worker(state, summary, 'fixture-date'))
+            assert len(dispositions) == 2 and dispositions[0].uncertain is partial, dict(expected_uncertain=partial, observed=[v.uncertain for v in dispositions], report=report)
+            assert report['outcome'] == 'incomplete' and report['move_deferred_orgs'] == {'zz-deferred': 'team_move_native_owner_unavailable'}, report
+            assert report['selected_org_roots'] == [str(f.org)] and report['unreached_orgs'] == []
+            assert json.loads(summary.read_text()) == report
+            item = report['orgs'][0]
+            assert item['mode'] == 'on' and 'configured_mode' not in item, item
+            assert row(item, p)['state'] == 'removed' and not p.exists(), item
+            assert item['discovery'] == ('partial' if partial else 'complete'), item
+            if partial:
+                assert item['unreached'] is None and item['discovery_scopes'], item
+            audit = ds._audit_payload(report, item, summary)
+            assert audit['move_deferred_orgs'] == report['move_deferred_orgs'] and audit['outcome'] == 'incomplete'
+            assert ds._audit_payload(report, None, summary)['org'] is None
+            observations.append(dict(partial=partial, report=report, audit=audit, native_uncertain=dispositions[0].uncertain))
+    return dict(runs=observations, limits='actual native reservation and missing-owner refusal; no installed-layout success or worker process supervision proof')
+
+
+
+# S1-S5 extend the existing corrections lane (8-12); C1-C7 remain owners of
+# their original safety contracts. No production policy is implemented here.
+@contextmanager
+def scheduled_fixture():
+    from types import SimpleNamespace
+    import threading
+    with fixture() as f:
+        others = []
+        for name in ('missing', 'new'):
+            (f.base / name).mkdir()
+            others.append(Fixture(f.base / name))
+        for g in others:
+                policy_config(g, None)
+        orgs = [f, *others]
+        policy_config(f, 'disk_sweep: {mode: "off"}')
+        for name, g in zip(('off', 'missing', 'new'), orgs):
+            g.db.close()
+            target = g.org.with_name(name); g.org.rename(target)
+            g.org = target; g.workspace = target / 'workspaces/maker'
+            g.db = sqlite3.connect(target / 'happyranch.db', check_same_thread=False)
+        paths, refs = [], []
+        for g in orgs:
+            paths.append(g.scratch('TASK-1'))
+            repo, q = g.worktree('TASK-2')
+            paths.append(q)
+            out = g.workspace / 'output/TASK-1'; out.mkdir(parents=True)
+            (out / 'keep').write_text('durable')
+            paths.extend([out, g.workspace / '.happyranch/task-scratch-manifests'])
+            refs.append((repo, g.git(repo, 'show-ref', '--heads'), g.git(repo, 'worktree', 'list', '--porcelain')))
+        import runtime.infrastructure.database  # noqa: F401
+        from runtime.infrastructure.db.audit import AuditMixin
+        class Audit(AuditMixin):
+            def __init__(self, g):
+                self._conn = g.db
+                self._lock = threading.RLock()
+        state = SimpleNamespace(runtime=True, broken_orgs={}, orgs={
+            name: SimpleNamespace(root=g.org, db=Audit(g)) for name, g in zip(('off', 'missing', 'new'), orgs)})
+        stop = f.base / 'daemon/disk-sweep/stop.json'
+        summary = stop.with_name('scheduled.json')
+        try:
+            yield f, orgs, state, stop, summary, paths, refs
+        finally:
+            for g in others:
+                g.db.close()
+
+
+def scheduled_attempt(state, summary, *, forbidden=False):
+    from runtime.orchestrator import producer_move
+    calls = []
+    actual_writer = producer_move.native_writer
+    @contextmanager
+    def writer(*args, **kwargs):
+        calls.append('reservation')
+        assert not forbidden, dict(expected='zero writer reservations under global suspension', observed=calls)
+        with actual_writer(*args, **kwargs) as value:
+            yield value
+    async def worker(roots, summary, **kwargs):
+        calls.append('worker')
+        assert not forbidden, dict(expected='zero worker launches under global suspension', observed=calls)
+        with patch.object(time, 'time', return_value=NOW):
+            report = ds.sweep(roots, time.monotonic() + kwargs['budget'], summary,
+                              dry_run=False, scheduled_date=kwargs['scheduled_date'], revision='stop-fixture',
+                              native_writers=kwargs['native_writers'])
+        report['worker_group_stop'] = 'SIMULATED supervision; actual disposable sweep'
+        ds.atomic_json(summary, report)
+        return report
+    with patch.object(producer_move, 'native_writer', writer), patch.object(ds, 'run_worker', worker):
+        report = asyncio.run(ds._run_scheduled_worker(state, summary, 'fixture-date'))
+    return report, calls
+
+
+def assert_suspended(report, reason, summary):
+    assert report.get('outcome') == 'suspended', dict(expected='suspended', observed=report)
+    admission = report['scheduled_admission']
+    assert admission['scope'] == 'daemon' and admission['state'] == 'suspended' and admission['reason'] == reason, admission
+    assert report['orgs'] == [] and len(report['unreached_orgs']) == 3
+    assert not any(key in report for key in ('worker_pid', 'worker_group_stop', 'removed_attributable_bytes'))
+    assert json.loads(summary.read_text()) == report
+    payload = ds._audit_payload(report, None, summary)
+    assert payload['scheduled_admission'] == admission and payload['outcome'] == 'suspended' and payload['org'] is None, payload
+
+
+def correction_stop_default():
+    observations = []
+    for control in (None, '{"stop":false}'):
+        with scheduled_fixture() as (f, orgs, state, stop, summary, paths, refs):
+            if control is not None: stop.write_text(control)
+            report, calls = scheduled_attempt(state, summary)
+            assert report['outcome'] == 'complete' and calls == ['reservation'] * 3 + ['worker'], (report, calls)
+            assert all(not paths[n].exists() and not paths[n+1].exists() for n in range(0, len(paths), 4))
+            assert all(g.git(repo, 'show-ref', '--heads') == branches for g, (repo, branches, _) in zip(orgs, refs))
+            assert all(paths[n+2].joinpath('keep').read_text() == 'durable' and paths[n+3].exists() for n in range(0, len(paths), 4))
+            observations.append(dict(control=control, outcome=report['outcome'], calls=calls, org_modes=[o['mode'] for o in report['orgs']], supervision='SIMULATED'))
+    return dict(attempts=observations)
+
+
+def correction_stop_true():
+    from runtime.orchestrator import producer_move
+    with scheduled_fixture() as (f, orgs, state, stop, summary, paths, refs):
+        stop.write_text('{"stop":true}')
+        before = candidate_contents(*paths, *(repo / '.git' for repo, _, _ in refs))
+        report, calls = scheduled_attempt(state, summary, forbidden=True)
+        assert_suspended(report, 'stop_true', summary)
+        assert calls == [] and candidate_contents(*paths, *(repo / '.git' for repo, _, _ in refs)) == before
+        # Exercise shipping loop reservation/audit order without changing dates:
+        # only the first sleep is passed; the next sleep terminates this fixture.
+        sleeps = []
+        async def sleep(_):
+            sleeps.append(1)
+            if len(sleeps) > 1: raise asyncio.CancelledError
+        audit_order = []
+        audit_type = type(state.orgs['off'].db)
+        actual_audit = audit_type.insert_audit_log
+        def audit(db, *args):
+            audit_order.append(next(slug for slug, org in state.orgs.items() if org.db is db))
+            return actual_audit(db, *args)
+        with patch.object(audit_type, 'insert_audit_log', audit), patch.object(ds.asyncio, 'sleep', sleep), patch.object(producer_move, 'native_writer', side_effect=AssertionError('forbidden reservation')), patch.object(ds, 'run_worker', side_effect=AssertionError('forbidden worker')):
+            try: asyncio.run(ds.disk_sweeper_loop(state))
+            except asyncio.CancelledError: pass
+        assert audit_order == sorted(state.orgs), audit_order
+        marker = json.loads(stop.with_name('last-scheduled.json').read_text())
+        actual_summary = stop.with_name(marker['scheduled_date'] + '.json')
+        actual_report = json.loads(actual_summary.read_text())
+        assert_suspended(actual_report, 'stop_true', actual_summary)
+        audits = []
+        for g in orgs:
+            rows = g.db.execute("SELECT task_id,agent,payload FROM audit_log WHERE action='disk_sweep_summary'").fetchall()
+            assert len(rows) == 1 and rows[0][:2] == ('', 'daemon'), rows
+            payload = json.loads(rows[0][2]); audits.append(payload)
+            assert payload == ds._audit_payload(actual_report, None, actual_summary)
+        assert candidate_contents(*paths, *(repo / '.git' for repo, _, _ in refs)) == before
+        for g, (repo, branches, registration) in zip(orgs, refs):
+            assert g.git(repo, 'show-ref', '--heads') == branches and g.git(repo, 'worktree', 'list', '--porcelain') == registration
+        # The marker suppresses a repeated occurrence even after control repair.
+        stop.write_text('{"stop":false}')
+        sleeps.clear()
+        with patch.object(ds.asyncio, 'sleep', sleep), patch.object(ds, '_run_scheduled_worker', side_effect=AssertionError('same-night retry')):
+            try: asyncio.run(ds.disk_sweeper_loop(state))
+            except asyncio.CancelledError: pass
+        assert all(g.db.execute("SELECT COUNT(*) FROM audit_log WHERE action='disk_sweep_summary'").fetchone()[0] == 1 for g in orgs)
+        return dict(report=report, audit=audits[0], persisted_audits=len(audits), marker=marker, same_night_retry=False, candidate_changes=False)
+
+
+def publication_refusal(entry, variant='parent_alias', control=None):
+    """S3 shipping publication paths; clock/sentinels observe, never decide."""
+    from runtime.orchestrator import producer_move
+    with scheduled_fixture() as (f, orgs, state, stop, summary, paths, refs), ExitStack() as fixture_stack:
+        date = ds.next_night(ds.datetime.now().astimezone()).date().isoformat()
+        summary = stop.with_name(date + '.json')
+        marker = stop.with_name('last-scheduled.json')
+        target = paths[0]
+        if control is not None:
+            stop.write_text(control)
+        if variant == 'parent_alias':
+            stop.parent.rmdir()
+            stop.parent.symlink_to(target, target_is_directory=True)
+        elif variant == 'ancestor_alias':
+            stop.parent.rmdir(); stop.parent.parent.rmdir()
+            (target / 'disk-sweep').mkdir()
+            stop.parent.parent.symlink_to(target, target_is_directory=True)
+        elif variant == 'parent_missing':
+            stop.parent.rmdir()
+        elif variant in ('marker_alias', 'marker_dangling', 'marker_hardlink', 'pending_hardlink', 'pending_alias', 'pending_regular', 'pending_fifo',
+                         'summary_alias', 'summary_dangling', 'summary_hardlink', 'summary_pending_alias', 'summary_pending_dangling',
+                         'summary_pending_hardlink', 'summary_pending_regular', 'summary_pending_fifo'):
+            payload = target / 'publication-target'
+            payload.write_text('{"scheduled_date":"2000-01-01"}')
+            slot = (summary.with_suffix('.json.pending') if variant.startswith('summary_pending_') else
+                    summary if variant.startswith('summary_') else
+                    marker.with_suffix('.json.pending') if variant.startswith('pending_') else marker)
+            if variant.endswith('_hardlink'): os.link(payload, slot)
+            elif variant.endswith('_regular'): slot.write_text('unowned pending evidence')
+            elif variant.endswith('_fifo'):
+                os.mkfifo(slot)
+                # A reader lets the pre-fix writer return for causal inspection;
+                # this does not implement publication policy or change the FIFO.
+                fifo_reader = os.open(slot, os.O_RDONLY | os.O_NONBLOCK)
+                fixture_stack.callback(os.close, fifo_reader)
+            else: slot.symlink_to(target / 'missing' if variant.endswith('_dangling') else payload)
+        else: raise AssertionError(variant)
+        before = candidate_contents(*paths, *(repo / '.git' for repo, _, _ in refs))
+        # Also preserve final/pending sidecars when literal directory is trusted.
+        sidecars = {str(p): (p.lstat(), os.readlink(p) if p.is_symlink() else p.read_bytes() if p.is_file() else None)
+                    for p in (marker, marker.with_suffix('.json.pending'), summary, summary.with_suffix('.json.pending')) if os.path.lexists(p)}
+        calls, sleeps = [], []
+        actual_writer, actual_worker = producer_move.native_writer, ds.run_worker
+        actual_admission, admissions = ds._scheduled_admission, []
+        def admission(*a, **kw):
+            value = actual_admission(*a, **kw)
+            admissions.append(value)
+            return value
+        async def sleep(_):
+            sleeps.append(1)
+            if len(sleeps) > 1: raise asyncio.CancelledError
+        @contextmanager
+        def writer(*a, **kw):
+            calls.append('native_writer_enter')
+            with actual_writer(*a, **kw) as disposition:
+                yield disposition
+        async def worker(*a, **kw):
+            calls.append('worker_enter')
+            return await actual_worker(*a, **kw)
+        async def forbidden_spawn(*a, **kw):
+            calls.append('worker_spawn')
+            raise OSError('forbidden worker spawn sentinel')
+        messages = io.StringIO()
+        handler = logging.StreamHandler(messages)
+        ds.LOG.addHandler(handler)
+        error = None
+        try:
+            with patch.object(ds.asyncio, 'sleep', sleep), patch.object(ds, '_scheduled_admission', admission), patch.object(producer_move, 'native_writer', writer), patch.object(ds, 'run_worker', worker), patch.object(ds.asyncio, 'create_subprocess_exec', forbidden_spawn):
+                try:
+                    if entry == 'loop': asyncio.run(ds.disk_sweeper_loop(state))
+                    elif entry == 'scheduled': asyncio.run(ds._run_scheduled_worker(state, summary, date))
+                    elif entry == 'worker': asyncio.run(actual_worker([], summary, dry_run=False, scheduled_date=date))
+                    else: raise AssertionError(entry)
+                except asyncio.CancelledError:
+                    assert entry == 'loop'
+                except (OSError, fs.Retain) as exc:
+                    error = type(exc).__name__ + ': ' + str(exc)
+        finally:
+            ds.LOG.removeHandler(handler)
+        after = candidate_contents(*paths, *(repo / '.git' for repo, _, _ in refs))
+        assert after == before, dict(expected='candidate/sidecar/permission/ref/registration nonmutation',
+                                     entry=entry, variant=variant, changed=[p for p in before.keys() | after.keys() if before.get(p) != after.get(p)])
+        if variant == 'parent_missing':
+            assert not stop.parent.exists(), 'scheduled attempt created missing control parent'
+        for path, (observed, content) in sidecars.items():
+            p = Path(path)
+            assert os.path.lexists(p), dict(expected='unchanged publication sidecar exists', observed='missing', path=path)
+            assert fs.signature(p.lstat()) == fs.signature(observed), dict(expected='unchanged publication sidecar', path=path, before=fs.signature(observed), observed=fs.signature(p.lstat()))
+            assert (os.readlink(p) if p.is_symlink() else p.read_bytes() if p.is_file() else None) == content
+        assert calls == [], dict(expected='zero native reservations/worker effects before publication refusal',
+                                 entry=entry, variant=variant, control=control, observed=calls)
+        if variant.startswith('summary_') and entry != 'worker':
+            assert len(admissions) == 1 and admissions[0]['state'] == 'allowed', admissions
+            assert admissions[0]['reason'] == ('stop_false' if control is not None else 'absent'), admissions
+            if entry == 'loop':
+                assert ds._read_json(marker) == {'scheduled_date': date}
+        if not any(path == str(summary) for path in sidecars):
+            assert not os.path.lexists(summary), 'refused summary was nevertheless published'
+        for g, (repo, branches, registration) in zip(orgs, refs):
+            assert g.git(repo, 'show-ref', '--heads') == branches and g.git(repo, 'worktree', 'list', '--porcelain') == registration
+            assert g.db.execute("SELECT COUNT(*) FROM audit_log WHERE action='disk_sweep_summary'").fetchone()[0] == 0
+        visible = messages.getvalue()
+        if entry == 'loop':
+            assert 'Disk sweep incomplete; no same-night automatic retry' in visible, visible
+        else: assert error, dict(expected='publication visibly refused', observed=visible)
+        return dict(entry=entry, variant=variant, control=control, admissions=admissions, calls=calls, candidate_changes=False,
+                    refusal=visible if entry == 'loop' else error, persisted_summary_or_audit=False)
+
+
+def correction_stop_invalid():
+    publication = [publication_refusal('loop', variant) for variant in ('parent_alias', 'ancestor_alias', 'parent_missing', 'marker_alias', 'marker_dangling', 'marker_hardlink', 'pending_hardlink', 'pending_alias', 'pending_regular', 'pending_fifo')]
+    publication += [publication_refusal(entry) for entry in ('scheduled', 'worker')]
+    publication.append(publication_refusal('worker', 'summary_alias'))
+    publication += [publication_refusal(entry, variant, control)
+                    for entry in ('loop', 'scheduled') for control in (None, '{"stop":false}')
+                    for variant in ('summary_alias', 'summary_dangling', 'summary_hardlink', 'summary_pending_alias',
+                                    'summary_pending_dangling', 'summary_pending_hardlink', 'summary_pending_regular', 'summary_pending_fifo')]
+    variants = [('empty', b''), ('malformed', b'{'), ('oversized', b' ' * 65537), ('utf8', b'\xff'),
+                *[(v, v.encode()) for v in ('null', '"x"', '1', '[]', 'true', '{}', '{"stop":null}', '{"stop":1}', '{"stop":"false"}', '{"stop":[]}', '{"stop":false,"extra":0}', '{"stop":false,"stop":false}')],
+                *[(v, None) for v in ('unreadable', 'symlink', 'dangling', 'directory', 'fifo', 'hardlink', 'parent_alias', 'changed_read', 'replaced_read', 'read_error', 'short_read', 'parent_missing')]]
+    observations = []
+    for label, content in variants:
+        with scheduled_fixture() as (f, orgs, state, stop, summary, paths, refs), ExitStack() as stack:
+            if content is not None: stop.write_bytes(content)
+            else: stop.write_text('{"stop":false}')
+            if label == 'unreadable': stop.chmod(0)
+            elif label in ('symlink', 'dangling'):
+                stop.unlink(); stop.symlink_to(f.base / ('missing-target' if label == 'dangling' else 'target'))
+                if label == 'symlink': stop.resolve().write_text('{"stop":false}')
+            elif label == 'directory': stop.unlink(); stop.mkdir()
+            elif label == 'fifo': stop.unlink(); os.mkfifo(stop)
+            elif label == 'hardlink': os.link(stop, stop.with_name('alias'))
+            elif label == 'parent_alias':
+                parent = stop.parent; moved = parent.with_name('real-disk-sweep'); parent.rename(moved); parent.symlink_to(moved, target_is_directory=True)
+            elif label == 'parent_missing':
+                stop.unlink(); stop.parent.rmdir()
+            elif label in ('changed_read', 'replaced_read', 'read_error', 'short_read'):
+                real = os.read
+                control_identity = fs.identity(stop.stat())
+                def read(fd, n):
+                    raw = real(fd, n)
+                    if fs.identity(os.fstat(fd)) != control_identity: return raw
+                    if label == 'changed_read': stop.write_text('{"stop":true }')
+                    elif label == 'replaced_read':
+                        replacement = stop.with_name('replacement'); replacement.write_text('{"stop":false}'); replacement.replace(stop)
+                    elif label == 'read_error': raise OSError('controlled read I/O failure')
+                    else: return raw[:-1]
+                    return raw
+                stack.enter_context(patch.object(ds.os, 'read', read))
+            before = candidate_contents(*paths, *(repo / '.git' for repo, _, _ in refs))
+            if label in ('parent_alias', 'parent_missing'):
+                try: scheduled_attempt(state, summary, forbidden=True)
+                except OSError as exc:
+                    expected_type = NotADirectoryError if label == 'parent_alias' else FileNotFoundError
+                    assert isinstance(exc, expected_type), exc
+                else: raise AssertionError('untrusted publication parent accepted')
+                assert candidate_contents(*paths, *(repo / '.git' for repo, _, _ in refs)) == before
+                observations.append(dict(control=label, publication='refused without persisted summary; real loop covered above'))
+                continue
+            report, calls = scheduled_attempt(state, summary, forbidden=True)
+            stack.close()
+            assert_suspended(report, 'invalid_control', summary)
+            error = report['scheduled_admission'].get('error', '')
+            expected = ('PermissionError' if label == 'unreadable' else
+                        'stop_not_regular_or_hardlinked' if label in ('symlink', 'dangling', 'directory', 'fifo', 'hardlink') else
+                        'NotADirectoryError' if label == 'parent_alias' else
+                        'FileNotFoundError' if label == 'parent_missing' else
+                        'stop_changed_during_read' if label in ('changed_read', 'replaced_read') else
+                        'controlled read I/O failure' if label == 'read_error' else
+                        'stop_oversized_or_short_read' if label in ('short_read', 'oversized') else
+                        'UnicodeDecodeError' if label == 'utf8' else
+                        'JSONDecodeError' if label in ('empty', 'malformed') else 'stop_requires_only_boolean_stop')
+            assert expected in error, dict(control=label, expected=expected, observed=error)
+            assert calls == [] and candidate_contents(*paths, *(repo / '.git' for repo, _, _ in refs)) == before
+            for g, (repo, branches, registration) in zip(orgs, refs):
+                assert g.git(repo, 'show-ref', '--heads') == branches and g.git(repo, 'worktree', 'list', '--porcelain') == registration
+            observations.append(dict(control=label, admission=report['scheduled_admission'], evidence='test-side controlled fault' if label in ('changed_read', 'replaced_read', 'read_error', 'short_read') else 'real filesystem/JSON'))
+    # Publication failure does not enter reservations; the error is observable.
+    with scheduled_fixture() as (f, orgs, state, stop, summary, paths, refs):
+        stop.write_text('{"stop":true}'); before = candidate_contents(*paths, *(repo / '.git' for repo, _, _ in refs))
+        with patch.object(ds, 'atomic_json', side_effect=OSError('controlled summary publication failure')):
+            try: scheduled_attempt(state, summary, forbidden=True)
+            except OSError as exc: assert 'summary publication failure' in str(exc)
+            else: raise AssertionError('publication error swallowed')
+        assert candidate_contents(*paths, *(repo / '.git' for repo, _, _ in refs)) == before
+    return dict(variants=observations, publication=publication, publication_failure='visible; zero reservation/worker')
+
+
+def correction_stop_recovery():
+    observations = []
+    for initial, repaired in (('{"stop":true}', '{"stop":false}'), ('{"stop":true}', None), ('{', '{"stop":false}')):
+        with scheduled_fixture() as (f, orgs, state, stop, summary, paths, refs):
+            stop.write_text(initial)
+            first, calls = scheduled_attempt(state, summary, forbidden=True)
+            assert_suspended(first, 'stop_true' if 'true' in initial else 'invalid_control', summary)
+            first_bytes = summary.read_bytes()
+            if repaired is None: stop.unlink()
+            else: stop.write_text(repaired)
+            second, calls = scheduled_attempt(state, summary.with_name('next-attempt.json'))
+            assert second['outcome'] == 'complete' and calls == ['reservation'] * 3 + ['worker'], second
+            assert all(not paths[n].exists() and not paths[n+1].exists() for n in range(0, len(paths), 4))
+            assert summary.read_bytes() == first_bytes
+            observations.append(dict(initial=initial, repaired=repaired, first=first['outcome'], second=second['outcome']))
+    return dict(attempts=observations, boundary='separate attempted admissions, no schedule/date manipulation or in-flight cancellation')
+
+
+def correction_stop_preview():
+    observations = []
+    for control in ('{"stop":true}', '{', None):
+        for config in ('disk_sweep: {mode: "off"}', None):
+            with fixture() as f:
+                policy_config(f, config)
+                stop = f.base / 'daemon/disk-sweep/stop.json'
+                if control is not None: stop.write_text(control)
+                p = f.scratch('TASK-1'); repo, q = f.worktree('TASK-2')
+                sidecars = f.workspace / '.happyranch/task-scratch-manifests'
+                before = candidate_contents(p, q, sidecars)
+                refs = f.git(repo, 'show-ref', '--heads'); registrations = f.git(repo, 'worktree', 'list', '--porcelain')
+                command = [sys.executable, '-m', 'runtime.daemon.disk_sweeper', '--dry-run', '--runtime-root', str(f.base / 'runtime')]
+                result = subprocess.run(command, capture_output=True, text=True, timeout=12)
+                assert result.returncode == 0, result.stderr
+                report = json.loads(result.stdout)['report']
+                assert report['outcome'] == 'complete' and report['orgs'][0]['mode'] == 'dry_run', report
+                assert all(c['state'] == 'retained' for c in report['orgs'][0]['candidates']), report
+                assert candidate_contents(p, q, sidecars) == before
+                assert f.git(repo, 'show-ref', '--heads') == refs and f.git(repo, 'worktree', 'list', '--porcelain') == registrations
+                observations.append(dict(control=control, config=config, exit=result.returncode, mode='dry_run', candidate_changes=False))
+    return dict(variants=observations, clock='real subprocess clock retains fresh candidates; C5 owns eligible preview sentinels')
+
+
 if __name__=='__main__':
     parser=argparse.ArgumentParser(description=__doc__)
     selection=parser.add_mutually_exclusive_group()
-    selection.add_argument('--corrections-only', action='store_true', help='THR307seq117: exactly C1 jobs, C2 superseded, C3 ended trees without process inspection; no historical/config/isolation cases')
+    selection.add_argument('--corrections-only', action='store_true', help='THR307seq117/134: C1-C7 and S1-S5 (8-12); no historical/isolation cases')
+    selection.add_argument('--correction-cases', type=int, nargs='+', choices=range(1, 13), help='select finite cases within the corrections lane')
     selection.add_argument('--cases',type=int,nargs='+',choices=range(1,23))
     selection.add_argument('--isolation-case',choices=('mount','root'),help='only the private executable namespace fixture; exit77 if unavailable')
     args=parser.parse_args()
@@ -1253,9 +1867,11 @@ if __name__=='__main__':
     if os.geteuid()==0: parser.error('run this driver as an unprivileged user')
     status=0
     try:
-        if args.corrections_only:
-            for number, purpose, fn in ((1, 'Finished jobs before lineage', correction_jobs), (2, 'Superseded owner and structural root', correction_superseded), (3, 'Ended trees without process inspection and truthful reporting', correction_processes)):
-                case(number, purpose, fn)
+        if args.corrections_only or args.correction_cases:
+            corrections = ((1, 'Finished jobs before lineage', correction_jobs), (2, 'Superseded owner and structural root', correction_superseded), (3, 'Ended trees without process inspection and truthful reporting', correction_processes), (4, 'All-org policy and obsolete config compatibility', correction_policy), (5, 'Explicit preview for every legacy policy', correction_preview), (6, 'Fresh admission and bounded retry independent of policy', correction_fresh_policy), (7, 'Actual reporting and native deferred/partial disposition', correction_policy_reporting), (8, 'S1 default-on scheduled control', correction_stop_default), (9, 'S2 global scheduled stop and audit', correction_stop_true), (10, 'S3 strict invalid control suspension', correction_stop_invalid), (11, 'S4 next-attempt recovery', correction_stop_recovery), (12, 'S5 manual preview with stop controls', correction_stop_preview))
+            for number, purpose, fn in corrections:
+                if args.correction_cases is None or number in args.correction_cases:
+                    case(number, purpose, fn)
         elif args.isolation_case:
             detail=isolated_boundary(args.isolation_case)
             RESULTS.append(dict(case=args.isolation_case,result=detail['result'],observations=detail))

@@ -205,8 +205,47 @@ class SnapshotDiagnostics:
         except (OSError,ValueError):self.disabled=True
 
 
+class CompleteBuildDiagnostics:
+    """One optional terminal fd3 line, inside the original command budget."""
+    def __init__(self,call,allowance):
+        self.disabled=True;self.phase='admission';self.operation='caller';self.ordinal=0;self.size=0
+        if not isinstance(call,str) or not re.fullmatch(r'[1-9][0-9]{0,4}',call):return
+        if not isinstance(allowance,str) or not re.fullmatch(r'[1-9][0-9]{0,3}',allowance):return
+        self.call=int(call);self.allowance=int(allowance)
+        if self.call>65536 or self.allowance>1024:return
+        try:
+            os.fstat(3)
+            self.budget=A['_budget'].get()
+        except Exception:return
+        self.disabled=False
+
+    def position(self,operation,ordinal=0,size=0):
+        self.operation=operation;self.ordinal=ordinal;self.size=size
+
+    def enter_phase(self,phase):
+        self.phase=phase;self.position('validation')
+
+    def finish(self,event):
+        if self.disabled:return
+        self.disabled=True # At most one attempt, including short/failed output.
+        try:
+            phases=('admission','completion-body','prefix','prefix-context','checked-build-record','validation-context','validation','completion-write','reply')
+            operations=('caller','bindings','asset-context','asset-source','toolchain-read','source-git','helper-read','validation','raw-read','subject-import','subject-import-read','subject-import-validation','selection-lookup','selection-json','lock-json','source-list','native-member-read','load-seal-read','load-seal-json','load-event-read','load-event-json','completion-write','token-json')
+            if self.phase not in phases or self.operation not in operations+tuple(prefix+kind for prefix in ('record-read-','record-json-') for kind in KINDS) or event not in ('failed','success'):return
+            # Read existing views only. No charge, scope exit, reset or receipt.
+            asset=getattr(self.budget,'_asset',None)
+            counters=(self.budget.regular,self.budget.json,asset.regular if asset is not None else -1,asset.json if asset is not None else -1)
+            if any(type(n) is not int or not -1<=n<=2**53-1 for n in counters):return
+            if any(type(n) is not int or not 0<=n<=2**53-1 for n in (self.ordinal,self.size)):return
+            raw=(f'[packaging-complete] call={self.call} grant={self.allowance} event={event} phase={self.phase} operation={self.operation} subject_ordinal={self.ordinal} subject_size={self.size} regular={counters[0]} json={counters[1]} asset_regular={counters[2]} asset_json={counters[3]}\n').encode('ascii')
+            if len(raw)>min(self.allowance,1024):return
+            os.write(3,raw) # Attempt consumes the grant; never retry or close fd3.
+        except Exception:pass # Diagnostic failure must preserve the original result.
+
+
 class Session:
-    def __init__(self,binding,diagnostics=None):
+    def __init__(self,binding,diagnostics=None,terminal=None):
+        self.terminal=terminal
         self.diagnostics=diagnostics
         if diagnostics:diagnostics.mark('bindings','start')
         keys(binding,BIND_KEYS);self.binding=binding
@@ -218,6 +257,7 @@ class Session:
         need(binding['venue'] in ('native','portable_web'),'VENUE')
         self.originals=A['absolute'](binding['originals'])
         need(not any(self.originals.is_relative_to(r) or r.is_relative_to(self.originals) for r in (self.paths.repo,self.paths.output)),'ORIGINAL_ROOT_OVERLAP')
+        if terminal:terminal.position('bindings')
         self.dirs,self.owner,self.preflight=A['bindings'](self.candidate,self.paths,self.run)
         self.binding_sha=sha(canonical(binding));self.subjects=[];self.subject_index={}
         if diagnostics:diagnostics.mark('bindings','end')
@@ -226,21 +266,26 @@ class Session:
             need(sys.platform=='darwin' and __import__('platform').machine()=='arm64','NATIVE_PLATFORM_REQUIRED')
             for f in ('asset_context_sha256','asset_source_sha256','toolchains_sha256'):digest_shape(binding[f])
             with A['_budget'].get().asset_lane():
+                if terminal:terminal.position('asset-context')
                 A['check_context'](self.candidate,self.paths,self.run,binding['asset_context_sha256'])
+                if terminal:terminal.position('asset-source')
                 A['checked_source'](self.candidate,self.paths,self.run,binding['asset_context_sha256'],binding['asset_source_sha256'])
         else:
             need(binding['asset_context_sha256'] is None and binding['asset_source_sha256'] is None,'PORTABLE_NATIVE_PREFIX_FORBIDDEN')
             digest_shape(binding['toolchains_sha256'])
         if diagnostics:diagnostics.mark('assets','end')
         if diagnostics:diagnostics.mark('toolchain','start')
+        if terminal:terminal.position('toolchain-read')
         with A['root_for'](self.paths.evidence_dir) as root:
             row=A['read_subject'](root,'toolchains.txt',A['TOOLCHAINS'])
         need(row['sha256']==binding['toolchains_sha256'],'TOOLCHAINS_MISMATCH')
         if diagnostics:diagnostics.mark('toolchain','end')
         if diagnostics:diagnostics.mark('source','start')
+        if terminal:terminal.position('source-git')
         need(A['git'](self.paths,'rev-parse',self.candidate.source_sha+'^{tree}',cap=128).decode().strip()==self.candidate.source_tree,'SOURCE_TREE_MISMATCH')
         # The invoked implementation must be the pinned exported implementation,
         # even when the native wrapper calls its adjacent repository copy.
+        if terminal:terminal.position('helper-read')
         with A['root_for'](Path(__file__).parent) as root:
             actual=A['read_subject'](root,'web_evidence.py')
         with A['root_for'](self.paths.exported_source) as root:
@@ -269,20 +314,26 @@ class Session:
         need(len(raw)-original<=BUILD_ADDITION,'BUILD_ADDITION_CAP')
 
     def load(self,kind,expected):
+        if self.terminal:self.terminal.position('record-read-'+kind)
         digest_shape(expected)
         with A['root_for'](self.paths.evidence_dir) as root:
             row,raw=A['read_bytes'](root,'web-'+kind+'.json',A['ReadDomain'](KINDS[kind],True))
+        if self.terminal:self.terminal.position('record-json-'+kind)
         A['_budget'].get().charge(len(raw),json_bytes=True)
         need(row['sha256']==expected,'RECORD_DIGEST_MISMATCH',kind)
         value=parse(raw,KINDS[kind],build=kind=='build',charged=True);keys(value,self.envelope(kind,None,{}))
         need({k:v for k,v in value.items() if k not in ('payload','upstream')}=={k:v for k,v in self.envelope(kind,None,{}).items() if k not in ('payload','upstream')},'CALLER_BINDING_MISMATCH',kind)
         if kind=='build':self.check_build_size(raw,value['payload'])
+        if self.terminal:self.terminal.position('validation')
         return value
 
     def raw(self,root,name,cap=CAP):
+        if self.terminal:self.terminal.position('subject-import-read' if self.terminal.ordinal else 'raw-read',self.terminal.ordinal,self.terminal.size)
         path_name(name)
         with A['root_for'](root) as handle:
-            return A['read_bytes'](handle,name,A['ReadDomain'](cap))
+            result=A['read_bytes'](handle,name,A['ReadDomain'](cap))
+        if self.terminal:self.terminal.position('subject-import-validation' if self.terminal.ordinal else 'validation',self.terminal.ordinal,self.terminal.size)
+        return result
 
     def intern_subject(self,root,name,cap=CAP):
         descriptor,raw=self.raw(root,name,cap)
@@ -301,6 +352,9 @@ class Session:
     def import_subjects(self,rows):
         need(type(rows) is list and len(rows)<=MAX_ROWS,'SUBJECT_CAP')
         for ordinal,row in enumerate(rows,1):
+            if self.terminal:
+                size=row['descriptor'].get('size',0) if type(row) is dict and type(row.get('descriptor')) is dict else 0
+                self.terminal.position('subject-import',ordinal,size)
             keys(row,{'subject_id','root','descriptor','descriptor_sha256'})
             need(row['subject_id']=='s'+str(ordinal),'SUBJECT_ID_INVALID')
             need(sha(canonical(row['descriptor']))==row['descriptor_sha256'],'SUBJECT_DESCRIPTOR_MISMATCH')
@@ -312,6 +366,7 @@ class Session:
             index=(row['root'],row['descriptor']['relative']);need(index not in self.subject_index,'SUBJECT_DUPLICATE')
             self.subject_index[index]=len(self.subjects);self.subjects.append(row)
             need(token['content']['size']<=TOOL,'SUBJECT_CAP')
+            if self.terminal:self.terminal.position('validation')
 
     def resolve_subject_token(self,token):
         keys(token,{'schema','subject_id','descriptor_sha256','content'});keys(token['content'],{'size','sha256'});js_size(token['content']['size'],TOOL);digest_shape(token['content']['sha256']);digest_shape(token['descriptor_sha256'])
@@ -324,7 +379,9 @@ class Session:
         return raw
 
     def source_list(self):
+        if self.terminal:self.terminal.position('source-list')
         raw=A['git'](self.paths,'ls-tree','-rz',self.candidate.source_sha,'--','web',cap=8*MiB)
+        if self.terminal:self.terminal.position('validation')
         need(not raw or raw.endswith(b'\0'),'SOURCE_LIST_TRUNCATED')
         result=[]
         for line in raw.split(b'\0')[:-1]:
@@ -360,7 +417,11 @@ class Session:
         return {'policy':POLICY,'source_tree':self.candidate.source_tree,'entries':entries}
 
     def lock(self):
-        _,raw=self.intern_subject(self.paths.exported_source,'web/package-lock.json');return parse(raw,8*MiB)
+        _,raw=self.intern_subject(self.paths.exported_source,'web/package-lock.json')
+        if self.terminal:self.terminal.position('lock-json')
+        result=parse(raw,8*MiB)
+        if self.terminal:self.terminal.position('validation')
+        return result
 
     def check_originals(self):
         lock=self.lock()['packages'];result=[]
@@ -465,10 +526,13 @@ def selection_lookups(s: Session,importers: list[str]) -> list[dict]:
     script="""const {createRequire}=require('node:module');
 if(process.versions.node.split('.')[0]!=='24')throw Error('Node24 required');
 console.log(JSON.stringify(JSON.parse(process.argv[1]).map(importer=>({importer,paths:createRequire(importer).resolve.paths('hr-selection-probe')}))));"""
+    if s.terminal:s.terminal.position('selection-lookup')
     result=A['process_capture'](['node','-e',script,canonical(importers,16384).decode()],s.paths.exported_source,16384,16384)
     A['_budget'].get().charge(len(result['stdout'])+len(result['stderr']))
     need(result['process']['exit']==0 and result['process']['quiescent'] and not result['process']['timed_out'] and not result['process']['overflow'],'TOOL_NODE_LOOKUPS')
+    if s.terminal:s.terminal.position('selection-json')
     rows=parse(result['stdout'],16384)
+    if s.terminal:s.terminal.position('validation')
     need(type(rows) is list and len(rows)==len(importers),'TOOL_NODE_LOOKUPS')
     for importer,row in zip(importers,rows):
         keys(row,{'importer','paths'})
@@ -564,7 +628,9 @@ def native_selection(s: Session) -> dict:
         selected='web/node_modules/'+selected_package+'/'+selected_name
         token,_=s.intern_subject(root,selected,TOOL)
         _,metadata=s.intern_subject(root,'web/node_modules/'+selected_package+'/package.json')
+        if s.terminal:s.terminal.position('selection-json')
         metadata=parse(metadata);entry=lock['node_modules/'+selected_package]
+        if s.terminal:s.terminal.position('validation')
         need(metadata['name']==selected_package and metadata['version']==entry['version'] and metadata['main']==('./' if package=='rollup' else '')+selected_name,'TOOL_PLATFORM_MEMBER',selected_package)
         original=None
         if native:
@@ -573,7 +639,9 @@ def native_selection(s: Session) -> dict:
             with tarfile.open(fileobj=io.BytesIO(archive_raw),mode='r:gz') as archive:
                 item=archive.getmember('package/'+selected_name)
                 need(item.isfile() and item.size<=TOOL,'TOOL_PLATFORM_MEMBER')
+                if s.terminal:s.terminal.position('native-member-read')
                 body=archive.extractfile(item).read(TOOL+1);A['_budget'].get().charge(len(body))
+                if s.terminal:s.terminal.position('validation')
             need(token['content']=={'size':len(body),'sha256':sha(body)},'TOOL_SELECTED_MEMBER_MISMATCH',selected)
             original={'archive':archive_token,'member':'package/'+selected_name,'content':token['content']}
         edge(importer,selected_package,selected)
@@ -788,9 +856,12 @@ def load_event_token(descriptor: dict,index: int) -> dict:
 def read_load_events(s: Session,root: object,context: str,preparation: str,names: list[str]) -> tuple[list, list, int, int]:
     events=[];inventory=[];total=0;name_bytes=0
     for index,leaf in enumerate(names,1):
+        if s.terminal:s.terminal.position('load-event-read')
         descriptor,raw=A['read_bytes'](root,LOAD_DIR+'/'+leaf,A['ReadDomain'](LOAD_EVENT,True))
         total+=len(raw);need(total<=LOAD_BYTES,'CSS_LOAD_BYTES_CAP')
+        if s.terminal:s.terminal.position('load-event-json')
         event=parse(raw,LOAD_EVENT)
+        if s.terminal:s.terminal.position('validation')
         keys(event,s.envelope('css-load',None,{}))
         expected=s.envelope('css-load',None,{'context':context,'preparation':preparation})
         need({k:v for k,v in event.items() if k!='payload'}=={k:v for k,v in expected.items() if k!='payload'},'CSS_LOAD_BINDING')
@@ -904,8 +975,11 @@ def checked_loads(s: Session,context: str,preparation: str) -> dict:
     with A['root_for'](s.paths.evidence_dir) as root:
         need(is_absent(root,'web-failure.json'),'FAILED_BUILD')
         names,sealed=load_inventory(root);need(sealed,'CSS_LOAD_SEAL_MISSING')
+        if s.terminal:s.terminal.position('load-seal-read')
         _,raw=A['read_bytes'](root,LOAD_SEAL,A['ReadDomain'](LOAD_BYTES,True))
+        if s.terminal:s.terminal.position('load-seal-json')
         seal=parse(raw,LOAD_BYTES,build=True);keys(seal,s.envelope('css-load-seal',None,{}))
+        if s.terminal:s.terminal.position('validation')
         expected=s.envelope('css-load-seal',None,{'context':context,'preparation':preparation})
         need({k:v for k,v in seal.items() if k!='payload'}=={k:v for k,v in expected.items() if k!='payload'},'CSS_LOAD_BINDING')
         keys(seal['payload'],{'inventory','event_bytes'})
@@ -1165,7 +1239,9 @@ def validate_build(s,payload,context,preparation,*,stored_required=False):
     stored={k:payload[k] for k in ('subjects','source_tool_associations') if k in payload}
     need(not stored_required or set(stored)=={'subjects','source_tool_associations'},'BUILD_REGISTRY_MISSING')
     payload={k:v for k,v in payload.items() if k not in stored}
+    if s.terminal:s.terminal.enter_phase('validation-context')
     p=load_context(s,context,preparation)
+    if s.terminal:s.terminal.enter_phase('validation')
     loads=checked_loads(s,context,preparation)
     keys(payload,{'resource_profile','complete','profile','observations','css_operations','modules','final_bundle','counts'})
     need(payload['resource_profile']==RESOURCE_PROFILE,'RESOURCE_PROFILE')
@@ -1419,7 +1495,9 @@ def completion_prefix(s,context,preparation,leaf):
     need(leaf==COMPLETION_LEAF,'COMPLETION_LEAF_INVALID')
     attempt=s.load('attempt',s.raw(s.paths.evidence_dir,'web-attempt.json',KINDS['attempt'])[0]['sha256'])
     need(attempt['payload']=={'binding_sha256':s.binding_sha,'completion_leaf':leaf},'COMPLETION_ATTEMPT_MISMATCH')
+    if s.terminal:s.terminal.enter_phase('prefix-context')
     p=load_context(s,context,preparation)
+    if s.terminal:s.terminal.enter_phase('prefix')
     need(p['completion_leaf']==leaf,'COMPLETION_LEAF_INVALID')
     with A['root_for'](s.paths.evidence_dir) as root:
         need(is_absent(root,'web-failure.json'),'FAILED_BUILD')
@@ -1462,9 +1540,12 @@ def completion_write(root,leaf,raw):
 
 
 def complete_build(s,context,preparation,token,leaf=COMPLETION_LEAF):
+    if s.terminal:s.terminal.enter_phase('completion-body')
     body=completion_body(s,context,preparation,token,leaf)
+    if s.terminal:s.terminal.enter_phase('prefix')
     completion_prefix(s,context,preparation,leaf)
     checked_build(s,context,preparation,token['record_sha256'])
+    if s.terminal:s.terminal.enter_phase('completion-write');s.terminal.position('completion-write')
     raw=canonical(body,4095)+b'\n';need(len(raw)==555,'COMPLETION_TOKEN_INVALID')
     with completion_context(A['root_for'](s.paths.evidence_dir)) as root:
         completion_write(root,leaf,raw)
@@ -1493,7 +1574,9 @@ def publish_build(s,context,preparation,payload):
 
 
 def checked_build(s,context,preparation,build):
+    if s.terminal:s.terminal.enter_phase('checked-build-record')
     record=s.load('build',build)
+    if s.terminal:s.terminal.enter_phase('validation')
     result=validate_build(s,record['payload'],context,preparation,stored_required=True)
     need(record['upstream']=={'context':context,'preparation':preparation,'css_relation':result},'BUILD_UPSTREAM_MISMATCH')
     return record
@@ -1631,18 +1714,26 @@ def main():
     p=argparse.ArgumentParser(allow_abbrev=False);p.add_argument('stage',choices=['prepare','begin','compile-begin','compile-end','read-input','snapshot','publish-build','complete-build','accept-build','seal-dist','notices','verify','fail','token-field'])
     p.add_argument('--caller');p.add_argument('--context');p.add_argument('--preparation');p.add_argument('--build');p.add_argument('--dist');p.add_argument('--notices');p.add_argument('--asset-dist');p.add_argument('--asset-app');p.add_argument('--index',type=int);p.add_argument('--token');p.add_argument('--field');p.add_argument('--original-exit',type=int);p.add_argument('--completion-leaf',default=COMPLETION_LEAF)
     p.add_argument('--snapshot-diagnostic-call',nargs='?');p.add_argument('--snapshot-diagnostic-bytes',nargs='?')
+    p.add_argument('--complete-diagnostic-call',nargs='?');p.add_argument('--complete-diagnostic-bytes',nargs='?')
     a=p.parse_args()
     if a.stage=='token-field':
         token=parse(a.token.encode(),4096);value=token[a.field];print(json.dumps(value,separators=(',',':')) if isinstance(value,(dict,list)) else value);return
     diagnostics=SnapshotDiagnostics(a.snapshot_diagnostic_call,a.snapshot_diagnostic_bytes) if a.stage=='snapshot' else None
-    s=Session(parse(a.caller.encode(),256*1024),diagnostics)
+    terminal=CompleteBuildDiagnostics(a.complete_diagnostic_call,a.complete_diagnostic_bytes) if a.stage=='complete-build' else None
     try:
-        return dispatch(s,a)
-    except (OSError,ValueError,KeyError,tarfile.TarError) as primary:
-        if a.stage in ('compile-begin','compile-end','read-input','snapshot','publish-build'):
-            try:s.write('failure',{'original_exit':1,'stage':a.stage})
-            except (OSError,ValueError,KeyError,tarfile.TarError) as secondary:primary.add_note('secondary failure receipt: '+str(secondary)[:4096])
+        s=Session(parse(a.caller.encode(),256*1024),diagnostics,terminal)
+        try:
+            result=dispatch(s,a)
+        except (OSError,ValueError,KeyError,tarfile.TarError) as primary:
+            if a.stage in ('compile-begin','compile-end','read-input','snapshot','publish-build'):
+                try:s.write('failure',{'original_exit':1,'stage':a.stage})
+                except (OSError,ValueError,KeyError,tarfile.TarError) as secondary:primary.add_note('secondary failure receipt: '+str(secondary)[:4096])
+            raise
+    except BaseException:
+        if terminal:terminal.finish('failed')
         raise
+    if terminal:terminal.finish('success')
+    return result
 
 
 def dispatch(s: Session,a: argparse.Namespace) -> None:
@@ -1662,6 +1753,7 @@ def dispatch(s: Session,a: argparse.Namespace) -> None:
     elif a.stage=='snapshot':result=snapshot(s,a.context,a.preparation,a.index,snapshot_request())
     elif a.stage=='publish-build':result=publish_build(s,a.context,a.preparation,parse(sys.stdin.buffer.read(BUILD_INPUT+1),BUILD_INPUT,build=True))
     elif a.stage=='complete-build':
+        if s.terminal:s.terminal.enter_phase('completion-body');s.terminal.position('token-json')
         result=complete_build(s,a.context,a.preparation,parse(sys.stdin.buffer.read(4097),4096),a.completion_leaf)
     elif a.stage=='accept-build':result=accept_build(s,a.context,a.preparation,a.completion_leaf)
     elif a.stage=='seal-dist':result=seal_dist(s,a.context,a.preparation,a.build,a.asset_dist)
@@ -1670,6 +1762,7 @@ def dispatch(s: Session,a: argparse.Namespace) -> None:
     elif a.stage=='verify':result=verify_web(s,a.context,a.preparation,a.build,a.dist,a.notices,a.asset_app,parse(sys.stdin.buffer.read(8*MiB+1),8*MiB) if a.notices else None)
     else:result=s.write('failure',{'original_exit':a.original_exit,'stage':os.environ.get('STAGE','web')})
     if s.diagnostics:s.diagnostics.mark('reply','start')
+    if s.terminal:s.terminal.enter_phase('reply')
     sys.stdout.buffer.write(canonical(result,32*MiB if a.stage=='read-input' else CAP)+b'\n')
     sys.stdout.buffer.flush()
     if s.diagnostics:s.diagnostics.mark('reply','end')
