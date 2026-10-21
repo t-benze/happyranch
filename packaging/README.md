@@ -738,14 +738,53 @@ environment values and error text/stacks are never included in these diagnostics
 Load/transform/moduleParsed calls have no progress logging.
 
 One custody instance shares a 64 KiB total diagnostic budget, including a single
-suppression notice. Exhaustion suppresses diagnostics only; short or failed writes
-disable them without changing build/tool errors or successful build results.
+suppression notice. Before each snapshot launch, it reserves 3072 bytes from that
+same budget while retaining the suppression allowance. Unused or partially
+written child bytes are never refunded. If the reservation cannot fit, the
+existing suppression notice disables further diagnostics and the original helper
+runs without the extension. An unavailable stderr descriptor also disables the
+extension. Exhaustion, short or failed writes affect diagnostics only.
+
+A reserved snapshot maps fixed child fd3 directly to the parent's existing stderr,
+so its lines remain visible while the original synchronous spawn is blocked.
+Numeric private CLI metadata grants the helper its call number and byte allowance;
+there is no caller-selected descriptor or destination. The child writes at most
+24 lines of at most 128 bytes each, including newlines, within its granted bytes.
+Missing/invalid metadata or unavailable fd3 disables child diagnostics; short or
+failed writes disable further child lines without retry. Borrowed descriptors
+are never closed. fd0/1/2, captured protocol stdout/stderr, CSS transport and
+original helper result/error handling are unchanged.
+
+Fixed `[packaging-snapshot]` records pair `start`/`end` for `bindings`, `assets`,
+`toolchain`, `source` (Git tree and helper pins), `stdin`, `mutable`, `context`,
+`create` (snapshot creation/readback), and `reply`. They carry only the numeric
+parent helper call number and fixed phase/event names. Operations and guarded
+reads remain in their original order. The `assets` phase follows the selected
+venue: a portable end does not exercise native asset context/source validation.
+A missing end leaves that phase's outcome UNKNOWN; even a reply end does not
+prove child exit or native/package acceptance.
 There is no retained stream queue, timer, monitor or deadline guarantee for OS
 stderr I/O. A start without its matching end identifies only a selected boundary;
 it does not identify an exact inner cause, and suppression, I/O failure or
 cancellation can also omit an end. Hook promise identity/lifetime/order, helper
 capture/transport limits, native source validation and build acceptance stay as
 before. Ordinary builds retain the existing null packaging-custody path.
+
+Native build17 (`39571904074`, attempt 1, source `22eea903`, tree `5fa018a`;
+workflow definition `be36c7a`) completed both EXEs and COLLECT. Its 43 immediate
+parent helper records show calls 1–21 returning, then snapshot call 22 starting
+at `2026-10-21T08:52:24.4387860Z` without an end/failure before cancellation at
+14:48:45Z after six hours. Node's synchronous helper spawn had not returned;
+Python admission, asset/source validation, Git, stdin, snapshot work and child
+closure were not distinguished. Precise cause remains UNKNOWN. Reserving for
+all 14 snapshots through that call costs 43008 bytes, leaving room for the
+observed parent records and the suppression allowance within 65536 bytes.
+The fd3 phases are optional diagnostics for the next root-owned changed-source
+native confirmation, not a causal or performance fix. Portable TASK-12265/12271
+success is a baseline only; its 788662-byte blob 14 is not known to equal native
+input, and an earlier portable blob was larger. JOB5031 exit 0 is collection
+only. Native artifacts were absent; archive/receipt/final metadata, manifest
+notices/hash/ZIP and install/launch acceptance remain unverified.
 
 Native build16 (`39521557858`, attempt 1, source `a17cf29`) completed both EXEs and
 COLLECT, then logged Vite's 4695 modules before silence and six-hour cancellation;
