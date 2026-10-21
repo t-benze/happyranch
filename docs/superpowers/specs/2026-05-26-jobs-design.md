@@ -42,6 +42,66 @@ not a new wait; reject is a nonexecution disposition, never script success.
 Completion-recovery sessions cannot submit; a thread invocation token is not a
 task session. Job admission grants no content authorization or lasting permission.
 
+
+## Truthful Stop and durable results — THR321seq6
+
+Stop is a signal request against the actual DB attachment/job/original native
+preparation/attempt/runner/Process, never ownership inferred from matching IDs.
+Two orgs may allocate the same job/task IDs. Registration precedes launch;
+duplicate live or uncertain owners refuse. Signal, first real cause, removal,
+terminal write and postcommit release compare the captured owner. An earlier
+actual timeout/output cap/task/shutdown/Stop cause survives later requests;
+ProcessLookupError removes only that unsuccessful request's provisional cause.
+
+HTTP200 `{ok:true,id}` means a real Stop signal request was issued; CLI says
+“Stop requested”. It never certifies exit. Existing409 `not_running` reports the
+actual nonrunning status, including pending, and existing session/auth precedence
+is unchanged. Running without a signal target returns409: `job_runner_pending`,
+`job_runner_finalizing`, or `job_liveness_unknown`, each with job_id/status.
+Actual affected/causal move refusal uses `team_move_native_held` with
+job_id/status/operation_id; unavailable attribution/history uses
+`job_owner_unavailable` with job_id/status (nullable)/unavailable_code. Actual
+owned Stop remains possible under root Pause. No refusal clears holds/history.
+503 `job_stop_unavailable` has job_id, request_issued (true/false/null), and
+unavailable_code (`signal_failed` or `request_audit_failed`). Refresh before
+trying again; an audit failure after signal is request_issued=true. New servers
+never emit already_terminal; that legacy field supplies no terminal proof.
+
+The genuine original job owner stages a running-only terminal CAS, one
+original-trigger terminal audit, its actual producer observation and required
+strict Pause disposition in one short COMMIT. No nested self-committing terminal,
+producer finish or audit calls. Direct child return settles that observed attempt
+with quiescent=false, never tree closure. Failed/unfinished tails, older attempts
+and failed_cleanup remain unknown. Lost CAS adds no terminal effects. Rollback
+or ambiguous COMMIT retains ownership and explicit unknown diagnostics; there is
+no blind append/retry. Local owner release and terminal hint/wake follow COMMIT.
+Notification failure cannot overwrite the result. One durable winner/audit is
+distinct from replayable hints, queue dedupe and genuine task claim.
+
+Startup retains unproven running rows and reports job_liveness_unknown. Missing
+maps/PID, old daemon death, timeout or absent native layout prove no orphanhood.
+No positive proof producer/consumer, reaper, adoption or historical repair is
+provided. preserve_uncommitted is unchanged. Original start/logs and unknown
+exit/duration remain intact. Source delivery does not repair historical jobs.
+
+wait/SSE terminal hints require a fresh authoritative terminal row; status,
+reason and nullable result come from that row. Existing native-list all-terminal
+waiter, queue/claim, cancellation, Pause/move and startup rediscovery rules remain.
+Decoded wrong JSON shapes and a parked missing-row producer are unsupported,
+UNVERIFIED manager debt; this change adds no waiter validator or backstop repair.
+
+Both Web details retain cached row/actions/logs when a read fails. Unexpected
+stream error/EOF exposes unavailable guidance; intentional terminal/unmount abort
+does not. There is no automatic reconnect/retry/polling addition or silent
+half-open detector. “Refresh status / 刷新状态” explicitly fetches fresh detail
+into ['job',slug,id] with staleTime0/retry=false, without restarting the stream.
+Both Stop success and error settlement refresh detail/list. Header/Stop follow
+the durable row, never an optimistic terminal hint or verified [done]. Same-job
+received logs survive running-to-terminal while canonical output loads/fails;
+they remain labelled last-received fallback. Locale switches issue no requests.
+Reopen/reload separately to try live output again. Fixture presentation and static
+checks do not establish backend behavior, deployment or historical recovery.
+
 The earlier approval-specific design below is retained as historical context:
 its true-mode queue, manual-run producer, notification promise, embedded skill
 draft and retired test commands are superseded by the current contract above.

@@ -4,7 +4,8 @@ Owns one short-lived asyncio coroutine per run: spawn → pump stdout/stderr →
 fan out events to in-memory subscribers via the `publish` callback → terminate.
 
 Module-level state: a registry of in-flight `asyncio.subprocess.Process` objects
-keyed by SR id, used by the daemon shutdown path to SIGTERM/SIGKILL on exit.
+keyed by actual DB attachment and job ID, with original runner/producer/Process
+attribution for Stop, task termination and daemon shutdown.
 """
 from __future__ import annotations
 
@@ -99,23 +100,148 @@ def migrate_artifacts_layout(org_root: Path | str) -> None:
                 )
 
 
-# In-flight registry; shutdown handler walks this to clean up.
-_INFLIGHT: dict[str, asyncio.subprocess.Process] = {}
+@dataclass(eq=False)
+class _JobRegistration:
+    # Strong references: neither a slug nor a recycled integer id owns a child.
+    db: object
+    org_slug: str
+    job_id: str
+    task_id: str
+    agent_id: str
+    task: asyncio.Task
+    owner: object
+    owner_identity: tuple | None
+    attempt: tuple | None = None
+    process: asyncio.subprocess.Process | None = None
+    cause: object | None = None
+    observed: bool = False
+    tail_failed: bool = False
+    cap_event: asyncio.Event | None = None
+    released: bool = False
 
-# Background runner tasks (the route's _run_and_persist coroutines). The shutdown
-# hook awaits these AFTER killing subprocesses so they can transition the SR row
-# to a terminal state before per-org DBs are closed. Without this wait, an
-# in-flight SR stays `running` until the next daemon startup recovery scan.
-_RUNNER_TASKS: dict[str, asyncio.Task] = {}
+    @property
+    def key(self):
+        return self.db, self.job_id
 
-# External-kill reason override: when ``terminate_jobs_for_task`` SIGTERMs a
-# job's subprocess, it deposits the kill reason here. ``run_job`` pops the
-# entry just before constructing ``JobRunResult`` so the row reports the
-# external trigger (e.g., ``"task_ended"``) instead of the executor's local
-# view (a generic non-zero rc → no reason). Single-process daemon → a plain
-# module dict is fine; the ``pop`` in the runner is critical to avoid stale
-# entries persisting across job ids.
-_KILL_REASON_OVERRIDE: dict[str, str] = {}
+
+@dataclass(eq=False)
+class _JobCause:
+    registration: _JobRegistration
+    process: asyncio.subprocess.Process
+    reason: str
+    attempt: tuple | None = None
+    external: bool = False
+
+
+_INFLIGHT: dict[tuple, _JobRegistration] = {}
+_RUNNER_TASKS: dict[tuple, _JobRegistration] = {}
+_KILL_REASON_OVERRIDE: dict[tuple, _JobCause] = {}
+
+
+def _owner_identity(owner):
+    s = owner.state
+    return (s.org_slug, s.kind, s.source_id, s.occurrence_id, s.agent_id,
+            s.task_id, s.session_id, s.preparation_id)
+
+
+def _attempt_identity(owner):
+    if not owner.state.attempts:
+        return None
+    a = owner.state.attempts[-1]
+    return a.attempt_id, a.ordinal, a.boundary
+
+
+def _require_job_attachment(db, org_slug):
+    # Reuse the daemon's actual resolver, never a same-slug/path row join.
+    # Standalone absent-layout callers have no resolver; production installs it.
+    if _ORCH_RESOLVER is not None:
+        current = _ORCH_RESOLVER(org_slug)
+        if current is None or current._db is not db:
+            from runtime.orchestrator.team_move import DeferredTeamMove
+            raise DeferredTeamMove('job_registration_unavailable')
+
+
+def _validate_registration(registration, *, running_task=False):
+    from runtime.orchestrator.producer_move import owner_for
+    from runtime.orchestrator.team_move import DeferredTeamMove
+    r = registration
+    _require_job_attachment(r.db, r.org_slug)
+    if (_RUNNER_TASKS.get(r.key) is not r or r.released or r.task.done()
+            or running_task and asyncio.current_task() is not r.task):
+        raise DeferredTeamMove('job_registration_unavailable')
+    admission = owner_for(r.db)
+    if r.owner is None:
+        if admission is not None:
+            raise DeferredTeamMove('job_registration_unavailable')
+    else:
+        o = r.owner
+        if (admission is not o.admission or admission.db is not r.db
+                or admission.move.store.org_slug != r.org_slug
+                or _owner_identity(o) != r.owner_identity
+                or admission.live.get(('job', r.job_id)) is not o or not o.owner_live
+                or _attempt_identity(o) != r.attempt):
+            raise DeferredTeamMove('job_registration_unavailable')
+        with r.db._lock:
+            states = admission.history_uncommitted()
+            if states.get(('job', r.job_id, o.state.occurrence_id)) != o.state:
+                raise DeferredTeamMove('team_move_producer_evidence_changed')
+    record = r.db.get_job(r.job_id)
+    if record is None or (record.task_id, record.agent_name) != (r.task_id, r.agent_id):
+        raise DeferredTeamMove('job_registration_unavailable')
+    return r
+
+
+def _capture_registration(db, job_id, owner):
+    from runtime.orchestrator.team_move import DeferredTeamMove
+    r = _RUNNER_TASKS.get((db, job_id))
+    if r is None or r.owner is not owner:
+        raise DeferredTeamMove('job_registration_unavailable')
+    return _validate_registration(r, running_task=True)
+
+
+def _signal_registered_job(r, reason, sig=signal.SIGTERM):
+    """No await between exact ownership/cause comparison and signal issuance."""
+    if r.released or _RUNNER_TASKS.get(r.key) is not r:
+        return False
+    _validate_registration(r)
+    proc = r.process
+    if proc is None or _INFLIGHT.get(r.key) is not r or proc.returncode is not None:
+        return False
+    # The pump may already have detected its cap before its watcher runs.
+    if r.cause is None and r.cap_event is not None and r.cap_event.is_set():
+        r.cause = _JobCause(r, proc, 'output_cap', r.attempt)
+    provisional = None
+    if r.cause is None:
+        provisional = _JobCause(r, proc, reason, r.attempt, external=True)
+        r.cause = provisional
+        _KILL_REASON_OVERRIDE[r.key] = provisional
+    try:
+        os.killpg(proc.pid, sig)
+    except ProcessLookupError:
+        if provisional is not None and r.cause is provisional:
+            r.cause = None
+            if _KILL_REASON_OVERRIDE.get(r.key) is provisional:
+                del _KILL_REASON_OVERRIDE[r.key]
+        return False
+    except BaseException:
+        if provisional is not None and r.cause is provisional:
+            r.cause = None
+            if _KILL_REASON_OVERRIDE.get(r.key) is provisional:
+                del _KILL_REASON_OVERRIDE[r.key]
+        raise
+    return True
+
+
+def _release_registration(r):
+    _validate_registration(r, running_task=True)
+    r.released = True
+    if _INFLIGHT.get(r.key) is r:
+        del _INFLIGHT[r.key]
+    cause = _KILL_REASON_OVERRIDE.get(r.key)
+    if (cause is not None and cause is r.cause and cause.registration is r
+            and cause.process is r.process and cause.attempt == r.attempt):
+        del _KILL_REASON_OVERRIDE[r.key]
+
 
 _HEAD_CAP_BYTES = 65536  # spec §3.1, §6.2
 
@@ -130,7 +256,8 @@ _HEAD_CAP_BYTES = 65536  # spec §3.1, §6.2
 # The module-level ``attach_jobs_resume_main_loop`` wiring function is kept
 # symmetric with ``Orchestrator.attach_thread_queue`` — a future caller that
 # runs on a worker thread would use ``_RESUME_MAIN_LOOP`` to bridge across.
-# For the current call sites it is informational / unused at runtime.
+# The resolver also checks that job registrations still own the actual current
+# DB attachment. It grants no ownership from matching slugs or rows.
 # ---------------------------------------------------------------------------
 
 _RESUME_MAIN_LOOP: asyncio.AbstractEventLoop | None = None
@@ -195,10 +322,45 @@ def fire_resume_check_for_job(org: "object", job_id: str) -> None:
             orch._team_moves.defer_task(row['id'], {'trigger': 'job_terminal', 'triggering_job_id': job_id})
 
 
-def register_runner_task(job_id: str, task: asyncio.Task) -> None:
-    """Register a background _run_and_persist task so shutdown can await it."""
-    _RUNNER_TASKS[job_id] = task
-    task.add_done_callback(lambda _t: _RUNNER_TASKS.pop(job_id, None))
+def register_runner_task(job_id: str, task: asyncio.Task, *, db, org_slug, move_owner=None):
+    """Called synchronously after create_task, before the caller yields."""
+    from runtime.orchestrator.producer_move import owner_for
+    from runtime.orchestrator.team_move import DeferredTeamMove
+    key = db, job_id
+    try:
+        if key in _RUNNER_TASKS:
+            raise DeferredTeamMove('job_registration_unavailable')
+        record = db.get_job(job_id)
+        admission = owner_for(db)
+        if record is None or (admission is None) != (move_owner is None):
+            raise DeferredTeamMove('job_registration_unavailable')
+        identity = None if move_owner is None else _owner_identity(move_owner)
+        if identity is not None and identity[:6] != (
+                org_slug, 'job', job_id, job_id, record.agent_name, record.task_id):
+            raise DeferredTeamMove('job_registration_unavailable')
+        r = _JobRegistration(db, org_slug, job_id, record.task_id, record.agent_name,
+                             task, move_owner, identity,
+                             attempt=None if move_owner is None else _attempt_identity(move_owner))
+        _RUNNER_TASKS[key] = r
+        _validate_registration(r)
+    except BaseException:
+        task.cancel()  # registration refusal must never leave an unregistered launch
+        if 'r' in locals() and _RUNNER_TASKS.get(key) is r:
+            del _RUNNER_TASKS[key]
+        raise
+    def finished(done):
+        error = None if done.cancelled() else done.exception()
+        # Failed/ambiguous persistence keeps the actual uncertain registration.
+        if r.released and done is r.task and _RUNNER_TASKS.get(key) is r:
+            del _RUNNER_TASKS[key]
+            if error is not None:
+                logging.getLogger(__name__).error('Released job postcommit tail failed: %r', error)
+        elif _RUNNER_TASKS.get(key) is r:
+            logging.getLogger(__name__).error(
+                'job_liveness_unknown: retaining original job owner %s/%s after unfinished tail: %r',
+                r.org_slug, r.job_id, error)
+    task.add_done_callback(finished)
+    return r
 
 
 def _interpreter_binary(interpreter: str) -> str | None:
@@ -213,9 +375,9 @@ def _now_iso() -> str:
 class JobRunResult:
     status: str           # "completed" | "failed"
     exit_code: int | None
-    duration_ms: int
-    stdout_head: str
-    stderr_head: str
+    duration_ms: int | None
+    stdout_head: str | None
+    stderr_head: str | None
     stdout_bytes: int
     stderr_bytes: int
     truncated_stdout: bool
@@ -321,11 +483,13 @@ async def run_job(
     task_id: str | None = None,
     workspace_root: str | None = None,
     move_owner=None,
+    registration=None,
 ) -> JobRunResult:
     """Spawn the script, pump streams, return JobRunResult.
 
-    `publish` is called with each line event and the final terminal event.
-    `job_id` is used only for the in-flight registry; pass None in unit tests.
+    `publish` carries output only. The original route owner commits terminal
+    composition before publishing its durable terminal hint.
+    Every named production job requires its actual registration.
 
     `max_runtime_seconds=None` means unbounded — the runner awaits the
     subprocess without an ``asyncio.wait_for`` wrapper. Positive int means
@@ -335,10 +499,13 @@ async def run_job(
     `max_output_bytes=None` means unbounded per stream. Positive int means
     either stream exceeding the threshold triggers an immediate SIGKILL of
     the process group; result is ``status="failed", reason="output_cap"``.
-    Timeout precedence: if both could apply, ``"timeout"`` wins because the
-    timeout branch sets ``reason`` first and the output_cap branch only
-    overwrites a still-None reason.
+    The first established real local or successfully signalled external cause
+    wins for this execution. A later Stop cannot rewrite timeout/output_cap.
     """
+    if job_id is not None:
+        if registration is None or (registration.job_id, registration.task_id, registration.owner) != (job_id, task_id, move_owner):
+            raise ValueError('job_registration_unavailable')
+        _validate_registration(registration, running_task=True)
     binary = _interpreter_binary(interpreter)
     if binary is None:
         raise FileNotFoundError(f"interpreter unavailable: {interpreter}")
@@ -368,6 +535,9 @@ async def run_job(
             move_owner.executor = interpreter
             move_owner.before_fifo()
             move_owner.commit()
+            if registration is not None:
+                registration.attempt = _attempt_identity(move_owner)
+                _validate_registration(registration, running_task=True)
         proc = await asyncio.create_subprocess_exec(
             binary,
             "-",  # read script from stdin (bash/sh/zsh/python3 all honor this)
@@ -381,10 +551,13 @@ async def run_job(
     finally:
         if scratch_token is not None:
             reset_task_scratch(scratch_token)
+    if registration is not None:
+        # Capture the exact Process before any further fallible native accounting.
+        registration.process = proc
+        _validate_registration(registration, running_task=True)
+        _INFLIGHT[registration.key] = registration
     if move_owner is not None:
         move_owner.on_started()
-    if job_id is not None:
-        _INFLIGHT[job_id] = proc
 
     proc.stdin.write(script_text.encode("utf-8"))
     proc.stdin.close()
@@ -399,6 +572,17 @@ async def run_job(
     # Shared cap event — set by EITHER pump when its per-stream byte counter
     # crosses max_output_bytes. The watcher coroutine awaits it and SIGKILLs.
     cap_event = asyncio.Event()
+    if registration is not None:
+        registration.cap_event = cap_event
+
+    def signal_child(sig):
+        if registration is None:
+            try:
+                os.killpg(proc.pid, sig)
+            except ProcessLookupError:
+                pass
+        else:
+            _signal_registered_job(registration, 'timeout' if sig == signal.SIGTERM else 'output_cap', sig)
 
     pump_out = asyncio.create_task(_pump_stream(
         proc.stdout, "stdout", stdout_path, publish, stdout_head, stdout_capped, stdout_bytes,
@@ -411,6 +595,8 @@ async def run_job(
 
     async def _watch_cap() -> None:
         await cap_event.wait()
+        if registration is not None and registration.cause is None:
+            registration.cause = _JobCause(registration, proc, "output_cap", registration.attempt)
         # Close the stdout/stderr read transports BEFORE SIGKILL. Two reasons:
         # 1. The writer gets SIGPIPE on its next write — stops pumping data
         #    into the pipe between our cap-detection and SIGKILL. Without
@@ -430,7 +616,7 @@ async def run_job(
             except Exception:
                 pass
         try:
-            os.killpg(proc.pid, signal.SIGKILL)
+            signal_child(signal.SIGKILL)
         except ProcessLookupError:
             pass
 
@@ -446,12 +632,13 @@ async def run_job(
         # the gather() resolves quickly. The 5s safety wait_for guards
         # against pathological pumps blocked on disk.
         try:
-            await asyncio.wait_for(
-                asyncio.gather(pump_out, pump_err, return_exceptions=True),
-                timeout=5,
-            )
+            pump_results = await asyncio.wait_for(
+                asyncio.gather(pump_out, pump_err, return_exceptions=True), timeout=5)
+            if registration is not None:
+                registration.tail_failed |= any(isinstance(x, BaseException) for x in pump_results)
         except asyncio.TimeoutError:
-            pass
+            if registration is not None:
+                registration.tail_failed = True
         if cap_event.is_set():
             status = "failed"
             reason = "output_cap"
@@ -460,15 +647,17 @@ async def run_job(
         exit_code = proc.returncode
     except asyncio.TimeoutError:
         reason = "timeout"
+        if registration is not None and registration.cause is None:
+            registration.cause = _JobCause(registration, proc, "timeout", registration.attempt)
         try:
-            os.killpg(proc.pid, signal.SIGTERM)
+            signal_child(signal.SIGTERM)
         except ProcessLookupError:
             pass
         try:
             await asyncio.wait_for(proc.wait(), timeout=5)
         except asyncio.TimeoutError:
             try:
-                os.killpg(proc.pid, signal.SIGKILL)
+                signal_child(signal.SIGKILL)
             except ProcessLookupError:
                 pass
             try:
@@ -477,9 +666,12 @@ async def run_job(
                 pass
         # Drain pumps briefly; ignore errors.
         try:
-            await asyncio.wait_for(asyncio.gather(pump_out, pump_err, return_exceptions=True), timeout=2)
+            pump_results = await asyncio.wait_for(asyncio.gather(pump_out, pump_err, return_exceptions=True), timeout=2)
+            if registration is not None:
+                registration.tail_failed |= any(isinstance(x, BaseException) for x in pump_results)
         except asyncio.TimeoutError:
-            pass
+            if registration is not None:
+                registration.tail_failed = True
         status = "failed"
         exit_code = proc.returncode
     finally:
@@ -488,8 +680,9 @@ async def run_job(
             await watcher
         except asyncio.CancelledError:
             pass
-        if job_id is not None:
-            _INFLIGHT.pop(job_id, None)
+        if (registration is not None and _INFLIGHT.get(registration.key) is registration
+                and registration.process is proc):
+            del _INFLIGHT[registration.key]
 
     finished = datetime.now(timezone.utc)
     duration_ms = int((finished - started).total_seconds() * 1000)
@@ -499,16 +692,17 @@ async def run_job(
     stdout_head_str = b"".join(stdout_head).decode("utf-8", errors="replace") + head_marker_stdout.decode()
     stderr_head_str = b"".join(stderr_head).decode("utf-8", errors="replace") + head_marker_stderr.decode()
 
-    # External-kill override (e.g., terminate_jobs_for_task on task-terminal
-    # transition). The override wins over the executor's local rc-based view:
-    # we got SIGKILL'd from outside, the "reason" lives outside this scope.
-    # ``pop`` is critical — leaving the entry would mis-attribute a future
-    # JOB id reusing the same in-process dict.
-    if job_id is not None:
-        override = _KILL_REASON_OVERRIDE.pop(job_id, None)
-        if override is not None:
-            status = "failed"
-            reason = override
+    if registration is not None:
+        _validate_registration(registration, running_task=True)
+        cause = registration.cause
+        if cause is not None:
+            if (cause.registration is not registration or cause.process is not proc
+                    or cause.attempt != registration.attempt
+                    or cause.external and _KILL_REASON_OVERRIDE.get(registration.key) is not cause):
+                from runtime.orchestrator.team_move import DeferredTeamMove
+                raise DeferredTeamMove('job_registration_unavailable')
+            status, reason = "failed", cause.reason
+        registration.observed = proc.returncode is not None
 
     result = JobRunResult(
         status=status,
@@ -523,118 +717,53 @@ async def run_job(
         reason=reason,
     )
 
-    if move_owner is not None:
-        move_owner.direct_terminal()
-    publish({
-        "kind": "terminal",
-        "status": status,
-        "exit_code": exit_code,
-        "duration_ms": duration_ms,
-        "reason": reason,
-        "ts": _now_iso(),
-    })
     return result
 
 
-def in_flight_job_ids() -> list[str]:
-    return list(_INFLIGHT.keys())
+def in_flight_job_ids(*, db) -> list[str]:
+    return [_validate_registration(r).job_id for r in tuple(_INFLIGHT.values()) if r.db is db]
 
 
 async def terminate_jobs_for_task(
-    task_id: str,
-    *,
+    task_id: str, *, db, org_slug: str,
     inflight_to_task: dict[str, str] | None = None,
     grace_seconds: float = 5.0,
 ) -> list[str]:
-    """Kill every in-flight job whose owning task_id matches.
-
-    ``inflight_to_task`` is a mapping JOB-NNN → TASK-NNN provided by the caller
-    (the orchestrator builds it by scanning the per-org ``jobs`` table for
-    rows in ``status='running'``). Deposits ``"task_ended"`` into
-    ``_KILL_REASON_OVERRIDE`` BEFORE the signal so the runner reads the
-    override on its way to constructing ``JobRunResult`` — the row reports the
-    external trigger rather than a bare ``rc=-15``.
-
-    SIGTERM → 5s grace → SIGKILL on any survivor. Returns the list of JOB-NNN
-    ids that were targeted (not the survivors).
-    """
-    inflight_to_task = inflight_to_task or {}
-    targets = [
-        (job_id, proc)
-        for job_id, proc in _INFLIGHT.items()
-        if inflight_to_task.get(job_id) == task_id
-    ]
-    if not targets:
-        return []
-    for job_id, _ in targets:
-        _KILL_REASON_OVERRIDE[job_id] = "task_ended"
-    for _, proc in targets:
-        try:
-            os.killpg(proc.pid, signal.SIGTERM)
-        except ProcessLookupError:
-            pass
-    await asyncio.sleep(grace_seconds)
-    for _, proc in targets:
-        if proc.returncode is None:
-            try:
-                os.killpg(proc.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-    return [job_id for job_id, _ in targets]
+    # DB rows select candidates; only the original actual registration owns signals.
+    candidates = inflight_to_task or {}
+    targets = [r for r in tuple(_INFLIGHT.values())
+               if r.db is db and r.org_slug == org_slug and r.task_id == task_id
+               and candidates.get(r.job_id) == task_id]
+    signalled = []
+    for r in targets:
+        if _signal_registered_job(r, 'task_ended'):
+            signalled.append(r)
+    if signalled:
+        await asyncio.sleep(grace_seconds)
+    for r in signalled:
+        _signal_registered_job(r, 'task_ended', signal.SIGKILL)
+    return [r.job_id for r in signalled]
 
 
 async def terminate_all_inflight(
     *, grace_seconds: int = 5, persist_timeout_seconds: float = 5.0,
 ) -> None:
-    """Daemon shutdown hook: classify then SIGTERM every live subprocess,
-    SIGKILL signalled survivors, and await runner tasks so they persist
-    ``failed/daemon_shutdown`` with the real exit code BEFORE the caller closes
-    per-org DB connections. Snapshot members already gone before signalling
-    retain their natural result; an existing ``task_ended`` cause wins.
-
-    Without the runner-task wait, the row sits in `running` until the next
-    daemon startup's recovery scan — making a dead SR look live to founders
-    in the meantime.
-    """
-    procs = list(_INFLIGHT.items())
-    # Install every snapshot override before the first signal.  ``setdefault``
-    # preserves the more specific task-terminal cause if task cleanup already
-    # owns (or concurrently won) this job.  A daemon-shutdown override remains
-    # valid only when this function actually signals the still-running process;
-    # natural exits in the snapshot-to-signal window remove our own value.
-    for job_id, _ in procs:
-        _KILL_REASON_OVERRIDE.setdefault(job_id, "daemon_shutdown")
-    signalled: set[str] = set()
-    for job_id, proc in procs:
-        if proc.returncode is not None:
-            if _KILL_REASON_OVERRIDE.get(job_id) == "daemon_shutdown":
-                _KILL_REASON_OVERRIDE.pop(job_id, None)
-            continue
+    logger = logging.getLogger(__name__)
+    signalled = []
+    for r in tuple(_INFLIGHT.values()):
         try:
-            os.killpg(proc.pid, signal.SIGTERM)
-        except ProcessLookupError:
-            if _KILL_REASON_OVERRIDE.get(job_id) == "daemon_shutdown":
-                _KILL_REASON_OVERRIDE.pop(job_id, None)
-        else:
-            signalled.add(job_id)
-    if procs:
+            if _signal_registered_job(r, 'daemon_shutdown'):
+                signalled.append(r)
+        except Exception:
+            logger.exception('Retaining unattributable job shutdown ownership')
+    if signalled:
         await asyncio.sleep(grace_seconds)
-        for job_id, proc in procs:
-            if job_id in signalled and proc.returncode is None:
-                try:
-                    os.killpg(proc.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-    # Drain runner tasks so they persist terminal state before DBs close.
-    # Snapshot once — entries self-clear via the done-callback registered by
-    # register_runner_task.
-    runners = list(_RUNNER_TASKS.values())
-    if runners:
+    for r in signalled:
         try:
-            await asyncio.wait_for(
-                asyncio.gather(*runners, return_exceptions=True),
-                timeout=persist_timeout_seconds,
-            )
-        except asyncio.TimeoutError:
-            # Best effort — startup recovery scan handles any stragglers.
-            pass
+            _signal_registered_job(r, 'daemon_shutdown', signal.SIGKILL)
+        except Exception:
+            logger.exception('Retaining changed job shutdown ownership')
+    runners = [r.task for r in tuple(_RUNNER_TASKS.values()) if not r.task.done()]
+    if runners:
+        # Timeout does not cancel finalization or certify cleanup.
+        await asyncio.wait(runners, timeout=persist_timeout_seconds)

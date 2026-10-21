@@ -199,11 +199,12 @@ async def _lifespan(app: FastAPI):
                 "THR-106 skill-id rename migration error for org %s: %s",
                 org.slug, exc,
             )
-        recovered = org.db.recover_orphaned_running_jobs(now_iso=_now_iso)
-        if recovered:
+        unknown_jobs = org.db.recover_orphaned_running_jobs(now_iso=_now_iso)
+        if unknown_jobs:
             _logger.warning(
-                "recovered %d orphaned jobs in org %s: %s",
-                len(recovered), org.slug, recovered,
+                "job_liveness_unknown: retained %d running jobs in org %s: %s; "
+                "restart is not attributable orphan/cleanup proof",
+                len(unknown_jobs), org.slug, unknown_jobs,
             )
 
     # THR-195: observation (read-only) of stale never-started pending jobs.

@@ -331,9 +331,24 @@ def cmd_jobs_stop(args: argparse.Namespace) -> None:
         params["task_id"] = args.task_id
         params["session_id"] = args.session_id
     r = client.post(f"/api/v1/orgs/{slug}/jobs/{args.job_id}/stop", params=params)
+    if r.status_code in (409, 503):
+        try:
+            detail = r.json().get("detail", {})
+        except (ValueError, AttributeError):
+            detail = {}
+        if isinstance(detail, dict) and detail.get("code") in {
+            "not_running", "job_runner_pending", "job_runner_finalizing",
+            "job_liveness_unknown", "job_owner_unavailable", "team_move_native_held",
+            "job_stop_unavailable",
+        }:
+            print(f"Stop response HTTP{r.status_code}: {r.text}; inspect jobs show/wait before retrying.", file=sys.stderr)
+            sys.exit(1)
     if not _ok(r):
         return
-    print(f"ok: stopped {args.job_id}")
+    if r.json().get("already_terminal"):
+        print(f"Stop request unconfirmed for {args.job_id}; inspect show/wait for actual status", file=sys.stderr)
+        sys.exit(1)
+    print(f"ok: Stop requested for {args.job_id}; inspect show/wait for the actual result")
 
 
 

@@ -64,7 +64,7 @@ function useStopJob(): MutationLike<{ jobId: string }, StopJobResult> {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: ({ jobId }: { jobId: string }) => jobsApi.stopJob(slug, jobId),
-    onSuccess: (_d, { jobId }) => {
+    onSettled: (_d, _error, { jobId }) => {
       qc.invalidateQueries({ queryKey: ['job', slug, jobId] });
       qc.invalidateQueries({ queryKey: ['jobs', slug] });
     },

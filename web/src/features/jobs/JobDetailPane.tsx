@@ -8,7 +8,7 @@ import {
   DrawerTitle,
 } from '@/design-system/primitives/Drawer';
 import { Button } from '@/design-system/primitives/Button';
-import { ApiError } from '@/lib/api';
+import { classifyJobError, renderJobError, type JobErrorView } from './strings';
 import { useJob, useJobsRoutes, useStopJob } from '@/hooks/jobs';
 import { cn } from '@/lib/utils';
 import type { JobStatus } from '@/lib/api/types';
@@ -50,7 +50,7 @@ export function JobDetailPane({ jobId }: JobDetailPaneProps): JSX.Element {
   const routes = useJobsRoutes();
   const query = useJob(jobId);
   const [openDialog, setOpenDialog] = useState<OpenDialog>(null);
-  const [stopError, setStopError] = useState<string | null>(null);
+  const [stopError, setStopError] = useState<JobErrorView | null>(null);
   const stop = useStopJob();
   const { slug } = useParams<{ slug: string }>();
 
@@ -63,11 +63,7 @@ export function JobDetailPane({ jobId }: JobDetailPaneProps): JSX.Element {
     try {
       await stop.mutateAsync({ jobId });
     } catch (err) {
-      setStopError(
-        err instanceof ApiError
-          ? `Error ${err.status}: ${err.message}`
-          : String(err),
-      );
+      setStopError(classifyJobError(err, 'jobs.stop.failed'));
     }
   };
 
@@ -122,10 +118,10 @@ export function JobDetailPane({ jobId }: JobDetailPaneProps): JSX.Element {
           {/* ── Body ── */}
           <section className="min-h-0 flex-1 space-y-5 overflow-y-auto p-4">
             {query.isLoading && (
-              <p className="text-text-muted text-sm">Loading…</p>
+              <p className="text-text-muted text-sm">{t('jobs.detail.loading', { jobId })}</p>
             )}
             {query.isError && (
-              <p className="text-text-muted text-sm">Error loading {jobId}.</p>
+              <p className="text-text-muted text-sm">{t('jobs.detail.loadError', { jobId })}</p>
             )}
             {job && (
               <>
@@ -180,11 +176,10 @@ export function JobDetailPane({ jobId }: JobDetailPaneProps): JSX.Element {
                         {stop.isPending ? t('jobs.action.stopping') : t('jobs.action.stop')}
                       </Button>
                     </div>
-                    {stopError && (
-                      <p className="text-feedback-danger text-sm">{stopError}</p>
-                    )}
                   </div>
                 )}
+
+                {stopError && <p className="text-feedback-danger text-sm">{renderJobError(stopError, t)}</p>}
 
                 {/* 5. Reject reason — rejected only */}
                 {job.status === 'rejected' && job.reject_reason && (

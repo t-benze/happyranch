@@ -692,9 +692,20 @@ export interface JobTailResponse {
   lines: string[];
 }
 
+/** Stop signals acknowledge a request; every outcome requires a fresh row read. */
+export type JobStopErrorDetail =
+  | { code: 'not_running'; status: JobStatus }
+  | { code: 'session_mismatch' }
+  | { code: 'unknown_job'; job_id: string }
+  | { code: 'job_runner_pending' | 'job_runner_finalizing' | 'job_liveness_unknown'; job_id: string; status: 'running' }
+  | { code: 'team_move_native_held'; job_id: string; status: JobStatus | null; operation_id: string }
+  | { code: 'job_owner_unavailable'; job_id: string; status: JobStatus | null; unavailable_code: string }
+  | { code: 'job_stop_unavailable'; job_id: string; request_issued: boolean | null; unavailable_code: 'signal_failed' | 'request_audit_failed' };
+
 export interface JobStopResponse {
   ok: boolean;
   id: string;
+  /** Historical servers only; never proof of durable terminal state. */
   already_terminal?: boolean;
 }
 

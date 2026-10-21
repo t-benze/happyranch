@@ -304,6 +304,59 @@ class ProducerPreparation:
             self.admission.live.pop((self.state.kind, self.state.source_id), None)
 
 
+class _DeferredJob:
+    """Original job-only callback/owner association, never reconstructed rows."""
+    def __init__(self, owner, callback):
+        self.owner, self.callback = owner, callback
+
+
+def _stage_job_terminal_uncommitted(owner, *, observed: bool, failed: bool = False, deferred: bool = False):
+    """Job-only candidate in the original owner's row/audit/Pause transaction.
+
+    A direct child observation settles only that attempt, never descendants.
+    Failed or unfinished ownership remains active/unknown, with every older
+    attempt and sticky failed_cleanup byte retained by the strict writer.
+    """
+    if owner is None:
+        return None
+    a, s = owner.admission, owner.state
+    if s.kind != 'job' or a.live.get(('job', s.source_id)) is not owner or not owner.owner_live:
+        raise DeferredTeamMove('job_registration_unavailable')
+    if a.history_uncommitted().get(('job', s.source_id, s.occurrence_id)) != s:
+        raise DeferredTeamMove('team_move_producer_evidence_changed')
+    attempts = s.attempts
+    if observed:
+        if not owner.attempt_open or not attempts or not attempts[-1].launched:
+            raise DeferredTeamMove('team_move_producer_attempt_unsettled')
+        attempts = attempts[:-1] + (attempts[-1].model_copy(update={'settled': True, 'quiescent': False}),)
+    safe_defer = deferred and not attempts and not s.failed_cleanup and not failed
+    finished_tail = (observed or not attempts) and not failed and not s.failed_cleanup
+    candidate = s.model_copy(update=dict(attempts=attempts,
+        producer_settled=finished_tail, deferred=safe_defer,
+        failed_cleanup=s.failed_cleanup or failed or (not observed and bool(attempts))))
+    a.store.save_uncommitted(candidate)
+    return candidate
+
+
+def _release_job_terminal(owner, candidate, *, callback=None):
+    """Only after COMMIT; never pop a replacement owner or callback."""
+    if owner is None:
+        return
+    a, s = owner.admission, owner.state
+    if a.live.get(('job', s.source_id)) is not owner:
+        raise DeferredTeamMove('job_registration_unavailable')
+    owner.state = candidate
+    if candidate.attempts and candidate.attempts[-1].settled:
+        owner.attempt_open = False
+    if candidate.producer_settled:
+        owner.owner_live = False
+        del a.live[('job', s.source_id)]
+        retained = a.deferred_jobs.get(s.source_id)
+        if retained is not None and retained.owner is owner and retained.callback is callback:
+            del a.deferred_jobs[s.source_id]
+
+
+
 class ProducerMoveAdmission:
     def __init__(self, move):
         self.move, self.db = move, move.store.db
@@ -687,11 +740,13 @@ async def redeliver_native_jobs(org):
     admission = owner_for(org.db)
     if admission is None:
         return
-    for job_id, callback in tuple(admission.deferred_jobs.items()):
+    for job_id, retained in tuple(admission.deferred_jobs.items()):
         try:
             owner = admission.reserve('job', job_id)
         except DeferredTeamMove:
             continue
         if owner is not None:
-            admission.deferred_jobs.pop(job_id, None)
-            register_runner_task(job_id, asyncio.create_task(callback(owner)))
+            register_runner_task(job_id, asyncio.create_task(retained.callback(owner)),
+                db=org.db, org_slug=org.slug, move_owner=owner)
+            if admission.deferred_jobs.get(job_id) is retained:
+                del admission.deferred_jobs[job_id]
