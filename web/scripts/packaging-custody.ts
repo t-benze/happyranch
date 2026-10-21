@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 import { spawnSync, type SpawnSyncReturns } from 'node:child_process';
 import path from 'node:path';
 import { createRequire } from 'node:module';
-import { writeSync } from 'node:fs';
+import { fstatSync, writeSync } from 'node:fs';
 import type { Plugin, ResolvedConfig } from 'vite';
 
 type Bytes = { size: number; sha256: string };
@@ -28,6 +28,7 @@ type ProgressBoundary = 'helper' | 'observe' | 'hook' | 'settle' | 'custody';
 type ProgressStamp = { started: bigint; ordinal: number; boundary: ProgressBoundary; stage: ProgressStage; call: number; plugin: number };
 const PROGRESS_CAP = 64 * 1024;
 const PROGRESS_SUPPRESSED = '[packaging-custody] event=suppressed reason=byte_cap\n';
+const SNAPSHOT_PROGRESS_CAP = 3072; // Child: at most 24 lines, each at most 128 bytes.
 type Measure = { bytes: number; nodes: number; names: number };
 
 // Validate/count before emission or retention; no stringify-to-discover overflow.
@@ -170,6 +171,24 @@ export class PackagingCustody {
     } catch { this.progressDisabled = true; }
   }
 
+  private reserveSnapshotProgress(): boolean {
+    if (this.progressDisabled) return false;
+    try {
+      // Borrow only existing stderr. Unavailable diagnostics keep the original
+      // three-pipe spawn; no alternate destination or helper retry.
+      fstatSync(2);
+      if (this.progressBytes + SNAPSHOT_PROGRESS_CAP > PROGRESS_CAP - Buffer.byteLength(PROGRESS_SUPPRESSED)) {
+        this.progressDisabled = true;
+        writeSync(2, PROGRESS_SUPPRESSED);
+        return false;
+      }
+      // Charge the entire grant before launch, even on partial/unknown output.
+      // Never refund unused bytes or spend the existing suppression allowance.
+      this.progressBytes += SNAPSHOT_PROGRESS_CAP;
+      return true;
+    } catch { this.progressDisabled = true; return false; }
+  }
+
   private progressBegin(boundary: ProgressBoundary, stage: ProgressStage, call = 0, plugin = 0): ProgressStamp | null {
     if (this.progressDisabled) return null;
     try {
@@ -253,9 +272,11 @@ export class PackagingCustody {
     const capture = stage === 'read-input' ? 32 * 1024 ** 2 : 256 * 1024;
     const progressStage = HELPER_STAGES.find(name => name === stage) ?? 'other';
     const helperProgress = this.progressBegin('helper', progressStage, this.helperCalls);
+    const snapshotProgress = stage === 'snapshot' && this.reserveSnapshotProgress();
+    if (snapshotProgress) args.push('--snapshot-diagnostic-call', String(this.helperCalls), '--snapshot-diagnostic-bytes', String(SNAPSHOT_PROGRESS_CAP));
     let result: SpawnSyncReturns<Buffer>;
     try {
-      result = spawnSync(this.python, args, { input, maxBuffer: capture, stdio: ['pipe', 'pipe', 'pipe'] });
+      result = spawnSync(this.python, args, { input, maxBuffer: capture, stdio: snapshotProgress ? ['pipe', 'pipe', 'pipe', 2] : ['pipe', 'pipe', 'pipe'] });
     } catch (error) { this.progressMark('failed', helperProgress); throw error; }
     this.progressMark(result.error || result.status !== 0 ? 'failed' : 'end', helperProgress);
     if (result.error) { this.sticky ??= result.error; throw result.error; }
