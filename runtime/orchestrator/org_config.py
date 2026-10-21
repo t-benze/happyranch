@@ -194,8 +194,6 @@ class OrgConfig:
     # an existing daemon/org config mechanism only — no new public
     # API/CLI/UI surface.
     workspace_cleanup_enabled: bool = True
-    # THR307 independent nightly daemon sweep; no implicit deletion.
-    disk_sweep_mode: str = "dry_run"
     # Reserved for a later reclamation hook. There is no action consumer yet,
     # so true is inert and does not enable reclamation.
     workspace_cleanup_reclamation_actions_enabled: bool = False
@@ -811,14 +809,8 @@ def _build_org_config(data: dict, path: str) -> OrgConfig:
     if threads_block is not None:
         threads_kwargs = _parse_threads(threads_block, path)
 
-    disk_sweep_mode = "dry_run"
-    if "disk_sweep" in data:
-        block = data["disk_sweep"]
-        if not isinstance(block, dict) or set(block) - {"mode"}:
-            raise OrgConfigError(f"{path}: disk_sweep must contain only mode")
-        disk_sweep_mode = block.get("mode", "dry_run")
-        if not isinstance(disk_sweep_mode, str) or disk_sweep_mode not in {"off", "dry_run", "on"}:
-            raise OrgConfigError(f"{path}: disk_sweep.mode must be off, dry_run or on")
+    # THR307 seq134: obsolete disk_sweep input is ignored in every shape.
+    # Scheduled policy is all-org; unrelated config validation stays active.
 
     # THR-195 / TASK-6036: daemon-managed workspace cleanup scheduler kill
     # switch. Absent block/key -> enabled (default True).
@@ -922,7 +914,6 @@ def _build_org_config(data: dict, path: str) -> OrgConfig:
 
     return OrgConfig(
         session_timeout_seconds=timeout,
-        disk_sweep_mode=disk_sweep_mode,
         timezone=org_timezone,
         dreaming=dreaming_cfg,
         working_hours=working_hours_cfg,
