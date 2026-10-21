@@ -1152,3 +1152,141 @@ byte-exact and GREEN. Fresh full independent review and same-final-head QA,
 exact-head two lints and the live manager's genuine merge/remote observation remain
 required. Fixture success establishes neither real GitHub enforcement nor live
 manager interruption/cold/runtime/merge acceptance.
+
+## Explicit manual coding-reader support (incomplete acceptance)
+
+ROOT TASK-12299 step12 allocates F5-R1c/F8-R1c SYNTHETIC reader mechanics,
+separately from the four-module adapter lane above. The maintained parent is:
+
+```bash
+python -I -S scripts/verify_coding_readers.py \
+  --source-root /absolute/registered/clean/task-worktree \
+  --expected-head FULL_40_HEX_COMMIT \
+  --case-set release-accounting \
+  --history-manifest /absolute/owned/history.json \
+  --environment-manifest /absolute/owned/frozen-environment.json \
+  --output-dir /absolute/owned/task-scratch/new-run
+```
+
+**This increment is incomplete.** Its admitted multi-owner aggregate candidate,
+intermediate-byte and traversal fixtures and populated noncoding/old-history
+siblings remain unimplemented/unproved. They are explicit `unproved` entries;
+passing the implemented subset cannot return exit0. Actual TASK12380 native
+namespace admission refused before product execution, so none of the new driver
+observations, full fixture, import closure or cleanup behavior has executable
+qualification. Source inspection and a frozen install are not qualification.
+Do not use this command as a merge/behavioral PASS or as an automatic check.
+
+The host requires Linux x86-64, effective Python3.14 with `-I -S`, `/usr/bin/bwrap`,
+and an independently admitted namespace venue for each actual invocation.
+Namespace refusal stops execution; do not retry through a job, a host import,
+a reduced schema, module mocks or a different isolation mechanism. Source must
+be a registered non-primary worktree at the supplied clean actual commit;
+proof variants likewise require their own real clean local commits. The explicit
+inventory names the existing conservative212-module closure, package ancestors,
+two literal dynamic import targets and fixed `coding.v1.json` resource. Hashes
+are derived from actual committed source before/after each invocation, allowing
+an allocated proof commit without replacing its expected head or byte fence.
+Unknown static/dynamic imports, resource access, escaped paths or drift refuse.
+The inventory is conservative source analysis, not executable reachability proof.
+
+Prepare a NEW production-only frozen environment outside isolation, beneath
+actual task scratch, with the existing supported tool:
+
+```bash
+env -u VIRTUAL_ENV UV_PROJECT_ENVIRONMENT=/absolute/owned/task-scratch/env \
+  UV_CACHE_DIR=/absolute/owned/task-scratch/uv-cache \
+  uv sync --project /absolute/registered/clean/task-worktree \
+  --frozen --no-dev --no-install-project --no-build --no-python-downloads \
+  --python /usr/bin/python3.14
+```
+
+This installs existing locked binary dependencies only, without installing the
+project. Do not reuse the shared development environment or change the lock.
+An unavailable wheel/interpreter/build requirement stops execution. Retain the
+actual command, tool/interpreter versions and native exit. Hashing and static
+native-dependency inspection may occur on host; no product import, constructor,
+SQL fixture preparation or reader call may occur there.
+
+Input JSON is closed and accepts only this allocation's synthetic origin:
+
+```json
+{"format":"coding-reader-history-input@1","origin":"SYNTHETIC","org_slug":"synthetic-reader","fixture":"full-j-release-v1","source_head":"FULL_40_HEX_COMMIT"}
+```
+
+The separately retained environment manifest is closed too. Its keys are
+`format` (`coding-reader-frozen-environment@1`), `lock_sha256`, `environment_root`,
+`interpreter` (canonical `/usr/bin/python3.14`), `stdlib`
+(`/usr/lib/python3.14`), `site_packages` (canonical private env path), `files`
+(absolute-path→SHA256 for the entire site tree and explicitly selected stdlib,
+interpreter and native-library files), `native_libraries` (explicit canonical
+system library paths), `distributions` (installed name→version), `wheels`
+(distribution→hash of its installed WHEEL metadata), and `metadata` (interpreter
+`version` integer array and recorded runtime/lock/install provenance). Record
+actual locked archive digests separately from installed WHEEL metadata hashes;
+metadata alone is not original downloaded-archive custody proof. Every mounted
+file must have a retained digest. The exact stdlib/native closure is explicit,
+with no broad `/usr`, `/lib` or host-home mount. The loader's `/lib64` operand is
+bound explicitly to its hashed canonical system file. Missing native dependencies
+or environment metadata are setup failure, never a reader observation.
+
+The parent has closed options, a fresh output directory and closed child env/fds.
+The child gets new user/mount/network/PID/IPC/UTS/cgroup namespaces; source,
+interpreter, dependencies and resources are read-only. Only its owned `/work`,
+`/tmp` and result paths are writable. It records namespace deltas, loopback-only
+interfaces, environment, interpreter, absent host home/runtime/config/socket
+paths and an empty cwd **before** adding product paths or importing product code.
+Product subprocess/network operations are refused. Import/resource tracing must
+agree with the inventory. These are bounded synthetic observations, not hostile
+same-user security certification or hard OS-I/O timing guarantees.
+
+The embedded driver uses the ordinary full native Database and complete J fresh
+initializer, checks the independent pristine whole release reference, and retains
+all schema definitions/columns/FKs/index metadata and saved native rows. Its
+synthetic fixed publication uses separately retained fixture inputs and compares
+returned identity/version/original command and six full typed rows. It does not
+call the publication constructor to derive its oracle. Human-looking strings
+in these disposable rows prove no actual Founder action, task/SID, native launch,
+current grant or authentic publication. Authentic history is not an input in this
+allocation. Complete fixture recognition must succeed before negative siblings.
+
+Implemented observations cover absent/valid omitted and explicit None; actual
+supplied budget's prior work and wrong-type categories; foreign-org, malformed,
+full-row/storage/command/admission/journal, extra and orphan siblings; queued and
+complete J `validate_data=False` success/refusal; caller transaction and prior
+uncommitted native noncoding work; and standalone queued transaction closure.
+Each records actual SELECT trace, native rows/integrity/FKs, in_transaction and
+available actual budget counters. Prior-consumption/lower-bound assertions are
+optional-path coverage only, never aggregate-composition acceptance. The remaining
+aggregate and populated-history cases retain their explicit missing status.
+
+Exit0 requires the complete assigned observation table and teardown; exit1 is
+contract assertion RED with observed/expected values; exit2 is incomplete,
+setup/isolation/input/fixture/dependency failure and never RED. The current
+unproved entries force exit2. The foreground invocation is bounded at60s, native
+wait at most55s, each observed case at2s, CPU40s, address space768MiB, per-child
+file2MiB and128 descriptors. No sleep/hang/retry is used. Timeout kills and reaps
+the owned process group; namespace teardown owns private fixture storage. Output
+retains `receipt.json`, native stdout/stderr and original driver observations.
+Source/input/environment identities are checked again on refusal as well as
+success. Existing output is never reused or removed. No historical cleanup runs.
+
+Step12 separately allocates M1 release budget reset, M2 queued forwarding loss,
+M3 complete-J forwarding loss, M4 nested byte/traversal reservation loss,
+M5 full typed publication equality weakening and M6 caller rollback regression.
+Each requires an initial complete GREEN, one intended full-table RED on an owned
+registered guarded local proof commit, byte-exact forward restoration and GREEN.
+No proof mutation has been performed here: initial complete GREEN is unavailable.
+The final candidate still owes complete GREEN plus five fresh-process full-table
+repetitions. Missing proof is review-blocking under test-authoring-evidence-gate;
+no conditional test-authoring PASS follows from source or subset counts.
+
+The PR case record retains each assertion's four authoring answers and actual
+attribution. Full independent review and genuine FAILED12291-linked same-final-head
+QA remain root-owned, followed by two exact-head lints and genuine live-manager
+guarded merge/remote observation. Python units stay RETIRED; general integration
+INCLUDING callback is SKIPPED THR243seq42; E2E/build/native lifecycle tests are not
+selected. Full consume/support/settings/@3/team_move and actual actors/scopes,
+release import, installed/serving runtime, scratch merge/rollback/two-org/backup
+remain separate unfinished prerequisites. No coding readiness or live operation
+follows from this support.

@@ -1,0 +1,663 @@
+{
+  "format": "coding-reader-source-inventory@1",
+  "modules": {
+    "cli": {
+      "path": "cli/__init__.py"
+    },
+    "cli._shared": {
+      "path": "cli/_shared.py"
+    },
+    "cli.client": {
+      "path": "cli/client/__init__.py"
+    },
+    "cli.client.client": {
+      "path": "cli/client/client.py"
+    },
+    "cli.commands": {
+      "path": "cli/commands/__init__.py"
+    },
+    "cli.commands.learning": {
+      "path": "cli/commands/learning.py"
+    },
+    "cli.thread_delivery_release_requests": {
+      "path": "cli/thread_delivery_release_requests.py"
+    },
+    "runtime": {
+      "path": "runtime/__init__.py"
+    },
+    "runtime.adapters": {
+      "path": "runtime/adapters/__init__.py"
+    },
+    "runtime.adapters.claude": {
+      "path": "runtime/adapters/claude.py"
+    },
+    "runtime.adapters.codex": {
+      "path": "runtime/adapters/codex.py"
+    },
+    "runtime.adapters.opencode": {
+      "path": "runtime/adapters/opencode.py"
+    },
+    "runtime.adapters.pi": {
+      "path": "runtime/adapters/pi.py"
+    },
+    "runtime.config": {
+      "path": "runtime/config.py"
+    },
+    "runtime.daemon": {
+      "path": "runtime/daemon/__init__.py"
+    },
+    "runtime.daemon.auth": {
+      "path": "runtime/daemon/auth.py"
+    },
+    "runtime.daemon.cleanup_diagnostics": {
+      "path": "runtime/daemon/cleanup_diagnostics.py"
+    },
+    "runtime.daemon.direct_connect_store": {
+      "path": "runtime/daemon/direct_connect_store.py"
+    },
+    "runtime.daemon.dream_queue": {
+      "path": "runtime/daemon/dream_queue.py"
+    },
+    "runtime.daemon.dream_runner": {
+      "path": "runtime/daemon/dream_runner.py"
+    },
+    "runtime.daemon.event_bus": {
+      "path": "runtime/daemon/event_bus.py"
+    },
+    "runtime.daemon.host_session_store": {
+      "path": "runtime/daemon/host_session_store.py"
+    },
+    "runtime.daemon.jobs_runner": {
+      "path": "runtime/daemon/jobs_runner.py"
+    },
+    "runtime.daemon.metrics": {
+      "path": "runtime/daemon/metrics.py"
+    },
+    "runtime.daemon.metrics_store": {
+      "path": "runtime/daemon/metrics_store.py"
+    },
+    "runtime.daemon.org_state": {
+      "path": "runtime/daemon/org_state.py"
+    },
+    "runtime.daemon.paths": {
+      "path": "runtime/daemon/paths.py"
+    },
+    "runtime.daemon.queue": {
+      "path": "runtime/daemon/queue.py"
+    },
+    "runtime.daemon.registration_token": {
+      "path": "runtime/daemon/registration_token.py"
+    },
+    "runtime.daemon.routes": {
+      "path": "runtime/daemon/routes/__init__.py"
+    },
+    "runtime.daemon.routes._doctrine": {
+      "path": "runtime/daemon/routes/_doctrine.py"
+    },
+    "runtime.daemon.routes._org_dep": {
+      "path": "runtime/daemon/routes/_org_dep.py"
+    },
+    "runtime.daemon.routes.audit": {
+      "path": "runtime/daemon/routes/audit.py"
+    },
+    "runtime.daemon.routes.custom_skills": {
+      "path": "runtime/daemon/routes/custom_skills.py"
+    },
+    "runtime.daemon.routes.jobs": {
+      "path": "runtime/daemon/routes/jobs.py"
+    },
+    "runtime.daemon.routes.skills": {
+      "path": "runtime/daemon/routes/skills.py"
+    },
+    "runtime.daemon.routes.tasks": {
+      "path": "runtime/daemon/routes/tasks.py"
+    },
+    "runtime.daemon.routes.threads": {
+      "path": "runtime/daemon/routes/threads.py"
+    },
+    "runtime.daemon.runner": {
+      "path": "runtime/daemon/runner.py"
+    },
+    "runtime.daemon.schedule_queue": {
+      "path": "runtime/daemon/schedule_queue.py"
+    },
+    "runtime.daemon.schedule_runner": {
+      "path": "runtime/daemon/schedule_runner.py"
+    },
+    "runtime.daemon.sessions": {
+      "path": "runtime/daemon/sessions.py"
+    },
+    "runtime.daemon.state": {
+      "path": "runtime/daemon/state.py"
+    },
+    "runtime.daemon.task_scratch_coverage": {
+      "path": "runtime/daemon/task_scratch_coverage.py"
+    },
+    "runtime.daemon.task_scratch_evidence": {
+      "path": "runtime/daemon/task_scratch_evidence.py"
+    },
+    "runtime.daemon.task_scratch_reclamation": {
+      "path": "runtime/daemon/task_scratch_reclamation.py"
+    },
+    "runtime.daemon.team_move_service": {
+      "path": "runtime/daemon/team_move_service.py"
+    },
+    "runtime.daemon.thread_delivery_release_service": {
+      "path": "runtime/daemon/thread_delivery_release_service.py"
+    },
+    "runtime.daemon.thread_queue": {
+      "path": "runtime/daemon/thread_queue.py"
+    },
+    "runtime.daemon.thread_runner": {
+      "path": "runtime/daemon/thread_runner.py"
+    },
+    "runtime.daemon.wake_queue": {
+      "path": "runtime/daemon/wake_queue.py"
+    },
+    "runtime.daemon.wake_runner": {
+      "path": "runtime/daemon/wake_runner.py"
+    },
+    "runtime.daemon.work_status": {
+      "path": "runtime/daemon/work_status.py"
+    },
+    "runtime.identities": {
+      "path": "runtime/identities/__init__.py"
+    },
+    "runtime.identities.admission": {
+      "path": "runtime/identities/admission.py"
+    },
+    "runtime.identities.presentation": {
+      "path": "runtime/identities/presentation.py"
+    },
+    "runtime.identities.registry": {
+      "path": "runtime/identities/registry.py"
+    },
+    "runtime.identities.schema": {
+      "path": "runtime/identities/schema.py"
+    },
+    "runtime.infrastructure": {
+      "path": "runtime/infrastructure/__init__.py"
+    },
+    "runtime.infrastructure.artifact_store": {
+      "path": "runtime/infrastructure/artifact_store.py"
+    },
+    "runtime.infrastructure.audit_logger": {
+      "path": "runtime/infrastructure/audit_logger.py"
+    },
+    "runtime.infrastructure.database": {
+      "path": "runtime/infrastructure/database.py"
+    },
+    "runtime.infrastructure.db": {
+      "path": "runtime/infrastructure/db/__init__.py"
+    },
+    "runtime.infrastructure.db._shared": {
+      "path": "runtime/infrastructure/db/_shared.py"
+    },
+    "runtime.infrastructure.db.attachments": {
+      "path": "runtime/infrastructure/db/attachments.py"
+    },
+    "runtime.infrastructure.db.audit": {
+      "path": "runtime/infrastructure/db/audit.py"
+    },
+    "runtime.infrastructure.db.authority_policy": {
+      "path": "runtime/infrastructure/db/authority_policy.py"
+    },
+    "runtime.infrastructure.db.authority_v1": {
+      "path": "runtime/infrastructure/db/authority_v1.py"
+    },
+    "runtime.infrastructure.db.authority_v2_attempts": {
+      "path": "runtime/infrastructure/db/authority_v2_attempts.py"
+    },
+    "runtime.infrastructure.db.authority_v2_continuation": {
+      "path": "runtime/infrastructure/db/authority_v2_continuation.py"
+    },
+    "runtime.infrastructure.db.dreams": {
+      "path": "runtime/infrastructure/db/dreams.py"
+    },
+    "runtime.infrastructure.db.jobs": {
+      "path": "runtime/infrastructure/db/jobs.py"
+    },
+    "runtime.infrastructure.db.knowledge": {
+      "path": "runtime/infrastructure/db/knowledge.py"
+    },
+    "runtime.infrastructure.db.reply_delivery": {
+      "path": "runtime/infrastructure/db/reply_delivery.py"
+    },
+    "runtime.infrastructure.db.reply_exchange": {
+      "path": "runtime/infrastructure/db/reply_exchange.py"
+    },
+    "runtime.infrastructure.db.schema": {
+      "path": "runtime/infrastructure/db/schema.py"
+    },
+    "runtime.infrastructure.db.sessions": {
+      "path": "runtime/infrastructure/db/sessions.py"
+    },
+    "runtime.infrastructure.db.task_reconciliation": {
+      "path": "runtime/infrastructure/db/task_reconciliation.py"
+    },
+    "runtime.infrastructure.db.tasks": {
+      "path": "runtime/infrastructure/db/tasks.py"
+    },
+    "runtime.infrastructure.db.threads": {
+      "path": "runtime/infrastructure/db/threads.py"
+    },
+    "runtime.infrastructure.db.workspace_cleanup": {
+      "path": "runtime/infrastructure/db/workspace_cleanup.py"
+    },
+    "runtime.infrastructure.learnings_store": {
+      "path": "runtime/infrastructure/learnings_store.py"
+    },
+    "runtime.infrastructure.memory_collection": {
+      "path": "runtime/infrastructure/memory_collection.py"
+    },
+    "runtime.infrastructure.memory_migration": {
+      "path": "runtime/infrastructure/memory_migration.py"
+    },
+    "runtime.infrastructure.memory_telemetry_report": {
+      "path": "runtime/infrastructure/memory_telemetry_report.py"
+    },
+    "runtime.infrastructure.producer_admission": {
+      "path": "runtime/infrastructure/producer_admission.py"
+    },
+    "runtime.infrastructure.remote_job_schema": {
+      "path": "runtime/infrastructure/remote_job_schema.py"
+    },
+    "runtime.infrastructure.schedule_store": {
+      "path": "runtime/infrastructure/schedule_store.py"
+    },
+    "runtime.infrastructure.task_attachment_store": {
+      "path": "runtime/infrastructure/task_attachment_store.py"
+    },
+    "runtime.infrastructure.task_pause_controls": {
+      "path": "runtime/infrastructure/task_pause_controls.py"
+    },
+    "runtime.infrastructure.team_move_store": {
+      "path": "runtime/infrastructure/team_move_store.py"
+    },
+    "runtime.infrastructure.thread_admission": {
+      "path": "runtime/infrastructure/thread_admission.py"
+    },
+    "runtime.infrastructure.thread_delivery_release": {
+      "path": "runtime/infrastructure/thread_delivery_release.py"
+    },
+    "runtime.infrastructure.thread_mentions": {
+      "path": "runtime/infrastructure/thread_mentions.py"
+    },
+    "runtime.infrastructure.thread_scoped_attachment_store": {
+      "path": "runtime/infrastructure/thread_scoped_attachment_store.py"
+    },
+    "runtime.infrastructure.thread_store": {
+      "path": "runtime/infrastructure/thread_store.py"
+    },
+    "runtime.infrastructure.work_hours_store": {
+      "path": "runtime/infrastructure/work_hours_store.py"
+    },
+    "runtime.infrastructure.workflow_coding_schema": {
+      "path": "runtime/infrastructure/workflow_coding_schema.py"
+    },
+    "runtime.infrastructure.workflow_schema": {
+      "path": "runtime/infrastructure/workflow_schema.py"
+    },
+    "runtime.models": {
+      "path": "runtime/models.py"
+    },
+    "runtime.orchestrator": {
+      "path": "runtime/orchestrator/__init__.py"
+    },
+    "runtime.orchestrator._paths": {
+      "path": "runtime/orchestrator/_paths.py"
+    },
+    "runtime.orchestrator.active_authority_policy": {
+      "path": "runtime/orchestrator/active_authority_policy.py"
+    },
+    "runtime.orchestrator.adapter_contract": {
+      "path": "runtime/orchestrator/adapter_contract.py"
+    },
+    "runtime.orchestrator.adapter_store": {
+      "path": "runtime/orchestrator/adapter_store.py"
+    },
+    "runtime.orchestrator.agent_def": {
+      "path": "runtime/orchestrator/agent_def.py"
+    },
+    "runtime.orchestrator.authority": {
+      "path": "runtime/orchestrator/authority.py"
+    },
+    "runtime.orchestrator.authority_policy": {
+      "path": "runtime/orchestrator/authority_policy.py"
+    },
+    "runtime.orchestrator.authority_policy_store": {
+      "path": "runtime/orchestrator/authority_policy_store.py"
+    },
+    "runtime.orchestrator.canonical_roster": {
+      "path": "runtime/orchestrator/canonical_roster.py"
+    },
+    "runtime.orchestrator.capabilities": {
+      "path": "runtime/orchestrator/capabilities.py"
+    },
+    "runtime.orchestrator.chain": {
+      "path": "runtime/orchestrator/chain.py"
+    },
+    "runtime.orchestrator.custom_adapter_registry": {
+      "path": "runtime/orchestrator/custom_adapter_registry.py"
+    },
+    "runtime.orchestrator.dashboard_projection": {
+      "path": "runtime/orchestrator/dashboard_projection.py"
+    },
+    "runtime.orchestrator.dashboard_summary": {
+      "path": "runtime/orchestrator/dashboard_summary.py"
+    },
+    "runtime.orchestrator.escalation_reason": {
+      "path": "runtime/orchestrator/escalation_reason.py"
+    },
+    "runtime.orchestrator.executor_binary_registry": {
+      "path": "runtime/orchestrator/executor_binary_registry.py"
+    },
+    "runtime.orchestrator.executor_registry": {
+      "path": "runtime/orchestrator/executor_registry.py"
+    },
+    "runtime.orchestrator.executors": {
+      "path": "runtime/orchestrator/executors.py"
+    },
+    "runtime.orchestrator.fanout": {
+      "path": "runtime/orchestrator/fanout.py"
+    },
+    "runtime.orchestrator.host_supervisor": {
+      "path": "runtime/orchestrator/host_supervisor.py"
+    },
+    "runtime.orchestrator.launch_refusals": {
+      "path": "runtime/orchestrator/launch_refusals.py"
+    },
+    "runtime.orchestrator.orchestrator": {
+      "path": "runtime/orchestrator/orchestrator.py"
+    },
+    "runtime.orchestrator.org_config": {
+      "path": "runtime/orchestrator/org_config.py"
+    },
+    "runtime.orchestrator.org_validation": {
+      "path": "runtime/orchestrator/org_validation.py"
+    },
+    "runtime.orchestrator.producer_move": {
+      "path": "runtime/orchestrator/producer_move.py"
+    },
+    "runtime.orchestrator.prompt_loader": {
+      "path": "runtime/orchestrator/prompt_loader.py"
+    },
+    "runtime.orchestrator.routine_parser": {
+      "path": "runtime/orchestrator/routine_parser.py"
+    },
+    "runtime.orchestrator.run_step": {
+      "path": "runtime/orchestrator/run_step.py"
+    },
+    "runtime.orchestrator.runtime_executor_store": {
+      "path": "runtime/orchestrator/runtime_executor_store.py"
+    },
+    "runtime.orchestrator.schedule_rules": {
+      "path": "runtime/orchestrator/schedule_rules.py"
+    },
+    "runtime.orchestrator.task_pause": {
+      "path": "runtime/orchestrator/task_pause.py"
+    },
+    "runtime.orchestrator.task_prompt_headers": {
+      "path": "runtime/orchestrator/task_prompt_headers.py"
+    },
+    "runtime.orchestrator.task_scratch": {
+      "path": "runtime/orchestrator/task_scratch.py"
+    },
+    "runtime.orchestrator.task_scratch_coverage": {
+      "path": "runtime/orchestrator/task_scratch_coverage.py"
+    },
+    "runtime.orchestrator.task_scratch_evidence": {
+      "path": "runtime/orchestrator/task_scratch_evidence.py"
+    },
+    "runtime.orchestrator.task_scratch_report": {
+      "path": "runtime/orchestrator/task_scratch_report.py"
+    },
+    "runtime.orchestrator.task_terminal_readers": {
+      "path": "runtime/orchestrator/task_terminal_readers.py"
+    },
+    "runtime.orchestrator.task_thread_posting": {
+      "path": "runtime/orchestrator/task_thread_posting.py"
+    },
+    "runtime.orchestrator.task_wait_readers": {
+      "path": "runtime/orchestrator/task_wait_readers.py"
+    },
+    "runtime.orchestrator.team_move": {
+      "path": "runtime/orchestrator/team_move.py"
+    },
+    "runtime.orchestrator.team_move_canonical": {
+      "path": "runtime/orchestrator/team_move_canonical.py"
+    },
+    "runtime.orchestrator.team_move_context": {
+      "path": "runtime/orchestrator/team_move_context.py"
+    },
+    "runtime.orchestrator.team_move_operation": {
+      "path": "runtime/orchestrator/team_move_operation.py"
+    },
+    "runtime.orchestrator.team_move_public": {
+      "path": "runtime/orchestrator/team_move_public.py"
+    },
+    "runtime.orchestrator.team_move_recovery": {
+      "path": "runtime/orchestrator/team_move_recovery.py"
+    },
+    "runtime.orchestrator.team_move_startup": {
+      "path": "runtime/orchestrator/team_move_startup.py"
+    },
+    "runtime.orchestrator.teams": {
+      "path": "runtime/orchestrator/teams.py"
+    },
+    "runtime.orchestrator.thread_move": {
+      "path": "runtime/orchestrator/thread_move.py"
+    },
+    "runtime.orchestrator.throttle": {
+      "path": "runtime/orchestrator/throttle.py"
+    },
+    "runtime.orchestrator.workspace_adapters": {
+      "path": "runtime/orchestrator/workspace_adapters.py"
+    },
+    "runtime.platform": {
+      "path": "runtime/platform/__init__.py"
+    },
+    "runtime.platform.backend_factory": {
+      "path": "runtime/platform/backend_factory.py"
+    },
+    "runtime.platform.enforcement_policy": {
+      "path": "runtime/platform/enforcement_policy.py"
+    },
+    "runtime.platform.isolation": {
+      "path": "runtime/platform/isolation.py"
+    },
+    "runtime.platform.linux_systemd": {
+      "path": "runtime/platform/linux_systemd.py"
+    },
+    "runtime.platform.macos_process_group": {
+      "path": "runtime/platform/macos_process_group.py"
+    },
+    "runtime.platform.passthrough_backend": {
+      "path": "runtime/platform/passthrough_backend.py"
+    },
+    "runtime.platform.process_census": {
+      "path": "runtime/platform/process_census.py"
+    },
+    "runtime.platform.session_backend": {
+      "path": "runtime/platform/session_backend.py"
+    },
+    "runtime.reply_delivery": {
+      "path": "runtime/reply_delivery.py"
+    },
+    "runtime.runtime": {
+      "path": "runtime/runtime.py"
+    },
+    "runtime.skills": {
+      "path": "runtime/skills/__init__.py"
+    },
+    "runtime.skills.canonical_store": {
+      "path": "runtime/skills/canonical_store.py"
+    },
+    "runtime.skills.custom": {
+      "path": "runtime/skills/custom/__init__.py"
+    },
+    "runtime.skills.custom.service": {
+      "path": "runtime/skills/custom/service.py"
+    },
+    "runtime.skills.eligibility": {
+      "path": "runtime/skills/eligibility.py"
+    },
+    "runtime.skills.exposure": {
+      "path": "runtime/skills/exposure.py"
+    },
+    "runtime.skills.models": {
+      "path": "runtime/skills/models.py"
+    },
+    "runtime.skills.registry": {
+      "path": "runtime/skills/registry.py"
+    },
+    "runtime.skills.resolver": {
+      "path": "runtime/skills/resolver.py"
+    },
+    "runtime.skills.skill_md": {
+      "path": "runtime/skills/skill_md.py"
+    },
+    "runtime.skills.sources": {
+      "path": "runtime/skills/sources.py"
+    },
+    "runtime.skills.symlink_materializer": {
+      "path": "runtime/skills/symlink_materializer.py"
+    },
+    "runtime.skills.system_contracts": {
+      "path": "runtime/skills/system_contracts.py"
+    },
+    "runtime.workflows": {
+      "path": "runtime/workflows/__init__.py"
+    },
+    "runtime.workflows._coding_import_support": {
+      "path": "runtime/workflows/_coding_import_support.py"
+    },
+    "runtime.workflows._coding_mapping_admission": {
+      "path": "runtime/workflows/_coding_mapping_admission.py"
+    },
+    "runtime.workflows._coding_release_history": {
+      "path": "runtime/workflows/_coding_release_history.py"
+    },
+    "runtime.workflows._coding_role_admission": {
+      "path": "runtime/workflows/_coding_role_admission.py"
+    },
+    "runtime.workflows._coding_role_records": {
+      "path": "runtime/workflows/_coding_role_records.py"
+    },
+    "runtime.workflows._coding_source_admission": {
+      "path": "runtime/workflows/_coding_source_admission.py"
+    },
+    "runtime.workflows._coding_source_capture": {
+      "path": "runtime/workflows/_coding_source_capture.py"
+    },
+    "runtime.workflows.activation": {
+      "path": "runtime/workflows/activation.py"
+    },
+    "runtime.workflows.artifacts": {
+      "path": "runtime/workflows/artifacts.py"
+    },
+    "runtime.workflows.authority": {
+      "path": "runtime/workflows/authority.py"
+    },
+    "runtime.workflows.coding_authority_history": {
+      "path": "runtime/workflows/coding_authority_history.py"
+    },
+    "runtime.workflows.coding_bootstrap": {
+      "path": "runtime/workflows/coding_bootstrap.py"
+    },
+    "runtime.workflows.coding_capability_history": {
+      "path": "runtime/workflows/coding_capability_history.py"
+    },
+    "runtime.workflows.coding_dispatch": {
+      "path": "runtime/workflows/coding_dispatch.py"
+    },
+    "runtime.workflows.coding_mapping_history": {
+      "path": "runtime/workflows/coding_mapping_history.py"
+    },
+    "runtime.workflows.coding_native_history": {
+      "path": "runtime/workflows/coding_native_history.py"
+    },
+    "runtime.workflows.coding_release_import": {
+      "path": "runtime/workflows/coding_release_import.py"
+    },
+    "runtime.workflows.coding_roles": {
+      "path": "runtime/workflows/coding_roles.py"
+    },
+    "runtime.workflows.coding_saved_records": {
+      "path": "runtime/workflows/coding_saved_records.py"
+    },
+    "runtime.workflows.coding_source_admission_history": {
+      "path": "runtime/workflows/coding_source_admission_history.py"
+    },
+    "runtime.workflows.coding_source_history": {
+      "path": "runtime/workflows/coding_source_history.py"
+    },
+    "runtime.workflows.coding_start": {
+      "path": "runtime/workflows/coding_start.py"
+    },
+    "runtime.workflows.coding_start_history": {
+      "path": "runtime/workflows/coding_start_history.py"
+    },
+    "runtime.workflows.coding_start_records": {
+      "path": "runtime/workflows/coding_start_records.py"
+    },
+    "runtime.workflows.cutover": {
+      "path": "runtime/workflows/cutover.py"
+    },
+    "runtime.workflows.draft_dispatch": {
+      "path": "runtime/workflows/draft_dispatch.py"
+    },
+    "runtime.workflows.profile_coordinator": {
+      "path": "runtime/workflows/profile_coordinator.py"
+    },
+    "runtime.workflows.recovery": {
+      "path": "runtime/workflows/recovery.py"
+    },
+    "runtime.workflows.release_templates": {
+      "path": "runtime/workflows/release_templates.py"
+    },
+    "runtime.workflows.repository_artifacts": {
+      "path": "runtime/workflows/repository_artifacts.py"
+    },
+    "runtime.workflows.review_dispatch": {
+      "path": "runtime/workflows/review_dispatch.py"
+    },
+    "runtime.workflows.review_join": {
+      "path": "runtime/workflows/review_join.py"
+    },
+    "runtime.workflows.review_receipts": {
+      "path": "runtime/workflows/review_receipts.py"
+    },
+    "runtime.workflows.revisions": {
+      "path": "runtime/workflows/revisions.py"
+    },
+    "runtime.workflows.submissions": {
+      "path": "runtime/workflows/submissions.py"
+    },
+    "runtime.workflows.templates": {
+      "path": "runtime/workflows/templates.py"
+    }
+  },
+  "resources": {
+    "runtime/workflows/builtin_templates/coding.v1.json": "6ee02be98738d3c95fe584b165abe07d0dbef66e510133c117ee0d62c953cad8"
+  },
+  "external_roots": [
+    "dateutil",
+    "fastapi",
+    "httpx",
+    "pydantic",
+    "pydantic_settings",
+    "sse_starlette",
+    "yaml"
+  ],
+  "literal_dynamic_edges": [
+    {
+      "path": "runtime/daemon/task_scratch_evidence.py",
+      "target": "runtime.orchestrator.task_scratch_evidence"
+    },
+    {
+      "path": "runtime/daemon/task_scratch_coverage.py",
+      "target": "runtime.orchestrator.task_scratch_coverage"
+    }
+  ]
+}
