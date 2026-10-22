@@ -2014,7 +2014,8 @@ unload prechecks and close can still block the loop.
 Build and dev commands:
 
 ```bash
-scripts/build_web.sh                 # release build: production UI flag profile
+scripts/build_web.sh                 # default: local UI flag profile
+scripts/build_web.sh --production    # release build: production UI flag profile
 cd web && npm run dev                # local profile (restart after flag edits)
 cd web && npm run build:local        # bundle with the local profile, never for release
 happyranch web
@@ -2026,11 +2027,12 @@ production profiles. An optional, gitignored `web/config/features.local.json`
 holds per-checkout overrides (see `features.local.example.json`). The SPA reads
 flags only from `web/src/config/features.ts`.
 
-- `npm run build`, `scripts/build_web.sh` and the Mac `build-app.sh` caller
-  always select the production profile. A local file, `VITE_ENABLE_KB_COMPOSE`,
-  Vite mode or `NODE_ENV` cannot change that.
-- `npm run dev` and `npm run build:local` use development defaults, then the
-  local file, then an explicit `VITE_ENABLE_KB_COMPOSE`.
+- `npm run build`, `scripts/build_web.sh --production` and the Mac
+  `build-app.sh` caller always select the production profile. A local file,
+  `VITE_ENABLE_KB_COMPOSE`, Vite mode or `NODE_ENV` cannot change that.
+- `scripts/build_web.sh` defaults to `npm run build:local`. Like `npm run dev`,
+  it uses development defaults, then the local file, then an explicit
+  `VITE_ENABLE_KB_COMPOSE`.
 - Vitest uses development defaults plus that explicit input, and ignores the
   local file.
 - `VITE_ENABLE_KB_COMPOSE` accepts only the literal `true` or `false`; empty

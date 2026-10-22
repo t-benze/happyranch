@@ -2391,16 +2391,21 @@ The CLI is an HTTP client. Start the daemon once, then run CLI commands.
 scripts/daemon.sh start
 scripts/daemon.sh status
 scripts/daemon.sh stop --force     # graceful shutdown (default daemon needs --force)
-scripts/build_web.sh
+scripts/build_web.sh              # default: local UI flag profile
+scripts/build_web.sh --production # production UI flag profile
 happyranch web [--no-open]
 ```
 
-`scripts/build_web.sh` builds the SPA with the production build-time UI flag
-profile (`web/config/features.production.json`), which hides unfinished UI
-such as Work Hours. The flags change UI visibility only: daemon settings,
-scheduler, API and CLI behavior do not depend on them. Local overrides
-(`web/config/features.local.json`) apply only to `npm run dev`,
-`npm run build:local` and, for the KB compatibility input, tests. See
+`scripts/build_web.sh` defaults to `npm run build:local`: development UI flag
+defaults, then optional gitignored `web/config/features.local.json`, then the
+existing explicit `VITE_ENABLE_KB_COMPOSE` compatibility input. It writes
+`web/dist/` and runs `npm ci` first if `node_modules` or its `.package-lock.json`
+is absent. `scripts/build_web.sh --production`, `npm run build` and Mac
+packaging use only `web/config/features.production.json`, ignoring local/ambient
+feature overrides and hiding unfinished UI such as Work Hours. `npm run dev`
+uses the local profile; Vitest uses development defaults plus the KB input,
+ignoring the local file. The flags change UI visibility only: daemon settings,
+scheduler, API and CLI behavior do not depend on them. See
 `web/ARCHITECTURE.md` § Build-time UI flags.
 
 `scripts/daemon.sh start` removes a stale port file, launches the daemon, and
