@@ -527,6 +527,52 @@ validation outside `tests/`, not a retired suite or product E2E evidence.
 Docs Manual and tenant-isolation workflows are explicit manual-only; neither
 is a required path check. macOS packaging remains manual/tag release activity.
 
+## Bounded E2E recovery diagnostics (ROOT12610 / TASK12643)
+
+The controller latches the first actual exception/traceback before diagnostic
+work; record_error performs no I/O. Optional closed failure_categories metadata
+is published only at the three existing main failure/finalization boundaries,
+owner-only, nonrecursive, sticky on publication failure and bounded by the
+original effective deadline. Separate capture metadata follows the original[]
+invalidation attempt and preserves capture/invalidation exception precedence.
+No context/readiness/sanitation, browser/transport or lifecycle rule changes.
+
+The private category snapshot and result projection have exact finite keys,
+enums, numeric/source/null/stale semantics and no raw text. The reader uses
+strict UTF8/JSON, one at-most4097-byte read/4096-byte admission, no-follow owned
+parent/file identity and pending-collision refusal. A validated snapshot is
+frozen before root loss; export never rereads it. Available/null/stale metadata
+supplies no latest/complete cause, capture success, readiness, marks or health.
+See [the existing case record](../e2e/README.md#task-12643-accepted-recovery-case-map-root12610--thr291)
+for all thirty R1/R2/R3/X expectations, A/B/D/E four answers, keeper gaps and
+full56 EACH3.12/3.14 L1–L7 plus TERM/INT/validator references.
+
+Unchanged Owned cleanup runs FIRST. Category read, valid-only collection,
+individual existing port probes and one identity-checked owned-root removal/
+literal absence observation proceed independently while the SAME original60s
+reserve remains positive. Owned timeout/expiry stops new cleanup; per-port1s is
+clipped to remaining time. Missing port observations are unknown. Staging,
+closure and cleanup failure are sticky through later read-only recollection/
+export; actual root absence never certifies process/unit/group closure.
+Original120s export performs no rescue teardown. Initial published metadata FAIL
+survives failed final replacement; incomplete detail has variants={} and BOTH
+cleanup.ok/timing.cleanup.ok=false in every fallback. Initial publication failure
+is never represented as a persisted FAIL. Required-member/native health rejection
+and complete-context raw sanitation remain unchanged.
+
+Corrected behavior NOT RUN; intended-failure/restored-pass PROOF NOT RUN. Native
+39765942783 remains HealthFAIL47/all56 EACH UNKNOWN/zero recordedPASS/no proved
+UNREACHED; scenario exit1 and cleanup/export ValueError have no recovered
+initiating cause. npm success, diagnostic-only TERM/INT PASS and JOB5234 COLLECTION
+ONLY retain their attribution. Prior historical failures/unknown ownership and
+product/reset INCOMPLETE remain; no new behavioral/test-authoring PASS follows.
+Source/AST/diff/lint evidence is separate. Units RETIRED; integration INCLUDING
+callback SKIPPED24342/211270–271. Protected proof/repetitions remain unauthorized;
+no local/PR E2E, new verifier/venue or workflow/manifest change. Daily19UTC,
+all56/two cells/signals/four artifacts/480-240-720-60-120-900 and two unconditional
+lint-only merge checks remain. Independent FULL review and same-final-head scoped
+QA, normal hooks/nonforce publication and manager guarded merge remain required.
+
 ## Integration environment and retained observations
 
 ## Historical PR1022 finite roster L/W observations
