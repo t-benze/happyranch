@@ -4123,3 +4123,17 @@ ROOT12299 owns genuine executable same-final-head QA before merge, actual tool
 entitlement and native constructor/isolation/scopes/scratch/installed-serving/
 operator/rollback acceptance. No automatic held-manager reallocation exists.
 <!-- /TASK12509 / ROOT12299 live final-manager source -->
+
+## Canonical Founder coding settings backend — R2
+
+Founder-only GET/PUT `/api/v1/orgs/{slug}/settings/coding` owns one canonical
+DB coding section, two-generation CAS, original-key replay and a genuine human
+mapping/publication suffix. No YAML/default fallback, task/SID impersonation,
+repository grant, settings UI or readiness enablement follows. Complete native
+prefix/human suffix/current pointer validation composes through mapping inventory
+and cold/schema(data=False)/recovery/drain readers; old literal families remain.
+Fresh old-native publication after S1 refuses inside its transaction; historical
+exact replay stays read-only. Preserve the original key/body after uncertainty
+and reconcile by GET, without reapply or reservation clearance. The full wire,
+authority/transaction/budget/error contract and unexecuted acceptance boundaries
+are in the ordered-coding-workflow spec's canonical Founder settings section.

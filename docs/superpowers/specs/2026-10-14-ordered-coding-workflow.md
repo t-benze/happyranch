@@ -1803,3 +1803,125 @@ ROOT12299 owns genuine executable same-final-head QA before merge, actual tool
 entitlement and native constructor/isolation/scopes/scratch/installed-serving/
 operator/rollback acceptance. No automatic held-manager reallocation exists.
 <!-- /TASK12509 / ROOT12299 live final-manager source -->
+
+## Canonical Founder settings backend (R2 source)
+
+The dedicated Founder GET/PUT `/api/v1/orgs/{slug}/settings/coding` consumes
+existing settings bearer authentication and the existing human principal proof.
+It accepts no task, SID or caller-actor query/body path. Configuration does not
+make coding ready: all execution/readiness gates stay disabled. The real Founder
+page, start@2/binding@3 settings pins and genuine cross-team run remain separate
+root-owned prerequisites. No settings UI or native execution producer ships here.
+
+The sole canonical value is `org_settings.section='coding'`. Absence yields E0:
+`{generation:0,admission:'disabled',release:null,mapping:null,snapshot_digest:null,
+mapping_generation:m}`, with m the authenticated native history tip or zero.
+There is no generation-zero row, YAML seed, default fallback, migration or schema
+change. A missing pointer after human publication is corruption. Null, partial,
+duplicate-key, noncanonical, wrongly typed, foreign or broken-history values
+refuse. Older layouts refuse a coding pointer even without mappings/audits.
+
+PUT is the bounded canonical UTF8 JSON `workflow-coding-settings-command@1` with
+exactly `format,org_slug,operation_key,expected_generation,
+expected_mapping_generation,admission,mapping`. Canonical means sorted keys,
+compact separators, non-ASCII preserved, no BOM/newline/nonfinite number. Limit
+is 65536 bytes; snapshots/records/captures are capped at 1 MiB. Booleans cannot
+stand for INTEGERs. Generations are 0..2^63−1; MAX cannot advance. Mapping is the
+closed role-default shape: fixed imported coding-v1 release, four independent
+agent roles, bounded per-role replacements, 1..8 repository references, and an
+org authority pin. Current fresh/explicit selection validates active permanent
+principals, their actual teams/worker-or-registered-manager roles/executors and
+every configured repository origin/ID/scope. Cross-team selections belong only
+to the human record family. Configuration confers no repository grant.
+
+Every accepted new key, including identical or admission-only changes, appends
+one genuine human mapping at m+1 and one settings snapshot at s+1. Both CAS values
+must match. Disabling may retain the complete immediately preceding Mapping
+under revoked actor eligibility, with its original authority pin; it still needs
+current human publication authority and supplies no fresh execution permission.
+All other selections require full current eligibility and mapping/current-pin
+equality. Old native record@1/custody history stays literal and byte-preserved.
+After S1, fresh native mapping publication refuses `coding_settings_human_owned`
+inside its admission transaction; exact old-operation replay remains read-only.
+
+The human `workflow-coding-agent-read-role-record@2` stores the original command,
+issuer `{kind:'human',principal:'founder',proof_kind:'founder_bearer'}`, original
+complete authority capture, Mapping, UTC time and settings
+`{generation,admission,previous_snapshot_digest}`. Its operation principal is
+`human:founder`, without fake task/SID/result/native source admission. Snapshot
+`workflow-coding-settings-snapshot@1` contains exactly `format,org_slug,generation,
+admission,release,mapping,operation_key,request_digest,previous_snapshot_digest,
+published_at,published_by`; mapping pins the actual new row ID/generation/digest,
+and published_by is human:founder. UTC uses six fractional digits and Z.
+Settings updated_by is the existing `founder` representation; updated_at matches.
+
+The native org_settings reservation surrounds authority→teams→DB async locks.
+After the awaited locks, discovery recaptures authority before the synchronous
+admission writer. That sole business transaction authenticates complete old
+state/replay/CAS/current authority, appends mapping/admission, consecutive
+`coding_settings_publication` then standard `org_config_write` audits under
+config:coding/founder at the same time, upserts the pointer, independently
+validates complete new state and rechecks authority before COMMIT. There is no
+await, filesystem/network work or self-committing helper in this transaction.
+Reservation and authority lease evidence have separate durable boundaries.
+Validation-only rollback preserves their native no-effect classification;
+unknown COMMIT/rollback/settlement remains uncertain. Post-COMMIT release failure
+never becomes an ordinary unsaved rejection or an automatic retry.
+
+The publication audit closes original command bytes/digest/key, org/principal,
+actual mapping ID/generation/digest, admission, and complete before/after
+snapshots. The standard audit has exactly section/tiers/before/after with sorted
+changed snapshot keys. Independent SELECT-only readers validate native storage
+classes, all original admission/journal/capture evidence, audit envelope/order,
+contiguous native-prefix/human-suffix generations, snapshot digest chain,
+original versus retained publication authority, orphans and current pointer.
+They use one cumulative existing allowance (8192 fetched candidates, 16384
+traversal steps, 16 MiB raw/decoded/canonical work, stricter per-value/table caps),
+without nested reset, schema recursion, global cache or trusted after-image.
+Cold/schema(data=False)/recovery/drain and mapping inventory inherit this closure.
+These cooperative limits are not hard SQL-engine/process-memory or wall limits.
+
+`resolve_coding_settings(conn,org,*,budget,pinned=None)` consumes a caller-owned
+complete-schema read snapshot. An exact historical
+`{generation,snapshot_digest,mapping:Pin}` returns its authenticated snapshot
+separately from current. Current corruption refuses; historical pins never
+replace current validity or authorize new work. Later native settings-pin
+composition and authentic held callback/settlement handling remain prerequisites
+before enabling the excluded new engine families.
+
+GET returns `workflow-coding-settings-view@1` with exactly
+`format,org_slug,current,configuration,operation`; configuration is the current
+validated Mapping or null for E0. Only optional operation_key is accepted; unknown
+operation is404. PUT returns `workflow-coding-settings-save@1` with exactly
+`format,org_slug,operation,current,configuration`. Receipt
+`workflow-coding-settings-receipt@1` has exactly `format,operation_key,
+request_digest,snapshot,snapshot_digest,publication_audit_id,replayed`.
+Original-key GET and exact PUT replay return replayed=true without an append,
+before fresh CAS; a first save returns false. Current may be newer than the
+receipt's original snapshot. Changed bytes under the same key give409
+coding_settings_operation_conflict; stale either-CAS gives409
+coding_settings_generation_stale, both with validated current. Invalid commands
+are422 coding_settings_invalid_request, corrupt closure is503
+coding_settings_invalid, and uncertain publication is503
+coding_settings_publication_uncertain with the original key. Preserve that key
+and body and explicitly GET it after transport loss. Readback never settles a
+native reservation or grants reapplication/cleanup.
+
+The browser mirror is `settings.getCodingSettings`/`putCodingSettings`, with
+closed TS types exported by the existing API barrel. PUT recursively constructs
+the canonical object for the unchanged shared JSON client and uses its existing
+explicit-token option to send the ordinary bearer once, including on401. No
+shared token/transport change or automatic write rebootstrap/reapply is added.
+JavaScript cannot represent every server int64: the mirror refuses unsafe numeric
+commands/readbacks rather than rounding a CAS. A transport rejection still needs
+original-key reconciliation; the browser does not claim full-range numeric
+recovery from JSON.parse. The server retains its full int64 grammar.
+
+This is backend SOURCE implementation. HTTP-client mocks prove wire/retry shape
+only; W1/O1 prove route/served-summary parity. Stateful SQL/CAS/concurrency,
+interruption, authority/native/operational behavior and genuine workflow acceptance
+remain UNEXECUTED without an authorized compatible venue. Swift proof remains
+UNEXECUTED / FOUNDER-EXEMPTED / NONBLOCKING under Founder320seq93; no test is removed.
+Python units remain RETIRED, integration INCLUDING callback/lifespan/SessionTracker
+SKIPPED24342, and automated merge checks lint/static only. Independent full review,
+future genuine linked QA and manager guarded merge remain required.

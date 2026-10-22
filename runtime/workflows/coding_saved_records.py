@@ -639,10 +639,13 @@ def read_saved_repository_binding(raw: bytes, *, expected_org_slug: str) -> Codi
     return _binding(_json(raw, VALUE_LIMIT), expected_org_slug)
 
 
-def read_saved_mapping_record(raw: bytes, *, expected_org_slug: str) -> SavedCodingRecord:
+def read_saved_mapping_record(raw: bytes, *, expected_org_slug: str, budget=None) -> SavedCodingRecord:
     """Complete command/adoption pairing and position-selected setup adapter."""
     _org(expected_org_slug)
     value = _json(raw, VALUE_LIMIT)
+    if value.get('format') == 'workflow-coding-agent-read-role-record@2':
+        from runtime.workflows._coding_settings_records import read_human_record
+        return read_human_record(raw, expected_org_slug=expected_org_slug, budget=budget)
     if value.get('format') == 'workflow-coding-agent-read-role-record@1':
         from runtime.workflows._coding_role_records import read_role_record
         return read_role_record(raw, expected_org_slug=expected_org_slug)

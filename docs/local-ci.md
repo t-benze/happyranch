@@ -1573,3 +1573,18 @@ Route fixture four-answer evidence is recorded; attributable RED/GREEN and nativ
 gate proof remain UNEXECUTED/unallocated, never test-authoring PASS. Only source,
 lint/static, normal hooks/publication; units RETIRED, integration INCLUDING callback
 SKIPPED24342. Genuine final-head executable QA/live-manager action stays root-owned.
+
+### R2 canonical coding settings source
+
+The existing focused `cd web && npm test -- --run src/lib/api/settings.test.ts
+src/test/openapi-coverage.test.ts` observes actual shared-client canonical request
+bytes, one-send behavior (401/503), explicit original-key GET and W1 route shape.
+It does not prove backend persistence, human authority, CAS, interruption,
+concurrency or native execution. Existing `uv run --python 3.14 python
+scripts/generate_openapi_snapshot.py --check` compares the served summary only.
+Required clean committed-head `scripts/local_ci.sh all` remains a durable-job,
+lint/static-only check. Missing stateful/native venue proof is honestly NOT RUN;
+Founder320seq99/v25 permits review with that limitation. Swift proof is
+UNEXECUTED / FOUNDER-EXEMPTED / NONBLOCKING93; integration INCLUDING callback,
+lifespan and SessionTracker SKIPPED24342; Python units RETIRED. No E2E/build/native
+campaign, proof framework or new merge check is introduced.

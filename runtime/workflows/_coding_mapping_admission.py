@@ -56,6 +56,10 @@ class _MappingCaptures:
             if capture.native_owner.table == 'workflow_coding_mappings':
                 _check(capture.native_owner.id not in self.by_mapping)
                 self.by_mapping[capture.native_owner.id] = capture
+        from runtime.workflows._coding_settings_history import publications
+        human = publications(self.conn, self.org_slug, self.budget)
+        _check(not self.by_mapping.keys() & human.keys())
+        self.by_mapping.update(human)
         self.loaded = True
 
 

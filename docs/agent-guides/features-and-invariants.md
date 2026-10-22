@@ -4180,3 +4180,14 @@ ROOT12299 owns genuine executable same-final-head QA before merge, actual tool
 entitlement and native constructor/isolation/scopes/scratch/installed-serving/
 operator/rollback acceptance. No automatic held-manager reallocation exists.
 <!-- /TASK12509 / ROOT12299 live final-manager source -->
+
+### Canonical coding configuration backend
+
+Coding defaults and admission are one canonical DB section owned by the dedicated
+Founder settings endpoint, with independent settings/mapping generations. Human
+publication appends genuine mapping/admission/two-audit history atomically; missing
+or corrupt current state refuses rather than falling back to YAML. Disabled may
+retain the exact prior Mapping under current publication authority. Source
+readiness remains disabled; configuration grants no access or launch authority.
+See [R2 settings](../superpowers/specs/2026-10-14-ordered-coding-workflow.md#canonical-founder-settings-backend-r2-source)
+for complete reader closure, replay and remaining operational acceptance.

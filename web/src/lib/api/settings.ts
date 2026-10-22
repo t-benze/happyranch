@@ -98,3 +98,64 @@ export const putTeams = (
   patch: TeamsPatchBody,
 ): Promise<{ teams: TeamRow[] }> =>
   request(`/orgs/${slug}/settings/teams`, { method: 'PUT', body: patch });
+
+import { getToken } from '../auth';
+import type { CodingSettingsCommand, CodingSettingsView, CodingSettingsSave } from './types';
+
+/** These closed grammars have ASCII field names and integer numeric values.
+ * Construct a recursively sorted body for the existing JSON.stringify client;
+ * do not send a JSON string (which that client would quote a second time).
+ * Refuse unsafe JS integers and ill-formed Unicode rather than change bytes.
+ */
+function canonicalCodingBody(value: unknown): unknown {
+  if (typeof value === 'number') {
+    if (!Number.isSafeInteger(value) || Object.is(value, -0)) throw new TypeError('coding integer cannot be represented exactly');
+    return value;
+  }
+  if (typeof value === 'string') {
+    // UTF-8 cannot represent unpaired UTF-16 surrogate code units.
+    if (/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u.test(value)) {
+      throw new TypeError('coding text must be valid Unicode');
+    }
+    return value;
+  }
+  if (value === null || typeof value === 'boolean') return value;
+  if (Array.isArray(value)) return value.map(canonicalCodingBody);
+  if (typeof value !== 'object' || Object.getPrototypeOf(value) !== Object.prototype) {
+    throw new TypeError('coding command must contain plain JSON values');
+  }
+  return Object.fromEntries(Object.keys(value).sort().map(key => [
+    key, canonicalCodingBody((value as Record<string, unknown>)[key]),
+  ]));
+}
+
+/** Read-only reconciliation: keep the original key/body after lost transport. */
+export const getCodingSettings = async (
+  slug: string,
+  operationKey?: string,
+): Promise<CodingSettingsView> => {
+  const result = await request<CodingSettingsView>(`/orgs/${slug}/settings/coding`, {
+    params: { operation_key: operationKey },
+  });
+  canonicalCodingBody(result); // Refuse an unrepresentable numeric readback.
+  return result;
+};
+
+export const putCodingSettings = async (
+  slug: string,
+  command: CodingSettingsCommand,
+): Promise<CodingSettingsSave> => {
+  if (slug !== command.org_slug) throw new TypeError('coding command org mismatch');
+  const body = canonicalCodingBody(command);
+  if (new TextEncoder().encode(JSON.stringify(body)).length > 65536) {
+    throw new TypeError('coding command exceeds 65536 UTF-8 bytes');
+  }
+  // The existing explicit-token option sends once, including on 401. This
+  // consumes the ordinary Founder bearer without changing shared transport or
+  // token custody. No automatic write retry/rebootstrap/reapply is requested.
+  const result = await request<CodingSettingsSave>(`/orgs/${slug}/settings/coding`, {
+    method: 'PUT', body, auth: { token: await getToken() },
+  });
+  canonicalCodingBody(result);
+  return result;
+};

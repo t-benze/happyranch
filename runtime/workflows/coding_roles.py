@@ -246,6 +246,9 @@ class CodingRoleStore:
                         replay = self._replay(conn, principal, capture, history, command, raw)
                         if replay is not None:
                             return replay
+                        if history is not None and any(
+                                entry.principal == 'human:founder' for entry in history.mappings):
+                            raise CodingRoleError('coding_settings_human_owned')
                         self._current(conn, principal, capture, command['mapping'], fresh=True)
                         generation = 0 if history is None else history.selected.generation
                         if generation != command['expected_generation']:

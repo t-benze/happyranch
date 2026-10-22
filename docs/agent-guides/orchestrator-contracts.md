@@ -5454,3 +5454,15 @@ ROOT12299 owns genuine executable same-final-head QA before merge, actual tool
 entitlement and native constructor/isolation/scopes/scratch/installed-serving/
 operator/rollback acceptance. No automatic held-manager reallocation exists.
 <!-- /TASK12509 / ROOT12299 live final-manager source -->
+
+### Coding settings publication ownership
+
+R2's human settings owner establishes the existing native org_settings reservation
+outside authority→teams→DB async locks, recaptures after awaits, then uses the sole
+authority admission transaction. Independent complete old/new closure and final
+authority rechecks surround its append; no await or external I/O occurs in the
+business writer. COMMIT and reservation/lease settlement are separate facts.
+After response/settlement uncertainty, original-key readback authenticates
+publication without clearing native ownership. Historical native families and
+current execution denials stay intact. See the
+[complete R2 contract](../superpowers/specs/2026-10-14-ordered-coding-workflow.md#canonical-founder-settings-backend-r2-source).

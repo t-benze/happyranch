@@ -4075,3 +4075,16 @@ Route fixture four-answer evidence is recorded; attributable RED/GREEN and nativ
 gate proof remain UNEXECUTED/unallocated, never test-authoring PASS. Only source,
 lint/static, normal hooks/publication; units RETIRED, integration INCLUDING callback
 SKIPPED24342. Genuine final-head executable QA/live-manager action stays root-owned.
+
+### Founder coding settings API
+
+The real TypeScript mirror provides `settings.getCodingSettings(slug, operationKey?)`
+and `settings.putCodingSettings(slug, command)` for GET/PUT `/settings/coding`.
+PUT sends the complete canonical settings command, including both expected
+generations, once through the existing bearer client. Keep its original key/body
+and explicitly GET that key after transport uncertainty; current configuration
+may be newer than the returned original receipt. Unsafe JavaScript integers
+refuse rather than round a CAS. This backend has no new CLI command or page;
+existing agent mapping publication cannot replace Founder-owned defaults after
+S1. No configuration save enables the currently disabled engine. See
+[R2](../superpowers/specs/2026-10-14-ordered-coding-workflow.md#canonical-founder-settings-backend-r2-source).
