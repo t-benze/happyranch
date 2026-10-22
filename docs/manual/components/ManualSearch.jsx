@@ -131,11 +131,13 @@ function focusSelectedResult(route, input) {
   const element = heading && main.contains(heading) ? heading : main
   if (!element.hasAttribute('tabindex')) {
     element.setAttribute('tabindex', '-1')
-    element.addEventListener(
-      'blur',
-      () => element.removeAttribute('tabindex'),
-      { once: true }
-    )
+    const restore = () => {
+      // Switching to another tab or window keeps focus here.
+      if (!document.hasFocus()) return
+      element.removeAttribute('tabindex')
+      element.removeEventListener('blur', restore)
+    }
+    element.addEventListener('blur', restore)
   }
   element.focus({ preventScroll: true })
   // Next.js scrolled to the heading while the search input could still have
