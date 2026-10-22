@@ -109,9 +109,17 @@ current boot/origin/document, action/destination and endpoint/query scopes.
 Actual main-frame GET Requests starting after arm and accepted destination/commit
 own their original Response, one private body read and successful requestfinished.
 Known prearm objects never become current. New-document observations require the
-unredirected native Request/commit; same-document initialization at the target is
-allowed, while another document or departure/return fails. Reused endpoints are
-allowed: a delayed producer starting a new read in the same unchanged declared
+unredirected native Request/commit. Before commit, a same-document event is
+allowed only when exact source=target=live URL, the original nonnull unredirected
+source Request/document sequence is still current, no navigation was pending at
+arm, and no invalid/aborted state exists. Both source redirect checks remain
+required. Any later pending navigation must be the selected exact unredirected
+target Request. This exception establishes no reached/commit/pending lineage or
+API readiness; ordinary initial goto without source lineage remains supported.
+After commit, same-document initialization must retain the NEW Request lineage
+and exact target. Changed query/hash, foreign URL, superseding document or
+departure/return refuses permanently, without rearm/retry or budget renewal.
+Reused endpoints are allowed: a delayed producer starting a new read in the same unchanged declared
 state can qualify. This proves temporal fresh-original-read coverage; initiating
 React hook/click causation and complete future producer closure remain unproved.
 
@@ -214,6 +222,14 @@ and original native error/cleanup evidence remain distinct.
 Only ID18 exports every admitted original roots body through the existing
 browser-events artifact. Its group/checkpoint/source/interpreter/boot/origin/
 native-document/arm/freeze/seal/member reference joins views[2] and list-reload.
+Arm-time source document sequence, verified source URL, pending-navigation and
+redirect facts stay separate from target lineage; native Request objects are
+never serialized. Same-document trace steps retain the live document and pending
+navigation sequences. ID18 independently requires source sequence before arm,
+exact source/target URLs and no pending navigation at arm; precommit steps must
+retain that source sequence before/after the one selected Request, while
+postcommit steps must retain its NEW sequence with no pending navigation.
+Missing attribution refuses, including historical traces lacking these fields.
 aggregate.validate_e07 independently reconstructs the seven literal queries,
 all original body/finish outcomes, per-query full images and earliest cancelled
 representative, binding genuine P/W allocation/cancellation/DB/audit/session
@@ -651,6 +667,16 @@ registry/shared stub, dependency, cadence/cap or cleanup-machinery changes.
 
 ## E04 jobs prefix (TASK-10686 / THR-291)
 
+Final saved `inner_text` requires literal `RECALL TREE`, `OUTCOME`, the exact
+scenario summary and `completed`, alongside each exact existing screenshot.
+CSS uppercase affects this rendered representation; existing own-body
+`textContent` and accessible-name expectations remain `Recall tree`/`Outcome`.
+The six final-record keepers (including review-required refusal) retain every
+SQL/result/session/audit/CLI/HTTP/no-effect join; no artifact is lowercased.
+Run39758401569 contains all twelve final records/PNGs before E07. Its native
+Health FAIL remains historical evidence of this representation mismatch;
+corrected consumer behavior is NOT RUN, sensitivity PROOF NOT RUN.
+
 Current source amendment TASK12452 / sole ROOT TASK-12445, Founder THR291
 seq301(b)/303, accepted manager disposition after independent TASK12447 DESIGN
 REVISE: replace only slot44/index43 with `E04.review-required-refused`. No legacy
@@ -997,7 +1023,17 @@ its own bound final payload and launches the actual hash-bound CLI wrapper.
 A dedicated one-shot relay captures the complete original completion POST
 before upstream transmission; provider acknowledgement precedes communicate.
 Live PID/start/PPID/argv/hash and actual /proc socket inode/FD/TCP tuple join the
-issuer to that request. The browser Cancel dialog sends `E07_CANCEL_TREE`.
+issuer to that request. Before Cancel, W then P each retain real goto/reload
+and actual200 detail/Recall tree reads. While each group is OPEN, its unique
+visible task-owned h1 supplies identity/status/qualifier within the ORIGINAL4s
+and group deadline. P requires own identity, `in_progress`, literal
+`· Waiting on child work`, and sealed public in_progress/delegated with
+child_wait.state=waiting_children. W requires own identity, `in_progress`, no
+waiting qualifier, and sealed public in_progress/null block_kind/null child_wait
+with parent_task_id=P. The independent aggregate checks these exported own
+headers and public/tree identities; sibling/Recall/chrome text cannot satisfy
+the header. These sequential views make no simultaneous-snapshot claim.
+The browser Cancel dialog sends `E07_CANCEL_TREE`.
 Product teardown must close W, its CLI and launch root before Fcancel; cleanup
 cannot satisfy the case. The original retained POST is then forwarded once to
 boot B: actual409 `task_not_active`, cancelled true. Dead downstream EOF and the
@@ -1155,6 +1191,27 @@ Four answers for these retained C cases (`E07.cancel-cascade-browser`,
 4. Actual seam: shipping task/Pause routes and real CLI/browser/HTTP boundaries
    feed full SQL/public/evidence captures and independent reopened aggregate.
    No production or test-only seam was added.
+
+The accepted TASK12614/TASK12616 design and ROOT12610 step3 scope extend these
+existing cases and A01–A16 keepers only. Four answers for the bounded recovery:
+
+| Changed existing keeper | Observable contract | Credible regression | Nearest coverage/gap | Test-only production seam |
+| --- | --- | --- | --- | --- |
+| E07.cancel-cascade-browser own h1 capture/assertion | Own P waiting and W running headers agree with sealed public detail/Recall before Cancel. | Stale qualifier, sibling header or omitted child_wait check. | Locale tests lack the held real child/public/native boundary; extend the existing cascade. | None. |
+| Shared observer at all16 transport sites | Old-source precommit initialization grants no new-document or API readiness; exact new Request/commit still required. | Unconditional precommit invalidation, or broad allowance admitting old/cached/foreign reads. | A01–A16/current/request/body/finish keepers remain; original3.14 exposed the positive ordering, negative sensitivity unproved. | None. |
+| validate_e07 own-header and ID18 attribution | Reopened evidence independently distinguishes own live states and old-source/new-Request sequences. | Stale consumer label, missing attribution or precommit source accepted as new lineage. | Browser assertions cannot own independent exported-content checks; seven-query/body/finish/full-image joins remain. | None. |
+| validate_e04/validate_review_refusal final records | Rendered uppercase headings, exact summary/completed and existing PNG remain required. | Title-case oracle against CSS-uppercase inner_text, or dropped content/image check. | Existing six E04 final keepers; textContent/accessible names observe a different representation. | None. |
+
+Supplied run39758401569 remains native Health FAIL:53 recordedPASS EACH3.12/3.14,
+interrupted E07 cascade and two UNREACHED EACH. Original3.12 stale label and3.14
+arm2857/same-document2858/Request2859/commit2877 support the repair, but exact
+initiating action/full refused URL remain inference/unproved. TERM3.12/INT3.14
+and E05 relay PASS are historical run-specific; JOB5221 exit0 is COLLECTION ONLY.
+Corrected native behavior is NOT RUN; negative sensitivity, protected mutations,
+restoration and repetitions are PROOF NOT RUN with no allocation. No aggregate
+rerun against old failed artifacts relabels them green. Missing final evidence
+and browser poison remain failures. Static delivery is not product/reset
+acceptance; later reviewed-main verification belongs to ROOT12610.
 
 This is source-only restoration, not full test-authoring or behavioral PASS.
 All behavioral/sensitivity/provenance/transport/persistence/delivery/sanitation/

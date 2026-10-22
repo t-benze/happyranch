@@ -474,7 +474,7 @@ raise SystemExit(0)
     check(all(final_by_id[a["id"]] == a for a in baseline_tables["audit_log"] if a["task_id"] == task), "all original lifecycle bytes retained")
     check([r for r in frames[3]["sql"]["alpha"]["content"]["tables"]["task_results"] if r["task_id"] == task] == [result], "closure retains same result")
     rendered = record["task_browser"]
-    check(all(t in rendered["text"] for t in (summary,"Recall tree","Outcome","completed"))
+    check(all(t in rendered["text"] for t in (summary,"RECALL TREE","OUTCOME","completed"))
           and rendered["screenshot"] == "e04-task-1.png" and (directory/"e04-task-1.png").read_bytes().startswith(b"\x89PNG\r\n\x1a\n"), "actual final task/list/Recall screenshot")
 
 
@@ -958,7 +958,7 @@ def validate_e04(row: dict, observations: dict, browser: list[dict], directory: 
                   and jobs[1]["action"]["at"] > checkpoints[-2]["finished"], "pair +0 no-early-resume barrier")
         check(snap["results"][1]["output_summary"] == summary, "independent truthful final summary")
         rendered = record["task_browser"]
-        check(all(t in rendered["text"] for t in (summary, "Recall tree", "Outcome", "completed"))
+        check(all(t in rendered["text"] for t in (summary, "RECALL TREE", "OUTCOME", "completed"))
               and rendered["screenshot"] == f"e04-task-{index}.png" and (directory / rendered["screenshot"]).is_file(), "rendered final task/Recall")
         own = commands[record["commands_begin"]:record["commands_end"]]
         check(own and own[-1] == record["final_callback"] and own[-1]["action"] == "jobs-final"
@@ -1854,8 +1854,27 @@ def validate_e07(row: dict, observations: dict, directory: Path) -> None:
     check(cancel["status"] == 200 and cancel["method"] == "POST" and cancel["request"] == {"rationale":"E07_CANCEL_TREE"}
           and cancel["response"] == {"ok":True,"task_id":P,"cancelled":[P,W],"killed":[{"task_id":W,"agent":"case_worker"}]}
           and len(cancel["requests"]) == 1 and cancel["requests"][0]["body"] == cancel["request"], "one actual dialog cancellation/no invented PID")
-    check(cancel["parent_view"]["detail"]["task"]["block_kind"] == "delegated" and "waiting on subtasks" in cancel["parent_view"]["text"]
-          and cancel["child_view"]["detail"]["task"]["block_kind"] is None, "rendered current waiting/running tree")
+    for view, task, qualifier in ((cancel["parent_view"], P, "· Waiting on child work"),
+                                   (cancel["child_view"], W, None)):
+        public = view["detail"]["task"]
+        check(dict(event="detail-reload", **view) in events
+              and view["task"] == public["task_id"] == view["recall"]["task_id"] == task
+              and view["url"].endswith(f"/orgs/alpha/tasks/{task}")
+              and view["detail_url"].endswith(f"/api/v1/orgs/alpha/tasks/{task}")
+              and view["recall_url"] == view["detail_url"]+"/recall?tree=true"
+              and view["detail_method"] == view["recall_method"] == "GET"
+              and view["detail_status"] == view["recall_status"] == 200
+              and view["header"] == dict(identity=task, status="in_progress", qualifier=qualifier)
+              and public["status"] == view["recall"]["status"] == "in_progress"
+              and view["cancel_disabled"] is False, "own rendered live header and actual detail/tree")
+        if task == P:
+            check(public["block_kind"] == "delegated" and public["child_wait"]["state"] == "waiting_children"
+                  and [node["task_id"] for node in view["recall"]["children"]] == [W]
+                  and view["recall"]["children"][0]["status"] == "in_progress", "public waiting parent/child tree")
+        else:
+            check(public["block_kind"] is None and public["child_wait"] is None
+                  and public["parent_task_id"] == P and view["recall"]["parent_task_id"] == P,
+                  "public running unblocked child")
     for view,task,name in zip(case["views"][:2],(P,W),("e07-parent.png","e07-child.png")):
         check(dict(event="detail-reload",**view) in events and view["url"].endswith(f"/orgs/alpha/tasks/{task}")
               and view["detail_url"].endswith(f"/api/v1/orgs/alpha/tasks/{task}") and view["recall_url"] == view["detail_url"]+"/recall?tree=true"
@@ -1948,9 +1967,29 @@ def validate_e07(row: dict, observations: dict, directory: Path) -> None:
           and steps[nav]["url"] == steps[commit]["url"] == destination
           and steps[commit]["expected"] is True and steps[nav]["sequence"] < steps[commit]["sequence"]
           and steps[commit]["document_sequence"] == steps[nav]["sequence"], "actual unredirected navigation Request/commit")
-    check(all(step["expected"] is True and step["url"] == destination
-              and step["document_sequence"] == steps[nav]["sequence"]
-              for step in steps if step["event"] == "same-document"), "no departure/other document")
+    source_sequence = group["source_document_sequence"]
+    check(type(source_sequence) is int and 0 < source_sequence < steps[arm]["sequence"]
+          and group["source_document_url"] == group["source_url"] == destination
+          and group["source_navigation_pending"] is False and group["source_unredirected"] is True,
+          "armed exact original source document attribution")
+    for i, step in enumerate(steps):
+        if step["event"] != "same-document":
+            continue
+        check(arm < i and steps[arm]["sequence"] < step["sequence"]
+              and step["expected"] is True and step["url"] == destination,
+              "same-document exact nondeparting URL")
+        if i < commit:
+            check(step["document_sequence"] == source_sequence
+                  and step["sequence"] < steps[commit]["sequence"]
+                  and (step["sequence"] > steps[nav]["sequence"] if nav < i
+                       else step["sequence"] < steps[nav]["sequence"])
+                  and step["pending_navigation_sequence"] == (steps[nav]["sequence"] if nav < i else None),
+                  "precommit remains old source with only selected pending Request")
+        else:
+            check(step["document_sequence"] == steps[nav]["sequence"]
+                  and step["sequence"] > steps[commit]["sequence"]
+                  and step["pending_navigation_sequence"] is None,
+                  "postcommit retains new Request document lineage")
     check(steps[guarded]["document_sequence"] == steps[nav]["sequence"]
           and steps[guarded]["boot_index"] == 1 and steps[guarded]["failure"] is False
           and steps[guarded]["poisoned"] is False, "final non-yielding current-document/boot/error guard")
