@@ -2140,6 +2140,152 @@ def validate_e07(row: dict, observations: dict, directory: Path) -> None:
           "earliest cancelled original, full selected body and identical public references/copies")
 
 
+def _decode_diagnostic(path: Path) -> tuple[object, tuple]:
+    """One exported-file decode; bound selected duplicate bookkeeping only."""
+    vocabulary = ("diagnostic_read_observation", "source_sha", "failure_categories", "schema", "state", "outcome",
+                  "controller", "launcher", "availability", "snapshot", "diagnostic_read", "first_observed",
+                  "context_capture", "stage", "error", "at", "launcher_result")
+    records = []  # Strong references: dictionary identities cannot be recycled.
+    overflow = False
+    root_mask = 0
+    hidden_member = False
+
+    def pairs(items: list[tuple]) -> dict:
+        nonlocal overflow, root_mask, hidden_member
+        result = {}
+        mask = 0
+        hidden = False
+        for key, value in items:
+            if key in result and key in vocabulary:
+                mask |= 1 << vocabulary.index(key)
+            if (key == "launcher_result" and type(value) is dict
+                    and "diagnostic_read_observation" in value):
+                hidden = True  # ANY candidate, before a duplicate parent overwrites it.
+            result[key] = value  # Preserve unrelated legacy last-key semantics.
+        if mask:
+            if len(records) < 16:
+                records.append((result, mask))
+            else:
+                overflow = True
+        # For a dictionary root, its hook is last; independent of record overflow.
+        root_mask, hidden_member = mask, hidden
+        return result
+
+    value = json.loads(path.read_text(encoding="utf-8", errors="strict"), object_pairs_hook=pairs)
+    return value, (records, overflow, root_mask, hidden_member, vocabulary)
+
+
+def _diagnostic_duplicates(value: dict, facts: tuple, keys: tuple[str, ...], *, root: bool = False) -> None:
+    records, overflow, root_mask, _hidden, vocabulary = facts
+    if overflow:
+        raise ValueError("invalid diagnostic metadata")
+    mask = root_mask if root else next((mask for item, mask in records if item is value), 0)
+    if any(mask & (1 << vocabulary.index(key)) for key in keys):
+        raise ValueError("invalid diagnostic metadata")
+
+
+def _diagnostic_source(value: object, source: str) -> None:
+    if (type(value) is not str or len(value) != 40 or any(c not in "0123456789abcdef" for c in value)
+            or value != source):
+        raise ValueError("invalid diagnostic metadata")
+
+
+def _diagnostic_projection(result: dict, facts: tuple, source: str, *, root: bool) -> tuple | None:
+    """Validate only the fixed-depth new member and its necessary relation."""
+    if "diagnostic_read_observation" not in result:
+        return None  # Legacy/unobserved, not unreached or diagnostic success.
+
+    def closed(value: object, keys: tuple[str, ...]) -> dict:
+        if type(value) is not dict or len(value) != len(keys) or any(key not in value for key in keys):
+            raise ValueError("invalid diagnostic metadata")
+        _diagnostic_duplicates(value, facts, keys)
+        return value
+
+    def schema_source(value: dict) -> None:
+        if type(value["schema"]) is not int or value["schema"] != 1:
+            raise ValueError("invalid diagnostic metadata")
+        _diagnostic_source(value["source_sha"], source)
+
+    def slot(value: object, *, read: bool = False) -> tuple | None:
+        if value is None:
+            return None
+        value = closed(value, ("stage", "error", "at"))
+        stage, error, at = (value[key] for key in ("stage", "error", "at"))
+        if (type(stage) is not str or len(stage) > 8
+                or stage not in ("phase", "bounded", "restore", "context", "action", "teardown", "evidence", "browser", "other")
+                or (read and stage != "teardown")
+                or type(error) is not str or len(error) > 12
+                or error not in ("unicode", "timeout", "interruption", "assertion", "value", "io", "runtime", "other")
+                or type(at) not in (int, float) or not 0 <= at <= 9007199254740991):
+            raise ValueError("invalid diagnostic metadata")
+        # The range check also rejects NaN/infinity without coercing large ints.
+        return stage, error, type(at), at
+
+    _diagnostic_duplicates(result, facts, ("diagnostic_read_observation", "source_sha", "failure_categories"), root=root)
+    _diagnostic_source(result["source_sha"], source)
+    observation = closed(result["diagnostic_read_observation"], ("schema", "source_sha", "state", "outcome"))
+    schema_source(observation)
+    state, outcome = observation["state"], observation["outcome"]
+    if (type(state) is not str or len(state) > 9 or state not in ("unknown", "admitted", "unreached", "completed")
+            or (outcome is not None and (type(outcome) is not str or len(outcome) > 18))):
+        raise ValueError("invalid diagnostic metadata")
+    if state == "completed":
+        if outcome not in ("root_unset", "root_missing", "coord_missing", "final_missing", "refused", "available"):
+            raise ValueError("invalid diagnostic metadata")
+    elif outcome is not None:
+        raise ValueError("invalid diagnostic metadata")
+    # Serialize only the already bounded four validated values (never arbitrary input).
+    if len(json.dumps(observation, separators=(",", ":")).encode("utf-8")) > 256:
+        raise ValueError("invalid diagnostic metadata")
+
+    categories = closed(result["failure_categories"], ("schema", "source_sha", "controller", "launcher"))
+    schema_source(categories)
+    controller = closed(categories["controller"], ("availability", "snapshot"))
+    availability = controller["availability"]
+    if (type(availability) is not str or len(availability) > 11
+            or availability not in ("unavailable", "available")):
+        raise ValueError("invalid diagnostic metadata")
+    snapshot = controller["snapshot"]
+    selected_snapshot = None
+    if availability == "unavailable":
+        if snapshot is not None:
+            raise ValueError("invalid diagnostic metadata")
+    else:
+        snapshot = closed(snapshot, ("schema", "source_sha", "first_observed", "context_capture"))
+        schema_source(snapshot)
+        selected_snapshot = (slot(snapshot["first_observed"]), slot(snapshot["context_capture"]))
+    launcher = categories["launcher"]
+    if type(launcher) is not dict or "diagnostic_read" not in launcher:
+        raise ValueError("invalid diagnostic metadata")
+    _diagnostic_duplicates(launcher, facts, ("diagnostic_read",))
+    read_slot = slot(launcher["diagnostic_read"], read=True)
+    if ((state == "unreached" and (availability != "unavailable" or read_slot is not None))
+            or (state == "completed" and (availability == "available") != (outcome == "available"))):
+        raise ValueError("invalid diagnostic metadata")
+    # Sources/schemas are independently exact above; numbers retain exact types.
+    return state, outcome, availability, selected_snapshot, read_slot
+
+
+def _diagnostic_cancellation(raw: object, raw_facts: tuple, row: object, row_facts: tuple, source: str) -> None:
+    if type(raw) is not dict or type(row) is not dict or type(row["launcher_result"]) is not dict:
+        raise ValueError("invalid diagnostic metadata")
+    embedded = row["launcher_result"]
+    for result in (raw, row, embedded):
+        _diagnostic_source(result["source_sha"], source)
+    present = "diagnostic_read_observation" in raw or "diagnostic_read_observation" in embedded
+    hidden = row_facts[3]
+    if present or hidden:
+        _diagnostic_duplicates(raw, raw_facts, ("diagnostic_read_observation", "source_sha", "failure_categories"), root=True)
+        _diagnostic_duplicates(row, row_facts, ("launcher_result", "source_sha"), root=True)
+        if hidden and "diagnostic_read_observation" not in embedded:
+            raise ValueError("invalid diagnostic metadata")
+        if ("diagnostic_read_observation" in raw) != ("diagnostic_read_observation" in embedded):
+            raise ValueError("invalid diagnostic metadata")
+        if (_diagnostic_projection(raw, raw_facts, source, root=True)
+                != _diagnostic_projection(embedded, row_facts, source, root=False)):
+            raise ValueError("invalid diagnostic metadata")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--controls", action="store_true")
@@ -2176,17 +2322,30 @@ def main() -> int:
                 if not path.is_file() or (name.endswith((".json", ".png")) and path.stat().st_size == 0):
                     health["errors"].append(f"missing/empty artifact: e2e-{version}/{name}")
             if (directory / "result.json").is_file():
-                result = json.loads((directory / "result.json").read_text())
-                rows.append(result)
-                if result.get("python") != version or result.get("exercise") != "baseline":
-                    health["errors"].append(f"e2e-{version}: directory/interpreter/exercise mismatch")
+                result = None
                 try:
-                    validate_e04(result, json.loads((directory / "observations.json").read_text()),
-                                 json.loads((directory / "browser-events.json").read_text()), directory)
-                    validate_e05(result, json.loads((directory / "observations.json").read_text()), directory)
-                    validate_e07(result, json.loads((directory / "observations.json").read_text()), directory)
-                except (OSError, ValueError, KeyError, TypeError, IndexError) as exc:
-                    health["errors"].append(f"e2e-{version}: {exc}")
+                    result, diagnostic_facts = _decode_diagnostic(directory / "result.json")
+                    if type(result) is not dict:
+                        result = None
+                        raise ValueError("invalid diagnostic metadata")
+                except (OSError, UnicodeError, ValueError, TypeError, RecursionError, OverflowError):
+                    health["errors"].append(f"e2e-{version}: invalid diagnostic metadata")
+                else:
+                    try:
+                        _diagnostic_projection(result, diagnostic_facts, args.source, root=True)
+                    except (ValueError, KeyError, TypeError, IndexError, RecursionError, OverflowError):
+                        health["errors"].append(f"e2e-{version}: invalid diagnostic metadata")
+                if result is not None:
+                    rows.append(result)
+                    if result.get("python") != version or result.get("exercise") != "baseline":
+                        health["errors"].append(f"e2e-{version}: directory/interpreter/exercise mismatch")
+                    try:
+                        validate_e04(result, json.loads((directory / "observations.json").read_text()),
+                                     json.loads((directory / "browser-events.json").read_text()), directory)
+                        validate_e05(result, json.loads((directory / "observations.json").read_text()), directory)
+                        validate_e07(result, json.loads((directory / "observations.json").read_text()), directory)
+                    except (OSError, ValueError, KeyError, TypeError, IndexError) as exc:
+                        health["errors"].append(f"e2e-{version}: {exc}")
         unexpected = set(path.name for path in args.artifacts.glob("e2e-*") if path.is_dir()) - set(names)
         if unexpected:
             health["errors"].append("unexpected artifact directories: " + ", ".join(sorted(unexpected)))
@@ -2204,15 +2363,37 @@ def main() -> int:
                 path = directory / name
                 if not path.is_file() or (name in {"cancellation.json", "launcher/active.json", "launcher/result.json"} and path.stat().st_size == 0):
                     health["errors"].append(f"missing/empty artifact: e2e-cancel-{label}/{name}")
+            raw = row = None
+            metadata_invalid = False
             try:
-                row = json.loads((directory / "cancellation.json").read_text())
-                if row["status"] != "PASS":
-                    raise ValueError("failed cancellation receipt")
-                validate_admission(row, admission)
-                validate_admission(row["launcher_result"], admission)
-                validate_cancellation(row, args.source, version, signum)
-            except (OSError, ValueError, KeyError, TypeError) as exc:
-                health["errors"].append(f"{label}: {exc}")
+                raw, raw_facts = _decode_diagnostic(directory / "launcher/result.json")
+            except (OSError, UnicodeError, ValueError, TypeError, RecursionError, OverflowError):
+                metadata_invalid = True
+            try:
+                row, row_facts = _decode_diagnostic(directory / "cancellation.json")
+                if type(row) is not dict:
+                    row = None
+                    raise ValueError("invalid diagnostic metadata")
+            except (OSError, UnicodeError, ValueError, TypeError, RecursionError, OverflowError):
+                metadata_invalid = True
+            # Independent reads and validation catches: metadata never skips a
+            # readable row's original status/admission/signal/timing/closure group.
+            if not metadata_invalid:
+                try:
+                    _diagnostic_cancellation(raw, raw_facts, row, row_facts, args.source)
+                except (ValueError, KeyError, TypeError, IndexError, RecursionError, OverflowError):
+                    metadata_invalid = True
+            if metadata_invalid:
+                health["errors"].append(f"{label}: invalid diagnostic metadata")
+            if row is not None:
+                try:
+                    if row["status"] != "PASS":
+                        raise ValueError("failed cancellation receipt")
+                    validate_admission(row, admission)
+                    validate_admission(row["launcher_result"], admission)
+                    validate_cancellation(row, args.source, version, signum)
+                except (OSError, ValueError, KeyError, TypeError) as exc:
+                    health["errors"].append(f"{label}: {exc}")
         if not health["errors"]:
             health["status"] = "PASS"
     except Exception as exc:

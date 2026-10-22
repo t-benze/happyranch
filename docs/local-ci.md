@@ -567,6 +567,76 @@ See [the existing case record](../e2e/README.md#task-12643-accepted-recovery-cas
 for all thirty R1/R2/R3/X expectations, A/B/D/E four answers, keeper gaps and
 full56 EACH3.12/3.14 L1–L7 plus TERM/INT/validator references.
 
+The accepted12693/TASK12697 extension implements only requirement4: optional
+useful actual reader disposition. Requirements1–3 (first-writer reachability,
+effective internal bound, owner/reentry/sticky/publication disposition) stay OPEN.
+`diagnostic_read_observation` is a result sibling with exactly schema/source_sha/
+state/outcome, strict int1 (not Boolean), admitted lowercase40-hex source, state
+at most9/outcome at most18, compact validated UTF8 at most256B. Invalid source
+omits BOTH optional projections; internal source_unavailable is never exported.
+The local immutable tuple starts unknown/null; optional positive-SAME-C pre-call
+admission says only checkpoint reached. Mandatory snapshot/error assignment
+precedes separately contained optional completed freeze; failure cannot skip
+operations/read-error/incomplete/cleanup_time or replace first/primary errors.
+Only a genuinely skipped owner boundary, positive C, unattempted sole reader,
+initial U/null and no read latch can freeze unreached. Expiry/interruption leaves
+previous history; no rescue observation or time renewal. Completed outcomes are
+root_unset/root_missing/coord_missing/final_missing/refused/available only on
+actual completed returns. Literal missing/missing_ok rules, ONE original private
+read and every descriptor/directory exit/check remain; Timeout escapes and
+provisional available cannot survive exit failure. Export copies frozen memory.
+
+The exact joined matrix and four-answer case extensions live in the
+[existing recovery record](../e2e/README.md#optional-reader-disposition-and-raw-copy-checks-task12697--accepted12693):
+unknown/admitted permit U or validated A and null/error D; unreached permits
+ONLY U/null-D; completed available requires A, every other completed outcome U,
+and all completed rows permit real later D errors. Necessary category/controller/
+snapshot/source and finite slot types/enums/numeric range are checked; other
+launcher slots keep existing consumers. Null/stale snapshots give no latest,
+error-free/readiness/cleanup/PASS inference. Both absent members are unobserved.
+
+Aggregate keeps baseline's read and adds exactly ONE read/decode EACH of the
+already exported TERM/INT launcher/result.json, authoritative against each
+cancellation.json embedded copy. No cancellation/private-file edit or fifth
+artifact. Strict per-file pairs hooks retain unrelated last-key semantics,
+16 strong-reference selected duplicate records/fixed masks plus overflow, and
+fixed root duplicate/ANY hidden metadata-bearing launcher_result summaries.
+Present/shadowed metadata rejects relevant selected duplicates/overflow and
+raw-only/embedded-only/presence/value/source/selected-relation mismatch; both
+copies must validate and compare with exact types at fixed depth. No whole-result
+equality or unrelated duplicate ban. Valid source-coherent BOTH-absent copies
+remain legacy/unobserved. Explicit compatibility delta: malformed/invalid-encoding,
+nonobject/unreadable raw legacy files and raw/embedded source disagreement now
+FAIL; missing/empty already FAIL. Historical evidence is not reread/relabelled.
+The cap bounds bookkeeping ONLY, not complete-file/JSON allocation, bytes/depth,
+RSS, OS-I/O or time. No new cap/retry/reserve/streaming framework/fit claim.
+
+Separate local baseline decode/metadata catches retain readable rows for ORIGINAL
+content/aggregate/admission groups. Cancellation independently attempts raw and
+row reads and separately validates selected metadata, adding at most ONE fixed
+`TERM: invalid diagnostic metadata` / `INT: invalid diagnostic metadata` error
+per label; baseline fixed labels are e2e-3.12/e2e-3.14. No exception/rejected-byte
+echo. Every readable row still enters original status → row admission → embedded
+admission → cancellation/timing group, with its OWN original short-circuit/errors.
+Metadata never replaces ordinary validators or jumps to their catch. Missing/
+empty/failed-job/errors/health/summary/exit/signal/witness/closure meanings remain.
+All30 rows/unaffected12686 additions/four-answer keeper gaps/H-C-J risks,56 EACH
+order/16-site/full validator maps and delivered12649/12675 assertions remain.
+H observes real process/file/exit, C propagation/bounds, J serialized relation;
+J cannot establish actual I/O, poison, sanitation or cleanup. No test-only seam,
+new runnable test/verifier/venue or case/control/proof campaign is allocated.
+
+Current parent-attributed39803512986 remains FAILED/HealthFAIL47/BOTH56UNKNOWN-null,
+zero recordedPASS/no provedUNREACHED, scenario1/fallback-only/cleanup-exportValueError,
+both cleanup flags false despite absence observations; initiating action/cause/
+internal clock UNKNOWN, npm success. TERM/INT actual signals15/2/witness/closure
+PASS is diagnostic-only; JOB5283 completed0/four archives32members357878B is
+COLLECTION ONLY under parent step20 authentication. This failure is not an
+unavailable-venue exemption. Corrected behavior NOT RUN, intended-failure/
+restored-pass PROOF NOT RUN, sensitivity UNPROVED. Product/reset INCOMPLETE and
+ownership_evidence_complete=false UNKNOWN persist; earlier evidence below is
+historical at its own source, never current-head behavioral verification.
+
 Unchanged Owned cleanup runs FIRST. Category read, valid-only collection,
 individual existing port probes and one identity-checked owned-root removal/
 literal absence observation proceed independently while the SAME original60s

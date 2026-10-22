@@ -613,6 +613,164 @@ Four authoring answers for **every changed named row**, with complete shared-blo
 | D: R3-01–R3-09 | Actual owner-first cleanup and independently observed ports/literal root, original bound transitions, final nonzero/FAIL, sticky both-ok false and variants={} fallback through later export; R3-07 also requires persisted final disposition to agree with terminal commit. | Keep one try grouping; let port failure skip removal; reset C; continue after timeout; clear staging failure after root absence or recollection; perform teardown in export; reintroduce a fallible deadline/alarm path after final replacement. | Keep Owned.cleanup/PID-start/unit/group/watcher gates, run.collection/failure_receipt, validate_timing and cancellation.validate. Existing TERM/INT success closes its diagnostic only, never failed baseline collection/isolation. No direct keeper asserts these new combined failures or the R3-07 final-commit ordering. H sees real removal/port/deadline/queued-alarm effects; J sees serialized failure laundering/empty variants and final disposition; neither layer replaces the other. Aggregate metadata controls reject false shapes but cannot prove cleanup execution or publication ordering. | NO for every listed case. No Owned implementation change or test-only seam. |
 | E: X-01–X-02 | End-to-end selected-error precedence and frozen safe projection/noncredit across controller death/root loss/export, with full-context raw withholding. X-01 retains original chain plus earlier snapshot/later poison-close-capture-failure/expiry and caller-finally interaction; X-02 retains terminal disposition matching successful final replacement. | Locally correct helpers combine to skip poison on whole-call writer escape, erase first error/cleanup failure, refresh stale source, admit partial detail, treat unavailable/stale J output as proof poison ran, or rely on another write after a postcommit alarm. | Same B/D keepers and precise cross-process composition gap; extend X-01 only. C owns actual propagation/poison attempt/finalization; H owns actual publication/refusal/root-loss effects; J uniquely owns frozen failure semantics after source loss and can misattribute/launder failure despite correct local refusal. J cannot prove OS or poison execution or repair unknown active/latch state. Preserve12649 X-02 precommit/terminal commitment and queued-alarm semantics. | NO for both cases. Existing main boundaries/artifacts only; no new journey, verifier or seam. |
 
+### Optional reader disposition and raw-copy checks (TASK12697 / accepted12693)
+
+Only requirement4, the launcher's useful actual reader disposition before root
+loss, is implemented. Requirements1–3 (first-writer reachability, effective
+internal bound, owner/reentry/sticky/publication disposition) remain OPEN. This
+is optional observation history, with no reliable final telemetry, latest-state,
+error-free, readiness, cleanup, case/PASS or native-cause inference. The existing
+category schema1/private file and controller's exactly THREE calls are unchanged.
+
+The optional result sibling `diagnostic_read_observation` has EXACT keys
+`schema,source_sha,state,outcome`: exact non-Boolean int1; matching admitted
+lowercase40-hex source; exact state string at most9; null or exact outcome string
+at most18. After those finite gates its compact UTF8 JSON must be at most256B.
+Unknown/missing/extra keys, wrong types/schema/enums/size/source reject. Invalid
+receipt source omits BOTH optional projections; internal `source_unavailable`
+never appears on the wire and no identity is minted. BOTH members absent remain
+legacy/unobserved, not proof of unreached; a present extension requires the
+necessary category envelope.
+
+One launcher-local immutable tuple starts unknown/null. Optional separately
+contained positive-SAME-C pre-call bookkeeping may record admitted/null; that
+proves reaching the checkpoint only, not callee entry/I/O. Mandatory reader
+snapshot/error assignment precedes optional positive-C completed freeze. Its
+failure never rolls back the mandatory assignment or skips original operations,
+read-error handling, incomplete() or cleanup_time(). Only an actual skipped
+owner boundary under positive original C, current_attempt=owner, unattempted
+sole reader, initial unavailable/null snapshot and no diagnostic-read latch may
+freeze unreached/null. Default attempted=false alone proves nothing. Expiry or
+interrupted bookkeeping keeps the prior tuple; no rescue observation or time
+renewal occurs. Original primary/first-cleanup/read errors remain authoritative.
+
+Completed outcomes occur only on genuine helper returns: `root_unset` for a
+valid source/root=None; `root_missing`/`coord_missing` only the existing
+missing_ok exact-filename branches after their check; `final_missing` only literal
+final ENOENT after verified parents/no pending and checks; `refused` for the
+existing ordinary error return; `available` only after the ONE bounded read,
+strict decode/source/slots AND all descriptor/directory exits/final check.
+Other missing/unsafe inputs refuse. Provisional availability cannot survive exit
+failure. Timeout escapes, with no invented expired outcome. Frozen memory alone
+feeds initial/final/fallback consumers; export never reads the private file.
+
+For PRESENT metadata, U means exact controller unavailable/snapshot=null; A means
+available with the validated schema1/matching-source snapshot and its two
+null/stale-or-exact `{stage,error,at}` slots. The category envelope is exactly
+`schema,source_sha,controller,launcher`, controller exactly `availability,snapshot`,
+snapshot exactly `schema,source_sha,first_observed,context_capture`. Launcher must
+contain `diagnostic_read`; its other six slots keep existing consumers. D is null
+or the exact teardown read slot. Slot stage is phase/bounded/restore/context/
+action/teardown/evidence/browser/other, error is unicode/timeout/interruption/
+assertion/value/io/runtime/other, at is exact non-Boolean finite int/float in
+0..9007199254740991. Gate exact dictionary type/count before fixed-key access,
+and string/numeric types/lengths before domains; traverse these finite paths only.
+
+| State / outcome | Controller | D | Accepted interpretation |
+| --- | --- | --- | --- |
+| unknown/null | U or A | null or error | Optional observation did not survive; later mandatory assignments can exist. |
+| admitted/null | U or A | null or error | Last optional checkpoint only; later read/assignment/latch may have occurred. |
+| unreached/null | U only | null only | Genuine positive-C skipped-site observation; A/error contradict it. |
+| completed/root_unset, root_missing, coord_missing, final_missing | U only | null or error | Completed prerequisite/allowed absence; real later D errors remain. |
+| completed/refused | U only | null or error | Actual completed helper refusal; caller latching need not finish. |
+| completed/available | A only | null or error | Valid completed read; a real later D error is not erased. |
+
+Every other pair rejects, including completed/source_unavailable or null,
+noncompleted/non-null, unreached+A/error and either opposite completed controller
+relation. The finite fields cannot order returned refusal versus later errors.
+Observation omission remains possible and earns no credit.
+
+Aggregate's authoritative serialized boundaries are baseline result.json and
+ONE additional read/decode EACH of the already exported TERM/INT
+`launcher/result.json`, alongside each existing cancellation.json. There is no
+cancellation implementation/private-file change or fifth artifact. Each decode
+uses strict text and one JSON pairs hook: ordinary dictionaries retain unrelated
+last-key behavior. Before collapse, selected duplicate flags cover
+`diagnostic_read_observation,source_sha,failure_categories,schema,state,outcome,controller,launcher,availability,snapshot,diagnostic_read,first_observed,context_capture,stage,error,at,launcher_result`.
+At most16 duplicate-bearing dictionary identities have strong references/fixed
+masks plus overflow. Fixed root summaries separately retain root duplicate mask
+and ANY metadata-bearing launcher_result candidate, including one hidden by a
+later parent overwrite or record overflow. The hook visits pairs once. No raw
+rejected bytes/keys/values are retained for errors or recursively searched later.
+
+With selected new/shadowed metadata, reject relevant duplicate parents/keys at
+result, observation, category, controller, snapshot/slots and launcher/read slot;
+also cancellation outer source/launcher_result. Overflow refuses conservatively,
+including saturation by selected-vocabulary duplicates elsewhere. BOTH genuinely
+absent copies with no hidden candidate retain legacy duplicate semantics. The
+16-record cap bounds BOOKKEEPING ONLY, not file/JSON allocation, length, key count,
+depth, RSS, OS-I/O or time. Existing complete-file decoding/job deadline remains;
+no streaming/cap/retry/reserve/framework or hard fit claim is added.
+
+Raw, cancellation row and embedded launcher_result must be actual dictionaries
+with strict coherent source equal to independent admission. BOTH present copies
+must individually validate the new object and necessary category relation and
+agree on presence and type-sensitive finite projections, including snapshot/D;
+Boolean1 differs from integer1, as does float1 versus int1. Reject raw-only,
+embedded-only, null-as-present, mismatched values/source/relation, selected
+parent overwrite/duplicates/overflow. A good derivative cannot rescue bad raw.
+No whole-result equality or unrelated duplicate ban applies. Valid source-coherent
+BOTH-absent copies need no category envelope and remain legacy/unobserved.
+
+**Explicit bounded compatibility delta:** malformed/truncated/invalid-encoding,
+nonobject or unreadable raw legacy launcher files and raw/embedded source
+disagreement now FAIL even without the new member. Previously the standalone raw
+cancellation file was only checked for presence/nonempty bytes. Missing/empty
+already FAIL. Valid supported absent-member receipts remain supported; historical
+evidence is neither reread nor relabeled. This is not unchanged compatibility.
+
+Baseline read/decode and selected validation have separate local catches with
+fixed `e2e-3.12: invalid diagnostic metadata` / `e2e-3.14: invalid diagnostic metadata`.
+Readable dictionaries remain in rows for original directory/interpreter/exercise,
+E04/E05/E07, aggregate and admission attempts in their original order/groups.
+Cancellation raw and row reads are attempted independently; read catches contain
+OSError/UnicodeError/ValueError/TypeError/RecursionError/OverflowError. Selected
+validation separately contains ValueError/KeyError/TypeError/IndexError/
+RecursionError/OverflowError. At most ONE fixed `TERM: invalid diagnostic metadata`
+or `INT: invalid diagnostic metadata` is added per label, without exception or
+rejected-byte echo. EVERY readable cancellation row still enters the ORIGINAL
+status → row admission → embedded admission → validate_cancellation/timing group.
+Ordinary errors retain THEIR OWN short-circuit/catch/messages; metadata neither
+replaces them nor jumps to their catch. Unreadable rows have no invented fallback.
+Other cells, file/missing/empty/failed-job errors, health/summary/exit, signals,
+witnesses and ownership closure retain their original semantics.
+
+The following increments extend the existing thirty cases and A/B/D/E blocks;
+they do not replace any row. Each line supplies answers1–3. Answer4 is **NO for
+EVERY named row/subinput**: no test-only production export/flag/parameter/wrapper/
+hook/path, runnable test, verifier or venue. H/C/J retain the environments above:
+H actual file/process/exit; C propagation/original bounds; J independent serialized
+relation cannot prove local I/O, poison, sanitation or cleanup execution.
+
+| Existing rows / requirement | 1. Precondition/input/action → independent expected result / level | 2. Credible regression; 3. keeper/gap/distinct risk |
+| --- | --- | --- |
+| R1-01 completed positive | Actual safe file read completes within C, including exits → completed/available beside unchanged validated snapshot in actual result, retained after removal. H+J. | Label at open. Keep strict reader/failure_receipt; missing contract is completed-return discrimination. H sees exits, J frozen claim. |
+| R1-02 prerequisites | Valid source with root=None, allowed exact root/coord missing or literal final ENOENT → distinct completed/U outcome; invalid source omits BOTH projections. Other missing/unsafe forms refuse. H+J. | Collapse ENOENT/null errors. Keep no-follow/pending/missing_ok gates; H identifies actual branch, J source omission. |
+| R1-03/R1-04 unsafe/pending | Original alias/owner/mode/link/special/pending inputs, including old valid final → completed/refused only on completed error return; otherwise unknown/admitted. No unsafe copy/repair. H+J. | Allow missing before pending or infer latest. Existing guards own refusal; gap is truthful completed disposition, not a second filesystem parser. |
+| R1-05/R1-06/R1-07 raw provenance | Retain4096/4097/short/change/private UTF8/JSON/exit cases. Add raw selected member/schema/source/category/controller/slot duplicates and outer launcher_result/source duplicates, same-looking last values, hidden metadata parent and overflow → fixed metadata FAIL; no embedded rescue. BOTH valid absent copies remain unobserved; unrelated duplicates preserved. H+J. | Validate only collapsed embedded copy or truth-test member. Strict private reader/admission are keepers; H owns private refusal/exit, J owns exported duplicate/copy loss. |
+| R1-07/R1-08 joined types | Enumerate EVERY D1 matrix row, opposite controller, D null/error, Boolean schema/time, source drift, missing/extra keys, completed/source_unavailable and wrong enum/schema/type/size → only listed forms accepted, fixed failures/no echo otherwise; absent extension unobserved. J. | Independent enum checks admit unreached+A, coercion or internal enum leak. Keep private source/slot reader and admission; gap is joined serialized truth. |
+| R1-09/R1-10 stale/null | Completed actual read of valid null/stale slots → available read only, never latest/writer/capture success; absent extension remains unobserved. H+J. | Translate availability into readiness. Keep reader's stale/null semantics; J independently prevents health laundering but proves no actual local completion. |
+| R1-11/R2-08/R3-06 partial/expiry | Interrupt before call, after mandatory snapshot assignment, before/during freeze, before/after error latch; owner skip positive C → unreached/U/null-D only, expiry retains prior tuple. Unknown/admitted allow U/A and real D; later D survives completed available/absence. Original nonzero/incomplete/C remain. C+H+J. | Default false as proof, force unknown/admitted U, require completed D=null or renew C. Keep operations/cleanup_time/first-error winner; C owns propagation/admission, H read/exit, J rejects impossible frozen joins. |
+| R3-02 independent continuation | Positive-C refusal retains read error/incomplete flags and independently eligible collection/ports/root attempts; allowed absence clears no prior false cleanup. H+J. | Optional freeze/error skips root or clears flags. Keep owner-FIRST cleanup; H owns actual independent attempts, J only serialized noncredit. |
+| R3-07/R3-08/R3-09/X-02 raw/copy/export | Freeze then root loss/partial collection/context/export failure; add raw-only/embedded-only/value/source/snapshot/error mismatch, duplicates/overflow and malformed/missing/empty/unreadable raw or cancellation.json. Fixed metadata FAIL; EVERY readable row still attempts original group, retaining actual timing/admission/signal/closure/missing errors. BOTH absent coherent copies unobserved. J+H. | Metadata try skips ordinary group, good derivative rescues raw, or malformed legacy acceptance called unchanged. Keep publisher/failure_receipt/cancellation.validate; J owns additive copy/error boundary, H real root loss/publication. |
+| R3-07/X-02 terminal commit | Initial FAIL remains if replacement never commits, possibly absent/earlier metadata. Successful final replacement remains terminal; evaluate ONLY actual exported bytes/copy, no postcommit check/private reread/recovery. H+J. | Reconstruct later observation at export, upgrade initial bytes in prose or require rescue. Keep12649 terminal publisher/sticky fallback; H commit/alarm effects, J actual receipt relation. |
+| R2-01/R2-05/X-01 composition | Original raw/traceback/capture[]/invalidation/conditional poison ATTEMPT/THREE calls plus admitted/refused/unavailable bookkeeping and later collection failure → original propagation/primary retained, no recursive/native diagnostic work. C+H+J. | Add writer or diagnose in record_error. Existing raw/poison keepers own local effects; J cannot prove those effects. Reader-only changes leave them intact. |
+| Existing TERM3.12/INT3.14 consumers | Real active witnesses/signals15/2/non-success/owned closure remain independent; add D2 raw/copy inputs at SAME aggregate boundary. Metadata failure adds HealthFAIL even if ordinary validator succeeds; metadata success masks none of fourteen negatives. J, actual signal H/C diagnostic-only. | Substitute metadata success or skip cancellation.validate on metadata failure. Keep cancellation.validate/controls/signals/closure; two-stage serialization differs from baseline parsing and actual delivery. |
+
+All original30 rows, unaffected12686 additions, delivered12649/12675 assertions,
+all56 EACH L1–L7 order, A01–A16/shared16-site map and full TASK12631 validator map
+above remain. No runnable assertions or existing controls changed. Corrected
+behavior **NOT RUN**, intended-failure/restored-pass **PROOF NOT RUN**, sensitivity
+**UNPROVED**; no execution/control/mutation/repetition campaign is allocated.
+Actual39803512986 remains FAILED/HealthFAIL47, BOTH56 UNKNOWN/null, zero
+recordedPASS/no provedUNREACHED, scenario1/fallback unavailable/null, cleanup
+flags false despite absence observations, initiating cause unknown and npm success.
+TERM3.12/INT3.14 actual witnesses/signals/closure PASS remains diagnostic-only;
+JOB5283 completed0/four archives32members357878B stays parent step20-attributed
+COLLECTION ONLY. Prior failures/receipts above are preserved; this actual failure
+is not an unavailable-venue exemption. Product/reset INCOMPLETE and
+ownership_evidence_complete=false UNKNOWN remain. No proof tooling is added.
+
 No existing success journey owns category-failure, cleanup-isolation or adversarial-sanitation sensitivity. No new runnable assertion is claimed for these design cases. Existing tooling/venue authorization does not permit a new fail/pass, protected mutation or repetition campaign here. Under current test-authoring skill, corrected behavior is **NOT RUN**, attributable intended-failure/restored-pass is **PROOF NOT RUN**. This honest limitation does not fabricate coverage and does not alone block design review; actual missing/unsound design requirements still warrant corrections. This source delivery preserves these case/keeper/gap records and current authority limits; no retired units, new verifier or test-only production seam can fill the gap.
 
 The full unaffected validator reference is TASK12631's **All validator/control memberships retained (NOT RUN here)**, byte-identical parent step8/qa-design-assessment.md SHA256d8c96b54c7e8be86244455a75098ab00985bae4b6c9a6c7d66c8cb9a62972799. Retain BOTH schedule/workflow_dispatch admission positives, all existing missing/wrong environment inputs, unsupported events, checkout/tree/repository/default/cron/manual-ref negatives, and per-event missing/conflicting comparisons for EACH ADMISSION_FIELDS member. Keep all original nine aggregate negatives and fourteen cancellation negatives listed above, all timing/nonoverlap/arithmetic caps and actual-content source/public/wire/CLI/browser/result/audit/provenance readers. These remain existing references, not reimplemented or executed validators. Optional categories cannot supply their required files or missing observations.
