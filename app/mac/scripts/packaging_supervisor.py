@@ -401,6 +401,8 @@ def relay(operation, argv, *, origin=None, cancel_fd=None, guardian=False,
     kill_at = drain_at = None
     killed = False
     nested = None
+    settlement_pending = False
+    control_open = True
     prior = None
     failure_deadline = None
     control_unknown = False
@@ -543,7 +545,7 @@ def relay(operation, argv, *, origin=None, cancel_fd=None, guardian=False,
                     code = child.poll()
                     if code is not None:
                         break
-                read = [left.fileno()]
+                read = [left.fileno()] if control_open else []
                 write = []
                 if cleanup is None and not input_eof and len(incoming) < CHUNK:
                     read.append(0)
@@ -556,18 +558,32 @@ def relay(operation, argv, *, origin=None, cancel_fd=None, guardian=False,
                         write.append(sink)
                 readable, writable, _ = select.select(read, write, [], min(0.05, max(0, effective - now)) if cleanup is None else 0.05)
                 if left.fileno() in readable:
-                    raw = left.recv(513)
+                    try:
+                        raw = left.recv(513)
+                    except OSError as exc:
+                        # Darwin reports private datagram peer detach as reset.
+                        # Only a receive with NO remaining protocol obligation
+                        # can retire that endpoint. Send/ack errors still fail.
+                        if (exc.errno != errno.ECONNRESET or nested is not None
+                                or settlement_pending or failure_deadline is not None
+                                or control_unknown):
+                            raise
+                        control_open = False
+                        continue  # Drain pipes on the same clock; no status claim.
                     if not raw or len(raw) > 512:
                         raise LifecycleError('PACKAGING_CONTROL_LOST')
                     msg = json.loads(raw)
                     action, epoch = msg.get('action'), msg.get('epoch')
                     if action == 'register' and nested is None and isinstance(epoch, int) and type(msg.get('pid')) is int:
                         nested = epoch
+                        settlement_pending = True
                     elif action == 'release' and nested == epoch:
                         nested = None
                     elif action == 'settled' and nested is None:
                         if not all(msg.get(k) is True for k in ('eof', 'reaped', 'absent')):
                             control_unknown = True
+                        else:
+                            settlement_pending = False
                     elif action == 'failure' and type(msg.get('prior')) is int and failure_deadline is None:
                         if prior is None:
                             prior = msg['prior'] or 1
@@ -664,6 +680,8 @@ def relay(operation, argv, *, origin=None, cancel_fd=None, guardian=False,
                         control_unknown = True
             if guardian and killed:
                 control_unknown = True  # Worker loss supplies no nested-helper settlement.
+            if settlement_pending or failure_deadline is not None:
+                control_unknown = True  # Release is not settlement; failure needs its end.
             complete = bool(outputs) and all(row[2] and not row[1] for row in outputs.values())
             absent = child.proc is not None and child.launched and child.absent()
             unresolved = control_unknown or nested is not None or not complete or not absent or code is None

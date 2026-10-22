@@ -760,6 +760,19 @@ within the existing cleanup window; unavailable diagnostics cannot replace the
 computed status or delay return by waiting for a sink. Borrowed stdio flags are
 restored after their last use. CLI error diagnostics likewise never wait.
 
+On this private datagram channel, a receive-side `ECONNRESET` can retire the
+detached peer from selection only when no registration, pending settlement,
+active failure scope or unknown control state remains. Release before a poll
+does not discharge settlement: the real `settled` message must report EOF,
+reaping and group absence. Send/ack errors and resets with outstanding
+obligations still fail. Retirement continues pipe draining on the original
+clock; success still requires complete output, actual child status and observed
+group absence. Prior failures and signals keep their original precedence.
+Apple's datagram detach implementation supports this treatment, but build22's
+relay errno54 diagnostic does not identify the failing syscall. The Darwin
+reset path remains unexecuted here; portable CLI/preflight observations do not
+establish a native repair or package acceptance.
+
 Failure attribution adds at most512 advisory stderr bytes per relay or verifier
 inspection invocation, separately from the unchanged65536-byte custody budget,
 its upfront1024-byte reserve and3072-byte snapshot grants. Each invocation has
