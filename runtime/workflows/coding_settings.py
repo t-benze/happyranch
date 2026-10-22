@@ -149,7 +149,7 @@ class CodingSettingsStore:
                                 self._principal(principal)
                                 return replay
                         if capture is None:
-                            raise CodingSettingsError('coding_settings_authority_unavailable')
+                            raise CodingSettingsError('coding_settings_authority_unavailable', current=state.current)
                         from runtime.workflows._coding_settings_publication import append
                         result = None
                         validation_error = None

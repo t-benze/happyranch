@@ -24,7 +24,7 @@ def append(store, conn, principal, capture, command, raw, state, inventory):
     if max(current['generation'], current['mapping_generation']) == 9223372036854775807:
         raise CodingSettingsError('coding_settings_generation_stale', current=current)
     if inventory.imported is None:
-        raise CodingSettingsError('coding_settings_release_required')
+        raise CodingSettingsError('coding_settings_release_required', current=current)
     previous_mapping = (None if inventory.mappings is None else
         account(json.loads(inventory.mappings.selected.mapping_bytes)['mapping'], budget))
     store._principal(principal)
@@ -38,11 +38,11 @@ def append(store, conn, principal, capture, command, raw, state, inventory):
         pin = dict(namespace=capture.ready.namespace, generation=capture.ready.generation,
                    snapshot_digest=capture.ready.snapshot_digest)
         if mapping['authority'] != pin:
-            raise CodingSettingsError('coding_settings_authority_unavailable')
+            raise CodingSettingsError('coding_settings_authority_unavailable', current=current)
         try:
             human_configuration(mapping, account(json.loads(capture.ready.snapshot_bytes), budget), budget)
         except ValueError:
-            raise CodingSettingsError('coding_settings_eligibility_revoked') from None
+            raise CodingSettingsError('coding_settings_eligibility_revoked', current=current) from None
     now = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.%fZ')
     identity = 'coding-mapping:' + uuid.uuid4().hex
     admission = 'coding-settings-admission:' + uuid.uuid4().hex
