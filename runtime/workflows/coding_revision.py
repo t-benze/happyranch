@@ -123,7 +123,7 @@ def scope_allowance(attempts: dict, command: dict, subject: dict, returns: list,
         _copy_allowance(value, budget)
     for a in attempts.values():
         # Contributor and attempt inventory projection copies, not all prior scopes.
-        _decoded(dict(id=a['id'], task_id=a['task_id'], principal=a['principal']), budget)
+        _copy_allowance(dict(id=a['id'], task_id=a['task_id'], principal=a['principal']), budget)
 
 
 def _copy_allowance(value: object, budget: object) -> None:

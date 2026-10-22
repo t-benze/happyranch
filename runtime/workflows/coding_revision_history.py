@@ -8,7 +8,7 @@ from typing import Any
 
 from runtime.workflows.coding_authority_history import _decoded
 from runtime.workflows.coding_bootstrap import decode_row, encode_row, identity
-from runtime.workflows.coding_revision import ROLES, attempt_identity, current_stage, independent, returned_findings, revision_brief, revision_scope, scope_allowance
+from runtime.workflows.coding_revision import ROLES, attempt_identity, current_stage, independent, returned_findings, revision_brief, revision_scope, scope_allowance, _copy_allowance
 from runtime.workflows.coding_saved_records import _canonical, _check, _closed, _hash
 from runtime.workflows.coding_start_records import parse_stage_output, parse_final_output, selected_repository
 
@@ -129,7 +129,7 @@ def replay_revision(conn: Any, org: str, budget: Any, storage: Any, *, event: di
         _closed(value, 'run attempts instances tasks rounds requests assignments')
     _check(same(body['before'], projection(run, attempts, tasks)))
     for value in (run, attempts, tasks):
-        _decoded(encode_row(value) if value is run else [encode_row(v) for v in value.values()], budget)
+        _copy_allowance(value, budget)
     target_run, target_attempts, target_tasks = dict(run), dict(attempts), dict(tasks)
     target_run.update(cas_version=run['cas_version'] + 1, last_event_id=event['id'])
     if holds:

@@ -8,13 +8,13 @@ from typing import Any
 
 from runtime.models import TaskRecord
 from runtime.workflows.coding_bootstrap import encode_row, identity
-from runtime.workflows.coding_revision import ROLES, attempt_identity, independent, returned_findings, revision_brief, revision_scope, scope_allowance
+from runtime.workflows.coding_revision import ROLES, attempt_identity, independent, returned_findings, revision_brief, revision_scope, scope_allowance, _copy_allowance
 from runtime.workflows.coding_saved_records import _canonical, _check, _hash
 from runtime.workflows.coding_start_records import selected_repository
 
 
 def append_revision(dispatcher: Any, conn: Any, entry: dict, kind: str, facts: dict, output: dict,
-                    now: str, attempt: dict | None = None, task: TaskRecord | None = None) -> None:
+                    now: str, attempt: dict | None = None, task: TaskRecord | None = None, *, budget: Any) -> None:
     current, run = entry['attempt'], entry['run']
     _check(conn is dispatcher.db._conn and conn.in_transaction)
     previous = entry['native']['history'][-1]
@@ -23,6 +23,8 @@ def append_revision(dispatcher: Any, conn: Any, entry: dict, kind: str, facts: d
     key = 'coding-internal:' + _hash(_canonical([run['instance_id'], kind, current['result_id'], internal]))
     principal = 'service:' + dispatcher.producer
     event_id = identity('event', dispatcher.org.slug, run['instance_id'], principal, key)
+    for value in (run, entry['attempts'], entry['tasks'], entry['authority']):
+        _copy_allowance(value, budget)
     before, after = dispatcher._projection(entry), deepcopy(dispatcher._projection(entry))
     after['run'].update(cas_version=run['cas_version'] + 1, last_event_id=event_id)
     if kind == 'stage_queued':
@@ -124,7 +126,7 @@ def advance_revision(dispatcher: Any, conn: Any, entry: dict, result_id: int, ca
     for kind in (('artifact_staged', 'contribution_recorded', 'stage_queued', 'advance') if current['stage'] == 'development'
                  else ('review_staged', 'stage_queued', 'advance')):
         append_revision(dispatcher, conn, entry, kind, facts, output, now,
-            attempt=a if kind == 'stage_queued' else None, task=task if kind == 'stage_queued' else None)
+            attempt=a if kind == 'stage_queued' else None, task=task if kind == 'stage_queued' else None, budget=budget)
     dispatcher.org.workflow_authority._validate_admission_uncommitted(conn, capture)
     from runtime.infrastructure.workflow_schema import _read_workflow_schema
     layout, _ = _read_workflow_schema(conn, expected_org_slug=dispatcher.org.slug, budget=budget)
@@ -136,4 +138,4 @@ def hold_revision(dispatcher: Any, conn: Any, entry: dict, output: dict) -> None
     from runtime.workflows.coding_dispatch import stamp
     kind = 'manager_completed' if entry['attempt']['stage'] == 'manager_closeout' else 'review_staged'
     _check(kind == 'manager_completed' or output['outcome'] == 'BLOCK')
-    append_revision(dispatcher, conn, entry, kind, facts_for(entry, output, attempt=None, admission=None), output, stamp())
+    append_revision(dispatcher, conn, entry, kind, facts_for(entry, output, attempt=None, admission=None), output, stamp(), budget=entry['_budget'])
