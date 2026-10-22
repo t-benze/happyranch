@@ -70,6 +70,38 @@ host; every other target needs its own build and its own run evidence.
   24.19.0 with glibc 2.43. The glibc 2.28 minimum, other glibc versions,
   musl, arm64, macOS and Windows were not tested.
 
+## Static export (optional, for a static host)
+
+The default build above is unchanged. For a static host such as Cloudflare
+Pages (which cannot run `server.js`), build the optional static export and
+assemble it from a clean checkout:
+
+```bash
+npm ci
+npm run build:static-export          # HAPPYRANCH_BUILD_TARGET=static-export, writes out/
+npm run assemble:static-export -- "$PWD" /absolute/new/package-dir
+```
+
+Any other `HAPPYRANCH_BUILD_TARGET` value fails the build. The assembler
+requires that the last build was a successful export into this directory's
+`out/`, a single build ID under `_next/static`, `index.html`, `404.html`
+(without it Pages serves `/` for unknown paths) and the search index
+`_next/static/chunks/nextra-data-en-US.json`. It refuses symlinks, hosting
+files (`_headers`, `_redirects`, `_routes.json`, `_worker.js`, `functions`),
+`.env*` and source maps, and files over the Pages limits. It writes `site/`
+(the only directory to upload or serve) with a package-only `_headers`
+(`X-Robots-Tag: noindex, nofollow`; nothing marked immutable, because the
+search index keeps the same name across builds) and `package-manifest.json`
+beside `site/`, never inside it.
+
+The export has the same pages, navigation and search as the Node package.
+Nextra's `/:path*/_meta` rewrite does not apply to a static export; the
+`_meta` routes produce no HTML there, so they are unknown paths (404). The
+pages load the three brand fonts from Google Fonts (`fonts.googleapis.com`,
+`fonts.gstatic.com`) in both builds; a visitor's browser makes those requests
+to Google directly. The navbar "Website" link targets `https://happyranch.ai`,
+which serves the website only after its cutover.
+
 Run the package:
 
 ```bash
