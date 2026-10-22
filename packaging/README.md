@@ -845,6 +845,14 @@ outer. Internal failure persistence is30s clipped to the original clock only
 when an actual supervising owner is present. PyInstaller imports/freezer body,
 npm producers, compilers and archive compression remain workflow-only.
 
+The relay retains pending input/output across retryable nonblocking readiness
+loss, including stdout/stderr/fd3 sinks that alias one pipe; partial writes
+advance only the bytes delivered. These retries consume the original clock.
+Secondary and terminal diagnostics make only a best-effort nonblocking attempt
+within the existing cleanup window; unavailable diagnostics cannot replace the
+computed status or delay return by waiting for a sink. Borrowed stdio flags are
+restored after their last use. CLI error diagnostics likewise never wait.
+
 The outer cleanup allowance is one5s window; Node's D+10 KILL fallback and
 Bash's same-module guardian/D+12 observation slots are independent fallbacks.
 Only the actual parent with a positively unreaped handle can signal its group;

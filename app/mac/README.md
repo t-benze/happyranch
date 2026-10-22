@@ -746,6 +746,14 @@ process scan occurs. Group absence, EOF and actual status are observations, not
 proof of global descendant quiescence; parent loss/escape can leave cleanup
 UNKNOWN and must never be called complete containment.
 
+The relay retains pending input/output across retryable nonblocking readiness
+loss, including stdout/stderr/fd3 sinks that alias one pipe; partial writes
+advance only the bytes delivered. These retries consume the original clock.
+Secondary and terminal diagnostics make only a best-effort nonblocking attempt
+within the existing cleanup window; unavailable diagnostics cannot replace the
+computed status or delay return by waiting for a sink. Borrowed stdio flags are
+restored after their last use. CLI error diagnostics likewise never wait.
+
 One shared5s outer cleanup allowance covers TERM (at most2s grace), held-child
 KILL, drain and reap/closure. Asset capture retains its stricter60s/0.25s/1s/1s
 schedule. Node has an independent D+10s SIGKILL fallback; failure is sticky and

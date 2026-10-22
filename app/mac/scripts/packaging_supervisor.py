@@ -281,6 +281,29 @@ def finish_status(code):
     return code
 
 
+def _diagnostic(message, cutoff=None):
+    """One nonblocking attempt; secondary output never changes the result.
+
+    Readiness is only a hint when stderr aliases another sink. Do not wait or
+    retry here, or acquire another clock after the owner's cleanup window.
+    """
+    old = None
+    try:
+        if cutoff is not None and time.monotonic() >= cutoff:
+            return
+        old = fcntl.fcntl(2, fcntl.F_GETFL)
+        os.set_blocking(2, False)
+        os.write(2, message)
+    except OSError:
+        pass
+    finally:
+        if old is not None:
+            try:
+                fcntl.fcntl(2, fcntl.F_SETFL, old)
+            except OSError:
+                pass
+
+
 def _fifo(path):
     fd = os.open(path, os.O_RDWR | os.O_NONBLOCK | os.O_NOFOLLOW)
     try:
@@ -429,9 +452,10 @@ def relay(operation, argv, *, origin=None, cancel_fd=None, guardian=False,
                         child.kill(signal.SIGTERM)
                 effective = min(deadline, failure_deadline or deadline)
                 if now >= effective:
-                    if cause is None and prior is not None:
-                        os.write(2, ('PACKAGING_HELPER_SECONDARY_DEADLINE:' + operation + '\n').encode())
+                    secondary = cause is None and prior is not None
                     enter(prior if prior is not None else 124, now)
+                    if secondary:
+                        _diagnostic(('PACKAGING_HELPER_SECONDARY_DEADLINE:' + operation + '\n').encode(), cleanup)
                 if cleanup is not None and now >= kill_at and not killed:
                     if child.pin:
                         child.kill(signal.SIGKILL)
@@ -482,9 +506,13 @@ def relay(operation, argv, *, origin=None, cancel_fd=None, guardian=False,
                     bound = min(deadline, failure_deadline or deadline, cleanup or deadline)
                     left.send(json.dumps(dict(action=action, epoch=epoch, ok=True, deadline=bound), separators=(',', ':')).encode())
                 if 0 in readable:
-                    chunk = os.read(0, CHUNK - len(incoming))
-                    incoming.extend(chunk)
-                    if not chunk:
+                    try:
+                        chunk = os.read(0, CHUNK - len(incoming))
+                    except BlockingIOError:
+                        chunk = None  # Another alias may have consumed readiness.
+                    if chunk:
+                        incoming.extend(chunk)
+                    if chunk == b'':
                         input_eof = True
                         if logger and not finalizing:
                             finalizing = True
@@ -493,7 +521,11 @@ def relay(operation, argv, *, origin=None, cancel_fd=None, guardian=False,
                 if in_write in writable:
                     try:
                         count = os.write(in_write, incoming)
+                        if count <= 0:
+                            raise LifecycleError('PACKAGING_RELAY_WRITE')
                         del incoming[:count]
+                    except BlockingIOError:
+                        pass  # Retain all bytes for the next readiness check.
                     except BrokenPipeError:
                         incoming.clear(); input_eof = True
                         close(in_write)
@@ -502,13 +534,21 @@ def relay(operation, argv, *, origin=None, cancel_fd=None, guardian=False,
                 for fd, row in outputs.items():
                     sink, data, eof = row
                     if fd in readable:
-                        chunk = os.read(fd, CHUNK - len(data))
+                        try:
+                            chunk = os.read(fd, CHUNK - len(data))
+                        except BlockingIOError:
+                            chunk = None
                         if chunk:
                             data.extend(chunk)
-                        else:
+                        elif chunk == b'':
                             row[2] = True
                     if sink in writable and data:
-                        count = os.write(sink, data)
+                        try:
+                            count = os.write(sink, data)
+                        except BlockingIOError:
+                            # stdout/stderr/fd3 can share a pipe: an earlier
+                            # write may have consumed the same readiness.
+                            continue
                         if count <= 0:
                             raise LifecycleError('PACKAGING_RELAY_WRITE')
                         del data[:count]
@@ -531,12 +571,6 @@ def relay(operation, argv, *, origin=None, cancel_fd=None, guardian=False,
                     code = child.reap(stop)
                 except BaseException:
                     control_unknown = True
-            for fd, old in flags.items():
-                if fd not in owned_ids:  # borrowed caller descriptors only
-                    try:
-                        fcntl.fcntl(fd, fcntl.F_SETFL, old)
-                    except OSError:
-                        control_unknown = True
             for fd in tuple(fds):
                 try:
                     close(fd)
@@ -548,18 +582,28 @@ def relay(operation, argv, *, origin=None, cancel_fd=None, guardian=False,
                         sock.close()
                     except OSError:
                         control_unknown = True
-    if guardian and killed:
-        control_unknown = True  # Worker loss supplies no nested-helper settlement.
-    complete = bool(outputs) and all(row[2] and not row[1] for row in outputs.values())
-    absent = child.proc is not None and child.launched and child.absent()
-    unresolved = control_unknown or nested is not None or not complete or not absent or code is None
-    status = cause if cause is not None else code
-    if status in (None, 0) and unresolved:
-        status = prior if prior is not None else 125
-    if status == 124:
-        os.write(2, ('PACKAGING_HELPER_DEADLINE:' + operation + '\n').encode())
-    if unresolved:
-        os.write(2, ('PACKAGING_HELPER_CLEANUP_UNRESOLVED:' + operation + '\n').encode())
+            if guardian and killed:
+                control_unknown = True  # Worker loss supplies no nested-helper settlement.
+            complete = bool(outputs) and all(row[2] and not row[1] for row in outputs.values())
+            absent = child.proc is not None and child.launched and child.absent()
+            unresolved = control_unknown or nested is not None or not complete or not absent or code is None
+            status = cause if cause is not None else code
+            if status in (None, 0) and unresolved:
+                status = prior if prior is not None else 125
+            diagnostic_stop = min(stop, cleanup if cleanup is not None else deadline)
+            if status == 124:
+                _diagnostic(('PACKAGING_HELPER_DEADLINE:' + operation + '\n').encode(), diagnostic_stop)
+            if unresolved:
+                _diagnostic(('PACKAGING_HELPER_CLEANUP_UNRESOLVED:' + operation + '\n').encode(), diagnostic_stop)
+            # Last use of borrowed stdio, including terminal diagnostics, is over.
+            for fd, old in flags.items():
+                if fd not in owned_ids:  # borrowed caller descriptors only
+                    try:
+                        fcntl.fcntl(fd, fcntl.F_SETFL, old)
+                    except OSError:
+                        control_unknown = True
+            if status in (None, 0) and control_unknown:
+                status = prior if prior is not None else 125
     return int(status)
 
 
@@ -726,6 +770,6 @@ if __name__ == '__main__':
     try:
         result = main()
     except (OSError, ValueError, LifecycleError):
-        os.write(2, b'PACKAGING_HELPER_LIFECYCLE_ERROR\n')
         result = 125
+        _diagnostic(b'PACKAGING_HELPER_LIFECYCLE_ERROR\n')
     raise SystemExit(finish_status(result))
