@@ -330,3 +330,13 @@ Per founder decision THR-007, the org-shared artifact store (the `happyranch art
 The thread inbox now consumes one provider-aware active bucket stream in 50-row pages. Real and prototype providers share committed generation/request ownership while using their respective transports/stores. Server summary supplies all counts independently of loaded rows or filtering; initial unknown, updating and stale values are explicit. Refresh builds a replacement prefix to prior depth privately before one cache commit. Abort/generation checks reject stale scopes; repeated cursors are recoverable protocol errors. ContentWrap owns intersection loading and accessible Load more/Retry; continuation failure retains rows and pauses automatic demand. Literal subject-or-ID filtering exhausts remaining pages even with viewport-filling early matches. Scoped offset/anchor/depth restoration waits for enough content or termination, survives errors/leaving and yields to user movement. Inbox/reconnect/focus and local mutations restart authoritative reads. Palette flattens committed active-org pages and legacy lists without fetching. Transcript semantics and provider/router wiring remain unchanged.
 
 Loaded inbox rows keep the newest accepted projection for each repeated thread ID, then use the complete active bucket comparator before literal subject-or-ID filtering. Open uses pin/numeric-ID/start/ID rank; Archived uses archive-or-start/ID rank; All uses global start/ID rank. This projection preserves each committed page’s authoritative totals, sample, cursor and termination metadata. Live movement can repeat IDs; only quiescent refresh/traversal promises the complete current set.
+
+## Current-state amendment 2026-10-22 — THR-305 seq16
+
+The build-artifact recipe above is historical. `scripts/build_web.sh` now
+defaults to `npm run build:local` (development defaults, optional gitignored
+local overrides and existing explicit KB compatibility input); pass
+`--production` for `npm run build`. Dependencies are installed with `npm ci`
+only when `node_modules` or its lock marker is absent. Both profiles still
+write `web/dist/`. Production npm and Mac release packaging stay production.
+See `web/ARCHITECTURE.md` § Build-time UI flags for current profile semantics.

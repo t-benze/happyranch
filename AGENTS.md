@@ -2847,7 +2847,8 @@ scripts/daemon.sh start
 scripts/daemon.sh status
 scripts/daemon.sh stop --force
 
-scripts/build_web.sh
+scripts/build_web.sh              # default: local UI flag profile
+scripts/build_web.sh --production # production UI flag profile
 cd web && npm run dev
 cd web && npm run build:local     # local UI flag profile; never a release build
 happyranch web [--no-open]
@@ -2953,10 +2954,11 @@ in `web/config/features.*.json`: a registry with purpose/owner/removal
 condition, complete development and production profiles, and an optional
 gitignored `features.local.json`. Read them ONLY from `web/src/config/features.ts`.
 
-- `npm run build`, `scripts/build_web.sh` and Mac packaging always use the
-  production file.
-- `npm run dev` and `npm run build:local` use development defaults plus the
-  local override.
+- `npm run build`, `scripts/build_web.sh --production` and Mac packaging
+  always use the production file, ignoring local/ambient feature overrides.
+- `scripts/build_web.sh` defaults to `npm run build:local`. Like `npm run dev`,
+  it uses development defaults, then the local override, then an explicit
+  `VITE_ENABLE_KB_COMPOSE`.
 - Vitest uses development defaults.
 - The `VITE_ENABLE_KB_COMPOSE` compatibility input (local/test only) is strict
   literal `true`/`false`.

@@ -116,11 +116,17 @@ dependencies.
 
 | Command | Profile |
 | --- | --- |
-| `npm run build`, `npm run build -- --sourcemap`, `scripts/build_web.sh`, Mac `build-app.sh`, any direct `vite build`, `build-storybook` | **production**: the checked-in production file only |
-| `npm run build:local [-- --outDir <dir>]` | **local** |
+| `scripts/build_web.sh --production`, `npm run build`, `npm run build -- --sourcemap`, Mac `build-app.sh`, any direct `vite build`, `build-storybook` | **production**: the checked-in production file only |
+| `scripts/build_web.sh` (no arguments), `npm run build:local [-- --outDir <dir>]` | **local** |
 | `npm run dev` (and Storybook dev) | **local** |
 | Vitest (`npm test`, `npm run test:write-path`) | **test** |
 | `npm run preview` | none: serves the existing `dist/` |
+
+The shell wrapper defaults to `npm run build:local`; `--production` calls
+`npm run build`. Both write `web/dist/` and install with `npm ci` first if
+`node_modules` or its `.package-lock.json` is absent. Standalone `-h`/`--help`
+prints usage; unknown or extra arguments fail before any install/build.
+Mac packaging continues to invoke production npm directly.
 
 - **local** = development defaults, then `config/features.local.json`, then an
   explicit `VITE_ENABLE_KB_COMPOSE`.

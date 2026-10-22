@@ -86,3 +86,15 @@ This is UI visibility only. The scheduler, API, CLI, stored `working_hours`
 settings and saved schedules are unchanged, including orgs that already
 enabled Work Hours. It is not access control. The shipped constraints above
 still describe daemon behavior. See `web/ARCHITECTURE.md` § Build-time UI flags.
+
+## Amendment 2026-10-22 — local shell build default (Founder THR-305 seq16)
+
+The shell command in the 2026-10-18 visibility amendment now defaults to
+`npm run build:local`: `scripts/build_web.sh` uses development defaults, then
+optional gitignored `web/config/features.local.json`, then the existing explicit
+`VITE_ENABLE_KB_COMPOSE` compatibility input. Work Hours is visible by default
+in this local profile, subject to the local override.
+`scripts/build_web.sh --production`, `npm run build` and Mac packaging retain
+the production profile with Work Hours hidden. Flag values, UI-only scope and
+all scheduler/API/CLI/stored-setting behavior remain unchanged. See
+`web/ARCHITECTURE.md` § Build-time UI flags.
