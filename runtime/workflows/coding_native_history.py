@@ -413,9 +413,13 @@ def read_native(conn: Any, org: str, budget: Any, storage: Any, *, start: dict,
             scope = _json(attempt['scope_bytes'], 1048576)
             _decoded(scope, budget)
             repaired = scope['format'] == 'workflow-coding-final-scope@2'
+        uncertainty = body['format'] == 'workflow-coding-native-manager-event@3'
+        if uncertainty:
+            _check(repaired and kind == 'held')
+        manager_version = '3' if uncertainty else '2' if repaired else '1'
         _check(_canonical(body) == event['event_bytes'] and body['format'] == {
             'development': 'workflow-coding-event@2', 'code_review': 'workflow-coding-native-review-event@1',
-            'qa': 'workflow-coding-native-qa-event@1', 'manager_closeout': 'workflow-coding-native-manager-event@2' if repaired else 'workflow-coding-native-manager-event@1'}[attempt['stage']])
+            'qa': 'workflow-coding-native-qa-event@1', 'manager_closeout': 'workflow-coding-native-manager-event@' + manager_version}[attempt['stage']])
         for name in ('id', 'instance_id', 'event_seq', 'event_kind', 'attempt_id', 'previous_digest', 'created_at'):
             _check(same(body[name], event[name]))
         _check(event['event_seq'] == previous['event_seq'] + 1
@@ -427,7 +431,7 @@ def read_native(conn: Any, org: str, budget: Any, storage: Any, *, start: dict,
         command = _closed(evidence['command'],
             'format kind source_event_ids source_event_digests subject producer_identity observation')
         _check(command['format'] == {'development': 'workflow-coding-internal-command@2',
-            'code_review': 'workflow-coding-native-review-command@1', 'qa': 'workflow-coding-native-qa-command@1', 'manager_closeout': 'workflow-coding-native-manager-command@2' if repaired else 'workflow-coding-native-manager-command@1'}[attempt['stage']] and command['kind'] == kind
+            'code_review': 'workflow-coding-native-review-command@1', 'qa': 'workflow-coding-native-qa-command@1', 'manager_closeout': 'workflow-coding-native-manager-command@' + manager_version}[attempt['stage']] and command['kind'] == kind
                and command['source_event_ids'] == [previous['id']]
                and command['source_event_digests'] == [previous['event_digest']] and command['subject'] is None)
         observation = _closed(command['observation'], 'facts invocation queue_owner admission' + (' workspace' if repaired else ''))
@@ -480,7 +484,26 @@ def read_native(conn: Any, org: str, budget: Any, storage: Any, *, start: dict,
                 task=tasks[task_id], source=source, org=org, expected=storage.heartbeat_owners.get(task_id),
                 source_invocation=source_invocation)
             storage.heartbeat_owners[task_id] = queue_owner
-        if repaired:
+        prebinding = uncertainty and facts['reason'] == 'coding_native_preparation_unsettled'
+        missing_close = uncertainty and facts['reason'] == 'coding_native_close_unavailable'
+        if uncertainty:
+            _check(not source_tail and (prebinding or missing_close)
+                   and facts['required_action'] == 'original_owner_reconciliation')
+        if prebinding:
+            # This is a preparation observation, never a successful session,
+            # launch, claim, workspace or cleanup witness.
+            _check(state['claim'] is state['host'] is state.get('workspace') is None
+                   and observation['workspace'] is None and origin['claim'] is None
+                   and attempt['state'] == 'queued' and attempt['session_id'] is attempt['result_id'] is None
+                   and observation['queue_owner'] is not None)
+            prepared = observation['queue_owner']['native']
+            _check(command['producer_identity'] == 'coding-dispatcher:' + org + ':' + prepared['id']
+                   and origin['session_id'] == prepared['session_id'])
+            if native is not None:
+                for key in ('id', 'org', 'root_task_id', 'task_id', 'agent', 'session_id',
+                            'owner', 'owner_identity', 'fingerprint', 'generation'):
+                    _check(native[key] == prepared[key])
+        elif repaired:
             from runtime.workflows.coding_start_records import CodingFinalWorkspace
             workspace = CodingFinalWorkspace.model_validate(observation['workspace']).model_dump()
             _decoded(workspace, budget)
@@ -494,7 +517,18 @@ def read_native(conn: Any, org: str, budget: Any, storage: Any, *, start: dict,
                 state['workspace'] = workspace
             else:
                 _check(workspace == state.get('workspace'))
-            if not source_tail:
+            if missing_close:
+                _check(native is None and state['claim'] is not None and state['host'] is not None
+                       and not state['cleanup_recorded']
+                       and workspace['invocation_id'] == state['claim']['invocation_id'] == state['claim']['pause_entry_id']
+                       and workspace['session_id'] == attempt['session_id'] == origin['session_id'])
+                if observation['queue_owner'] is not None:
+                    prepared = observation['queue_owner']['native']
+                    _check(prepared['id'] == workspace['invocation_id']
+                           and prepared['session_id'] == workspace['session_id']
+                           and prepared['fingerprint'] == state['claim']['task_fingerprint']
+                           and prepared['generation'] == state['claim']['pause_generation'])
+            elif not source_tail:
                 _check(native is not None and workspace['invocation_id'] == native['id']
                        and workspace['session_id'] == native['session_id'] == origin['session_id'])
         if kind in ('session_bound', 'callback_recorded'):

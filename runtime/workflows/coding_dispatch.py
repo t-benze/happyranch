@@ -180,6 +180,12 @@ class CodingDispatcher:
             # A persisted heartbeat's claim can never be silently replaced.
             _check(owner['binding'] is None or same(owner['binding'], binding))
             owner['binding'] = binding
+            # queue_finished removes the live queue slot before native close.
+            # Keep its actual original preparation for uncertainty capture only.
+            if invocation.owner == 'coding':
+                original = getattr(invocation, 'coding_queue_binding', None)
+                _check(original is None or same(original, binding))
+                invocation.coding_queue_binding = deepcopy(binding)
 
     def heartbeat(self, task_id: str, owner: dict | None) -> None:
         with self.db._lock:
@@ -455,7 +461,17 @@ class CodingDispatcher:
         previous = entry['native']['history'][-1]
         _check(previous['event_seq'] < entry['source']['budgets']['coding_event_limit'])
         source_tail = invocation.task.id == entry['source']['task_id']
+        repaired = (entry['attempt']['stage'] == 'manager_closeout' and
+                    json.loads(entry['attempt']['scope_bytes'])['format'] == 'workflow-coding-final-scope@2')
+        uncertainty = (repaired and not source_tail and kind == 'held' and facts.get('reason') in
+                       ('coding_native_preparation_unsettled', 'coding_native_close_unavailable'))
+        prebinding = uncertainty and facts['reason'] == 'coding_native_preparation_unsettled'
         claim = None if source_tail else getattr(invocation, 'coding_claim', entry['native']['claim'])
+        if prebinding:
+            # A rolled-back session admission may leave transient Python facts;
+            # those are not a committed coding claim or workspace.
+            _check(entry['native']['claim'] is entry['native']['host'] is entry['native'].get('workspace') is None)
+            claim = None
         producer = (invocation.identity if source_tail else claim['owner'] if claim is not None
                     else self.producer + ':' + invocation.identity)
         row = invocation.store.row_uncommitted(entry['source']['root_ancestor_id'])
@@ -465,17 +481,29 @@ class CodingDispatcher:
             candidates = [owner for owner in self._queue_live.get(invocation.task.id, {}).values()
                           if owner['binding'] is not None and owner['binding']['claim_identity'] == invocation.identity]
             queue_owner = deepcopy(candidates[0]['binding']) if len(candidates) == 1 else None
+        if uncertainty:
+            _check(invocation.owner == 'coding' and invocation.workflow_dispatcher is self
+                   and invocation.orch is self.org.orchestrator
+                   and invocation.task.id == entry['attempt']['task_id']
+                   and invocation.agent == entry['attempt']['principal'])
+            if queue_owner is None:
+                queue_owner = deepcopy(getattr(invocation, 'coding_queue_binding', None))
+            if prebinding:
+                _check(queue_owner is not None and queue_owner['claim_identity'] == invocation.identity
+                       and queue_owner['native']['session_id'] == invocation.session_id)
+            else:
+                # A retained journal entry is not the unavailable current close.
+                native = None
         observation = dict(facts=facts, invocation=native, queue_owner=queue_owner,
             admission=(invocation.coding_launch_admission if kind == 'session_bound' else
                        invocation.coding_callback_admission if kind == 'callback_recorded' else None))
-        repaired = (entry['attempt']['stage'] == 'manager_closeout' and
-                    json.loads(entry['attempt']['scope_bytes'])['format'] == 'workflow-coding-final-scope@2')
         if repaired:
             workspace = self._final_workspace(invocation, entry) if kind == 'session_bound' else entry['native'].get('workspace')
-            _check(workspace is not None)
+            _check(prebinding or workspace is not None)
             observation['workspace'] = workspace
+        manager_version = '3' if uncertainty else '2' if repaired else '1'
         command = dict(format={'development': 'workflow-coding-internal-command@2',
-            'code_review': 'workflow-coding-native-review-command@1', 'qa': 'workflow-coding-native-qa-command@1', 'manager_closeout': 'workflow-coding-native-manager-command@2' if repaired else 'workflow-coding-native-manager-command@1'}[entry['attempt']['stage']], kind=kind,
+            'code_review': 'workflow-coding-native-review-command@1', 'qa': 'workflow-coding-native-qa-command@1', 'manager_closeout': 'workflow-coding-native-manager-command@' + manager_version}[entry['attempt']['stage']], kind=kind,
             source_event_ids=[previous['id']], source_event_digests=[previous['event_digest']],
             subject=None, producer_identity=producer, observation=observation)
         instance = entry['run']['instance_id']
@@ -493,7 +521,7 @@ class CodingDispatcher:
                           for k in sorted(entry['tasks'])]
         operation = dict(org_slug=self.org.slug, principal=principal, key=key, request_digest=_hash(_canonical(command)))
         body = dict(format={'development': 'workflow-coding-event@2',
-            'code_review': 'workflow-coding-native-review-event@1', 'qa': 'workflow-coding-native-qa-event@1', 'manager_closeout': 'workflow-coding-native-manager-event@2' if repaired else 'workflow-coding-native-manager-event@1'}[entry['attempt']['stage']],
+            'code_review': 'workflow-coding-native-review-event@1', 'qa': 'workflow-coding-native-qa-event@1', 'manager_closeout': 'workflow-coding-native-manager-event@' + manager_version}[entry['attempt']['stage']],
             id=event_id, instance_id=instance,
             event_seq=previous['event_seq'] + 1, event_kind=kind, attempt_id=attempt['id'], operation=operation,
             previous_digest=previous['event_digest'], before=before, after=after,

@@ -777,5 +777,12 @@ commit/aware time must be observed in THIS live session before claiming merged.
 Failed command remains failed/uncertain despite separate later effect observation.
 Callback through actual task/agent/SID is FINAL. Only genuine successful host and
 positive outer settlement can record performed work; daemon never performs PR I/O.
-Historical event@4 held QA PASS stays held; new event@5 accepts eligible settled QA
+Historical event@4 held QA PASS stays held; repaired event@6 accepts eligible settled QA
 PASS. Readiness remains disabled and source presence grants no execution/merge.
+
+The native-manager command/event@3 uncertainty records retain actual original
+preparation identity before binding, or original workspace/claim with missing
+current close after binding. Both remain held; no selected output, cleanup or
+successful settlement follows. Literal native-manager@1/@2 remain unchanged.
+The final-manager GET remains own-current-original CLI-only, browser-excluded and
+native-remote-denied. Source/static evidence supplies no runtime or authoring PASS.

@@ -1561,3 +1561,15 @@ transport loss never retries; pending checks hold without coding jobs. Readiness
 remains unconditionally disabled. Source/static only; native/behavioral proof
 UNEXECUTED, units RETIRED/integration INCLUDING callback SKIPPED24342, no old-root
 waiver or execution/merge/activation grant.
+
+ROOT12299 step32 source correction adds uncertainty-only native-manager command/event@3:
+prebinding holds retain the actual original preparation/queue identity with absent
+workspace/claim/host; missing-close holds retain the original bound workspace/claim
+and absent current native close. Independent readers keep both held and preserve
+literal @1/@2. Successful selected output still needs complete original capture.
+The own-current-original-final-manager GET is exactly browser-excluded and denied
+by the existing native raw/normalized gate before unchanged credential handling.
+Route fixture four-answer evidence is recorded; attributable RED/GREEN and native
+gate proof remain UNEXECUTED/unallocated, never test-authoring PASS. Only source,
+lint/static, normal hooks/publication; units RETIRED, integration INCLUDING callback
+SKIPPED24342. Genuine final-head executable QA/live-manager action stays root-owned.

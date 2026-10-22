@@ -4027,7 +4027,7 @@ all adverse lineage remain preserved.
 <!-- TASK12509 / ROOT12299 live final-manager source -->
 ## Disabled live final-manager source
 
-ROOT12299 step31 F01/F02 correction / Founder THR320seq4/18/27 extends the same-PR disabled
+ROOT12299 step32 F03/F04/F05 correction / Founder THR320seq4/18/27 extends the same-PR disabled
 engine through a fourth actual coding-owned attempt. Readiness/require_ready
 remain unconditionally disabled. This source adds no execution, repository
 access, credential, settings/@3, control/reassignment, merge or activation grant.
@@ -4058,6 +4058,18 @@ caller paths supply no root. Every later native observation retains that SAME
 original capture. Selected live reads compare it with the actual current owner
 and OrgPaths again; independent historical readers reconstruct the full path
 and original native task/SID/claim/invocation relationship.
+The closed native-manager-command/event@3 family records only held uncertainty
+for repaired scope@2. coding_native_preparation_unsettled retains the original
+prepared queue identity, producer/task/SID/fingerprint/root and any actual native
+observation while workspace/committed claim/host remain absent. The coding queue
+capture survives removal of its live slot on the SAME invocation; missing capture
+cannot manufacture provenance. coding_native_close_unavailable after binding
+retains the SAME original workspace/claim/invocation and explicitly absent current
+native close. Independent complete readers join those original identities and
+preserve the held cause; neither absence supplies session_bound, launch, cleanup,
+selected output or successful settlement. Source-tail observations retain their
+separate original identity. Native-manager@1/@2 keep their literal readers and
+successful @2 still requires complete original capture and all positive gates.
 The source wait/carrier never impersonates this task or reuses an upstream SID.
 The narrowly selected GET /workflows/coding/runs/{instance_id}/final-manager
 requires exactly session_id=CURRENT, the current original nonrecovery manager's
@@ -4066,8 +4078,14 @@ roles/scopes before private decoding and again on return. It returns workflow-co
 original workspace capture, pins and three original selected summaries/verdicts.
 The opaque repository ID is independently reconstructed by the EXISTING canonical
 org/key/origin-digest rule. Current mapping scopes remain a separate gate.
-It accepts no bearer; browser/remote access receives no new grant. Source-manager
-run-show and role publication predicates, SessionTracker and jobs document/legacy
+It accepts no bearer; browser/remote access receives no new grant.
+The route is exactly excluded from the browser classification. SurfaceAllowList's
+default metadata and exact raw/normalized stageDenialCandidate GET matcher deny
+its nonempty instance segment and literal final-manager suffix before the
+unchanged HomeConnector credential gate. Existing run-metadata GET, adjacent
+routes, other methods and custom-policy semantics remain unchanged. This is the
+existing decoder's finite semantics, not a broader normalization guarantee.
+Source-manager run-show and role publication predicates, SessionTracker and jobs document/legacy
 predicates remain unchanged. All file/network work is outside ownership locks.
 
 The LOCAL `happyranch workflows coding finalize --org ORG --session-id CURRENT
@@ -4139,7 +4157,8 @@ hosts/heartbeats/ordered events/CAS/contributions/upstream/final pins and rows.
 Provisional later QA/manager discovery is charged to the enclosing cumulative
 budget and must close through complete replay; partial/foreign/orphan/dual/mixed/
 unknown graphs refuse. New scope@2, selected@2, supplement@2, native-manager
-command/event@2, edge@4/event@6 and final-output@2 carry the repaired meanings.
+command/event@2, uncertainty-only native-manager command/event@3, edge@4/event@6
+and final-output@2 carry the repaired meanings.
 Literal old scope/selected/supplement/native-manager/final-output@1 and edge@3/
 event@5 preserve original readers/bytes. An old output cannot be promoted into
 repaired identity proof; copied foreign reference/root receipts and mixed
@@ -4151,8 +4170,10 @@ result/task/subject/outcome closeout without findings. Old run@1/@2/@3 stay lite
 
 SOURCE/STATIC ONLY: F1/F2/F3/F4/F5/F7/F8 native/behavior/SQL/negative/red-green/
 mutation/restoration/repetition/executable QA and actual command/native/remote
-acceptance remain UNEXECUTED. No new tests/assertions/support/experiment/lane
-is allocated; Python units RETIRED, integration INCLUDING callback/lifespan/
+acceptance remain UNEXECUTED. The one route-classification fixture has four-answer
+case evidence; attributable RED/GREEN and native gate proof remain missing.
+No new assertion implementation/support/experiment/lane is allocated. Python
+units RETIRED, integration INCLUDING callback/lifespan/
 SessionTracker SKIPPED24342, no old-root waiver. Normal hooks/nonforce same-PR
 publication, clean exact-head lint/static all and full independent review remain.
 ROOT12299 owns genuine executable same-final-head QA before merge, actual tool
