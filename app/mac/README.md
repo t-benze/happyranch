@@ -45,6 +45,13 @@ uses invocation-local Go/npm/Swift/temp caches, and builds Go c-archive, frozen
 daemon+CLI, Vite web and Swift app with ordinary tools. Iconutil produces the
 app icon. Runtime skill/catalog resources and their originals remain bundled.
 
+Both frozen entry points retain `runtime.infrastructure.learnings_store` source
+at `daemon/_internal/runtime/infrastructure/learnings_store.py` alongside their
+ordinary PYZ bytecode, using PyInstaller's standard `pyz+py` collection mode. The
+existing import-time renderer digest needs that source through `inspect.getsource`.
+The actual frozen `--help` check still must pass on macOS. It does not qualify
+later memory-collection identity/refusal semantics or their diagnostics.
+
 The freezer retains the frozen dependency bundle, CPython3.12.10 managed-only
 selection, private installation and absent exported .venv, no global bin links,
 explicit project/directory and no-dotenv runs. Unexpected UV/PYTHON controls,

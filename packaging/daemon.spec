@@ -40,6 +40,10 @@ _hooks_dir = _SPEC_DIR / "hooks"
 # ---- Analysis (common kwargs shared by daemon and CLI) -------------------
 _common_analysis_kwargs = dict(
     pathex=[str(_PROJ)],
+    # memory_collection hashes MemoryStore.render_memory_digest at import.
+    # Keep this module's source beside the frozen loader path in BOTH lanes,
+    # while retaining the ordinary PYZ bytecode/import behavior.
+    module_collection_mode={'runtime.infrastructure.learnings_store': 'pyz+py'},
     binaries=[],
     datas=[
         *_runtime_data,

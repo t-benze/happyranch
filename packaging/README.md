@@ -27,6 +27,14 @@ the same explicit project and patch-bearing Python request with downloads disabl
 after the private install. The spec uses standard Analysis/PYZ/EXE/COLLECT, separate
 daemon+CLI archives and collision-checked shared data/native inputs.
 
+Both Analysis lanes select standard `module_collection_mode` `pyz+py` only for
+`runtime.infrastructure.learnings_store`. This retains its ordinary PYZ bytecode
+and actual source at `_internal/runtime/infrastructure/learnings_store.py`, where
+the frozen loader can supply `inspect.getsource(MemoryStore.render_memory_digest)`
+for the existing import-time renderer digest. Other modules keep their existing
+collection modes. Frozen `--help` remains a required native check; source retention
+alone does not qualify later memory-collection identity or refusal diagnostics.
+
 The existing Darwin PyInstaller6.21.0 wheel remains pinned with its original
 notices. Its opt-in custody API is inactive: the spec supplies no custom argument,
 caller or observer. There is no dependency/version/lock/wheel mutation. Vite
@@ -68,6 +76,9 @@ resources/plist/icon/Mach-O headers and a substituted ditto ZIP writer. The seco
 uses actual workflow reservation/upload selectors and shipping source/path
 preflight with fixture Git/marker bytes. Neither compiles an app or proves native
 execution, cleanup/quiescence, Mac14 installation, signing or public availability.
+The first also inspects both shipping Analysis calls for the narrow source/PYZ
+setting without running PyInstaller; this is configuration coverage, not frozen
+execution evidence.
 Former directory-diagnostic/asset binding cases observe retired protocols; active
 path keepers now observe the shipping preflight/reservation instead.
 
