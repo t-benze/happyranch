@@ -4308,11 +4308,22 @@ rediscovers the target/cascade and complete affected coding graphs, retains
 terminal tasks, and atomically writes native cancellation rows, original
 `task_cancelled` audits, run/attempt fences and closed cancellation events.
 A direct coding leaf stops its complete graph; an ordinary ancestor may stop
-multiple graphs. A later ancestor batch containing a live graph also retains
-previously cancelled graphs in its complete closure: their terminal tasks,
-results, events and native owners stay intact, with no second cancellation or
-repeated control. Readers authenticate the earlier batch, retained task equality
-and strict audit ordering before admitting that later batch.
+multiple graphs. A later ordinary ancestor stop also commits when every coding
+graph was already cancelled, with or without ordinary siblings. Previously
+cancelled graphs stay in the complete closure: their terminal tasks, results,
+events, causes and native owners remain intact, with no second fence or control.
+When no fresh coding graph exists, the distinct task-scoped audit action
+`coding_ordinary_cancellation` carries `workflow-coding-ordinary-cancellation@1`:
+the original command, exact ordinary task audits, operation digest and earlier
+genuine cancellation-event anchors. It changes no existing event family or
+`task_cancelled` audit shape/scope. Independent readers close original rows,
+causal membership, retained graphs and strict audit ordering, then derive only
+the ordinary-row overlay and freshly compare every target before COMMIT.
+Reverse coding/causal dependencies are discovered separately from requested
+mutation cascade through the complete authenticated start and edge captures.
+A point stop of a coding-dependent ordinary ancestor refuses before any task,
+audit, ownership, control or tail mutation, including cancelled graphs and deep
+ancestry. Ordinary-only point cancellation retains its existing behavior.
 Partial/foreign/orphan/mixed or oversized closure refuses;
 complete independent target validation shares the original cumulative allowance
 and precedes COMMIT. Existing opaque native/prepared controls and worktree/tail

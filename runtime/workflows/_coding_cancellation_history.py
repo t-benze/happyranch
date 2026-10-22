@@ -123,11 +123,121 @@ def replay(conn: Any, org: str, budget: Any, storage: Any, *, event: dict,
     return expected_run, expected_attempts, expected_tasks, record
 
 
+def ordinary_overlay(org: str, command: dict, audits: list, saved: Any, instances: set) -> dict:
+    """Distinct ordinary operation; never a second coding cancellation event."""
+    digest = _hash(_canonical(command))
+    return dict(format='workflow-coding-ordinary-cancellation@1',
+        operation=dict(org_slug=org, principal='service:coding-cancellation:' + org,
+            key='coding-ordinary-cancel:' + digest, request_digest=digest),
+        command=command, audits=audits,
+        retained=[dict(instance_id=i, event_id=saved.runs[i]['native']['cancellation']['event']['id'],
+            event_digest=saved.runs[i]['native']['cancellation']['event']['event_digest']) for i in sorted(instances)])
+
+
+def _ordinary_batches(conn: Any, org: str, budget: Any, storage: Any) -> list:
+    """Independently authenticate all ordinary overlays, including orphan rows.
+
+    Existing literal coding event readers are unchanged. This separate closed
+    audit family admits only an ordinary operation over already cancelled graphs.
+    """
+    from runtime.workflows.coding_start_history import rows, same
+    from runtime.workflows.coding_native_history import _row
+    from runtime.workflows.coding_source_history import _timestamp as native_timestamp
+    from runtime.infrastructure.task_pause_controls import decode_journal
+    batches, operations = [], set()
+    for audit in rows(conn, 'audit_log', budget, where="action='coding_ordinary_cancellation'"):
+        _check(type(audit['payload']) is str)
+        value = _closed(_read_json(audit['payload'].encode('utf8'), budget, 1048576),
+            'format operation command audits retained')
+        _check(value['format'] == 'workflow-coding-ordinary-cancellation@1')
+        command = _closed(value['command'],
+            'format target_task_id cascade actor rationale cancelled_at tasks owners native_owners')
+        _check(command['format'] == 'workflow-coding-cancellation-command@1'
+               and command['cascade'] is True and type(command['actor']) is str
+               and bool(command['actor']) and command['actor'].strip() == command['actor']
+               and type(command['rationale']) is str and command['rationale'].strip() == command['rationale'])
+        _timestamp(command['cancelled_at'])
+        digest = _hash(_canonical(command))
+        _check(same(value['operation'], dict(org_slug=org, principal='service:coding-cancellation:' + org,
+                   key='coding-ordinary-cancel:' + digest, request_digest=digest))
+               and digest not in operations and audit['agent'] == command['actor']
+               and audit['task_id'] == command['target_task_id'] and type(audit['id']) is int and audit['id'] > 0)
+        native_timestamp(audit['timestamp'])
+        operations.add(digest)
+        _check(type(command['tasks']) is list and 1 <= len(command['tasks']) <= 512)
+        originals = {}
+        for item in command['tasks']:
+            budget.step()
+            _closed(item, 'id record')
+            row = _row(item['record'])
+            _check(row['id'] == item['id'] and item['id'] not in originals)
+            originals[item['id']] = row
+        _check(list(originals) == sorted(originals) and command['target_task_id'] in originals
+               and command['target_task_id'] not in storage.owners
+               and originals[command['target_task_id']]['status'] not in TERMINAL)
+        live = {k: v for k, v in originals.items() if v['status'] not in TERMINAL}
+        _check(live and not (live.keys() & storage.owners.keys())
+               and type(value['audits']) is list and len(value['audits']) == len(live))
+        tasks, ids = [], []
+        for item in value['audits']:
+            budget.step()
+            _closed(item, 'table id record')
+            original = decode_row(item['record'])
+            found = list(rows(conn, 'audit_log', budget, where='id=?', args=(item['id'],), maximum=1))
+            _check(item['table'] == 'audit_log' and type(item['id']) is int and 0 < item['id'] < audit['id']
+                   and len(found) == 1 and same(found[0], original) and original['id'] == item['id']
+                   and original['action'] == 'task_cancelled' and original['agent'] == command['actor']
+                   and original['task_id'] in live and type(original['payload']) is str)
+            native_timestamp(original['timestamp'])
+            payload = _closed(_read_json(original['payload'].encode('utf8'), budget, 1048576), 'rationale cascade')
+            _check(same(payload, dict(rationale=command['rationale'], cascade=True)))
+            tasks.append(original['task_id'])
+            ids.append(item['id'])
+            storage.add('audit_log', original)
+        _check(tasks == sorted(live) and ids == sorted(set(ids)))
+        _check(type(command['native_owners']) is list and len(command['native_owners']) <= 512)
+        _check([n['id'] for n in command['native_owners']] == sorted({n['id'] for n in command['native_owners']}))
+        for native in command['native_owners']:
+            budget.step()
+            decode_journal(_canonical(dict(version=1, entries=[native])).decode('utf8'))
+            _check(native['org'] == org and native['task_id'] in originals)
+            row = originals[native['task_id']]
+            _check(native['agent'] == row['assigned_agent']
+                   and (row['current_session_id'] is None or native['session_id'] == row['current_session_id']))
+            owner = storage.owners.get(native['task_id'])
+            if owner is not None:
+                earlier = storage.runs[owner[1]]['native'].get('cancellation')
+                _check(earlier is not None)
+                original = [n for n in earlier['command']['native_owners'] if n['id'] == native['id']]
+                _check(len(original) == 1)
+                for key in ('id', 'org', 'root_task_id', 'task_id', 'agent', 'session_id',
+                            'owner', 'owner_identity', 'fingerprint', 'generation'):
+                    _check(same(native[key], original[0][key]))
+        _check(type(value['retained']) is list and 1 <= len(value['retained']) <= 512)
+        instances = []
+        for anchor in value['retained']:
+            budget.step()
+            _closed(anchor, 'instance_id event_id event_digest')
+            instance = anchor['instance_id']
+            _check(instance in storage.runs and storage.runs[instance]['run']['state'] == 'cancelled')
+            earlier = storage.runs[instance]['native'].get('cancellation')
+            _check(earlier is not None and anchor['event_id'] == earlier['event']['id']
+                   and anchor['event_digest'] == earlier['event']['event_digest']
+                   and max(a['id'] for a in earlier['audits']) < min(ids))
+            instances.append(instance)
+        _check(instances == sorted(set(instances)))
+        storage.add('audit_log', audit)
+        batches.append(dict(command=command, audits=value['audits'], originals=originals, retained=set(instances)))
+    return batches
+
+
 def complete(conn: Any, org: str, budget: Any, storage: Any) -> None:
     """Cross-graph/legacy closure, including partial and orphan batch refusal."""
     from runtime.workflows.coding_start_history import rows, same
-    for records in storage.cancellations.values():
-        sample = next(iter(records.values()))
+    ordinary = _ordinary_batches(conn, org, budget, storage)
+    batches = [(records, next(iter(records.values()))) for records in storage.cancellations.values()]
+    batches.extend(({}, record) for record in ordinary)
+    for records, sample in batches:
         command, originals = sample['command'], sample['originals']
         pending, visited, instances = [command['target_task_id']], set(), set()
         while pending:
@@ -157,6 +267,8 @@ def complete(conn: Any, org: str, budget: Any, storage: Any) -> None:
                 pending.extend(r['id'] for r in rows(conn, 'tasks', budget,
                     where='parent_task_id=?', args=(key,), maximum=512))
         _check(visited == set(originals) and set(records) <= instances)
+        if 'retained' in sample:
+            _check(instances == sample['retained'])
         expected_owners = [dict(task_id=k, kind=v[0], instance_id=v[1])
             for k, v in sorted(storage.owners.items()) if v[1] in instances]
         _check(same(command['owners'], expected_owners))
@@ -179,8 +291,7 @@ def complete(conn: Any, org: str, budget: Any, storage: Any) -> None:
     # No row may receive two independent live-to-cancelled overlays. Replaying
     # multiple graph events for ONE batch is distinct from another batch.
     overlays = {}
-    for records in storage.cancellations.values():
-        record = next(iter(records.values()))
+    for _, record in batches:
         for key, original in record['originals'].items():
             budget.step()
             if original['status'] not in TERMINAL:
@@ -263,6 +374,10 @@ def defer_ancestry(actual: dict, historical: dict, storage: Any, budget: Any) ->
     below must authenticate the sole overlay and freshly reread current SQL.
     """
     from runtime.workflows.coding_start_history import same
+    # This census is independent of mutation cascade and includes unchanged
+    # causal rows. The actual locked cancellation writer consumes it too.
+    budget.step()
+    storage.cancellation_dependencies.add(historical['id'])
     if same(actual, historical):
         return
     from runtime.workflows.coding_revision import _copy_allowance

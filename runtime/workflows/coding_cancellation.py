@@ -66,8 +66,13 @@ def cancel_locked(org: Any, task_id: str, *, cascade: bool, rationale: str,
             _, inventory = _read_workflow_schema(conn, expected_org_slug=org.slug, budget=budget)
             _check(inventory is not None)
             saved = inventory.queued
+            # Reverse dependencies come from complete authenticated start/edge
+            # captures, independently of the requested mutation traversal.
+            _check(cascade or task_id in saved.owners
+                   or task_id not in saved.cancellation_dependencies)
             selected, instances = affected(conn, task_id, cascade, saved, budget)
             if not instances:
+                _check(not (selected.keys() & saved.cancellation_dependencies))
                 conn.rollback()
                 return None
             root = selected[task_id]
@@ -91,7 +96,6 @@ def cancel_locked(org: Any, task_id: str, *, cascade: bool, rationale: str,
             # receive another cancellation event, task write or control.
             for instance in instances - fresh:
                 _check(all(t['status'] in TERMINAL for t in saved.runs[instance]['tasks'].values()))
-            _check(fresh)
             for instance in fresh:
                 entry = saved.runs[instance]
                 _check(entry['run']['state'] != 'complete'
@@ -169,6 +173,15 @@ def cancel_locked(org: Any, task_id: str, *, cascade: bool, rationale: str,
                          digest, 'cancelled', previous['event_digest'], raw, _hash(raw), now))
                     conn.execute("UPDATE workflow_coding_runs SET state='cancelled',cas_version=?,last_event_id=? WHERE instance_id=?",
                         (payload['event_seq'], event_id, instance))
+                if not fresh:
+                    # No coding graph may be fenced twice just to carry an
+                    # ordinary ancestor stop. Its own closed task-scoped audit
+                    # anchors the earlier genuine fences without modifying them.
+                    from runtime.workflows._coding_cancellation_history import ordinary_overlay
+                    overlay = ordinary_overlay(org.slug, command, audits, saved, instances)
+                    _copy_allowance(overlay, budget)
+                    _check(len(_canonical(overlay)) <= 1048576)
+                    db.insert_audit_log_uncommitted(task_id, actor, 'coding_ordinary_cancellation', overlay)
                 _read_workflow_schema(conn, expected_org_slug=org.slug, budget=budget)
                 conn.commit()
             return dict(teardown_incomplete=teardown_incomplete, tasks=sorted(live), coding_tasks=sorted(set(live) & saved.owners.keys()), prior={k: TaskStatus(v['status']) for k, v in live.items()},

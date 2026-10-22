@@ -1640,8 +1640,16 @@ and literal exact-head Source Boundary Lint / Web Lint (Node 24). Existing
 operator CLI help, imports and idle served-schema summary may check the new
 run@7 registration; they do not exercise cancellation/native/SQL races.
 No tests/fixtures/assertions or proof venue are added by this increment.
-C11/F5/F8 cases include separately cancelled G1 then ancestor/live-G2 cascade,
-progressed development/review/QA/final/revision/successor ancestor overlays,
+C11/F5/F8 cases include separately cancelled G1 then ordinary ancestor cascade
+with no G2 (P alone, P/S, multiple retained graphs), retained G1 plus fresh G2,
+and pre-write point-stop refusal for coding-dependent ordinary ancestors
+(live/cancelled graphs, deeper ancestry) while ordinary-only point stops remain.
+The all-retained stop appends only a distinct closed ordinary-operation audit;
+no second G1 cancellation fence/control/result. Missing/foreign/orphan/duplicate
+or tampered overlays, audit IDs/order/actor/operation/original rows/membership,
+and exhausted original aggregate allowances refuse and roll back before controls.
+No ordinary live-to-cancelled overlay may appear in two independent batches.
+Cases also retain progressed development/review/QA/final/revision/successor ancestor overlays,
 prepared/unknown owners with no control/PID, missing/throwing controls, and
 positive-settlement/duplicate/exact-callback/rollback keepers. Complete readers
 must preserve original bytes/membership and independently close every batch;

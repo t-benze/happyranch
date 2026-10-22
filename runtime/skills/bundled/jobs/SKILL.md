@@ -569,10 +569,15 @@ terminal/outer ownership. Only a callback already committed under the exact
 original INTEGER/task/SID may drain or replay unchanged, without advancing.
 A stopped task, missing handle/control or transport loss supplies no cleanup,
 remote-effect clearance, reservation release or retry permission. A later ordinary
-ancestor batch with a live coding graph preserves earlier cancelled graphs and
-controls; complete readers authenticate that ancestor overlay against unchanged
-original admission bytes. Prepared/unknown ownership, missing/failed controls and
-unsettled outer proof retain the existing root-tail incomplete disposition, even
+ancestor batch preserves earlier cancelled graphs even without another live
+coding graph or ordinary sibling. With no fresh graph, a separate closed
+ordinary-operation audit anchors the original cancellation without another graph
+fence/control/result;
+complete readers authenticate every batch and the sole ordinary-row overlay
+against unchanged original admission bytes. A point stop of a coding-dependent
+ordinary ancestor refuses before writes, independently of mutation cascade;
+ordinary-only point stops remain supported. Prepared/unknown ownership,
+missing/failed controls and unsettled outer proof retain the existing root-tail incomplete disposition, even
 without a PID and after a successful control return. Only positive original owner
 settlement permits the existing safe disposition; never clear tracker/journal
 ownership to force it. The existing Founder task-cancel route owns cancellation;

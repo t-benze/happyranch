@@ -74,6 +74,7 @@ class QueuedStorage:
     callbacks: dict = field(default_factory=dict)
     cancellations: dict = field(default_factory=dict)
     cancellation_comparisons: list = field(default_factory=list)
+    cancellation_dependencies: set = field(default_factory=set)
 
     def add(self, table: str, row: dict) -> None:
         key = _canonical(encode_row(row))
