@@ -757,6 +757,11 @@ The first caught signal is latched through error and final settlement, including
 handler restoration, and the result is selected after restoration. With no
 earlier observed failure/deadline, it returns the conventional signal result
 even after a successful child poll; an earlier primary cause remains unchanged.
+The parent uses the genuine nonzero status already stored by its child poll or
+reap, including a child signal, before considering a later caught signal,
+exception or cleanup result. This applies before the caller receives that
+status and when reap subsequently raises; unobserved kernel exits do not imply
+an earlier owner observation.
 
 One shared5s outer cleanup allowance covers TERM (at most2s grace), held-child
 KILL, drain and reap/closure. Asset capture retains its stricter60s/0.25s/1s/1s

@@ -366,9 +366,15 @@ def relay(operation, argv, *, origin=None, cancel_fd=None, guardian=False,
             flags[fd] = fcntl.fcntl(fd, fcntl.F_GETFL)
         os.set_blocking(fd, False)
 
+    def observed_status(fallback):
+        # Child.poll/reap store decoded wait status before their caller receives
+        # it, including a reap that subsequently raises a release error.
+        observed = child.proc.returncode if child.launched else None
+        return prior if prior is not None else observed if observed not in (None, 0) else fallback
+
     def enter(reason, now):
         nonlocal cleanup, kill_at, drain_at, killed
-        reason = cause.setdefault('status', reason)
+        reason = cause.setdefault('status', observed_status(reason))
         if cleanup is not None:
             return
         cleanup = min(now + (1 if guardian and reason == 124 else 10 if guardian or logger else 5),
@@ -385,7 +391,7 @@ def relay(operation, argv, *, origin=None, cancel_fd=None, guardian=False,
     def record_signal(sig):
         # No I/O or cleanup from the handler. A child failure already observed
         # by this owner (or an existing primary cause) precedes a late signal.
-        reason = prior if prior is not None else code if code not in (None, 0) else -sig
+        reason = observed_status(-sig)
         cause.setdefault('status', reason)
 
     with signals(record_signal) as caught:
@@ -593,7 +599,7 @@ def relay(operation, argv, *, origin=None, cancel_fd=None, guardian=False,
             complete = bool(outputs) and all(row[2] and not row[1] for row in outputs.values())
             absent = child.proc is not None and child.launched and child.absent()
             unresolved = control_unknown or nested is not None or not complete or not absent or code is None
-            status = cause.get('status', code)
+            status = cause.get('status', observed_status(code))
             if status in (None, 0) and unresolved:
                 status = cause.setdefault('status', prior if prior is not None else 125)
             diagnostic_stop = min(stop, cleanup if cleanup is not None else deadline)

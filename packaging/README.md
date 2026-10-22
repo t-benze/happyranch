@@ -856,6 +856,11 @@ The first caught signal is latched through error and final settlement, including
 handler restoration, and the result is selected after restoration. With no
 earlier observed failure/deadline, it returns the conventional signal result
 even after a successful child poll; an earlier primary cause remains unchanged.
+The parent uses the genuine nonzero status already stored by its child poll or
+reap, including a child signal, before considering a later caught signal,
+exception or cleanup result. This applies before the caller receives that
+status and when reap subsequently raises; unobserved kernel exits do not imply
+an earlier owner observation.
 
 The outer cleanup allowance is one5s window; Node's D+10 KILL fallback and
 Bash's same-module guardian/D+12 observation slots are independent fallbacks.
