@@ -72,6 +72,7 @@ class QueuedStorage:
     runs: dict = field(default_factory=dict)
     owners: dict = field(default_factory=dict)
     callbacks: dict = field(default_factory=dict)
+    cancellations: dict = field(default_factory=dict)
 
     def add(self, table: str, row: dict) -> None:
         key = _canonical(encode_row(row))
@@ -294,10 +295,11 @@ def read_queued(conn: sqlite3.Connection, org: str, budget: _Budget, mappings: A
         _check(chain[-1]['parent_task_id'] is None and source['root_ancestor_id'] == chain[-1]['id']
                and source['parent_task_id'] == source_before['parent_task_id'])
         # Current ancestry may have native observations, but no owner/edge drift.
+        current_ancestors = []
         for historical in chain[1:]:
             current = _task(conn, historical['id'], budget)
             actual = {c.name: c.value.decode('utf8') if c.storage_class == 'text' else c.value for c in current.columns}
-            _check(same(actual, historical))
+            current_ancestors.append((actual, historical))
         start = _session_start(conn, dict(task_id=source['task_id'], session_id=source['session_id'], principal=source['principal']), budget)
         actual_start = {c.name: c.value.decode('utf8') if c.storage_class == 'text' else c.value for c in start.columns}
         _check(same(native_source['session_start'], actual_start))
@@ -378,6 +380,12 @@ def read_queued(conn: sqlite3.Connection, org: str, budget: _Budget, mappings: A
             tasks=after_tasks, source=source, roles=roles, authority=evidence['authority'],
             command_value=command, mapping=mapping, source_invocation=entry,
             source_ancestors=[decode_row(r) for r in native_source['ancestors']])
+        # A new cancellation may also stop a legacy ancestor. Reconstruct
+        # only that closed overlay AFTER its independent event/batch replay;
+        # all preceding historical native ancestor bytes remain unchanged.
+        from runtime.workflows._coding_cancellation_history import ancestry
+        for actual, historical in current_ancestors:
+            ancestry(actual, historical, native.get('cancellation'))
         actual_attempts = {a['id']: a for a in selected_attempts}
         _check(len(actual_attempts) == len(selected_attempts)
                and same(native['run'], actual_run) and same(native['attempts'], actual_attempts))
@@ -436,6 +444,8 @@ def read_queued(conn: sqlite3.Connection, org: str, budget: _Budget, mappings: A
                               *((a['task_id'], 'coding_attempt') for a in actual_attempts.values())):
             _check(task_id not in storage.owners)
             storage.owners[task_id] = (kind, instance)
+    from runtime.workflows._coding_cancellation_history import complete
+    complete(conn, org, budget, storage)
     from runtime.workflows.coding_native_history import validate_native_journals
     validate_native_journals(conn, org, budget, storage)
     _check(used_attempts == {r['id'] for r in attempts} and used_events == {r['id'] for r in events})

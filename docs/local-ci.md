@@ -1632,3 +1632,16 @@ proof remains UNEXECUTED / FOUNDER-EXEMPTED / NONBLOCKING93; Python units RETIRE
 integration INCLUDING callback/lifespan/SessionTracker SKIPPED24342. Required
 clean committed-head local all and both hosted exact-head lints remain static
 only, through normal hooks/nonforce publication and independent full review.
+
+
+ROOT12568 cancellation source uses the existing task-owned clean committed-head
+`scripts/local_ci.sh all` lane, normal hooks
+and literal exact-head Source Boundary Lint / Web Lint (Node 24). Existing
+operator CLI help, imports and idle served-schema summary may check the new
+run@7 registration; they do not exercise cancellation/native/SQL races.
+No tests/fixtures/assertions or proof venue are added by this increment.
+C11/F5/F8 execution/causal proof is NOT RUN / PROOF NOT RUN without an authentic
+entitled venue under THR320seq99. No old-root execution waiver is inherited.
+Integration INCLUDING callback/lifespan/SessionTracker remains SKIPPED24342;
+Python units RETIRED; missing Swift proof remains UNEXECUTED /
+FOUNDER-EXEMPTED / NONBLOCKING320seq93. No E2E/build/native campaign follows.

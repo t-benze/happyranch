@@ -233,8 +233,28 @@ class CodingSuccessorRunReceipt(CodingFinalRunReceipt):
     target_revision: Annotated[StrictInt, Field(ge=1, le=3)]
 
 
+class CodingCancelledAttempt(CodingRevisionAttempt):
+    state: Literal['queued', 'claimed', 'running', 'uncertain', 'blocked', 'failed', 'completed', 'cancelled', 'superseded']
+
+
+class CodingCancelledEvent(CodingFinalEvent):
+    kind: Literal['run_started', 'session_bound', 'launch_reserved', 'launch_observed',
+        'callback_recorded', 'terminal_recorded', 'cleanup_settled', 'held', 'host_reconciled',
+        'artifact_staged', 'contribution_recorded', 'stage_queued', 'advance', 'review_staged',
+        'manager_completed', 'return', 'cancelled']
+
+
+class CodingCancelledRunReceipt(CodingFinalRunReceipt):
+    format: Literal['workflow-coding-run@7']
+    current_revision: Annotated[StrictInt, Field(ge=0, le=3)]
+    target_revision: Annotated[StrictInt, Field(ge=1, le=3)]
+    state: Literal['cancelled']
+    current_attempt: CodingCancelledAttempt
+    history: list[CodingCancelledEvent] = Field(min_length=2, max_length=4096)
+
+
 class CodingRunReceipt(RootModel[Annotated[
-        CodingInitialRunReceipt | CodingOrderedRunReceipt | CodingQARunReceipt | CodingFinalRunReceipt | CodingRevisionRunReceipt | CodingSuccessorRunReceipt,
+        CodingInitialRunReceipt | CodingOrderedRunReceipt | CodingQARunReceipt | CodingFinalRunReceipt | CodingRevisionRunReceipt | CodingSuccessorRunReceipt | CodingCancelledRunReceipt,
         Field(discriminator='format')]]):
     pass
 

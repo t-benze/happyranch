@@ -842,3 +842,16 @@ commit/aware time BEFORE preserving own final-output@2 (r1) or @3 (r2/3) and
 its own genuine FINAL callback. No daemon effect/recovery, new role selection,
 job wait or coding decision. Historical @2/@3 instructions retain their meanings;
 readiness remains false and no live allocation/enablement follows source delivery.
+
+
+Coding cancellation is a business stop. Stop fresh repository/stage/result/
+successor/finalize work when the authorized original task cancellation wins.
+Preserve original intent/action/receipt uncertainty and native preparation/
+terminal/outer ownership. Only a callback already committed under the exact
+original INTEGER/task/SID may drain or replay unchanged, without advancing.
+A stopped task, missing handle/control or transport loss supplies no cleanup,
+remote-effect clearance, reservation release or retry permission. The existing
+Founder task-cancel route owns cancellation; this skill grants no control tool.
+Deferred native recovery/reassignment remain unavailable separately. Genuine
+current task/SID report-completion remains the final action; never fabricate
+an earlier result or another task's callback to work around a refusal.

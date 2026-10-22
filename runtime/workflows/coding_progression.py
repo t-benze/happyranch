@@ -25,6 +25,7 @@ from runtime.workflows.coding_start_records import effective_mapping, parse_fina
 
 def settled_upstreams(entry: dict, *, budget: _Budget | None = None) -> tuple[dict, list]:
     """Original INTEGER callbacks, successful hosts AND positive native outer closure."""
+    _check(entry['native'].get('cancellation') is None)
     pins, results, subject, findings = {}, [], None, set()
     for stage, outcome in (('development', 'produced'), ('code_review', 'APPROVE'), ('qa', 'PASS')):
         attempt = current_stage(entry['attempts'], entry['attempt']['revision'], stage)
@@ -269,6 +270,8 @@ def advance_in_writer(dispatcher: Any, conn: Any, *, instance: str, result_id: i
     inventory = dispatcher.org.workflow_coding_start.support._storage(conn, references)
     budget, saved = inventory.budget, inventory.queued
     entry = saved.runs[instance]
+    if entry['native'].get('cancellation') is not None:
+        return None  # Draining an original result cannot notify or advance cancelled work.
     for successor in entry['attempts'].values():
         predecessor = entry['attempts'].get(successor['predecessor_id'])
         if predecessor is not None and predecessor['result_id'] == result_id:

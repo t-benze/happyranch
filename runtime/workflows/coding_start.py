@@ -156,17 +156,13 @@ class CodingStartStore:
     async def get_final(self, *, principal: Any, instance_id: str) -> dict:
         return await self.org.workflow_coding_dispatch.selected_final(principal=principal, instance=instance_id)
 
-    def guard_cancellation(self, task_id: str, *, cascade: bool) -> None:
-        with self.db._lock:
-            conn = self.db._conn
-            if conn.execute("SELECT 1 FROM sqlite_schema WHERE type='table' AND name='workflow_coding_runs'").fetchone() is None:
-                return
-            saved = queued_storage(conn, self.org.slug)
-            selected = {task_id}
-            if cascade:
-                selected.update(self.db.get_descendant_task_ids(task_id))
-            if selected.intersection(saved.owners):
-                raise CodingStartError('coding_queued_mutation_unavailable')
+    def guard_cancellation(self, task_id: str, *, cascade: bool, rationale: str,
+                           actor: str, transitions: Any) -> dict | None:
+        # This is an owned writer, never permission for the legacy mutation
+        # below it. Reconstruct closure after the route's actual lock wait.
+        from runtime.workflows.coding_cancellation import cancel_locked
+        return cancel_locked(self, task_id, cascade=cascade, rationale=rationale,
+                             actor=actor, transitions=transitions)
 
     def guard_native_mutation(self, task_id: str) -> None:
         # K3a has no standalone native mutation bridge. Preserve complete
@@ -409,10 +405,10 @@ class CodingStartStore:
         closeout = (None if final is None else dict(result_id=attempt['result_id'], task_id=attempt['task_id'],
             subject=final['subject'], outcome=final['outcome']))
         revised = attempt['revision'] > 1
-        return CodingRunReceipt.model_validate(dict(format='workflow-coding-run@6' if attempt['attempt_sequence'] > 1 else 'workflow-coding-run@5' if revised else {1: 'workflow-coding-run@1', 2: 'workflow-coding-run@2',
+        return CodingRunReceipt.model_validate(dict(format='workflow-coding-run@7' if entry['native'].get('cancellation') is not None else 'workflow-coding-run@6' if attempt['attempt_sequence'] > 1 else 'workflow-coding-run@5' if revised else {1: 'workflow-coding-run@1', 2: 'workflow-coding-run@2',
             3: 'workflow-coding-run@3', 4: 'workflow-coding-run@4'}[len(entry['attempts'])], instance_id=instance,
             release=entry['command']['release'], mapping=entry['command']['mapping'], effective_roles=entry['roles'],
-            cas_version=entry['run']['cas_version'], current_revision=entry['run']['current_revision'], target_revision=attempt['revision'], state='held' if entry['native'].get('ownership_unknown') else 'agent_manager' if entry['run']['state'] == 'manager_closeout' else entry['run']['state'],
+            cas_version=entry['run']['cas_version'], current_revision=entry['run']['current_revision'], target_revision=attempt['revision'], state='cancelled' if entry['native'].get('cancellation') is not None else 'held' if entry['native'].get('ownership_unknown') else 'agent_manager' if entry['run']['state'] == 'manager_closeout' else entry['run']['state'],
             current_attempt=dict(id=attempt['id'], task_id=attempt['task_id'], stage='agent_manager' if attempt['stage'] == 'manager_closeout' else attempt['stage'], state='uncertain' if entry['native'].get('ownership_unknown') else attempt['state'], principal=attempt['principal']),
             history=[dict(id=e['id'], kind=e['event_kind'], event_seq=e['event_seq']) for e in entry['native']['history']], closeout=closeout,
             readiness=readiness())).model_dump()

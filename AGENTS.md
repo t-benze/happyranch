@@ -4253,6 +4253,58 @@ Native/SQL/workflow/CAS/replay/rollback proof is NOT RUN / PROOF NOT RUN without
 an entitled genuine venue. Python units RETIRED; integration INCLUDING callback/
 lifespan/SessionTracker SKIPPED24342; missing Swift proof UNEXECUTED /
 FOUNDER-EXEMPTED / NONBLOCKING320seq93. Fresh FULL independent reviewer is next;
-root separately routes QA. Cancellation, deferred-native reconciliation,
+root separately routes QA. Deferred-native reconciliation,
 reassignment and operational/scratch/Founder/two-org/rollback/live acceptance
 remain separately bounded root work. No DDL/release/auth/permission/live effect.
+
+
+## Coding-owned cancellation — ROOT12568 C11/F5/F8
+
+The existing authorized task-cancel route now composes a coding cancellation
+writer even while coding admission is disabled. Under the real DB lock it
+rediscovers the target/cascade and complete affected coding graphs, retains
+terminal tasks, and atomically writes native cancellation rows, original
+`task_cancelled` audits, run/attempt fences and closed cancellation events.
+A direct coding leaf stops its complete graph; an ordinary ancestor may stop
+multiple graphs. Partial/foreign/orphan/mixed or oversized closure refuses;
+complete independent target validation shares the original cumulative allowance
+and precedes COMMIT. Existing opaque native/prepared controls and worktree/tail
+ordering follow outside the writer. Coding controls never fall back to a PID.
+Duplicate cancellation allocates no result, task or new control invocation.
+
+`workflow-coding-cancellation-command@1` records the original target/cascade,
+actor/rationale/time, complete affected task originals, coding owner IDs and
+actual native owner snapshots. `workflow-coding-cancellation-event@1` stores
+that closure once with the original audits and previous-event/CAS anchor;
+readers derive every resulting task/run/attempt row independently. Closed
+`workflow-coding-cancelled-native-event@1` / command@1 admit only original
+handle/PID/terminal/outer observations. A cancellation is a business stop,
+never native quiescence, remote-effect absence, preparation cleanup or success.
+Affirmative owned queued prelaunch history is distinct from an absent handle.
+Missing/failed controls, unclosed preparation, reserved-no-handle, stale journals,
+unknown effect or missing terminal/outer proof retain the original owner.
+Fresh callback/launch/stage/successor/merge admission is fenced. A precommitted
+original INTEGER/task/SID callback may drain or replay exactly, read-only,
+without advancing. Tasks/runs remain cancelled when later native facts settle;
+no finalizer reservation, historical result/subject/contributor/effect evidence,
+generation, lower limit, age or uncertainty is reset. No daemon PR I/O occurs.
+
+Saved/current/native/schema(data=False)/cold/reopen/recovery/drain consumers
+share the independent closed reader, including complete cross-graph audit/task
+closure. Public `workflow-coding-run@7` keeps the existing field inventory,
+explicit cancelled state and cancelled-or-uncertain current attempt; the CLI
+and served route consume the same union. Literal old held/r1-r3/native/document/
+then histories retain their own meanings. Deferred native recovery still refuses
+`coding_native_recovery_unavailable`; reassignment remains separately bounded.
+The current supplements require stopping fresh work on cancellation and retaining
+the original callback/effect/native owner, without granting a new control tool.
+
+SOURCE delivery only: readiness remains false, installed source is untouched,
+loaded identity UNVERIFIED and enabled acceptance absent. Native/SQL/workflow/
+race/causal proof NOT RUN / PROOF NOT RUN without a genuine authorized venue
+(THR320seq99). Python units RETIRED; general integration INCLUDING callback/
+lifespan/SessionTracker SKIPPED24342; all missing Swift proof UNEXECUTED /
+FOUNDER-EXEMPTED / NONBLOCKING320seq93. Static checks prove no workflow behavior.
+FULL independent final-head reviewer returns directly ROOT12568; scoped QA is
+later root-routed. No schema/auth/permission/grant/restart/deploy/live experiment,
+merge or cleanup is authorized by this increment.

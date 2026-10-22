@@ -560,3 +560,16 @@ finalize boundary and captured native workspace/reference. Final-selection@3,
 finalize-command@2 and final-output@3 bind only the current exact-subject fresh
 results. Never move its action or receipt production into a job, daemon, recovery
 runner or old source/upstream SID. Existing reservations/unknown facts survive.
+
+
+Coding cancellation is a business stop. Stop fresh repository/stage/result/
+successor/finalize work when the authorized original task cancellation wins.
+Preserve original intent/action/receipt uncertainty and native preparation/
+terminal/outer ownership. Only a callback already committed under the exact
+original INTEGER/task/SID may drain or replay unchanged, without advancing.
+A stopped task, missing handle/control or transport loss supplies no cleanup,
+remote-effect clearance, reservation release or retry permission. The existing
+Founder task-cancel route owns cancellation; this skill grants no control tool.
+Deferred native recovery/reassignment remain unavailable separately. Genuine
+current task/SID report-completion remains the final action; never fabricate
+an earlier result or another task's callback to work around a refusal.

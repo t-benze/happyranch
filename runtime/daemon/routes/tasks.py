@@ -2110,7 +2110,7 @@ async def cancel_task(
             raise HTTPException(status_code=404, detail=f"task {task_id} not found")
         from runtime.workflows.recovery import classify_task
         ownership = classify_task(org.db, task_id, org_slug=getattr(org, "slug", None))
-        if ownership.kind != "legacy":
+        if ownership.kind != "legacy" and not ownership.kind.startswith("coding_"):
             if ownership.kind not in {"draft", "f5"}:
                 raise HTTPException(status_code=409, detail={"code": "workflow_reconciliation_required"})
             # Workflow-owned execution has no ordinary delegated subtree. Its durable fence
@@ -2121,42 +2121,17 @@ async def cancel_task(
                     return await _await_worktree_cleanup(owner.cancel, task_id)
                 finally:
                     root_tail_failed |= delivery['teardown_incomplete']
-        if root.status in _TERMINAL_TASK_STATUSES:
+        if root.status in _TERMINAL_TASK_STATUSES and not (
+                root.status == TaskStatus.CANCELLED and ownership.kind.startswith("coding_")):
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail={"code": "task_already_terminal", "current_status": root.status.value},
             )
 
         coding = getattr(org, 'workflow_coding_start', None)
-        if coding is not None:
-            from runtime.workflows.coding_start import CodingStartError
-            try:
-                coding.guard_cancellation(task_id, cascade=body.cascade)
-            except CodingStartError as exc:
-                raise HTTPException(status_code=409, detail={'code': exc.code}) from None
-
-        # BFS subtree walk (cascade=True) or single-task (cascade=False). Only
-        # non-terminal rows are collected — anything already COMPLETED/FAILED
-        # stays untouched.  Also capture prior statuses so Phase 1 can route
-        # PENDING-only followup calls without a second DB round-trip.
         to_cancel: list[str] = []
         prior_statuses: dict[str, TaskStatus] = {}
-        # Path B: capture the prior block_kind too. A parked task is now
-        # in_progress(delegated|blocked_on_job) with no live subprocess; the
-        # discriminant is what tells "parked" apart from "running" so Phase 1b
-        # fires the thread followup for exactly the right set (see below).
         prior_block_kinds: dict[str, BlockKind | None] = {}
-        stack = [task_id]
-        while stack:
-            tid = stack.pop()
-            t = org.db.get_task(tid)
-            if t is None or t.status in _TERMINAL_TASK_STATUSES:
-                continue
-            to_cancel.append(tid)
-            prior_statuses[tid] = t.status
-            prior_block_kinds[tid] = t.block_kind
-            if body.cascade:
-                stack.extend(org.db.get_children(tid))
 
         now = datetime.now(timezone.utc).isoformat()
         rationale = body.rationale.strip()
@@ -2171,24 +2146,41 @@ async def cancel_task(
         pids_without_control: list[tuple[str, str, int]] = []
         audit = AuditLogger(org.db)
         async with org.db_lock:
+            cancellation = None
             if coding is not None:
                 try:
-                    coding.guard_cancellation(task_id, cascade=body.cascade)
-                except CodingStartError as exc:
-                    raise HTTPException(status_code=409, detail={'code': exc.code}) from None
+                    cancellation = coding.guard_cancellation(task_id, cascade=body.cascade,
+                        rationale=rationale, actor=actor, transitions=root_transitions)
+                except (ValueError, TypeError, KeyError, sqlite3.Error):
+                    raise HTTPException(status_code=409, detail={'code': 'coding_cancellation_reconciliation_required'}) from None
+            if cancellation is not None:
+                to_cancel = cancellation['tasks']
+                prior_statuses = cancellation['prior']
+                prior_block_kinds = cancellation['block_kinds']
+            else:
+                # Rediscover ordinary membership after the actual lock wait too.
+                to_cancel, prior_statuses, prior_block_kinds = [], {}, {}
+                stack, visited = [task_id], set()
+                while stack:
+                    tid = stack.pop()
+                    if tid in visited:
+                        continue
+                    visited.add(tid)
+                    t = org.db.get_task(tid)
+                    if t is None or t.status in _TERMINAL_TASK_STATUSES:
+                        if tid == task_id:
+                            raise HTTPException(status_code=409, detail={'code': 'task_already_terminal'})
+                        continue
+                    to_cancel.append(tid)
+                    prior_statuses[tid], prior_block_kinds[tid] = t.status, t.block_kind
+                    if body.cascade:
+                        stack.extend(org.db.get_children(tid))
             for tid in to_cancel:
-                # Path B: a founder cancel writes the dedicated terminal CANCELLED
-                # status (was FAILED + cancelled_at). cancelled_at is still set so
-                # the cancel-race guards and cancellation derivations are unchanged.
-                with _capture_root_worktree_transition(org.orchestrator, tid, 'cancel_task', root_transitions):
-                    org.db.update_task(
-                        tid,
-                        status=TaskStatus.CANCELLED,
-                        block_kind=None,
-                        note=note,
-                        cancelled_at=now,
-                        completed_at=now,
-                    )
+                if cancellation is None:
+                    with _capture_root_worktree_transition(org.orchestrator, tid, 'cancel_task', root_transitions):
+                        org.db.update_task(tid, status=TaskStatus.CANCELLED, block_kind=None,
+                            note=note, cancelled_at=now, completed_at=now)
+                    audit.log_task_cancelled(task_id=tid, rationale=rationale, cascade=body.cascade, actor=actor)
                 from runtime.orchestrator.task_pause import prepared_cancel_controls
                 controls_by_agent = dict(org.sessions.iter_task_cancel_controls(tid))
                 controls_by_agent.update(prepared_cancel_controls(org.db, tid))
@@ -2201,11 +2193,8 @@ async def cancel_task(
                 # (non-wired/legacy sessions — impossible in production because
                 # the control is registered before launch).
                 for agent, pid in org.sessions.iter_task_pids(tid):
-                    if agent not in controls_by_agent:
+                    if agent not in controls_by_agent and not (cancellation is not None and tid in cancellation.get("coding_tasks", ())):
                         pids_without_control.append((tid, agent, pid))
-                audit.log_task_cancelled(
-                    task_id=tid, rationale=rationale, cascade=body.cascade, actor=actor,
-                )
 
         # Phase 1b: fire thread followup for every cancelled task that had NO live
         # subprocess at cancel time.
@@ -2258,7 +2247,8 @@ async def cancel_task(
             # Clear the tracker entry so a parent auto-resume (if one gets
             # enqueued via run_step's dependent-child check) can't find a stale
             # pid/control and mis-route a subsequent cancel.
-            org.sessions.clear(tid, agent)
+            if cancellation is None or tid not in cancellation.get("coding_tasks", ()):
+                org.sessions.clear(tid, agent)
         for tid, agent, pid in pids_without_control:
             try:
                 os.kill(pid, signal.SIGTERM)

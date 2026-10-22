@@ -25,6 +25,16 @@ from runtime.workflows.coding_start_history import rows, same
 from runtime.workflows.coding_authority_history import _Budget
 
 
+_CANCELLATION_INSTRUCTION = (
+    '\n\nCoding cancellation stops fresh work, staging, successors and finalization. '
+    'Preserve the original effect/intent/receipt and native preparation/terminal/outer owner. '
+    'Only an already committed exact original INTEGER/task/SID callback may drain or replay unchanged, '
+    'without advancing. Missing handle/control, task termination or transport loss supplies no '
+    'quiescence, remote-effect clearance, reservation release or retry permission. '
+    'Use only existing authorized tools; cancellation grants no new control command. '
+    'Never fabricate or substitute a callback. Your genuine current task/SID callback remains FINAL.')
+
+
 def stamp() -> str:
     return datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.%fZ')
 
@@ -205,6 +215,8 @@ class CodingDispatcher:
             _check(owner is not None and owners.get(id(owner)) is owner)
             with self._writer() as (conn, budget):
                 entry = self._entry(conn, task_id, budget=budget)
+                if entry['native'].get('cancellation') is not None:
+                    return  # The cancelled business row is frozen; native tails keep their own owner.
                 kind = ('source' if task_id == entry['source']['task_id'] else 'attempt'
                         if task_id == entry['attempt']['task_id'] else None)
                 _check(kind is not None)
@@ -485,10 +497,13 @@ class CodingDispatcher:
         _check(conn.in_transaction and kind in KINDS)
         previous = entry['native']['history'][-1]
         _check(previous['event_seq'] < entry['source']['budgets']['coding_event_limit'])
+        cancelled = entry['native'].get('cancellation') is not None
+        if cancelled:
+            _check(kind in ('launch_observed', 'host_reconciled', 'terminal_recorded', 'cleanup_settled', 'held'))
         source_tail = invocation.task.id == entry['source']['task_id']
         repaired = (entry['attempt']['stage'] == 'manager_closeout' and
                     json.loads(entry['attempt']['scope_bytes'])['format'] in ('workflow-coding-final-scope@2', 'workflow-coding-final-scope@3', 'workflow-coding-final-scope@4'))
-        uncertainty = ((repaired or entry['attempt']['revision'] > 1) and not source_tail and kind == 'held' and facts.get('reason') in
+        uncertainty = ((cancelled or repaired or entry['attempt']['revision'] > 1) and not source_tail and kind == 'held' and facts.get('reason') in
                        ('coding_native_preparation_unsettled', 'coding_native_close_unavailable'))
         prebinding = uncertainty and facts['reason'] == 'coding_native_preparation_unsettled'
         claim = None if source_tail else getattr(invocation, 'coding_claim', entry['native']['claim'])
@@ -513,10 +528,10 @@ class CodingDispatcher:
                    and invocation.agent == entry['attempt']['principal'])
             if queue_owner is None:
                 queue_owner = deepcopy(getattr(invocation, 'coding_queue_binding', None))
-            if prebinding:
+            if prebinding and not cancelled:
                 _check(queue_owner is not None and queue_owner['claim_identity'] == invocation.identity
                        and queue_owner['native']['session_id'] == invocation.session_id)
-            else:
+            elif not prebinding:
                 # A retained journal entry is not the unavailable current close.
                 native = None
         observation = dict(facts=facts, invocation=native, queue_owner=queue_owner,
@@ -526,8 +541,10 @@ class CodingDispatcher:
             workspace = self._final_workspace(invocation, entry) if kind == 'session_bound' else entry['native'].get('workspace')
             _check(prebinding or workspace is not None)
             observation['workspace'] = workspace
+        if cancelled:
+            observation['outer'] = getattr(invocation, 'coding_cancellation_outer', None)
         manager_version = '3' if uncertainty else '2' if repaired else '1'
-        command = dict(format=(('workflow-coding-successor-native-command@2' if uncertainty else 'workflow-coding-successor-native-command@1') if entry['attempt']['attempt_sequence'] > 1 else ('workflow-coding-revision-native-command@2' if uncertainty else 'workflow-coding-revision-native-command@1') if entry['attempt']['revision'] > 1 else {'development': 'workflow-coding-internal-command@2',
+        command = dict(format=('workflow-coding-cancelled-native-command@1' if cancelled else ('workflow-coding-successor-native-command@2' if uncertainty else 'workflow-coding-successor-native-command@1') if entry['attempt']['attempt_sequence'] > 1 else ('workflow-coding-revision-native-command@2' if uncertainty else 'workflow-coding-revision-native-command@1') if entry['attempt']['revision'] > 1 else {'development': 'workflow-coding-internal-command@2',
             'code_review': 'workflow-coding-native-review-command@1', 'qa': 'workflow-coding-native-qa-command@1', 'manager_closeout': 'workflow-coding-native-manager-command@' + manager_version}[entry['attempt']['stage']]), kind=kind,
             source_event_ids=[previous['id']], source_event_digests=[previous['event_digest']],
             subject=None, producer_identity=producer, observation=observation)
@@ -540,12 +557,15 @@ class CodingDispatcher:
         after = deepcopy(before)
         after['run'].update(cas_version=entry['run']['cas_version'] + 1, last_event_id=event_id, **(run_changes or {}))
         attempt = {**entry['attempt'], **(attempt_changes or {})}
+        if cancelled:
+            after['run'].update(state='cancelled', current_revision=entry['run']['current_revision'])
+            attempt['state'] = entry['attempt']['state']
         after['attempts'] = [dict(id=k, record=encode_row(attempt if k == attempt['id'] else a))
                              for k, a in sorted(entry['attempts'].items())]
         after['tasks'] = [dict(id=k, record=encode_row(dict(conn.execute('SELECT * FROM tasks WHERE id=?', (k,)).fetchone())))
                           for k in sorted(entry['tasks'])]
         operation = dict(org_slug=self.org.slug, principal=principal, key=key, request_digest=_hash(_canonical(command)))
-        body = dict(format=(('workflow-coding-successor-native-event@2' if uncertainty else 'workflow-coding-successor-native-event@1') if entry['attempt']['attempt_sequence'] > 1 else ('workflow-coding-revision-native-event@2' if uncertainty else 'workflow-coding-revision-native-event@1') if entry['attempt']['revision'] > 1 else {'development': 'workflow-coding-event@2',
+        body = dict(format=('workflow-coding-cancelled-native-event@1' if cancelled else ('workflow-coding-successor-native-event@2' if uncertainty else 'workflow-coding-successor-native-event@1') if entry['attempt']['attempt_sequence'] > 1 else ('workflow-coding-revision-native-event@2' if uncertainty else 'workflow-coding-revision-native-event@1') if entry['attempt']['revision'] > 1 else {'development': 'workflow-coding-event@2',
             'code_review': 'workflow-coding-native-review-event@1', 'qa': 'workflow-coding-native-qa-event@1', 'manager_closeout': 'workflow-coding-native-manager-event@' + manager_version}[entry['attempt']['stage']]),
             id=event_id, instance_id=instance,
             event_seq=previous['event_seq'] + 1, event_kind=kind, attempt_id=attempt['id'], operation=operation,
@@ -636,11 +656,12 @@ class CodingDispatcher:
             _check(entry['native']['host']['handle_id'] is not None)
             before = entry['tasks'][task_id]
             _check(before['current_session_id'] == session_id and before['assigned_agent'] == agent
-                   and before['status'] == 'in_progress' and before['cancelled_at'] is None)
+                   and (before['status'] == 'in_progress' and before['cancelled_at'] is None
+                        or entry['native'].get('cancellation') is not None and before['status'] == 'cancelled'))
             if before['executor_pid'] == pid:
                 return True
-            conn.execute('UPDATE tasks SET executor_pid=? WHERE id=? AND assigned_agent=? AND current_session_id=? AND status=? AND cancelled_at IS NULL',
-                         (pid, task_id, agent, session_id, 'in_progress'))
+            conn.execute('UPDATE tasks SET executor_pid=? WHERE id=? AND assigned_agent=? AND current_session_id=? AND status=?',
+                         (pid, task_id, agent, session_id, before['status']))
             raw = _canonical(dict(task_id=task_id, agent=agent, session_id=session_id, pid=pid))
             self._append(conn, entry, 'host_reconciled', dict(host=entry['native']['host'],
                 source_owner_event_ids=[entry['native']['history'][-1]['id']], observation_bytes_base64=base64.b64encode(raw).decode('ascii'),
@@ -656,6 +677,8 @@ class CodingDispatcher:
         if result is not None:
             return ((result['task_id'], result['agent'], result['session_id']) == (task_id, agent, session_id)
                     and completion_result_payload_matches(result, **payload))
+        if entry['native'].get('cancellation') is not None:
+            return False  # Only an already committed exact original result may replay.
         if (attempt['principal'] != agent or attempt['session_id'] != session_id
                 or attempt['state'] not in ('claimed', 'running') or payload['decision_json'] is not None
                 or payload['waiting_on_job_ids'] is not None or payload['status'] not in ('completed', 'failed', 'blocked')):
@@ -712,7 +735,7 @@ class CodingDispatcher:
                     else 'blocked' if safe and result is not None and result['status'] == 'blocked' else 'unknown')
                 host = {**host, 'terminal_receipt': receipt, 'cleanup': dict(error=outcome.cleanup_error)}
                 now = stamp()
-                if classification in ('success', 'failed'):
+                if classification in ('success', 'failed') and entry['native'].get('cancellation') is None:
                     conn.execute('UPDATE tasks SET status=?,completed_at=?,updated_at=?,block_kind=NULL,final_output_summary=?,final_output_dir=? WHERE id=?',
                         ('completed' if classification == 'success' else 'failed', now, now, result['output_summary'], result['output_dir'], task_id))
                 self._append(conn, entry, 'terminal_recorded', dict(host=host, accepted_result_id=entry['attempt']['result_id'],
@@ -744,6 +767,13 @@ class CodingDispatcher:
             if ownership[0] == 'coding_carrier':
                 raise CodingStartError('coding_structural_launch_refused')
             source = ownership[0] == 'coding_source_waiting'
+            if entry['native'].get('cancellation') is not None:
+                invocation.coding_cancellation_outer = dict(failed=failed,
+                    cleanup=None if cleanup is None else dict(kind=cleanup.kind, processes=list(cleanup.processes)),
+                    invocation=native_entry, terminal=getattr(invocation, 'native_terminal_observation', None),
+                    close=close_disposition, release=release_disposition,
+                    tracker_clear=self.org.sessions.get_active(invocation.task.id, invocation.agent) is None,
+                    unsettled=invocation.unsettled)
             if not source and (entry['native']['claim'] is None or entry['native']['host'] is None):
                 # Unclosed preparation is not affirmative no-launch proof.
                 # Hold this exact native owner; never invent a host/result or
@@ -792,7 +822,7 @@ class CodingDispatcher:
             # Preserve the authentic final entry even when close removed it.
             invocation.coding_settled_entry = native_entry
             changes = {} if safe else dict(state='held')
-            if not source and safe and entry['native']['terminal'] == 'success':
+            if not source and safe and entry['native']['terminal'] == 'success' and entry['native'].get('cancellation') is None:
                 from runtime.workflows.coding_revision import fulfilled_revision
                 if fulfilled_revision(entry['attempt'], entry['native']['callback'], entry['command']['work'], budget):
                     changes['current_revision'] = entry['attempt']['revision']
@@ -801,7 +831,7 @@ class CodingDispatcher:
                 attempt_changes=(dict(state='completed') if not source and safe and entry['native']['terminal'] == 'success'
                                  else dict(state='uncertain') if not source and not safe else {}),
                 event_time=now)
-            if not source and safe and entry['native']['terminal'] == 'success':
+            if not source and safe and entry['native']['terminal'] == 'success' and entry['native'].get('cancellation') is None:
                 entry = self._entry(conn, invocation.task.id, budget=budget)
                 from runtime.workflows.coding_progression import _settled, record_final_in_writer, record_qa_in_writer, record_review_in_writer
                 try:
@@ -822,7 +852,8 @@ class CodingDispatcher:
         # Native close/move release was recorded and committed before any new
         # current-authority allocation, with no await or enqueue in that writer.
         from runtime.workflows.coding_progression import reconcile_run
-        reconcile_run(self, entry['run']['instance_id'], self.org.orchestrator._queue)
+        if entry['native'].get('cancellation') is None:
+            reconcile_run(self, entry['run']['instance_id'], self.org.orchestrator._queue)
 
     def _selected_final_owner(self, conn: Any, principal: Any, instance: str) -> Any:
         """Own original running coding leaf BEFORE any private history decoding.
@@ -970,7 +1001,7 @@ class CodingDispatcher:
                 'BEFORE your own callback; partial or uncertain evidence retains its original owner.')
         if entry['command']['format'] == 'workflow-coding-start@2':
             supplement['settings'] = entry['command']['settings']
-        return '\n\n' + _canonical(supplement).decode('utf8')
+        return '\n\n' + _canonical(supplement).decode('utf8') + _CANCELLATION_INSTRUCTION
 
 
     def development_instruction(self, task_id: str, agent: str, session_id: str) -> str:
@@ -1032,7 +1063,7 @@ class CodingDispatcher:
                         command=entry['command'], roles=entry['roles'], developer=developer, subject=scope['subject']))
                 supplement['developer'] = scope['developer']
                 supplement['subject'] = scope['subject']
-        return '\n\n' + _canonical(supplement).decode('utf8')
+        return '\n\n' + _canonical(supplement).decode('utf8') + _CANCELLATION_INSTRUCTION
 
     def revision_instruction(self, entry: dict, task_id: str, agent: str, session_id: str) -> str:
         from runtime.workflows.coding_revision import ROLES, returned_findings, revision_scope
@@ -1072,7 +1103,7 @@ class CodingDispatcher:
                     'Failed/blocked outcomes retain their true cause. References grant no access or execution authority.'))
         if entry['command']['format'] == 'workflow-coding-start@2':
             supplement['settings'] = entry['command']['settings']
-        return '\n\n' + _canonical(supplement).decode('utf8')
+        return '\n\n' + _canonical(supplement).decode('utf8') + _CANCELLATION_INSTRUCTION
 
 
 def _json_start(entry: dict) -> dict:
