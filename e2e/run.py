@@ -9,6 +9,7 @@ import math
 import os
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -32,6 +33,45 @@ def arm_deadline(deadline: float) -> None:
         raise TimeoutError("exhausted absolute deadline")
     # alarm(int(remaining)) can disable the timer for a positive fraction.
     signal.setitimer(signal.ITIMER_REAL, remaining)
+
+
+def copy_npm_downloads(source: Path, destination: Path, deadline: float) -> None:
+    """Copy only ordinary _cacache trees; no shared live state or race fence."""
+    def fail(error: OSError) -> None:
+        raise error
+
+    def validate(path: Path) -> bool:
+        if not path.is_absolute() or path.name != "_cacache" or ".." in path.parts:
+            raise ValueError("invalid npm download-store path")
+        # Check parents too: even a missing leaf must not conceal an alias.
+        for parent in (*reversed(path.parents), path):
+            arm_deadline(deadline)
+            try:
+                info = parent.lstat()
+            except FileNotFoundError:
+                return False
+            if not stat.S_ISDIR(info.st_mode):
+                raise ValueError(f"non-directory or aliased npm download path: {parent}")
+        for current, directories, files in os.walk(path, onerror=fail, followlinks=False):
+            arm_deadline(deadline)
+            for name in directories + files:
+                arm_deadline(deadline)
+                entry = Path(current) / name
+                info = entry.lstat()
+                if not (stat.S_ISDIR(info.st_mode)
+                        or (stat.S_ISREG(info.st_mode) and info.st_nlink == 1)):
+                    raise ValueError(f"aliased or special npm download entry: {entry}")
+        return True
+
+    if source == destination or source in destination.parents or destination in source.parents:
+        raise ValueError("overlapping npm download stores")
+    present = validate(source)
+    validate(destination)
+    if present:
+        arm_deadline(deadline)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(source, destination, dirs_exist_ok=True, copy_function=shutil.copyfile)
+    arm_deadline(deadline)
 
 
 def validate_timing(row: dict) -> None:
@@ -252,7 +292,18 @@ def main() -> int:
         python = str(root / "venv" / "bin" / "python")
         command("browser-dependencies", [uv, "pip", "install", "--python", python, "--require-hashes", "-r", str(source / "e2e" / "browser.lock")])
         command("browser-install", [python, "-I", "-m", "playwright", "install", "chromium"])
-        command("web-dependencies", [npm, "ci"], source / "web")
+        npm_prefix = root / "cache" / "npm"
+        npm_prefix.mkdir(mode=0o700)
+        bridge = os.environ.get("E2E_NPM_DOWNLOAD_STORE")
+        download_store = None
+        if bridge is not None:
+            if not bridge or bridge != str(Path(bridge)) or bridge.startswith("//"):
+                raise ValueError("invalid runner npm download-store path")
+            download_store = Path(bridge)
+            copy_npm_downloads(download_store, npm_prefix / "_cacache", action_end)
+        command("web-dependencies", [npm, "ci", "--cache", str(npm_prefix)], source / "web")
+        if download_store is not None:
+            copy_npm_downloads(npm_prefix / "_cacache", download_store, action_end)
         command("web-build", [npm, "run", "build"], source / "web")
         # Harness uses only stdlib + locked browser library; runtime lives in
         # separate real processes. No runtime/pytest import in the controller.
