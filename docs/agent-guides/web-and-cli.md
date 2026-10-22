@@ -4159,3 +4159,51 @@ Fresh FULL independent review and separately root-routed scoped QA remain.
 Control/reassignment/operational and real scratch/Founder/across-team/override/
 two-org/backup/rollback/live-manager acceptance stay root-owned. Exact encodings
 and active/historical boundaries: ordered-coding-workflow spec, same section.
+
+
+## Disabled settled no-action manager successor — ROOT12568
+
+A NEW genuine manager attempt may follow only a newly recorded complete bound
+held callback whose validated effect evidence affirmatively records a pre-action
+guard refusal, no command/remote effect and no action revalidation, AND original
+successful host, positive source/outer settlement and no unknown native owner.
+Partial intent, callback-only, unknown/preparation/close/no-handle evidence,
+uncertain action, merged/complete/cancelled work and literal historical held
+families cannot enter. Unsupported held subtypes retain their original owner.
+
+The same bound currently eligible manager receives one new task/queued attempt,
+same content revision/subject/reference/three original current upstream results,
+predecessor identity and all retained contributors. Stage sequence becomes2;
+role generation/CAS/events increase independently. Same-principal retry remains1
+and original lower cumulative limits remain; no principal reselection, revision,
+host retry, source revival, settings remap or budget reset occurs. Current
+settings/authority/ancestry/Pause/move/independence/capacity are revalidated in
+one caller-owned writer. Exact accepted original-result replay returns the SAME
+successor before fresh capacity checks. Full independent target reconstruction
+precedes COMMIT; notification follows, and cold recovery rediscovers that queue.
+Superseded callbacks cannot settle the current attempt.
+
+Additive event@8/edge@6/edge-command@6/admission@5 and final-scope@4 encode the
+new hold/transition and predecessor. Successor-native event/command@1,
+uncertainty-only@2 and admission@1 preserve native ownership; final-manager@4
+is the actual consumed supplement. Public run@6 retains field inventory and
+allows content revision1..3 for a successor; CLI/served schema share its reader.
+Selected/output/finalize families remain literal @2/r1 and @3/r2..3 as applicable.
+Complete saved/native/current/schema(data=False)/cold/reopen/recovery/drain
+readers reject mixed/orphan/fork/incomplete history on ONE cumulative allowance,
+including target rereads. Old held/native/r1..r3 bytes and meanings remain.
+
+The new actor independently rechecks its repository/base/head/results/checks and
+current entitlements in its OWN live SID. Only that actor may perform its fresh
+expected-head non-admin action and independently observe remote MERGED/full
+actual commit/aware time BEFORE its own callback. Never reuse a predecessor
+intent, reservation, action or receipt. The daemon performs no PR I/O or effect
+recovery. Readiness/require_ready stay false; no allocation is executed here.
+Source/static delivery is separate from installed/loaded/enabled acceptance.
+Native/SQL/workflow/CAS/replay/rollback proof is NOT RUN / PROOF NOT RUN without
+an entitled genuine venue. Python units RETIRED; integration INCLUDING callback/
+lifespan/SessionTracker SKIPPED24342; missing Swift proof UNEXECUTED /
+FOUNDER-EXEMPTED / NONBLOCKING320seq93. Fresh FULL independent reviewer is next;
+root separately routes QA. Cancellation, deferred-native reconciliation,
+reassignment and operational/scratch/Founder/two-org/rollback/live acceptance
+remain separately bounded root work. No DDL/release/auth/permission/live effect.

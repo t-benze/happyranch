@@ -227,8 +227,14 @@ class CodingRevisionRunReceipt(CodingFinalRunReceipt):
     current_attempt: CodingRevisionAttempt
 
 
+class CodingSuccessorRunReceipt(CodingFinalRunReceipt):
+    format: Literal['workflow-coding-run@6']
+    current_revision: Annotated[StrictInt, Field(ge=1, le=3)]
+    target_revision: Annotated[StrictInt, Field(ge=1, le=3)]
+
+
 class CodingRunReceipt(RootModel[Annotated[
-        CodingInitialRunReceipt | CodingOrderedRunReceipt | CodingQARunReceipt | CodingFinalRunReceipt | CodingRevisionRunReceipt,
+        CodingInitialRunReceipt | CodingOrderedRunReceipt | CodingQARunReceipt | CodingFinalRunReceipt | CodingRevisionRunReceipt | CodingSuccessorRunReceipt,
         Field(discriminator='format')]]):
     pass
 

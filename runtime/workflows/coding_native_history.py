@@ -124,12 +124,12 @@ def _admission(conn: Any, org: str, budget: Any, value: Any, *, callback: bool,
     value = _closed(value, 'format phase authority manager_teams tasks bindings pause invocation move capacity '
                     'max_revise_rounds effective_bindings_base64 record'
                     + (' settings mapping' if new and attempt['stage'] == 'development' else '')
-                    + (' attempt_id revision' if attempt['revision'] > 1 else ''))
+                    + (' attempt_id revision' if attempt['revision'] > 1 or attempt['attempt_sequence'] > 1 else ''))
     if new and attempt['stage'] == 'development':
         _check(same(value['settings'], command['settings']) and same(value['mapping'], command['mapping']))
-    if attempt['revision'] > 1:
+    if attempt['revision'] > 1 or attempt['attempt_sequence'] > 1:
         _check(value['attempt_id'] == attempt['id'] and type(value['revision']) is int and value['revision'] == attempt['revision'])
-    _check(value['format'] == ('workflow-coding-revision-native-admission@1' if attempt['revision'] > 1 else _native_format(command, attempt['stage']))
+    _check(value['format'] == ('workflow-coding-successor-native-admission@1' if attempt['attempt_sequence'] > 1 else 'workflow-coding-revision-native-admission@1' if attempt['revision'] > 1 else _native_format(command, attempt['stage']))
            and value['phase'] == ('callback' if callback else 'launch'))
     original_native = value['invocation']
     _check(same(original_native, native))
@@ -202,7 +202,9 @@ def _admission(conn: Any, org: str, budget: Any, value: Any, *, callback: bool,
            and f['agent'] == leaf['assigned_agent'] == attempt['principal'])
     limits = source['budgets']
     _check(type(value['max_revise_rounds']) is int and value['max_revise_rounds'] == limits['max_revise_rounds']
-           and 1 <= attempt['revision'] <= min(3, limits['coding_revision_limit']) and attempt['attempt_sequence'] == 1
+           and 1 <= attempt['revision'] <= min(3, limits['coding_revision_limit'])
+           and (attempt['attempt_sequence'] == 1 or attempt['attempt_sequence'] == 2
+                and attempt['stage'] == 'manager_closeout' and limits['coding_same_principal_retry_limit'] >= 1)
            and limits['coding_attempt_limit'] >= ({'manager_closeout': 4, 'qa': 3, 'code_review': 2}.get(attempt['stage'], 1))
            and leaf['session_timeout_seconds'] == limits['session_timeout_seconds']
            and tasks[source['task_id']]['orchestration_step_count'] == limits['source_step']
@@ -345,20 +347,22 @@ def read_native(conn: Any, org: str, budget: Any, storage: Any, *, start: dict,
     # Explicit future QA/manager/revision allocations may be absent from an
     # earlier snapshot. Provisional discovery grants no validity: ordered replay
     # below must derive exactly these allocations and their complete native rows.
-    later_qa_tasks, later_manager_tasks, later_revision_tasks = set(), set(), set()
+    later_qa_tasks, later_manager_tasks, later_revision_tasks, later_successor_tasks = set(), set(), set(), set()
     for event in events:
         budget.step()
         if event['event_kind'] != 'stage_queued':
             continue
         candidate = _closed(_read_json(event['event_bytes'], budget, 16777216),
             'format id instance_id event_seq event_kind attempt_id operation previous_digest before after evidence created_at')
-        if candidate['format'] == 'workflow-coding-event@7':
+        if candidate['format'] in ('workflow-coding-event@7', 'workflow-coding-event@8'):
             evidence = _closed(candidate['evidence'], 'kind command origin authority rows facts native_task_observations')
             facts = _closed(evidence['facts'], 'format source_attempt_id result_id output_digest outcome next_attempt_id next_task_id destination target_revision admission')
             task_id = facts['next_task_id']
-            _check(facts['format'] == 'workflow-coding-edge@5' and type(task_id) is str
-                   and task_id.startswith('TASK-') and task_id not in later_revision_tasks)
-            later_revision_tasks.add(task_id)
+            successor = candidate['format'] == 'workflow-coding-event@8'
+            selected_tasks = later_successor_tasks if successor else later_revision_tasks
+            _check(facts['format'] == ('workflow-coding-edge@6' if successor else 'workflow-coding-edge@5') and type(task_id) is str
+                   and task_id.startswith('TASK-') and task_id not in selected_tasks)
+            selected_tasks.add(task_id)
         elif candidate['format'] == 'workflow-coding-event@4':
             evidence = _closed(candidate['evidence'], 'kind command origin authority rows facts native_task_observations')
             facts = _closed(evidence['facts'], 'format developer_attempt_id reviewer_attempt_id result_id output_digest contributor qa_task_id admission')
@@ -397,7 +401,8 @@ def read_native(conn: Any, org: str, budget: Any, storage: Any, *, start: dict,
             run, attempts, tasks = replay(conn, org, budget, storage, event=event, body=body,
                 previous=previous, initial=initial, run=run, attempts=attempts, tasks=tasks,
                 state=state, source=source, roles=roles, mapping=mapping, command=command_value,
-                later_qa_tasks=later_qa_tasks | later_manager_tasks | later_revision_tasks, later_manager_tasks=later_manager_tasks | later_revision_tasks, settled_stages=completed_states)
+                later_qa_tasks=later_qa_tasks | later_manager_tasks | later_revision_tasks | later_successor_tasks,
+                later_manager_tasks=later_manager_tasks | later_revision_tasks | later_successor_tasks, settled_stages=completed_states)
             attempt = attempts[run['current_attempt_id']]
             if attempt['id'] != old_id:
                 completed_states[old_id] = {k: v for k, v in state.items() if k != 'history'}
@@ -419,13 +424,13 @@ def read_native(conn: Any, org: str, budget: Any, storage: Any, *, start: dict,
         repaired = False
         if attempt['stage'] == 'manager_closeout':
             scope = _read_json(attempt['scope_bytes'], budget, 1048576)
-            repaired = scope['format'] in ('workflow-coding-final-scope@2', 'workflow-coding-final-scope@3')
-        uncertainty = body['format'] in ('workflow-coding-native-manager-event@3', 'workflow-coding-revision-native-event@2')
+            repaired = scope['format'] in ('workflow-coding-final-scope@2', 'workflow-coding-final-scope@3', 'workflow-coding-final-scope@4')
+        uncertainty = body['format'] in ('workflow-coding-native-manager-event@3', 'workflow-coding-revision-native-event@2', 'workflow-coding-successor-native-event@2')
         if uncertainty:
             _check((repaired or attempt['revision'] > 1) and kind == 'held')
         manager_version = '3' if uncertainty else '2' if repaired else '1'
         _check(_canonical(body) == event['event_bytes'] and body['format'] == (
-            ('workflow-coding-revision-native-event@2' if uncertainty else 'workflow-coding-revision-native-event@1') if attempt['revision'] > 1 else {
+            ('workflow-coding-successor-native-event@2' if uncertainty else 'workflow-coding-successor-native-event@1') if attempt['attempt_sequence'] > 1 else ('workflow-coding-revision-native-event@2' if uncertainty else 'workflow-coding-revision-native-event@1') if attempt['revision'] > 1 else {
             'development': 'workflow-coding-event@2', 'code_review': 'workflow-coding-native-review-event@1',
             'qa': 'workflow-coding-native-qa-event@1', 'manager_closeout': 'workflow-coding-native-manager-event@' + manager_version}[attempt['stage']]))
         for name in ('id', 'instance_id', 'event_seq', 'event_kind', 'attempt_id', 'previous_digest', 'created_at'):
@@ -438,7 +443,7 @@ def read_native(conn: Any, org: str, budget: Any, storage: Any, *, start: dict,
         facts = _closed(evidence['facts'], FACTS[kind])
         command = _closed(evidence['command'],
             'format kind source_event_ids source_event_digests subject producer_identity observation')
-        _check(command['format'] == (('workflow-coding-revision-native-command@2' if uncertainty else 'workflow-coding-revision-native-command@1') if attempt['revision'] > 1 else {'development': 'workflow-coding-internal-command@2',
+        _check(command['format'] == (('workflow-coding-successor-native-command@2' if uncertainty else 'workflow-coding-successor-native-command@1') if attempt['attempt_sequence'] > 1 else ('workflow-coding-revision-native-command@2' if uncertainty else 'workflow-coding-revision-native-command@1') if attempt['revision'] > 1 else {'development': 'workflow-coding-internal-command@2',
             'code_review': 'workflow-coding-native-review-command@1', 'qa': 'workflow-coding-native-qa-command@1', 'manager_closeout': 'workflow-coding-native-manager-command@' + manager_version}[attempt['stage']]) and command['kind'] == kind
                and command['source_event_ids'] == [previous['id']]
                and command['source_event_digests'] == [previous['event_digest']] and command['subject'] is None)
@@ -756,10 +761,12 @@ def read_native(conn: Any, org: str, budget: Any, storage: Any, *, start: dict,
     for historical in [*completed_states.values(), state]:
         _check(historical.get('edge_index', 0) in (0, 4) and historical.get('qa_edge_index', 0) in (0, 3)
                and historical.get('final_edge_index', 0) in (0, 3)
-               and historical.get('revision_edge_index', 0) in (0, historical.get('revision_edge_length', -1)))
-    _check(later_revision_tasks == {a['task_id'] for a in attempts.values() if a['revision'] > 1})
+               and historical.get('revision_edge_index', 0) in (0, historical.get('revision_edge_length', -1))
+               and historical.get('manager_edge_index', 0) in (0, 2))
+    _check(later_successor_tasks == {a['task_id'] for a in attempts.values() if a['attempt_sequence'] > 1})
+    _check(later_revision_tasks == {a['task_id'] for a in attempts.values() if a['revision'] > 1 and a['attempt_sequence'] == 1})
     _check(later_qa_tasks == {a['task_id'] for a in attempts.values() if a['stage'] == 'qa' and a['revision'] == 1})
-    _check(later_manager_tasks == {a['task_id'] for a in attempts.values() if a['stage'] == 'manager_closeout' and a['revision'] == 1})
+    _check(later_manager_tasks == {a['task_id'] for a in attempts.values() if a['stage'] == 'manager_closeout' and a['revision'] == 1 and a['attempt_sequence'] == 1})
     states = {**completed_states, attempt['id']: {k: v for k, v in state.items() if k != 'history'}}
     for key, value in states.items():
         value.update(attempt=attempts[key], queue_owner=storage.heartbeat_owners.get(attempts[key]['task_id']),

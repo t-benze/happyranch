@@ -825,3 +825,20 @@ reservation/current-selection/expected-head/non-admin/one-action/remote-observat
 rules above. Save canonical final-output@3 as own summary before actual FINAL
 callback; no daemon-owned merge/recovery, stale approvals or synthetic receipt.
 Readiness remains disabled; source is not installed/loaded/enabled acceptance.
+
+
+A bound workflow-coding-final-manager@4 is a NEW genuine same-subject attempt,
+not a content revision or permission to replay its predecessor. Preserve its
+final-scope@4/predecessor, actual current attempt/task/SID/workspace/reference,
+all retained contributors and three original current upstream results. Use only
+its own supplied LOCAL finalize-command@1 (r1) or @2 (r2/3), stable own key and
+existing authorized repository tools. Independently recheck repository/base/head,
+original results/checks/current entitlements in THIS live session. Never reuse
+an old intent/reservation/action/result/callback or infer safety from absent PID,
+ended SID, task label or held state. Partial/uncertain effects stay with the
+original owner. Only this actual new manager may perform its fresh expected-head
+non-admin guarded action and independently observe remote MERGED/full actual
+commit/aware time BEFORE preserving own final-output@2 (r1) or @3 (r2/3) and
+its own genuine FINAL callback. No daemon effect/recovery, new role selection,
+job wait or coding decision. Historical @2/@3 instructions retain their meanings;
+readiness remains false and no live allocation/enablement follows source delivery.

@@ -48,13 +48,18 @@ def replay_revision(conn: Any, org: str, budget: Any, storage: Any, *, event: di
                     future_tasks: set[str]) -> tuple:
     from runtime.workflows.coding_start_history import same
     from runtime.workflows.coding_progression_history import admission
-    from runtime.workflows.coding_start_records import CodingRevisionFinalSelection
+    from runtime.workflows.coding_start_records import CodingBoundFinalSelection, CodingRevisionFinalSelection
+    from runtime.workflows.coding_revision import manager_no_action, manager_successor_scope
     kind = event['event_kind']
-    _check(body['format'] == 'workflow-coding-event@7')
+    successor = body['format'] == 'workflow-coding-event@8'
+    _check(successor or body['format'] == 'workflow-coding-event@7')
     evidence = _closed(body['evidence'], 'kind command origin authority rows facts native_task_observations')
     facts = _closed(evidence['facts'], 'format source_attempt_id result_id output_digest outcome next_attempt_id next_task_id destination target_revision admission')
     current = attempts[run['current_attempt_id']]
-    _check(event['attempt_id'] == current['id'] and run['state'] == current['stage']
+    _check(successor or current['attempt_sequence'] == 1)
+    _check(event['attempt_id'] == current['id']
+           and (run['state'] == current['stage'] or successor and run['state'] == 'held'
+                and kind in ('stage_queued', 'advance') and state.get('manager_retry_hold') is not None)
            and current['state'] == 'completed' and state['source_settled'] and state['cleanup_recorded']
            and state['cleanup'] and state['terminal'] == 'success' and state['claim'] is not None
            and not state.get('ownership_unknown') and evidence['kind'] == kind
@@ -67,12 +72,14 @@ def replay_revision(conn: Any, org: str, budget: Any, storage: Any, *, event: di
     scope = None if current['stage'] == 'development' else _read_scope(current, budget)
     stages = {**settled_stages, current['id']: state}
     if current['stage'] == 'manager_closeout':
-        _check(current['revision'] > 1 and kind == 'manager_completed')
+        _check((current['revision'] > 1 and not successor and kind == 'manager_completed')
+               or successor and kind in ('manager_completed', 'stage_queued', 'advance'))
         subject = scope['subject']
         pins = upstream_pins(attempts, stages, current['revision'], run['instance_id'], command['work'], subject, budget)
         results = [dict(identity=pin, summary=stages[pin['attempt_id']]['callback']['output_summary'],
             verdict=stages[pin['attempt_id']]['callback']['verdict']) for pin in pins.values()]
-        selected = CodingRevisionFinalSelection.model_validate(dict(format='workflow-coding-final-selection@3',
+        selected = (CodingRevisionFinalSelection if current['revision'] > 1 else CodingBoundFinalSelection).model_validate(dict(
+            format='workflow-coding-final-selection@3' if current['revision'] > 1 else 'workflow-coding-final-selection@2',
             instance_id=run['instance_id'], attempt_id=current['id'], task_id=current['task_id'], session_id=current['session_id'],
             principal=current['principal'], revision=current['revision'], subject=subject, upstream_results=pins, results=results,
             release=command['release'], mapping=command['mapping'], scope_digest=current['scope_digest'],
@@ -94,25 +101,38 @@ def replay_revision(conn: Any, org: str, budget: Any, storage: Any, *, event: di
             _check(all(json_findings(stages[p['attempt_id']]['callback']['output_summary'], budget) != output['findings'] for p in pins.values()))
     _decoded(output, budget)
     rejected = output['outcome'] in ('REQUEST_CHANGES', 'REVISE')
-    holds = output['outcome'] == 'BLOCK' or current['stage'] == 'manager_closeout'
-    _check(current['revision'] > 1 or rejected)
-    destination = None if holds else 'development' if rejected else dict(development='code_review', code_review='qa', qa='manager_closeout')[current['stage']]
+    holds = facts['next_attempt_id'] is None if successor else output['outcome'] == 'BLOCK' or current['stage'] == 'manager_closeout'
+    _check(current['revision'] > 1 or rejected or successor)
+    if successor:
+        _check(current['stage'] == 'manager_closeout'
+               and scope['format'] in ('workflow-coding-final-scope@2', 'workflow-coding-final-scope@3', 'workflow-coding-final-scope@4'))
+        if not holds:
+            _check(manager_no_action(output) and same(state.get('manager_retry_hold'), output)
+                   and run['state'] == 'held' and current['attempt_sequence'] == 1)
+        else:
+            _check(manager_no_action(output) or current['attempt_sequence'] == 2)
+    destination = None if holds else 'manager_closeout' if successor else 'development' if rejected else dict(development='code_review', code_review='qa', qa='manager_closeout')[current['stage']]
     revision = current['revision'] + (1 if rejected else 0)
     if destination is not None:
-        _check(2 <= revision <= min(3, source['budgets']['coding_revision_limit']))
+        _check((1 if successor else 2) <= revision <= min(3, source['budgets']['coding_revision_limit']))
     # A sequence is stage-local within this content revision; generation is role-local across revisions.
     retained = {k: a for k, a in attempts.items() if k != facts['next_attempt_id']}
     sequence = 1 + sum(a['revision'] == revision and a['stage'] == destination for a in retained.values())
     generation = 1 + sum(a['stage'] == destination for a in retained.values())
     next_id = None if holds else attempt_identity(run['instance_id'], revision, destination, sequence, generation)
-    expected = dict(format='workflow-coding-edge@5', source_attempt_id=current['id'], result_id=callback['id'],
+    if successor and not holds:
+        _check(sequence == 2 and sequence - 1 <= min(1, source['budgets']['coding_same_principal_retry_limit'])
+               and len(retained) + 1 <= min(10, source['budgets']['coding_attempt_limit'])
+               and current['principal'] == roles['agent_manager']['principal']
+               and output['subject'] == scope['subject'] and pins == scope['upstream_results'])
+    expected = dict(format='workflow-coding-edge@6' if successor else 'workflow-coding-edge@5', source_attempt_id=current['id'], result_id=callback['id'],
         output_digest=_hash(callback['output_summary'].encode('utf8')), outcome=output['outcome'], next_attempt_id=next_id,
         next_task_id=facts['next_task_id'], destination=destination, target_revision=revision, admission=facts['admission'])
     _check(same(facts, expected) and type(facts['result_id']) is int)
     origin = dict(kind='settled_result', principal=current['principal'], task_id=current['task_id'], session_id=current['session_id'],
         result_id=callback['id'], claim=state['claim'])
     _check(same(evidence['origin'], origin))
-    internal = dict(format='workflow-coding-edge-command@5', kind=kind, source_event_ids=[previous['id']],
+    internal = dict(format='workflow-coding-edge-command@6' if successor else 'workflow-coding-edge-command@5', kind=kind, source_event_ids=[previous['id']],
         source_event_digests=[previous['event_digest']], subject=subject, facts=facts)
     _check(evidence['command'] == internal)
     principal = 'service:coding-dispatcher:' + org
@@ -138,23 +158,27 @@ def replay_revision(conn: Any, org: str, budget: Any, storage: Any, *, event: di
         state['revision_hold'] = output
         if current['stage'] == 'manager_closeout':
             state['final_output'] = output
+            if successor and manager_no_action(output):
+                state['manager_retry_hold'] = output
         target_run['state'] = 'complete' if output['outcome'] == 'merged' else 'held'
     else:
-        kinds = ('artifact_staged', 'contribution_recorded', 'stage_queued', 'advance') if current['stage'] == 'development' else ('review_staged', 'stage_queued', 'advance')
-        index = state.get('revision_edge_index', 0)
-        _check(index < len(kinds) and kind == kinds[index] and sequence == 1)
+        kinds = ('stage_queued', 'advance') if successor else ('artifact_staged', 'contribution_recorded', 'stage_queued', 'advance') if current['stage'] == 'development' else ('review_staged', 'stage_queued', 'advance')
+        index_key = 'manager_edge_index' if successor else 'revision_edge_index'
+        index = state.get(index_key, 0)
+        _check(index < len(kinds) and kind == kinds[index] and sequence == (2 if successor else 1))
         if index == 0:
             _check(type(facts['next_task_id']) is str and facts['next_task_id'].startswith('TASK-') and facts['next_task_id'] not in tasks)
             admission(conn, org, budget, storage, facts['admission'], run=run, tasks=tasks, source=source, roles=roles,
                 mapping=mapping, command=command, future_task_id=facts['next_task_id'],
                 later_qa_tasks=future_tasks - tasks.keys() - {facts['next_task_id']},
                 qa=current['stage'] == 'code_review', final=current['stage'] == 'qa',
-                destination=destination, target=revision, attempt_count=len(attempts))
+                destination=destination, target=revision, attempt_count=len(attempts), manager_retry=successor)
             state['revision_edge_facts'] = facts
         else:
             _check(same(facts, state['revision_edge_facts']))
-        state['revision_edge_index'] = index + 1
-        state['revision_edge_length'] = len(kinds)
+        state[index_key] = index + 1
+        if not successor:
+            state['revision_edge_length'] = len(kinds)
         if kind == 'stage_queued':
             first = decode_row(initial['after']['attempts'][0]['record'])
             pristine = next(decode_row(v['record']) for v in initial['after']['tasks'] if v['id'] == first['task_id'])
@@ -169,8 +193,10 @@ def replay_revision(conn: Any, org: str, budget: Any, storage: Any, *, event: di
                 upstream = upstream_pins(attempts, stages, revision, run['instance_id'], command['work'], subject, budget,
                     through={'code_review': 'development', 'qa': 'code_review', 'manager_closeout': 'qa'}[destination])
             scope_allowance(attempts, command, subject, returns, upstream, budget)
-            raw = _canonical(revision_scope(org=org, instance=run['instance_id'], command=command, roles=roles,
-                attempt=a, attempts=attempts, subject=subject, returns=returns, upstream=upstream,
+            scope_builder = manager_successor_scope if successor else revision_scope
+            scope_args = dict(budget=budget) if successor else dict(returns=returns)
+            raw = _canonical(scope_builder(org=org, instance=run['instance_id'], command=command, roles=roles,
+                attempt=a, attempts=attempts, subject=subject, upstream=upstream, **scope_args,
                 repository_reference=selected_repository(mapping, command['work'])))
             _check(len(raw) <= 1048576 and next_id not in attempts and task['id'] not in tasks)
             a.update(scope_bytes=raw, scope_digest=_hash(raw))

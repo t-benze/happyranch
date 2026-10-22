@@ -63,8 +63,8 @@ def final_selection(entry: dict, *, budget: _Budget | None = None) -> dict:
     scope = json.loads(a['scope_bytes'])
     if budget is not None:
         _decoded(scope, budget)
-    revised = scope['format'] == 'workflow-coding-final-scope@3'
-    repaired = revised or scope['format'] == 'workflow-coding-final-scope@2'
+    revised = scope['format'] == 'workflow-coding-final-scope@3' or scope['format'] == 'workflow-coding-final-scope@4' and a['revision'] > 1
+    repaired = revised or scope['format'] in ('workflow-coding-final-scope@2', 'workflow-coding-final-scope@4')
     bound = {}
     if repaired:
         reference = selected_repository(entry['mapping'], entry['command']['work'])
@@ -81,9 +81,11 @@ def final_selection(entry: dict, *, budget: _Budget | None = None) -> dict:
     return selected
 
 
-def _settled(entry: dict, *, budget: _Budget | None = None) -> dict | None:
+def _settled(entry: dict, *, budget: _Budget | None = None, manager_retry: bool = False) -> dict | None:
     attempt, native = entry['attempt'], entry['native']
-    if (entry['run']['state'] != attempt['stage'] or attempt['state'] != 'completed'
+    retry_hold = (manager_retry and attempt['stage'] == 'manager_closeout' and entry['run']['state'] == 'held'
+                  and native.get('manager_retry_hold') is not None)
+    if ((entry['run']['state'] != attempt['stage'] and not retry_hold) or attempt['state'] != 'completed'
             or native.get('ownership_unknown') or not native['source_settled']
             or not native['cleanup_recorded'] or not native['cleanup'] or native['terminal'] != 'success'):
         return None
@@ -130,7 +132,7 @@ def _settled(entry: dict, *, budget: _Budget | None = None) -> dict | None:
 
 
 def _admission(dispatcher: Any, conn: Any, entry: dict, capture: Any, sessions: tuple,
-               budget: _Budget, *, destination: str | None = None, target: int | None = None) -> dict:
+               budget: _Budget, *, destination: str | None = None, target: int | None = None, manager_retry: bool = False) -> dict:
     from runtime.workflows.activation import author_capacity_blocked
     org, db = dispatcher.org, dispatcher.db
     _check(not org._runner_admission_closed and org.orchestrator._db is db)
@@ -168,11 +170,14 @@ def _admission(dispatcher: Any, conn: Any, entry: dict, capture: Any, sessions: 
     independent(entry['attempts'], roles)
     reviewer = roles[ROLES[destination] if destination is not None else 'agent_manager' if final else 'qa_engineer' if qa else 'code_reviewer']['principal']
     if destination is not None:
-        _check(type(target) is int and 2 <= target <= min(3, source['budgets']['coding_revision_limit']))
-    _check(entry['attempt']['stage'] in ('development', 'code_review', 'qa')
+        _check(type(target) is int and (1 if manager_retry else 2) <= target <= min(3, source['budgets']['coding_revision_limit']))
+    if manager_retry:
+        _check(destination == 'manager_closeout' and target == entry['attempt']['revision']
+               and entry['run']['state'] == 'held' and entry['native'].get('manager_retry_hold') is not None)
+    _check((entry['attempt']['stage'] in ('development', 'code_review', 'qa') or manager_retry)
            and source['budgets']['coding_revision_limit'] >= 1
            and len(entry['attempts']) + 1 <= source['budgets']['coding_attempt_limit']
-           and entry['run']['cas_version'] + (3 if qa or final else 4) <= source['budgets']['coding_event_limit'])
+           and entry['run']['cas_version'] + (2 if manager_retry else 3 if qa or final else 4) <= source['budgets']['coding_event_limit'])
     _check(len(sessions) <= 1024)
     if author_capacity_blocked(conn, author=reviewer, task_id=None, active_sessions=sessions):
         raise CodingStartError('coding_capacity_unavailable')
@@ -193,7 +198,7 @@ def _admission(dispatcher: Any, conn: Any, entry: dict, capture: Any, sessions: 
             where="agent_name=? AND status='running'", args=(reviewer,))],
         max_revise_rounds=source['budgets']['max_revise_rounds'])
     if destination is not None:
-        result.update(format='workflow-coding-edge-admission@4', destination=destination, target_revision=target,
+        result.update(format='workflow-coding-edge-admission@5' if manager_retry else 'workflow-coding-edge-admission@4', destination=destination, target_revision=target,
             attempt_count=len(entry['attempts']))
     _check(len(_canonical(result)) <= 4194304)
     conn.execute('INSERT INTO workflow_admission_records VALUES (?,?,?,?,?)', tuple(record.values()))
@@ -268,6 +273,9 @@ def advance_in_writer(dispatcher: Any, conn: Any, *, instance: str, result_id: i
         predecessor = entry['attempts'].get(successor['predecessor_id'])
         if predecessor is not None and predecessor['result_id'] == result_id:
             return successor['task_id']
+    if entry['attempt']['stage'] == 'manager_closeout':
+        from runtime.workflows.coding_revision_writer import advance_manager
+        return advance_manager(dispatcher, conn, entry, result_id, capture, sessions, budget)
     if entry['attempt']['revision'] > 1:
         from runtime.workflows.coding_revision_writer import advance_revision
         return advance_revision(dispatcher, conn, entry, result_id, capture, sessions, references, budget)
@@ -335,7 +343,7 @@ def advance_in_writer(dispatcher: Any, conn: Any, *, instance: str, result_id: i
         _append(dispatcher, conn, entry, kind, facts, output, now=now,
                 next_attempt=attempt if kind == 'stage_queued' else None, task=task if kind == 'stage_queued' else None)
     dispatcher.org.workflow_authority._validate_admission_uncommitted(conn, capture)
-    # New state is independently reread with a fresh complete allowance after
+    # New state is independently reread on the SAME cumulative allowance after
     # the first mutation; no pre-write inventory is trusted as target closure.
     from runtime.infrastructure.workflow_schema import _read_workflow_schema
     layout, _ = _read_workflow_schema(conn, expected_org_slug=dispatcher.org.slug, budget=budget)
@@ -387,7 +395,8 @@ def record_final_in_writer(dispatcher: Any, conn: Any, entry: dict) -> None:
     output = _settled(entry, budget=entry.get('_budget'))
     if output is None or entry['attempt']['stage'] != 'manager_closeout':
         return
-    if entry['attempt']['revision'] > 1:
+    from runtime.workflows.coding_revision import manager_no_action
+    if entry['attempt']['revision'] > 1 or manager_no_action(output) or entry['attempt']['attempt_sequence'] > 1:
         from runtime.workflows.coding_revision_writer import hold_revision
         hold_revision(dispatcher, conn, entry, output)
         return
@@ -408,8 +417,9 @@ async def reconcile_settled_stage(dispatcher: Any, instance: str) -> str | None:
             and entry['native']['source_settled'] and entry['native']['claim'] is None
             and entry['native']['host'] is None and not entry['native'].get('ownership_unknown')):
         return entry['attempt']['task_id']
-    output = _settled(entry, budget=entry.get('_budget'))
-    if (output is None or entry['attempt']['stage'] not in ('development', 'code_review', 'qa')
+    output = _settled(entry, budget=entry.get('_budget'), manager_retry=True)
+    if (output is None or entry['attempt']['stage'] not in ('development', 'code_review', 'qa', 'manager_closeout')
+            or (entry['attempt']['stage'] == 'manager_closeout' and entry['native'].get('manager_retry_hold') is None)
             or (entry['attempt']['stage'] == 'code_review' and output['outcome'] not in ('APPROVE', 'REQUEST_CHANGES'))
             or (entry['attempt']['stage'] == 'qa' and output['outcome'] not in ('PASS', 'REVISE'))):
         return None

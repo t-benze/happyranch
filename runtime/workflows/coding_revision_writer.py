@@ -18,7 +18,11 @@ def append_revision(dispatcher: Any, conn: Any, entry: dict, kind: str, facts: d
     current, run = entry['attempt'], entry['run']
     _check(conn is dispatcher.db._conn and conn.in_transaction)
     previous = entry['native']['history'][-1]
-    internal = dict(format='workflow-coding-edge-command@5', kind=kind,
+    successor = facts['format'] == 'workflow-coding-edge@6'
+    if successor:
+        _copy_allowance(facts, budget)
+        _copy_allowance(output['subject'], budget)
+    internal = dict(format='workflow-coding-edge-command@6' if successor else 'workflow-coding-edge-command@5', kind=kind,
         source_event_ids=[previous['id']], source_event_digests=[previous['event_digest']], subject=output['subject'], facts=facts)
     key = 'coding-internal:' + _hash(_canonical([run['instance_id'], kind, current['result_id'], internal]))
     principal = 'service:' + dispatcher.producer
@@ -44,7 +48,7 @@ def append_revision(dispatcher: Any, conn: Any, entry: dict, kind: str, facts: d
     after['attempts'] = [dict(id=k, record=encode_row(a)) for k, a in sorted(entry['attempts'].items())]
     after['tasks'] = [dict(id=k, record=encode_row(t)) for k, t in sorted(entry['tasks'].items())]
     operation = dict(org_slug=dispatcher.org.slug, principal=principal, key=key, request_digest=_hash(_canonical(internal)))
-    body = dict(format='workflow-coding-event@7', id=event_id, instance_id=run['instance_id'],
+    body = dict(format='workflow-coding-event@8' if successor else 'workflow-coding-event@7', id=event_id, instance_id=run['instance_id'],
         event_seq=previous['event_seq'] + 1, event_kind=kind, attempt_id=current['id'], operation=operation,
         previous_digest=previous['event_digest'], before=before, after=after, created_at=now,
         evidence=dict(kind=kind, command=internal, origin=dict(kind='settled_result', principal=current['principal'],
@@ -138,4 +142,70 @@ def hold_revision(dispatcher: Any, conn: Any, entry: dict, output: dict) -> None
     from runtime.workflows.coding_dispatch import stamp
     kind = 'manager_completed' if entry['attempt']['stage'] == 'manager_closeout' else 'review_staged'
     _check(kind == 'manager_completed' or output['outcome'] == 'BLOCK')
-    append_revision(dispatcher, conn, entry, kind, facts_for(entry, output, attempt=None, admission=None), output, stamp(), budget=entry['_budget'])
+    facts = facts_for(entry, output, attempt=None, admission=None)
+    from runtime.workflows.coding_revision import manager_no_action
+    if kind == 'manager_completed' and (manager_no_action(output) or entry['attempt']['attempt_sequence'] > 1):
+        facts['format'] = 'workflow-coding-edge@6'
+    append_revision(dispatcher, conn, entry, kind, facts, output, stamp(), budget=entry['_budget'])
+
+
+def advance_manager(dispatcher: Any, conn: Any, entry: dict, result_id: int, capture: Any,
+                    sessions: tuple, budget: Any) -> str | None:
+    """One new actor attempt, never a replay of its predecessor's local intent."""
+    from runtime.workflows.coding_dispatch import stamp
+    from runtime.workflows.coding_progression import _admission, _settled, settled_upstreams
+    from runtime.workflows.coding_revision import manager_no_action, manager_successor_scope
+    from runtime.workflows.coding_start import CodingStartError
+    current, run = entry['attempt'], entry['run']
+    _check(conn.in_transaction)
+    if current['result_id'] != result_id:
+        raise CodingStartError('coding_result_conflict')
+    # The new saved hold marker is derived ONLY from additive event@8. Literal
+    # old held records, and unknown native/external ownership, cannot enter.
+    if entry['native'].get('manager_retry_hold') is None:
+        return None
+    output = _settled(entry, budget=budget, manager_retry=True)
+    if output is None or not manager_no_action(output):
+        return None
+    limits = entry['source']['budgets']
+    sequence = 1 + sum(a['stage'] == 'manager_closeout' and a['revision'] == current['revision']
+                       for a in entry['attempts'].values())
+    _check(sequence == 2 and sequence - 1 <= min(1, limits['coding_same_principal_retry_limit'])
+           and len(entry['attempts']) + 1 <= min(10, limits['coding_attempt_limit']))
+    pins, _ = settled_upstreams(entry, budget=budget)
+    from runtime.workflows._coding_settings_execution import _read_json
+    original_scope = _read_json(current['scope_bytes'], budget, 1048576)
+    _check(output['upstream_results'] == original_scope['upstream_results'] == pins
+           and output['subject'] == original_scope['subject']
+           and current['principal'] == entry['roles']['agent_manager']['principal'])
+    admission = _admission(dispatcher, conn, entry, capture, sessions, budget,
+                           destination='manager_closeout', target=current['revision'], manager_retry=True)
+    now, task_id = stamp(), dispatcher.db.next_task_id()
+    binding = entry['roles']['agent_manager']
+    task = TaskRecord(id=task_id, task_type='subtask',
+        parent_task_id=json.loads(entry['event']['event_bytes'])['evidence']['facts']['carrier_task_id'],
+        assigned_agent=binding['principal'], team=binding['team'], brief=revision_brief(entry['command']['work'], 'manager_closeout'),
+        created_at=datetime.fromisoformat(now.replace('Z', '+00:00')), updated_at=datetime.fromisoformat(now.replace('Z', '+00:00')),
+        session_timeout_seconds=limits['session_timeout_seconds'])
+    dispatcher.db._check_team_move_task_uncommitted(task)
+    generation = 1 + sum(a['stage'] == 'manager_closeout' for a in entry['attempts'].values())
+    a = dict(id=attempt_identity(run['instance_id'], current['revision'], 'manager_closeout', sequence, generation),
+        instance_id=run['instance_id'], revision=current['revision'], stage='manager_closeout',
+        attempt_sequence=sequence, assignment_generation=generation, predecessor_id=current['id'], task_id=task_id,
+        principal=binding['principal'], session_id=None, result_id=None, submission_id=None, review_request_id=None, state='queued')
+    scope_allowance(entry['attempts'], entry['command'], output['subject'], [], pins, budget)
+    raw = _canonical(manager_successor_scope(org=dispatcher.org.slug, instance=run['instance_id'],
+        command=entry['command'], roles=entry['roles'], attempt=a, attempts=entry['attempts'], subject=output['subject'],
+        upstream=pins, repository_reference=selected_repository(entry['mapping'], entry['command']['work']), budget=budget))
+    _check(len(raw) <= 1048576)
+    a.update(scope_bytes=raw, scope_digest=_hash(raw))
+    facts = facts_for(entry, output, attempt=a, admission=admission)
+    facts['format'] = 'workflow-coding-edge@6'
+    for kind in ('stage_queued', 'advance'):
+        append_revision(dispatcher, conn, entry, kind, facts, output, now,
+            attempt=a if kind == 'stage_queued' else None, task=task if kind == 'stage_queued' else None, budget=budget)
+    dispatcher.org.workflow_authority._validate_admission_uncommitted(conn, capture)
+    from runtime.infrastructure.workflow_schema import _read_workflow_schema
+    layout, _ = _read_workflow_schema(conn, expected_org_slug=dispatcher.org.slug, budget=budget)
+    _check(layout == 'J')
+    return task_id

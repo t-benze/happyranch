@@ -85,6 +85,34 @@ def revision_scope(*, org: str, instance: str, command: dict, roles: dict, attem
     return value
 
 
+def manager_no_action(output: dict) -> bool:
+    """Only a complete bound callback's affirmative pre-action refusal.
+
+    Called after full result/intent/workspace/native validation. Absence of a
+    callback, partial intent, command receipt or owner is never proof here.
+    """
+    evidence = output['evidence']
+    return (output['format'] in ('workflow-coding-final-output@2', 'workflow-coding-final-output@3')
+            and output['outcome'] == 'held' and evidence['command'] is None and evidence['remote'] is None
+            and evidence['revalidated_at'] is None
+            and evidence['guard_verdict'] in ('ci_failed', 'checks_missing', 'timeout', 'merge_guard_mergeable',
+                'merge_guard_review', 'merge_guard_qa'))
+
+
+def manager_successor_scope(*, org: str, instance: str, command: dict, roles: dict, attempt: dict,
+                            attempts: dict, subject: dict, upstream: dict, repository_reference: dict, budget: object) -> dict:
+    previous = attempts[attempt['predecessor_id']]
+    _check(previous['stage'] == attempt['stage'] == 'manager_closeout'
+           and previous['revision'] == attempt['revision'] and previous['principal'] == attempt['principal'])
+    _copy_allowance(previous, budget)
+    value = revision_scope(org=org, instance=instance, command=command, roles=roles, attempt=attempt,
+        attempts=attempts, subject=subject, returns=[], upstream=upstream, repository_reference=repository_reference)
+    value.update(format='workflow-coding-final-scope@4', predecessor=dict(attempt_id=previous['id'],
+        task_id=previous['task_id'], session_id=previous['session_id'], result_id=previous['result_id'],
+        principal=previous['principal'], scope_digest=previous['scope_digest']))
+    return value
+
+
 def revision_brief(work: dict, stage: str) -> str:
     from runtime.workflows.coding_bootstrap import final_brief, qa_brief, review_brief
     if stage != 'development':
