@@ -171,7 +171,7 @@ def cancelled(c: Controller, value: dict, parent: dict, worker: dict, result: di
     tables = value["sql"]["alpha"]["tables"]
     tasks = {r["id"]:r for r in tables["tasks"]}
     p, w = tasks[parent["task"]], tasks[worker["task"]]
-    require(len(tasks) == 22 and len(tables["task_results"]) == 31
+    require(len(tasks) == 22 and len(tables["task_results"]) == 30
             and sum(t["status"] == "completed" for t in tasks.values()) == 20, "E07 exact final alpha population")
     for t, start in ((p,parent), (w,worker)):
         require(t["status"] == "cancelled" and t["block_kind"] is None
@@ -306,7 +306,7 @@ def exercise(c: Controller) -> None:
     begin = time.monotonic()
     prior = next(d["threads_cases"] for d in c.durable if "threads_cases" in d)
     raw, prefix = witnesses(c)
-    require(len(c.results) == 53 and len(c.starts) == 37 and prefix == prior["witnesses"], "E07 enters only after original53 and full E05 witness prefix")
+    require(len(c.results) == 53 and len(c.starts) == 36 and prefix == prior["witnesses"], "E07 enters only after original53 and full E05 witness prefix")
     c.e07 = dict(variants=VARIANTS, design_sha256=DESIGN, source_sha=c.revision, python=c.python,
                  entered=begin, scenario_deadline=c.deadline, end=min(begin+50,c.deadline),
                  prefix=dict(witness_bytes=len(raw), witness_records=len(prefix), witness_sha256=hashlib.sha256(raw).hexdigest(),
@@ -332,8 +332,8 @@ def exercise(c: Controller) -> None:
         phase("capture",16)
         baseline = frame(c)
         c.e07["baseline"] = baseline
-        host(baseline,25,25,0,prior["final_anchor"]["projection"]["receipts"])
-        c.e07["anchors"].append(dict(name="E05-end-B25",samples=[baseline]))
+        host(baseline,24,24,0,prior["final_anchor"]["projection"]["receipts"])
+        c.e07["anchors"].append(dict(name="E05-end-B24",samples=[baseline]))
         P = c.create("alpha","E07_CANCEL_PARENT")
         parent = c.start("alpha",P,"case_manager")
         c.e07["parent"] = parent
@@ -357,15 +357,15 @@ def exercise(c: Controller) -> None:
             require(t[P]["status"] == t[W]["status"] == "in_progress" and t[W]["parent_task_id"] == P
                     and t[W]["brief"] == "E07_CANCEL_CHILD" and t[W]["block_kind"] is None, "E07 genuine delegated tree")
             a = snap["metrics"]["host_sessions"]["admission"]
-            if a["released_total"] != 26:
+            if a["released_total"] != 25:
                 return None
-            host(snap,27,26,1,prior["final_anchor"]["projection"]["receipts"])
+            host(snap,26,25,1,prior["final_anchor"]["projection"]["receipts"])
             return snap
         live = c.poll(parked,"E07 P released, W sole live")
         second = frame(c,P,W)
-        require(host(second,27,26,1,prior["final_anchor"]["projection"]["receipts"]) == host(live,27,26,1,prior["final_anchor"]["projection"]["receipts"]), "E07 two live projections")
+        require(host(second,26,25,1,prior["final_anchor"]["projection"]["receipts"]) == host(live,26,25,1,prior["final_anchor"]["projection"]["receipts"]), "E07 two live projections")
         c.e07["live"] = [live,second]
-        c.e07["anchors"].append(dict(name="P-success-W-live-B26",samples=[live,second]))
+        c.e07["anchors"].append(dict(name="P-success-W-live-B25",samples=[live,second]))
         new = second["metrics"]["host_sessions"]["receipts"]["recent"][0]
         require(new["terminal_reason"] == "success" and new["invocation_kind"] == "task", "E07 P success receipt")
         wire_payload = dict(session_id=worker["session"],agent="case_worker",status="completed",confidence=90,
@@ -421,15 +421,15 @@ def exercise(c: Controller) -> None:
             audits = snap["sql"]["alpha"]["tables"]["audit_log"]
             if not any(a["task_id"] == W and a["action"] == "session_end" for a in audits):
                 return None
-            if snap["metrics"]["host_sessions"]["admission"]["released_total"] != 27:
+            if snap["metrics"]["host_sessions"]["admission"]["released_total"] != 26:
                 return None
             cancelled(c,snap,parent,worker,result)
-            host(snap,27,27,0,second["metrics"]["host_sessions"]["receipts"])
+            host(snap,26,26,0,second["metrics"]["host_sessions"]["receipts"])
             return snap
         freeze = c.poll(closed,"E07 product closure before rescue")
         freeze2 = frame(c,P,W)
         require(content(freeze) == content(freeze2)
-                and host(freeze2,27,27,0,second["metrics"]["host_sessions"]["receipts"]) == host(freeze,27,27,0,second["metrics"]["host_sessions"]["receipts"]), "E07 settled cancellation frame")
+                and host(freeze2,26,26,0,second["metrics"]["host_sessions"]["receipts"]) == host(freeze,26,26,0,second["metrics"]["host_sessions"]["receipts"]), "E07 settled cancellation frame")
         receipt = freeze["metrics"]["host_sessions"]["receipts"]["recent"][0]
         require(receipt["terminal_reason"] == "cancelled" and receipt["invocation_kind"] == "task", "E07 one active cancellation receipt")
         c.e07["freeze"] = [freeze,freeze2]
@@ -450,10 +450,10 @@ def exercise(c: Controller) -> None:
         freeze,freeze2 = frame(c,P,W),frame(c,P,W)
         cancelled(c,freeze,parent,worker,result)
         require(content(freeze) == content(freeze2)
-                and host(freeze,27,27,0,second["metrics"]["host_sessions"]["receipts"])
-                == host(freeze2,27,27,0,second["metrics"]["host_sessions"]["receipts"]), "E07 Fcancel after all product closure")
+                and host(freeze,26,26,0,second["metrics"]["host_sessions"]["receipts"])
+                == host(freeze2,26,26,0,second["metrics"]["host_sessions"]["receipts"]), "E07 Fcancel after all product closure")
         c.e07["freeze"] = [freeze,freeze2]
-        c.e07["anchors"].append(dict(name="cancelled-B27",samples=[freeze,freeze2]))
+        c.e07["anchors"].append(dict(name="cancelled-B26",samples=[freeze,freeze2]))
         connection, stream = c.holds.pop(worker["session"])
         connection.settimeout(c.remaining())
         c.e07["provider_eof"] = dict(bytes=len(stream.read(1)),at=time.monotonic())
@@ -498,7 +498,7 @@ def exercise(c: Controller) -> None:
             sample["closure"] = closure(c,tree,held["launch"]["child"])
             window["samples"].append(sample)
             require(content(sample) == content(freeze) and sample["witnesses"] == after["witnesses"],"E07 bounded full content/launch absence")
-            host(sample,27,27,0,freeze["metrics"]["host_sessions"]["receipts"])
+            host(sample,26,26,0,freeze["metrics"]["host_sessions"]["receipts"])
             require(not any(p["start"] == p["observed_start"] for p in sample["closure"]["processes"])
                     and not any(g["pids"] for g in sample["closure"]["groups"].values()) and not sample["closure"]["pending"],"E07 product stays closed")
             previous = window["entered"] if len(window["samples"]) == 1 else window["samples"][-2]["entered"]
@@ -512,7 +512,7 @@ def exercise(c: Controller) -> None:
         phase("archive",50)
         final = frame(c,P,W)
         c.e07["final"] = final
-        c.e07["anchors"].append(dict(name="final-B27",samples=[final]))
+        c.e07["anchors"].append(dict(name="final-B26",samples=[final]))
         live_tasks = {t["id"]:t for t in second["sql"]["alpha"]["tables"]["tasks"]}
         final_tasks = {t["id"]:t for t in final["sql"]["alpha"]["tables"]["tasks"]}
         changed_fields = {"status","block_kind","note","cancelled_at","completed_at"}
@@ -522,9 +522,9 @@ def exercise(c: Controller) -> None:
         cancelled(c,final,parent,worker,result)
         require(content(final) == content(freeze) and final["sql"]["beta"] == baseline["sql"]["beta"],"E07 final immutable tree/beta")
         raw, rows = witnesses(c)
-        require(len(c.starts) == 39 and len({s["session"] for s in c.starts}) == 39 and not c.holds
-                and sum(w["kind"] == "stub" for w in rows) == 39
-                and sum(w["kind"] == "callback" for w in rows) == len(c.commands)+len(c.provider_commands)+len(c.thread_commands)+len(c.e07_commands),"E07 exact39 starts and every CLI accounted")
+        require(len(c.starts) == 38 and len({s["session"] for s in c.starts}) == 38 and not c.holds
+                and sum(w["kind"] == "stub" for w in rows) == 38
+                and sum(w["kind"] == "callback" for w in rows) == len(c.commands)+len(c.provider_commands)+len(c.thread_commands)+len(c.e07_commands),"E07 exact38 starts and every CLI accounted")
         relay.deadline = c.case_deadline
         c.e07["transport_closure"] = relay.close(c.case_deadline)
         c.late_transport = None
