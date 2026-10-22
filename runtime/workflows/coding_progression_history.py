@@ -18,7 +18,7 @@ KINDS = (*EDGE_KINDS, 'review_staged')
 
 
 def admission(conn: Any, org: str, budget: Any, storage: Any, value: dict, *,
-              run: dict, tasks: dict, source: dict, roles: dict, mapping: dict, command: dict) -> None:
+              run: dict, tasks: dict, source: dict, roles: dict, mapping: dict, command: dict, future_task_id: str) -> None:
     """Reconstruct original authority, Pause, causal move and capacity predicates."""
     from runtime.infrastructure.task_pause_controls import decode_journal
     from runtime.workflows._coding_role_records import configuration
@@ -55,6 +55,30 @@ def admission(conn: Any, org: str, budget: Any, storage: Any, value: dict, *,
                and row['active_chain'] is None and row['active_fanout'] is None)
         for key in ('parent_task_id', 'revisit_of_task_id'):
             _check(row[key] is None or row[key] in closure)
+    # Re-enumerate the complete causal native inventory independently. The
+    # sole later allocation is excluded at this original boundary; every other
+    # original row/edge must still exist. Owned rows use replay-time values,
+    # while unchanged ordinary siblings cannot be invented in a saved capture.
+    _check(future_task_id not in closure)
+    pending, discovered = [source['task_id']], set()
+    while pending:
+        key = pending.pop()
+        if key == future_task_id or key in discovered:
+            continue
+        _check(len(discovered) < 512 and key in closure)
+        actual = list(rows(conn, 'tasks', budget, where='id=?', args=(key,), maximum=1))
+        _check(len(actual) == 1)
+        row = actual[0]
+        if key not in tasks:
+            _check(same(row, closure[key]))
+        else:
+            for name in ('id', 'assigned_agent', 'team', 'brief', 'parent_task_id', 'revisit_of_task_id'):
+                _check(same(row[name], closure[key][name]))
+        discovered.add(key)
+        pending.extend(r['id'] for r in rows(conn, 'tasks', budget,
+            where='parent_task_id=? OR revisit_of_task_id=?', args=(key, key), maximum=512))
+        pending.extend(row[k] for k in ('parent_task_id', 'revisit_of_task_id') if row[k] is not None)
+    _check(discovered == set(closure))
     current, seen = closure[source['task_id']], set()
     while True:
         _check(current['id'] not in seen and len(seen) < 20
@@ -164,7 +188,7 @@ def replay(conn: Any, org: str, budget: Any, storage: Any, *, event: dict, body:
         _check(edge_index < len(EDGE_KINDS) and kind == EDGE_KINDS[edge_index])
         if edge_index == 0:
             admission(conn, org, budget, storage, facts['admission'], run=run, tasks=tasks,
-                      source=source, roles=roles, mapping=mapping, command=command)
+                      source=source, roles=roles, mapping=mapping, command=command, future_task_id=facts['reviewer_task_id'])
             state['edge_facts'] = facts
             state['subject'] = output['subject']
         else:

@@ -14,7 +14,7 @@ from typing import Any
 from runtime.models import TaskRecord
 from runtime.workflows._coding_import_support import _capture
 from runtime.workflows._coding_role_records import configuration
-from runtime.workflows.coding_authority_history import _Budget
+from runtime.workflows.coding_authority_history import _Budget, _decoded
 from runtime.workflows.coding_bootstrap import effective_bindings, encode_row, identity, review_brief, review_scope
 from runtime.workflows.coding_saved_records import _canonical, _check, _hash
 from runtime.workflows.coding_start import CodingStartError, queued_storage, require_ready
@@ -22,7 +22,7 @@ from runtime.workflows.coding_start_history import rows
 from runtime.workflows.coding_start_records import effective_mapping, parse_stage_output
 
 
-def _settled(entry: dict) -> dict | None:
+def _settled(entry: dict, *, budget: _Budget | None = None) -> dict | None:
     attempt, native = entry['attempt'], entry['native']
     if (entry['run']['state'] != attempt['stage'] or attempt['state'] != 'completed'
             or native.get('ownership_unknown') or not native['source_settled']
@@ -32,8 +32,15 @@ def _settled(entry: dict) -> dict | None:
     if result is None:
         return None
     scope = None if attempt['stage'] == 'development' else json.loads(attempt['scope_bytes'])
-    return parse_stage_output(result, instance=entry['run']['instance_id'], attempt=attempt,
+    if budget is not None:
+        _check(type(result['output_summary']) is str and len(result['output_summary']) <= 65536)
+        budget.consumed += 12 * len(result['output_summary'])
+        _check(budget.remaining_bytes >= 0)
+    output = parse_stage_output(result, instance=entry['run']['instance_id'], attempt=attempt,
         work=entry['command']['work'], subject=None if scope is None else scope['subject'])
+    if budget is not None:
+        _decoded(output, budget)
+    return output
 
 
 def _admission(dispatcher: Any, conn: Any, entry: dict, capture: Any, sessions: tuple,
@@ -158,7 +165,7 @@ def advance_in_writer(dispatcher: Any, conn: Any, *, instance: str, result_id: i
         return entry['attempt']['task_id']  # Exact accepted result/CAS replay.
     if entry['attempt']['result_id'] != result_id:
         raise CodingStartError('coding_result_conflict')
-    output = _settled(entry)
+    output = _settled(entry, budget=budget)
     if output is None:
         return None
     if entry['attempt']['stage'] == 'code_review':
