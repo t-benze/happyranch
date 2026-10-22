@@ -30,16 +30,18 @@ def jobs_command(instruction: dict, binding: dict) -> dict:
     if hashlib.sha256(callback.read_bytes()).hexdigest() != manifest["callback_sha256"]:
         raise RuntimeError("provider callback binding changed")
     action = instruction["action"]
-    if action in {"jobs-submit", "jobs-block", "jobs-final"}:
+    if "expected_exit" in instruction:
+        raise RuntimeError("caller-selected jobs exits forbidden")
+    if action in {"jobs-submit", "jobs-refuse-review", "jobs-block", "jobs-final"}:
         payload = dict(instruction["payload"], task_id=binding["task"], session_id=binding["session"])
-        if action != "jobs-submit":
+        if action not in {"jobs-submit", "jobs-refuse-review"}:
             payload["agent"] = binding["agent"]
         path = root / "coord" / (hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest() + ".json")
         path.write_text(json.dumps(payload, sort_keys=True))
         path.chmod(0o600)
-        args = (["jobs", "submit"] if action == "jobs-submit" else ["report-completion"])
+        args = (["jobs", "submit"] if action in {"jobs-submit", "jobs-refuse-review"} else ["report-completion"])
         args += ["--org", binding["org"], "--from-file", str(path)]
-        if action == "jobs-submit":
+        if action in {"jobs-submit", "jobs-refuse-review"}:
             args += ["--json"]
     elif action == "jobs-read":
         operation = instruction["operation"]
@@ -55,6 +57,10 @@ def jobs_command(instruction: dict, binding: dict) -> dict:
         payload = None
     else:
         raise RuntimeError("unexpected jobs instruction")
+    payload_file = None
+    if payload is not None:
+        raw = path.read_bytes()
+        payload_file = dict(path=str(path), text=raw.decode("utf-8"), bytes=len(raw), sha256=hashlib.sha256(raw).hexdigest())
     available = instruction["execution_deadline"] - time.monotonic()
     if available <= 0:
         raise RuntimeError("provider common deadline exhausted")
@@ -64,7 +70,9 @@ def jobs_command(instruction: dict, binding: dict) -> dict:
     process = subprocess.Popen(argv, cwd=root, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     timed_out = False
     try:
-        child_start = Path(f"/proc/{process.pid}/stat").read_text().rsplit(")", 1)[1].split()[19]
+        child_stat = Path(f"/proc/{process.pid}/stat").read_text()
+        child_fields = child_stat.rsplit(")", 1)[1].split()
+        child_start = child_fields[19]
         # Setup/spawn time consumes the same absolute child allowance.
         out, err = process.communicate(timeout=remaining(root, end=instruction["execution_deadline"]))
     except subprocess.TimeoutExpired as exc:
@@ -77,9 +85,10 @@ def jobs_command(instruction: dict, binding: dict) -> dict:
     if not timed_out and time.monotonic() >= instruction["execution_deadline"]:
         timed_out = True
     return dict(action=action, operation=instruction.get("operation"), argv=argv, exit=process.returncode,
-                stdout=out, stderr=err, payload=payload, entered=entered, finished=time.monotonic(),
+                stdout=out, stderr=err, payload=payload, payload_file=payload_file, entered=entered, finished=time.monotonic(),
                 timed_out=timed_out, execution_deadline=instruction["execution_deadline"],
                 provider=binding, child_pid=process.pid, child_start=child_start,
+                child_parent=int(child_fields[1]), child_stat=child_stat,
                 python=sys.executable, source_sha=manifest["revision"], callback_sha256=manifest["callback_sha256"])
 
 
@@ -106,11 +115,14 @@ def main() -> None:
         thread_actions: list[str] = []
         atexit.register(lambda: [path.unlink(missing_ok=True) for path in thread_files.values()])
         command_mode = None
+        jobs_actions: list[str] = []
         while True:
             connection.settimeout(remaining(root))
             instruction = json.loads(stream.readline(131072))
             remaining(root)
             if instruction == {"action": "exit"}:
+                if jobs_actions and jobs_actions[0] == "jobs-refuse-review" and jobs_actions != ["jobs-refuse-review", "jobs-final"]:
+                    raise RuntimeError("incomplete review refusal protocol")
                 for path in thread_files.values():
                     path.unlink(missing_ok=True)
                 if thread_actions and thread_actions != ["thread-task-send", "thread-task-final"]:
@@ -143,6 +155,7 @@ def main() -> None:
                     raise RuntimeError("E07 held provider returned or parent failed")
                 final = True
                 continue
+            refusal_content_ok = True
             if instruction["action"].startswith("thread-"):
                 sys.path.insert(0, str(Path(__file__).resolve().parent))
                 from thread_provider import command
@@ -155,15 +168,35 @@ def main() -> None:
                 # callback is still the provider's last actual CLI operation.
                 expected_exit = 1 if instruction["action"] == "thread-task-send" else 0
             else:
+                action = instruction["action"]
+                if "expected_exit" in instruction:
+                    raise RuntimeError("caller-selected exit forbidden")
+                refusal = action == "jobs-refuse-review" or jobs_actions[:1] == ["jobs-refuse-review"]
+                if refusal:
+                    expected = "jobs-refuse-review" if not jobs_actions else "jobs-final"
+                    if action != expected or len(jobs_actions) >= 2:
+                        raise RuntimeError("closed review refusal sequence")
+                    if action == "jobs-refuse-review" and (instruction["payload"].get("review_required") is not True or org != "alpha"):
+                        raise RuntimeError("literal review refusal mode")
+                    if action == "jobs-final" and instruction["payload"] != dict(status="completed", confidence=90,
+                            summary="E04_REVIEW_REQUIRED_REFUSED no job submitted",
+                            decision=dict(action="done", summary="E04_REVIEW_REQUIRED_REFUSED no job submitted")):
+                        raise RuntimeError("literal review refusal continuation")
+                jobs_actions.append(action)
                 receipt = jobs_command(instruction, row)
-                expected_exit = 0
+                expected_exit = 2 if action == "jobs-refuse-review" else 0
+                if action == "jobs-refuse-review":
+                    expected_stderr = (f"Error reading scripts-submit file {receipt['payload_file']['path']}: "
+                        "review_required_removed: obtain any required authorization in a thread before submitting; "
+                        "upgrade old clients and omit review_required or set it to false. This request was not submitted.\n")
+                    refusal_content_ok = receipt["stdout"] == "" and receipt["stderr"] == expected_stderr
             connection.settimeout(remaining(root, end=instruction.get("deadline", instruction.get("execution_deadline"))))
             stream.write((json.dumps(receipt) + "\n").encode())
             remaining(root, end=instruction.get("deadline", instruction.get("execution_deadline")))
             connection.settimeout(remaining(root, end=instruction.get("deadline", instruction.get("execution_deadline"))))
             stream.flush()
             remaining(root, end=instruction.get("deadline", instruction.get("execution_deadline")))
-            if receipt["exit"] != expected_exit or receipt["timed_out"] or receipt.get("output_truncated", False):
+            if receipt["exit"] != expected_exit or receipt["timed_out"] or receipt.get("output_truncated", False) or not refusal_content_ok:
                 for path in thread_files.values():
                     path.unlink(missing_ok=True)
                 raise RuntimeError("real provider CLI failed")

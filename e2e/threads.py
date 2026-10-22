@@ -267,7 +267,7 @@ def negative(c: Controller, provider: dict, action: str, status: int, **argument
 
 
 def exercise(c: Controller) -> None:
-    require(len(c.results) == 48 and len(c.starts) == 30, "full unchanged 48-case prefix")
+    require(len(c.results) == 48 and len(c.starts) == 29, "full unchanged 48-case prefix")
     c.threads_active = True
     c.relay.capture_e05 = True
     entered = time.monotonic()
@@ -281,7 +281,7 @@ def exercise(c: Controller) -> None:
          "web/src/design-system/patterns/AgentChip.tsx")}
     c.durable.append(dict(threads_cases=record))
     previous = next(d["jobs_anchor"] for d in c.durable if d.get("jobs_anchor", {}).get("name") == "final-drain-B")
-    require(previous["total"] == 18 and previous["projection"]["receipts"]["window_size"] + 7 <= 64, "B18 capacity before E05")
+    require(previous["total"] == 17 and previous["projection"]["receipts"]["window_size"] + 7 <= 64, "B17 capacity before E05")
     c.case_deadline = min(c.deadline, entered + 18)
     c.publish_end()
     if c.browser_relay:
@@ -344,7 +344,7 @@ def exercise(c: Controller) -> None:
         group["providers"] = [manager, worker]
         group["initial_decline"] = decline(c, worker, "E05 initial observed")
         # A process exit precedes host release and post-exit transcript work.
-        group["worker_closed"] = live_boundary(c,20,19)
+        group["worker_closed"] = live_boundary(c,19,18)
         group["reply"] = reply(c, manager, REPLY, 2)
         worker2 = start(c, C, {"case_worker"})
         group["providers"].append(worker2)
@@ -357,7 +357,7 @@ def exercise(c: Controller) -> None:
                 and group["reply"]["payload_sha256"] == group["replay"]["command"]["payload_sha256"], "same live provider file replay")
         release(c, manager)
         group["last_decline"] = decline(c, worker2, "E05 reply observed")
-        previous = anchor(c, "E05:C", 21, previous)
+        previous = anchor(c, "E05:C", 20, previous)
         group["anchor"] = previous
         group["settled"] = settled_thread(c, C, "E05 compose race", [(1,"founder","message",OPENING),(2,"case_manager","message",REPLY)], group["providers"], 2)
         group["view"] = browser.thread_view(C, "E05 compose race", ["E05 opening", "literal beta", "E05 reply", "@case_worker received"], "reply")
@@ -376,7 +376,7 @@ def exercise(c: Controller) -> None:
         worker = start(c, N, {"case_worker"})
         group["providers"] = [worker]
         group["decline"] = decline(c, worker, "E05 denial venue observed")
-        previous = anchor(c, "E05:N", 22, previous)
+        previous = anchor(c, "E05:N", 21, previous)
         group["anchor"] = previous
         group["settled"] = settled_thread(c, N, "E05 denial venue", [(1,"founder","message","E05 denial anchor")], [worker], 1)
         group["finished"] = time.monotonic()
@@ -399,7 +399,7 @@ def exercise(c: Controller) -> None:
         group["task"] = task
         group["reply"] = reply(c, d1, "E05 task accepted", 3)
         release(c, d1)
-        group["dispatcher_closed"] = live_boundary(c,24,23)
+        group["dispatcher_closed"] = live_boundary(c,23,22)
         group["denial"] = negative(c, task, "thread-task-send", 403, thread=N, payload=dict(body_markdown="E05 forbidden post"))
         group["callback"] = command(c, task, "thread-task-final", payload=dict(status="completed", confidence=90, summary="E05 task complete",
                                                                                  decision=dict(action="done", summary="E05 task complete")))
@@ -413,7 +413,7 @@ def exercise(c: Controller) -> None:
         require(T in group["read"]["stdout"] and "E05 task complete" in group["read"]["stdout"], "genuine followup reads actual task")
         group["followup"] = reply(c, d2, "E05 task complete", 5)
         release(c, d2)
-        previous = anchor(c, "E05:D", 25, previous)
+        previous = anchor(c, "E05:D", 24, previous)
         group["anchor"] = previous
         group["settled"] = settled_thread(c, D, "E05 dispatch", [(1,"founder","message","E05 do one task"),
             (2,"case_manager","system",None),(3,"case_manager","message","E05 task accepted"),
@@ -431,16 +431,16 @@ def exercise(c: Controller) -> None:
         beta = c.stores["beta"].thread_frame()
         c.durable.append(dict(threads_beta=beta))
         require(not any(beta[k] for k in beta if k.startswith("thread") or k in {"jobs", "files"}), "no beta thread/job/file effects")
-        for org, counts in (("alpha", (20,30)), ("beta", (1,1))):
+        for org, counts in (("alpha", (20,29)), ("beta", (1,1))):
             snapshot = c.stores[org].snapshot()
             require((len(snapshot["tasks"]), len(snapshot["results"])) == counts
                     and all(t["status"] == "completed" for t in snapshot["tasks"]), "final composed task/result closure")
             c.durable.append(dict(threads_final_org=org, snapshot=snapshot))
-        require(len(c.starts) == 37 and not c.holds and not select.select([c.server],[],[],0)[0], "exact37 providers, no live or unknown peer")
+        require(len(c.starts) == 36 and not c.holds and not select.select([c.server],[],[],0)[0], "exact36 providers, no live or unknown peer")
         rows = witnesses(c)
-        require(sum(r["kind"] == "stub" for r in rows) == 37 and sum(r["kind"] == "callback" for r in rows)
+        require(sum(r["kind"] == "stub" for r in rows) == 36 and sum(r["kind"] == "callback" for r in rows)
                 == len(c.commands)+len(c.provider_commands)+len(c.thread_commands), "all E05 CLI/provider witnesses accounted")
-        record.update(witnesses=rows, final_anchor=anchor(c,"E05:final",25,previous))
+        record.update(witnesses=rows, final_anchor=anchor(c,"E05:final",24,previous))
         record["finished"] = time.monotonic()
         require(record["finished"] <= c.case_deadline, "E05 final evidence stays within shared allowance")
         for variant in VARIANTS:

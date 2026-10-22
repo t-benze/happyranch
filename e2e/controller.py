@@ -132,6 +132,18 @@ class Controller:
     def provider_cli(self, start: dict, action: str, **arguments: Any) -> dict:
         from owned import identity
         require(identity(start["pid"]) == start["pid_start"], "provider CLI requires live issued SID")
+        prior = [r["action"] for r in self.provider_commands if r["provider"]["session"] == start["session"]]
+        require("expected_exit" not in arguments, "closed provider exit policy")
+        refusal = action == "jobs-refuse-review" or prior[:1] == ["jobs-refuse-review"]
+        if refusal:
+            require(not any(r.get("provider", {}).get("session") == start["session"] for r in self.thread_commands + self.e07_commands),
+                    "refusal cannot mix provider modes")
+            require((not prior and action == "jobs-refuse-review") or (prior == ["jobs-refuse-review"] and action == "jobs-final"),
+                    "closed refusal then final protocol")
+            if action == "jobs-final":
+                require(arguments["payload"] == dict(status="completed", confidence=90,
+                    summary="E04_REVIEW_REQUIRED_REFUSED no job submitted",
+                    decision=dict(action="done", summary="E04_REVIEW_REQUIRED_REFUSED no job submitted")), "truthful refusal continuation")
         connection, stream = self.holds[start["session"]]
         entered = time.monotonic()
         deadline = min(entered + self.remaining(10), self.deadline, getattr(self, "case_deadline", self.deadline))
@@ -154,18 +166,28 @@ class Controller:
         receipt["wire"] = list(self.relay.records[offset:])
         self.provider_commands.append(receipt)  # Preserve failed commands before assertions.
         self.remaining(deadline-time.monotonic())
-        attempt.update(finished=time.monotonic(), command_index=len(self.provider_commands) - 1)
+        attempt.update(wire_end=len(self.relay.records), finished=time.monotonic(), command_index=len(self.provider_commands) - 1)
         require(receipt["provider"] == {k: start[k] for k in ("task", "session", "agent", "org", "pid")}
                 and receipt["source_sha"] == self.revision and receipt["python"] == self.python,
                 "provider-owned CLI identity/source/interpreter", receipt)
-        require(receipt["action"] == action and receipt["exit"] == 0 and receipt["timed_out"] is False
+        require(receipt["action"] == action and receipt["exit"] == (2 if action == "jobs-refuse-review" else 0) and receipt["timed_out"] is False
                 and receipt["execution_deadline"] == instruction["execution_deadline"]
                 and receipt["finished"] <= time.monotonic() < deadline and self.relay.error is None, "actual provider CLI exit/relay", receipt)
         if "payload" in arguments:
             expected = dict(arguments["payload"], task_id=start["task"], session_id=start["session"])
-            if action != "jobs-submit":
+            if action not in {"jobs-submit", "jobs-refuse-review"}:
                 expected["agent"] = start["agent"]
             require(receipt["payload"] == expected, "actual provider-authored payload", receipt["payload"])
+        if action == "jobs-refuse-review":
+            file = receipt["payload_file"]
+            raw = json.dumps(receipt["payload"], sort_keys=True).encode("utf-8")
+            require(start["org"] == "alpha" and receipt["payload"]["review_required"] is True
+                    and file == dict(path=receipt["argv"][-2], text=raw.decode("utf-8"), bytes=len(raw), sha256=hashlib.sha256(raw).hexdigest())
+                    and receipt["stdout"] == "" and receipt["stderr"] == (
+                        f"Error reading scripts-submit file {file['path']}: review_required_removed: obtain any required authorization in a thread before submitting; "
+                        "upgrade old clients and omit review_required or set it to false. This request was not submitted.\n")
+                    and receipt["wire"] == [] and attempt["wire_begin"] == attempt["wire_end"]
+                    and identity(start["pid"]) == start["pid_start"], "exact pre-HTTP refusal and live provider", receipt)
         if action == "jobs-submit":
             submitted = [r for r in receipt["wire"] if r["path"] == f"/api/v1/orgs/{start['org']}/jobs/submit" and r["method"] == "POST"]
             require(len(submitted) == 1 and submitted[0]["status"] == 201
@@ -298,27 +320,62 @@ class Controller:
             time.sleep(min(0.05, max(0, end - time.monotonic())))
         raise AssertionError(f"deadline waiting for {name}")
 
-    def api(self, method: str, path: str, body: dict | None = None, bearer: str | None = "valid") -> tuple[int, dict]:
+    def api(self, method: str, path: str, body: dict | None = None, bearer: str | None = "valid",
+            *, review_refusal_file: dict | None = None) -> tuple[int, dict]:
         headers = {"Content-Type": "application/json"}
         if bearer is not None:
             headers["Authorization"] = "Bearer " + (self.token if bearer == "valid" else bearer)
+        entity = json.dumps(body) if body is not None else None
+        capture = None
+        if review_refusal_file is not None:
+            from owned import identity
+            require(method == "POST" and path == "/api/v1/orgs/alpha/jobs/submit" and bearer == "valid"
+                    and body["review_required"] is True, "selected refusal API capture only")
+            entity = json.dumps(body, sort_keys=True).encode("utf-8")
+            require(review_refusal_file == dict(path=review_refusal_file["path"], text=entity.decode("utf-8"),
+                    bytes=len(entity), sha256=hashlib.sha256(entity).hexdigest()), "identical actual provider file entity")
+            capture = dict(method=method, path=path, capture="E04.review-required-refused", index=len(self.http),
+                entered=time.monotonic(), source_sha=self.revision, payload_file=review_refusal_file,
+                destination=dict(host="127.0.0.1", port=self.port), daemon_pid=self.daemon.pid,
+                daemon_start=identity(self.daemon.pid), boot=dict(self.boots[-1]))
+            self.http.append(capture)  # Partial evidence precedes connect/send/assertions.
         connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=self.remaining())
         try:
             connection.connect()
             upstream_socket = connection.sock
             self.remaining()
             connection.sock.settimeout(self.remaining())
-            connection.request(method, path, json.dumps(body) if body is not None else None, headers)
+            if capture is not None:
+                capture.update(peer=list(upstream_socket.getpeername()), send=time.monotonic(),
+                    request_text=entity.decode("utf-8"), request_bytes=len(entity), request_sha256=hashlib.sha256(entity).hexdigest())
+            connection.request(method, path, entity, headers)
             self.remaining()
             connection.sock.settimeout(self.remaining())
             response = connection.getresponse()
             self.remaining()
             upstream_socket.settimeout(self.remaining())
-            data = json.loads(response.read())
+            if capture is not None:
+                capture.update(response_at=time.monotonic(), status=response.status)
+            raw = response.read()
+            if capture is not None:
+                capture.update(response_text=raw.decode("utf-8"), response_bytes=len(raw), response_sha256=hashlib.sha256(raw).hexdigest())
+            data = json.loads(raw)
             self.remaining()
-            self.http.append(dict(method=method, path=path, status=response.status, response=data))
+            if capture is None:
+                self.http.append(dict(method=method, path=path, status=response.status, response=data))
+            else:
+                capture["response"] = data
             return response.status, data
+        except BaseException as exc:
+            if capture is not None:
+                capture["error"] = repr(exc)
+                partial = getattr(exc, "partial", None)
+                if isinstance(partial, bytes):
+                    capture["partial_response_hex"] = partial.hex()
+            raise
         finally:
+            if capture is not None:
+                capture["finished"] = time.monotonic()
             connection.close()
 
     def get(self, path: str) -> dict:
