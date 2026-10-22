@@ -1,4 +1,4 @@
-"""Independent SELECT-only first-development native event reconstruction.
+"""Independent SELECT-only development and first-review native reconstruction.
 
 This is a coding-specific closed transition reader, never a generic task change
 bus. Unsupported mutations refuse. Original run_started and native captures stay

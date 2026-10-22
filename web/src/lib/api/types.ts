@@ -122,6 +122,11 @@ export interface TaskRecord {
   assigned_agent: string | null;
   parent_task_id: string | null;
   revisit_of_task_id: string | null;
+  /** Literal creation provenance; retries may keep this null. */
+  dispatched_from_thread_id?: string | null;
+  /** Complete root revisit lineage, independently derived from creation provenance. */
+  originating_thread_id?: string | null;
+  originating_task_id?: string | null;
   created_at: string;
   updated_at: string;
   closed_at: string | null;

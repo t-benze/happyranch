@@ -1,8 +1,8 @@
-"""Production owner for the disabled first coding development invocation.
+"""Native owner for disabled development and its first independent review.
 
 Queue and launch admission remain unavailable until the whole coding engine is
-present. This owner composes native writers and their SELECT-only readers; it
-has no artifact, receipt, successor, control or legacy completion consumer.
+present. Original native writers compose complete readers and the first coding
+ordered edge; later stages, controls and legacy completion effects remain absent.
 """
 from __future__ import annotations
 

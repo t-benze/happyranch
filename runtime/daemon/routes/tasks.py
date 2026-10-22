@@ -27,7 +27,7 @@ from runtime.daemon.runner import enqueue_task
 from runtime.daemon.state import DaemonState
 from runtime.daemon.work_status import derive_work_status
 from runtime.workflows.coding_start_records import start_decision_schema
-from runtime.infrastructure.db.tasks import InvalidLineage, _RetryEvidenceRefusal
+from runtime.infrastructure.db.tasks import InvalidLineage, TaskThreadOriginUnavailable, _RetryEvidenceRefusal
 from runtime.infrastructure.db.task_reconciliation import (
     SCOPE, HistoricalReceiptResponse, PreflightResponse, ReconcileFailedContinuationBody,
     ReconciliationError, ReconciliationRefusal, ReconciliationResponse,
@@ -239,12 +239,13 @@ def _require_task_active(task_id: str, task: TaskRecord | None) -> None:
         )
 
 
-def _task_to_dict(t: TaskRecord, org: OrgState, budget: ChildWaitBudget) -> dict:
+def _task_to_dict(t: TaskRecord, org: OrgState, budget: ChildWaitBudget, origins: dict[str, dict]) -> dict:
     # Wire convention: every other task-shaped response (submit POST, recall)
     # exposes the primary key as `task_id`; thread routes do the same via
     # their own helpers. Rename here so list + detail responses match.
     d = t.model_dump(exclude={"executor_pid"})
     d["task_id"] = d.pop("id")
+    d.update(origins[t.id])
     d["child_wait"] = derive_child_wait(org.db, t, budget)
     return d
 
@@ -497,12 +498,13 @@ def list_tasks(
                 blocked_on_job_id=blocked_on_job_id,
             )
             budget = ChildWaitBudget()
+            origins = org.db.get_task_thread_origins([t.id for t in tasks])
             next_cursor = tasks[-1].id if len(tasks) == limit else None
             return {
-                "tasks": [{**_task_to_dict(t, org, budget), "pause": _pause_projection(org, t.id)} for t in tasks],
+                "tasks": [{**_task_to_dict(t, org, budget, origins), "pause": _pause_projection(org, t.id)} for t in tasks],
                 "next_cursor": next_cursor,
             }
-    except CensusReadUnavailable as exc:
+    except (CensusReadUnavailable, TaskThreadOriginUnavailable) as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
@@ -524,27 +526,31 @@ def list_roots(
     descendant whose same-parent revisit lineage leaves no unresolved FAILED
     leaf does not dominate). The field name and response shape are unchanged.
     """
-    with org.db.coherent_read_view():
-        tasks = org.db.list_roots(
-            limit=limit, assigned_agent=assigned_agent, before_task_id=before,
-            status=status, block_kind=block_kind,
-        )
-        budget = ChildWaitBudget()
-        next_cursor = tasks[-1].id if len(tasks) == limit else None
-        # Batch-fetch direct revisits for all returned roots (avoid N+1).
-        root_ids = [t.id for t in tasks]
-        revisits_map = org.db.batch_get_direct_revisits(root_ids)
-        result_tasks: list[dict] = []
-        for t in tasks:
-            d = _task_to_dict(t, org, budget)
-            d["pause"] = _pause_projection(org, t.id)
-            d["severity_rollup"] = getattr(t, '_severity_rollup', t.status.value)
-            d["direct_revisits"] = revisits_map.get(t.id, [])
-            result_tasks.append(d)
-        return {
-            "tasks": result_tasks,
-            "next_cursor": next_cursor,
-        }
+    try:
+        with org.db._memory_collection_read_budget(), org.db.coherent_read_view():
+            tasks = org.db.list_roots(
+                limit=limit, assigned_agent=assigned_agent, before_task_id=before,
+                status=status, block_kind=block_kind,
+            )
+            budget = ChildWaitBudget()
+            origins = org.db.get_task_thread_origins([t.id for t in tasks])
+            next_cursor = tasks[-1].id if len(tasks) == limit else None
+            # Batch-fetch direct revisits for all returned roots (avoid N+1).
+            root_ids = [t.id for t in tasks]
+            revisits_map = org.db.batch_get_direct_revisits(root_ids)
+            result_tasks: list[dict] = []
+            for t in tasks:
+                d = _task_to_dict(t, org, budget, origins)
+                d["pause"] = _pause_projection(org, t.id)
+                d["severity_rollup"] = getattr(t, '_severity_rollup', t.status.value)
+                d["direct_revisits"] = revisits_map.get(t.id, [])
+                result_tasks.append(d)
+            return {
+                "tasks": result_tasks,
+                "next_cursor": next_cursor,
+            }
+    except (CensusReadUnavailable, TaskThreadOriginUnavailable) as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 def _pause_projection(org: OrgState, task_id: str) -> dict:
@@ -648,8 +654,9 @@ def get_task(task_id: str, org: OrgDep) -> dict:
                         superseded_by_task_id = succ
                     break
 
+            origins = org.db.get_task_thread_origins([task.id])
             return {
-                "task": _task_to_dict(task, org, ChildWaitBudget()),
+                "task": _task_to_dict(task, org, ChildWaitBudget(), origins),
                 "results": org.db.get_task_results(task_id),
                 "audit_log": audit_log,
                 "revisit_chain": chain,
@@ -669,7 +676,7 @@ def get_task(task_id: str, org: OrgDep) -> dict:
                 "work_status": derive_work_status(task, audit_log),
                 "pause": _pause_projection(org, task_id),
             }
-    except CensusReadUnavailable as exc:
+    except (CensusReadUnavailable, TaskThreadOriginUnavailable) as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 

@@ -1,7 +1,8 @@
 """SELECT-only complete queued K3a closure under the enclosing native budget.
 
 The initial start is reconstructed independently, followed by the closed
-first-development native reader. Unsupported control/stage families refuse.
+first ordered edge and native reviewer reader. Unsupported later-stage/control
+families refuse.
 Saved validity never supplies current access, readiness or permission.
 """
 from __future__ import annotations
