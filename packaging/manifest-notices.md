@@ -16,8 +16,11 @@ The existing collector `app/mac/scripts/manifest_notices.py` owns direct inputs:
 - `python_snapshot`, called by the ordinary spec, reads installed metadata/RECORD,
   the actual selected EXE.python_lib from both lanes and native binary inputs.
   The selected library must agree and be present in both analyses. Authentic
-  installed CPython/toolchain originals take precedence; the prior exact pinned
-  offline CPython fallback remains strict. Unknown native vendors receive no
+  installed CPython/toolchain originals take precedence. The CPython original
+  may be at the base-prefix root or the selected sysconfig stdlib beneath it;
+  the latter must match the pinned original bytes. Vendor texts cannot satisfy
+  it. The prior exact pinned offline CPython fallback remains strict and is used
+  only when both installed locations are absent. Unknown native vendors receive no
   inherited license and refuse collection. No observer lifecycle/IPC is used.
 - `collect` reads full resolved npm/uv/Go manifests, installed npm/Python metadata,
   source-map package membership where available, known resolved generated-web

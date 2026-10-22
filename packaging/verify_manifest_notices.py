@@ -165,7 +165,9 @@ def python_spec_notices(scratch, stdlib=None):
              ('missing CPython with vendor refuses unsupported identity', False, True, 'PYTHON_NOTICE_IDENTITY_MISMATCH'),
              ('missing CPython without vendor refuses unsupported identity', False, False, 'PYTHON_NOTICE_IDENTITY_MISMATCH')]
     if stdlib is not None:
-        cases += [('authenticated fallback plus vendor', False, True, None),
+        cases += [('uv installed stdlib original plus vendor', False, True, None),
+                  ('uv installed stdlib original tampered', False, True, 'PYTHON_NOTICE_ORIGINAL_MISMATCH'),
+                  ('authenticated fallback plus vendor', False, True, None),
                   ('authenticated fallback stdlib mismatch', False, True, 'PYTHON_NOTICE_STDLIB_MISMATCH'),
                   ('authenticated fallback original missing', False, True, 'cpython-LICENSE')]
     else:
@@ -183,11 +185,21 @@ def python_spec_notices(scratch, stdlib=None):
                                     executable=str(prefix / 'bin/python'), version=sys.version, platform=sys.platform)
         machine = 'unsupported-fixture'
         analysis = {}
+        selected_stdlib = prefix / 'lib/python3.12'
+        selected_stdlib.mkdir(parents=True)
+        if label.startswith('uv installed'):
+            # Actual native23 diagnostic metadata; interpreter fields are still
+            # synthetic here. Bytes come from the authenticated uv archive.
+            effective.version = '3.12.10 (main, May 30 2025, 05:53:56) [Clang 20.1.4 ]'
+            effective.platform, machine = 'darwin', 'arm64'
+            write(selected_stdlib / 'LICENSE.txt', (stdlib / 'LICENSE.txt').read_bytes())
+            if error == 'PYTHON_NOTICE_ORIGINAL_MISMATCH':
+                write(selected_stdlib / 'LICENSE.txt', b'tampered CPython original')
         if label.startswith('authenticated'):
             effective.version = identity['toolchain']['version']
             effective.platform = identity['toolchain']['platform']
             machine = identity['toolchain']['machine']
-            selected_stdlib = root / 'stdlib'
+            selected_stdlib = prefix / 'lib/python3.12'
             for filename in identity['stdlib']:
                 write(selected_stdlib / filename, (stdlib / filename).read_bytes())
             analysis = {lane: dict(pure=[dict(destination=Path(name).stem, source=str(selected_stdlib / name),
@@ -195,8 +207,6 @@ def python_spec_notices(scratch, stdlib=None):
                         for lane in ('daemon', 'cli')}
             if error == 'PYTHON_NOTICE_STDLIB_MISMATCH':
                 write(selected_stdlib / 'threading.py', b'changed stdlib fixture')
-        else:
-            selected_stdlib = prefix / 'stdlib'
         write(evidence / 'python-toolchain.json', dict(executable=effective.executable,
               version=effective.version, platform=effective.platform, machine=machine))
         spec_dir = SOURCE / 'packaging'
@@ -413,7 +423,7 @@ def run(scratch, stdlib=None):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--scratch', type=Path, required=True)
-    parser.add_argument('--cpython-stdlib', type=Path, help='Pinned CPython source fixtures, not a native interpreter')
+    parser.add_argument('--cpython-stdlib', type=Path, help='Pinned CPython stdlib sources and installed LICENSE.txt from the resolved archive; not a native interpreter')
     args = parser.parse_args()
     assert args.scratch.is_absolute() and not args.scratch.exists()
     try:

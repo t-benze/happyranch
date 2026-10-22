@@ -55,7 +55,12 @@ mode/configuration repair occurs. [Packaging](../../packaging/README.md) describ
 the standalone command and selected standard PyInstaller path.
 
 The spec exports direct notice inputs only: installed distribution metadata,
-selected interpreter library and native input owners. The notice collector reads
+selected interpreter library and native input owners. CPython's required
+original is selected from its base-prefix root or current sysconfig stdlib
+under that prefix (uv standalone's installed location, checked against the
+pinned original bytes). Only absence from both invokes the unchanged exact
+offline fallback; supplemental vendor originals remain separately required.
+The managed-only exact 3.12.10 selection is unchanged. The notice collector reads
 resolved npm/uv/Go manifests, applicable generated-web tool originals, GOROOT
 vendor owners and included font/icon/public assets. Unknown required native
 owners or missing/corrupt originals refuse. All required original associations,

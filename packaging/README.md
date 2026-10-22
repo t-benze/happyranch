@@ -37,8 +37,13 @@ metadata/RECORD, selected interpreter/native owner paths and authenticated
 interpreter originals. This does not collect producer lifecycles or emitted
 archive closure. Missing/unrecognized required owners or original texts refuse.
 CPython LICENSE.txt is required independently of supplemental installed/vendor
-originals; its absence invokes only the existing exact-identity/stdlib-checked
-offline fallback. Each original retains its own source boundary.
+originals. After the base-prefix root, the spec checks the selected interpreter's
+current sysconfig stdlib beneath that same prefix. uv's resolved standalone
+3.12.10 installs its original there; it must match the hash-pinned CPython
+original byte for byte. Unsafe or corrupt installed texts refuse. Only absence
+from both locations invokes the unchanged exact-identity/stdlib-checked offline
+fallback. The build's managed-only exact 3.12.10 selection remains required; no
+additional offline identity is admitted. Each original retains its source boundary.
 The full build collects notices after assembly, validates resources/basic app,
 checks frozen CLI/catalog, records unsigned trust observations, archives and
 reconciles actual ZIP/notice bytes and release identity. The retained resource
@@ -54,9 +59,10 @@ python packaging/verify_mac_run_layout.py --scratch /owned/new-layout-fixture
 ```
 
 The first also accepts `--cpython-stdlib /owned/pinned-stdlib` for the three
-source originals pinned in `notice-data/identity-map.json`; these exercise the
-authenticated fallback with synthetic identity/Analysis, without executing a
-native interpreter. Without them that positive case is reported NOT RUN.
+source originals pinned in `notice-data/identity-map.json` plus `LICENSE.txt`
+from the resolved standalone archive. These exercise installed-original
+selection and the authenticated fallback with synthetic identity/Analysis,
+without executing a native interpreter. Without them these cases are NOT RUN.
 The first uses authentic notices with synthetic resolved inputs, preassembled
 resources/plist/icon/Mach-O headers and a substituted ditto ZIP writer. The second
 uses actual workflow reservation/upload selectors and shipping source/path
@@ -247,7 +253,9 @@ unchanged. Any source refusal persists for its owner across later inputs/maps.
 
 The [notice index](THIRD_PARTY_NOTICES.md) documents the two byte-preserved
 offline originals and exact pinned identities in `packaging/notice-data/`.
-Installed originals take precedence. The CPython fallback requires matching
+Installed originals take precedence, including the current stdlib LICENSE.txt
+under the selected base prefix when its bytes match the pinned original. The
+CPython fallback, used only when both installed locations are absent, requires matching
 effective toolchain and three stdlib hashes in both Analysis lanes; the twelve
 Radix fallbacks require pinned metadata and every actual emitted source hash.
 Unsafe paths, corrupt inputs and conflicts refuse retention. A fixed 3.12.10

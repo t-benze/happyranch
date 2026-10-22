@@ -53,6 +53,14 @@ resolve ambiguity. Record skipped/unavailable diagnostics explicitly. Source
 review, lint and collected logs do not establish a valid app, notices, installation
 or public release.
 
+For a Python notice failure, distinguish the selected interpreter's installed
+CPython original from the offline fallback. The spec checks base-prefix
+LICENSE.txt, then the current sysconfig stdlib/LICENSE.txt beneath that prefix
+with pinned-original byte validation. uv standalone 3.12.10 uses the latter.
+Only absence at both enters the unchanged exact-identity fallback; vendor
+licenses cannot satisfy CPython. Preserve actual toolchain diagnostics and
+failure receipts; portable notice cases do not establish native app acceptance.
+
 GitHub documents [workflow cancellation](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-cancellation),
 [step outcomes](https://docs.github.com/en/actions/reference/workflows-and-actions/contexts#steps-context),
 [status expressions](https://docs.github.com/en/actions/reference/workflows-and-actions/expressions#status-check-functions)
