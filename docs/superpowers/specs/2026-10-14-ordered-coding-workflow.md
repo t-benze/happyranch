@@ -2003,3 +2003,55 @@ RETIRED; integration INCLUDING callback/lifespan/SessionTracker is SKIPPED24342.
 ROOT12568 retains real scratch/revision/fresh roles/controls/Founder page/across-team/
 override/two-org/backup/rollback/operator acceptance and eventual live-manager
 expected-head action plus actual remote observation before its callback.
+
+## Founder coding settings page — ROOT12568 / TASK12632
+
+The R2 section's "No settings UI ships here" describes that backend checkpoint.
+The real page is now bookmarkable at `/orgs/:slug/settings/coding` (Settings
+sub-nav "Coding"/"编码"). Public `useCodingSettings`/`useCodingSettingsActions`
+hooks forward to the provider; the real provider keys the view by org and drops
+a same-org read that settles after a later accepted save/readback, without
+generation arithmetic. The panel is keyed by org, so drafts and late replies stay
+with their org. Preview mocks show E0 and refuse saves with
+`coding_settings_preview_only`; they never claim a receipt.
+
+The page shows current generation/admission/mapping generation/release/snapshot
+and a fixed disabled-readiness notice: configuration is never engine readiness.
+Four selectors (developer, independent reviewer, QA, agent manager) list the
+org-wide existing agents roster across teams with Name · ID, team/role and
+advisory hints (worker/manager role, registered agent team manager, executor,
+team, configured repo keys). Hints and roster visibility grant nothing; the
+server stays authoritative. Founder is the owner, never a role option. Four
+distinct principals are required before sending. A changed mapping binds every
+role to its current actual team (an agent absent from the roster keeps its
+accepted binding for server judgement) and preserves eligible_replacements,
+repository_references, release and authority unchanged. An unchanged mapping is
+sent as the accepted mapping itself, so disabling never forces new selections
+(disabled-retain). No reviewer/QA/manager override or workflow-start transport.
+
+Each explicit Save freezes one `coding-settings:<uuid>` key and complete
+command with both expected generations; a synchronous latch sends once. 409
+generation_stale/operation_conflict keeps draft, selection and focus, refreshes
+current, and requires explicit "use the current version" before a new save with
+a new key. 5xx other than `coding_settings_invalid`, and transport failures, are
+uncertain: editing and Save are locked, the original key is shown, and only
+read-only GET(original key) is offered. A committed receipt and current state are
+shown separately (receipt generation may be older); 404 operation_not_found is
+reported as "no committed save found in this read" and grants no write; the
+Founder may then explicitly edit again. Other refusals keep the draft. Locale
+changes cause no request. Copy ships in en and zh-CN.
+
+Initial E0 has `configuration:null`; no existing Founder read supplies the
+complete mapping's repository_references (repository_id/origin_digest/
+object_format) or current authority pin, so the page drafts roles but refuses a
+first save ("A first configuration cannot be saved from this page yet") and
+fabricates nothing. Producer gap: GET `/settings/coding` returns no initial
+mapping seed and `/teams/ensure-default` is a mutation, not a read. A backend
+owner must supply an accepted read for these values before first configuration.
+A changed mapping also reuses the saved authority pin; a later authority
+generation is refused by the server (`coding_settings_authority_unavailable`)
+and shown as a refusal.
+
+Rendered evidence is `web/src/features/settings/sections/CodingSection.test.tsx`
+(MSW, real route/provider/client): UI/transport boundary only. Real Founder
+persistence/authority, native behavior and two-org acceptance stay ROOT12568's.

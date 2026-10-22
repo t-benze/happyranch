@@ -1590,6 +1590,17 @@ lifespan and SessionTracker SKIPPED24342; Python units RETIRED. No E2E/build/nat
 campaign, proof framework or new merge check is introduced.
 
 
+### Founder coding settings page — TASK12632
+
+`cd web && CI=1 npm test -- --run src/features/settings/sections/CodingSection.test.tsx`
+renders the real route/provider/client over MSW: E0/refusal/populated states,
+complete canonical save, disabled-retain, distinctness, 409 retention, uncertain
+lock plus original-key GET (committed and 404), same-org late-read ordering,
+org A→B isolation and en↔zh-CN with no requests. It is UI/transport evidence
+only; it is not a required merge check and proves no backend persistence,
+authority or native behavior. Screenshots/browser runs are separate evidence.
+
+
 ## Settings-pinned engine composition evidence — TASK12615
 
 This increment changes closed start syntax and coding reader composition, not

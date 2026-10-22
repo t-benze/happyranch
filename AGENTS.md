@@ -4153,3 +4153,11 @@ No coding start, queue or native launch is enabled. See the ordered-coding-workf
 spec's settings-pinned execution section for exact family, snapshot and evidence
 boundaries. Source/static acceptance is separate from genuine scratch/Founder
 page/operator/backup/rollback acceptance retained by ROOT12568.
+
+The Founder page is `/orgs/:slug/settings/coding` (TASK12632): org-keyed view,
+four org-wide cross-team selectors, one explicit frozen key/body per Save, 409
+draft retention with explicit adoption, uncertain-save lock with read-only
+GET(original key), byte-identical disabled-retain and en/zh-CN copy. Initial E0
+cannot be saved there because no existing read supplies repository references or
+the authority pin; nothing is fabricated. Rendered MSW checks prove UI/client
+behavior only. See the ordered-coding-workflow spec's Founder page section.

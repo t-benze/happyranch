@@ -631,6 +631,28 @@ export interface SettingsApi {
     agent: string | undefined,
     count?: number,
   ) => QueryLike<import('@/lib/api/types').NextWakesResponse>;
+  /** Founder coding configuration view for the routed org (org-keyed). */
+  useCodingSettings: () => CodingSettingsQueryLike;
+  /** Explicit single-send save and read-only original-key reconciliation,
+   *  both bound to the org that was routed when the hook rendered. */
+  useCodingSettingsActions: () => CodingSettingsActions;
+}
+
+export interface CodingSettingsQueryLike
+  extends QueryLike<import('@/lib/api/types').CodingSettingsView> {
+  isFetching: boolean;
+  refetch: () => Promise<unknown>;
+}
+
+export interface CodingSettingsActions {
+  /** Sends the frozen command exactly once; never retries or rekeys. */
+  save: (
+    command: import('@/lib/api/types').CodingSettingsCommand,
+  ) => Promise<import('@/lib/api/types').CodingSettingsSave>;
+  /** Read-only GET(operation_key); never writes. */
+  readOperation: (
+    operationKey: string,
+  ) => Promise<import('@/lib/api/types').CodingSettingsView>;
 }
 
 // ---------------------------------------------------------------------------

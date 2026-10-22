@@ -3,18 +3,22 @@
  *
  * Phase 1: read-only `useSettings` hook backed by GET /settings.
  * Phase 2: editable `useUpdateOrgSettings` mutation backed by PUT /settings/org.
+ * Coding: org-keyed GET/PUT /settings/coding view plus explicit save/readback.
  */
+import { useMemo } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useParams } from 'react-router-dom';
 import { settings as settingsApi } from '@/lib/api';
 import type {
+  CodingSettingsCommand,
+  CodingSettingsView,
   DaemonCapacitySnapshot,
   NextWakesResponse,
   OrgSettingsPatch,
   SettingsSnapshot,
   DaemonCapacityWrite,
 } from '@/lib/api/types';
-import type { SettingsApi, QueryLike } from './DataContext';
+import type { SettingsApi, QueryLike, CodingSettingsActions, CodingSettingsQueryLike } from './DataContext';
 import {
   acceptCapacityWrite,
   capacityObservation,
@@ -179,10 +183,89 @@ function useNextWakes(
   }) as QueryLike<NextWakesResponse>;
 }
 
+// ── Founder coding settings ──
+//
+// One org-keyed view per slug. Ordering is decided at SETTLEMENT: a read
+// issued before the latest accepted write/readback for the same org settled
+// can never replace that newer accepted view (a reply can arrive late). Other
+// orgs are separate keys, so a slow org-A reply cannot reach org B's view.
+// No generation arithmetic is used, so an operator restore is not masked.
+
+let codingSeq = 0;
+const codingAcceptedSeq = new Map<string, number>();
+
+export function codingSettingsQueryKey(slug: string): readonly unknown[] {
+  return ['settings', 'coding', slug] as const;
+}
+
+function acceptCodingView(slug: string): void {
+  codingAcceptedSeq.set(slug, ++codingSeq);
+}
+
+function useCodingSettings(): CodingSettingsQueryLike {
+  const slug = useRealOrgSlug();
+  const qc = useQueryClient();
+  const key = codingSettingsQueryKey(slug);
+  const query = useQuery({
+    queryKey: key,
+    queryFn: async (): Promise<CodingSettingsView> => {
+      const issued = ++codingSeq;
+      const data = await settingsApi.getCodingSettings(slug);
+      const accepted = qc.getQueryData<CodingSettingsView>(key);
+      if (issued < (codingAcceptedSeq.get(slug) ?? 0) && accepted !== undefined) return accepted;
+      acceptCodingView(slug);
+      return data;
+    },
+    enabled: !!slug,
+    staleTime: 30_000,
+    // A failed read is shown as a refusal; nothing is retried silently.
+    retry: false,
+  });
+  return {
+    data: query.data,
+    isLoading: query.isLoading,
+    isError: query.isError,
+    error: query.error,
+    isFetching: query.isFetching,
+    refetch: () => query.refetch(),
+  };
+}
+
+function useCodingSettingsActions(): CodingSettingsActions {
+  const slug = useRealOrgSlug();
+  const qc = useQueryClient();
+  return useMemo(() => {
+    const key = codingSettingsQueryKey(slug);
+    const publish = (view: CodingSettingsView) => {
+      acceptCodingView(slug);
+      qc.setQueryData(key, view);
+    };
+    return {
+      save: async (command: CodingSettingsCommand) => {
+        // Outstanding reads become obsolete; the PUT itself is sent once.
+        await qc.cancelQueries({ queryKey: key });
+        const saved = await settingsApi.putCodingSettings(slug, command);
+        publish({ format: 'workflow-coding-settings-view@1', org_slug: saved.org_slug,
+          current: saved.current, configuration: saved.configuration, operation: null });
+        return saved;
+      },
+      readOperation: async (operationKey: string) => {
+        await qc.cancelQueries({ queryKey: key });
+        const view = await settingsApi.getCodingSettings(slug, operationKey);
+        // The receipt is returned to its caller; the cached view is current only.
+        publish({ ...view, operation: null });
+        return view;
+      },
+    };
+  }, [qc, slug]);
+}
+
 export const realSettingsApi: SettingsApi = {
   useSettings,
   useUpdateOrgSettings,
   useDaemonCapacity,
   useUpdateDaemonCapacity,
   useNextWakes,
+  useCodingSettings,
+  useCodingSettingsActions,
 };

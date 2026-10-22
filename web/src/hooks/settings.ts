@@ -25,7 +25,20 @@ export const useUpdateOrgSettings: ReturnType<
 export const useDaemonCapacity = () => useData().settings.useDaemonCapacity();
 export const useUpdateDaemonCapacity = () => useData().settings.useUpdateDaemonCapacity();
 
-export const useNextWakes: ReturnType<
+export const useCodingSettings = () => useData().settings.useCodingSettings();
+export const useCodingSettingsActions = () => useData().settings.useCodingSettingsActions();
+export type {
+  CodingSettingsCommand,
+  CodingSettingsCurrent,
+  CodingSettingsReceipt,
+  CodingSettingsSave,
+  CodingSettingsView,
+  CodingConfiguration,
+  CodingRoles,
+  CodingAgentBinding,
+} from '@/lib/api/types';
+
+export const useNextWakes:ReturnType<
   typeof useData
 >['settings']['useNextWakes'] = (agent, count) =>
   useData().settings.useNextWakes(agent, count);

@@ -13,7 +13,9 @@
  */
 import type { SettingsApi, QueryLike } from './DataContext';
 import type { CapacityQueryLike } from './_capacity-ordering';
+import { ApiError } from '@/lib/api';
 import type {
+  CodingSettingsView,
   DaemonCapacitySnapshot,
   DaemonCapacityWrite,
   NextWakesResponse,
@@ -122,6 +124,20 @@ const DAEMON_CAPACITY_FIXTURE: DaemonCapacitySnapshot = {
   authorization: 'Local operator; daemon bearer required. Bearer authorization cannot be attributed to a verified person.',
 };
 
+/** Preview coding view: genuine initial state (E0), no saved configuration. */
+const CODING_SETTINGS_FIXTURE: CodingSettingsView = {
+  format: 'workflow-coding-settings-view@1',
+  org_slug: 'prototype',
+  current: { generation: 0, admission: 'disabled', release: null, mapping: null, snapshot_digest: null, mapping_generation: 0 },
+  configuration: null,
+  operation: null,
+};
+
+/** The preview never claims a save or a committed receipt. */
+function previewRefusal(): Promise<never> {
+  return Promise.reject(new ApiError(503, 'coding_settings_preview_only', { code: 'coding_settings_preview_only' }));
+}
+
 /** Browser-safe stand-in for the no-op mutation callbacks previously supplied by `vi.fn()`. */
 function noop(): void {}
 
@@ -150,4 +166,10 @@ export const mockSettingsApi: SettingsApi = {
     settlementOf: noSettlement,
   }),
   useNextWakes: () => ok(NEXT_WAKES_FIXTURE),
+  useCodingSettings: () => ({
+    ...ok(CODING_SETTINGS_FIXTURE),
+    isFetching: false,
+    refetch: () => Promise.resolve(CODING_SETTINGS_FIXTURE),
+  }),
+  useCodingSettingsActions: () => ({ save: previewRefusal, readOperation: previewRefusal }),
 };

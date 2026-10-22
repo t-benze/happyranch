@@ -348,6 +348,7 @@ describe('W2c Preferences — routing, state and persistence', () => {
       'Capacity',
       'Organization',
       'Executors',
+      'Coding',
       'Preferences',
     ]);
     expect(

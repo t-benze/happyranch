@@ -192,6 +192,7 @@ describe('SettingsPage — sub-nav and routing', () => {
       'Capacity',
       'Organization',
       'Executors',
+      'Coding',
       'Preferences',
     ]);
     expect(within(subnav).queryByText('Assistant')).not.toBeInTheDocument();

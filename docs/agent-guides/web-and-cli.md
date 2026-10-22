@@ -4084,10 +4084,23 @@ PUT sends the complete canonical settings command, including both expected
 generations, once through the existing bearer client. Keep its original key/body
 and explicitly GET that key after transport uncertainty; current configuration
 may be newer than the returned original receipt. Unsafe JavaScript integers
-refuse rather than round a CAS. This backend has no new CLI command or page;
+refuse rather than round a CAS. This backend has no new CLI command;
 existing agent mapping publication cannot replace Founder-owned defaults after
-S1. No configuration save enables the currently disabled engine. See
+S1. The page below consumes this client. No configuration save enables the currently disabled engine. See
 [R2](../superpowers/specs/2026-10-14-ordered-coding-workflow.md#canonical-founder-settings-backend-r2-source).
+
+### Founder coding settings page
+
+`/orgs/:slug/settings/coding` mounts `CodingSection` outside the general settings
+gate through `useCodingSettings`/`useCodingSettingsActions`; the real provider
+keys the view by org and ignores a read settling after a later accepted save or
+readback. Four org-wide cross-team selectors show Name · ID, team/role and
+advisory hints; the server decides eligibility. One explicit Save sends one
+frozen key/body; 409 keeps the draft/focus and needs explicit adoption of the
+current version; uncertain outcomes lock editing and offer only GET(original key).
+Unchanged mappings are sent byte-identical (disabled-retain). E0 cannot be saved
+here: no existing read supplies initial repository references or authority pin.
+See [the page section](../superpowers/specs/2026-10-14-ordered-coding-workflow.md#founder-coding-settings-page--root12568--task12632).
 
 
 ## Settings-pinned coding start syntax

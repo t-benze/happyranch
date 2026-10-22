@@ -1,7 +1,7 @@
 /**
  * SettingsPage — full page (not dialog) with sticky left sub-nav + field panel.
  *
- * Sub-nav: Capacity · Organization · Executors · Preferences.
+ * Sub-nav: Capacity · Organization · Executors · Coding · Preferences.
  * (THR-061 seq79: the Usage sub-tab was removed — token usage now lives on
  * the standalone /usage page.)
  * Each sub-nav item routes to /orgs/:slug/settings/:section.
@@ -19,6 +19,10 @@
  * panels keep the existing loading/error/data gate unchanged. THR-118 W3b-2
  * enabled Preferences in ordinary production builds; W5 now uses full-mode
  * browser-language fallback when a saved preference is absent or invalid.
+ *
+ * THR-320: the Founder coding section reads its own org-keyed coding view, so
+ * it is mounted outside the general settings gate with its own states, and is
+ * keyed by org so a draft or late reply never crosses into another org.
  */
 import {
   Navigate,
@@ -32,6 +36,7 @@ import {
   Terminal,
   Gauge,
   Languages,
+  GitPullRequest,
   type LucideIcon,
 } from 'lucide-react';
 import type { ReactNode } from 'react';
@@ -50,6 +55,13 @@ const SECTIONS = [
   icon: LucideIcon;
 }>;
 
+/** Founder coding section; owns its own read, outside the settings gate. */
+const CODING_SECTION = {
+  key: 'coding',
+  labelKey: 'settings.nav.coding',
+  icon: GitPullRequest,
+} as const satisfies { key: string; labelKey: MessageKey; icon: LucideIcon };
+
 /** Client-only section; listed last (W3b-2: always mounted). */
 const PREFERENCES_SECTION = {
   key: 'preferences',
@@ -59,6 +71,7 @@ const PREFERENCES_SECTION = {
 
 export type SettingsSection =
   | (typeof SECTIONS)[number]['key']
+  | (typeof CODING_SECTION)['key']
   | (typeof PREFERENCES_SECTION)['key'];
 
 /**
@@ -109,6 +122,14 @@ export function SettingsPage(): JSX.Element {
             </SettingsContent>
           }
         />
+        <Route
+          path="coding"
+          element={
+            <SettingsContent>
+              <CodingPanel key={slug} />
+            </SettingsContent>
+          }
+        />
         <Route path="daemon-capacity" element={gated(<DaemonCapacityPanel />)} />
         <Route path="organization" element={gated(settingsQuery.data && <OrganizationPanel org={settingsQuery.data.org} />)} />
         <Route path="executors" element={gated(<ExecutorsPanel />)} />
@@ -140,7 +161,7 @@ function SettingsContent({ children }: { children: ReactNode }): JSX.Element {
 function SettingsSubNav(): JSX.Element {
   const { slug } = useParams<{ slug: string }>();
   const { t } = useTranslation();
-  const sections = [...SECTIONS, PREFERENCES_SECTION];
+  const sections = [...SECTIONS, CODING_SECTION, PREFERENCES_SECTION];
 
   return (
     <aside className="border-border-default bg-surface-sunken w-full min-w-0 shrink-0 overflow-y-auto border-b p-3 sm:w-50 sm:border-r sm:border-b-0">
@@ -179,6 +200,7 @@ import { OrganizationSection } from './sections/OrganizationSection';
 import { ExecutorsSection } from './sections/ExecutorsSection';
 import { DaemonCapacitySection } from './sections/DaemonCapacitySection';
 import { PreferencesSection } from './sections/PreferencesSection';
+import { CodingSection } from './sections/CodingSection';
 import type { OrgSettings } from '@/lib/api/types';
 
 function DaemonCapacityPanel(): JSX.Element {
@@ -209,6 +231,19 @@ function ExecutorsPanel(): JSX.Element {
         {t('settings.panel.executors.description')}
       </p>
       <ExecutorsSection />
+    </div>
+  );
+}
+
+function CodingPanel(): JSX.Element {
+  const { t } = useTranslation();
+  return (
+    <div className="max-w-2xl min-w-0 p-4 break-words sm:p-6">
+      <h2 className="font-display mb-1 text-lg font-semibold">{t('settings.panel.coding.title')}</h2>
+      <p className="text-text-secondary mb-6 text-sm">
+        {t('settings.panel.coding.description')}
+      </p>
+      <CodingSection />
     </div>
   );
 }
