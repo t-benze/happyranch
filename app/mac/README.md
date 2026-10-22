@@ -759,6 +759,38 @@ Secondary and terminal diagnostics make only a best-effort nonblocking attempt
 within the existing cleanup window; unavailable diagnostics cannot replace the
 computed status or delay return by waiting for a sink. Borrowed stdio flags are
 restored after their last use. CLI error diagnostics likewise never wait.
+
+Failure attribution adds at most512 advisory stderr bytes per relay or verifier
+inspection invocation, separately from the unchanged65536-byte custody budget,
+its upfront1024-byte reserve and3072-byte snapshot grants. Each invocation has
+one first-error slot and one settlement slot, each limited to256 bytes including
+the newline. Slots are consumed before classification/output, even when either
+fails; there is no queue, retry, additional clock or production option.
+`PACKAGING_HELPER_FIRST_ERROR` is attempted immediately at the first existing
+caught-error boundary, before error cleanup can be interrupted by an outer owner.
+It contains only owner (`relay` or `inspection`), phase (`setup`, `launch`,
+`relay`, `inspect`, `kill`, `reap`, `settle`, `close`, `flags`, or `unknown`),
+category (`lifecycle`, `timeout`, `os`, `value`, `subprocess`, `interrupt`, `exit`,
+or `unknown`) and numeric errno (a positive signed32-bit integer, otherwise0).
+It never formats exception text/repr/tracebacks, paths, arguments, environment,
+tokens or user content. Classification and emission are both best effort;
+secondary failures cannot replace the original error or result.
+
+`PACKAGING_HELPER_SETTLEMENT` is attempted at the relay's existing unresolved
+boundary, or the inspection's final error/timeout/interruption boundary. Its
+fixed0/1 fields report `control_unknown`, outstanding `nested`, output `complete`,
+observed group `absent`, and `code_known` (the local code was returned), plus
+`child_known`, `child_zero`, `child_nonzero` and `child_signal` from the actual
+parent-stored returncode, without polling. A known signal is also nonzero.
+Inspection additionally reports `error`, `timeout` and `interrupted`; relay-only
+control/nested fields default to0 there, while inspection-only fields default
+to0 for relay. Relay settlement precedes borrowed-flag restoration, as does the
+original unresolved message. These bits describe that observation, not a native
+root cause or global quiescence. No added message is emitted on an ordinary
+successful or settled nonzero child outcome. Unavailable/truncated diagnostics
+prove neither successful cleanup nor native/package acceptance. Build21's
+native preflight125 remains unexplained by its original collected log.
+
 The first caught signal is latched through error and final settlement, including
 handler restoration, and the result is selected after restoration. With no
 earlier observed failure/deadline, it returns the conventional signal result

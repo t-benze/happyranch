@@ -306,6 +306,64 @@ def _diagnostic(message, cutoff=None):
                 pass
 
 
+class _FailureAttribution:
+    """Two advisory attempts, each <=256 bytes, separate from custody grants.
+
+    Consume each slot before acquisition/output, including failed attempts.
+    Neither classification nor a secondary sink error may replace the cause.
+    """
+    def __init__(self, owner):
+        self.owner = 'inspection' if owner == 'inspection' else 'relay'
+        self.first_attempted = False
+        self.terminal_attempted = False
+
+    def first(self, phase, exc, cutoff):
+        try:
+            if self.first_attempted:
+                return
+            self.first_attempted = True
+            if phase not in ('setup', 'launch', 'relay', 'inspect', 'kill',
+                             'reap', 'settle', 'close', 'flags'):
+                phase = 'unknown'
+            category = 'unknown'
+            for kind, label in ((LifecycleError, 'lifecycle'),
+                                (subprocess.TimeoutExpired, 'timeout'),
+                                (OSError, 'os'), (ValueError, 'value'),
+                                (subprocess.SubprocessError, 'subprocess'),
+                                (KeyboardInterrupt, 'interrupt'), (SystemExit, 'exit')):
+                if isinstance(exc, kind):
+                    category = label
+                    break
+            number = exc.errno if isinstance(exc, OSError) else None
+            number = number if type(number) is int and 0 < number <= 2147483647 else 0
+            message = (f'PACKAGING_HELPER_FIRST_ERROR owner={self.owner} phase={phase} '
+                       f'category={category} errno={number}\n').encode('ascii')
+            if len(message) <= 256:
+                _diagnostic(message, cutoff)
+        except BaseException:
+            pass
+
+    def terminal(self, child, code, cutoff, *, control_unknown=False, nested=False,
+                 complete=False, absent=False, error=False, timeout=False, interrupted=False):
+        try:
+            if self.terminal_attempted:
+                return
+            self.terminal_attempted = True
+            # Read only the parent's already-stored observation; never poll.
+            observed = child.proc.returncode if child is not None and child.launched else None
+            message = (f'PACKAGING_HELPER_SETTLEMENT owner={self.owner} '
+                       f'control_unknown={int(control_unknown)} nested={int(nested)} '
+                       f'complete={int(complete)} absent={int(absent)} code_known={int(code is not None)} '
+                       f'child_known={int(observed is not None)} child_zero={int(observed == 0)} '
+                       f'child_nonzero={int(observed is not None and observed != 0)} '
+                       f'child_signal={int(observed is not None and observed < 0)} '
+                       f'error={int(error)} timeout={int(timeout)} interrupted={int(interrupted)}\n').encode('ascii')
+            if len(message) <= 256:
+                _diagnostic(message, cutoff)
+        except BaseException:
+            pass
+
+
 def _fifo(path):
     fd = os.open(path, os.O_RDWR | os.O_NONBLOCK | os.O_NOFOLLOW)
     try:
@@ -350,6 +408,8 @@ def relay(operation, argv, *, origin=None, cancel_fd=None, guardian=False,
     finalizing = False
     logger_term = None
     logger_termed = False
+    attribution = _FailureAttribution('relay')
+    phase = 'setup'
 
     def remember(fd):
         fds.append(fd)
@@ -428,8 +488,10 @@ def relay(operation, argv, *, origin=None, cancel_fd=None, guardian=False,
             command = argv
             if diag_write is not None:
                 command = [sys.executable, str(Path(__file__).resolve()), '_exec', str(diag_write), *argv]
+            phase = 'launch'
             child.launch(command, stdin=in_read, stdout=out_write, stderr=err_write,
                          env=env, start_new_session=True, pass_fds=tuple(pass_fds))
+            phase = 'relay'
             right.close(); right = None
             for fd in (in_read, out_write, err_write, diag_write):
                 if fd is not None:
@@ -564,35 +626,41 @@ def relay(operation, argv, *, origin=None, cancel_fd=None, guardian=False,
                         if count <= 0:
                             raise LifecycleError('PACKAGING_RELAY_WRITE')
                         del data[:count]
-        except BaseException:
+        except BaseException as exc:
+            attribution.first(phase, exc, cleanup if cleanup is not None else deadline)
             control_unknown = True
             try:
                 enter(prior if prior is not None else 125, time.monotonic())
-            except BaseException:
+            except BaseException as exc:
+                attribution.first('kill', exc, cleanup if cleanup is not None else deadline)
                 pass
         finally:
             # Independent attempts; never rearm after ambiguous poll or reap.
             if child.pin:
                 try:
                     child.kill(signal.SIGKILL)
-                except BaseException:
+                except BaseException as exc:
+                    attribution.first('kill', exc, cleanup if cleanup is not None else deadline)
                     control_unknown = True
             stop = cleanup or (time.monotonic() + 1)
             if child.proc is not None:
                 try:
                     code = child.reap(stop)
-                except BaseException:
+                except BaseException as exc:
+                    attribution.first('reap', exc, stop)
                     control_unknown = True
             for fd in tuple(fds):
                 try:
                     close(fd)
-                except OSError:
+                except OSError as exc:
+                    attribution.first('close', exc, stop)
                     control_unknown = True
             for sock in (left, right):
                 if sock is not None:
                     try:
                         sock.close()
-                    except OSError:
+                    except OSError as exc:
+                        attribution.first('close', exc, stop)
                         control_unknown = True
             if guardian and killed:
                 control_unknown = True  # Worker loss supplies no nested-helper settlement.
@@ -606,13 +674,18 @@ def relay(operation, argv, *, origin=None, cancel_fd=None, guardian=False,
             if status == 124:
                 _diagnostic(('PACKAGING_HELPER_DEADLINE:' + operation + '\n').encode(), diagnostic_stop)
             if unresolved:
+                attribution.terminal(child, code, diagnostic_stop,
+                                     control_unknown=control_unknown, nested=nested is not None,
+                                     complete=complete, absent=absent)
                 _diagnostic(('PACKAGING_HELPER_CLEANUP_UNRESOLVED:' + operation + '\n').encode(), diagnostic_stop)
-            # Last use of borrowed stdio, including terminal diagnostics, is over.
+            # Restore borrowed stdio after terminal diagnostics. A failed restore
+            # may attempt its own nonblocking, independently restored advisory.
             for fd, old in flags.items():
                 if fd not in owned_ids:  # borrowed caller descriptors only
                     try:
                         fcntl.fcntl(fd, fcntl.F_SETFL, old)
-                    except OSError:
+                    except OSError as exc:
+                        attribution.first('flags', exc, diagnostic_stop)
                         control_unknown = True
             if status in (None, 0) and control_unknown:
                 status = cause.setdefault('status', prior if prior is not None else 125)
@@ -637,6 +710,9 @@ def inspection_run(argv):
     timeout = False
     error = None
     cutoff = start + 60
+    attribution = _FailureAttribution('inspection')
+    phase = 'setup'
+    absent = False
     with signals() as caught:
         try:
             control = Control()
@@ -645,7 +721,9 @@ def inspection_run(argv):
             for _ in range(2):
                 fds.extend(os.pipe())
                 owned_fds.update(fds)
+            phase = 'launch'
             child.launch(argv, stdin=None, stdout=fds[1], stderr=fds[3], start_new_session=True)
+            phase = 'inspect'
             for i in (1, 3):
                 owned_fds.remove(fds[i])
                 os.close(fds[i])
@@ -681,6 +759,7 @@ def inspection_run(argv):
                     else:
                         eof[readers.pop(fd)] = True
         except BaseException as exc:
+            attribution.first(phase, exc, cutoff)
             error = exc
         finally:
             if child is not None:
@@ -688,10 +767,12 @@ def inspection_run(argv):
                     if child.pin:
                         child.kill(signal.SIGKILL)
                 except BaseException as exc:
+                    attribution.first('kill', exc, cutoff)
                     error = error or exc
                 try:
                     code = child.reap(min(cutoff, time.monotonic() + 1))
                 except BaseException as exc:
+                    attribution.first('reap', exc, cutoff)
                     error = error or exc
                 try:
                     absent = child.launched and child.absent()
@@ -699,18 +780,24 @@ def inspection_run(argv):
                     if not absent or not all(eof):
                         raise LifecycleError('PACKAGING_INSPECTION_CLEANUP_UNKNOWN')
                 except BaseException as exc:
+                    attribution.first('settle', exc, cutoff)
                     error = error or exc
             for fd in tuple(owned_fds):
                 owned_fds.remove(fd)
                 try:
                     os.close(fd)
                 except OSError as exc:
+                    attribution.first('close', exc, cutoff)
                     error = error or exc
             if control is not None:
                 try:
                     control.close()
                 except OSError as exc:
+                    attribution.first('close', exc, cutoff)
                     error = error or exc
+            if error is not None or timeout or caught:
+                attribution.terminal(child, code, cutoff, complete=all(eof), absent=absent,
+                                     error=error is not None, timeout=timeout, interrupted=bool(caught))
         if caught:
             raise LifecycleError('PACKAGING_INSPECTION_INTERRUPTED:' + str(caught[0]))
     if timeout:
