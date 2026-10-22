@@ -556,8 +556,8 @@ class CodingDispatcher:
         conn.execute('INSERT INTO workflow_coding_events VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)',
             (event_id, instance, body['event_seq'], attempt['id'], self.org.slug, principal, key,
              operation['request_digest'], kind, previous['event_digest'], raw, _hash(raw), now))
-        conn.execute('UPDATE workflow_coding_runs SET cas_version=?,state=?,last_event_id=? WHERE instance_id=?',
-            (after['run']['cas_version'], after['run']['state'], event_id, instance))
+        conn.execute('UPDATE workflow_coding_runs SET cas_version=?,current_revision=?,state=?,last_event_id=? WHERE instance_id=?',
+            (after['run']['cas_version'], after['run']['current_revision'], after['run']['state'], event_id, instance))
 
     def _session_bound_uncommitted(self, invocation: Any) -> None:
         conn = self.db._conn
