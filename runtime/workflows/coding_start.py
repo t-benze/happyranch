@@ -46,11 +46,11 @@ def require_start_ready(conn: sqlite3.Connection, org: str, command: dict) -> No
     require_ready()
     from runtime.workflows.coding_settings import resolve_coding_settings
     from runtime.workflows._coding_settings_execution import _fresh_settings, _settings_family
-    _check(_settings_family(command))
     owned = not conn.in_transaction
     if owned:
         conn.execute('BEGIN')
     try:
+        _check(_settings_family(command))
         pin = dict(**command['settings'], mapping=command['mapping'])
         state = resolve_coding_settings(conn, org, budget=_Budget(), pinned=pin)
         _fresh_settings(state, command)
