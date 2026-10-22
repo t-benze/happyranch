@@ -84,12 +84,26 @@ npm run assemble:static-export -- "$PWD" /absolute/new/package-dir
 
 Any other `HAPPYRANCH_BUILD_TARGET` value fails the build. The assembler
 requires that the last build was a successful export into this directory's
-`out/`, a single build ID under `_next/static`, `index.html`, `404.html`
-(without it Pages serves `/` for unknown paths) and the search index
-`_next/static/chunks/nextra-data-en-US.json`. It refuses symlinks, hosting
-files (`_headers`, `_redirects`, `_routes.json`, `_worker.js`, `functions`),
-`.env*` and source maps, and files over the Pages limits. It writes `site/`
-(the only directory to upload or serve) with a package-only `_headers`
+`out/` (`.next/export-detail.json`, without `exportPathMap` or
+`trailingSlash`). It derives the expected export from that build, not from
+`out/`: one static HTML page per `.next/server/pages-manifest.json` page (the
+`getStaticProps` routes must all be the Nextra `_meta` 404s), each carrying
+the build's `.next/BUILD_ID` and no other, plus every `.next/static` file
+under a single build ID. `index.html`, `404.html` (without it Pages serves `/`
+for unknown paths) and the search index
+`_next/static/chunks/nextra-data-en-US.json` are required. `out/` must match
+that inventory and those bytes exactly, so a stale page from another build, a
+changed resource, a missing page or an extra file such as `server.js` is
+refused. It also refuses hosting files (`_headers`, `_redirects`,
+`_routes.json`, `_worker.js`, `functions`), secret/workspace names anywhere
+under `out/` or `.next/static` (`.env*`, `.npmrc`, `.netrc`, `.git`, `.ssh`,
+`.aws`, `.claude`, `.happyranch`, `*.pem`, `*.key`, `*.p12`, `*.pfx`), source
+maps, a `public/` directory and files over the Pages limits. Every existing
+ancestor of the manual directory, `out/`, `.next` and its metadata files, and
+of the destination must be a real directory, not a symlink; this is a literal
+path check, not protection against a concurrent rename. The destination must
+be new and outside the manual directory. It writes `site/` (the only
+directory to upload or serve) with a package-only `_headers`
 (`X-Robots-Tag: noindex, nofollow`; nothing marked immutable, because the
 search index keeps the same name across builds) and `package-manifest.json`
 beside `site/`, never inside it.
