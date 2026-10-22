@@ -1,4 +1,4 @@
-"""Independent SELECT-only development and first-review native reconstruction.
+"""Independent SELECT-only development, reviewer and QA native reconstruction.
 
 This is a coding-specific closed transition reader, never a generic task change
 bus. Unsupported mutations refuse. Original run_started and native captures stay
@@ -122,8 +122,8 @@ def _admission(conn: Any, org: str, budget: Any, value: Any, *, callback: bool,
     from runtime.workflows.coding_start_history import rows, same
     value = _closed(value, 'format phase authority manager_teams tasks bindings pause invocation move capacity '
                     'max_revise_rounds effective_bindings_base64 record')
-    _check(value['format'] == ('workflow-coding-native-admission@1' if attempt['stage'] == 'development'
-           else 'workflow-coding-review-admission@1')
+    _check(value['format'] == {'development': 'workflow-coding-native-admission@1',
+           'code_review': 'workflow-coding-review-admission@1', 'qa': 'workflow-coding-qa-admission@1'}[attempt['stage']]
            and value['phase'] == ('callback' if callback else 'launch'))
     original_native = value['invocation']
     _check(same(original_native, native))
@@ -193,7 +193,8 @@ def _admission(conn: Any, org: str, budget: Any, value: Any, *, callback: bool,
            and f['agent'] == leaf['assigned_agent'] == attempt['principal'])
     limits = source['budgets']
     _check(type(value['max_revise_rounds']) is int and value['max_revise_rounds'] == limits['max_revise_rounds']
-           and attempt['revision'] == attempt['attempt_sequence'] == 1 and limits['coding_attempt_limit'] >= 1
+           and attempt['revision'] == attempt['attempt_sequence'] == 1
+           and limits['coding_attempt_limit'] >= (3 if attempt['stage'] == 'qa' else 1)
            and leaf['session_timeout_seconds'] == limits['session_timeout_seconds']
            and tasks[source['task_id']]['orchestration_step_count'] == limits['source_step']
            and tasks[source['task_id']]['revision_count'] == limits['source_revision']
@@ -313,7 +314,7 @@ def fold_heartbeats(conn: Any, org: str, budget: Any, storage: Any, tasks: dict,
 def read_native(conn: Any, org: str, budget: Any, storage: Any, *, start: dict,
                 events: list, tasks: dict, source: dict, roles: dict, authority: dict,
                 command_value: dict, mapping: dict, source_invocation: dict, source_ancestors: list) -> dict:
-    """Replay admitted first-development kinds without trusting writer projections."""
+    """Replay each admitted stage without trusting writer projections."""
     from runtime.infrastructure.task_pause_controls import decode_journal
     from runtime.workflows.coding_start_history import rows, same
     storage.heartbeat_instance = start['instance_id']
@@ -333,6 +334,26 @@ def read_native(conn: Any, org: str, budget: Any, storage: Any, *, start: dict,
     previous = start
     expected_principal = 'service:coding-dispatcher:' + org
     _check(len(events) <= min(4096, source['budgets']['coding_event_limit']))
+    # Only explicit future QA allocations may be absent from a first-edge
+    # snapshot. This bounded preselection is provisional: complete ordered
+    # replay below must derive that exact sole QA task and its native row.
+    later_qa_tasks = set()
+    for event in events:
+        budget.step()
+        if event['event_kind'] != 'stage_queued':
+            continue
+        budget.consumed += 4 * len(event['event_bytes'])
+        _check(budget.remaining_bytes >= 0)
+        candidate = _closed(_json(event['event_bytes'], 16777216),
+            'format id instance_id event_seq event_kind attempt_id operation previous_digest before after evidence created_at')
+        _decoded(candidate, budget)
+        if candidate['format'] == 'workflow-coding-event@4':
+            evidence = _closed(candidate['evidence'], 'kind command origin authority rows facts native_task_observations')
+            facts = _closed(evidence['facts'], 'format developer_attempt_id reviewer_attempt_id result_id output_digest contributor qa_task_id admission')
+            _check(facts['format'] == 'workflow-coding-edge@2')
+            task_id = facts['qa_task_id']
+            _check(type(task_id) is str and task_id.startswith('TASK-') and not later_qa_tasks)
+            later_qa_tasks.add(task_id)
     for event in events:
         budget.step()
         kind = event['event_kind']
@@ -357,7 +378,8 @@ def read_native(conn: Any, org: str, budget: Any, storage: Any, *, start: dict,
             old_id = attempt['id']
             run, attempts, tasks = replay(conn, org, budget, storage, event=event, body=body,
                 previous=previous, initial=initial, run=run, attempts=attempts, tasks=tasks,
-                state=state, source=source, roles=roles, mapping=mapping, command=command_value)
+                state=state, source=source, roles=roles, mapping=mapping, command=command_value,
+                later_qa_tasks=later_qa_tasks, settled_stages=completed_states)
             attempt = attempts[run['current_attempt_id']]
             if attempt['id'] != old_id:
                 completed_states[old_id] = {k: v for k, v in state.items() if k != 'history'}
@@ -377,7 +399,9 @@ def read_native(conn: Any, org: str, budget: Any, storage: Any, *, start: dict,
         body = _closed(_json(event['event_bytes'], 16777216),
             'format id instance_id event_seq event_kind attempt_id operation previous_digest before after evidence created_at')
         _decoded(body, budget)
-        _check(_canonical(body) == event['event_bytes'] and body['format'] == ('workflow-coding-event@2' if attempt['stage'] == 'development' else 'workflow-coding-native-review-event@1'))
+        _check(_canonical(body) == event['event_bytes'] and body['format'] == {
+            'development': 'workflow-coding-event@2', 'code_review': 'workflow-coding-native-review-event@1',
+            'qa': 'workflow-coding-native-qa-event@1'}[attempt['stage']])
         for name in ('id', 'instance_id', 'event_seq', 'event_kind', 'attempt_id', 'previous_digest', 'created_at'):
             _check(same(body[name], event[name]))
         _check(event['event_seq'] == previous['event_seq'] + 1
@@ -388,7 +412,8 @@ def read_native(conn: Any, org: str, budget: Any, storage: Any, *, start: dict,
         facts = _closed(evidence['facts'], FACTS[kind])
         command = _closed(evidence['command'],
             'format kind source_event_ids source_event_digests subject producer_identity observation')
-        _check(command['format'] == ('workflow-coding-internal-command@2' if attempt['stage'] == 'development' else 'workflow-coding-native-review-command@1') and command['kind'] == kind
+        _check(command['format'] == {'development': 'workflow-coding-internal-command@2',
+            'code_review': 'workflow-coding-native-review-command@1', 'qa': 'workflow-coding-native-qa-command@1'}[attempt['stage']] and command['kind'] == kind
                and command['source_event_ids'] == [previous['id']]
                and command['source_event_digests'] == [previous['event_digest']] and command['subject'] is None)
         observation = _closed(command['observation'], 'facts invocation queue_owner admission')
@@ -642,7 +667,8 @@ def read_native(conn: Any, org: str, budget: Any, storage: Any, *, start: dict,
     # A committed edge is complete: no half-written acceptance/contribution or
     # allocation prefix may be admitted on cold load.
     for historical in [*completed_states.values(), state]:
-        _check(historical.get('edge_index', 0) in (0, 4))
+        _check(historical.get('edge_index', 0) in (0, 4) and historical.get('qa_edge_index', 0) in (0, 3))
+    _check(later_qa_tasks == {a['task_id'] for a in attempts.values() if a['stage'] == 'qa'})
     states = {**completed_states, attempt['id']: {k: v for k, v in state.items() if k != 'history'}}
     for key, value in states.items():
         value.update(attempt=attempts[key], queue_owner=storage.heartbeat_owners.get(attempts[key]['task_id']),

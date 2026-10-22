@@ -46,6 +46,28 @@ def review_scope(*, org: str, instance: str, command: dict, roles: dict,
             session_id=developer['session_id'], result_id=developer['result_id'], principal=developer['principal']))
 
 
+def qa_brief(work: dict) -> str:
+    return ('Independently QA the exact produced and approved coding subject in the bound supplement.\n'
+            'Use existing authorized repository tools; unavailable access or proof requires BLOCK.\n'
+            'Return genuine PASS, REVISE or BLOCK with your own findings.\n' + work['brief'])
+
+
+def qa_scope(*, org: str, instance: str, command: dict, roles: dict, developer: dict,
+             reviewer: dict, subject: dict, task_id: str) -> dict:
+    return dict(format='workflow-coding-qa-scope@1', org_slug=org, instance_id=instance,
+        attempt_id=identity('attempt', instance, 3), task_id=task_id, stage='qa', role='qa_engineer',
+        principal=roles['qa_engineer']['principal'], team=roles['qa_engineer']['team'],
+        revision=1, attempt_sequence=1, assignment_generation=1, release=command['release'],
+        mapping=command['mapping'], mapping_digest=command['mapping']['digest'], context_id=identity('context', instance),
+        authorization=identity('authorization', instance), work_scope=command['work'], subject=subject,
+        developer=dict(attempt_id=developer['id'], task_id=developer['task_id'],
+            session_id=developer['session_id'], result_id=developer['result_id'],
+            principal=developer['principal'], outcome='produced', subject=subject),
+        reviewer=dict(attempt_id=reviewer['id'], task_id=reviewer['task_id'],
+            session_id=reviewer['session_id'], result_id=reviewer['result_id'],
+            principal=reviewer['principal'], outcome='APPROVE', subject=subject))
+
+
 def pinned_rows(*, org: str, command: dict, source: dict, native_source: dict,
                 authority: dict, mapping: dict, roles: dict, template: dict,
                 carrier_id: str, instance_id: str, created_at: str) -> tuple[dict, dict, dict]:

@@ -1508,3 +1508,28 @@ waiver applies. Existing synthetic complete-reader evidence proves its original
 reader scope only. The root must allocate the existing real OrgState/start/
 TaskInvocation/RetryClaim/callback/host/outer venue and readiness prerequisites;
 no fake native fixture, patched readiness, ad hoc E2E or build substitutes for it.
+
+
+## ROOT12299 step29 approved review to independent QA source
+
+TASK12502 continues SAME PR1170 with a disabled exact-subject approved-review to
+one independent qa edge and conservative held QA outcome. It extends step28;
+readiness stays false and final-manager/merge/operational prerequisites remain.
+Required clean committed exact-head `scripts/local_ci.sh all` is lint/static only,
+with Python3.14 and Node24, normal hooks and nonforce publication. Observe the
+actual exact-head Source Boundary Lint and Web Lint (Node24) once without waiting,
+dispatch or rerun. Every push renews independent FULL review and actual head gates.
+The allowed existing `uv run --python 3.14 python scripts/generate_openapi_snapshot.py
+--check` operator compares route/method/parameter/status summaries, not full
+response-component validation, runtime or behavioral acceptance.
+
+No tests/assertions/verifier support, product/native/SQL experiment, E2E or build
+is allocated. F1/F2/F3/F4/F5/F8 native/behavior/negative/red-green/mutation/
+restoration/repetition/executable QA remain UNEXECUTED; no old-root waiver or
+test-authoring PASS. Python units RETIRED; integration INCLUDING callback/lifespan/
+SessionTracker SKIPPED24342. Existing-owner native dependencies add the actual QA
+constructor, pinned upstream developer+reviewer results and explicit QA supplement,
+three-attempt cold/current/schema/drain/replay/settlement observations; no new
+runner or readiness override. ROOT retains genuinely failed-child-linked final-head
+execution and entitled live-manager guarded expected-head/no-admin merge plus
+remote commit/aware-time observation before its own callback.

@@ -728,3 +728,24 @@ inventing a subject or receipt. Use your own genuine final report-completion
 callback as the FINAL action. No staging/advancement command is available;
 never substitute document staging. Callback alone does not advance, and a
 review result does not grant QA/final-manager execution or merge authority.
+
+
+A bound workflow-coding-qa@1 supplement selects only the actual assigned qa
+stage, selected qa_engineer role, task and current SID. Preserve its full
+workflow-coding-qa-scope@1: release/mapping/revision/work, actual QA assignment,
+exact repository/object-format/B/H/branch/PR and original developer AND independent
+reviewer attempt/task/SID/INTEGER result/outcome/subject. Use only existing
+authorized repository tools. Independently inspect that exact subject and write
+your own findings; use BLOCK for unavailable access or required proof. Metadata
+and prior approval grant no permission and never substitute for your inspection.
+For a completed assessment, summary is a canonical UTF8 JSON STRING with exactly
+format=workflow-coding-stage-output@1, instance_id, attempt_id, revision=1,
+stage=qa, subject (unchanged full workflow-code-change@1), findings (nonblank,
+at most16384 UTF8 bytes), outcome=PASS|REVISE|BLOCK. Top-level verdict exactly
+matches outcome. Use sorted keys/compact separators, Unicode verbatim, finite
+values and no duplicates/extra keys/trailing newline. Report genuine own
+failed/blocked causes without copying another principal findings or inventing
+results/receipts. No coding decision/job wait, staging or advancement command.
+Use only your genuine task/agent/SID report-completion as FINAL action. Native
+host and positive outer settlement remain separate; settled QA output stays held,
+even PASS, pending final-manager implementation. Readiness remains disabled.

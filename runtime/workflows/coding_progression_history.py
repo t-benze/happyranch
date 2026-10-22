@@ -1,4 +1,4 @@
-"""Independent SELECT-only reconstruction of the first ordered coding edge.
+"""Independent SELECT-only reconstruction of coding edges through QA.
 
 Original bootstrap/native families keep their literal readers. These records
 carry no current authority and never supply a trusted writer after-image.
@@ -9,23 +9,25 @@ import base64
 from typing import Any
 
 from runtime.workflows.coding_authority_history import _capture_admission, _decoded
-from runtime.workflows.coding_bootstrap import decode_row, encode_row, identity, review_brief, review_scope
+from runtime.workflows.coding_bootstrap import decode_row, encode_row, identity, qa_brief, qa_scope, review_brief, review_scope
 from runtime.workflows.coding_saved_records import _Ancestry, _canonical, _capture, _check, _closed, _hash, _json, _timestamp
 from runtime.workflows.coding_start_records import effective_mapping, parse_stage_output
 
 EDGE_KINDS = ('artifact_staged', 'contribution_recorded', 'stage_queued', 'advance')
+QA_EDGE_KINDS = ('review_staged', 'stage_queued', 'advance')
 KINDS = (*EDGE_KINDS, 'review_staged')
 
 
 def admission(conn: Any, org: str, budget: Any, storage: Any, value: dict, *,
-              run: dict, tasks: dict, source: dict, roles: dict, mapping: dict, command: dict, future_task_id: str) -> None:
+              run: dict, tasks: dict, source: dict, roles: dict, mapping: dict, command: dict,
+              future_task_id: str, later_qa_tasks: set[str], qa: bool = False) -> None:
     """Reconstruct original authority, Pause, causal move and capacity predicates."""
     from runtime.infrastructure.task_pause_controls import decode_journal
     from runtime.workflows._coding_role_records import configuration
     from runtime.workflows.coding_native_history import _row
     from runtime.workflows.coding_start_history import rows, same
     value = _closed(value, 'format authority record tasks pause move sessions capacity_tasks work_hours max_revise_rounds')
-    _check(value['format'] == 'workflow-coding-edge-admission@1')
+    _check(value['format'] == ('workflow-coding-edge-admission@2' if qa else 'workflow-coding-edge-admission@1'))
     budget.consumed += 4 * len(value['authority']['snapshot_bytes_base64'])
     _check(budget.remaining_bytes >= 0)
     grant, _ = _capture(value['authority'], org, _Ancestry())
@@ -56,15 +58,16 @@ def admission(conn: Any, org: str, budget: Any, storage: Any, value: dict, *,
         for key in ('parent_task_id', 'revisit_of_task_id'):
             _check(row[key] is None or row[key] in closure)
     # Re-enumerate the complete causal native inventory independently. The
-    # sole later allocation is excluded at this original boundary; every other
-    # original row/edge must still exist. Owned rows use replay-time values,
+    # current edge allocation and any independently replayed later QA allocation
+    # are excluded at this original boundary; every original row/edge must still
+    # exist. Owned rows use replay-time values,
     # while unchanged ordinary siblings cannot be invented in a saved capture.
-    _check(future_task_id not in closure)
+    _check(future_task_id not in closure and not (later_qa_tasks & closure.keys()))
     pending, discovered = [source['task_id']], set()
     while pending:
         budget.step()
         key = pending.pop()
-        if key == future_task_id or key in discovered:
+        if key == future_task_id or key in later_qa_tasks or key in discovered:
             continue
         _check(len(discovered) < 512 and key in closure)
         actual = list(rows(conn, 'tasks', budget, where='id=?', args=(key,), maximum=1))
@@ -100,11 +103,11 @@ def admission(conn: Any, org: str, budget: Any, storage: Any, value: dict, *,
     _check(type(value['max_revise_rounds']) is int
            and value['max_revise_rounds'] == source['budgets']['max_revise_rounds']
            and source['budgets']['coding_revision_limit'] >= 1
-           and source['budgets']['coding_attempt_limit'] >= 2
-           and run['cas_version'] + 4 <= source['budgets']['coding_event_limit'])
+           and source['budgets']['coding_attempt_limit'] >= (3 if qa else 2)
+           and run['cas_version'] + (3 if qa else 4) <= source['budgets']['coding_event_limit'])
     _check(value['capacity_tasks'] == [] and value['work_hours'] == []
            and type(value['sessions']) is list and len(value['sessions']) <= 1024)
-    reviewer = roles['code_reviewer']['principal']
+    reviewer = roles['qa_engineer' if qa else 'code_reviewer']['principal']
     for session in value['sessions']:
         _check(type(session) is list and len(session) == 3
                and all(type(item) is str and item for item in session) and session[1] != reviewer)
@@ -125,9 +128,14 @@ def admission(conn: Any, org: str, budget: Any, storage: Any, value: dict, *,
 
 def replay(conn: Any, org: str, budget: Any, storage: Any, *, event: dict, body: dict,
            previous: dict, initial: dict, run: dict, attempts: dict, tasks: dict,
-           state: dict, source: dict, roles: dict, mapping: dict, command: dict) -> tuple:
+           state: dict, source: dict, roles: dict, mapping: dict, command: dict,
+           later_qa_tasks: set[str], settled_stages: dict) -> tuple:
     """Derive every target row from validated predecessors and actual callback."""
     from runtime.workflows.coding_start_history import same
+    if body['format'] == 'workflow-coding-event@4':
+        return replay_qa(conn, org, budget, storage, event=event, body=body, previous=previous,
+            initial=initial, run=run, attempts=attempts, tasks=tasks, state=state,
+            source=source, roles=roles, mapping=mapping, command=command, settled_stages=settled_stages)
     kind = event['event_kind']
     _check(kind in KINDS and body['format'] == 'workflow-coding-event@3')
     evidence = _closed(body['evidence'], 'kind command origin authority rows facts native_task_observations')
@@ -189,7 +197,8 @@ def replay(conn: Any, org: str, budget: Any, storage: Any, *, event: dict, body:
         _check(edge_index < len(EDGE_KINDS) and kind == EDGE_KINDS[edge_index])
         if edge_index == 0:
             admission(conn, org, budget, storage, facts['admission'], run=run, tasks=tasks,
-                      source=source, roles=roles, mapping=mapping, command=command, future_task_id=facts['reviewer_task_id'])
+                      source=source, roles=roles, mapping=mapping, command=command,
+                      future_task_id=facts['reviewer_task_id'], later_qa_tasks=later_qa_tasks)
             state['edge_facts'] = facts
             state['subject'] = output['subject']
         else:
@@ -218,5 +227,121 @@ def replay(conn: Any, org: str, budget: Any, storage: Any, *, event: dict, body:
             next_attempt = attempts[identity('attempt', run['instance_id'], 2)]
             _check(next_attempt['task_id'] == facts['reviewer_task_id'])
             target_run.update(current_attempt_id=next_attempt['id'], current_revision=1, state='code_review')
+    _check(same(body['after'], projection(target_run, target_attempts, target_tasks)))
+    return target_run, target_attempts, target_tasks
+
+
+def replay_qa(conn: Any, org: str, budget: Any, storage: Any, *, event: dict, body: dict,
+              previous: dict, initial: dict, run: dict, attempts: dict, tasks: dict,
+              state: dict, source: dict, roles: dict, mapping: dict, command: dict,
+              settled_stages: dict) -> tuple:
+    """New closed edge; event@3 review_staged retains its unconditional hold."""
+    from runtime.workflows.coding_start_history import same
+    kind = event['event_kind']
+    _check(kind in QA_EDGE_KINDS and body['format'] == 'workflow-coding-event@4')
+    evidence = _closed(body['evidence'], 'kind command origin authority rows facts native_task_observations')
+    facts = _closed(evidence['facts'], 'format developer_attempt_id reviewer_attempt_id result_id output_digest contributor qa_task_id admission')
+    _check(facts['format'] == 'workflow-coding-edge@2' and evidence['kind'] == kind
+           and evidence['authority'] == initial['evidence']['authority'] and evidence['rows'] == [])
+    current = attempts[run['current_attempt_id']]
+    _check(event['attempt_id'] == current['id'] and run['state'] == current['stage']
+           and current['state'] == 'completed' and state['source_settled']
+           and state['cleanup_recorded'] and state['cleanup'] and state['terminal'] == 'success'
+           and state['claim'] is not None and not state.get('ownership_unknown'))
+    callback = state['callback']
+    _check(callback is not None and type(callback['output_summary']) is str and len(callback['output_summary']) <= 65536)
+    budget.consumed += 12 * len(callback['output_summary'])
+    _check(budget.remaining_bytes >= 0)
+    output = parse_stage_output(callback, instance=run['instance_id'], attempt=current,
+        work=command['work'], subject=_json(current['scope_bytes'], 1048576)['subject'])
+    _decoded(output, budget)
+    developer = attempts[identity('attempt', run['instance_id'], 1)]
+    reviewer = attempts[identity('attempt', run['instance_id'], 2)]
+    _check(developer['stage'] == 'development' and reviewer['stage'] == 'code_review'
+           and developer['state'] == reviewer['state'] == 'completed'
+           and reviewer['predecessor_id'] == developer['id']
+           and len({b['principal'] for b in roles.values()}) == 4
+           and developer['principal'] == roles['implementer']['principal']
+           and reviewer['principal'] == roles['code_reviewer']['principal']
+           and facts['developer_attempt_id'] == developer['id']
+           and facts['reviewer_attempt_id'] == reviewer['id']
+           and type(facts['result_id']) is int and facts['result_id'] == callback['id']
+           and facts['output_digest'] == _hash(callback['output_summary'].encode('utf8'))
+           and facts['contributor'] == developer['principal'])
+    origin = dict(kind='settled_result', principal=current['principal'], task_id=current['task_id'],
+        session_id=current['session_id'], result_id=callback['id'], claim=state['claim'])
+    _check(evidence['origin'] == origin)
+    internal = dict(format='workflow-coding-edge-command@2', kind=kind,
+        source_event_ids=[previous['id']], source_event_digests=[previous['event_digest']],
+        subject=output['subject'], facts=facts)
+    _check(evidence['command'] == internal)
+    principal = 'service:coding-dispatcher:' + org
+    key = 'coding-internal:' + _hash(_canonical([run['instance_id'], kind, callback['id'], internal]))
+    operation = dict(org_slug=org, principal=principal, key=key, request_digest=_hash(_canonical(internal)))
+    _check(body['operation'] == operation and event['org_slug'] == org and event['principal'] == principal
+           and event['operation_key'] == key and event['request_digest'] == operation['request_digest']
+           and event['id'] == identity('event', org, run['instance_id'], principal, key))
+    for projection_value in (body['before'], body['after']):
+        _closed(projection_value, 'run attempts instances tasks rounds requests assignments')
+        _check(projection_value['instances'] == initial['after']['instances']
+               and all(projection_value[k] == [] for k in ('rounds', 'requests', 'assignments')))
+    def projection(r: dict, a: dict, t: dict) -> dict:
+        return dict(run=r, attempts=[dict(id=k, record=encode_row(a[k])) for k in sorted(a)],
+            tasks=[dict(id=k, record=encode_row(t[k])) for k in sorted(t)],
+            instances=initial['after']['instances'], rounds=[], requests=[], assignments=[])
+    _check(same(body['before'], projection(run, attempts, tasks)))
+    target_run, target_attempts, target_tasks = dict(run), dict(attempts), dict(tasks)
+    target_run.update(cas_version=run['cas_version'] + 1, last_event_id=event['id'])
+    if kind == 'review_staged' and current['stage'] == 'qa':
+        _check(current['stage'] == 'qa' and len(attempts) == 3 and state.get('qa_output') is None
+               and facts['qa_task_id'] == current['task_id'] and facts['admission'] is None)
+        for upstream, outcome in ((developer, 'produced'), (reviewer, 'APPROVE')):
+            native = settled_stages[upstream['id']]
+            original = native['callback']
+            _check(native['source_settled'] and native['cleanup_recorded'] and native['cleanup']
+                   and native['terminal'] == 'success' and original is not None
+                   and type(original['output_summary']) is str and len(original['output_summary']) <= 65536)
+            budget.consumed += 12 * len(original['output_summary'])
+            _check(budget.remaining_bytes >= 0)
+            prior = parse_stage_output(original, instance=run['instance_id'], attempt=upstream,
+                work=command['work'], subject=output['subject'])
+            _decoded(prior, budget)
+            _check(prior['outcome'] == outcome and prior['findings'] != output['findings'])
+        state['qa_output'] = output
+        target_run['state'] = 'held'
+    else:
+        _check(current['id'] == reviewer['id'] and output['outcome'] == 'APPROVE'
+               and state.get('review_output') is None)
+        edge_index = state.get('qa_edge_index', 0)
+        _check(edge_index < len(QA_EDGE_KINDS) and kind == QA_EDGE_KINDS[edge_index])
+        if edge_index == 0:
+            admission(conn, org, budget, storage, facts['admission'], run=run, tasks=tasks,
+                source=source, roles=roles, mapping=mapping, command=command,
+                future_task_id=facts['qa_task_id'], later_qa_tasks=set(), qa=True)
+            state['qa_edge_facts'] = facts
+        else:
+            _check(same(facts, state['qa_edge_facts']))
+        state['qa_edge_index'] = edge_index + 1
+        if kind == 'stage_queued':
+            task_id = facts['qa_task_id']
+            _check(type(task_id) is str and task_id.startswith('TASK-') and task_id not in tasks and len(attempts) == 2)
+            binding = roles['qa_engineer']
+            first = decode_row(initial['after']['attempts'][0]['record'])
+            pristine = next(decode_row(v['record']) for v in initial['after']['tasks'] if v['id'] == first['task_id'])
+            task = {**pristine, 'id': task_id, 'assigned_agent': binding['principal'], 'team': binding['team'],
+                'brief': qa_brief(command['work']), 'created_at': event['created_at'], 'updated_at': event['created_at']}
+            scope = _canonical(qa_scope(org=org, instance=run['instance_id'], command=command,
+                roles=roles, developer=developer, reviewer=reviewer, subject=output['subject'], task_id=task_id))
+            next_attempt = {**first, 'id': identity('attempt', run['instance_id'], 3), 'stage': 'qa',
+                'predecessor_id': reviewer['id'], 'task_id': task_id, 'principal': binding['principal'],
+                'scope_bytes': scope, 'scope_digest': _hash(scope)}
+            _check(next_attempt['id'] not in attempts)
+            target_attempts[next_attempt['id']] = next_attempt
+            target_tasks[task_id] = task
+        if kind == 'advance':
+            _check(len(attempts) == 3)
+            selected = attempts[identity('attempt', run['instance_id'], 3)]
+            _check(selected['task_id'] == facts['qa_task_id'])
+            target_run.update(current_attempt_id=selected['id'], current_revision=1, state='qa')
     _check(same(body['after'], projection(target_run, target_attempts, target_tasks)))
     return target_run, target_attempts, target_tasks

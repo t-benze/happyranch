@@ -54,17 +54,18 @@ class CodingStageOutput(Closed):
     instance_id: Token
     attempt_id: Token
     revision: Annotated[StrictInt, Field(ge=1, le=1)]
-    stage: Literal['development', 'code_review']
+    stage: Literal['development', 'code_review', 'qa']
     subject: CodeChangeDescriptor
     findings: str
-    outcome: Literal['produced', 'APPROVE', 'REQUEST_CHANGES', 'BLOCK']
+    outcome: Literal['produced', 'APPROVE', 'REQUEST_CHANGES', 'BLOCK', 'PASS', 'REVISE']
 
     @model_validator(mode='after')
     def closed_stage(self) -> CodingStageOutput:
         _check(self.subject.comparison is not None)
         _check(self.findings.strip() != '' and '\x00' not in self.findings
                and 0 < len(self.findings.encode('utf8')) <= 16384)
-        _check((self.stage == 'development') == (self.outcome == 'produced'))
+        _check(self.outcome in {'development': ('produced',),
+            'code_review': ('APPROVE', 'REQUEST_CHANGES', 'BLOCK'), 'qa': ('PASS', 'REVISE', 'BLOCK')}[self.stage])
         return self
 
 
@@ -152,8 +153,18 @@ class CodingOrderedRunReceipt(CodingInitialRunReceipt):
     history: list[CodingOrderedEvent] = Field(min_length=1, max_length=4096)
 
 
+class CodingQAAttempt(CodingOrderedAttempt):
+    stage: Literal['qa']
+
+
+class CodingQARunReceipt(CodingOrderedRunReceipt):
+    format: Literal['workflow-coding-run@3']
+    state: Literal['qa', 'held']
+    current_attempt: CodingQAAttempt
+
+
 class CodingRunReceipt(RootModel[Annotated[
-        CodingInitialRunReceipt | CodingOrderedRunReceipt, Field(discriminator='format')]]):
+        CodingInitialRunReceipt | CodingOrderedRunReceipt | CodingQARunReceipt, Field(discriminator='format')]]):
     pass
 
 

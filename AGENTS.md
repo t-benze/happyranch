@@ -3886,3 +3886,74 @@ ROOT12299 retains genuine disposable OrgState/native/start/readiness/proof and
 same-final-head independent execution before merge. FAILED12298 uncertainty,
 separate runtimeROOT12293, adverse receipts and draftPR1134 remain unchanged.
 <!-- /TASK12488 / ROOT12299 first ordered edge -->
+
+
+<!-- TASK12502 / ROOT12299 approved review to QA -->
+## Disabled approved review to independent QA source
+
+ROOT12299 step29 / Founder THR320seq4/18/27 extends the disabled revision1
+engine through ONE independent qa attempt. This section extends the preceding
+first-edge checkpoint. Readiness/require_ready remain unconditionally disabled;
+final-manager allocation, finalization, settings/cross-team binding@3 and all
+merge/enablement effects remain unimplemented.
+
+workflow-coding-stage-output@1 additionally admits stage=qa with exactly
+PASS|REVISE|BLOCK and verdict equal to outcome. The existing exact key inventory,
+canonical duplicate-free JSON STRING summary, strict native types/revision1,
+nonblank findings<=16384 UTF8 bytes, real own task/SID/INTEGER result and exact
+repository/object-format/B/H/branch/PR remain required. Development and reviewer
+syntax retain their literal meanings. Findings are independently authored.
+
+Only the authentic completed reviewer APPROVE plus successful/quiescent real
+host and positive original tracker/task-tail/worktree/settle_live/native close/
+move-release settlement can advance. Callback persistence alone, unusable or
+nonapproval output, unknown/failed/blocked ownership and historical held reviews
+cannot allocate QA. A separate current-authority transaction reselects the whole
+graph, original developer contribution and independent reviewer result, mapping/
+release/effective four distinct roles, qa_engineer principal/team and existing
+repository scopes, Pause/move/capacity and pinned attempt/revision/event limits.
+
+New workflow-coding-event@4 / edge-command@2 / edge@2 / edge-admission@2 encode
+review_staged (code_review+APPROVE), stage_queued and advance in order, with ONE
+native uncommitted QA task/attempt/scope in the same business transaction. These
+use the existing exact DDL/event kinds. Full independent target validation
+precedes caller COMMIT; notification follows it. Exact original-result/CAS replay
+returns the original allocation. No generic self-committing delegate, I/O, await
+or notification occurs in the synchronous business writer.
+
+workflow-coding-qa-scope@1 pins actual QA task/principal/team/revision/work and
+both original developer and reviewer attempt/task/SID/INTEGER result/outcome/
+exact subject, release and mapping. The role-selected workflow-coding-qa@1
+supplement carries that scope and explicit PASS|REVISE|BLOCK instruction, never
+a development/reviewer instruction or legacy task alias. Native QA uses separate
+native-qa-event@1/native-qa-command@1/qa-admission@1 families, retaining actual
+claim/host/heartbeat/callback/terminal/outer proof and honest causes. A usable
+settled QA assessment emits event@4 review_staged for stage=qa and unconditionally
+holds, including PASS, pending the separate final-manager increment.
+
+Literal bootstrap/development/reviewer/event@3 and historical review_staged-held
+families stay unchanged. New readers independently derive all THREE attempts,
+scopes, callbacks/subject/contributor/order/CAS and complete typed native rows.
+Only a provisionally discovered event@4 QA child is excluded from earlier
+admission snapshots; full ordered reconstruction must prove that exact allocation
+and refuse partial prefixes, extra/foreign/orphan/dual owners and mixed formats.
+All traversal uses the enclosing cumulative inventory allowance; no trusted DTO,
+global cache or pre-write after-image replaces fresh post-write validation.
+Current/cold/schema(data=False)/ownership/recovery/drain compose these readers.
+Closed workflow-coding-run@3 projects qa/held, revision1 and the existing public
+field inventory/event metadata; run@1 and run@2 stay literal, with no findings
+exposure. Recovery may notify committed queued QA or reconcile a settled eligible
+reviewer; it never relaunches a settled SID or repairs uncertain ownership.
+
+This is SOURCE only. F1/F2/F3/F4/F5/F8 behavior/native/SQL/negative/red-green/
+mutation/restoration/repetition/executable-QA remain UNEXECUTED; no tests,
+assertions, fixture/support or runtime experiment were allocated. Python units
+RETIRED; integration INCLUDING callback/lifespan/SessionTracker SKIPPED24342.
+No old-root waiver applies. Lint/static/hooks and the existing OpenAPI summary
+generator are the only automated verification here; summary parity does not
+prove full response components or native behavior. ROOT12299 retains genuine
+native constructor/readiness/remaining-engine/operator/isolation/proof inputs and
+failed-child-linked independent same-final-head execution before any merge.
+No descriptor grants access/permission. Unknown12298/runtime12293/draft1134 and
+all adverse lineage remain preserved.
+<!-- /TASK12502 / ROOT12299 approved review to QA -->

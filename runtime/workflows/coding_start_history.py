@@ -1,7 +1,7 @@
 """SELECT-only complete queued K3a closure under the enclosing native budget.
 
 The initial start is reconstructed independently, followed by the closed
-first ordered edge and native reviewer reader. Unsupported later-stage/control
+ordered edges and native reviewer/QA readers. Unsupported later-stage/control
 families refuse.
 Saved validity never supplies current access, readiness or permission.
 """
@@ -132,7 +132,7 @@ def read_queued(conn: sqlite3.Connection, org: str, budget: _Budget, mappings: A
     run_rows = list(rows(conn, 'workflow_coding_runs', budget))
     attempts = list(rows(conn, 'workflow_coding_attempts', budget))
     events = list(rows(conn, 'workflow_coding_events', budget))
-    _check(len(run_rows) <= len(attempts) <= 2 * len(run_rows) and len(events) >= len(run_rows))
+    _check(len(run_rows) <= len(attempts) <= 3 * len(run_rows) and len(events) >= len(run_rows))
     used_attempts, used_events, used_sources = set(), set(), set()
     for run in run_rows:
         budget.step()
@@ -141,7 +141,7 @@ def read_queued(conn: sqlite3.Connection, org: str, budget: _Budget, mappings: A
         selected = [r for r in events if r['instance_id'] == instance]
         selected_attempts = [r for r in attempts if r['instance_id'] == instance]
         selected.sort(key=lambda row: row['event_seq'])
-        _check(len(selected) >= 1 and 1 <= len(selected_attempts) <= 2)
+        _check(len(selected) >= 1 and 1 <= len(selected_attempts) <= 3)
         event = selected[0]
         actual_run = run
         initial = _json(event['event_bytes'], 16777216)

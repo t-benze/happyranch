@@ -1,8 +1,8 @@
-"""Native owner for disabled development and its first independent review.
+"""Native owner for disabled development, independent review and QA.
 
 Queue and launch admission remain unavailable until the whole coding engine is
-present. Original native writers compose complete readers and the first coding
-ordered edge; later stages, controls and legacy completion effects remain absent.
+present. Original native writers compose complete readers and the coding
+ordered edges through QA; finalization, controls and legacy effects remain absent.
 """
 from __future__ import annotations
 
@@ -283,7 +283,7 @@ class CodingDispatcher:
         if not callback and author_capacity_blocked(conn, author=invocation.agent, task_id=invocation.task.id, active_sessions=sessions):
             raise CodingStartError('coding_capacity_unavailable')
         _check(entry['attempt']['revision'] == 1 and entry['attempt']['attempt_sequence'] == 1
-               and entry['source']['budgets']['coding_attempt_limit'] >= 1
+               and len(entry['attempts']) <= entry['source']['budgets']['coding_attempt_limit']
                and entry['run']['cas_version'] + (1 if callback else 2) <= entry['source']['budgets']['coding_event_limit'])
         return self._admission_observation(conn, entry, invocation, capture, sessions, callback=callback)
 
@@ -350,8 +350,9 @@ class CodingDispatcher:
                    and not native['context'].get('execution_unknown'))
         # Frozen config was checked outside each awaited boundary by _policies.
         # Do not read files while owning this synchronous native writer.
-        result = dict(format=('workflow-coding-native-admission@1' if entry['attempt']['stage'] == 'development'
-            else 'workflow-coding-review-admission@1'), phase='callback' if callback else 'launch',
+        result = dict(format={'development': 'workflow-coding-native-admission@1',
+            'code_review': 'workflow-coding-review-admission@1', 'qa': 'workflow-coding-qa-admission@1'}[entry['attempt']['stage']],
+            phase='callback' if callback else 'launch',
             authority=_capture(capture, identity('native-admission', entry['attempt']['id'],
                 invocation.identity, entry['run']['cas_version']), _canonical(entry['command'])),
             manager_teams=list(self.org.teams.teams_for_manager(entry['source']['principal'])),
@@ -452,8 +453,8 @@ class CodingDispatcher:
         observation = dict(facts=facts, invocation=native, queue_owner=queue_owner,
             admission=(invocation.coding_launch_admission if kind == 'session_bound' else
                        invocation.coding_callback_admission if kind == 'callback_recorded' else None))
-        command = dict(format=('workflow-coding-internal-command@2' if entry['attempt']['stage'] == 'development'
-            else 'workflow-coding-native-review-command@1'), kind=kind,
+        command = dict(format={'development': 'workflow-coding-internal-command@2',
+            'code_review': 'workflow-coding-native-review-command@1', 'qa': 'workflow-coding-native-qa-command@1'}[entry['attempt']['stage']], kind=kind,
             source_event_ids=[previous['id']], source_event_digests=[previous['event_digest']],
             subject=None, producer_identity=producer, observation=observation)
         instance = entry['run']['instance_id']
@@ -470,8 +471,9 @@ class CodingDispatcher:
         after['tasks'] = [dict(id=k, record=encode_row(dict(conn.execute('SELECT * FROM tasks WHERE id=?', (k,)).fetchone())))
                           for k in sorted(entry['tasks'])]
         operation = dict(org_slug=self.org.slug, principal=principal, key=key, request_digest=_hash(_canonical(command)))
-        body = dict(format=('workflow-coding-event@2' if entry['attempt']['stage'] == 'development'
-            else 'workflow-coding-native-review-event@1'), id=event_id, instance_id=instance,
+        body = dict(format={'development': 'workflow-coding-event@2',
+            'code_review': 'workflow-coding-native-review-event@1', 'qa': 'workflow-coding-native-qa-event@1'}[entry['attempt']['stage']],
+            id=event_id, instance_id=instance,
             event_seq=previous['event_seq'] + 1, event_kind=kind, attempt_id=attempt['id'], operation=operation,
             previous_digest=previous['event_digest'], before=before, after=after,
             evidence=dict(kind=kind, command=command, origin=dict(kind='service', principal=invocation.agent,
@@ -715,7 +717,7 @@ class CodingDispatcher:
                 event_time=now)
             if not source and safe and entry['native']['terminal'] == 'success':
                 entry = self._entry(conn, invocation.task.id)
-                from runtime.workflows.coding_progression import _settled, record_review_in_writer
+                from runtime.workflows.coding_progression import _settled, record_qa_in_writer, record_review_in_writer
                 try:
                     usable = _settled(entry)
                 except (ValueError, TypeError, UnicodeError):
@@ -727,6 +729,8 @@ class CodingDispatcher:
                         invocation=invocation, run_changes=dict(state='held'))
                 elif entry['attempt']['stage'] == 'code_review':
                     record_review_in_writer(self, conn, entry)
+                elif entry['attempt']['stage'] == 'qa':
+                    record_qa_in_writer(self, conn, entry)
         # Native close/move release was recorded and committed before any new
         # current-authority allocation, with no await or enqueue in that writer.
         from runtime.workflows.coding_progression import reconcile_run
@@ -740,12 +744,14 @@ class CodingDispatcher:
                    and entry['run']['current_attempt_id'] == attempt['id']
                    and attempt['state'] in ('queued', 'claimed', 'running')
                    and attempt['session_id'] in (None, session_id))
-            from runtime.workflows.coding_bootstrap import review_scope
+            from runtime.workflows.coding_bootstrap import qa_scope, review_scope
             development = attempt['stage'] == 'development'
+            qa = attempt['stage'] == 'qa'
             scope = json.loads(attempt['scope_bytes'])
-            supplement = dict(format='workflow-coding-development@1' if development else 'workflow-coding-review@1',
+            supplement = dict(format={'development': 'workflow-coding-development@1',
+                'code_review': 'workflow-coding-review@1', 'qa': 'workflow-coding-qa@1'}[attempt['stage']],
                 instance_id=entry['run']['instance_id'], attempt_id=attempt['id'], task_id=task_id,
-                session_id=session_id, role='implementer' if development else 'code_reviewer',
+                session_id=session_id, role='implementer' if development else 'qa_engineer' if qa else 'code_reviewer',
                 revision=attempt['revision'], assignment_generation=attempt['assignment_generation'],
                 scope_digest=attempt['scope_digest'], release=entry['command']['release'], mapping=entry['command']['mapping'],
                 work=entry['command']['work'], head=None if development else scope['subject']['head'],
@@ -758,16 +764,29 @@ class CodingDispatcher:
                         comparison=dict(base=entry['command']['work']['base']), navigation=dict(branch=None, pr_url=None))
                         if development else scope['subject']),
                     findings='Your own nonempty findings, at most 16384 UTF8 bytes.',
-                    outcome='produced' if development else 'APPROVE|REQUEST_CHANGES|BLOCK'),
+                    outcome='produced' if development else 'PASS|REVISE|BLOCK' if qa else 'APPROVE|REQUEST_CHANGES|BLOCK'),
                 output_obligation=('Introduce only the full commit genuinely produced by this assigned task.' if development else
+                    'Independently inspect the exact pinned produced and approved subject; use BLOCK for unavailable access or proof. '
+                    'Write your own QA findings; never copy another principal findings.' if qa else
                     'Independently inspect the exact pinned subject; use BLOCK for unavailable access. Never copy another actor approval.'),
                 final_callback=dict(task_id=task_id, agent=agent, session_id=session_id,
                     command='happyranch report-completion --org ' + self.org.slug + ' --from-file ABS',
-                    obligation='summary is the canonical UTF8 JSON STRING of output, never an object; completed status with null verdict for development or exact outcome verdict for review. Failed/blocked callbacks retain actual causes without inventing output. Callback is FINAL. No staging command.'))
+                    obligation=('summary is the canonical UTF8 JSON STRING of output, never an object; completed status with null verdict for development or exact outcome verdict for review. Failed/blocked callbacks retain actual causes without inventing output. Callback is FINAL. No staging command.'
+                        if not qa else 'summary is the canonical UTF8 JSON STRING of output; completed status and verdict=PASS|REVISE|BLOCK matching outcome. '
+                        'Use only this real task/agent/SID and own findings. Failed/blocked callbacks retain actual causes. Callback is FINAL. No staging or coding decision/job wait.')))
             if not development:
                 developer = next(a for a in entry['attempts'].values() if a['stage'] == 'development')
-                _check(scope == review_scope(org=self.org.slug, instance=entry['run']['instance_id'],
-                    command=entry['command'], roles=entry['roles'], developer=developer, subject=scope['subject']))
+                if qa:
+                    reviewer = next(a for a in entry['attempts'].values() if a['stage'] == 'code_review')
+                    _check(scope == qa_scope(org=self.org.slug, instance=entry['run']['instance_id'],
+                        command=entry['command'], roles=entry['roles'], developer=developer,
+                        reviewer=reviewer, subject=scope['subject'], task_id=task_id))
+                    supplement['reviewer'] = scope['reviewer']
+                    supplement['team'] = scope['team']
+                    supplement['scope'] = scope
+                else:
+                    _check(scope == review_scope(org=self.org.slug, instance=entry['run']['instance_id'],
+                        command=entry['command'], roles=entry['roles'], developer=developer, subject=scope['subject']))
                 supplement['developer'] = scope['developer']
                 supplement['subject'] = scope['subject']
         return '\n\n' + _canonical(supplement).decode('utf8')

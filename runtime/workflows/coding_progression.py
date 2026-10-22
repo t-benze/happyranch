@@ -1,4 +1,4 @@
-"""Coding-owned first ordered edge; no generic delegate or external effect.
+"""Coding-owned ordered edges through QA; no generic delegate or external effect.
 
 The native outer owner records settlement first. A separate current-authority
 transaction reselects that original result and graph. Only committed queued
@@ -15,7 +15,7 @@ from runtime.models import TaskRecord
 from runtime.workflows._coding_import_support import _capture
 from runtime.workflows._coding_role_records import configuration
 from runtime.workflows.coding_authority_history import _Budget, _decoded
-from runtime.workflows.coding_bootstrap import effective_bindings, encode_row, identity, review_brief, review_scope
+from runtime.workflows.coding_bootstrap import effective_bindings, encode_row, identity, qa_brief, qa_scope, review_brief, review_scope
 from runtime.workflows.coding_saved_records import _canonical, _check, _hash
 from runtime.workflows.coding_start import CodingStartError, queued_storage, require_ready
 from runtime.workflows.coding_start_history import rows
@@ -40,6 +40,20 @@ def _settled(entry: dict, *, budget: _Budget | None = None) -> dict | None:
         work=entry['command']['work'], subject=None if scope is None else scope['subject'])
     if budget is not None:
         _decoded(output, budget)
+    if attempt['stage'] == 'qa':
+        for stage, outcome in (('development', 'produced'), ('code_review', 'APPROVE')):
+            upstream = next(a for a in entry['attempts'].values() if a['stage'] == stage)
+            original = native['stages'][upstream['id']]['callback']
+            _check(original is not None and type(original['output_summary']) is str
+                   and len(original['output_summary']) <= 65536)
+            if budget is not None:
+                budget.consumed += 12 * len(original['output_summary'])
+                _check(budget.remaining_bytes >= 0)
+            prior = parse_stage_output(original, instance=entry['run']['instance_id'], attempt=upstream,
+                work=entry['command']['work'], subject=output['subject'])
+            if budget is not None:
+                _decoded(prior, budget)
+            _check(prior['outcome'] == outcome and prior['findings'] != output['findings'])
     return output
 
 
@@ -77,7 +91,12 @@ def _admission(dispatcher: Any, conn: Any, entry: dict, capture: Any, sessions: 
         pending.extend(row[k] for k in ('parent_task_id', 'revisit_of_task_id') if row[k] is not None)
     _check(not any(e['task_id'] in closure for e in pause['journal']['entries']))
     db._check_team_move_workflow_uncommitted(binding_bytes=effective_bindings(entry['run']['instance_id'], roles))
-    reviewer = roles['code_reviewer']['principal']
+    qa = entry['attempt']['stage'] == 'code_review'
+    reviewer = roles['qa_engineer' if qa else 'code_reviewer']['principal']
+    _check(entry['attempt']['stage'] in ('development', 'code_review')
+           and source['budgets']['coding_revision_limit'] >= 1
+           and len(entry['attempts']) + 1 <= source['budgets']['coding_attempt_limit']
+           and entry['run']['cas_version'] + (3 if qa else 4) <= source['budgets']['coding_event_limit'])
     _check(len(sessions) <= 1024)
     if author_capacity_blocked(conn, author=reviewer, task_id=None, active_sessions=sessions):
         raise CodingStartError('coding_capacity_unavailable')
@@ -87,7 +106,7 @@ def _admission(dispatcher: Any, conn: Any, entry: dict, capture: Any, sessions: 
     record = dict(id=authority['admission_record_id'], namespace=pin['namespace'], generation=pin['generation'],
         request_digest=_hash(_canonical(entry['command'])), admitted_by='service:' + dispatcher.producer)
     move = org.orchestrator._team_moves.active_uncommitted()
-    result = dict(format='workflow-coding-edge-admission@1', authority=authority, record=record,
+    result = dict(format='workflow-coding-edge-admission@2' if qa else 'workflow-coding-edge-admission@1', authority=authority, record=record,
         tasks=[encode_row(closure[k]) for k in sorted(closure)],
         pause=encode_row({k: v for k, v in pause.items() if k != 'journal'}),
         move=None if move is None else encode_row(move), sessions=[list(s) for s in sessions],
@@ -107,7 +126,8 @@ def _append(dispatcher: Any, conn: Any, entry: dict, kind: str, facts: dict,
             task: TaskRecord | None = None) -> None:
     previous = entry['native']['history'][-1]
     current = entry['attempt']
-    internal = dict(format='workflow-coding-edge-command@1', kind=kind,
+    qa_edge = facts['format'] == 'workflow-coding-edge@2'
+    internal = dict(format='workflow-coding-edge-command@2' if qa_edge else 'workflow-coding-edge-command@1', kind=kind,
         source_event_ids=[previous['id']], source_event_digests=[previous['event_digest']],
         subject=output['subject'], facts=facts)
     key = 'coding-internal:' + _hash(_canonical([entry['run']['instance_id'], kind, current['result_id'], internal]))
@@ -124,14 +144,14 @@ def _append(dispatcher: Any, conn: Any, entry: dict, kind: str, facts: dict,
         entry['attempts'][next_attempt['id']] = next_attempt
         entry['tasks'][task.id] = dict(conn.execute('SELECT * FROM tasks WHERE id=?', (task.id,)).fetchone())
     if kind == 'advance':
-        after['run'].update(state='code_review', current_revision=1,
-            current_attempt_id=identity('attempt', entry['run']['instance_id'], 2))
-    if kind == 'review_staged':
+        after['run'].update(state='qa' if qa_edge else 'code_review', current_revision=1,
+            current_attempt_id=identity('attempt', entry['run']['instance_id'], 3 if qa_edge else 2))
+    if kind == 'review_staged' and (not qa_edge or current['stage'] == 'qa'):
         after['run']['state'] = 'held'
     after['attempts'] = [dict(id=k, record=encode_row(a)) for k, a in sorted(entry['attempts'].items())]
     after['tasks'] = [dict(id=k, record=encode_row(t)) for k, t in sorted(entry['tasks'].items())]
     operation = dict(org_slug=dispatcher.org.slug, principal=principal, key=key, request_digest=_hash(_canonical(internal)))
-    body = dict(format='workflow-coding-event@3', id=event_id, instance_id=entry['run']['instance_id'],
+    body = dict(format='workflow-coding-event@4' if qa_edge else 'workflow-coding-event@3', id=event_id, instance_id=entry['run']['instance_id'],
         event_seq=previous['event_seq'] + 1, event_kind=kind, attempt_id=current['id'], operation=operation,
         previous_digest=previous['event_digest'], before=before, after=after, created_at=now,
         evidence=dict(kind=kind, command=internal, origin=dict(kind='settled_result', principal=current['principal'],
@@ -162,35 +182,51 @@ def advance_in_writer(dispatcher: Any, conn: Any, *, instance: str, result_id: i
     budget, saved = inventory.budget, inventory.queued
     entry = saved.runs[instance]
     developer = next(a for a in entry['attempts'].values() if a['stage'] == 'development')
-    if entry['attempt']['stage'] == 'code_review' and result_id == developer['result_id']:
-        return entry['attempt']['task_id']  # Exact accepted result/CAS replay.
+    reviewer = next((a for a in entry['attempts'].values() if a['stage'] == 'code_review'), None)
+    qa_attempt = next((a for a in entry['attempts'].values() if a['stage'] == 'qa'), None)
+    if reviewer is not None and result_id == developer['result_id']:
+        return reviewer['task_id']  # Original accepted result/CAS replay, even after QA.
+    if qa_attempt is not None and reviewer is not None and result_id == reviewer['result_id']:
+        return qa_attempt['task_id']
     if entry['attempt']['result_id'] != result_id:
         raise CodingStartError('coding_result_conflict')
     output = _settled(entry, budget=budget)
     if output is None:
         return None
-    if entry['attempt']['stage'] == 'code_review':
-        return None  # Reviewer settlement is recorded by its native outer owner.
+    stage = entry['attempt']['stage']
+    qa = stage == 'code_review'
+    if stage == 'qa' or (qa and output['outcome'] != 'APPROVE'):
+        return None
+    _check(stage in ('development', 'code_review'))
     admission = _admission(dispatcher, conn, entry, capture, sessions, budget)
     now = stamp()
     task_id = dispatcher.db.next_task_id()
-    binding = entry['roles']['code_reviewer']
+    binding = entry['roles']['qa_engineer' if qa else 'code_reviewer']
     task = TaskRecord(id=task_id, task_type='subtask', parent_task_id=json.loads(entry['event']['event_bytes'])['evidence']['facts']['carrier_task_id'],
-        assigned_agent=binding['principal'], team=binding['team'], brief=review_brief(entry['command']['work']),
+        assigned_agent=binding['principal'], team=binding['team'],
+        brief=(qa_brief if qa else review_brief)(entry['command']['work']),
         created_at=datetime.fromisoformat(now.replace('Z', '+00:00')),
         updated_at=datetime.fromisoformat(now.replace('Z', '+00:00')),
         session_timeout_seconds=entry['source']['budgets']['session_timeout_seconds'])
     dispatcher.db._check_team_move_task_uncommitted(task)
-    scope = _canonical(review_scope(org=dispatcher.org.slug, instance=instance, command=entry['command'],
+    scope = _canonical(qa_scope(org=dispatcher.org.slug, instance=instance, command=entry['command'],
+        roles=entry['roles'], developer=developer, reviewer=reviewer, subject=output['subject'], task_id=task_id)
+        if qa else review_scope(org=dispatcher.org.slug, instance=instance, command=entry['command'],
         roles=entry['roles'], developer=developer, subject=output['subject']))
-    attempt = dict(id=identity('attempt', instance, 2), instance_id=instance, revision=1, stage='code_review',
-        attempt_sequence=1, assignment_generation=1, predecessor_id=developer['id'], task_id=task_id,
+    attempt = dict(id=identity('attempt', instance, 3 if qa else 2), instance_id=instance, revision=1, stage='qa' if qa else 'code_review',
+        attempt_sequence=1, assignment_generation=1, predecessor_id=entry['attempt']['id'], task_id=task_id,
         principal=binding['principal'], session_id=None, result_id=None, submission_id=None, review_request_id=None,
         state='queued', scope_bytes=scope, scope_digest=_hash(scope))
     facts = dict(format='workflow-coding-edge@1', developer_attempt_id=developer['id'], result_id=result_id,
         output_digest=_hash(entry['native']['callback']['output_summary'].encode('utf8')),
         contributor=developer['principal'], reviewer_task_id=task_id, admission=admission)
-    for kind in ('artifact_staged', 'contribution_recorded', 'stage_queued', 'advance'):
+    if qa:
+        facts = dict(format='workflow-coding-edge@2', developer_attempt_id=developer['id'],
+            reviewer_attempt_id=reviewer['id'], result_id=result_id,
+            output_digest=_hash(entry['native']['callback']['output_summary'].encode('utf8')),
+            contributor=developer['principal'], qa_task_id=task_id, admission=admission)
+    for kind in (('review_staged', 'stage_queued', 'advance') if qa else
+                 ('artifact_staged', 'contribution_recorded', 'stage_queued', 'advance')):
         _append(dispatcher, conn, entry, kind, facts, output, now=now,
                 next_attempt=attempt if kind == 'stage_queued' else None, task=task if kind == 'stage_queued' else None)
     dispatcher.org.workflow_authority._validate_admission_uncommitted(conn, capture)
@@ -206,10 +242,26 @@ def record_review_in_writer(dispatcher: Any, conn: Any, entry: dict) -> None:
     output = _settled(entry)
     if output is None or entry['attempt']['stage'] != 'code_review':
         return
+    if output['outcome'] == 'APPROVE':
+        return  # Separate current-authority writer owns the new QA edge.
     developer = next(a for a in entry['attempts'].values() if a['stage'] == 'development')
     facts = dict(format='workflow-coding-edge@1', developer_attempt_id=developer['id'],
         result_id=entry['attempt']['result_id'], output_digest=_hash(entry['native']['callback']['output_summary'].encode('utf8')),
         contributor=developer['principal'], reviewer_task_id=entry['attempt']['task_id'], admission=None)
+    _append(dispatcher, conn, entry, 'review_staged', facts, output, now=stamp())
+
+
+def record_qa_in_writer(dispatcher: Any, conn: Any, entry: dict) -> None:
+    from runtime.workflows.coding_dispatch import stamp
+    output = _settled(entry)
+    if output is None or entry['attempt']['stage'] != 'qa':
+        return
+    developer = next(a for a in entry['attempts'].values() if a['stage'] == 'development')
+    reviewer = next(a for a in entry['attempts'].values() if a['stage'] == 'code_review')
+    facts = dict(format='workflow-coding-edge@2', developer_attempt_id=developer['id'],
+        reviewer_attempt_id=reviewer['id'], result_id=entry['attempt']['result_id'],
+        output_digest=_hash(entry['native']['callback']['output_summary'].encode('utf8')),
+        contributor=developer['principal'], qa_task_id=entry['attempt']['task_id'], admission=None)
     _append(dispatcher, conn, entry, 'review_staged', facts, output, now=stamp())
 
 
@@ -222,7 +274,9 @@ async def reconcile_settled_stage(dispatcher: Any, instance: str) -> str | None:
             and entry['native']['source_settled'] and entry['native']['claim'] is None
             and entry['native']['host'] is None and not entry['native'].get('ownership_unknown')):
         return entry['attempt']['task_id']
-    if _settled(entry) is None or entry['attempt']['stage'] != 'development':
+    output = _settled(entry)
+    if (output is None or entry['attempt']['stage'] not in ('development', 'code_review')
+            or (entry['attempt']['stage'] == 'code_review' and output['outcome'] != 'APPROVE')):
         return None
     dispatcher._policies(entry)
     references = org.workflow_coding_start.support._schema_references()
