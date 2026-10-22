@@ -18,8 +18,8 @@ behavioral regressions can be detected only later when their coverage executes.
 
 Fresh Product E2E keeps the daily `0 19 * * *` schedule (19:00 UTC /
 03:00 Asia/Shanghai) on immutable default-branch `github.sha`. Founder
-THR291seq277 authorizes engineering_manager under sole linked ROOT TASK-12281
-(resolving superseded TASK-12262) to use the existing main-only `workflow_dispatch`
+THR291seq277 authorizes engineering_manager under sole linked ROOT TASK-12445
+(resolving superseded TASK-12281/TASK-12262) to use the existing main-only `workflow_dispatch`
 on demand after concrete reviewed corrections, without per-run approval or a
 nightly wait. Reconcile active owners/runs first; no blind same-source retry loop.
 Manual admission requires actual `refs/heads/main`, default branch `main`, and
