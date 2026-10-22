@@ -182,14 +182,27 @@ analysis = {label: {'binaries': toc_rows(value.binaries),
             for label, value in [('daemon', a), ('cli', a_cli)]}
 notice_root = evidence / 'notices'
 notice_root.mkdir()
-# Installed originals take precedence; only this exact authenticated CPython
-# identity/source pair may use the offline original when LICENSE.txt is absent.
+# Installed originals take precedence. uv standalone installs CPython LICENSE.txt
+# in its current stdlib, rather than the base-prefix root.
 notice_helpers = __import__('runpy').run_path(str(_SPEC_DIR / 'notice-data/retained_notices.py'))
 _manifest_notices = runpy.run_path(str(_PROJ / 'app/mac/scripts/manifest_notices.py'))
 source_root = Path(sys.base_prefix).resolve()
 installed_originals = _manifest_notices['original_files'](source_root)
 python_originals = [(p, source_root) for p in installed_originals
                     if p == source_root / 'LICENSE.txt']
+if not python_originals:
+    import sysconfig
+    stdlib = Path(sysconfig.get_path('stdlib'))
+    notice_helpers['safe_path'](stdlib, source_root)
+    installed_notice = stdlib / 'LICENSE.txt'
+    if os.path.lexists(installed_notice):
+        # Associate the actual selected interpreter's installed original, never
+        # a vendor text or another installation. Keep the pinned original check.
+        data_root = _SPEC_DIR / 'notice-data'
+        expected = notice_helpers['original'](data_root, notice_helpers['identities'](data_root)['python']['notice'])
+        if notice_helpers['safe_bytes'](installed_notice, source_root) != notice_helpers['safe_bytes'](expected, data_root):
+            raise ValueError('PYTHON_NOTICE_ORIGINAL_MISMATCH')
+        python_originals = [(installed_notice, source_root)]
 if not python_originals:
     import platform
     import sysconfig
