@@ -16,7 +16,7 @@ scripts/daemon.sh start
 By default the daemon binds to `127.0.0.1:8765`. It is local to your machine.
 
 The start command waits for `GET /api/v1/health` to answer before reporting
-success. The default startup timeout is 30 seconds; set a different positive
+success. The default startup timeout is 120 seconds; set a different positive
 integer when needed:
 
 ```bash
@@ -79,7 +79,7 @@ Common environment variables:
 | Variable | Default | Controls |
 |---|---|---|
 | `HAPPYRANCH_DAEMON_PORT` | `8765` | Local port |
-| `HAPPYRANCH_DAEMON_START_TIMEOUT` | `30` | Seconds to wait for startup health |
+| `HAPPYRANCH_DAEMON_START_TIMEOUT` | `120` | Seconds to wait for startup health |
 | `HAPPYRANCH_QUEUE_WORKERS` | `3` | Concurrent agent sessions |
 | `HAPPYRANCH_SESSION_TIMEOUT_SECONDS` | `1800` | Agent session timeout |
 | `HAPPYRANCH_MAX_ORCHESTRATION_STEPS` | `50` | Legacy accepted setting; no longer limits decisions |

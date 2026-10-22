@@ -787,10 +787,30 @@ class ReplyDeliveryMixin:
                 p.agent_name for p in self.list_thread_participants(thread_id)
             ]
             move = getattr(self, "_team_move_coordinator", None)
+            from runtime.infrastructure.thread_delivery_release import delivery_view, pair_permission
+            unbuilt = object()
+            view = unbuilt
+            lifecycle = None
+
+            def release_view():
+                nonlocal view
+                if view is unbuilt:
+                    # delivery_view finishes all SQL under native_read. Only
+                    # materialized thread/current facts escape its owner.
+                    view = delivery_view(self, thread_id)
+                return view
+
+            def lifecycle_state(inv):
+                nonlocal lifecycle
+                if lifecycle is None:
+                    lifecycle = move.threads.store._read_segment(thread_id)
+                return lifecycle.read(inv)
+
             for agent_name in participants:
-                if not self._thread_release_pair_permitted_uncommitted(thread_id, agent_name):
+                if not pair_permission(release_view(), thread_id, agent_name):
                     continue
-                if move is not None and move.threads.preserve_pair_uncommitted(thread_id, agent_name):
+                if move is not None and move.threads._preserve_pair_uncommitted(
+                        thread_id, agent_name, view=release_view, read_state=lifecycle_state):
                     continue
                 existing = self._conn.execute(
                     "SELECT 1 FROM thread_reply_delivery_state "
@@ -810,6 +830,10 @@ class ReplyDeliveryMixin:
                     (thread_id, agent_name),
                 ).fetchone()
                 from_seq = legacy["from_seq"]
+                # Every remaining branch writes. No native view or lifecycle
+                # conclusion may survive into the next participant afterwards.
+                view = unbuilt
+                lifecycle = None
                 if from_seq is not None:
                     # Terminalize exactly those legacy pending REPLYs with an
                     # explicit coalesced_cutover receipt.

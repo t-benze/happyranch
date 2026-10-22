@@ -97,6 +97,16 @@ complete validation reconstructs fresh state, and caller-owned transactions stay
 open. Public schema readers retain their layout/None returns. Standalone
 role/import/template readers retain their existing defaults and provenance.
 
+Only the owned write-free existing-layout install_or_recover branch privately
+collects the validated audit device/inode/last-rowid. An outer Database RLock spans
+transaction exit and publication after successful COMMIT, publishing that exact
+prefix rather than a newer MAX. Validation failure, rollback, uncertain/failed
+COMMIT, interruption or detected identity/MAX regression cannot publish it.
+Caller transactions remain refused; fresh installation and public schema snapshots
+retain their behavior. Complete J/inventory/mapping/queued/source/data=False/FK/
+integrity checks remain; bounded mapping/queued paths do not trust watermarks.
+This assumes cooperative insert-only history, not arbitrary same-UID rewrites.
+
 PR1165's prerequisite merged at fee7aa7222dbc80e16492258c15f8fa3214fabad,
 with independent TASK12436 APPROVE and synthetic executable TASK12438 PASS at
 reviewed aa9e64ad3a568b080571f86c6453d191aa6c706b (identical merge tree).
@@ -873,6 +883,24 @@ is unavailable. The approved human risk override requires exact preview, stable
 org-wide key, canonical command and explicit confirmation of late producer/session
 writes, overlapping work, repeated external effects and missing owner/process/
 effect closure. This source supplies no live-use, deployment or restart authority.
+
+Startup and archived-thread resume cutover share a lazy, fully materialized
+release view and common lifecycle-family decoding only within one transaction's
+mutation-free segment. Unbuilt differs from proven-empty; every write invalidates
+both views and selected conclusions. Initialized pairs still pass evidence and
+permission checks before the no-op shortcut. Common sibling shape/size/duplicate/
+org/thread/audit-owner checks remain complete; selected initial/append/native
+agent/session histories replay on demand in caller order. Ordinary absent history
+remains None, distinct from bounded release missing/orphan/1024-row refusals.
+Permissions, live owners, holds, recovery, Pause, effects and raw census stay fresh.
+Terminal status alone is unsafe: callback consumption can precede cleanup, and
+settled=true/quiescent=false or sticky failed_cleanup retains unknown. Pending
+preservation still uses the stricter retry/deferral/live-owner predicate; nonpending
+history must be producer-settled and known before it stops preserving. Other
+callers reread normally. This is full common decoding with lazy selected replay,
+not unsettled-only pruning or lifecycle clearance. A legacy triggering_seq0 write
+followed by another participant's native_delivery_range refusal rolls back the
+whole cutover, without reusing the prewrite view or changing resume's prior commit.
 
 The append-only version1 `thread_delivery_release` companion retains real thread
 scope/permanent agent meanings and literal lifecycle-v1/unknown/retry history.

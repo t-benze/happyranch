@@ -368,7 +368,7 @@ scripts/daemon.sh stop --force     # graceful shutdown (default daemon needs --f
 ```
 
 The daemon binds to port **8765** by default. Override with `HAPPYRANCH_DAEMON_PORT=<n>` before starting if that port is taken.
-`scripts/daemon.sh start` waits up to 30 seconds for the daemon's public
+`scripts/daemon.sh start` waits up to 120 seconds for the daemon's public
 `GET /api/v1/health` endpoint to answer. Set
 `HAPPYRANCH_DAEMON_START_TIMEOUT=<seconds>` to another positive integer for a
 slower host. If the daemon process exits during startup, the command fails

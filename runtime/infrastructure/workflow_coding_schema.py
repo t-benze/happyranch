@@ -325,7 +325,8 @@ def validate_coding_data(conn: sqlite3.Connection, *, layout: str,
 
 def _read_coding_data(conn: sqlite3.Connection, *, layout: str,
                       expected_org_slug: str | None,
-                      budget: _Budget | None = None) -> _CodingInventory | None:
+                      budget: _Budget | None = None,
+                      advances: list[tuple[tuple[int, int], int]] | None = None) -> _CodingInventory | None:
     # Own a coherent snapshot only when the caller has none. Central callers
     # have already recognized the complete schema; no recursive schema read.
     if budget is not None:
@@ -335,17 +336,18 @@ def _read_coding_data(conn: sqlite3.Connection, *, layout: str,
     owned = not conn.in_transaction
     # A snapshot we open ourselves holds no uncommitted rows of ours, so the
     # audit rows it verified are committed; advance only after it ends.
-    advances: list[tuple[tuple[int, int], int]] | None = [] if owned else None
+    collected = [] if owned else advances
     if owned:
         conn.execute('BEGIN')
     try:
         inventory = _validate_coding_data(conn, layout=layout, expected_org_slug=expected_org_slug,
-                                          advances=advances, budget=budget)
+                                          advances=collected, budget=budget)
     finally:
         if owned:
             conn.rollback()
-    for file_key, last_id in advances or ():
-        _advance_audit_log_watermark(conn, file_key, last_id)
+    if owned:
+        for file_key, last_id in collected or ():
+            _advance_audit_log_watermark(conn, file_key, last_id)
     return inventory
 
 
@@ -577,6 +579,18 @@ def _advance_audit_log_watermark(conn: sqlite3.Connection, file_key: tuple[int, 
     # rollback would reuse their AUTOINCREMENT ids, so never cache past them.
     if conn.in_transaction:
         return
+    if _audit_log_file_key(conn) != file_key:
+        with _AUDIT_LOG_WATERMARK_LOCK:
+            _AUDIT_LOG_WATERMARKS.pop(file_key, None)
+        return
+    current_max = conn.execute('SELECT COALESCE(MAX(rowid), 0) FROM audit_log').fetchone()[0]
+    if type(current_max) is not int or current_max < last_id:
+        with _AUDIT_LOG_WATERMARK_LOCK:
+            _AUDIT_LOG_WATERMARKS.pop(file_key, None)
+        return
     with _AUDIT_LOG_WATERMARK_LOCK:
+        if current_max < _AUDIT_LOG_WATERMARKS.get(file_key, 0):
+            _AUDIT_LOG_WATERMARKS.pop(file_key, None)
+            return
         if last_id > _AUDIT_LOG_WATERMARKS.get(file_key, 0):
             _AUDIT_LOG_WATERMARKS[file_key] = last_id

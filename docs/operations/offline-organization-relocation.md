@@ -1146,7 +1146,7 @@ are unchanged.
 
 After launch, `cmd_start` waits for the configured bind host's public
 `GET /api/v1/health` endpoint, not merely the port file. The wait is controlled
-by the positive-integer `HAPPYRANCH_DAEMON_START_TIMEOUT` (default 30 seconds),
+by the positive-integer `HAPPYRANCH_DAEMON_START_TIMEOUT` (default 120 seconds),
 and wildcard binds are probed through loopback. A dead launch fails fast; a
 dead launch or timeout prints the last 20 daemon-log lines. If `curl` is
 unavailable, the script announces its fallback to the fresh `daemon.port`

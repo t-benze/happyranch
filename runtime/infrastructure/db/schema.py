@@ -2014,6 +2014,19 @@ class SchemaMixin:
         self._conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_audit_log_task_id ON audit_log(task_id)"
         )
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_audit_log_action ON audit_log(action)"
+        )
+        # IF NOT EXISTS does not authenticate an existing same-name object.
+        index = [tuple(row) for row in self._conn.execute("PRAGMA index_list(audit_log)")
+                 if row[1] == "idx_audit_log_action"]
+        columns = [tuple(row) for row in self._conn.execute("PRAGMA index_xinfo(idx_audit_log_action)")]
+        action_cid = next(row[0] for row in self._conn.execute("PRAGMA table_info(audit_log)")
+                          if row[1] == "action")
+        if (len(index) != 1 or index[0][2:] != (0, "c", 0)
+                or columns != [(0, action_cid, "action", 0, "BINARY", 1),
+                               (1, -1, None, 0, "BINARY", 0)]):
+            raise ValueError("audit_log_action_index_mismatch")
         for ddl in (
             "ALTER TABLE custom_skills ADD COLUMN purged_at TEXT",
             "ALTER TABLE custom_skills ADD COLUMN purge_id TEXT",

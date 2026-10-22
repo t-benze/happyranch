@@ -115,7 +115,13 @@ class ThreadAdmissionStore:
     def _replay_states(
         self, inv: Any, rows: Iterable[Mapping[str, Any]], *, check: Callable[[], None],
     ) -> Iterable[tuple[Mapping[str, Any], ThreadLifecycle]]:
-        prior = None
+        return self._replay_selected(inv,
+            self._decode_states(inv.thread_id, rows, check=check), check=check)
+
+    def _decode_states(
+        self, thread_id: str, rows: Iterable[Mapping[str, Any]], *, check: Callable[[], None],
+    ) -> Iterable[tuple[Mapping[str, Any], ThreadLifecycle]]:
+        """Common family validation, including siblings of the selected owner."""
         for row in rows:
             check()
             raw = row["payload"]
@@ -131,9 +137,17 @@ class ThreadAdmissionStore:
             json.loads(raw, object_pairs_hook=unique)
             check()
             state = ThreadLifecycle.model_validate_json(raw, strict=True)
-            if (state.org_slug != self.org_slug or state.thread_id != inv.thread_id
+            if (state.org_slug != self.org_slug or state.thread_id != thread_id
                     or state.agent_id != row["agent"]):
                 raise ValueError("audit owner")
+            yield row, state
+
+    def _replay_selected(
+        self, inv: Any, decoded: Iterable[tuple[Mapping[str, Any], ThreadLifecycle]], *,
+        check: Callable[[], None],
+    ) -> Iterable[tuple[Mapping[str, Any], ThreadLifecycle]]:
+        prior = None
+        for row, state in decoded:
             if state.invocation_id != inv.id:
                 continue
             if state.agent_id != inv.agent_name or (inv.session_id and state.session_id != inv.session_id):
@@ -146,6 +160,9 @@ class ThreadAdmissionStore:
             prior = state
             check()
             yield row, state
+
+    def _read_segment(self, thread_id: str) -> _ThreadLifecycleSegment:
+        return _ThreadLifecycleSegment(self, thread_id)
 
     @staticmethod
     def _validate_append(prior: ThreadLifecycle, current: ThreadLifecycle) -> None:
@@ -221,3 +238,39 @@ class ThreadAdmissionStore:
             raise ValueError("thread audit writer representation bound")
         self.db.insert_audit_log_uncommitted(task_id=inv.thread_id, agent=inv.agent_name,
             action="thread_move_lifecycle", payload=payload)
+
+
+class _ThreadLifecycleSegment:
+    """Private lazy conclusions for one cutover's mutation-free interval."""
+
+    def __init__(self, store: ThreadAdmissionStore, thread_id: str) -> None:
+        self.store, self.thread_id = store, thread_id
+        self.decoded: dict[int, list[tuple[Mapping[str, Any], ThreadLifecycle]]] | None = None
+        self.selected: dict[tuple[int, str, str | None], ThreadLifecycle | None] = {}
+
+    def read(self, inv: Any) -> ThreadLifecycle | None:
+        try:
+            if inv.thread_id != self.thread_id:
+                raise ValueError("thread segment owner")
+            if self.decoded is None:
+                rows = self.store.db._conn.execute(
+                    "SELECT agent,payload FROM audit_log WHERE task_id=? "
+                    "AND action='thread_move_lifecycle' ORDER BY id", (self.thread_id,),
+                )
+                decoded: dict[int, list[tuple[Mapping[str, Any], ThreadLifecycle]]] = {}
+                # All common siblings validate even when selected history is
+                # absent. Selected append/initial/session errors stay lazy.
+                for row, state in self.store._decode_states(self.thread_id, rows, check=lambda: None):
+                    decoded.setdefault(state.invocation_id, []).append((row, state))
+                self.decoded = decoded
+            key = (inv.id, inv.agent_name, inv.session_id)
+            if key not in self.selected:
+                prior = None
+                for _, state in self.store._replay_selected(
+                        inv, self.decoded.get(inv.id, ()), check=lambda: None):
+                    prior = state
+                self.selected[key] = prior
+            return self.selected[key]
+        except (ValueError, TypeError, ValidationError) as exc:
+            from runtime.orchestrator.team_move import DeferredTeamMove
+            raise DeferredTeamMove("team_move_thread_audit_unavailable") from exc
