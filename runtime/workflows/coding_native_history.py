@@ -645,7 +645,10 @@ def read_native(conn: Any, org: str, budget: Any, storage: Any, *, start: dict,
             host = _host(facts['host'], state['claim'], attempt['session_id'], attempt['principal'], org, attempt['id'], budget)
             _check(same({**host, 'terminal_receipt': None, 'cleanup': None}, state['host']))
             receipt = host['terminal_receipt']
-            safe = (type(receipt) is dict and receipt.get('quiescent') is True
+            # Only launch_observed can supply this identity; terminal replay
+            # must not turn a handleless reservation into successful execution.
+            safe = (host['handle_id'] is not None and host['backend'] is not None
+                    and type(receipt) is dict and receipt.get('quiescent') is True
                     and receipt.get('backend') == host['backend'] and host['backend'] != 'passthrough'
                     and receipt.get('cleanup_status') != 'incomplete' and receipt.get('survivors') == []
                     and host['cleanup'] == dict(error=None))
