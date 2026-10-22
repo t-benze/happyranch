@@ -276,8 +276,12 @@ its local finally retains the SAME `if controller.browser` conditional
 invocation escapes. Earlier safe publication can precede poison's secondary
 throw or consumption of remaining time. Caller finally preserves an ATTEMPT,
 not poison or publication completion. The outer close/evidence finally, phase
-bookkeeping and selected raw-primary final raise remain unchanged: when reached,
-that raise propagates the first actually recorded winner and its traceback.
+bookkeeping and original selected raw-primary final raise expression retain
+their order: when reached, main raises the SAME first actually recorded object
+with its saved traceback. Only the narrowly matched real module-entry adapter
+then translates that raise to SystemExit; this deliberately replaces automatic
+uncaught traceback output and selected special BaseException termination.
+Calling main without its private production handoff preserves propagation.
 Exactly THREE existing owner-only nonrecursive main publisher calls remain:
 action catch, close-finalization and post-evidence. Off-owner/reentry skips
 without locks or waits. A protected-body caught metadata/I/O/alarm failure makes
@@ -289,8 +293,8 @@ observation, inherited), including after an absorbed alarm. Earlier I/O can
 consume original time; no extra slack/reserve is added. Constructor failure,
 interruption in the legacy record_error tail, arbitrary later/repeated
 interruption, crash and hard OS-I/O remain limits on publication, poison and
-final propagation. An earlier file/frozen projection can be stale; unavailable,
-null or stale metadata proves neither latest/complete cause nor local poison
+reaching the final raise or terminal translation. An earlier file/frozen
+projection can be stale; unavailable, null or stale metadata proves neither latest/complete cause nor local poison
 execution, and earns no context/readiness/case/cleanup/health credit.
 Controller requests observer stop, and atomically stages small complete sanitized
 marks/trace before optional native teardown and bulky evidence. Resource attempts independently retain
@@ -557,7 +561,7 @@ The new category and cleanup-isolation expectations have no attributable intende
 
 ### Accepted recovery expectations and authoring answers
 
-These accepted rows cover only R1–R3 and their interactions; the L1–L7 memberships and validator maps above remain intact. IDs below are finite **design expectations**, not newly authored runnable tests, new manifest variants, or a campaign authorization. No new verifier/harness/venue/seam is proposed. Each observation is a shipping boundary (result.json, sanitized detailed members when admissible, original controller exit/traceback or actual owned cleanup observations), not a self-comparison with a helper.
+These accepted rows cover only R1–R3 and their interactions; the L1–L7 memberships and validator maps above remain intact. IDs below are finite **design expectations**, not newly authored runnable tests, new manifest variants, or a campaign authorization. No new verifier/harness/venue/seam is proposed. Each observation is a shipping boundary (result.json, sanitized detailed members when admissible, controller final-raise/terminal boundary or actual owned cleanup observations), not a self-comparison with a helper.
 
 Environment/levels: **H** = existing disposable hosted Ubuntu harness CLI/process/file boundary, synthetic run root, real ownership and original clocks, in EACH existing CPython3.12/3.14 cell; **J** = existing serialized result/consumer boundary in that same environment; **C** = actual controller/launcher propagation/finalization boundary within H. Root/process/port ownership is serialized through the existing root allocation. No live host, PR/local runner, extra disposable venue or infrastructure is allocated. No behavioral command is run for these rows; source/AST/diff and lint are recorded separately. Source/design inspection can assess these expectations; it cannot prove them. All rows have corrected behavior NOT RUN and intended-failure/restored-pass PROOF NOT RUN. Native39765942783 is the preserved genuine failure, not intended RED for this source repair.
 
@@ -574,10 +578,10 @@ Environment/levels: **H** = existing disposable hosted Ubuntu harness CLI/proces
 | R1-09 null success ambiguity | Valid envelope with both slots null, then no further publication | available/null slots never certify error absence or successful capture, never fill missing variants/artifacts. Any underlying native health failure stays failure. | J / A |
 | R1-10 stale | Earlier valid published envelope; later write fails before pending creation or dies before a boundary; read prior final | available may contain old/null slots; no latest/complete/publication-failure guarantee. If pending exists instead, R1-04 unavailable applies. No overwrite of first controller latches or raw primary. | H+J / A |
 | R1-11 read/write expiry | Original effective end expires during read/parse/write/replace or an I/O error occurs | Before/after checks refuse new optional work. Expiry terminates applicable attempt sequence, not a recoverable unavailable branch. A committed replace may exist but no rollback/latest claim; initial safe result, if already published, survives. | H+C / A |
-| R2-01 nested first error | Action throws A; nested phase/bounded unwind and restoration throw B/C before finalization | Original selected raw A/traceback and its fixed first stage/category survive; later restored errors stay secondary in gated evidence. Original nonzero/propagation is preserved through final main raise; category never asserts product cause. | C / B |
+| R2-01 nested first error | Action throws A; nested phase/bounded unwind and restoration throw B/C before finalization | Original selected raw A/traceback and its fixed first stage/category survive; later restored errors stay secondary in gated evidence. SAME raw object/traceback is preserved through final main raise; the selected terminal adapter below controls the subsequent exit, without asserting product cause. | C / B |
 | R2-02 subclass/mapping | Known literals from every caller family, unknown dynamic name, UnicodeError/ValueError, TimeoutError/InterruptedError/OSError, RuntimeError with signal-like text, custom subclass and unrelated custom error | Closed stages and exact ordered built-in categories; no class-name/message projection or signal inference. Real signal receipt still owns signal identity. Final receipt contains only finite fields. | C+J / B |
-| R2-03 reentry | Writer active, native callback or signal calls record_error; nested request attempts writer | Raw/first categories latch before I/O; second writer skips without lock/wait/recursion. Current snapshot may omit new latch; next existing boundary may publish only with positive original time. Primary still propagates. | C / B |
-| R2-04 off-owner | Future nonowner record_error/writer request while owner snapshotting | First-winner memory only; nonowner writer skips/no enqueue/wait, no observer/relay dependency. Unpublished detail remains unknown. No new owner/thread lifecycle is admitted; original process outcome is unchanged. | C / B |
+| R2-03 reentry | Writer active, native callback or signal calls record_error; nested request attempts writer | Raw/first categories latch before I/O; second writer skips without lock/wait/recursion. Current snapshot may omit new latch; next existing boundary may publish only with positive original time. SAME primary object/traceback is preserved through main's final raise when reached; subsequent handling follows the selected adapter below. | C / B |
+| R2-04 off-owner | Future nonowner record_error/writer request while owner snapshotting | First-winner memory only; nonowner writer skips/no enqueue/wait, no observer/relay dependency. Unpublished detail remains unknown. No new owner/thread lifecycle is admitted; off-owner skip behavior is unchanged; subsequent terminal handling follows the selected adapter below. | C / B |
 | R2-05 writer failure | Any publication metadata/create/write/close/replace failure after raw latch | Local publication state failed, no record_error/_attempt recursion, first raw/traceback/category retained. Existing pending never truncated; subsequent optional work rechecks original deadline. Remote detail may be old/unavailable. | H+C / B |
 | R2-06 capture failure | Capture query/remember throws A; existing[] invalidation succeeds | [] attempt precedes diagnostic latch. Same A propagates with original traceback; separate first context slot records context/category without setting readiness or replacing first_observed. Unsafe detail withheld; no last-good/bearer-only republish. | C+J / B |
 | R2-07 invalidation failure | Capture throws A and original[] write throws B | Same B/traceback/exception precedence propagates as before; fixed context capture slot about A may latch after failed[] attempt and local invalidation_failed=true, never a successful invalidation claim. Writer/category errors cannot replace B or supply readiness. | C+J / B |
@@ -600,18 +604,117 @@ SAME C/H/J environments and add no runnable cases or proof campaign.
 
 | Affected existing row | Requirement → precondition/action → final observable result → level |
 | --- | --- |
-|R2-01| Preserve the actually-selected raw winner A/traceback, including nested restore B remaining secondary, rather than infer an initiating assertion. Preconditions: completed record_error, safe existing paths/source and positive ORIGINAL effective end. The SAME earlier writer is tried, with the original conditional poison in its main-local finally. Keep poison ordinary-return AND secondary-throw branches; if publication succeeds, the private finite file and eventual frozen launcher projection record A's first category before poison, independently of poison success. A stays the stored primary and the unchanged final raise propagates A/traceback when reached; the result remains nonzero/FAIL. An escaping writer still unwinds through the poison attempt; its completion and arbitrary later interruptions are not guaranteed. Refusal does not promise a file. C+H; J observes eventual safe result/noncredit, not proof poison ran. |
-|R2-05| With raw A already selected, a usable unpoisoned Browser and positive ORIGINAL time, distinguish (a) metadata/pending/create/write/close/replace failure or absorbed alarm IN the protected writer body: existing handler makes sticky refusal and returns if its assignments/reset complete; later calls consult that sticky state, raw A/traceback survive and pending bytes are never truncated/exported; from (b) an interruption escaping writer entry, handler assignments or active reset: caller finally still preserves the original conditional poison ATTEMPT before outer finalization can consider native work. Publication/active/latch outcomes remain UNKNOWN wherever assignments were never reached; do not promise publication_failed, active=False, cleanup of pending or state repair, and do not alter/reset the writer. Original raw latches and unchanged selected-primary final propagation/nonzero remain, subject to existing later interruption limits. Safe exported result is unavailable or a validated possibly stale projection, with original failure noncredit; that J output cannot prove poison executed. Expiry admits no new optional work or reserve; only the unchanged three calls remain. C observes actual propagation/poison attempt and resulting finalization; H observes real publication/refusal/inode outcomes; J observes frozen failure semantics. |
-|X-01| Retain the original raw A/restore B/capture C/failed[] D/writer-failure/reader-collection-port-root-export failure chain. Retain the added earlier-SUCCESS branch: while ORIGINAL time is positive the moved call publishes, then poison/close/capture fails or later expiry prevents updates; frozen safe earlier projection may survive root loss but is stale/noncredit, full detail stays withheld, both cleanup flags stay false for required staging failure, fallback variants={} and native health failure persist. Incorporate D1 within these branches: a writer whole-call escape must still unwind through the original conditional poison attempt; never infer that attempt from J's unavailable/stale fields or promise active/sticky reset for unreached assignments. Raw A ownership and unchanged final-primary propagation remain; successful poison completion and immunity to repeated interruption/crash are not promised. C+H+J; no new journey, row or campaign. |
+|R2-01| Preserve the actually-selected raw winner A/traceback, including nested restore B remaining secondary, rather than infer an initiating assertion. Preconditions: completed record_error, safe existing paths/source and positive ORIGINAL effective end. The SAME earlier writer is tried, with the original conditional poison in its main-local finally. Keep poison ordinary-return AND secondary-throw branches; if publication succeeds, the private finite file and eventual frozen launcher projection record A's first category before poison, independently of poison success. A stays the stored primary and the original final raise raises SAME A/traceback when reached, before the selected terminal adapter below; the result remains nonzero/FAIL. An escaping writer still unwinds through the poison attempt; its completion and arbitrary later interruptions are not guaranteed. Refusal does not promise a file. C+H; J observes eventual safe result/noncredit, not proof poison ran. |
+|R2-05| With raw A already selected, a usable unpoisoned Browser and positive ORIGINAL time, distinguish (a) metadata/pending/create/write/close/replace failure or absorbed alarm IN the protected writer body: existing handler makes sticky refusal and returns if its assignments/reset complete; later calls consult that sticky state, raw A/traceback survive and pending bytes are never truncated/exported; from (b) an interruption escaping writer entry, handler assignments or active reset: caller finally still preserves the original conditional poison ATTEMPT before outer finalization can consider native work. Publication/active/latch outcomes remain UNKNOWN wherever assignments were never reached; do not promise publication_failed, active=False, cleanup of pending or state repair, and do not alter/reset the writer. Original raw latches and SAME selected-primary final raise remain; the selected adapter below then controls terminal handling, subject to existing later interruption limits. Safe exported result is unavailable or a validated possibly stale projection, with original failure noncredit; that J output cannot prove poison executed. Expiry admits no new optional work or reserve; only the unchanged three calls remain. C observes actual propagation/poison attempt and resulting finalization; H observes real publication/refusal/inode outcomes; J observes frozen failure semantics. |
+|X-01| Retain the original raw A/restore B/capture C/failed[] D/writer-failure/reader-collection-port-root-export failure chain. Retain the added earlier-SUCCESS branch: while ORIGINAL time is positive the moved call publishes, then poison/close/capture fails or later expiry prevents updates; frozen safe earlier projection may survive root loss but is stale/noncredit, full detail stays withheld, both cleanup flags stay false for required staging failure, fallback variants={} and native health failure persist. Incorporate D1 within these branches: a writer whole-call escape must still unwind through the original conditional poison attempt; never infer that attempt from J's unavailable/stale fields or promise active/sticky reset for unreached assignments. Raw A ownership and SAME final-primary raise remain before the selected adapter below; successful poison completion and immunity to repeated interruption/crash are not promised. C+H+J; no new journey, row or campaign. |
 
 Four authoring answers for **every changed named row**, with complete shared-block membership:
 
 | Block and exact membership | 1. Observable contract | 2. Credible regression | 3. Nearest keepers, precise gap and distinct additional-layer risks | 4. Test-only production seam |
 | --- | --- | --- | --- | --- |
 | A: R1-01–R1-11 | Exact optional result member/source/snapshot fields after cleanup and final receipt replacement; unsafe input never appears in artifacts; fixed unavailable/omission and original failure retained. | Admit duplicate keys/source drift/nonfinite value; follow/truncate alias or pending; call stale/null snapshot latest/complete; export raw rejected bytes. | Existing Controller first-error/private staging and run.failure_receipt are nearest, but no existing direct assertion owns the new closed category channel or hostile filesystem/JSON forms. Existing E07 finite launch-record reasons are a shape precedent, not a keeper for this schema. H sees actual inode/read/write/root-loss risks; J independently observes serialized admission/absence/shape and health noncredit, which cannot prove OS behavior. | NO for every listed case. Existing private runtime path and public exported artifact only. |
-| B: R2-01–R2-08 | Controller original selected-primary exit/traceback when the final raise is reached, gated detail and separate fixed first/context slots; earlier safe publication independent of poison success and original conditional poison ATTEMPT via main-local finally independent of writer return. No reentrant publication. | Publish during record_error; overwrite first raw/category on restore; recurse on writer failure; diagnose before[]; swallow invalidation/expiry; infer signal from RuntimeError text; equate body catch with whole-call protection and skip poison on entry/reset escape, or invent sticky/reset state for unreached assignments. | Keep phase/bounded traceback restore, record_error, capture's[]/bare raise, prepare_redaction and main's final-primary raise. Extend only R2-01/R2-05 for poison return/secondary throw and whole-call writer escape. Success/TERM/INT lacks these combinations; R2-08 expiry/constructor and R1-10 stale remain distinct. C observes actual poison attempt, primary propagation and resulting finalization; H observes real safe publication/refusal/pending and state uncertainty; J sees finite frozen fields/noncredit and cannot establish poison execution, unexported traceback or cause. Source inspection is not behavioral proof. | NO for every listed case. No new callback/export/injection/parameter/wrapper or writer change. |
+| B: R2-01–R2-08 | Controller SAME selected-primary object/saved traceback through the actual final raise, then the matched selected terminal handling below, gated detail and separate fixed first/context slots; earlier safe publication independent of poison success and original conditional poison ATTEMPT via main-local finally independent of writer return. No reentrant publication. | Publish during record_error; overwrite first raw/category on restore; recurse on writer failure; diagnose before[]; swallow invalidation/expiry; infer signal from RuntimeError text; equate body catch with whole-call protection and skip poison on entry/reset escape, or invent sticky/reset state for unreached assignments. | Keep phase/bounded traceback restore, record_error, capture's[]/bare raise, prepare_redaction and main's final-primary raise. Extend only R2-01/R2-05 for poison return/secondary throw and whole-call writer escape. Success/TERM/INT lacks these combinations; R2-08 expiry/constructor and R1-10 stale remain distinct. C observes actual poison attempt, primary propagation and resulting finalization; H observes real safe publication/refusal/pending and state uncertainty; J sees finite frozen fields/noncredit and cannot establish poison execution, unexported traceback or cause. Source inspection is not behavioral proof. | NO for every listed case. The private main handoff serves actual production module entry, with no test-only callback/export/injection/parameter/wrapper. |
 | D: R3-01–R3-09 | Actual owner-first cleanup and independently observed ports/literal root, original bound transitions, final nonzero/FAIL, sticky both-ok false and variants={} fallback through later export; R3-07 also requires persisted final disposition to agree with terminal commit. | Keep one try grouping; let port failure skip removal; reset C; continue after timeout; clear staging failure after root absence or recollection; perform teardown in export; reintroduce a fallible deadline/alarm path after final replacement. | Keep Owned.cleanup/PID-start/unit/group/watcher gates, run.collection/failure_receipt, validate_timing and cancellation.validate. Existing TERM/INT success closes its diagnostic only, never failed baseline collection/isolation. No direct keeper asserts these new combined failures or the R3-07 final-commit ordering. H sees real removal/port/deadline/queued-alarm effects; J sees serialized failure laundering/empty variants and final disposition; neither layer replaces the other. Aggregate metadata controls reject false shapes but cannot prove cleanup execution or publication ordering. | NO for every listed case. No Owned implementation change or test-only seam. |
 | E: X-01–X-02 | End-to-end selected-error precedence and frozen safe projection/noncredit across controller death/root loss/export, with full-context raw withholding. X-01 retains original chain plus earlier snapshot/later poison-close-capture-failure/expiry and caller-finally interaction; X-02 retains terminal disposition matching successful final replacement. | Locally correct helpers combine to skip poison on whole-call writer escape, erase first error/cleanup failure, refresh stale source, admit partial detail, treat unavailable/stale J output as proof poison ran, or rely on another write after a postcommit alarm. | Same B/D keepers and precise cross-process composition gap; extend X-01 only. C owns actual propagation/poison attempt/finalization; H owns actual publication/refusal/root-loss effects; J uniquely owns frozen failure semantics after source loss and can misattribute/launder failure despite correct local refusal. J cannot prove OS or poison execution or repair unknown active/latch state. Preserve12649 X-02 precommit/terminal commitment and queued-alarm semantics. | NO for both cases. Existing main boundaries/artifacts only; no new journey, verifier or seam. |
+
+### Advisory terminal interpretation (TASK12709 / accepted12707-12708)
+
+This extends the SAME recovery record after ROOT12610 step28 acceptance of
+TASK12707's design and independent TASK12708 DESIGN ONLY assessment. References
+above to primary propagation apply through main's actual final raise; this
+selected internal adapter deliberately changes subsequent interpreter handling.
+It adds no result field, runtime decoder, test driver or reliable telemetry.
+
+W is the actual immutable `_failure_raw["first"]` tuple, including its original
+object and saved traceback, never a category slot or latest cleanup error.
+Inside the original owner/active/sticky guards, one private `setdefault` claim
+binds W and a fresh invocation nonce before the FIRST initial check prepared
+with W. Only that winning nonce may complete ONE immutable observation for the
+SAME current W. A check prepared with no W stays unassociated; a later winner
+never joins it retroactively. Later calls cannot repair a pending claim.
+Off-owner/reentry/sticky skips create no observation. The SAME original
+`monotonic() >= effective_end()` comparison executes ONCE; its actual Boolean
+and W's unchanged `_failure_error` category complete before the existing true
+TimeoutError or false continuation. Other checks retain their original behavior.
+No extra clock, check, timer, publisher or reserve is introduced. Partial or
+interrupted comparison/category/assignments stay UNKNOWN, with no handler/finally
+repair. A completed tuple is historical, never eventual publication state.
+
+Only a narrow catch around the ORIGINAL final raise expression may hand off:
+actual raw/primary/caught-object/saved-traceback identity must match, and the
+new main traceback head must point exactly to that saved traceback. It stores
+real immutable references with the real module token/frame, then BARE RAISES.
+The actual module call verifies fresh token/frame, the caught object, its module
+traceback head and EXACT following stored main head, then claim/nonce/W/enum/
+Boolean. Earlier armed state, matching text/class, the same object at another
+site or a completed earlier check alone cannot authorize translation. No wrapper
+frame is added to unselected tracebacks. Main without handoff preserves propagation;
+imported Controller use gains only finite private per-instance memory.
+
+A complete selected handoff with a matching complete observation emits an exact
+built-in integer `80 + 2*k + b`, b=0 for positive, b=1 for exhausted:
+
+| k / existing error enum | Positive | Exhausted |
+| --- | ---: | ---: |
+| 0 unicode | 80 | 81 |
+| 1 timeout | 82 | 83 |
+| 2 interruption | 84 | 85 |
+| 3 assertion | 86 | 87 |
+| 4 value | 88 | 89 |
+| 5 io | 90 | 91 |
+| 6 runtime | 92 | 93 |
+| 7 other | 94 | 95 |
+
+Unicode retains precedence over ValueError, TimeoutError over OSError; interruption
+includes KeyboardInterrupt/SystemExit/GeneratorExit/InterruptedError and does not
+prove an OS signal. `other` requires completed evidence; it is not UNKNOWN.
+Positive means only that check's non-exhausted branch, never publication.
+Exhausted means only its exhausted branch, never which inner bound won, cause,
+final writer state or why a file is absent. A complete selected handoff without
+a matching complete observation emits noncategorical1. Selected ordinary and
+special BaseExceptions, including SystemExit0, become `raise SystemExit(status)
+from None`: automatic uncaught traceback/special handling is deliberately replaced.
+
+The ONLY otherwise-unselected normalization is exact built-in SystemExit whose
+code is an underlying int (including int subclass), within signed64 and with low
+byte80–95: direct80 and aliases336/-176 become1. Built-in int operations bypass
+subclass operator overrides; no arbitrary conversion or code mutation. None,
+noninteger, Boolean0/1, noncolliding and outside-signed64 codes retain handling.
+Normal return0, argument2, constructor and other unselected Exception/BaseException
+handling remain. Dynamic/stateful SystemExit subclasses, pre-entry/native positive
+collisions and interpreter failures remain unisolated. This targets the existing
+direct Linux64 CPython3.12/3.14 invocation. Interruption anywhere can prevent
+handoff or exit; normal finalization can change the intended exit (including120)
+or receipt. No shield, repair, synthetic traceback/stderr, hook, atexit, os._exit,
+supervisor or new I/O promises a categorical status.
+
+Documentation is the ONLY new interpreter; runtime retains literal actual
+scenario `phase.exit`. Require genuine completed source/admission/event/ref/run/
+attempt/SHA/tree/interpreter/controller-command provenance, then exact built-in
+int80–95 only. Never coerce bool/string/float or apply modulo to the recorded exit.
+Even with all joins, a reserved byte NEVER authenticates encoder entry or cause:
+state only “consistent with candidate category/first-check pair under this source;
+encoder entry is not independently proved.” Other/null/partial/negative/old-source
+or wrong-type records stay UNKNOWN;1 is noncategorical;0 alone gives no case or
+health acceptance.120 is outside the table. No requirements1–3/Product/reset,
+local encoder/poison/I/O/sanitation/cleanup or native initiating-cause credit follows.
+
+Extend only these existing joins, with all other thirty-row/A-B-D-E expectations,
+accepted12693 reader/raw-copy additions, delivered12649/12675/12697 assertions,
+56 EACH,16-site and full validator maps retained by reference:
+
+| Affected row and finite subinputs → expected final transition | Observable contract / credible regression | Keeper gap and distinct C/H/J risk | Test-only seam |
+| --- | --- | --- | --- |
+| R2-01/R2-05/X-01: raw A versus later restore/poison/close B; first associated check positive/exhausted; final raise reached/bypassed | SAME A/saved traceback survives original conditional poison ATTEMPT/finalization to actual final raise when reached. Only complete matched handoff+observation gives A's pair; complete selected handoff without observation gives1. A bypassed final raise gives no selected translation. Regression: encode B, compare text, arm before finalization or omit caller finally. | phase/bounded/raw/capture/poison keepers own precedence and ATTEMPT, not terminal identity/numeric emission. C owns actual object/traceback/check/attempt; H real child emission/failure retention; J consistency/noncredit cannot prove encoder/poison execution. | NO for every named row/subinput; real production module handoff only. |
+| R1-11/R2-08/R3-06: no-W; interrupt before claim, comparison, category, completion, handler/reset/handoff; pending nonce, later call, reentry/sticky/off-owner; positive/exhausted; success, argument/constructor, unrelated Exception/BaseException, selected SystemExit0/KeyboardInterrupt/GeneratorExit; exact built-in SystemExit direct80/aliases336/-176, int-subclass overrides, None/noninteger/Boolean/noncolliding/outside-signed64, dynamic subclass/native/finalization collision limits | Complete historical tuple immutable; partial/no-match/unreached UNKNOWN and no later repair/retroactive association. Complete selected unknown gives1; exact collision gives1; others retain handling as specified above. Regression: extra clock, second nonce repairs first, infer bound from handler/final_missing or decode reserved-only output. | Existing expiry/constructor/writer keepers lack association/terminal join. C actual comparison/identity/interruption; H real status/partial receipt/native/finalization limits; J source/type consistency only. | NO for every named row/subinput; no new driver/export/flag. |
+| R3-07/R3-09/X-02: completed scenario table int versus null/negative/Boolean/string/float/wrong-source/partial; frozen FAIL, withholding/root loss;12649 precommit failure versus successful terminal replace | Retain exact phase exit, safe FAIL/variants={}, flags/frozen reader and original precommit/terminal ordering. Interpretation stays advisory/noncredit. Regression: coercion/modulo, substitute launcher/reaped exit, bypass sanitation or reclassify after commit. | command/failure_receipt/publish/12649 own carrier/commit, not independent category origin. H real assignment/file/publication/root loss; J serialized source/type consistency/noncredit cannot prove local encoder/poison/I/O/cleanup. | NO for every named row/subinput; existing fields/validators only. |
+| Existing TERM3.12/INT3.14: active witnesses, actual launcher signals15/2, independent closure; later controller reaped exit | Preserve launcher_exit1 and interrupted scenario exit=null at their own times; later controller reaping never fills phase null. All signal/closure/timing/raw-copy assertions remain. Regression: decode launcher1, substitute later child or broaden cancellation acceptance. | cancellation.validate/ALL14 controls and accepted raw-copy keeper remain. H owns two actual processes/times, signal and closure; J consistency cannot prove signal delivery/closure. Distinct from completed baseline exit. | NO for every named subinput; no new process or venue. |
+
+Behavior NOT RUN; intended-failure/restored-pass PROOF NOT RUN; sensitivity
+UNPROVED. No control/mutation/RED-restoration-GREEN/repetition campaign is allocated.
+Genuine native failure is not an unavailable-venue exemption. Static inspection
+and lint supply no behavioral/test-authoring PASS. Protected12/abruptR/E04cap/
+persistentStop holds and100MiB suffix-fit uncertainty remain.
 
 ### Optional reader disposition and raw-copy checks (TASK12697 / accepted12693)
 

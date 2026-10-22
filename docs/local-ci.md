@@ -537,8 +537,12 @@ SAME `if controller.browser` conditional `controller.browser.poison(exc)`
 ATTEMPT even if the ENTIRE writer invocation escapes. Earlier safe publication
 may precede poison's secondary throw or consumption of remaining time; neither
 publication nor poison completion is promised. The outer close/evidence finally,
-phase bookkeeping and selected raw-primary final raise are unchanged; when
-reached, that raise propagates the actual selected winner and its traceback.
+phase bookkeeping and original selected raw-primary final raise expression
+retain their order. When reached, main raises the SAME selected object with its
+saved traceback before a narrowly matched production module-entry adapter
+translates it. This deliberately changes interpreter-level uncaught output and
+selected special BaseException termination; main without handoff preserves
+propagation.
 Exactly THREE existing owner-only nonrecursive main publisher calls remain:
 action catch, close-finalization and post-evidence. Off-owner/reentry skips
 without locks/waits. Protected-body caught metadata/I/O/alarm failure is sticky
@@ -550,12 +554,13 @@ Optional work uses the SAME effective end=min(global, case, local, observation,
 inherited), including after an absorbed alarm. Earlier I/O can consume original
 time; no extra slack/reserve is added. Constructor failure, legacy-record_error-
 tail interruption, arbitrary later/repeated interruption, crash and hard OS-I/O
-remain limits on publication, poison and final propagation. A frozen earlier
-projection can be stale; unavailable/null/stale output cannot prove local poison
+remain limits on publication, poison, reaching the final raise and terminal
+translation. A frozen earlier projection can be stale; unavailable/null/stale output cannot prove local poison
 executed and earns no context/readiness/case/cleanup/health credit. Separate
 capture metadata follows the original[] invalidation attempt and preserves
-capture/invalidation exception precedence. Writer/state/signal/clock, context/
-readiness/sanitation and browser/transport/lifecycle implementations are unchanged.
+capture/invalidation exception precedence. Writer guards/publication behavior,
+signal/clock, context/readiness/sanitation and browser/transport/lifecycle remain.
+The only new writer state is finite private claim/completed-check memory.
 
 The private category snapshot and result projection have exact finite keys,
 enums, numeric/source/null/stale semantics and no raw text. The reader uses
@@ -566,6 +571,79 @@ supplies no latest/complete cause, capture success, readiness, marks or health.
 See [the existing case record](../e2e/README.md#task-12643-accepted-recovery-case-map-root12610--thr291)
 for all thirty R1/R2/R3/X expectations, A/B/D/E four answers, keeper gaps and
 full56 EACH3.12/3.14 L1–L7 plus TERM/INT/validator references.
+
+The accepted12707–12708 / TASK12709 terminal observation extends the
+[existing recovery record](../e2e/README.md#advisory-terminal-interpretation-task12709--accepted12707-12708).
+Actual W is `_failure_raw["first"]`, its original object/saved traceback, never
+a category slot/latest cleanup error. Before the first initial owner check
+prepared with W, one setdefault claim binds W and an invocation nonce. Only the
+winning nonce can store ONE complete immutable observation for SAME current W.
+No-W checks remain unassociated; no retroactive join or later repair of pending
+claims. Off-owner/reentry/sticky skips observe nothing. Its SAME original
+monotonic/effective_end comparison runs ONCE; unchanged _failure_error category
+and actual Boolean complete before the true TimeoutError/false continuation.
+Other checks/handlers/order stay; no extra clock/check/timer/publisher/reserve.
+Interrupted/partial assignments remain UNKNOWN without handler/finally repair;
+completed history never establishes eventual publication.
+
+A narrow catch encloses only the original final main raise expression, verifies
+actual raw/primary/caught-object/saved-traceback identity and new main head/next,
+stores immutable real references with module token/frame, then BARE RAISES.
+The actual module boundary verifies fresh token/frame, caught object, module
+traceback head and EXACT following stored main head, plus claim/nonce/W/enum/
+Boolean. No earlier arm, matching text/class or same object at another site
+qualifies. No wrapper frame is added to unselected tracebacks; the private main
+parameter serves real production entry, and imported Controller is unchanged
+apart from finite private per-instance memory.
+
+Complete selected handoff+observation emits exact built-in int `80+2*k+b`, b=0
+positive/b=1 exhausted: unicode0=80/81, timeout1=82/83, interruption2=84/85,
+assertion3=86/87, value4=88/89, io5=90/91, runtime6=92/93, other7=94/95.
+Precedence is unchanged; `other` needs complete evidence. Positive is not
+publication; exhausted identifies no winning inner bound/cause/final state.
+Complete selected handoff without matching observation gives noncategorical1.
+Selected ordinary/special BaseExceptions (including SystemExit0/KeyboardInterrupt/
+GeneratorExit) become `raise SystemExit(status) from None`, replacing automatic
+uncaught traceback/special handling. Interruption enum is not OS-signal proof.
+
+Only otherwise-unselected EXACT built-in SystemExit with an underlying int within
+signed64 whose low byte is80–95 normalizes to1 (direct80/aliases336/-176).
+Built-in int operations bypass subclass overrides; no arbitrary conversion or
+code mutation. None/noninteger/Boolean0–1/noncolliding/outside-signed64 keep
+handling, as do normal0, argument2, constructor and other unselected failures.
+Dynamic/stateful SystemExit subclasses, pre-entry/native/interpreter collisions
+remain unisolated. This is the existing direct Linux64 CPython3.12/3.14 boundary.
+Interruption anywhere can prevent handoff/exit; interpreter finalization may
+change intended status (including120) or receipt. No shield/repair/synthetic
+traceback/stderr/hook/atexit/os._exit/supervisor/new I/O is supplied.
+
+Documentation is the ONLY new interpreter. Runtime retains literal actual scenario
+phase.exit, requiring genuine completed source/admission/event/ref/run/attempt/
+SHA/tree/interpreter/controller-command provenance and exact built-in int80–95;
+no bool/string/float/coercion/modulo on recorded exits. Reserved byte NEVER proves
+encoder entry/cause, even with all joins: only consistency with a candidate
+category/first-check pair under this source; encoder entry is not independently
+proved. Other/null/partial/negative/old-source/wrong-type is UNKNOWN;1 is
+noncategorical;0 gives no case/health acceptance;120 is outside the table.
+Launcher_exit1, interrupted scenario exit=null and later reaped controller exit
+remain distinct processes/times. TERM3.12/INT3.14 witness/signals15/2/closure/raw-copy
+acceptance is unchanged. Requirements1–3/Product-reset remain INCOMPLETE; no
+local encoder/poison/I/O/sanitation/cleanup/health/native-cause credit follows.
+
+The same existing record extends R2-01/R2-05/X-01 rawA/laterB and reached/bypassed
+final raise/positive-exhausted; R1-11/R2-08/R3-06 no-W/partial/nonce/reentry/sticky/
+interruption/collision/success/unselected/selected BaseException subinputs;
+R3-07/R3-09/X-02 completed carrier/null-negative-source-type/frozen FAIL and12649
+precommit-versus-terminal joins; existing TERM/INT two-process signals/reaping.
+Four answers/keeper gaps and distinct C/H/J risks cover EVERY named row/subinput,
+with no test-only seam. H owns real process/emission/assignment; C actual object/
+traceback/check/attempt; J consistency/noncredit cannot prove encoder/poison/I/O/
+cleanup. Other30-row/A-B-D-E/accepted12693/delivered12649-12675-12697/56 EACH/
+16-site/full validator maps remain by reference. Behavior NOT RUN; intended-
+failure/restored-pass PROOF NOT RUN; sensitivity UNPROVED. No control/mutation/
+RED-restoration-GREEN/repetition campaign or new venue/tool/driver is authorized;
+a genuine native failure is not an unavailable-venue exemption or test-authoring
+PASS.100MiB suffix-fit remains unproved; protected holds remain.
 
 The accepted12693/TASK12697 extension implements only requirement4: optional
 useful actual reader disposition. Requirements1–3 (first-writer reachability,
