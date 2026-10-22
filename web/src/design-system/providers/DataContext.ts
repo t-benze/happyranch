@@ -636,6 +636,19 @@ export interface SettingsApi {
   /** Explicit single-send save and read-only original-key reconciliation,
    *  both bound to the org that was routed when the hook rendered. */
   useCodingSettingsActions: () => CodingSettingsActions;
+  /** The routed org's frozen send ownership, or null. It lives for the
+   *  provider (QueryClient) lifetime, so it survives pane unmount and org
+   *  A->B->A switches; it is never persisted. */
+  useCodingSendFence: () => CodingSendFence | null;
+}
+
+/** One frozen org-local send: `sending` while its single PUT is outstanding,
+ *  `uncertain` once that PUT settled without a definite answer. While a fence
+ *  exists no edit or new send is admitted for that org. */
+export interface CodingSendFence {
+  command: import('@/lib/api/types').CodingSettingsCommand;
+  phase: 'sending' | 'uncertain';
+  detail: string | null;
 }
 
 export interface CodingSettingsQueryLike
@@ -645,10 +658,21 @@ export interface CodingSettingsQueryLike
 }
 
 export interface CodingSettingsActions {
-  /** Sends the frozen command exactly once; never retries or rekeys. */
+  /** Sends the frozen command exactly once; never retries or rekeys. The
+   *  org's fence is taken synchronously before the request; success releases
+   *  it, any failure leaves it until `settle` classifies the failure. Refuses
+   *  without a request while the org already has a fence. */
   save: (
     command: import('@/lib/api/types').CodingSettingsCommand,
   ) => Promise<import('@/lib/api/types').CodingSettingsSave>;
+  /** Synchronous read of the org's current fence (send latch). */
+  fence: () => CodingSendFence | null;
+  /** Classifies a failed send of `operationKey`: a definite refusal releases
+   *  the fence; an uncertain outcome keeps it read-only. */
+  settle: (operationKey: string, uncertainDetail: string | null) => void;
+  /** Releases an uncertain fence only after `readOperation` returned the
+   *  committed receipt for that exact key. */
+  resolveCommitted: (operationKey: string) => void;
   /** Read-only GET(operation_key); never writes. */
   readOperation: (
     operationKey: string,

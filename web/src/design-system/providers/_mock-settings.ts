@@ -171,5 +171,12 @@ export const mockSettingsApi: SettingsApi = {
     isFetching: false,
     refetch: () => Promise.resolve(CODING_SETTINGS_FIXTURE),
   }),
-  useCodingSettingsActions: () => ({ save: previewRefusal, readOperation: previewRefusal }),
+  useCodingSettingsActions: () => ({
+    save: previewRefusal,
+    readOperation: previewRefusal,
+    fence: () => null,
+    settle: () => undefined,
+    resolveCommitted: () => undefined,
+  }),
+  useCodingSendFence: () => null,
 };

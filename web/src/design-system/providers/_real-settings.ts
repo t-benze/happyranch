@@ -5,8 +5,8 @@
  * Phase 2: editable `useUpdateOrgSettings` mutation backed by PUT /settings/org.
  * Coding: org-keyed GET/PUT /settings/coding view plus explicit save/readback.
  */
-import { useMemo } from 'react';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMemo, useSyncExternalStore } from 'react';
+import { useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { useParams } from 'react-router-dom';
 import { settings as settingsApi } from '@/lib/api';
 import type {
@@ -18,7 +18,7 @@ import type {
   SettingsSnapshot,
   DaemonCapacityWrite,
 } from '@/lib/api/types';
-import type { SettingsApi, QueryLike, CodingSettingsActions, CodingSettingsQueryLike } from './DataContext';
+import type { SettingsApi, QueryLike, CodingSendFence, CodingSettingsActions, CodingSettingsQueryLike } from './DataContext';
 import {
   acceptCapacityWrite,
   capacityObservation,
@@ -210,9 +210,20 @@ function useCodingSettings(): CodingSettingsQueryLike {
     queryKey: key,
     queryFn: async (): Promise<CodingSettingsView> => {
       const issued = ++codingSeq;
-      const data = await settingsApi.getCodingSettings(slug);
+      // Settlement ordering applies to rejections too: a read issued before
+      // a newer accepted write/readback can neither replace nor error out
+      // that accepted view. Without an accepted view a failure stays visible.
+      const obsolete = () => issued < (codingAcceptedSeq.get(slug) ?? 0);
+      let data: CodingSettingsView;
+      try {
+        data = await settingsApi.getCodingSettings(slug);
+      } catch (error) {
+        const accepted = qc.getQueryData<CodingSettingsView>(key);
+        if (obsolete() && accepted !== undefined) return accepted;
+        throw error;
+      }
       const accepted = qc.getQueryData<CodingSettingsView>(key);
-      if (issued < (codingAcceptedSeq.get(slug) ?? 0) && accepted !== undefined) return accepted;
+      if (obsolete() && accepted !== undefined) return accepted;
       acceptCodingView(slug);
       return data;
     },
@@ -231,27 +242,80 @@ function useCodingSettings(): CodingSettingsQueryLike {
   };
 }
 
+// Send ownership is settings-local and lives with the provider's QueryClient,
+// not with the mounted pane: leaving the route or switching org A->B->A keeps
+// org A's frozen command/key and fence. It is never persisted.
+interface CodingSendStore {
+  fences: Map<string, CodingSendFence>;
+  committed: Set<string>;
+  listeners: Set<() => void>;
+}
+const codingSendStores = new WeakMap<QueryClient, CodingSendStore>();
+
+function codingSendStore(qc: QueryClient): CodingSendStore {
+  let store = codingSendStores.get(qc);
+  if (!store) {
+    store = { fences: new Map(), committed: new Set(), listeners: new Set() };
+    codingSendStores.set(qc, store);
+  }
+  return store;
+}
+
+function setCodingFence(store: CodingSendStore, slug: string, fence: CodingSendFence | null): void {
+  if (fence) store.fences.set(slug, fence);
+  else store.fences.delete(slug);
+  store.listeners.forEach((listener) => listener());
+}
+
+function useCodingSendFence(): CodingSendFence | null {
+  const slug = useRealOrgSlug();
+  const store = codingSendStore(useQueryClient());
+  return useSyncExternalStore(
+    (listener) => { store.listeners.add(listener); return () => { store.listeners.delete(listener); }; },
+    () => store.fences.get(slug) ?? null,
+  );
+}
+
 function useCodingSettingsActions(): CodingSettingsActions {
   const slug = useRealOrgSlug();
   const qc = useQueryClient();
   return useMemo(() => {
     const key = codingSettingsQueryKey(slug);
+    const store = codingSendStore(qc);
+    const owns = (operationKey: string) => store.fences.get(slug)?.command.operation_key === operationKey;
     const publish = (view: CodingSettingsView) => {
       acceptCodingView(slug);
       qc.setQueryData(key, view);
     };
     return {
       save: async (command: CodingSettingsCommand) => {
+        // The fence is frozen synchronously, before any await, so a second
+        // pane/click/remount cannot send a replacement.
+        if (store.fences.has(slug)) throw new Error('coding_settings_send_in_progress');
+        setCodingFence(store, slug, { command, phase: 'sending', detail: null });
         // Outstanding reads become obsolete; the PUT itself is sent once.
         await qc.cancelQueries({ queryKey: key });
         const saved = await settingsApi.putCodingSettings(slug, command);
         publish({ format: 'workflow-coding-settings-view@1', org_slug: saved.org_slug,
           current: saved.current, configuration: saved.configuration, operation: null });
+        if (owns(command.operation_key)) setCodingFence(store, slug, null);
         return saved;
+      },
+      fence: () => store.fences.get(slug) ?? null,
+      settle: (operationKey: string, uncertainDetail: string | null) => {
+        const fence = store.fences.get(slug);
+        if (!fence || fence.command.operation_key !== operationKey || fence.phase !== 'sending') return;
+        setCodingFence(store, slug, uncertainDetail === null ? null : { ...fence, phase: 'uncertain', detail: uncertainDetail });
+      },
+      resolveCommitted: (operationKey: string) => {
+        if (!owns(operationKey) || !store.committed.has(operationKey)) return;
+        store.committed.delete(operationKey);
+        setCodingFence(store, slug, null);
       },
       readOperation: async (operationKey: string) => {
         await qc.cancelQueries({ queryKey: key });
         const view = await settingsApi.getCodingSettings(slug, operationKey);
+        if (view.operation?.operation_key === operationKey) store.committed.add(operationKey);
         // The receipt is returned to its caller; the cached view is current only.
         publish({ ...view, operation: null });
         return view;
@@ -268,4 +332,5 @@ export const realSettingsApi: SettingsApi = {
   useNextWakes,
   useCodingSettings,
   useCodingSettingsActions,
+  useCodingSendFence,
 };

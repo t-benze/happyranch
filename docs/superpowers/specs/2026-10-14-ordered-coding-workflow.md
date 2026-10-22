@@ -2030,16 +2030,28 @@ sent as the accepted mapping itself, so disabling never forces new selections
 (disabled-retain). No reviewer/QA/manager override or workflow-start transport.
 
 Each explicit Save freezes one `coding-settings:<uuid>` key and complete
-command with both expected generations; a synchronous latch sends once. 409
+command with both expected generations into the org's send fence, taken
+synchronously before the single PUT. The fence is settings-local provider state
+(per QueryClient, keyed by org): it survives leaving the pane and org A→B→A within
+the current app lifetime, is never persisted, and org B never sees org A's key,
+draft or fence. While the PUT is pending, role/admission fields are locked in
+render and handler (no edit can be silently lost by the later success replace);
+a detached pane's send still settles that same org/key. 409
 generation_stale/operation_conflict keeps draft, selection and focus, refreshes
 current, and requires explicit "use the current version" before a new save with
 a new key. 5xx other than `coding_settings_invalid`, and transport failures, are
 uncertain: editing and Save are locked, the original key is shown, and only
 read-only GET(original key) is offered. A committed receipt and current state are
 shown separately (receipt generation may be older); 404 operation_not_found is
-reported as "no committed save found in this read" and grants no write; the
-Founder may then explicitly edit again. Other refusals keep the draft. Locale
-changes cause no request. Copy ships in en and zh-CN.
+reported as "no committed save found in this read" and grants no write: an
+absent key or a failed check keeps the original command/key read-only with
+repeatable explicit GET(original key), never a reset/edit/adopt path to a new
+key and no automatic resend. Only a reconciled committed receipt for that key
+releases the fence (TASK12642 F01/F02/F04). Other refusals keep the draft. A
+same-org read issued before a newer accepted save/readback can neither replace
+nor, by rejecting, error out that accepted view; a genuinely current failed read
+stays a visible refusal (F03). Locale changes cause no request. Copy ships in en
+and zh-CN.
 
 Initial E0 has `configuration:null`; no existing Founder read supplies the
 complete mapping's repository_references (repository_id/origin_digest/

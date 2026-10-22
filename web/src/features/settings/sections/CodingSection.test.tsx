@@ -4,7 +4,7 @@
  * establish UI/client behavior only; real Founder persistence, authority and
  * native execution stay root-owned acceptance.
  */
-import { act, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse, delay } from 'msw';
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
@@ -163,9 +163,25 @@ describe('CodingSection — route, initial and populated states', () => {
     await user.selectOptions(select(/Developer/), 'frontend_engineer');
     await user.click(screen.getByTestId('coding-save'));
     await user.click(screen.getByTestId('coding-save'));
+    // F04: while the frozen save is pending, fields are locked in render AND
+    // in the handler; attempted role/admission edits are not taken.
+    await waitFor(() => expect(puts()).toHaveLength(1));
+    const key = (puts()[0].body as { operation_key: string }).operation_key;
+    fireEvent.change(select(/Developer/), { target: { value: 'dev_agent' } });
+    fireEvent.click(screen.getByRole('radio', { name: /Disabled/ }));
+    expect(select(/Developer/)).toHaveValue('frontend_engineer');
+    expect(screen.getByRole('radio', { name: /Allowed/ })).toBeChecked();
+    expect(select(/Developer/)).toBeDisabled();
+    expect(screen.getByRole('radio', { name: /Disabled/ })).toBeDisabled();
+    expect(screen.getByTestId('coding-sending')).toHaveTextContent(key);
     act(() => release());
     await screen.findByTestId('coding-saved');
     expect(puts()).toHaveLength(1);
+    expect(screen.queryByTestId('coding-sending')).not.toBeInTheDocument();
+    expect(select(/Developer/)).toBeEnabled();
+    expect(select(/Developer/)).toHaveValue('frontend_engineer');
+    expect(screen.getByRole('radio', { name: /Allowed/ })).toBeChecked();
+    expect(screen.getByRole('button', { name: 'Discard changes' })).toHaveAttribute('aria-disabled', 'true');
     const body = puts()[0].body as Record<string, unknown>;
     const expected = configuration();
     expected.roles.implementer = { principal: 'frontend_engineer', team: 'design' };
@@ -277,10 +293,15 @@ describe('CodingSection — conflict, uncertainty and reconciliation', () => {
   });
 
   test('unknown original key (404) is reported without granting a new write', async () => {
+    let checks = 0;
     server.use(
-      http.get(`/api/v1/orgs/${A}/settings/coding`, ({ request }) => new URL(request.url).searchParams.get('operation_key')
-        ? HttpResponse.json({ detail: { code: 'coding_settings_operation_not_found' } }, { status: 404 })
-        : HttpResponse.json(view(A, 1, 1, configuration()))),
+      http.get(`/api/v1/orgs/${A}/settings/coding`, ({ request }) => {
+        if (!new URL(request.url).searchParams.get('operation_key')) return HttpResponse.json(view(A, 1, 1, configuration()));
+        checks += 1;
+        return checks === 2
+          ? HttpResponse.json({ detail: { code: 'coding_settings_unavailable' } }, { status: 500 })
+          : HttpResponse.json({ detail: { code: 'coding_settings_operation_not_found' } }, { status: 404 });
+      }),
       http.put(`/api/v1/orgs/${A}/settings/coding`, () =>
         HttpResponse.json({ detail: { code: 'coding_settings_publication_uncertain', operation_key: 'k' } }, { status: 503 })),
     );
@@ -292,12 +313,37 @@ describe('CodingSection — conflict, uncertainty and reconciliation', () => {
     await screen.findByTestId('coding-uncertain');
     await user.click(screen.getByRole('button', { name: 'Check original save' }));
     await screen.findByText(/No committed save with this key was found/);
+    const key = (puts()[0].body as { operation_key: string; admission: string }).operation_key;
+    // F01: an absent key releases nothing. Drive the former "Edit again"
+    // release action whenever it is rendered, then an edit and a Save: no
+    // second PUT and no fresh key may follow.
+    const formerRelease = screen.queryByRole('button', { name: 'Edit again' });
+    if (formerRelease) await user.click(formerRelease);
+    fireEvent.click(screen.getByRole('radio', { name: /Allowed/ }));
+    await user.click(screen.getByTestId('coding-save'));
+    await act(() => delay(20));
     expect(puts()).toHaveLength(1);
+    expect(formerRelease).toBeNull();
+    expect(screen.getByRole('radio', { name: /Allowed/ })).toBeDisabled();
+    expect(screen.getByTestId('coding-uncertain')).toHaveTextContent(key);
+    // A failed check and a repeated explicit check stay read-only on the SAME key.
+    await user.click(screen.getByRole('button', { name: 'Check original save' }));
+    await screen.findByText(/The check failed \(coding_settings_unavailable\)/);
+    await user.click(screen.getByTestId('coding-save'));
+    await user.click(screen.getByRole('button', { name: 'Check original save' }));
+    await screen.findByText(/No committed save with this key was found/);
+    await user.click(screen.getByTestId('coding-save'));
+    expect(screen.queryByTestId('coding-saved')).not.toBeInTheDocument();
+    expect(screen.getByRole('radio', { name: /Disabled/ })).toBeChecked();
+    const reads = seen.filter((r) => r.method === 'GET' && r.search);
+    expect(reads.map((r) => new URLSearchParams(r.search).get('operation_key'))).toEqual([key, key, key]);
+    expect(puts()).toHaveLength(1);
+    expect((puts()[0].body as { admission: string }).admission).toBe('disabled');
   });
 });
 
 describe('CodingSection — ordering, org isolation and locale', () => {
-  test('a same-org read that settles after an accepted save cannot replace it', async () => {
+  test.each(['resolves', 'rejects'] as const)('a same-org read that %s after an accepted save cannot replace or error it', async (settles) => {
     let gets = 0;
     let releasePut!: () => void;
     let releaseGet!: () => void;
@@ -306,7 +352,11 @@ describe('CodingSection — ordering, org isolation and locale', () => {
     server.use(
       http.get(`/api/v1/orgs/${A}/settings/coding`, async () => {
         gets += 1;
-        if (gets > 1) await getGate;
+        if (gets > 1) {
+          await getGate;
+          // F03: an obsolete read that REJECTS must not hide the accepted form.
+          if (settles === 'rejects') return HttpResponse.json({ detail: { code: 'coding_settings_unavailable' } }, { status: 503 });
+        }
         return HttpResponse.json(view(A, 1, 1, configuration()));
       }),
       http.put(`/api/v1/orgs/${A}/settings/coding`, async ({ request }) => {
@@ -330,6 +380,10 @@ describe('CodingSection — ordering, org isolation and locale', () => {
     await waitFor(() => expect(client.isFetching()).toBe(0));
     expect(within(screen.getByTestId('coding-current')).getAllByText('2').length).toBeGreaterThan(0);
     expect(screen.getByTestId('coding-current')).toHaveTextContent('Disabled');
+    expect(screen.queryByText('Could not load coding settings.')).not.toBeInTheDocument();
+    expect(screen.getByRole('radio', { name: /Disabled/ })).toBeChecked();
+    expect(screen.getByTestId('coding-saved')).toBeInTheDocument();
+    expect(puts()).toHaveLength(1);
   });
 
   test('switching org A→B isolates views and drafts; a late org-A reply never reaches org B', async () => {
@@ -356,6 +410,52 @@ describe('CodingSection — ordering, org isolation and locale', () => {
     await waitFor(() => expect(client.isFetching()).toBe(0));
     expect(screen.getByTestId('coding-initial')).toBeInTheDocument();
     expect(select(/Developer/)).toHaveValue('');
+  });
+
+  test('send ownership survives leaving org A during the PUT and after uncertain settlement; org B stays isolated', async () => {
+    let releasePut!: () => void;
+    const putGate = new Promise<void>((r) => { releasePut = r; });
+    server.use(
+      http.get(`/api/v1/orgs/${A}/settings/coding`, () => HttpResponse.json(view(A, 1, 1, configuration()))),
+      http.get(`/api/v1/orgs/${B}/settings/coding`, () => HttpResponse.json(view(B, 0, 0, null))),
+      http.put(`/api/v1/orgs/${A}/settings/coding`, async () => { await putGate; return HttpResponse.error(); }),
+    );
+    const user = userEvent.setup();
+    const { router } = mount();
+    await screen.findByTestId('coding-current');
+    await user.selectOptions(select(/Developer/), 'frontend_engineer');
+    await user.click(screen.getByTestId('coding-save'));
+    await waitFor(() => expect(puts()).toHaveLength(1));
+    const sent = puts()[0].body as { operation_key: string; mapping: { roles: { implementer: { principal: string } } } };
+    // Away to org B and back while the PUT is still pending.
+    await act(() => router.navigate(`/orgs/${B}/settings/coding`));
+    await screen.findByTestId('coding-initial');
+    expect(screen.queryByTestId('coding-sending')).not.toBeInTheDocument();
+    expect(select(/Developer/)).toBeEnabled();
+    expect(select(/Developer/)).toHaveValue('');
+    await act(() => router.navigate(`/orgs/${A}/settings/coding`));
+    await screen.findByTestId('coding-current');
+    await user.click(screen.getByTestId('coding-save'));
+    await act(() => delay(20));
+    expect(puts()).toHaveLength(1);
+    expect(select(/Developer/)).toBeDisabled();
+    expect(screen.getByTestId('coding-sending')).toHaveTextContent(sent.operation_key);
+    // Away again; the pending send settles uncertain while A's pane is detached.
+    await act(() => router.navigate(`/orgs/${A}/settings/preferences`));
+    act(() => releasePut());
+    await act(() => delay(20));
+    await act(() => router.navigate(`/orgs/${B}/settings/coding`));
+    await screen.findByTestId('coding-initial');
+    expect(screen.queryByTestId('coding-uncertain')).not.toBeInTheDocument();
+    await act(() => router.navigate(`/orgs/${A}/settings/coding`));
+    await screen.findByTestId('coding-current');
+    await user.click(screen.getByTestId('coding-save'));
+    await act(() => delay(20));
+    expect(puts()).toHaveLength(1);
+    expect(select(/Developer/)).toBeDisabled();
+    expect(screen.getByTestId('coding-uncertain')).toHaveTextContent(sent.operation_key);
+    expect(sent.mapping.roles.implementer.principal).toBe('frontend_engineer');
+    expect(puts().every((p) => p.path === `/api/v1/orgs/${A}/settings/coding`)).toBe(true);
   });
 
   test('en↔zh-CN preserves draft and focus with no coding request', async () => {

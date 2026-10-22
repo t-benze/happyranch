@@ -1595,8 +1595,10 @@ campaign, proof framework or new merge check is introduced.
 `cd web && CI=1 npm test -- --run src/features/settings/sections/CodingSection.test.tsx`
 renders the real route/provider/client over MSW: E0/refusal/populated states,
 complete canonical save, disabled-retain, distinctness, 409 retention, uncertain
-lock plus original-key GET (committed and 404), same-org late-read ordering,
-org A→B isolation and en↔zh-CN with no requests. It is UI/transport evidence
+lock plus original-key GET (committed; 404/error/repeat stay locked with one PUT),
+fields locked during a pending save, same-org late-read ordering (resolve and
+reject), send ownership across A→B→A during/after the PUT, org A→B isolation and
+en↔zh-CN with no requests (TASK12642). It is UI/transport evidence
 only; it is not a required merge check and proves no backend persistence,
 authority or native behavior. Screenshots/browser runs are separate evidence.
 

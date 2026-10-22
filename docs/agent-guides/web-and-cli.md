@@ -4093,11 +4093,14 @@ S1. The page below consumes this client. No configuration save enables the curre
 
 `/orgs/:slug/settings/coding` mounts `CodingSection` outside the general settings
 gate through `useCodingSettings`/`useCodingSettingsActions`; the real provider
-keys the view by org and ignores a read settling after a later accepted save or
-readback. Four org-wide cross-team selectors show Name · ID, team/role and
+keys the view by org and ignores a read settling (or rejecting) after a later
+accepted save or readback. Four org-wide cross-team selectors show Name · ID, team/role and
 advisory hints; the server decides eligibility. One explicit Save sends one
-frozen key/body; 409 keeps the draft/focus and needs explicit adoption of the
-current version; uncertain outcomes lock editing and offer only GET(original key).
+frozen key/body held in a provider-lifetime org send fence (`useCodingSendFence`)
+that survives pane unmount and org switches; fields lock while it is pending;
+409 keeps the draft/focus and needs explicit adoption of the current version;
+uncertain outcomes lock editing and offer only GET(original key), released only
+by a reconciled committed receipt (an absent key never authorizes a new write).
 Unchanged mappings are sent byte-identical (disabled-retain). E0 cannot be saved
 here: no existing read supplies initial repository references or authority pin.
 See [the page section](../superpowers/specs/2026-10-14-ordered-coding-workflow.md#founder-coding-settings-page--root12568--task12632).

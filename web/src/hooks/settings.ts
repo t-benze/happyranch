@@ -27,6 +27,8 @@ export const useUpdateDaemonCapacity = () => useData().settings.useUpdateDaemonC
 
 export const useCodingSettings = () => useData().settings.useCodingSettings();
 export const useCodingSettingsActions = () => useData().settings.useCodingSettingsActions();
+export const useCodingSendFence = () => useData().settings.useCodingSendFence();
+export type { CodingSendFence } from '@/design-system/providers/DataContext';
 export type {
   CodingSettingsCommand,
   CodingSettingsCurrent,

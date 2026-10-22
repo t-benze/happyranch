@@ -7,24 +7,29 @@
  * and authority; roster hints here are advisory and grant no access.
  *
  * Save discipline:
- * - One explicit Save freezes one operation key and body; a synchronous latch
- *   prevents a second send. Nothing is retried, rekeyed or reapplied.
+ * - One explicit Save freezes one operation key and body in the org's send
+ *   fence, owned by the settings provider so it survives leaving the pane and
+ *   org A->B->A switches. Nothing is retried, rekeyed or reapplied, and fields
+ *   are locked (render and handler) while the send is pending.
  * - 409 stale/conflict keeps the draft and focus; the refreshed version must be
  *   adopted explicitly before the next save.
  * - An uncertain outcome keeps the original key/body and offers only a
- *   read-only GET(original key) reconciliation.
+ *   read-only GET(original key) reconciliation. Only a reconciled committed
+ *   receipt releases it; an absent key or a failed check never authorizes a
+ *   new write.
  * - Unchanged roles keep the last accepted mapping byte-for-byte, so disabling
  *   never forces replacement selections (disabled-retain).
  *
  * Saving configuration never enables coding execution.
  */
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Button } from '@/design-system/primitives/Button';
 import { useAgentsList } from '@/hooks/agents';
 import { useTeamsList } from '@/hooks/teams';
 import { useIdentityPresentation } from '@/hooks/identities';
 import { useTranslation } from '@/hooks/i18n';
 import {
+  useCodingSendFence,
   useCodingSettings,
   useCodingSettingsActions,
   type CodingAgentBinding,
@@ -84,8 +89,7 @@ type Outcome =
   | { kind: 'none' }
   | { kind: 'saved'; receipt: CodingSettingsReceipt; current: CodingSettingsCurrent }
   | { kind: 'conflict'; code: string; current: CodingSettingsCurrent | null }
-  | { kind: 'refused'; status: number; code: string | null }
-  | { kind: 'uncertain'; command: CodingSettingsCommand; detail: string; reconcile: Reconcile };
+  | { kind: 'refused'; status: number; code: string | null };
 
 type Reconcile =
   | { kind: 'none' }
@@ -145,6 +149,7 @@ export function CodingSection(): JSX.Element {
   const { t } = useTranslation();
   const query = useCodingSettings();
   const actions = useCodingSettingsActions();
+  const fence = useCodingSendFence();
   const agentsQuery = useAgentsList();
   const teamsQuery = useTeamsList();
   const { label } = useIdentityPresentation();
@@ -157,8 +162,7 @@ export function CodingSection(): JSX.Element {
   const [dirty, setDirty] = useState(false);
   const [outcome, setOutcome] = useState<Outcome>({ kind: 'none' });
   const [notice, setNotice] = useState<MessageKey | null>(null);
-  const [saving, setSaving] = useState(false);
-  const inFlight = useRef(false);
+  const [reconcileState, setReconcileState] = useState<{ key: string; state: Reconcile }>({ key: '', state: { kind: 'none' } });
 
   // An untouched draft follows the authoritative view; an edited draft never
   // changes underneath the Founder (stale-conflict retention).
@@ -217,7 +221,10 @@ export function CodingSection(): JSX.Element {
   const rolesChanged = configuration === null || ROLE_KEYS.some((r) => draft.roles[r] !== configuration.roles[r].principal);
   const basisStale = draft.basis.generation !== current.generation
     || draft.basis.mapping_generation !== current.mapping_generation;
-  const uncertain = outcome.kind === 'uncertain';
+  const saving = fence?.phase === 'sending';
+  const locked = fence !== null;
+  const reconcileOf: Reconcile = fence && reconcileState.key === fence.command.operation_key
+    ? reconcileState.state : { kind: 'none' };
   const selected = ROLE_KEYS.map((r) => draft.roles[r]);
   const distinct = selected.every((p) => p !== '') && new Set(selected).size === ROLE_KEYS.length;
 
@@ -243,13 +250,15 @@ export function CodingSection(): JSX.Element {
   };
 
   const edit = (next: Partial<Omit<Draft, 'basis'>>) => {
+    // Handler-level lock: a disabled appearance is not the only guard.
+    if (actions.fence()) return;
     setDraft((d) => (d ? { ...d, ...next, roles: next.roles ?? d.roles } : d));
     setDirty(true);
     setNotice(null);
   };
 
   const save = async () => {
-    if (inFlight.current || uncertain) return;
+    if (actions.fence()) return;
     const problem = validation();
     if (problem) { setNotice(problem); return; }
     if (!configuration) return;
@@ -270,80 +279,76 @@ export function CodingSection(): JSX.Element {
       admission: draft.admission,
       mapping,
     };
-    inFlight.current = true;
-    setSaving(true);
     setNotice(null);
+    setOutcome({ kind: 'none' });
+    // The provider freezes the fence synchronously inside save(), before its
+    // first await. The continuation below still settles that SAME org/key if
+    // this pane has since been detached (its React updates are then ignored).
     try {
       const result = await actions.save(command);
       setOutcome({ kind: 'saved', receipt: result.operation, current: result.current });
       setDraft(draftFrom(result.current, result.configuration));
       setDirty(false);
     } catch (error) {
-      if (error instanceof ApiError && error.status === 409 && CONFLICT_CODES.has(error.code ?? '')) {
-        setOutcome({ kind: 'conflict', code: error.code ?? '', current: conflictCurrent(error) });
-        void query.refetch();
-      } else if (isUncertain(error)) {
-        setOutcome({
-          kind: 'uncertain', command,
-          detail: errorCode(error) ?? (error instanceof Error ? error.message : String(error)),
-          reconcile: { kind: 'none' },
-        });
+      if (isUncertain(error)) {
+        actions.settle(command.operation_key, errorCode(error) ?? (error instanceof Error ? error.message : String(error)));
       } else {
-        setOutcome({ kind: 'refused', status: error instanceof ApiError ? error.status : 0, code: errorCode(error) });
+        actions.settle(command.operation_key, null);
+        if (error instanceof ApiError && error.status === 409 && CONFLICT_CODES.has(error.code ?? '')) {
+          setOutcome({ kind: 'conflict', code: error.code ?? '', current: conflictCurrent(error) });
+          void query.refetch();
+        } else {
+          setOutcome({ kind: 'refused', status: error instanceof ApiError ? error.status : 0, code: errorCode(error) });
+        }
       }
-    } finally {
-      inFlight.current = false;
-      setSaving(false);
     }
   };
 
   const reconcile = async () => {
-    if (outcome.kind !== 'uncertain' || outcome.reconcile.kind === 'reading') return;
-    const pending = outcome;
-    setOutcome({ ...pending, reconcile: { kind: 'reading' } });
+    if (!fence || fence.phase !== 'uncertain' || reconcileOf.kind === 'reading') return;
+    const key = fence.command.operation_key;
+    setReconcileState({ key, state: { kind: 'reading' } });
+    let next: Reconcile;
     try {
-      const result = await actions.readOperation(pending.command.operation_key);
-      if (result.operation) {
-        setOutcome({ ...pending, reconcile: { kind: 'committed', receipt: result.operation, current: result.current } });
-      } else {
-        setOutcome({ ...pending, reconcile: { kind: 'error', detail: 'operation_missing' } });
-      }
+      const result = await actions.readOperation(key);
+      next = result.operation
+        ? { kind: 'committed', receipt: result.operation, current: result.current }
+        : { kind: 'error', detail: 'operation_missing' };
     } catch (error) {
-      if (error instanceof ApiError && error.status === 404 && error.code === 'coding_settings_operation_not_found') {
-        setOutcome({ ...pending, reconcile: { kind: 'absent' } });
-      } else {
-        setOutcome({ ...pending, reconcile: { kind: 'error', detail: errorCode(error) ?? (error instanceof Error ? error.message : String(error)) } });
-      }
+      next = error instanceof ApiError && error.status === 404 && error.code === 'coding_settings_operation_not_found'
+        ? { kind: 'absent' }
+        : { kind: 'error', detail: errorCode(error) ?? (error instanceof Error ? error.message : String(error)) };
     }
+    setReconcileState({ key, state: next });
   };
 
-  const closeUncertain = () => {
-    if (outcome.kind !== 'uncertain') return;
-    const settled = outcome.reconcile;
-    if (settled.kind === 'committed') {
-      setOutcome({ kind: 'saved', receipt: settled.receipt, current: settled.current });
-      setDirty(false);
-    } else {
-      // Only the Founder's explicit choice re-enables editing; nothing is resent.
-      setOutcome({ kind: 'none' });
-    }
+  // Only a reconciled committed receipt for the original key releases the
+  // fence. An absent key or a failed check keeps the page read-only: neither
+  // proves the original send can never commit.
+  const acceptCommitted = () => {
+    if (!fence || reconcileOf.kind !== 'committed') return;
+    const settled = reconcileOf;
+    actions.resolveCommitted(fence.command.operation_key);
+    setOutcome({ kind: 'saved', receipt: settled.receipt, current: settled.current });
+    setDirty(false);
   };
 
   const adoptCurrent = () => {
+    if (actions.fence()) return;
     setDraft((d) => (d ? { ...d, basis: { generation: current.generation, mapping_generation: current.mapping_generation } } : d));
     setOutcome({ kind: 'none' });
     setNotice(null);
   };
 
   const discard = () => {
-    if (saving || outcome.kind === 'uncertain') return;
+    if (actions.fence()) return;
     setDraft(draftFrom(current, configuration));
     setDirty(false);
     setNotice(null);
     setOutcome({ kind: 'none' });
   };
 
-  const saveBlocked = saving || uncertain;
+  const saveBlocked = locked;
 
   return (
     <section className="min-w-0 space-y-4 break-words" aria-label={t('settings.panel.coding.title')}>
@@ -378,7 +383,7 @@ export function CodingSection(): JSX.Element {
 
       {query.isFetching && <p role="status" className="text-text-secondary text-xs">{t('settings.coding.refreshing')}</p>}
 
-      <fieldset className="space-y-2" disabled={uncertain}>
+      <fieldset className="space-y-2" disabled={locked}>
         <legend className="mb-1 text-sm font-medium">{t('settings.coding.admission.heading')}</legend>
         {(['disabled', 'explicit'] as const).map((value) => (
           <label key={value} className="flex items-start gap-2 text-sm">
@@ -400,7 +405,7 @@ export function CodingSection(): JSX.Element {
         ))}
       </fieldset>
 
-      <fieldset className="space-y-3" disabled={uncertain}>
+      <fieldset className="space-y-3" disabled={locked}>
         <legend className="mb-1 text-sm font-medium">{t('settings.coding.roles.heading')}</legend>
         <p className="text-text-secondary text-xs">{t('settings.coding.roles.help')}</p>
         {agentsQuery.isLoading && <p role="status" className="text-text-secondary text-xs">{t('settings.coding.roster.loading')}</p>}
@@ -470,7 +475,7 @@ export function CodingSection(): JSX.Element {
         )}
       </fieldset>
 
-      {basisStale && outcome.kind !== 'conflict' && dirty && (
+      {basisStale && outcome.kind !== 'conflict' && dirty && !locked && (
         <div role="status" className="border-border-default rounded-md border p-3 text-sm">
           <p>{t('settings.coding.newerVersion', { generation: current.generation, mapping: current.mapping_generation })}</p>
           <Button size="sm" variant="secondary" className="mt-2" onClick={adoptCurrent}>{t('settings.coding.adopt')}</Button>
@@ -495,28 +500,35 @@ export function CodingSection(): JSX.Element {
         </div>
       )}
 
-      {outcome.kind === 'uncertain' && (
+      {fence?.phase === 'sending' && (
+        <div role="status" className="border-border-default rounded-md border p-3 text-sm" data-testid="coding-sending">
+          <p>{t('settings.coding.sending')}</p>
+          <p className="mt-1 font-mono text-xs break-all">{fence.command.operation_key}</p>
+        </div>
+      )}
+
+      {fence?.phase === 'uncertain' && (
         <div role="alert" className="border-feedback-warning rounded-md border p-3 text-sm" data-testid="coding-uncertain">
           <p>{t('settings.coding.uncertain')}</p>
-          <p className="mt-1 font-mono text-xs break-all">{outcome.command.operation_key}</p>
-          <p className="mt-1 font-mono text-xs break-all">{outcome.detail}</p>
-          {outcome.reconcile.kind === 'committed' && (
+          <p className="mt-1 font-mono text-xs break-all">{fence.command.operation_key}</p>
+          <p className="mt-1 font-mono text-xs break-all">{fence.detail}</p>
+          {reconcileOf.kind === 'committed' && (
             <p className="mt-2">{t('settings.coding.reconcile.committed', {
-              receipt: outcome.reconcile.receipt.snapshot.generation,
-              current: outcome.reconcile.current.generation,
+              receipt: reconcileOf.receipt.snapshot.generation,
+              current: reconcileOf.current.generation,
             })}</p>
           )}
-          {outcome.reconcile.kind === 'absent' && <p className="mt-2">{t('settings.coding.reconcile.absent')}</p>}
-          {outcome.reconcile.kind === 'error' && (
-            <p className="mt-2">{t('settings.coding.reconcile.error', { detail: outcome.reconcile.detail })}</p>
+          {reconcileOf.kind === 'absent' && <p className="mt-2">{t('settings.coding.reconcile.absent')}</p>}
+          {reconcileOf.kind === 'error' && (
+            <p className="mt-2">{t('settings.coding.reconcile.error', { detail: reconcileOf.detail })}</p>
           )}
           <div className="mt-2 flex flex-wrap gap-2">
-            <Button size="sm" variant="secondary" onClick={() => void reconcile()} aria-disabled={outcome.reconcile.kind === 'reading'}>
-              {t(outcome.reconcile.kind === 'reading' ? 'settings.coding.reconcile.reading' : 'settings.coding.reconcile.action')}
+            <Button size="sm" variant="secondary" onClick={() => void reconcile()} aria-disabled={reconcileOf.kind === 'reading'}>
+              {t(reconcileOf.kind === 'reading' ? 'settings.coding.reconcile.reading' : 'settings.coding.reconcile.action')}
             </Button>
-            {(outcome.reconcile.kind === 'committed' || outcome.reconcile.kind === 'absent') && (
-              <Button size="sm" variant="secondary" onClick={closeUncertain}>
-                {t(outcome.reconcile.kind === 'committed' ? 'settings.coding.reconcile.accept' : 'settings.coding.reconcile.release')}
+            {reconcileOf.kind === 'committed' && (
+              <Button size="sm" variant="secondary" onClick={acceptCommitted}>
+                {t('settings.coding.reconcile.accept')}
               </Button>
             )}
           </div>
