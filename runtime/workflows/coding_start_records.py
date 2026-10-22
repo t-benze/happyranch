@@ -4,11 +4,11 @@ from __future__ import annotations
 import json
 import re
 from datetime import datetime
-from typing import Annotated, Literal
+from typing import Annotated, Literal, Union
 from pydantic import Field, RootModel, StrictBool, StrictInt, field_validator, model_validator
 
 from runtime.workflows._coding_role_records import AgentBinding, Closed, MappingPin, Release, RepositoryReference, Roles
-from runtime.workflows.artifacts import CodeChangeDescriptor, Token
+from runtime.workflows.artifacts import CodeChangeDescriptor, SHA256, Token
 from runtime.workflows.coding_saved_records import (
     _check, _constant, _json, _model, _oid, _operation, _pairs, _paths, _repository,
 )
@@ -46,9 +46,22 @@ class CodingStart(Closed):
         return self
 
 
+class CodingSettingsPin(Closed):
+    generation: Annotated[StrictInt, Field(ge=1, le=9223372036854775807)]
+    snapshot_digest: SHA256
+
+
+class CodingSettingsStart(CodingStart):
+    format: Literal['workflow-coding-start@2']
+    settings: CodingSettingsPin
+
+
+StartCommand = Annotated[Union[CodingStart, CodingSettingsStart], Field(discriminator='format')]
+
+
 class CodingStartDecision(Closed):
     action: Literal['workflow_start']
-    workflow: CodingStart
+    workflow: StartCommand
 
 
 class CodingStageOutput(Closed):
@@ -563,7 +576,8 @@ def parse_final_output(result: dict, *, instance: str, attempt: dict, work: dict
 
 
 def parse_start(raw: bytes) -> dict:
-    return _model(CodingStart, _json(raw, START_LIMIT)).model_dump()
+    return _model(CodingStartDecision, dict(action='workflow_start',
+        workflow=_json(raw, START_LIMIT))).model_dump()['workflow']
 
 
 def parse_decision(raw: bytes) -> dict:
@@ -612,7 +626,10 @@ def start_decision_schema() -> dict:
         if isinstance(value, dict):
             if '$ref' in value:
                 return inline(definitions[value['$ref'].rsplit('/', 1)[-1]])
-            return {key: inline(item) for key, item in value.items()}
+            # The definitions are inlined. Discriminator mapping strings must
+            # not retain references to the removed $defs namespace.
+            return {key: inline(item) for key, item in value.items()
+                    if not (key == 'mapping' and 'propertyName' in value)}
         if isinstance(value, list):
             return [inline(item) for item in value]
         return value

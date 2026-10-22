@@ -65,9 +65,13 @@ class CodingDispatcher:
             raise CodingStartError('coding_host_unavailable')
         return asyncio.run_coroutine_threadsafe(coroutine, loop).result()
 
-    def _entry(self, conn: Any, task_id: str) -> dict:
-        budget = _Budget()
+    def _entry(self, conn: Any, task_id: str, *, budget: _Budget | None = None) -> dict:
+        _check(budget is None or type(budget) is _Budget)
+        budget = _Budget() if budget is None else budget
         saved = queued_storage(conn, self.org.slug, budget=budget)
+        return self._selected_entry(saved, task_id, budget)
+
+    def _selected_entry(self, saved: Any, task_id: str, budget: _Budget) -> dict:
         owner = saved.owners.get(task_id)
         _check(owner is not None)
         entry = saved.runs[owner[1]]
@@ -79,19 +83,25 @@ class CodingDispatcher:
         return {**entry, '_budget': budget}
 
     @contextmanager
-    def _writer(self) -> Iterator[Any]:
+    def _writer(self) -> Iterator[tuple[Any, _Budget]]:
         with self.db._lock:
             conn = self.db._conn
             _check(not conn.in_transaction)
             conn.execute('BEGIN IMMEDIATE')
+            budget = _Budget()
             try:
-                yield conn
-                from runtime.infrastructure.workflow_schema import validate_workflow_schema
-                validate_workflow_schema(conn, expected_org_slug=self.org.slug)
+                yield conn, budget
+                from runtime.infrastructure.workflow_schema import _read_workflow_schema
+                _read_workflow_schema(conn, expected_org_slug=self.org.slug, budget=budget)
                 conn.commit()
             except BaseException:
                 conn.rollback()
                 raise
+
+    def require_task_ready(self, task_id: str) -> None:
+        require_ready()
+        with self.db._lock:
+            self._entry(self.db._conn, task_id)
 
     def queue_admission_allowed(self, task_id: str) -> bool:
         # This check precedes generation, SID, Pause preparation, counter and
@@ -191,8 +201,8 @@ class CodingDispatcher:
         with self.db._lock:
             owners = self._queue_live.get(task_id, {})
             _check(owner is not None and owners.get(id(owner)) is owner)
-            with self._writer() as conn:
-                entry = self._entry(conn, task_id)
+            with self._writer() as (conn, budget):
+                entry = self._entry(conn, task_id, budget=budget)
                 kind = ('source' if task_id == entry['source']['task_id'] else 'attempt'
                         if task_id == entry['attempt']['task_id'] else None)
                 _check(kind is not None)
@@ -257,25 +267,22 @@ class CodingDispatcher:
 
     def _eligible(self, conn: Any, entry: dict, invocation: Any, capture: Any, sessions: tuple,
                   *, callback: bool = False) -> dict:
-        from runtime.workflows._coding_role_records import configuration
-        from runtime.workflows.coding_start_records import effective_mapping
+        from runtime.workflows._coding_settings_execution import _current_configuration, _settings_family
         from runtime.workflows.activation import author_capacity_blocked
         from runtime.workflows.coding_bootstrap import effective_bindings
-        from runtime.workflows.coding_mapping_history import read_mapping_storage
         _check(not self.org._runner_admission_closed and invocation.orch is self.org.orchestrator
                and invocation.owner == 'coding' and invocation.workflow_dispatcher is self
                and invocation is invocation.store._live.get(invocation.identity))
         self.org.workflow_authority._validate_admission_uncommitted(conn, capture)
-        mappings = read_mapping_storage(conn, expected_org_slug=self.org.slug)
-        pinned = next(m for m in mappings.mappings if m.mapping_id == entry['command']['mapping']['id'])
-        mapping = json.loads(pinned.mapping_bytes)['mapping']
+        # _entry reconstructed the complete mapping/settings/native closure on
+        # this connection before any write. Current authority is independent.
         current = json.loads(capture.ready.snapshot_bytes)
-        configuration(mapping, current)
-        configuration(effective_mapping(mapping, entry['command']), current)
+        _current_configuration(entry['mapping'], current, entry['command'], entry['_budget'])
         _check(self.org.teams.teams_for_manager(entry['source']['principal']) ==
                (entry['roles']['agent_manager']['team'],))
-        for binding in entry['roles'].values():
-            _check(binding['team'] == entry['roles']['agent_manager']['team'])
+        if not _settings_family(entry['command']):
+            for binding in entry['roles'].values():
+                _check(binding['team'] == entry['roles']['agent_manager']['team'])
         _check(not entry['native'].get('ownership_unknown')
                and entry['native']['source_settled'] and entry['run']['state'] == entry['attempt']['stage']
                and entry['run']['current_attempt_id'] == entry['attempt']['id']
@@ -298,8 +305,9 @@ class CodingDispatcher:
                                sessions: tuple, *, callback: bool) -> dict:
         from runtime.workflows._coding_import_support import _capture
         from runtime.workflows.coding_bootstrap import effective_bindings
+        from runtime.workflows._coding_settings_execution import _native_format, _settings_family
         _check(len(sessions) <= 1024)
-        budget = _Budget()
+        budget = entry['_budget']
         root = invocation.store.root_uncommitted(invocation.task.id)
         pause = invocation.store.row_uncommitted(root['id'])
         native = deepcopy(invocation._entry(pause))
@@ -329,7 +337,11 @@ class CodingDispatcher:
         current, seen = closure[invocation.task.id], set()
         while True:
             _check(current['id'] not in seen and len(seen) < 23
-                   and current['team'] == entry['roles']['agent_manager']['team']
+                   and current['team'] == (entry['roles'][{'development': 'implementer',
+                       'code_review': 'code_reviewer', 'qa': 'qa_engineer',
+                       'manager_closeout': 'agent_manager'}[entry['attempt']['stage']]]['team']
+                       if _settings_family(entry['command']) and current['id'] == invocation.task.id
+                       else entry['roles']['agent_manager']['team'])
                    and current['cancelled_at'] is None and current['zombie_flagged_at'] is None
                    and current['status'] not in ('completed', 'failed', 'cancelled', 'superseded'))
             seen.add(current['id'])
@@ -357,8 +369,7 @@ class CodingDispatcher:
                    and not native['context'].get('execution_unknown'))
         # Frozen config was checked outside each awaited boundary by _policies.
         # Do not read files while owning this synchronous native writer.
-        result = dict(format={'development': 'workflow-coding-native-admission@1',
-            'code_review': 'workflow-coding-review-admission@1', 'qa': 'workflow-coding-qa-admission@1', 'manager_closeout': 'workflow-coding-manager-admission@1'}[entry['attempt']['stage']],
+        result = dict(format=_native_format(entry['command'], entry['attempt']['stage']),
             phase='callback' if callback else 'launch',
             authority=_capture(capture, identity('native-admission', entry['attempt']['id'],
                 invocation.identity, entry['run']['cas_version']), _canonical(entry['command'])),
@@ -368,6 +379,8 @@ class CodingDispatcher:
             move=None if (move := invocation.orch._team_moves.active_uncommitted()) is None else encode_row(move),
             capacity=capacity, max_revise_rounds=entry['source']['budgets']['max_revise_rounds'],
             effective_bindings_base64=base64.b64encode(effective_bindings(entry['run']['instance_id'], entry['roles'])).decode('ascii'))
+        if _settings_family(entry['command']) and entry['attempt']['stage'] == 'development':
+            result.update(settings=entry['command']['settings'], mapping=entry['command']['mapping'])
         pin = result['authority']['pin']
         result['record'] = dict(id=result['authority']['admission_record_id'], namespace=pin['namespace'],
             generation=pin['generation'], request_digest=_hash(_canonical(entry['command'])),
@@ -543,7 +556,7 @@ class CodingDispatcher:
     def _session_bound_uncommitted(self, invocation: Any) -> None:
         conn = self.db._conn
         entry = invocation.coding_before
-        audits = list(rows(conn, 'audit_log', _Budget(), where="task_id=? AND action='session_start'", args=(invocation.task.id,)))
+        audits = list(rows(conn, 'audit_log', entry['_budget'], where="task_id=? AND action='session_start'", args=(invocation.task.id,)))
         audits = [r for r in audits if json.loads(r['payload']).get('session_id') == invocation.session_id]
         _check(len(audits) == 1)
         now = stamp()
@@ -592,8 +605,8 @@ class CodingDispatcher:
     def observed_handle(self, task_id: str, agent: str, session_id: str, running: Any) -> None:
         invocation = self._invocation(task_id, session_id)
         _check(invocation.agent == agent and running.request_id == invocation.coding_request.logical_id)
-        with self._writer() as conn:
-            entry = self._entry(conn, task_id)
+        with self._writer() as (conn, budget):
+            entry = self._entry(conn, task_id, budget=budget)
             host = {**entry['native']['host'], 'handle_id': _hash(_canonical(dict(
                 token=running.token, request_id=running.request_id, backend=running.backend))), 'backend': running.backend}
             if entry['native']['host']['handle_id'] is not None:
@@ -606,8 +619,8 @@ class CodingDispatcher:
     def record_pid(self, *, task_id: str, agent: str, session_id: str, pid: int) -> bool:
         invocation = self._invocation(task_id, session_id)
         _check(type(pid) is int and pid > 0 and invocation.agent == agent)
-        with self._writer() as conn:
-            entry = self._entry(conn, task_id)
+        with self._writer() as (conn, budget):
+            entry = self._entry(conn, task_id, budget=budget)
             _check(entry['native']['host']['handle_id'] is not None)
             before = entry['tasks'][task_id]
             _check(before['current_session_id'] == session_id and before['assigned_agent'] == agent
@@ -665,9 +678,9 @@ class CodingDispatcher:
         transitions = _RootWorktreeTransitions()
         failed = True
         try:
-            with self._writer() as conn, _capture_root_worktree_transition(
+            with self._writer() as (conn, budget), _capture_root_worktree_transition(
                     self.org.orchestrator, task_id, 'coding_dispatch.terminal', transitions):
-                entry = self._entry(conn, task_id)
+                entry = self._entry(conn, task_id, budget=budget)
                 host = entry['native']['host']
                 _check(host is not None and outcome is not None and outcome.request is expected_request
                        and expected_request is invocation.coding_request and outcome.attempt == 0)
@@ -705,12 +718,12 @@ class CodingDispatcher:
                 return
             if self.db._conn.execute('SELECT 1 FROM workflow_coding_runs LIMIT 1').fetchone() is None:
                 return
-        with self._writer() as conn:
-            saved = queued_storage(conn, self.org.slug)
+        with self._writer() as (conn, budget):
+            saved = queued_storage(conn, self.org.slug, budget=budget)
             ownership = saved.owners.get(invocation.task.id)
             if ownership is None:
                 return
-            entry = self._entry(conn, invocation.task.id)
+            entry = self._selected_entry(saved, invocation.task.id, budget)
             if ownership[0] == 'coding_carrier':
                 raise CodingStartError('coding_structural_launch_refused')
             source = ownership[0] == 'coding_source_waiting'
@@ -767,7 +780,7 @@ class CodingDispatcher:
                                  else dict(state='uncertain') if not source and not safe else {}),
                 event_time=now)
             if not source and safe and entry['native']['terminal'] == 'success':
-                entry = self._entry(conn, invocation.task.id)
+                entry = self._entry(conn, invocation.task.id, budget=budget)
                 from runtime.workflows.coding_progression import _settled, record_final_in_writer, record_qa_in_writer, record_review_in_writer
                 try:
                     usable = _settled(entry, budget=entry['_budget'])
@@ -839,10 +852,9 @@ class CodingDispatcher:
     async def selected_final(self, *, principal: Any, instance: str) -> dict:
         """Selected metadata only; no GitHub/file I/O in ownership/read snapshots."""
         from runtime.orchestrator import prompt_loader
-        from runtime.workflows._coding_role_records import configuration
+        from runtime.workflows._coding_settings_execution import _current_configuration
         from runtime.workflows.coding_bootstrap import effective_bindings
         from runtime.workflows.coding_progression import final_selection
-        from runtime.workflows.coding_start_records import effective_mapping
         org = self.org
         principal.revalidate()
         policy = prompt_loader.load_agent(org.orchestrator._paths, principal.principal_id)
@@ -874,8 +886,7 @@ class CodingDispatcher:
                                    and entry['native']['host']['handle_id'] is not None
                                    and entry['native']['terminal'] is None and entry['native']['callback'] is None)
                             snapshot = json.loads(current.ready.snapshot_bytes)
-                            configuration(entry['mapping'], snapshot)
-                            configuration(effective_mapping(entry['mapping'], entry['command']), snapshot)
+                            _current_configuration(entry['mapping'], snapshot, entry['command'], inventory.budget)
                             for task in entry['tasks']:
                                 self.db._check_team_move_task_uncommitted(task)
                             self.db._check_team_move_workflow_uncommitted(binding_bytes=effective_bindings(instance, entry['roles']))
@@ -916,6 +927,8 @@ class CodingDispatcher:
                 'Preserve its canonical final-output@2 JSON STRING in your own summary, null verdict, no decision/jobs. '
                 'Save receipts before report-completion through this genuine task/agent/SID as FINAL action. '
                 'Callback alone cannot complete; successful host/quiescence and positive native outer closure are required.')
+        if entry['command']['format'] == 'workflow-coding-start@2':
+            supplement['settings'] = entry['command']['settings']
         return '\n\n' + _canonical(supplement).decode('utf8')
 
 
@@ -959,6 +972,8 @@ class CodingDispatcher:
                     obligation=('summary is the canonical UTF8 JSON STRING of output, never an object; completed status with null verdict for development or exact outcome verdict for review. Failed/blocked callbacks retain actual causes without inventing output. Callback is FINAL. No staging command.'
                         if not qa else 'summary is the canonical UTF8 JSON STRING of output; completed status and verdict=PASS|REVISE|BLOCK matching outcome. '
                         'Use only this real task/agent/SID and own findings. Failed/blocked callbacks retain actual causes. Callback is FINAL. No staging or coding decision/job wait.')))
+            if entry['command']['format'] == 'workflow-coding-start@2':
+                supplement.update(settings=entry['command']['settings'], scope=scope)
             if not development:
                 developer = next(a for a in entry['attempts'].values() if a['stage'] == 'development')
                 if qa:

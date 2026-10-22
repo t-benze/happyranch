@@ -310,26 +310,66 @@ class TeamMoveCoordinator:
                 pending.append(related)
         tables = {r[0] for r in db._conn.execute("SELECT name FROM sqlite_schema WHERE type='table'")}
         if "workflow_instances" in tables:
-            for row in db._conn.execute("SELECT i.id,i.root_task_id,b.binding_bytes FROM workflow_instances i "
-                    "JOIN workflow_binding_snapshots b ON b.id=i.binding_snapshot_id"):
-                linked = row["root_task_id"] in seen or any(r[0] in seen for r in db._conn.execute(
-                    "SELECT task_id FROM workflow_instance_tasks WHERE instance_id=?", (row["id"],)))
-                if linked:
-                    try:
-                        binding = json.loads(row["binding_bytes"])
-                        if not isinstance(binding, dict):
-                            raise ValueError("unknown workflow binding")
-                        if binding.get('format') == 'workflow-coding-binding@2':
-                            from runtime.workflows.coding_start import queued_storage
-                            coding = queued_storage(db._conn, self.store.org_slug)
-                            selected = coding.runs.get(row['id'])
-                            if selected is None or selected['binding']['binding_bytes'] != row['binding_bytes']:
-                                raise ValueError('coding workflow binding is not closed')
-                            related_to_move |= referenced(selected['roles'])
-                        else:
-                            related_to_move |= referenced(binding)
-                    except (ValueError, TypeError) as exc:
-                        raise DeferredTeamMove("team_move_workflow_owner_unavailable") from exc
+            from runtime.workflows.coding_authority_history import _Budget, _decoded
+            from runtime.workflows.coding_start import queued_storage
+            from runtime.workflows.coding_start_history import rows, same
+            from runtime.workflows.coding_saved_records import _json
+            budget = _Budget()
+            coding = None
+
+            def coding_inventory() -> Any:
+                nonlocal coding
+                if coding is None:
+                    if not db._conn.in_transaction:
+                        raise ValueError('caller_owned_coding_snapshot_required')
+                    coding = queued_storage(db._conn, self.store.org_slug, budget=budget)
+                return coding
+
+            try:
+                # Native relations identify coding independently of JSON tags.
+                # Complete reconstruction detects missing/orphan/corrupt owners
+                # before any selected-role projection can be returned.
+                for table in ('workflow_coding_runs', 'workflow_coding_attempts', 'workflow_coding_events'):
+                    budget.step()
+                    if table in tables and db._conn.execute(f'SELECT 1 FROM {table} LIMIT 1').fetchone() is not None:
+                        coding_inventory()
+                        break
+                for instance in rows(db._conn, 'workflow_instances', budget, maximum=1024):
+                    linked = instance['root_task_id'] in seen or any(r['task_id'] in seen for r in rows(
+                        db._conn, 'workflow_instance_tasks', budget, where='instance_id=?', args=(instance['id'],), maximum=1024))
+                    selected = None if coding is None else coding.runs.get(instance['id'])
+                    linked |= selected is not None and bool(seen.intersection(selected['tasks']))
+                    if not linked:
+                        continue
+                    bindings = list(rows(db._conn, 'workflow_binding_snapshots', budget,
+                        where='id=?', args=(instance['binding_snapshot_id'],), maximum=1))
+                    if len(bindings) != 1:
+                        raise ValueError('workflow_binding_owner_missing')
+                    original = bindings[0]
+                    raw = original['binding_bytes']
+                    binding = json.loads(raw)
+                    if type(binding) is not dict:
+                        raise ValueError('unknown_workflow_binding')
+                    tag = binding.get('format')
+                    reserved = type(tag) is str and tag.startswith('workflow-coding-')
+                    if reserved or selected is not None:
+                        inventory = coding_inventory()
+                        selected = inventory.runs.get(instance['id'])
+                        if (tag not in ('workflow-coding-binding@2', 'workflow-coding-binding@3')
+                                or selected is None or type(raw) is not bytes
+                                or not same(original, selected['binding'])
+                                or not inventory.matches('workflow_instances', instance)
+                                or instance['root_task_id'] not in selected['tasks']
+                                or instance['binding_snapshot_id'] != selected['binding']['id']):
+                            raise ValueError('coding_workflow_binding_not_closed')
+                        _decoded(_json(raw, 1048576), budget)
+                        # Historical replacements/defaults are not live roles.
+                        # All actual task/team/history dependencies above remain.
+                        related_to_move |= referenced(selected['roles'])
+                    else:
+                        related_to_move |= referenced(binding)
+            except (ValueError, TypeError, KeyError, sqlite3.Error, RecursionError, OverflowError) as exc:
+                raise DeferredTeamMove("team_move_workflow_owner_unavailable") from exc
         return related_to_move
 
     def check_bindings_uncommitted(self, raw: bytes) -> None:

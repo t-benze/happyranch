@@ -4191,3 +4191,21 @@ retain the exact prior Mapping under current publication authority. Source
 readiness remains disabled; configuration grants no access or launch authority.
 See [R2 settings](../superpowers/specs/2026-10-14-ordered-coding-workflow.md#canonical-founder-settings-backend-r2-source)
 for complete reader closure, replay and remaining operational acceptance.
+
+
+## Pinned coding selection across teams
+
+For the new settings-pinned family, the actual selected executable final manager
+initiates execution from its own result. Four distinct eligible permanent actors
+may belong to different teams. Every stage retains its actual role/team and
+current repository authority; configuration confers no access. The original
+implementer-only override determines the effective four roles. Move projection
+includes selected future roles and actual causal history, while unused defaults/
+replacements alone create no binding dependency. Historical native same-team
+families keep their predicates and immutable bytes.
+
+Current valid disable/default changes do not replace an admitted run's settings
+pin. Revocation/Pause/move and genuine callback/host/outer settlement still govern.
+Readiness remains false. Native/progression/move behavior is unexecuted; real
+scratch/revision/controls/Founder page/two-org/rollback acceptance remains
+ROOT12568-owned. See the ordered-coding-workflow settings-pinned execution contract.

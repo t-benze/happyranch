@@ -15,7 +15,7 @@ from typing import Any, Iterator
 from dataclasses import dataclass, field
 from datetime import datetime
 
-from runtime.workflows._coding_role_records import RECORD_FORMAT, configuration
+from runtime.workflows._coding_settings_execution import _configuration, _resolve_start
 from runtime.workflows.coding_authority_history import _Budget, _bounded_rows, _capture_admission, _decoded
 from runtime.workflows.coding_bootstrap import (
     decode_row, encode_row, identity, initial_scope, journal_rows, pinned_rows, task_brief,
@@ -97,6 +97,8 @@ def read_queued(conn: sqlite3.Connection, org: str, budget: _Budget, mappings: A
             continue
         _decoded(envelope, budget)
         decision = parse_native_decision(raw.encode('utf8'))
+        if decision['workflow']['format'] == 'workflow-coding-start@2':
+            _resolve_start(decision['workflow'], mappings, imported, budget)
         _integer(row['id'], 1)
         _check(row['status'] == 'completed' and row['waiting_on_job_ids'] is None)
         issuer = dict(task_id=row['task_id'], session_id=row['session_id'], principal=row['agent'])
@@ -218,7 +220,7 @@ def read_queued(conn: sqlite3.Connection, org: str, budget: _Budget, mappings: A
         _check(command['mapping'] == dict(id=mapping_entry.mapping_id, generation=mapping_entry.generation,
                                          digest=mapping_entry.mapping_digest) and run['mapping_id'] == mapping_entry.mapping_id)
         record = _json(mapping_entry.mapping_bytes, 1048576)
-        _check(record['format'] == RECORD_FORMAT)
+        settings = _resolve_start(command, mappings, imported, budget)
         mapping = record['mapping']
         effective = effective_mapping(mapping, command)
         roles = effective['roles']
@@ -227,8 +229,8 @@ def read_queued(conn: sqlite3.Connection, org: str, budget: _Budget, mappings: A
         grant, _ = _capture(evidence['authority'], org, _Ancestry())
         _check(grant == _canonical(command))
         snapshot = json.loads(base64.b64decode(evidence['authority']['snapshot_bytes_base64'], validate=True))
-        configuration(mapping, snapshot)
-        configuration(effective, snapshot)
+        _configuration(mapping, snapshot, command, budget)
+        _configuration(effective, snapshot, command, budget)
         carrier_id = facts['carrier_task_id']
         _check(carrier_id in after_tasks and carrier_id != source['task_id'])
         carrier, leaf = after_tasks[carrier_id], after_tasks[attempt['task_id']]
@@ -429,7 +431,7 @@ def read_queued(conn: sqlite3.Connection, org: str, budget: _Budget, mappings: A
             storage.add(table, row)
         storage.runs[instance] = dict(run=run, command=command, roles=roles, attempt=attempt, event=event,
                                     source=source, attempts=actual_attempts, mapping=mapping, binding=expected_pins['workflow_binding_snapshots'][0],
-                                    native=native, authority=evidence['authority'], tasks=after_tasks)
+                                    native=native, authority=evidence['authority'], tasks=after_tasks, settings=settings)
         for task_id, kind in ((source['task_id'], 'coding_source_waiting'),
                               (carrier_id, 'coding_carrier'),
                               *((a['task_id'], 'coding_attempt') for a in actual_attempts.values())):

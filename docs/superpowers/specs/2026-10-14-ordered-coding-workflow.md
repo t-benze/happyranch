@@ -1925,3 +1925,81 @@ UNEXECUTED / FOUNDER-EXEMPTED / NONBLOCKING under Founder320seq93; no test is re
 Python units remain RETIRED, integration INCLUDING callback/lifespan/SessionTracker
 SKIPPED24342, and automated merge checks lint/static only. Independent full review,
 future genuine linked QA and manager guarded merge remain required.
+
+
+## Settings-pinned execution family — ROOT12568 / TASK12615
+
+This disabled source composition follows accepted R1/R2/R1-C1 and DESIGN12365
+under Founder320seq4/18/27/93/99 and139seq329. Earlier implementation checkpoints
+record their original exclusions. The current source connects settings to the
+engine; actual runtime/product acceptance remains separate and unexecuted.
+
+The closed `workflow-coding-start@2` command adds exactly
+`settings:{generation,snapshot_digest}` to start@1's fields. Generation is a strict
+positive int64 and digest is lowercase SHA256. Its existing mapping Pin must name
+the corresponding authenticated human record@2 and settings publication. Fresh
+selection requires the current explicit snapshot, exact release/mapping/settings
+correspondence, genuine release import and current native/repository authority.
+The selected executable final manager supplies its own genuine initiating result;
+Founder publication is administration, not an executable role or grant.
+
+Matched bootstrap authorization@3, binding@3 and context@3 retain that settings
+pin and mapping; development scope@3 and native-admission@2 carry the same pins.
+The literal start@1/authorization@2/binding@2/context@2/scope@2/native-admission@1
+readers and original native/custody record predicates remain separate. Mixed,
+unknown or corrupted families refuse instead of being converted. The later
+review/QA/final scope families retain their original shapes and independently
+join the pinned command, context, authorization and actual stage. Their admission
+grants bind the entire original command. New consumed supplements disclose the
+original settings pin; they grant no repository, execution or merge capability.
+
+One private resolver core is shared by public settings resolution and local
+complete start inventories. Current pointer/history validity is mandatory;
+previously admitted work resolves its original publication separately from current
+settings. Later disable/default publications do not replace its pin. Current
+selected-role eligibility, actual native invocation/Pause/move/host/callback and
+positive outer settlement remain required. New-family current eligibility checks
+the four effective roles after the original implementer-only override; unused
+replacements/defaults remain history. Original bootstrap eligibility still checks
+the complete published mapping. Historical same-team predicates remain literal.
+Source/carrier stay in the selected manager's team; each stage leaf stays in its
+selected permanent principal's actual team. Invalid current state refuses healthy
+reads/new effects; it does not rewrite original callbacks or clear native ownership
+or uncertainty. Held settlement cannot establish a new allocation entitlement.
+
+Complete mapping/release/source/start/native/progression validation shares one
+caller-owned snapshot and cumulative `_Budget`. Private local inventory reuse is
+limited to that unchanged snapshot. Native writes and post-write validation use
+the same allowance but reconstruct changed state independently. No public trusted
+DTO, Boolean, nested transaction, recursive schema read or global cache is added.
+Existing per-value/table/aggregate row/byte/traversal and stricter local limits stay;
+these are cooperative bounds, not hard RSS/time claims. Cold/schema(data=False),
+recovery and drain reach the same complete readers without a new schema or DDL.
+
+Team-move projection discovers coding relations independently of the reserved
+format prefix. One complete queued inventory covers the closure, including every
+original stage, future selected role and retained failed/uncertain native attempt.
+Each linked binding independently requires BLOB storage, exact complete stored row
+and binding bytes, instance/root/task relations and a literal @2 or @3 family.
+Only the four effective roles create binding-only dependencies; causal native
+team/task/history dependencies still count. Unknown/mixed/corrupt/orphan/foreign
+ownership or exhausted budget refuses `team_move_workflow_owner_unavailable`
+without a partial projection. Native move/Pause/reservation enforcement is unchanged.
+
+`run-start --emit-decision` still only prints syntax for the genuine callback.
+The callback model and emitted schema select both literal commands; no browser
+coding-start API or TS workflow-start transport is introduced. Existing public run
+projections and route-summary/classification shapes remain unchanged. Both the
+fresh callback and result consumer retain unconditional downstream refusal;
+queue/TaskInvocation/dispatch admission likewise stays disabled. Settings is never
+a readiness Boolean. Installing this source cannot itself enable coding.
+
+F5-R1a/b/c and F6/F8-R2a/b/e remain the accepted finite contracts, not observed
+results. Stateful progression/move/authority/callback/rollback/cold/recovery proof
+is NOT RUN / PROOF NOT RUN without a compatible authorized genuine venue. No fake
+actors, SQL fixture, patched readiness or new proof tooling substitutes. Swift
+proof remains UNEXECUTED / FOUNDER-EXEMPTED / NONBLOCKING320seq93. Python units are
+RETIRED; integration INCLUDING callback/lifespan/SessionTracker is SKIPPED24342.
+ROOT12568 retains real scratch/revision/fresh roles/controls/Founder page/across-team/
+override/two-org/backup/rollback/operator acceptance and eventual live-manager
+expected-head action plus actual remote observation before its callback.

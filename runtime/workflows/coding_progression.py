@@ -13,7 +13,7 @@ from typing import Any
 
 from runtime.models import TaskRecord
 from runtime.workflows._coding_import_support import _capture
-from runtime.workflows._coding_role_records import configuration
+from runtime.workflows._coding_settings_execution import _current_configuration
 from runtime.workflows.coding_authority_history import _Budget, _decoded
 from runtime.workflows.coding_bootstrap import effective_bindings, encode_row, identity, final_brief, final_scope, qa_brief, qa_scope, review_brief, review_scope
 from runtime.workflows.coding_saved_records import _canonical, _check, _hash
@@ -130,8 +130,7 @@ def _admission(dispatcher: Any, conn: Any, entry: dict, capture: Any, sessions: 
     org.workflow_authority._validate_admission_uncommitted(conn, capture)
     mapping = entry['mapping']
     current = json.loads(capture.ready.snapshot_bytes)
-    configuration(mapping, current)
-    configuration(effective_mapping(mapping, entry['command']), current)
+    _current_configuration(mapping, current, entry['command'], budget)
     roles, source = entry['roles'], entry['source']
     _check(org.teams.teams_for_manager(source['principal']) == (roles['agent_manager']['team'],)
            and len({b['principal'] for b in roles.values()}) == 4)
@@ -314,8 +313,9 @@ def advance_in_writer(dispatcher: Any, conn: Any, *, instance: str, result_id: i
     dispatcher.org.workflow_authority._validate_admission_uncommitted(conn, capture)
     # New state is independently reread with a fresh complete allowance after
     # the first mutation; no pre-write inventory is trusted as target closure.
-    from runtime.infrastructure.workflow_schema import validate_workflow_schema
-    _check(validate_workflow_schema(conn, expected_org_slug=dispatcher.org.slug) == 'J')
+    from runtime.infrastructure.workflow_schema import _read_workflow_schema
+    layout, _ = _read_workflow_schema(conn, expected_org_slug=dispatcher.org.slug, budget=budget)
+    _check(layout == 'J')
     return task_id
 
 

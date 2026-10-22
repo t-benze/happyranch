@@ -18,6 +18,7 @@ from runtime.orchestrator.org_config import load_org_config
 from runtime.workflows._coding_import_support import CodingImportSupport, _capture
 from runtime.workflows._coding_release_history import read_release_import
 from runtime.workflows._coding_role_admission import capture_body, native_owner
+from runtime.workflows.coding_authority_history import _Budget
 from runtime.workflows._coding_role_records import (
     RECORD_FORMAT, RoleReceipt, SelectionReceipt, configuration,
     parse_role_command, parse_selection, read_role_record,
@@ -26,7 +27,7 @@ from runtime.workflows.authority import AuthorityAdmissionCapture, WorkflowAutho
 from runtime.workflows.coding_mapping_history import (
     CodingMappingHistory, HistoricalCodingMapping, read_mapping_storage,
 )
-from runtime.workflows.coding_saved_records import ROLES, _canonical, _hash, _roles
+from runtime.workflows.coding_saved_records import ROLES, _canonical, _check, _hash, _roles
 from runtime.workflows.profile_coordinator import ProfileCoordinatorError
 from runtime.workflows.templates import WorkflowTemplatePrincipal
 
@@ -119,7 +120,8 @@ class CodingRoleStore:
         return read_mapping_storage(conn, expected_org_slug=self.org.slug)
 
     def _current(self, conn: sqlite3.Connection, principal: WorkflowTemplatePrincipal,
-                 capture: AuthorityAdmissionCapture | None, mapping: dict, *, fresh: bool = False) -> None:
+                 capture: AuthorityAdmissionCapture | None, mapping: dict, *, fresh: bool = False,
+                 command: dict | None = None, budget: _Budget | None = None) -> None:
         self._principal(principal)
         native_owner(self.org, principal, conn)
         if capture is None:
@@ -132,7 +134,13 @@ class CodingRoleStore:
                 generation=capture.ready.generation, snapshot_digest=capture.ready.snapshot_digest):
             raise CodingRoleError('coding_role_authority_stale')
         try:
-            configuration(mapping, json.loads(capture.ready.snapshot_bytes))
+            snapshot = json.loads(capture.ready.snapshot_bytes)
+            if command is None:
+                configuration(mapping, snapshot)
+            else:
+                from runtime.workflows._coding_settings_execution import _configuration
+                _check(type(budget) is _Budget)
+                _configuration(mapping, snapshot, command, budget)
         except ValueError:
             raise CodingRoleError('coding_role_eligibility_revoked') from None
         authority._validate_admission_uncommitted(conn, capture)

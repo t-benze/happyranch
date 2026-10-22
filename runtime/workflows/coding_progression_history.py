@@ -23,7 +23,7 @@ def admission(conn: Any, org: str, budget: Any, storage: Any, value: dict, *,
               future_task_id: str, later_qa_tasks: set[str], qa: bool = False, final: bool = False) -> None:
     """Reconstruct original authority, Pause, causal move and capacity predicates."""
     from runtime.infrastructure.task_pause_controls import decode_journal
-    from runtime.workflows._coding_role_records import configuration
+    from runtime.workflows._coding_settings_execution import _current_configuration
     from runtime.workflows.coding_native_history import _row
     from runtime.workflows.coding_start_history import rows, same
     value = _closed(value, 'format authority record tasks pause move sessions capacity_tasks work_hours max_revise_rounds')
@@ -41,8 +41,7 @@ def admission(conn: Any, org: str, budget: Any, storage: Any, value: dict, *,
     storage.add('workflow_admission_records', expected)
     snapshot = _json(base64.b64decode(value['authority']['snapshot_bytes_base64'], validate=True), 1048576)
     _decoded(snapshot, budget)
-    configuration(mapping, snapshot)
-    configuration(effective_mapping(mapping, command), snapshot)
+    _current_configuration(mapping, snapshot, command, budget)
     _check(roles == effective_mapping(mapping, command)['roles'])
     _check(type(value['tasks']) is list and 1 <= len(value['tasks']) <= 512)
     closure = {}

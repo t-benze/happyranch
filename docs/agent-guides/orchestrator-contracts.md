@@ -5466,3 +5466,24 @@ After response/settlement uncertainty, original-key readback authenticates
 publication without clearing native ownership. Historical native families and
 current execution denials stay intact. See the
 [complete R2 contract](../superpowers/specs/2026-10-14-ordered-coding-workflow.md#canonical-founder-settings-backend-r2-source).
+
+
+## Disabled settings-pinned coding start and native attribution
+
+The historical K3a start@1 contract above remains readable. Start@2 adds exactly
+settings:{generation,snapshot_digest}; callback models and run-start parsing
+select these two closed literals. Authorization/binding/context@3, development
+scope@3 and native-admission@2 carry corresponding settings/mapping pins. Mixed
+families refuse. Later stage scopes/admissions join the original command and
+context; each leaf uses its selected principal's actual team, while source/carrier
+remain in the initiating final manager's team. Current-use checks of new runs
+select the original effective roles, excluding unused replacements.
+
+Queued/current/native/progression/cold/recovery/drain readers share complete
+settings-history reconstruction. One cumulative allowance covers each local
+validation boundary and independently reconstructed post-write state. Team-move
+uses one complete inventory for all linked bindings, independently comparing each
+BLOB row/bytes and instance/root/task relation; coding relations also detect
+corrupted format tags. Unknown closure refuses without partial projection.
+Fresh callback/result/queue/TaskInvocation/dispatch admission stays unconditionally
+disabled. Neither a settings pin nor source inspection grants an effect.

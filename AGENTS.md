@@ -4137,3 +4137,19 @@ exact replay stays read-only. Preserve the original key/body after uncertainty
 and reconcile by GET, without reapply or reservation clearance. The full wire,
 authority/transaction/budget/error contract and unexecuted acceptance boundaries
 are in the ordered-coding-workflow spec's canonical Founder settings section.
+
+
+## Disabled settings-pinned coding composition — ROOT12568
+
+Current source adds literal start@2, authorization/binding/context@3, development
+scope@3 and native-admission@2. Fresh starts require the exact current explicit
+human settings publication and mapping/release pins; historical start@1 families
+retain their own readers. Admitted continuation retains its original settings and
+effective selected roles across later disable/default changes, with current native
+authority/Pause/move/host/callback/positive outer closure still mandatory.
+Coding-specific cross-team attribution and complete one-budget move projection
+are connected; generic execution/reservations and source readiness are unchanged.
+No coding start, queue or native launch is enabled. See the ordered-coding-workflow
+spec's settings-pinned execution section for exact family, snapshot and evidence
+boundaries. Source/static acceptance is separate from genuine scratch/Founder
+page/operator/backup/rollback acceptance retained by ROOT12568.

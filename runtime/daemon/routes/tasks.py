@@ -1203,9 +1203,9 @@ async def submit_completion(task_id: str, body: CompletionBody, org: OrgDep) -> 
                     # origin invocation must not overwrite a recovery claim.
                     if (ownership.kind == 'legacy' and decision_payload is not None
                             and decision_payload.get('action') == 'workflow_start'):
-                        from runtime.workflows.coding_start import CodingStartError, require_ready
+                        from runtime.workflows.coding_start import CodingStartError, require_start_ready
                         try:
-                            require_ready()
+                            require_start_ready(org.db._conn, org.slug, decision_payload['workflow'])
                         except CodingStartError as exc:
                             # Refuse before persisting a fresh unsupported start result,
                             # including on I; never poison old/native history or spend

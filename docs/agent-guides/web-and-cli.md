@@ -4088,3 +4088,16 @@ refuse rather than round a CAS. This backend has no new CLI command or page;
 existing agent mapping publication cannot replace Founder-owned defaults after
 S1. No configuration save enables the currently disabled engine. See
 [R2](../superpowers/specs/2026-10-14-ordered-coding-workflow.md#canonical-founder-settings-backend-r2-source).
+
+
+## Settings-pinned coding start syntax
+
+`happyranch workflows coding run-start --from-file ABS --emit-decision` accepts
+closed start@2 with settings:{generation,snapshot_digest} plus the existing
+mapping Pin, and retains historical start@1 parsing. It only prints a decision
+for the selected executable manager's own genuine callback; it allocates nothing
+and proves no pin/actor authority. The callback schema mirrors these literal
+variants. There is no browser workflow-start transport or TS command mirror.
+The existing settings API types/client and public run projections retain their
+shapes. Source readiness remains disabled; real Founder settings-page acceptance
+is a separate ROOT12568 obligation.

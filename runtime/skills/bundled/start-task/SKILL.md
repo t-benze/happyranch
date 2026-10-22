@@ -786,3 +786,16 @@ current close after binding. Both remain held; no selected output, cleanup or
 successful settlement follows. Literal native-manager@1/@2 remain unchanged.
 The final-manager GET remains own-current-original CLI-only, browser-excluded and
 native-remote-denied. Source/static evidence supplies no runtime or authoring PASS.
+
+
+For a settings-pinned coding start, use the actual bound start@2 command with its
+settings generation/snapshot_digest and mapping Pin. `run-start --emit-decision`
+validates syntax and prints only the closed decision for the selected executable
+manager's own genuine callback; no allocation or authority follows. Historical
+start@1 retains its reader. Coding readiness remains unconditionally disabled.
+New-family stage supplements carry the original settings pin and authenticated
+scope; later defaults or disable publications do not replace that assignment.
+Each selected principal uses its own actual team and authorized tools. Preserve
+original owner/key/evidence on refusal or uncertainty; never fabricate an actor,
+callback, native settlement or clearance. Current native/Pause/move/repository
+authority and genuine final-session callback obligations remain unchanged.

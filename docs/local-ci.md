@@ -1588,3 +1588,19 @@ Founder320seq99/v25 permits review with that limitation. Swift proof is
 UNEXECUTED / FOUNDER-EXEMPTED / NONBLOCKING93; integration INCLUDING callback,
 lifespan and SessionTracker SKIPPED24342; Python units RETIRED. No E2E/build/native
 campaign, proof framework or new merge check is introduced.
+
+
+## Settings-pinned engine composition evidence — TASK12615
+
+This increment changes closed start syntax and coding reader composition, not
+routes/classification or settings-client transport. The supported idle-schema
+operator checks served-summary parity; CLI help checks command registration.
+They do not prove full callback schema semantics, persisted settings pins,
+cross-team progression, native move projection or interrupted settlement.
+Accepted F5-R1a/b/c and F6/F8-R2a/b/e executable contracts remain NOT RUN / PROOF
+NOT RUN without the genuine compatible venue. Under Founder320seq99/v25, no new
+proof tooling or routine unchanged W1/client repetition is required. Missing Swift
+proof remains UNEXECUTED / FOUNDER-EXEMPTED / NONBLOCKING93; Python units RETIRED,
+integration INCLUDING callback/lifespan/SessionTracker SKIPPED24342. Required
+clean committed-head local all and both hosted exact-head lints remain static
+only, through normal hooks/nonforce publication and independent full review.

@@ -15,11 +15,10 @@ from runtime.orchestrator.org_config import load_org_config
 from runtime.orchestrator.task_pause import current_invocation
 from runtime.workflows._coding_import_support import CodingImportSupport, _capture
 from runtime.workflows._coding_release_history import read_release_import
-from runtime.workflows._coding_role_records import RECORD_FORMAT, configuration
+from runtime.workflows._coding_settings_execution import _configuration, _resolve_start
 from runtime.workflows.activation import author_capacity_blocked
 from runtime.workflows.coding_authority_history import _Budget
 from runtime.workflows.coding_bootstrap import effective_bindings, encode_row, identity, initial_scope, journal_rows, pinned_rows, task_brief
-from runtime.workflows.coding_mapping_history import read_mapping_storage
 from runtime.workflows.coding_saved_records import _canonical, _check, _hash
 from runtime.workflows.coding_source_history import _session_start
 from runtime.workflows.coding_start_history import claim_for, rows, same
@@ -40,6 +39,26 @@ def require_ready() -> None:
     # Sole production activation boundary. No caller/config Boolean can bypass
     # absent dispatcher/native/control/K4-K6 writer-reader/supplement closure.
     raise CodingStartError('coding_downstream_unavailable')
+
+
+def require_start_ready(conn: sqlite3.Connection, org: str, command: dict) -> None:
+    # Keep the unconditional source refusal ahead of all result/action writes.
+    require_ready()
+    from runtime.workflows.coding_settings import resolve_coding_settings
+    from runtime.workflows._coding_settings_execution import _fresh_settings, _settings_family
+    _check(_settings_family(command))
+    owned = not conn.in_transaction
+    if owned:
+        conn.execute('BEGIN')
+    try:
+        pin = dict(**command['settings'], mapping=command['mapping'])
+        state = resolve_coding_settings(conn, org, budget=_Budget(), pinned=pin)
+        _fresh_settings(state, command)
+    except (ValueError, TypeError, KeyError, sqlite3.Error, RecursionError, OverflowError):
+        raise CodingStartError('coding_start_settings_unavailable') from None
+    finally:
+        if owned:
+            conn.rollback()
 
 
 class CodingStartStore:
@@ -122,17 +141,16 @@ class CodingStartStore:
                                         (instance_id,)).fetchone()
                 if selected is None or selected[0] != principal.operation_principal:
                     raise CodingRoleError('coding_role_not_found')
-                roles._storage(conn, references)
-                saved = queued_storage(conn, self.org.slug)
-                entry = saved.runs.get(instance_id)
+                inventory = self.support._storage(conn, references)
+                entry = inventory.queued.runs.get(instance_id)
                 if entry is None or entry['source']['principal'] != principal.principal_id:
                     raise CodingRoleError('coding_role_not_found')
-                record = json.loads(next(e.mapping_bytes for e in read_mapping_storage(conn,
-                    expected_org_slug=self.org.slug).mappings
-                    if e.mapping_id == entry['command']['mapping']['id']))
-                roles._current(conn, principal, current, record['mapping'])
-                effective = effective_mapping(record['mapping'], entry['command'])
-                roles._current(conn, principal, current, effective)
+                from runtime.workflows._coding_settings_execution import _settings_family
+                if not _settings_family(entry['command']):
+                    roles._current(conn, principal, current, entry['mapping'])
+                effective = effective_mapping(entry['mapping'], entry['command'])
+                roles._current(conn, principal, current, effective,
+                    command=entry['command'], budget=inventory.budget)
                 self.db._check_team_move_workflow_uncommitted(binding_bytes=effective_bindings(instance_id, entry['roles']))
                 return self.project(instance_id, entry)
 
@@ -164,7 +182,9 @@ class CodingStartStore:
             raise CodingStartError('coding_queued_mutation_unavailable')
 
     def consume(self, claim: RetryClaim, decision: NextStep, report: CompletionReport) -> str:
-        require_ready()  # BEFORE v2 action spending, result claim, or allocation.
+        with self.db._lock:
+            require_start_ready(self.db._conn, self.org.slug, decision.workflow)
+        # BEFORE v2 action spending, result claim, or allocation.
         owner = current_invocation()
         coroutine = self._start(claim, decision, report, owner)
         return self.org.workflow_drafts._on_loop(coroutine)
@@ -215,7 +235,7 @@ class CodingStartStore:
         Any refusal/error unwinds admission_writer and preserves the callback.
         """
         _check(conn is self.db._conn and conn.in_transaction)
-        from runtime.infrastructure.workflow_schema import validate_workflow_schema
+        from runtime.infrastructure.workflow_schema import _read_workflow_schema
         inventory = self.support._storage(conn, references)
         command = decision.workflow
         parsed = parse_decision(_canonical(dict(action='workflow_start', workflow=command)))
@@ -247,14 +267,14 @@ class CodingStartStore:
         selected = entries[0]
         _check(command['mapping'] == dict(id=selected.mapping_id, generation=selected.generation, digest=selected.mapping_digest))
         record = json.loads(selected.mapping_bytes)
-        _check(record['format'] == RECORD_FORMAT)
+        _resolve_start(command, mappings, imported, inventory.budget, fresh=True)
         mapping = record['mapping']
         effective = effective_mapping(mapping, command)
         roles = effective['roles']
         _check(roles['agent_manager'] == dict(principal=claim.assigned_agent, team=claim.team))
         snapshot = json.loads(capture.ready.snapshot_bytes)
-        configuration(mapping, snapshot)
-        configuration(effective, snapshot)
+        _configuration(mapping, snapshot, command, inventory.budget)
+        _configuration(effective, snapshot, command, inventory.budget)
         self.org.workflow_authority._validate_admission_uncommitted(conn, capture)
         for selector in roles.values():
             if selector['principal'] != claim.assigned_agent and author_capacity_blocked(conn,
@@ -317,7 +337,7 @@ class CodingStartStore:
         conn.execute('UPDATE tasks SET block_kind=?,note=?,updated_at=? WHERE id=?',
                      ('delegated', 'coding-owned:' + instance, now, claim.task_id))
         conn.execute('UPDATE workflow_coding_runs SET current_attempt_id=? WHERE instance_id=?', (attempt_id, instance))
-        budget = _Budget()
+        budget = inventory.budget
         run = next(rows(conn, 'workflow_coding_runs', budget, where='instance_id=?', args=(instance,)))
         run['last_event_id'] = event_id
         attempt = next(rows(conn, 'workflow_coding_attempts', budget, where='id=?', args=(attempt_id,)))
@@ -357,7 +377,8 @@ class CodingStartStore:
                 result_id=action_claim.causal_result_id)
             _check(ack.status == 'applied')
         self.org.workflow_authority._validate_admission_uncommitted(conn, capture)
-        _check(validate_workflow_schema(conn, expected_org_slug=self.org.slug) == 'J')
+        layout, _ = _read_workflow_schema(conn, expected_org_slug=self.org.slug, budget=inventory.budget)
+        _check(layout == 'J')
         return instance
 
     def _claim_result_action_uncommitted(self, claim: RetryClaim) -> Any:

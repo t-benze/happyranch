@@ -92,7 +92,9 @@ def final_scope(*, org: str, instance: str, command: dict, roles: dict, qa: dict
 def pinned_rows(*, org: str, command: dict, source: dict, native_source: dict,
                 authority: dict, mapping: dict, roles: dict, template: dict,
                 carrier_id: str, instance_id: str, created_at: str) -> tuple[dict, dict, dict]:
-    """One explicit @2 branch; historical @1 custody bytes keep their readers."""
+    """Literal agent-read families; historical custody bytes keep their readers."""
+    from runtime.workflows._coding_settings_execution import _settings_family
+    settings = _settings_family(command)
     root = identity('root', org, source['task_id'], source['result']['id'], _hash(_canonical(command)))
     _check(root == instance_id)
     activation_id = identity('activation', root)
@@ -115,6 +117,10 @@ def pinned_rows(*, org: str, command: dict, source: dict, native_source: dict,
         repository_reference=reference, work_scope=command['work'], authority=authority,
         source=source, native_source=native_source, authorization_id=authorization_id,
         binding_snapshot_id=binding_id, activation_id=activation_id, activation_revision=1)
+    if settings:
+        authorization.update(format='workflow-coding-authorization@3', settings=command['settings'], mapping=command['mapping'])
+        binding.update(format='workflow-coding-binding@3', settings=command['settings'], mapping=command['mapping'])
+        context.update(format='workflow-coding-context@3', settings=command['settings'])
     grant, bound, ctx = map(_canonical, (authorization, binding, context))
     pin = authority['pin']
     digest = _hash(_canonical(command))
@@ -122,7 +128,7 @@ def pinned_rows(*, org: str, command: dict, source: dict, native_source: dict,
     rows = {
         'workflow_authorization_revisions': [dict(id=authorization_id, namespace=namespace,
             revision=1, authority_bytes=grant, authority_digest=_hash(grant),
-            source_pin='workflow-coding-agent-read-start@1', created_at=created_at)],
+            source_pin='workflow-coding-agent-read-start@2' if settings else 'workflow-coding-agent-read-start@1', created_at=created_at)],
         'workflow_active_authorizations': [dict(namespace=namespace, authorization_revision_id=authorization_id)],
         'workflow_binding_snapshots': [dict(id=binding_id, template_version_id=template['version_id'],
             authorization_revision_id=authorization_id, binding_bytes=bound,
@@ -147,13 +153,17 @@ def pinned_rows(*, org: str, command: dict, source: dict, native_source: dict,
 
 def initial_scope(*, org: str, instance: str, attempt: str, command: dict,
                   roles: dict, context: dict) -> dict:
-    return dict(format='workflow-coding-scope@2', org_slug=org, instance_id=instance,
+    scope = dict(format='workflow-coding-scope@2', org_slug=org, instance_id=instance,
         attempt_id=attempt, stage='development', role='implementer',
         principal=roles['implementer']['principal'], team=roles['implementer']['team'],
         revision=1, attempt_sequence=1, assignment_generation=1, release=command['release'],
         mapping_digest=command['mapping']['digest'], context_id=identity('context', instance),
         authorization=context['authorization_id'], work_scope=command['work'],
         inputs=[], artifact=None, predecessor=None)
+    from runtime.workflows._coding_settings_execution import _settings_family
+    if _settings_family(command):
+        scope.update(format='workflow-coding-scope@3', settings=command['settings'], mapping=command['mapping'])
+    return scope
 
 
 def journal_rows(pins: dict) -> list:

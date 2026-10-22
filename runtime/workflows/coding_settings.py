@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import sqlite3
 from contextlib import asynccontextmanager
+from typing import Any
 
 from runtime.orchestrator.producer_move import native_writer
 from runtime.workflows._coding_import_support import CodingImportSupport
@@ -29,6 +30,14 @@ class CodingSettingsError(ValueError):
         super().__init__(code)
 
 
+def _resolve_history(history: Any, imported: Any, budget: _Budget, *,
+                     pinned: dict | None = None) -> SettingsResolution:
+    """Private core shared only by freshly reconstructed local inventories."""
+    if history is not None and imported is None:
+        raise ValueError('coding_settings_release_required')
+    return project(history, budget, pinned=pinned)
+
+
 def resolve_coding_settings(conn: sqlite3.Connection, org_slug: str, *,
                             budget: _Budget, pinned=None) -> SettingsResolution:
     """SELECT-only complete current/pinned closure in the caller's snapshot.
@@ -43,9 +52,7 @@ def resolve_coding_settings(conn: sqlite3.Connection, org_slug: str, *,
         history, _ = _read_mapping_storage(conn, expected_org_slug=org_slug, budget=budget)
         from runtime.workflows._coding_release_history import read_release_import
         imported = read_release_import(conn, expected_org_slug=org_slug, budget=budget)
-        if history is not None and imported is None:
-            raise ValueError('coding_settings_release_required')
-        return project(history, budget, pinned=pinned)
+        return _resolve_history(history, imported, budget, pinned=pinned)
     except (ValueError, TypeError, KeyError, sqlite3.Error, RecursionError, OverflowError):
         raise CodingSettingsError('coding_settings_invalid') from None
 

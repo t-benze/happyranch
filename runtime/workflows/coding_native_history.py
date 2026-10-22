@@ -114,16 +114,19 @@ def _admission(conn: Any, org: str, budget: Any, value: Any, *, callback: bool,
                command: dict, mapping: dict, roles: dict, source: dict, tasks: dict,
                run: dict, attempt: dict, native: dict, claim: dict | None, source_ancestors: list, storage: Any) -> None:
     """Independent original-time predicates; no current roster substitution."""
-    from runtime.workflows._coding_role_records import configuration
+    from runtime.workflows._coding_settings_execution import _current_configuration, _native_format, _settings_family
     from runtime.workflows.coding_start_records import effective_mapping
     from runtime.workflows.coding_saved_records import _capture, _Ancestry
     from runtime.workflows.coding_authority_history import _capture_admission
     from runtime.infrastructure.task_pause_controls import decode_journal
     from runtime.workflows.coding_start_history import rows, same
+    new = _settings_family(command)
     value = _closed(value, 'format phase authority manager_teams tasks bindings pause invocation move capacity '
-                    'max_revise_rounds effective_bindings_base64 record')
-    _check(value['format'] == {'development': 'workflow-coding-native-admission@1',
-           'code_review': 'workflow-coding-review-admission@1', 'qa': 'workflow-coding-qa-admission@1', 'manager_closeout': 'workflow-coding-manager-admission@1'}[attempt['stage']]
+                    'max_revise_rounds effective_bindings_base64 record'
+                    + (' settings mapping' if new and attempt['stage'] == 'development' else ''))
+    if new and attempt['stage'] == 'development':
+        _check(same(value['settings'], command['settings']) and same(value['mapping'], command['mapping']))
+    _check(value['format'] == _native_format(command, attempt['stage'])
            and value['phase'] == ('callback' if callback else 'launch'))
     original_native = value['invocation']
     _check(same(original_native, native))
@@ -139,8 +142,7 @@ def _admission(conn: Any, org: str, budget: Any, value: Any, *, callback: bool,
     _capture_admission(conn, expected_record, authority, budget)
     storage.add('workflow_admission_records', expected_record)
     snapshot = _json(base64.b64decode(authority['snapshot_bytes_base64'], validate=True), 1048576)
-    configuration(mapping, snapshot)
-    configuration(effective_mapping(mapping, command), snapshot)
+    _current_configuration(mapping, snapshot, command, budget)
     _check(roles == effective_mapping(mapping, command)['roles']
            and value['manager_teams'] == [roles['agent_manager']['team']]
            and roles['agent_manager']['principal'] == source['principal'])
@@ -157,6 +159,10 @@ def _admission(conn: Any, org: str, budget: Any, value: Any, *, callback: bool,
         _check(key in closure and same(closure[key], row) and row['cancelled_at'] is None
                and row['zombie_flagged_at'] is None)
     leaf = tasks[attempt['task_id']]
+    role = {'development': 'implementer', 'code_review': 'code_reviewer',
+            'qa': 'qa_engineer', 'manager_closeout': 'agent_manager'}[attempt['stage']]
+    _check((leaf['assigned_agent'], leaf['team']) ==
+           (roles[role]['principal'], roles[role]['team']))
     chain, seen = [], set()
     current = leaf
     while True:
@@ -164,7 +170,8 @@ def _admission(conn: Any, org: str, budget: Any, value: Any, *, callback: bool,
         seen.add(current['id'])
         chain.append(current)
         _check(current['cancelled_at'] is None and current['zombie_flagged_at'] is None
-               and current['team'] == roles['agent_manager']['team']
+               and current['team'] == (roles[role]['team'] if new and current['id'] == leaf['id']
+                                       else roles['agent_manager']['team'])
                and current['status'] not in ('completed', 'failed', 'cancelled', 'superseded'))
         if current['parent_task_id'] is None:
             break

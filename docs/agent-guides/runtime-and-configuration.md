@@ -3288,3 +3288,15 @@ E2E/protected/executable-QA/test-authoring proof UNEXECUTED/FOUNDER-WAIVED139429
 Fresh FULL independent review then same-final-head scoped SOURCE QA return to
 ROOT10693; K3 controls/recovery/K4–K6 and operational acceptance remain root-owned.
 <!-- /K3b native service attribution: TASK12034 / ROOT10693 step93 -->
+
+
+## Coding settings pins at execution boundaries
+
+The disabled engine consumes canonical DB settings through the common current/
+pinned resolver. Start@2 binds a strict positive settings generation/digest to its
+existing mapping Pin and genuine human publication. E0 and disabled current state
+permit no fresh selection. An admitted run keeps its original pin after defaults
+change or coding is disabled; current selected-role/native authority still applies.
+Corrupt current settings is a refusal, never a fallback to a healthy old pointer.
+The new family requires compatible code even though no DDL changes. Source,
+installed code, loaded daemon and enabled product acceptance are distinct.
