@@ -931,10 +931,30 @@ def validate_e04(row: dict, observations: dict, browser: list[dict], directory: 
               "actual orchestrator final done with exclude_none defaults")
         if index >= 4:
             early = record["first_terminal"]
-            check(len(early["results"]) == 1 and early["tasks"][0]["orchestration_step_count"] == 1
+            check(len(early["jobs"]) == 2 and len(set(ids)) == 2
+                  and sorted(j["id"] for j in early["jobs"]) == ids
+                  and all(j["task_id"] == task and j["agent_name"] == "case_manager" for j in early["jobs"]),
+                  "pair first-terminal exact submitted job identities/owner")
+            early_jobs = {j["id"]: j for j in early["jobs"]}
+            completed, running = (early_jobs[j["id"]] for j in jobs)
+            check(completed == jobs[0]["oracle"]["row"]
+                  and type(completed["exit_code"]) is int
+                  and (completed["status"], completed["exit_code"], completed["reason"])
+                  == ("completed", expected_codes[index][0], None)
+                  and running == jobs[1]["pending"][-1]["row"]
+                  and running["status"] == "running"
+                  and all(running[k] is None for k in ("finished_at", "exit_code", "reason", "duration_ms")),
+                  "pair authored first outcome and genuinely running second job")
+            check(len(early["tasks"]) == 1 and len(early["results"]) == 1
+                  and early["results"] == record["parked"]["results"]
+                  and early["tasks"][0]["id"] == task
+                  and early["tasks"][0]["assigned_agent"] == "case_manager"
+                  and early["tasks"][0]["status"] == "in_progress"
+                  and early["tasks"][0]["current_session_id"] == first["session"]
+                  and early["tasks"][0]["orchestration_step_count"] == 1
                   and early["tasks"][0]["block_kind"] == "blocked_on_job"
+                  and json.loads(early["tasks"][0]["blocked_on_job_ids"]) == ids
                   and not any(a["action"] == "task_resumed_from_jobs" for a in early["audit"])
-                  and [j["status"] for j in early["jobs"]].count("pending") == 1
                   and jobs[1]["action"]["at"] > checkpoints[-2]["finished"], "pair +0 no-early-resume barrier")
         check(snap["results"][1]["output_summary"] == summary, "independent truthful final summary")
         rendered = record["task_browser"]

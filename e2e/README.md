@@ -415,8 +415,9 @@ actual CLI callback sources keep their fences and are not automated merge gates.
 Independent full review, scoped QA, normal hooks and manager guarded merge remain
 required. No old unit or full historical G-run allocation is renewed.
 
-The E04 prefix below authors approval/rejection/exit7/timeout and both fan-in
-orders; their behavior remains unproven. Wider jobs, threads/replay, cancellation/late
+The E04 prefix below authors automatic exit0, review-required refusal, exit7,
+timeout and both fan-in orders; their behavior remains unproven. Wider jobs,
+threads/replay, cancellation/late
 callback, restart windows beyond the bounded Pause increment, PR1014 compatibility
 and authentic memory thresholds remain root-owned uncovered work. Provider hold and response
 loss in the baseline do not establish restart/recovery. No merge or deployment follows from a
@@ -725,14 +726,28 @@ Each credible mutation is an unexecuted sensitivity proposal, not authorization.
 | `E04.two-jobs-A-first`: A completed0 while B remains running across durable/audit/CLI/browser and two +0 settled checkpoints; B then completed7 → one S2, both literal outcomes, two results/count2, no third provider. | Coordinated all→any producer/admission predicate or lost claim fence. | Single-job wake and ordinary child joins do not cover job fan-in. |
 | `E04.two-jobs-B-first`: B completed7 first, A running through the same checkpoints, then A completed0 → identical final truth with reverse triggering-job ID. | Asymmetric terminal ordering, premature wake or duplicate return. | A-first alone cannot establish order symmetry. |
 
+For both pair variants, the independent first-terminal snapshot consumer binds
+exactly the two submitted IDs to their task/agent, checks the planned first
+job's literal completed exit0/7 and the other raw running row with no terminal
+fields, and retains the unchanged blocked S1 result/current SID/wait IDs,
+no-resume audit and both +0 anchors before the second action. The existing
+live-peer observation corroborates the running row; no pending row is fabricated.
+
+The following job-read, live-S2 and two-generation contracts apply to the five
+admitted-job journeys only. The replacement has one provider, no allocated job,
+no S2 and no job reads: exact local CLI refusal precedes the separate same-file
+public API refusal, then the original SID's final callback. Individual legacy
+pending-job rejection and natural waiter wake remain retired only for this slot.
+
 `provider.jobs_command` invokes the bound CLI as a genuine provider child,
 using the real issued task/session. S1's final CLI action is blocked callback;
 S2 runs show/receipt/output/tail/wait, then exactly one completed/done callback
 as its final CLI action and naturally exits. Read-command exit0 never means
 job success. `Controller.provider_cli` retains command/argv/child PID-start/
 parent PID/source/interpreter/payload/HTTP receipts. Existing org discovery is
-retained and reconciled without assuming one request per read. For each of all
-six variants, `validate_e04` requires the shipping method, exact alpha/job path,
+retained and reconciled without assuming one request per read. For each job in
+the five admitted journeys, `validate_e04` requires the shipping method, exact
+alpha/job path,
 query (including genuine S2 binding), literal HTTP200 and actual body: human
 show GET detail, JSON show/output GET receipt, tail GET and wait POST. It
 compares full detail/wait rows (including the captured output cap), the closed
@@ -741,7 +756,8 @@ CLI JSON/text must agree with those responses. Discovery-only or error wire
 cannot satisfy a job read. `jobs.exercise` and the aggregate both require the
 first human-show line to equal returned ID, literal status and created timestamp;
 a completed/failed word in the title cannot substitute. Independent literal
-exit7, timeout/-9/reason and rejection-reason lines remain required.
+exit7 and timeout/-9/reason lines remain required. The replacement requires the
+exact local refusal stderr and separate API refusal body, with no rejection-reason line.
 
 The live-S2 frame retains source, actual provider identity/PID-start and
 snapshot entry/finish times. The aggregate requires one in-progress task bound
@@ -794,10 +810,10 @@ Evidence/control authoring records (all four answers; production seam NO):
 | --- | --- | --- |
 | Provider jobs protocol + wrapper child witness | `jobs_command`/`provider_cli` order absolute child/exchange deadlines with one-second receipt delivery room, append partial timeout evidence before refusal, bind actual child PID/parent/argv/source/SID and enforce block/final last-CLI rule. | Equal caller/child timeouts lose streams/identity; controller impersonation or post-final CLI. Exit-only provider lacks these command/evidence boundaries; persistence and sensitivity are unexecuted. |
 | Owned submitted-script socket/sentinel | `pending`/`run_script` bind exact script/token/job to SO_PEERCRED, E2E_ROOT, PID/start/PGID, natural EOF/closure and untruncated streams. | Wrong automatic launch owner/peer, controller substituting timeout; baseline provider socket is a different process family. |
-| Passive observer + boot/window records | `anchor`, passive Pause archive hooks, unchanged baseline/Pause boundary assertions and `aggregate.validate_e04` recompute A0→9→12/B0→6→18, serial+1/+1 and pair+0, full tails/counters and observed source identities. | Missing/reset/evicted window, extra attempt without provider, duplicate summaries deduplicated, receipt-before-S1/after-S2 confusion; old aggregate only checked metadata. |
+| Passive observer + boot/window records | `anchor`, passive Pause archive hooks, unchanged baseline/Pause boundary assertions and `aggregate.validate_e04` recompute A0→9→12/B0→6→17, admitted journeys' S1/final +1/+1, refusal's single +1 and both pair +0 checkpoints, full tails/counters and observed source identities. E04 retains54 provider commands and seven jobs/seven scripts. | Missing/reset/evicted window, extra attempt without provider, duplicate summaries deduplicated, receipt-before-S1/after-S2 confusion; old aggregate only checked metadata. |
 | Browser jobs fixture (O1–O7) | `Browser.response` binds armed Request/document scope and captures opt-in JSON inside the original deadline; `job_action` captures actual unchanged-cap body, status, dialog-open no-launch; `job_terminal`/`jobs_waiting` read fresh shipping detail, output, Recall and screenshots. | Wrong dialog/action, stale outcome or exit7 laundered; existing Browser covers only ordinary tasks. |
-| Actual-content daily aggregate (J1.b/J1.c) | `validate_e04` independently reconstructs genuine result/start SIDs, closed semantic completion/defaults, exact live/final lifecycle and full retained history; reads observations and browser events, resolves records and screenshots, recomputes source/boot/counter/CLI/job/audit/process/result joins, five method/path/query/HTTP200/body/stdout/durable read joins, source-timed live-S2/blocked-S1 chronology and exact human-show first header; rejects empty/hash-only/disagreeing content. | Discovery-only/error/contradictory job wire, missing live S2, title masquerading as status or forged PASS/count-only content; metadata controls cannot validate these joins. Dedicated synthetic E04 aggregate fixtures are not authored or executed; sensitivity remains MISSING. |
-| Existing metadata `controls` fixture with48 manifest entries | Existing `validate` controls still exercise missing/failed/skip/source/cleanup/timing envelope, now against the48-ID manifest. They are explicitly metadata-only; daily main additionally requires actual-content validation. | An omitted E04 name slips past stale manifest; old42-ID fixture covered baseline/Pause only. No control was executed for this delivery. |
+| Actual-content daily aggregate (J1.b/J1.c) | `validate_e04` independently reconstructs genuine result/start SIDs, closed semantic completion/defaults, exact live/final lifecycle and full retained history; reads observations and browser events, resolves records and screenshots, recomputes source/boot/counter/CLI/job/audit/process/result joins. Five admitted journeys retain all five method/path/query/HTTP200/body/stdout/durable reads per job, source-timed live-S2/blocked-S1 chronology and exact human-show first header. The one-generation refusal instead requires exact CLI/API refusal, raw no-effect and original-SID final evidence; all reject empty/hash-only/disagreeing content. | Discovery-only/error/contradictory job wire, missing live S2 in an admitted journey, title masquerading as status or forged PASS/count-only content; metadata controls cannot validate these joins. Dedicated synthetic E04 aggregate fixtures are not authored or executed; sensitivity remains MISSING. |
+| Existing metadata `controls` fixture with56 manifest entries | Existing `validate` controls retain the missing/failed/skip/source/cleanup/timing envelope against the current56-ID manifest (historically48 after E04). They are explicitly metadata-only; daily main additionally requires actual-content validation. | An omitted E04 name slips past stale manifest; old42-ID fixture covered baseline/Pause only. No control was executed for this delivery. |
 | Failure export / redaction context (J1.a) | `final_task` publishes its single sanitized partial final frame before assertions; `Controller.sanitize` + private retained old/new bearer context feed `run.collect_evidence/redact` before observations/scenario/browser-event/failure export; PR1036 unknown-context withholding and reserves remain. | Old boot secret survives final-token-only redaction, or failure loses partial chain; original exporter retained only final bearer. |
 
 Consumers are `Controller.mark/durable/evidence` → observations.json and
