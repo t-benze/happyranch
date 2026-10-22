@@ -27,6 +27,25 @@ def task_brief(work: dict) -> str:
             'no developer head or approval exists.\n' + work['brief'])
 
 
+def review_brief(work: dict) -> str:
+    return ('Independently review the exact coding subject in the bound supplement.\n'
+            'Use existing authorized repository tools; unavailable access requires BLOCK.\n'
+            'Return genuine APPROVE, REQUEST_CHANGES or BLOCK with findings.\n' + work['brief'])
+
+
+def review_scope(*, org: str, instance: str, command: dict, roles: dict,
+                 developer: dict, subject: dict) -> dict:
+    """Same-team first-edge scope; unrelated cross-team @3 pins stay reserved."""
+    return dict(format='workflow-coding-review-scope@1', org_slug=org, instance_id=instance,
+        attempt_id=identity('attempt', instance, 2), stage='code_review', role='code_reviewer',
+        principal=roles['code_reviewer']['principal'], team=roles['code_reviewer']['team'],
+        revision=1, attempt_sequence=1, assignment_generation=1, release=command['release'],
+        mapping_digest=command['mapping']['digest'], context_id=identity('context', instance),
+        authorization=identity('authorization', instance), work_scope=command['work'],
+        subject=subject, developer=dict(attempt_id=developer['id'], task_id=developer['task_id'],
+            session_id=developer['session_id'], result_id=developer['result_id'], principal=developer['principal']))
+
+
 def pinned_rows(*, org: str, command: dict, source: dict, native_source: dict,
                 authority: dict, mapping: dict, roles: dict, template: dict,
                 carrier_id: str, instance_id: str, created_at: str) -> tuple[dict, dict, dict]:

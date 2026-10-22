@@ -706,3 +706,25 @@ access, inspection or execution authority. Head remains absent until you actuall
 produce the commit. Report only your own result through the supplied genuine
 task/SID final callback. No coding staging or advancement command is available
 in this disabled slice; never substitute a document staging command.
+
+
+A bound workflow-coding-development@1 or workflow-coding-review@1 supplement
+selects only your actual assigned stage/task/SID. Preserve release/mapping,
+revision, repository/object-format/fixed-base/paths and the reviewer's exact
+produced head/PR/developer result. Use existing authorized repository tools;
+metadata grants no access. Development introduces only its genuinely produced
+full commit; reviewer independently inspects that exact subject and returns
+APPROVE, REQUEST_CHANGES or BLOCK (including unavailable access).
+For a completed stage, summary is the canonical UTF8 JSON STRING of the closed
+workflow-coding-stage-output@1 envelope: format, instance_id, attempt_id,
+revision=1, stage=development|code_review, subject, findings, outcome. subject
+uses workflow-code-change@1 with kind=code-change, repository:{id}, object_format,
+head, comparison:{base}, navigation:{branch,pr_url}; findings are nonblank and
+at most16384 UTF8 bytes. Serialize sorted keys, compact separators, Unicode
+verbatim, finite values, no duplicates/unknown fields or trailing newline.
+Development outcome=produced and top-level verdict=null; completed reviewer
+verdict equals its exact outcome. Report actual failed/blocked causes without
+inventing a subject or receipt. Use your own genuine final report-completion
+callback as the FINAL action. No staging/advancement command is available;
+never substitute document staging. Callback alone does not advance, and a
+review result does not grant QA/final-manager execution or merge authority.

@@ -139,10 +139,13 @@ def recover_owned_task(db: Any, queue: Any, slug: str, task_id: str, *, orchestr
     ownership = classify_task(db, task_id, org_slug=slug)
     if ownership.kind == "legacy":
         return False
-    if ownership.kind == 'coding_attempt':
+    if ownership.kind in ('coding_attempt', 'coding_source_waiting', 'coding_carrier'):
         coding = getattr(orchestrator, '_workflow_coding_dispatch', None)
         if coding is not None:
-            coding.notify_queued(task_id, queue)
+            from runtime.workflows.coding_progression import reconcile_run
+            reconcile_run(coding, ownership.intent_id, queue)
+            if ownership.kind == 'coding_attempt':
+                coding.notify_queued(task_id, queue)
     elif ownership.kind in ('draft', 'f5') and ownership.state == "queued":
         # This is discovery of the committed intent, not reinsertion or host
         # launch. All ownership effects occur at the dispatcher claim seam.

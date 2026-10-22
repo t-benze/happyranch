@@ -1491,3 +1491,20 @@ waiver or historical42+14 campaign covers this source head. Full independent
 review returns directly to ROOT12299; root allocates actual same-head executable
 QA before a later live-manager guarded merge. Local `scripts/local_ci.sh all`
 and the two hosted required checks remain lint/static only.
+
+
+## First coding edge source — ROOT12299 / TASK12488
+
+The development -> code_review writer, complete two-attempt readers and selected
+reviewer lifetime remain behind disabled coding readiness. This assignment runs
+only clean exact-head scripts/local_ci.sh all, normal hooks and one hosted
+Source Boundary Lint / Web Lint (Node24) observation. The existing OpenAPI
+snapshot generator may check served metadata parity; it is not behavioral proof.
+No new tests, verifier assertions, runner or native experiment is allocated.
+F1/F2/F3/F4/F5/F8 native progression, negatives, red-green, mutation/restoration,
+repetition and executable QA remain UNEXECUTED. Python units RETIRED; general
+integration INCLUDING callback/lifespan/SessionTracker SKIPPED24342. No old-root
+waiver applies. Existing synthetic complete-reader evidence proves its original
+reader scope only. The root must allocate the existing real OrgState/start/
+TaskInvocation/RetryClaim/callback/host/outer venue and readiness prerequisites;
+no fake native fixture, patched readiness, ad hoc E2E or build substitutes for it.

@@ -1509,3 +1509,68 @@ E2E/protected/executable-QA/test-authoring proof UNEXECUTED/FOUNDER-WAIVED139429
 Fresh FULL independent review then same-final-head scoped SOURCE QA return to
 ROOT10693; K3 controls/recovery/K4–K6 and operational acceptance remain root-owned.
 <!-- /K3b native service attribution: TASK12034 / ROOT10693 step93 -->
+
+
+<!-- TASK12488 / ROOT12299 first ordered edge -->
+## Disabled development to independent code review source
+
+ROOT12299 step28 / Founder THR320seq4/18/27 releases only the first
+revision1 development -> code_review edge and the selected reviewer's native
+lifetime. Readiness and require_ready remain unconditionally disabled. No
+settings/cross-team binding@3, QA/final-manager allocation, merge effect,
+activation or runtime acceptance is supplied. Earlier one-development checkpoint
+statements describe their original source; this additive contract controls the
+new explicitly versioned records without rewriting old records or receipts.
+
+The closed workflow-coding-stage-output@1 has exactly format, instance_id,
+attempt_id, revision, stage, subject, findings and outcome. subject is the real
+workflow-code-change@1 descriptor with kind=code-change, repository:{id},
+object_format, full lowercase head, comparison:{base}, navigation:{branch,pr_url}.
+Repository/object format/base are fixed by admission; initial start has no head.
+Findings are nonblank and at most16384 UTF8 bytes. The callback summary remains
+a canonical UTF8 JSON STRING (sorted keys, compact separators, no duplicate or
+unknown keys), never a new parameter/object. Development uses outcome=produced,
+completed status and null verdict; code_review uses genuine APPROVE,
+REQUEST_CHANGES or BLOCK with an exactly equal verdict. Failed/blocked/unusable
+outputs retain original native evidence and cause, without an invented receipt.
+
+Callback persistence does not advance. The complete reader reselects the actual
+INTEGER result/task/SID/principal/attempt and positive successful real host and
+tracker/task-tail/worktree/settle_live/close/move-release settlement. Unknown or
+retained original owners hold. A separate current-authority/Pause/move/capacity
+transaction accepts the exact subject, records its actual contributor and queues
+one distinct pinned reviewer, using native uncommitted task insertion. The
+business writer performs no await, file/remote I/O, enqueue or commit. Full target
+closure precedes commit; committed notification and cold rediscovery follow.
+Same original-result/CAS replay reuses the allocation. No active_chain alias or
+self-committing generic delegation helper is used.
+
+New edge event@3/edge-command@1/edge-admission@1 and review-scope@1 are explicit
+same-team families, separate from reserved cross-team binding@3/native-admission@2.
+Original bootstrap event@1, development native event@2/internal-command@2/
+native-admission@1 and scope@2 stay literal. Selected reviewer native records use
+native-review-event@1/native-review-command@1/review-admission@1. Readers derive
+both complete attempts, callbacks, subject/contributor/order, all typed native
+rows, heartbeats, current CAS and terminal/outer owners on the unchanged full-call
+budget. Partial/foreign/orphan/mixed graphs and hidden descendants refuse.
+Schema(data=False), cold/reopen, ownership/recovery and drain compose these same
+readers. No DDL/reference/type change or trusted after-image/cache is introduced.
+
+The role-selected workflow-coding-review@1 supplement pins actual reviewer
+identity, release/mapping/revision, fixed repository/base/head/PR and original
+developer INTEGER result. Existing repository tools supply independent inspection;
+metadata grants no rights. Authentic review output is retained with native
+terminal/cleanup evidence; the run remains held for the unimplemented later edge.
+Historical workflow-coding-run@1 remains literal. Progressed metadata uses closed
+workflow-coding-run@2 with the same field inventory, current_revision1,
+code_review/held state and ordered event metadata, without private findings.
+
+This is source implementation only. F1/F2/F3/F4/F5/F8 behavior, native settlement,
+negative/red-green/mutation/restoration/repetition/executable QA are UNEXECUTED;
+no test/native experiment/lane was allocated and no old-root waiver applies.
+Python units RETIRED; general integration INCLUDING callback/lifespan/SessionTracker
+SKIPPED24342. Required exact-head all/hooks/hosted checks are lint/static only.
+ROOT12299 retains genuine disposable OrgState/native/start/readiness/proof and
+same-final-head independent execution before merge. FAILED12298 uncertainty,
+separate runtimeROOT12293, adverse receipts and draftPR1134 remain unchanged.
+<!-- /TASK12488 / ROOT12299 first ordered edge -->

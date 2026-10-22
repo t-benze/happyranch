@@ -122,7 +122,8 @@ def _admission(conn: Any, org: str, budget: Any, value: Any, *, callback: bool,
     from runtime.workflows.coding_start_history import rows, same
     value = _closed(value, 'format phase authority manager_teams tasks bindings pause invocation move capacity '
                     'max_revise_rounds effective_bindings_base64 record')
-    _check(value['format'] == 'workflow-coding-native-admission@1'
+    _check(value['format'] == ('workflow-coding-native-admission@1' if attempt['stage'] == 'development'
+           else 'workflow-coding-review-admission@1')
            and value['phase'] == ('callback' if callback else 'launch'))
     original_native = value['invocation']
     _check(same(original_native, native))
@@ -196,7 +197,7 @@ def _admission(conn: Any, org: str, budget: Any, value: Any, *, callback: bool,
            and leaf['session_timeout_seconds'] == limits['session_timeout_seconds']
            and tasks[source['task_id']]['orchestration_step_count'] == limits['source_step']
            and tasks[source['task_id']]['revision_count'] == limits['source_revision']
-           and run['state'] == 'development' and run['cas_version'] + (1 if callback else 2) <= limits['coding_event_limit'])
+           and run['state'] == attempt['stage'] and run['cas_version'] + (1 if callback else 2) <= limits['coding_event_limit'])
     if callback:
         _check(value['capacity'] is None and claim is not None
                and native['id'] == claim['invocation_id'] == claim['pause_entry_id']
@@ -327,18 +328,56 @@ def read_native(conn: Any, org: str, budget: Any, storage: Any, *, start: dict,
         source['result_claim']['owner_invocation_id'] if key == source['task_id'] else None) for key in tasks}
     state = dict(claim=None, host=None, terminal=None, source_settled=False, source_cleanup=None, cleanup=False, cleanup_recorded=False,
                  callback=None, invocation=None, history=[start])
+    attempts = {attempt['id']: attempt}
+    completed_states = {}
     previous = start
     expected_principal = 'service:coding-dispatcher:' + org
     _check(len(events) <= min(4096, source['budgets']['coding_event_limit']))
     for event in events:
         budget.step()
         kind = event['event_kind']
+        from runtime.workflows.coding_progression_history import KINDS as EDGE_KINDS, replay
+        if kind in EDGE_KINDS:
+            _check(event['instance_id'] == run['instance_id'] and type(event['event_bytes']) is bytes
+                   and _hash(event['event_bytes']) == event['event_digest'])
+            body = _closed(_json(event['event_bytes'], 16777216),
+                'format id instance_id event_seq event_kind attempt_id operation previous_digest before after evidence created_at')
+            _decoded(body, budget)
+            _check(_canonical(body) == event['event_bytes']
+                   and event['event_seq'] == previous['event_seq'] + 1
+                   and event['previous_digest'] == previous['event_digest'])
+            for name in ('id', 'instance_id', 'event_seq', 'event_kind', 'attempt_id', 'previous_digest', 'created_at'):
+                _check(same(body[name], event[name]))
+            _timestamp(event['created_at'])
+            observations = body['evidence']['native_task_observations']
+            _check(type(observations) is list)
+            end = max((o['to_audit_id'] for o in observations), default=0)
+            tasks, observed = fold_heartbeats(conn, org, budget, storage, tasks, anchors, through=end)
+            _check(same(observed, observations))
+            old_id = attempt['id']
+            run, attempts, tasks = replay(conn, org, budget, storage, event=event, body=body,
+                previous=previous, initial=initial, run=run, attempts=attempts, tasks=tasks,
+                state=state, source=source, roles=roles, mapping=mapping, command=command_value)
+            attempt = attempts[run['current_attempt_id']]
+            if attempt['id'] != old_id:
+                completed_states[old_id] = {k: v for k, v in state.items() if k != 'history'}
+                state = dict(claim=None, host=None, terminal=None, callback=None, invocation=None,
+                    source_settled=state['source_settled'], source_cleanup=state['source_cleanup'],
+                    cleanup=False, cleanup_recorded=False, history=state['history'])
+                leaf = attempt['task_id']
+                storage.heartbeat_claims[leaf] = ('attempt', None)
+            for key, value in tasks.items():
+                anchors[key] = (event['id'], _hash(_canonical(encode_row(value))), anchors.get(key, (None, None, None))[2])
+            previous = event
+            state['history'].append(event)
+            storage.add('workflow_coding_events', event)
+            continue
         _check(kind in KINDS and event['instance_id'] == run['instance_id'])
         _check(type(event['event_bytes']) is bytes and _hash(event['event_bytes']) == event['event_digest'])
         body = _closed(_json(event['event_bytes'], 16777216),
             'format id instance_id event_seq event_kind attempt_id operation previous_digest before after evidence created_at')
         _decoded(body, budget)
-        _check(_canonical(body) == event['event_bytes'] and body['format'] == 'workflow-coding-event@2')
+        _check(_canonical(body) == event['event_bytes'] and body['format'] == ('workflow-coding-event@2' if attempt['stage'] == 'development' else 'workflow-coding-native-review-event@1'))
         for name in ('id', 'instance_id', 'event_seq', 'event_kind', 'attempt_id', 'previous_digest', 'created_at'):
             _check(same(body[name], event[name]))
         _check(event['event_seq'] == previous['event_seq'] + 1
@@ -349,7 +388,7 @@ def read_native(conn: Any, org: str, budget: Any, storage: Any, *, start: dict,
         facts = _closed(evidence['facts'], FACTS[kind])
         command = _closed(evidence['command'],
             'format kind source_event_ids source_event_digests subject producer_identity observation')
-        _check(command['format'] == 'workflow-coding-internal-command@2' and command['kind'] == kind
+        _check(command['format'] == ('workflow-coding-internal-command@2' if attempt['stage'] == 'development' else 'workflow-coding-native-review-command@1') and command['kind'] == kind
                and command['source_event_ids'] == [previous['id']]
                and command['source_event_digests'] == [previous['event_digest']] and command['subject'] is None)
         observation = _closed(command['observation'], 'facts invocation queue_owner admission')
@@ -381,7 +420,7 @@ def read_native(conn: Any, org: str, budget: Any, storage: Any, *, start: dict,
         end = max((o['to_audit_id'] for o in observations), default=0)
         tasks, actual_observations = fold_heartbeats(conn, org, budget, storage, tasks, anchors, through=end)
         _check(same(actual_observations, observations))
-        _check(same(before['run'], run) and before['attempts'] == [dict(id=attempt['id'], record=encode_row(attempt))]
+        _check(same(before['run'], run) and before['attempts'] == [dict(id=k, record=encode_row(attempts[k])) for k in sorted(attempts)]
                and same(before['tasks'], [dict(id=k, record=encode_row(tasks[k])) for k in sorted(tasks)]))
         expected_run = {**run, 'cas_version': run['cas_version'] + 1, 'last_event_id': event['id']}
         expected_attempt, expected_tasks = deepcopy(attempt), deepcopy(tasks)
@@ -581,7 +620,7 @@ def read_native(conn: Any, org: str, budget: Any, storage: Any, *, start: dict,
                 state['cleanup'] = safe
                 state['cleanup_recorded'] = True
         elif kind == 'held':
-            _check(facts['owner_event_ids'] == [previous['id']] and facts['resume_state'] == 'development'
+            _check(facts['owner_event_ids'] == [previous['id']] and facts['resume_state'] == attempt['stage']
                    and type(facts['reason']) is str and facts['required_owner'] == command['producer_identity']
                    and type(facts['required_action']) is str)
             expected_run['state'] = 'held'
@@ -589,9 +628,10 @@ def read_native(conn: Any, org: str, budget: Any, storage: Any, *, start: dict,
             _check(origin['claim'] == state['claim'] and origin['session_id'] == expected_attempt['session_id']
                    and command['producer_identity'] == state['claim']['owner'])
         _check(same(after['run'], expected_run)
-               and after['attempts'] == [dict(id=attempt['id'], record=encode_row(expected_attempt))]
+               and after['attempts'] == [dict(id=k, record=encode_row(expected_attempt if k == attempt['id'] else attempts[k])) for k in sorted(attempts)]
                and same(after['tasks'], [dict(id=k, record=encode_row(expected_tasks[k])) for k in sorted(expected_tasks)]))
         run, attempt, tasks = expected_run, expected_attempt, expected_tasks
+        attempts[attempt['id']] = attempt
         for key, value in tasks.items():
             anchors[key] = (event['id'], _hash(_canonical(encode_row(value))), anchors[key][2])
         previous = event
@@ -599,7 +639,16 @@ def read_native(conn: Any, org: str, budget: Any, storage: Any, *, start: dict,
         storage.add('workflow_coding_events', event)
     _check(state['claim'] is None or state['host'] is not None)
     tasks, pending = fold_heartbeats(conn, org, budget, storage, tasks, anchors)
-    state.update(run=run, attempt=attempt, tasks=tasks, anchors=anchors, pending_observations=pending,
+    # A committed edge is complete: no half-written acceptance/contribution or
+    # allocation prefix may be admitted on cold load.
+    for historical in [*completed_states.values(), state]:
+        _check(historical.get('edge_index', 0) in (0, 4))
+    states = {**completed_states, attempt['id']: {k: v for k, v in state.items() if k != 'history'}}
+    for key, value in states.items():
+        value.update(attempt=attempts[key], queue_owner=storage.heartbeat_owners.get(attempts[key]['task_id']),
+                     source_invocation=source_invocation, history=state['history'])
+    state.update(run=run, attempt=attempt, attempts=attempts, stages=states, tasks=tasks,
+                 anchors=anchors, pending_observations=pending,
                  queue_owner=storage.heartbeat_owners.get(leaf), source_invocation=source_invocation)
     return state
 
@@ -643,7 +692,8 @@ def validate_native_journals(conn: Any, org: str, budget: Any, storage: Any) -> 
             if native['phase'] == 'unknown' or native['context'].get('execution_unknown'):
                 uncertain.add(native['task_id'])
             entry = storage.runs[owner[1]]
-            attempt, state = entry['attempt'], entry['native']
+            attempt = next(a for a in entry['attempts'].values() if a['task_id'] == native['task_id'])
+            state = entry['native']['stages'][attempt['id']]
             _check(native['agent'] == attempt['principal'] and native['org'] == org
                    and native['root_task_id'] == row['root_task_id'] == entry['source']['root_ancestor_id']
                    and native['generation'] <= row['generation'] and native['owner_identity'] == {})
@@ -667,10 +717,13 @@ def validate_native_journals(conn: Any, org: str, budget: Any, storage: Any) -> 
                 _check(not (state['cleanup_recorded'] and state['cleanup']))
         storage.add('task_pause_controls', row)
     for entry in storage.runs.values():
-        state = entry['native']
-        # Missing native ownership never proves teardown. Retain the original
-        # J claim/host identity and expose uncertainty until its actual late
-        # owner commits a positive cleanup observation.
-        state['ownership_unknown'] = (entry['attempt']['task_id'] in uncertain or ((state['claim'] is not None or state['queue_owner'] is not None)
-            and not (state['cleanup_recorded'] and state['cleanup'])
-            and entry['attempt']['task_id'] not in selected))
+        for attempt in entry['attempts'].values():
+            state = entry['native']['stages'][attempt['id']]
+            # Missing native ownership never proves teardown, including an
+            # earlier attempt after the current pointer has advanced.
+            state['ownership_unknown'] = (attempt['task_id'] in uncertain or ((state['claim'] is not None or state['queue_owner'] is not None)
+                and not (state['cleanup_recorded'] and state['cleanup'])
+                and attempt['task_id'] not in selected))
+        current = entry['native']['stages'][entry['attempt']['id']]
+        entry['native']['ownership_unknown'] = any(s['ownership_unknown'] for s in entry['native']['stages'].values())
+        entry['native']['queue_owner'] = current['queue_owner']

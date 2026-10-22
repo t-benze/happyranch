@@ -69,7 +69,13 @@ class CodingDispatcher:
         saved = queued_storage(conn, self.org.slug)
         owner = saved.owners.get(task_id)
         _check(owner is not None)
-        return saved.runs[owner[1]]
+        entry = saved.runs[owner[1]]
+        if owner[0] == 'coding_attempt':
+            selected = next(a for a in entry['attempts'].values() if a['task_id'] == task_id)
+            if selected['id'] != entry['attempt']['id']:
+                entry = {**entry, 'attempt': selected, 'native': {**entry['native'],
+                    **entry['native']['stages'][selected['id']]}}
+        return entry
 
     @contextmanager
     def _writer(self) -> Iterator[Any]:
@@ -95,7 +101,11 @@ class CodingDispatcher:
             return False
         with self.db._lock:
             entry = self._entry(self.db._conn, task_id)
-            return task_id == entry['attempt']['task_id'] and entry['attempt']['state'] == 'queued'
+            return (task_id == entry['attempt']['task_id'] and entry['attempt']['state'] == 'queued'
+                    and entry['run']['current_attempt_id'] == entry['attempt']['id']
+                    and entry['run']['state'] == entry['attempt']['stage']
+                    and entry['native']['source_settled'] and not entry['native'].get('ownership_unknown')
+                    and entry['native']['claim'] is None and entry['native']['host'] is None)
 
     def queue_started(self, task_id: str) -> dict:
         # The queue calls this before scheduling its first heartbeat. A coding
@@ -260,7 +270,8 @@ class CodingDispatcher:
         for binding in entry['roles'].values():
             _check(binding['team'] == entry['roles']['agent_manager']['team'])
         _check(not entry['native'].get('ownership_unknown')
-               and entry['native']['source_settled'] and entry['run']['state'] == 'development'
+               and entry['native']['source_settled'] and entry['run']['state'] == entry['attempt']['stage']
+               and entry['run']['current_attempt_id'] == entry['attempt']['id']
                and entry['attempt']['task_id'] == invocation.task.id
                and entry['attempt']['principal'] == invocation.agent)
         for task in entry['tasks'].values():
@@ -339,7 +350,8 @@ class CodingDispatcher:
                    and not native['context'].get('execution_unknown'))
         # Frozen config was checked outside each awaited boundary by _policies.
         # Do not read files while owning this synchronous native writer.
-        result = dict(format='workflow-coding-native-admission@1', phase='callback' if callback else 'launch',
+        result = dict(format=('workflow-coding-native-admission@1' if entry['attempt']['stage'] == 'development'
+            else 'workflow-coding-review-admission@1'), phase='callback' if callback else 'launch',
             authority=_capture(capture, identity('native-admission', entry['attempt']['id'],
                 invocation.identity, entry['run']['cas_version']), _canonical(entry['command'])),
             manager_teams=list(self.org.teams.teams_for_manager(entry['source']['principal'])),
@@ -414,7 +426,7 @@ class CodingDispatcher:
                                              before=entry['tasks'][invocation.task.id])
 
     def _projection(self, entry: dict) -> dict:
-        return dict(run=deepcopy(entry['run']), attempts=[dict(id=entry['attempt']['id'], record=encode_row(entry['attempt']))],
+        return dict(run=deepcopy(entry['run']), attempts=[dict(id=k, record=encode_row(a)) for k, a in sorted(entry['attempts'].items())],
             instances=_json_start(entry)['after']['instances'],
             tasks=[dict(id=k, record=encode_row(v)) for k, v in sorted(entry['tasks'].items())],
             rounds=[], requests=[], assignments=[])
@@ -440,7 +452,8 @@ class CodingDispatcher:
         observation = dict(facts=facts, invocation=native, queue_owner=queue_owner,
             admission=(invocation.coding_launch_admission if kind == 'session_bound' else
                        invocation.coding_callback_admission if kind == 'callback_recorded' else None))
-        command = dict(format='workflow-coding-internal-command@2', kind=kind,
+        command = dict(format=('workflow-coding-internal-command@2' if entry['attempt']['stage'] == 'development'
+            else 'workflow-coding-native-review-command@1'), kind=kind,
             source_event_ids=[previous['id']], source_event_digests=[previous['event_digest']],
             subject=None, producer_identity=producer, observation=observation)
         instance = entry['run']['instance_id']
@@ -452,11 +465,13 @@ class CodingDispatcher:
         after = deepcopy(before)
         after['run'].update(cas_version=entry['run']['cas_version'] + 1, last_event_id=event_id, **(run_changes or {}))
         attempt = {**entry['attempt'], **(attempt_changes or {})}
-        after['attempts'] = [dict(id=attempt['id'], record=encode_row(attempt))]
+        after['attempts'] = [dict(id=k, record=encode_row(attempt if k == attempt['id'] else a))
+                             for k, a in sorted(entry['attempts'].items())]
         after['tasks'] = [dict(id=k, record=encode_row(dict(conn.execute('SELECT * FROM tasks WHERE id=?', (k,)).fetchone())))
                           for k in sorted(entry['tasks'])]
         operation = dict(org_slug=self.org.slug, principal=principal, key=key, request_digest=_hash(_canonical(command)))
-        body = dict(format='workflow-coding-event@2', id=event_id, instance_id=instance,
+        body = dict(format=('workflow-coding-event@2' if entry['attempt']['stage'] == 'development'
+            else 'workflow-coding-native-review-event@1'), id=event_id, instance_id=instance,
             event_seq=previous['event_seq'] + 1, event_kind=kind, attempt_id=attempt['id'], operation=operation,
             previous_digest=previous['event_digest'], before=before, after=after,
             evidence=dict(kind=kind, command=command, origin=dict(kind='service', principal=invocation.agent,
@@ -492,6 +507,7 @@ class CodingDispatcher:
         entry['run'] = dict(conn.execute('SELECT * FROM workflow_coding_runs WHERE instance_id=?', (entry['run']['instance_id'],)).fetchone())
         entry['attempt'] = dict(conn.execute('SELECT * FROM workflow_coding_attempts WHERE id=?', (entry['attempt']['id'],)).fetchone())
         entry['tasks'] = {k: dict(conn.execute('SELECT * FROM tasks WHERE id=?', (k,)).fetchone()) for k in entry['tasks']}
+        entry['attempts'][entry['attempt']['id']] = entry['attempt']
         event = dict(conn.execute('SELECT * FROM workflow_coding_events WHERE id=?', (entry['run']['last_event_id'],)).fetchone())
         entry['native'].update(claim=invocation.coding_claim, history=[*entry['native']['history'], event], pending_observations=[])
         host = self._host(invocation)
@@ -641,7 +657,7 @@ class CodingDispatcher:
             ownership = saved.owners.get(invocation.task.id)
             if ownership is None:
                 return
-            entry = saved.runs[ownership[1]]
+            entry = self._entry(conn, invocation.task.id)
             if ownership[0] == 'coding_carrier':
                 raise CodingStartError('coding_structural_launch_refused')
             source = ownership[0] == 'coding_source_waiting'
@@ -652,14 +668,14 @@ class CodingDispatcher:
                 producer = self.producer + ':' + invocation.identity
                 invocation.coding_settled_entry = native_entry
                 self._append(conn, entry, 'held', dict(reason='coding_native_preparation_unsettled',
-                    owner_event_ids=[entry['native']['history'][-1]['id']], resume_state='development',
+                    owner_event_ids=[entry['native']['history'][-1]['id']], resume_state=entry['attempt']['stage'],
                     required_owner=producer, required_action='original_owner_reconciliation'),
                     invocation=invocation, run_changes=dict(state='held'))
                 return
             if native_entry is None:
                 invocation.coding_settled_entry = None
                 self._append(conn, entry, 'held', dict(reason='coding_native_close_unavailable',
-                    owner_event_ids=[entry['native']['history'][-1]['id']], resume_state='development',
+                    owner_event_ids=[entry['native']['history'][-1]['id']], resume_state=entry['attempt']['stage'],
                     required_owner=invocation.identity if source else entry['native']['claim']['owner'],
                     required_action='original_owner_reconciliation'), invocation=invocation,
                     run_changes=dict(state='held'))
@@ -697,27 +713,63 @@ class CodingDispatcher:
                 attempt_changes=(dict(state='completed') if not source and safe and entry['native']['terminal'] == 'success'
                                  else dict(state='uncertain') if not source and not safe else {}),
                 event_time=now)
+            if not source and safe and entry['native']['terminal'] == 'success':
+                entry = self._entry(conn, invocation.task.id)
+                from runtime.workflows.coding_progression import _settled, record_review_in_writer
+                try:
+                    usable = _settled(entry)
+                except (ValueError, TypeError, UnicodeError):
+                    usable = None
+                if usable is None:
+                    self._append(conn, entry, 'held', dict(reason='coding_stage_output_unusable',
+                        owner_event_ids=[entry['native']['history'][-1]['id']], resume_state=entry['attempt']['stage'],
+                        required_owner=entry['native']['claim']['owner'], required_action='original_result_inspection'),
+                        invocation=invocation, run_changes=dict(state='held'))
+                elif entry['attempt']['stage'] == 'code_review':
+                    record_review_in_writer(self, conn, entry)
+        # Native close/move release was recorded and committed before any new
+        # current-authority allocation, with no await or enqueue in that writer.
+        from runtime.workflows.coding_progression import reconcile_run
+        reconcile_run(self, entry['run']['instance_id'], self.org.orchestrator._queue)
 
     def development_instruction(self, task_id: str, agent: str, session_id: str) -> str:
         with self.db._lock:
             entry = self._entry(self.db._conn, task_id)
             attempt = entry['attempt']
             _check(task_id == attempt['task_id'] and agent == attempt['principal']
+                   and entry['run']['current_attempt_id'] == attempt['id']
                    and attempt['state'] in ('queued', 'claimed', 'running')
                    and attempt['session_id'] in (None, session_id))
-            supplement = dict(format='workflow-coding-development@1', instance_id=entry['run']['instance_id'],
-                attempt_id=attempt['id'], task_id=task_id, session_id=session_id, role='implementer',
+            from runtime.workflows.coding_bootstrap import review_scope
+            development = attempt['stage'] == 'development'
+            scope = json.loads(attempt['scope_bytes'])
+            supplement = dict(format='workflow-coding-development@1' if development else 'workflow-coding-review@1',
+                instance_id=entry['run']['instance_id'], attempt_id=attempt['id'], task_id=task_id,
+                session_id=session_id, role='implementer' if development else 'code_reviewer',
                 revision=attempt['revision'], assignment_generation=attempt['assignment_generation'],
-                scope_digest=attempt['scope_digest'], release=entry['command']['release'],
-                mapping=entry['command']['mapping'], work=entry['command']['work'], head=None,
-                reading='Use your existing authorized repository tools. A reference grants no access or execution authority.',
-                output=dict(format='workflow-code-change@1', repository_id=entry['command']['work']['repository_id'],
-                    object_format=entry['command']['work']['object_format'], base=entry['command']['work']['base'],
-                    head=None, pull_request=None),
-                output_obligation='Return only the full commit genuinely produced by this task, bound to this fixed base and repository. PR navigation is not approval identity.',
+                scope_digest=attempt['scope_digest'], release=entry['command']['release'], mapping=entry['command']['mapping'],
+                work=entry['command']['work'], head=None if development else scope['subject']['head'],
+                reading='Use existing authorized repository tools. A reference grants no access or execution authority.',
+                output=dict(format='workflow-coding-stage-output@1', instance_id=entry['run']['instance_id'],
+                    attempt_id=attempt['id'], revision=1, stage=attempt['stage'],
+                    subject=(dict(format='workflow-code-change@1', kind='code-change',
+                        repository=dict(id=entry['command']['work']['repository_id']),
+                        object_format=entry['command']['work']['object_format'], head=None,
+                        comparison=dict(base=entry['command']['work']['base']), navigation=dict(branch=None, pr_url=None))
+                        if development else scope['subject']),
+                    findings='Your own nonempty findings, at most 16384 UTF8 bytes.',
+                    outcome='produced' if development else 'APPROVE|REQUEST_CHANGES|BLOCK'),
+                output_obligation=('Introduce only the full commit genuinely produced by this assigned task.' if development else
+                    'Independently inspect the exact pinned subject; use BLOCK for unavailable access. Never copy another actor approval.'),
                 final_callback=dict(task_id=task_id, agent=agent, session_id=session_id,
                     command='happyranch report-completion --org ' + self.org.slug + ' --from-file ABS',
-                    obligation='Report your own authentic result as the final action. No staging/advancement command is available.'))
+                    obligation='summary is the canonical UTF8 JSON STRING of output, never an object; completed status with null verdict for development or exact outcome verdict for review. Failed/blocked callbacks retain actual causes without inventing output. Callback is FINAL. No staging command.'))
+            if not development:
+                developer = next(a for a in entry['attempts'].values() if a['stage'] == 'development')
+                _check(scope == review_scope(org=self.org.slug, instance=entry['run']['instance_id'],
+                    command=entry['command'], roles=entry['roles'], developer=developer, subject=scope['subject']))
+                supplement['developer'] = scope['developer']
+                supplement['subject'] = scope['subject']
         return '\n\n' + _canonical(supplement).decode('utf8')
 
 

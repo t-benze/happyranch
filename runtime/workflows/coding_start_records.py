@@ -3,10 +3,10 @@ from __future__ import annotations
 
 import json
 from typing import Annotated, Literal
-from pydantic import Field, StrictInt, field_validator, model_validator
+from pydantic import Field, RootModel, StrictInt, field_validator, model_validator
 
 from runtime.workflows._coding_role_records import AgentBinding, Closed, MappingPin, Release, Roles
-from runtime.workflows.artifacts import Token
+from runtime.workflows.artifacts import CodeChangeDescriptor, Token
 from runtime.workflows.coding_saved_records import (
     _check, _constant, _json, _model, _oid, _operation, _pairs, _paths, _repository,
 )
@@ -49,6 +49,50 @@ class CodingStartDecision(Closed):
     workflow: CodingStart
 
 
+class CodingStageOutput(Closed):
+    format: Literal['workflow-coding-stage-output@1']
+    instance_id: Token
+    attempt_id: Token
+    revision: Annotated[StrictInt, Field(ge=1, le=1)]
+    stage: Literal['development', 'code_review']
+    subject: CodeChangeDescriptor
+    findings: str
+    outcome: Literal['produced', 'APPROVE', 'REQUEST_CHANGES', 'BLOCK']
+
+    @model_validator(mode='after')
+    def closed_stage(self) -> CodingStageOutput:
+        _check(self.subject.comparison is not None)
+        _check(self.findings.strip() != '' and '\x00' not in self.findings
+               and 0 < len(self.findings.encode('utf8')) <= 16384)
+        _check((self.stage == 'development') == (self.outcome == 'produced'))
+        return self
+
+
+def parse_stage_output(result: dict, *, instance: str, attempt: dict,
+                       work: dict, subject: dict | None = None) -> dict:
+    """Validate content against an already authenticated native result row.
+
+    Envelope IDs and commit syntax do not prove assignment or object existence.
+    Failed/blocked and unusable callbacks remain their original native evidence.
+    """
+    _check(type(result['id']) is int and result['id'] > 0
+           and result['id'] == attempt['result_id']
+           and (result['task_id'], result['session_id'], result['agent']) ==
+               (attempt['task_id'], attempt['session_id'], attempt['principal'])
+           and result['status'] == 'completed' and result['decision_json'] is None
+           and result['waiting_on_job_ids'] is None and type(result['output_summary']) is str)
+    output = _model(CodingStageOutput, _json(result['output_summary'].encode('utf8'), 65536)).model_dump()
+    _check((output['instance_id'], output['attempt_id'], output['revision'], output['stage']) ==
+           (instance, attempt['id'], attempt['revision'], attempt['stage']))
+    descriptor = output['subject']
+    _check((descriptor['repository']['id'], descriptor['object_format'], descriptor['comparison']['base']) ==
+           (work['repository_id'], work['object_format'], work['base']))
+    _check(result['verdict'] == (None if output['stage'] == 'development' else output['outcome']))
+    if subject is not None:
+        _check(descriptor == subject)
+    return output
+
+
 class CodingReadiness(Closed):
     enabled: Literal[False]
     reason: Literal['coding_downstream_unavailable']
@@ -74,7 +118,7 @@ class QueuedEvent(Closed):
     event_seq: Annotated[StrictInt, Field(ge=1, le=4096)]
 
 
-class CodingRunReceipt(Closed):
+class CodingInitialRunReceipt(Closed):
     format: Literal['workflow-coding-run@1']
     instance_id: Token
     release: Release
@@ -88,6 +132,29 @@ class CodingRunReceipt(Closed):
     history: list[QueuedEvent] = Field(min_length=1, max_length=4096)
     closeout: None
     readiness: CodingReadiness
+
+
+class CodingOrderedAttempt(QueuedAttempt):
+    stage: Literal['development', 'code_review']
+
+
+class CodingOrderedEvent(QueuedEvent):
+    kind: Literal['run_started', 'session_bound', 'launch_reserved', 'launch_observed',
+        'callback_recorded', 'terminal_recorded', 'cleanup_settled', 'held', 'host_reconciled',
+        'artifact_staged', 'contribution_recorded', 'stage_queued', 'advance', 'review_staged']
+
+
+class CodingOrderedRunReceipt(CodingInitialRunReceipt):
+    format: Literal['workflow-coding-run@2']
+    current_revision: Annotated[StrictInt, Field(ge=1, le=1)]
+    state: Literal['code_review', 'held']
+    current_attempt: CodingOrderedAttempt
+    history: list[CodingOrderedEvent] = Field(min_length=1, max_length=4096)
+
+
+class CodingRunReceipt(RootModel[Annotated[
+        CodingInitialRunReceipt | CodingOrderedRunReceipt, Field(discriminator='format')]]):
+    pass
 
 
 def parse_start(raw: bytes) -> dict:

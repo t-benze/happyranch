@@ -131,7 +131,7 @@ def read_queued(conn: sqlite3.Connection, org: str, budget: _Budget, mappings: A
     run_rows = list(rows(conn, 'workflow_coding_runs', budget))
     attempts = list(rows(conn, 'workflow_coding_attempts', budget))
     events = list(rows(conn, 'workflow_coding_events', budget))
-    _check(len(attempts) == len(run_rows) and len(events) >= len(run_rows))
+    _check(len(run_rows) <= len(attempts) <= 2 * len(run_rows) and len(events) >= len(run_rows))
     used_attempts, used_events, used_sources = set(), set(), set()
     for run in run_rows:
         budget.step()
@@ -140,8 +140,8 @@ def read_queued(conn: sqlite3.Connection, org: str, budget: _Budget, mappings: A
         selected = [r for r in events if r['instance_id'] == instance]
         selected_attempts = [r for r in attempts if r['instance_id'] == instance]
         selected.sort(key=lambda row: row['event_seq'])
-        _check(len(selected) >= 1 and len(selected_attempts) == 1)
-        event, actual_attempt = selected[0], selected_attempts[0]
+        _check(len(selected) >= 1 and 1 <= len(selected_attempts) <= 2)
+        event = selected[0]
         actual_run = run
         initial = _json(event['event_bytes'], 16777216)
         run = initial['after']['run']
@@ -150,7 +150,6 @@ def read_queued(conn: sqlite3.Connection, org: str, budget: _Budget, mappings: A
         for selected_event in selected:
             _check(selected_event['id'] not in used_events)
             used_events.add(selected_event['id'])
-        used_attempts.add(attempt['id'])
         _check(type(event['event_bytes']) is bytes and _hash(event['event_bytes']) == event['event_digest'])
         payload = _closed(_json(event['event_bytes'], 16777216),
             'format id instance_id event_seq event_kind attempt_id operation previous_digest before after evidence created_at')
@@ -377,7 +376,12 @@ def read_queued(conn: sqlite3.Connection, org: str, budget: _Budget, mappings: A
             tasks=after_tasks, source=source, roles=roles, authority=evidence['authority'],
             command_value=command, mapping=mapping, source_invocation=entry,
             source_ancestors=[decode_row(r) for r in native_source['ancestors']])
-        _check(same(native['run'], actual_run) and same(native['attempt'], actual_attempt))
+        actual_attempts = {a['id']: a for a in selected_attempts}
+        _check(len(actual_attempts) == len(selected_attempts)
+               and same(native['run'], actual_run) and same(native['attempts'], actual_attempts))
+        _check(not (set(actual_attempts) & used_attempts))
+        used_attempts.update(actual_attempts)
+        actual_attempt = actual_attempts[actual_run['current_attempt_id']]
         after_tasks = native['tasks']
         run, attempt = actual_run, actual_attempt
         for task_id, expected in after_tasks.items():
@@ -408,22 +412,26 @@ def read_queued(conn: sqlite3.Connection, org: str, budget: _Budget, mappings: A
             for key in keys:
                 budget.step()
                 _check(conn.execute(f'SELECT 1 FROM {table} WHERE {column}=? LIMIT 1', (key,)).fetchone() is None)
-        callbacks = list(rows(conn, 'task_results', budget, where='task_id=?', args=(leaf['id'],)))
-        _check(same(callbacks, [] if native['callback'] is None else [native['callback']]))
-        budget.step()
-        _check(conn.execute('SELECT 1 FROM tasks WHERE parent_task_id=? LIMIT 1', (leaf['id'],)).fetchone() is None)
+        for owned_attempt in actual_attempts.values():
+            owned_state = native['stages'][owned_attempt['id']]
+            callbacks = list(rows(conn, 'task_results', budget, where='task_id=?', args=(owned_attempt['task_id'],)))
+            _check(same(callbacks, [] if owned_state['callback'] is None else [owned_state['callback']]))
+            budget.step()
+            _check(conn.execute('SELECT 1 FROM tasks WHERE parent_task_id=? LIMIT 1', (owned_attempt['task_id'],)).fetchone() is None)
+            storage.add('workflow_coding_attempts', owned_attempt)
         for child in rows(conn, 'tasks', budget, where='parent_task_id=?', args=(source['task_id'],)):
             _check(child['id'] == carrier_id or (child['status'] in ('completed', 'failed', 'cancelled', 'superseded')
                 and datetime.fromisoformat(child['created_at']) <= datetime.fromisoformat(payload['created_at'].replace('Z', '+00:00'))))
-        _check([r['id'] for r in rows(conn, 'tasks', budget, where='parent_task_id=?',
-                                    args=(carrier_id,), maximum=2)] == [leaf['id']])
+        _check({r['id'] for r in rows(conn, 'tasks', budget, where='parent_task_id=?',
+                                    args=(carrier_id,), maximum=3)} == {a['task_id'] for a in actual_attempts.values()})
         for table, row in (('workflow_coding_runs', run), ('workflow_coding_attempts', attempt), ('workflow_coding_events', event)):
             storage.add(table, row)
         storage.runs[instance] = dict(run=run, command=command, roles=roles, attempt=attempt, event=event,
-                                    source=source, binding=expected_pins['workflow_binding_snapshots'][0],
+                                    source=source, attempts=actual_attempts, mapping=mapping, binding=expected_pins['workflow_binding_snapshots'][0],
                                     native=native, authority=evidence['authority'], tasks=after_tasks)
         for task_id, kind in ((source['task_id'], 'coding_source_waiting'),
-                              (carrier_id, 'coding_carrier'), (leaf['id'], 'coding_attempt')):
+                              (carrier_id, 'coding_carrier'),
+                              *((a['task_id'], 'coding_attempt') for a in actual_attempts.values())):
             _check(task_id not in storage.owners)
             storage.owners[task_id] = (kind, instance)
     from runtime.workflows.coding_native_history import validate_native_journals
