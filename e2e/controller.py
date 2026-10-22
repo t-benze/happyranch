@@ -157,6 +157,7 @@ class Controller:
         self.failures: list[dict] = []
         self._failure_raw: dict[str, tuple] = {}
         self._failure_slots: dict[str, tuple] = {}
+        self._failure_check: dict[str, tuple] = {}
         self._failure_writer_owner = threading.get_ident()
         self._failure_writer_active = False
         self._failure_publication_state = "not_attempted"
@@ -920,11 +921,22 @@ class Controller:
             return
         self._failure_writer_active = True
         try:
-            def check() -> None:
-                if time.monotonic() >= self.effective_end():
+            def check(*, initial: bool = False) -> None:
+                exhausted = time.monotonic() >= self.effective_end()
+                if (initial and claim is not None and claim[0] is winner and claim[1] is nonce
+                        and self._failure_raw.get("first") is winner):
+                    category = _failure_error(winner[0])
+                    if type(exhausted) is bool and self._failure_raw.get("first") is winner:
+                        self._failure_check.setdefault("observation", (claim, winner, category, exhausted))
+                if exhausted:
                     raise TimeoutError("diagnostic work deadline")
 
-            check()
+            # Claim before the first check prepared with this actual raw winner.
+            # A later invocation cannot complete an interrupted winning nonce.
+            winner = self._failure_raw.get("first")
+            nonce = object()
+            claim = self._failure_check.setdefault("claim", (winner, nonce)) if winner is not None else None
+            check(initial=True)
             slots = (self._failure_slots.get("first_observed"), self._failure_slots.get("context_capture"))
             if self._failure_published == slots:
                 self._failure_publication_state = "skipped"
@@ -1264,7 +1276,43 @@ def cancellation_hold(controller: Controller) -> None:
         time.sleep(0.05)
 
 
-def main() -> None:
+def _failure_terminal_status(error: BaseException, entry: dict, token: object, frame: Any) -> int | None:
+    """Finite advisory status only after the real final-raise handoff matches."""
+    selected = entry.get("selected")
+    if selected is not None:
+        entry_token, entry_frame, controller, winner, saved, head, claim, observation = selected
+        outer = error.__traceback__
+        if (entry_token is token and entry.get("token") is token
+                and entry_frame is frame and entry.get("frame") is frame
+                and controller._failure_raw.get("first") is winner
+                and controller.primary_error is winner[0] and error is winner[0]
+                and controller.primary_traceback is saved and saved is winner[1]
+                and head.tb_frame.f_code is main.__code__ and head.tb_next is saved
+                and outer is not None and outer.tb_frame is frame and outer.tb_next is head):
+            categories = ("unicode", "timeout", "interruption", "assertion", "value", "io", "runtime", "other")
+            if (type(claim) is tuple and len(claim) == 2 and claim[0] is winner
+                    and type(claim[1]) is object and controller._failure_check.get("claim") is claim
+                    and type(observation) is tuple and len(observation) == 4
+                    and controller._failure_check.get("observation") is observation
+                    and observation[0] is claim and observation[1] is winner
+                    and type(observation[2]) is str and observation[2] in categories
+                    and type(observation[3]) is bool):
+                return 80 + 2 * categories.index(observation[2]) + observation[3]
+            return 1  # Genuine selected entry, without a complete matching check.
+
+    # Only exact built-in SystemExit: never evaluate a subclass's code property
+    # or overridden int operators/conversions, and never mutate the code member.
+    if type(error) is SystemExit:
+        code = error.code
+        if (isinstance(code, int) and int.__ge__(code, -(1 << 63))
+                and int.__le__(code, (1 << 63) - 1)):
+            low = int.__and__(code, 255)
+            if 80 <= low <= 95:
+                return 1
+    return None
+
+
+def main(_terminal: dict | None = None) -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", type=Path, required=True)
     parser.add_argument("--source", type=Path, required=True)
@@ -1328,8 +1376,29 @@ def main() -> None:
             controller.record_error("controller-evidence", exc)
         controller._stage_failure_categories()
         if controller.primary_error is not None:
-            raise controller.primary_error.with_traceback(controller.primary_traceback)
+            try:
+                raise controller.primary_error.with_traceback(controller.primary_traceback)
+            except BaseException as exc:
+                if _terminal is not None:
+                    winner = controller._failure_raw.get("first")
+                    head = exc.__traceback__
+                    if (winner is not None and controller.primary_error is winner[0] and exc is winner[0]
+                            and controller.primary_traceback is winner[1] and head is not None
+                            and head.tb_frame is sys._getframe() and head.tb_next is winner[1]):
+                        _terminal.setdefault("selected", (
+                            _terminal["token"], _terminal["frame"], controller, winner, winner[1], head,
+                            controller._failure_check.get("claim"), controller._failure_check.get("observation")))
+                raise
 
 
 if __name__ == "__main__":
-    main()
+    _entry_token = object()
+    _entry_frame = sys._getframe()
+    _entry = {"token": _entry_token, "frame": _entry_frame}
+    try:
+        main(_entry)
+    except BaseException as _error:
+        _status = _failure_terminal_status(_error, _entry, _entry_token, _entry_frame)
+        if _status is not None:
+            raise SystemExit(_status) from None
+        raise
