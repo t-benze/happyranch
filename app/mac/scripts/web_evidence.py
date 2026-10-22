@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Private generated-web custody. Unsigned observations, never release approval.
+"""RETIRED / NONSHIPPING under Founder THR104 seq369.
+
+Historical implementation only; Mac build and all shipping readers do not import
+or invoke this file. Its former protocol is not a current acceptance gate.
+
+Private generated-web custody. Unsigned observations, never release approval.
 
 Both publish_build and verify_web re-open the same original inputs and validate
 relations. Python alone owns stat integers. JS sees opaque subject tokens only.

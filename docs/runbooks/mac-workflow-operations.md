@@ -7,7 +7,7 @@ checkout SHA and tree. Record both identities before a confirmation run.
 The job has a 95-minute limit. Checkout, uv, Node and Go setup each have five
 minutes; private directory reservation has one, Xcode selection and Go validation
 each have two. Build and inspect has 45 minutes, including original preparation,
-packaging and the helper's existing bounded diagnostic packaging. Each artifact
+packaging and best-effort bounded diagnostic packaging. Each artifact
 upload has five minutes. These explicit limits total 85 minutes, leaving ten
 minutes for action finalization within the job budget. This is an upper budget,
 not an expected build duration or a guarantee that finalization completes.
@@ -38,10 +38,12 @@ be the only available file. Missing diagnostic files are reported by the upload
 action; upload failure remains a failure and does not establish candidate success.
 
 Step timeout can leave time for this upload if the runner remains available.
-Explicit cancellation, job timeout, runner loss, or interrupted helper diagnostic
+Explicit cancellation, job timeout, runner loss, or interrupted build diagnostic
 packaging can prevent or interrupt uploads. Cancellation diagnostics are best
 effort. These workflow limits do not establish helper child-process cleanup;
-named helper limits and owned-child cleanup belong to the package delivery owner.
+the custom packaging supervisor and helper protocols are retired under THR104 seq369.
+Ordinary foreground tool status, standard subprocess timeouts and runner
+cancellation remain; escaped children/runner loss never establish quiescence.
 Automatic action finalization remains subject to runner and job availability.
 
 For an interrupted run, retain the actual GitHub run/attempt conclusion, raw logs

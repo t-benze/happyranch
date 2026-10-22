@@ -1,3 +1,8 @@
+Current Mac build (THR104 seq369) keeps this pinned dependency bundle and all
+originals unchanged, using standard PyInstaller calls without custody arguments
+or activation. The opt-in evidence machinery described below is retired from
+shipping and supplies no mandatory receipt or acceptance gate.
+
 # PyInstaller custody input
 
 This internal repack retains distribution/version `pyinstaller 6.21.0` and uses

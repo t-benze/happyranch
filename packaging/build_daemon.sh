@@ -45,7 +45,7 @@ import contextlib, os, stat, sys, tomllib
 from pathlib import Path
 source = Path(sys.argv[3])
 sys.path.insert(0, str(source / 'app/mac/scripts'))
-from asset_evidence import absolute, open_root, read_bytes, ReadDomain
+from manifest_notices import absolute, open_root, read
 paths = [absolute(p) for p in sys.argv[1:3]]
 venv = source / '.venv'
 for p in paths:
@@ -87,7 +87,7 @@ with contextlib.ExitStack() as stack:
         # All other inspection errors propagate; links (including dangling),
         # directories and unreadable files are present and refuse without reads.
         raise SystemExit('FREEZE_UV_ANCESTOR_PROJECT_CONFLICT: use a standalone disposable export without enclosing pyproject.toml')
-    _, raw = read_bytes(src, 'pyproject.toml', ReadDomain(262144, True, True))
+    raw = read(source / 'pyproject.toml', source)
     project = tomllib.loads(raw.decode())
     # Current reviewed source configuration has only its frozen Darwin source.
     # New uv settings require review rather than silently overriding admission.
@@ -115,7 +115,7 @@ with contextlib.ExitStack() as stack:
         raise SystemExit('FREEZE_VENV_EXISTS: source environment appeared during admission')
 PY
 cd "$REPO_ROOT"
-export HAPPYRANCH_FREEZE_EVIDENCE="$WORK"
+export HAPPYRANCH_NOTICE_INPUTS="$WORK"
 export PYINSTALLER_CONFIG_DIR="$WORK/pyinstaller-cache"
 export UV_PYTHON_INSTALL_DIR="$WORK/python-install" UV_CACHE_DIR="$WORK/uv-cache"
 export TMPDIR="$WORK/tmp" UV_PROJECT_ENVIRONMENT="$REPO_ROOT/.venv"
@@ -130,7 +130,7 @@ import os, stat, sys
 from pathlib import Path
 source = Path(sys.argv[3])
 sys.path.insert(0, str(source / 'app/mac/scripts'))
-from asset_evidence import absolute, open_root
+from manifest_notices import absolute, open_root
 install = Path(sys.argv[2])
 exe = absolute(sys.argv[1])
 # Refuse links/escapes before executing the selected base or creating a venv.
@@ -149,7 +149,7 @@ import sys, sysconfig
 from pathlib import Path
 source = Path(sys.argv[2])
 sys.path.insert(0, str(source / 'app/mac/scripts'))
-from asset_evidence import absolute, open_root
+from manifest_notices import absolute, open_root
 root, base_exe = absolute(sys.argv[1]), absolute(sys.argv[3])
 prefix, base_prefix = absolute(sys.prefix), absolute(sys.base_prefix)
 stdlib = absolute(sysconfig.get_path('stdlib'))
@@ -176,7 +176,7 @@ import json, platform, sys, sysconfig
 from pathlib import Path
 source = Path(sys.argv[5])
 sys.path.insert(0, str(source / 'app/mac/scripts'))
-from asset_evidence import absolute, open_root
+from manifest_notices import absolute, open_root
 info = {'executable': sys.executable, 'version': sys.version, 'platform': sys.platform,
         'machine': platform.machine()}
 venv, base_exe, expected_base = map(absolute, sys.argv[2:5])
@@ -194,7 +194,7 @@ with (open_root(source, source, True), open_root(install, install, True),
     if sys.platform != 'darwin' or platform.machine() != 'arm64' or not (3, 12) <= sys.version_info[:2] <= (3, 14):
         raise SystemExit('FREEZE_PYTHON_PLATFORM_UNSUPPORTED: ' + json.dumps(info))
 # All acceptance and ancestry exit rechecks precede a successful receipt.
-# Executable leaf links remain separately checked by freezer executable_alias.
+# The concrete base executable identity remains separately checked above.
 Path(sys.argv[1]).write_text(json.dumps(info, indent=2) + '\n')
 PYTOOL
 # Use the same venv command as the receipt, independent of console-script shebangs.

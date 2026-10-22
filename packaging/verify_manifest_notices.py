@@ -17,9 +17,12 @@ import plistlib
 import runpy
 import shutil
 import subprocess
+import struct
 import sys
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 SOURCE = Path(__file__).resolve().parent.parent
 H = runpy.run_path(str(SOURCE / 'app/mac/scripts/manifest_notices.py'))
@@ -81,10 +84,12 @@ def fixture(root):
         locks[location] = dict(version=version, resolved='pinned upstream 8ca9ba5ea52de03308fe8ced94f7b159a44d28ff')
         write(source / 'web' / location / 'package.json', dict(name='react-remove-scroll-bar', version=version))
         write(source / 'web' / location / 'LICENSE', (originals / 'LICENSE').read_bytes())
-    # Authentic Vite version, explicitly excluded as build-only here. Full
-    # production generated-web custody separately includes its actual tools.
+    # Generated-web tooling is included directly from resolved manifests.
     locks['node_modules/vite'] = dict(version='5.4.21+hr.css-relation.1', dev=True)
     write(source / 'web/node_modules/vite/package.json', dict(name='vite', version='5.4.21+hr.css-relation.1'))
+    write(source / 'web/node_modules/vite/LICENSE', (SOURCE / 'web/vendor/vite/LICENSE.md').read_bytes())
+    locks['node_modules/typescript'] = dict(version='5.0.0', dev=True)
+    write(source / 'web/node_modules/typescript/package.json', dict(name='typescript', version='5.0.0'))
     locks['node_modules/@esbuild/linux-x64'] = dict(version='0.21.5', optional=True, dev=True, os=['linux'], cpu=['x64'])
     write(source / 'web/package-lock.json', dict(lockfileVersion=3, packages=locks))
     pyversion = next(p['version'] for p in __import__('tomllib').loads((SOURCE / 'uv.lock').read_text())['package'] if p['name'] == 'pyinstaller' and 'path' in p['source'])
@@ -107,6 +112,7 @@ def fixture(root):
     shutil.copytree(SOURCE / 'web/public', source / 'web/public')
     shutil.copytree(SOURCE / 'web/public', app / 'Contents/Resources/web/dist')
     shutil.copytree(SOURCE / 'app/mac/Resources/AppIcon.appiconset', source / 'app/mac/Resources/AppIcon.appiconset')
+    write(source / 'packaging/THIRD_PARTY_NOTICES.md', (SOURCE / 'packaging/THIRD_PARTY_NOTICES.md').read_bytes())
     write(source / 'packaging/notice-data/font-assets.json', (SOURCE / 'packaging/notice-data/font-assets.json').read_bytes())
     # Authentic retained Go release originals; fixture needs no Go installation.
     goroot = source / 'fixture-go'
@@ -130,12 +136,95 @@ def fixture(root):
         dest = app / ('Contents/Resources/licenses/LICENSE' if row['path'] == 'LICENSE' else 'Contents/Resources/daemon/_internal/' + row['path'])
         write(dest, data)
         dest.chmod(int(row['posix_mode'], 8))
-    write(app / 'Contents/Info.plist', plistlib.dumps(dict(CFBundleShortVersionString='1.0.1', CFBundleVersion='1.0.1', GitCommitSHA='1' * 40, GitTreeSHA='2' * 40, ReleaseArchitecture='arm64')))
+    plist = plistlib.loads((SOURCE / 'app/mac/scripts/Info.plist').read_bytes())
+    plist.update(dict(CFBundleShortVersionString='1.0.1', CFBundleVersion='1.0.1', GitCommitSHA='1' * 40, GitTreeSHA='2' * 40, ReleaseArchitecture='arm64'))
+    write(app / 'Contents/Info.plist', plistlib.dumps(plist))
+    for name in ('Contents/MacOS/HappyRanch', 'Contents/Resources/daemon/happyranch-daemon', 'Contents/Resources/daemon/happyranch'):
+        write(app / name, struct.pack('<IIIIIIII', 0xfeedfacf, 0x100000c, 0, 2, 0, 0, 0, 0))
+        (app / name).chmod(0o755)
+    write(app / 'Contents/Resources/AppIcon.icns', b'preassembled icon fixture, not iconutil output')
+    write(app / 'Contents/Resources/web/dist/index.html', b'<html>preassembled fixture</html>')
     return source, output, app, mapping
 
 
-def run(scratch):
+def python_spec_notices(scratch, stdlib=None):
+    """Run the shipping notice block, without PyInstaller or a native build."""
+    spec_path = SOURCE / 'packaging/daemon.spec'
+    nodes = ast.parse(spec_path.read_text()).body
+    start = next(i for i, node in enumerate(nodes) if isinstance(node, ast.Assign)
+                 and any(isinstance(t, ast.Name) and t.id == 'notice_root' for t in node.targets))
+    stop = next(i for i, node in enumerate(nodes) if isinstance(node, ast.Expr)
+                and isinstance(node.value, ast.Call) and isinstance(node.value.func, ast.Subscript)
+                and isinstance(node.value.func.slice, ast.Constant)
+                and node.value.func.slice.value == 'python_snapshot')
+    block = compile(ast.Module(body=nodes[start:stop], type_ignores=[]), str(spec_path), 'exec')
+    helpers = runpy.run_path(str(SOURCE / 'packaging/notice-data/retained_notices.py'))
+    identity = helpers['identities'](SOURCE / 'packaging/notice-data')['python']
+    original = (SOURCE / 'packaging/notice-data/cpython-LICENSE').read_bytes()
+    cases = [('installed CPython plus vendor', True, True, None),
+             ('missing CPython with vendor refuses unsupported identity', False, True, 'PYTHON_NOTICE_IDENTITY_MISMATCH'),
+             ('missing CPython without vendor refuses unsupported identity', False, False, 'PYTHON_NOTICE_IDENTITY_MISMATCH')]
+    if stdlib is not None:
+        cases += [('authenticated fallback plus vendor', False, True, None),
+                  ('authenticated fallback stdlib mismatch', False, True, 'PYTHON_NOTICE_STDLIB_MISMATCH'),
+                  ('authenticated fallback original missing', False, True, 'cpython-LICENSE')]
+    else:
+        REPORT.append(dict(label='authenticated fallback positive', result='NOT RUN',
+                           limitation='Supply --cpython-stdlib with the three pinned source originals; native runtime acceptance remains UNEXECUTED.'))
+    for index, (label, installed, vendor, error) in enumerate(cases):
+        root = scratch / ('spec-' + str(index))
+        prefix, evidence = root / 'python', root / 'evidence'
+        prefix.mkdir(parents=True); evidence.mkdir()
+        if installed:
+            write(prefix / 'LICENSE.txt', original)
+        if vendor:
+            write(prefix / 'licenses/vendor.txt', b'Supplemental vendor original\n')
+        effective = SimpleNamespace(base_prefix=str(prefix), implementation=SimpleNamespace(name='cpython'),
+                                    executable=str(prefix / 'bin/python'), version=sys.version, platform=sys.platform)
+        machine = 'unsupported-fixture'
+        analysis = {}
+        if label.startswith('authenticated'):
+            effective.version = identity['toolchain']['version']
+            effective.platform = identity['toolchain']['platform']
+            machine = identity['toolchain']['machine']
+            selected_stdlib = root / 'stdlib'
+            for filename in identity['stdlib']:
+                write(selected_stdlib / filename, (stdlib / filename).read_bytes())
+            analysis = {lane: dict(pure=[dict(destination=Path(name).stem, source=str(selected_stdlib / name),
+                        kind='PYMODULE', sha256=digest) for name, digest in identity['stdlib'].items()])
+                        for lane in ('daemon', 'cli')}
+            if error == 'PYTHON_NOTICE_STDLIB_MISMATCH':
+                write(selected_stdlib / 'threading.py', b'changed stdlib fixture')
+        else:
+            selected_stdlib = prefix / 'stdlib'
+        write(evidence / 'python-toolchain.json', dict(executable=effective.executable,
+              version=effective.version, platform=effective.platform, machine=machine))
+        spec_dir = SOURCE / 'packaging'
+        if label == 'authenticated fallback original missing':
+            spec_dir = root / 'packaging'
+            for name in ('retained_notices.py', 'identity-map.json'):
+                write(spec_dir / 'notice-data' / name, (SOURCE / 'packaging/notice-data' / name).read_bytes())
+        env = dict(Path=Path, sys=effective, os=os, json=json, runpy=runpy,
+                   _SPEC_DIR=spec_dir, _PROJ=SOURCE, evidence=evidence, analysis=analysis)
+        try:
+            with patch('platform.machine', return_value=machine), patch('sysconfig.get_path', return_value=str(selected_stdlib)):
+                exec(block, env)
+        except (ValueError, FileNotFoundError) as exc:
+            assert error and error in str(exc), (label, str(exc))
+            assert not list((evidence / 'notices').iterdir()), label
+            REPORT.append(dict(label=label, result='REFUSED', error=str(exc)))
+        else:
+            assert error is None, (label, 'missing CPython original accepted')
+            retained = [Path(n['retained']).read_bytes() for n in env['python_component']['notices']]
+            assert retained == [original] + ([b'Supplemental vendor original\n'] if vendor else []), label
+            REPORT.append(dict(label=label, result='PASS', retained_sha256=[H['sha'](b) for b in retained],
+                               limitation='Synthetic effective identity/Analysis; authentic pinned notice/stdlib bytes. No native interpreter executed.'))
+
+
+def run(scratch, stdlib=None):
+    os.umask(0o077)  # Match shipping private output allocations.
     scratch.mkdir(mode=0o700)
+    python_spec_notices(scratch, stdlib)
     source, output, app, mapping = fixture(scratch)
     facts = REPORT[-1]
     for label in ('missing selected Analysis input', 'different lane selection'):
@@ -163,7 +252,7 @@ def run(scratch):
     assert py_snapshot['runtime'][0]['interpreter_library']['source'].endswith('/lib/libpython3.12.dylib')
     assert py_snapshot['distributions'][0]['name'] == 'PyInstaller'
     call('case1 real collector complete resolved fixture including R1 interpreter library', collect)
-    call('case1 independent live inventory verification', cli + ['verify', '--source', str(source), '--app', str(app), '--output', str(output), '--mapping', str(output / 'diagnostics/license-mapping.json')])
+    call('case1 independent live inventory verification', ['bash', str(SOURCE / 'app/mac/scripts/verify-release.sh'), 'licenses', '--source', str(source), '--app', str(app), '--output-dir', str(output), '--mapping', str(output / 'diagnostics/license-mapping.json')])
     manifest_path = app / H['MANIFEST']
     manifest_raw = manifest_path.read_bytes()
     manifest = json.loads(manifest_raw)
@@ -207,9 +296,9 @@ def run(scratch):
         bad_archive[2:4] = [str(bad_app), str(bad_output)]
         call('R1 uncollected vendor candidate refuses before archive ' + name, bad_archive, expected=1, env=env)
         assert not (bad_output / candidate_zip.name).exists()
-    for family in ('npm', 'go', 'python', 'asset'):
+    for family in ('npm', 'go', 'python', 'asset', 'runtime', 'font'):
         broken = copy.deepcopy(manifest)
-        removed = next(r for r in broken['components'] if r['family'] == family and r['selection'].startswith('included:'))
+        removed = next(r for r in broken['components'] if (r['family'] == family or (family == 'font' and r['family'] == 'asset' and 'Newsreader' in r['component'])) and r['selection'].startswith('included:'))
         broken['components'].remove(removed)
         write(manifest_path, broken)
         p = call('case2 missing owner ' + removed['id'], archive, expected=1, env=env)
@@ -266,11 +355,44 @@ def run(scratch):
     assert len({r['notices'][0]['sha256'] for r in packages}) == 1
     assert any('optional package not installed' in r['selection'] for r in manifest['components'])
     assert any('build-only' in r['selection'] for r in manifest['components'])
+    vite_owner = next(r for r in manifest['components'] if r['component'] == 'vite')
+    assert vite_owner['selection'].startswith('included:') and vite_owner['notices'], 'resolved generated-web tool must retain its original'
     assert len([r for r in manifest['components'] if r['family'] == 'asset' and 'Newsreader' in r['component']]) >= 2
     REPORT.append(dict(label='case4 multiple versions/shared authentic original/platform optional/build-only selections', exit=0, owners=len(manifest['components'])))
+    plist_path = app / 'Contents/Info.plist'
+    original_plist = plist_path.read_bytes()
+    for key, value in [('CFBundleExecutable', 'Other'), ('CFBundlePackageType', 'BNDL'), ('CFBundleVersion', ''), ('LSMinimumSystemVersion', '13.0')]:
+        changed = plistlib.loads(original_plist); changed[key] = value
+        write(plist_path, plistlib.dumps(changed))
+        call('case6 basic bundle rejects ' + key, archive, expected=1, env=env)
+        assert not candidate_zip.exists()
+    write(plist_path, original_plist)
+    executable = app / 'Contents/MacOS/HappyRanch'
+    executable_bytes = executable.read_bytes()
+    write(executable, struct.pack('<IIIIIIII', 0xfeedfacf, 0x1000007, 0, 2, 0, 0, 0, 0))
+    call('case6 actual x86_64 header refuses arm64', archive, expected=1, env=env)
+    assert not candidate_zip.exists()
+    write(executable, executable_bytes)
+    resource = app / 'Contents/Resources/web/dist/index.html'
+    resource_bytes = resource.read_bytes(); resource.unlink()
+    call('case6 missing web entry refuses archive', archive, expected=1, env=env)
+    assert not candidate_zip.exists()
+    write(resource, resource_bytes)
+    # Real failure status at the actual archive subprocess boundary, no supervisor.
+    ditto_bytes = ditto.read_bytes()
+    ditto.write_text('#!/bin/sh\nexit 19\n'); ditto.chmod(0o755)
+    failed = call('case7 ordinary compressor status', archive, expected=1, env=env)
+    assert failed.returncode == 19 and not candidate_zip.exists()
+    ditto.write_text('#!/bin/sh\nkill -TERM $$\n'); ditto.chmod(0o755)
+    failed = call('case7 compressor signal remains failure', archive, expected=1, env=env)
+    assert failed.returncode != 0 and not candidate_zip.exists()
+    ditto.write_bytes(ditto_bytes); ditto.chmod(0o755)
     call('case5 complete roundtrip', archive, env=env)
     call('case5 archived notices independent read', cli + ['archive', '--archive', str(candidate_zip)])
     notice_member = 'HappyRanch.app/' + row['notices'][0]['destination']
+    truncated = scratch / 'truncated.zip'
+    write(truncated, valid_zip.read_bytes()[:100])
+    call('case5 truncated ZIP', cli + ['archive', '--archive', str(truncated)], expected=1)
     for mode in ('missing', 'changed'):
         tampered = scratch / (mode + '.zip')
         with zipfile.ZipFile(valid_zip) as src, zipfile.ZipFile(tampered, 'x') as dest:
@@ -284,17 +406,18 @@ def run(scratch):
         args = verifier.copy()
         args[args.index(option) + 1] = value
         call('case5 independent rejection ' + option, args, expected=1)
-    REPORT.append(dict(label='limitations', native='UNEXECUTED', substitutions=['synthetic resolved manifests, installed RECORD, EXE.python_lib selection, standalone prefix and Analysis inputs; preassembled resource/plist candidate', 'ditto replaced with Python zipfile'], actual='shipping collector, manifest validator, archive shell, resources, ZIP inventory and receipt reconciliation', integration='SKIPPED THR243seq42'))
+    REPORT.append(dict(label='limitations', native='UNEXECUTED', substitutions=['synthetic resolved manifests, installed RECORD, EXE.python_lib selection, standalone prefix and Analysis inputs; preassembled resources/plist/icon and synthetic arm64 Mach-O headers; no compiled native app', 'ditto replaced with Python zipfile'], actual='shipping collector, manifest validator, archive shell, resources, ZIP inventory and receipt reconciliation', integration='SKIPPED THR243seq42'))
     return scratch / 'evidence.json'
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--scratch', type=Path, required=True)
+    parser.add_argument('--cpython-stdlib', type=Path, help='Pinned CPython source fixtures, not a native interpreter')
     args = parser.parse_args()
     assert args.scratch.is_absolute() and not args.scratch.exists()
     try:
-        evidence = run(args.scratch)
+        evidence = run(args.scratch, args.cpython_stdlib)
     finally:
         write(args.scratch / 'evidence.json', REPORT)
-    print(json.dumps(dict(cases='1-5 PASS portable only', evidence=str(evidence), commands=len(REPORT))))
+    print(json.dumps(dict(cases='notice/archive/basic/status cases PASS portable only', evidence=str(evidence), commands=len(REPORT))))

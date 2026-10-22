@@ -1,12 +1,13 @@
 # HappyRanch Mac app
 
-Current shipping standard and finite verification: [manifest-notice contract](../../packaging/manifest-notices.md).
-
-The Swift app supports a development checkout and an internal bundled candidate
-with frozen daemon/CLI, web assets and a Go tsnet archive. Bundled release
-verification is still pending. Candidates are unsigned; no public download,
-Gatekeeper acceptance, signing, notarization or automatic update is provided by
-these scripts. Bundle identity stays `ai.happyranch.HappyRanchApp`.
+The current Mac build follows Founder THR104 seq369: compile and assemble the
+app, retain authentic dependency notices, check the basic bundle, then ZIP and
+reconcile its receipt. See [the notice contract](../../packaging/manifest-notices.md)
+and [workflow operations](../../docs/runbooks/mac-workflow-operations.md).
+The asset/freezer/web evidence collectors and packaging supervisor are retired
+from build, spec, Vite, originals preparation, archive and independent verification.
+They supply no shipping tokens, IPC, mandatory receipts or emitted-closure gates.
+Retained historical source is nonshipping; it is not invoked indirectly.
 
 ## Development
 
@@ -16,9 +17,99 @@ stubs remain available when no Go archive exists. When the freshly built
 archive exists, CTsnet exposes the unchanged header without compiling stubs;
 Darwin `-force_load` selects that exact archive with separate path arguments,
 including paths with spaces. Darwin `-u` roots each unchanged ABI export against
-SwiftPM release dead stripping. All eleven exports still require independent
-strong-definition and archive-member verification. Retained native tests are
-separate from automated lint/static merge checks.
+SwiftPM release dead stripping. Retained native sources can inspect ABI exports; the simplified shipping build
+uses basic bundle checks. Native tests remain separate from automated lint/static
+merge checks.
+
+## Internal candidate build
+
+Use a clean independently reviewed full commit/tree, an arm64 Mac, Xcode16 /
+Swift6, bootstrap Python3.12–3.14, uv, Node24/npm and Go1.23.12 as pinned by the
+existing workflow. Version/build1.0.1 and minimumOS14.0 are declarations; actual
+Mac14 installation remains unproven. This unsigned internal candidate grants no
+signing, notarization, public upload/download or release approval.
+
+The existing workflow interface is unchanged:
+
+```sh
+python3 app/mac/scripts/prepare_web_originals.py --source /clean/source --destination /owned/private/new-originals
+bash app/mac/scripts/build-app.sh --version 1.0.1 --build 1.0.1 \
+  --source-sha FULL_COMMIT --source-tree FULL_TREE --arch arm64 \
+  --web-tool-originals /owned/private/new-originals --output-dir /owned/private/new-output
+```
+
+The output must be absent, disjoint from source, with an existing uid-owned
+mode0700 parent and no symlink ancestry. Source SHA/tree/cleanliness is checked
+before build effects and before final success. The wrapper exports that commit,
+uses invocation-local Go/npm/Swift/temp caches, and builds Go c-archive, frozen
+daemon+CLI, Vite web and Swift app with ordinary tools. Iconutil produces the
+app icon. Runtime skill/catalog resources and their originals remain bundled.
+
+The freezer retains the frozen dependency bundle, CPython3.12.10 managed-only
+selection, private installation and absent exported .venv, no global bin links,
+explicit project/directory and no-dotenv runs. Unexpected UV/PYTHON controls,
+VIRTUAL_ENV, discovered uv.toml or ancestor pyproject refuse. Offline/download
+prohibitions are respected by refusal. After managed installation, automatic
+Python downloads are disabled. No ambient interpreter fallback or external
+mode/configuration repair occurs. [Packaging](../../packaging/README.md) describes
+the standalone command and selected standard PyInstaller path.
+
+The spec exports direct notice inputs only: installed distribution metadata,
+selected interpreter library and native input owners. The notice collector reads
+resolved npm/uv/Go manifests, applicable generated-web tool originals, GOROOT
+vendor owners and included font/icon/public assets. Unknown required native
+owners or missing/corrupt originals refuse. All required original associations,
+including multiple versions/locations and multiple texts, survive into the app.
+
+Basic inspection checks Info.plist executable/package/identifier, versions,
+minimum14.0, source identities, required resources/licenses/README, executable
+presence/modes and actual Mach-O arm64 headers. The wrapper also exercises
+frozen help/catalog commands and records trust observations without claiming
+signature or Gatekeeper acceptance. Archive repeats notice/basic checks, uses
+ditto, then compares ZIP members/notice bytes, nonzero size, SHA256 and effective
+identity to the receipt. It asserts ZIP integrity, not emitted/linker closure.
+
+Foreground tools propagate nonzero status. The existing runner supplies build45 /
+job95 minute limits and ordinary cancellation; no custom supervisor protocol or
+cleanup/quiescence guarantee is added. Standard inspection subprocesses have
+bounded timeouts. Best-effort bounded failure diagnostics preserve the original
+exit and remain distinct from success artifacts. Interrupted tools/runner loss
+can leave invocation-owned scratch; keep that uncertainty and all historical
+failures. The venue owner handles those exact paths after evidence retention.
+
+## Runtime prerequisites and support limits
+
+Frozen help/startup/catalog should require no developer checkout, uv, Python,
+Go or npm; actual Mac execution is pending. Provider operations separately
+require externally installed, authorized claude/codex/opencode/pi CLIs or a
+capability-registered custom profile with its admitted adapter and executable
+binding. Repository operations require git. File-backed Python skill helpers
+require an external compatible Python environment. The shipped skill-local
+`uv --project` shim is development-only. Optional installed Tailscale CLI/socket
+integration is distinct from linked tsnet; neither linkage nor packaging proves
+remote/network operation.
+
+Cleanup resources rely on Linux `/proc` process/namespace/cgroup observation;
+Mac cleanup capability remains unverified and platform dependent. The verifier
+hashes helper bytes and calculates the ordinary bundled root, with
+`ordinary_reader_execution=UNEXECUTED`; it never imports runtime, constructs
+Settings or executes guards/cleanup. Managed catalog success is separate.
+
+## Independent acceptance and publication
+
+ROOT TASK12599 owns independent full review, same-head scoped QA, guarded merge,
+exact-main lints, a fresh complete native census/ledger, justified unsigned
+confirmation and independent inspection of the actual ZIP/notices/version/arch/
+size/hash/integrity. Source/static and fixture results are not native success.
+MinimumOS14 installation, GUI/runtime/provider operation, trust, signing and
+public distribution require their actual independent venues and authorization.
+No maker native build, E2E, Jenkins run, public tag/upload or deployment follows.
+
+<details>
+<summary>Historical pre-seq369 build and acceptance notes — retired, nonshipping</summary>
+
+The following original text preserves historical failures, investigations and
+superseded acceptance requirements. It does not control the current build.
 
 ## Internal candidate build
 
@@ -829,3 +920,5 @@ exceed observed bounds. Actual Darwin Bash finish/logger, native freezer and
 archive/notices/hash/ZIP acceptance require their real native venue; portable
 relay checks do not establish those outcomes. Native18's aggregate cap and the
 native17/19 unknown stall causes are not resolved by these deadlines.
+
+</details>

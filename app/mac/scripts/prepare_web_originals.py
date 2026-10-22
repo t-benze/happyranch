@@ -10,7 +10,7 @@ from pathlib import Path
 
 
 def prepare(source, destination):
-    helper = runpy.run_path(str(source / 'app/mac/scripts/web_evidence.py'))
+    helper = runpy.run_path(str(source / 'app/mac/scripts/manifest_notices.py'))
     lock = json.loads((source / 'web/package-lock.json').read_text())['packages']
     upstream = json.loads((source / 'web/vendor/vite/UPSTREAM.json').read_text())
     if (not destination.is_absolute() or destination.resolve() != destination
@@ -18,7 +18,7 @@ def prepare(source, destination):
             or destination.is_relative_to(source) or source.is_relative_to(destination)):
         raise ValueError('WEB_ORIGINAL_DESTINATION_UNSAFE: use a new disjoint directory')
     destination.mkdir(mode=0o700)
-    for package, version in helper['ARCHIVES'].items():
+    for package, version in helper['WEB_TOOLS'].items():
         entry = lock['node_modules/' + package]
         url = 'https://registry.npmjs.org/vite/-/vite-5.4.21.tgz' if package == 'vite' else entry['resolved']
         parsed = urllib.parse.urlsplit(url)
@@ -35,7 +35,7 @@ def prepare(source, destination):
             raise ValueError('WEB_ORIGINAL_DIGEST_MISMATCH: ' + package)
         with (destination / (package.replace('/', '_') + '.tgz')).open('xb') as stream:
             stream.write(data)
-    print(json.dumps({'originals': str(destination), 'count': len(helper['ARCHIVES']), 'status': 'hash-verified; native reader still required'}))
+    print(json.dumps({'originals': str(destination), 'count': len(helper['WEB_TOOLS']), 'status': 'hash-verified; original notice inputs only; native build still required'}))
 
 
 if __name__ == '__main__':

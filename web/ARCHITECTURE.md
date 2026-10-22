@@ -110,9 +110,9 @@ Work Hours), and hidden code may still be present in the bundle and source maps.
 
 `vite.config.ts` picks the profile once per invocation and resolves
 `@happyranch/feature-flags` with `resolve.alias` only. It adds no `define`,
-injected env, plugin or config-time import, because the Mac packaging custody
-validator pins those. Profiles are read with `fs`, so they are not config
-dependencies.
+injected env, plugin or config-time import for flag resolution. The Mac packaging
+custody instrumentation is retired under THR104seq369. Profiles are read with
+`fs`, so they are not config dependencies.
 
 | Command | Profile |
 | --- | --- |
@@ -187,9 +187,10 @@ Browser evidence for the profiles: `node scripts/w4a-browser-evidence.mjs
 production|local|local-wh-off --build-log <that build's log>`. Harness slices
 that exercise Work Hours need a `build:local` dist.
 
-Native Mac packaging custody of the production JSON module has only been
-source-reviewed (UNVERIFIED natively; owner engineering_manager). Ordinary WEB
-sourcemap builds succeed.
+Historical Mac packaging custody of the production JSON module was only
+source-reviewed (UNVERIFIED natively); that instrumentation is now retired.
+Native confirmation of the simplified Mac build remains ROOT TASK12599-owned.
+Ordinary WEB sourcemap build evidence retains its original source attribution.
 
 ## Internationalization (i18n)
 

@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Packaging-local deadlines and direct-child ownership, not OS containment.
+"""RETIRED / NONSHIPPING under Founder THR104 seq369.
+
+Historical implementation only; Mac build and all shipping readers do not import
+or invoke this file. Its former protocol is not a current acceptance gate.
+
+Packaging-local deadlines and direct-child ownership, not OS containment.
 
 A child number permits signaling ONLY while its actual parent holds the unreaped
 handle. Registration on the private channel never transfers that permission.

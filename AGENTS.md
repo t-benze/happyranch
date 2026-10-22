@@ -2968,7 +2968,8 @@ gitignored `features.local.json`. Read them ONLY from `web/src/config/features.t
 `kb_compose_ui` (off everywhere) hides KB Compose. Flags are UI visibility only;
 they change no daemon, API, CLI, auth or stored data behavior. The resolver lives
 inline in `web/vite.config.ts` and uses `resolve.alias` only: never add
-`define`, injected env, plugins or config imports, which Mac custody pins. See
+`define`, injected env, plugins or config imports for flag resolution. The Mac
+custody instrumentation is retired under THR104seq369. See
 `web/ARCHITECTURE.md` § Build-time UI flags.
 
 - Python snapshot maintainer: `scripts/generate_openapi_snapshot.py`; data: `tests/contract/openapi.json`.
