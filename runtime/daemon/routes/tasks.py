@@ -2147,12 +2147,18 @@ async def cancel_task(
         audit = AuditLogger(org.db)
         async with org.db_lock:
             cancellation = None
-            if coding is not None:
-                try:
+            try:
+                if coding is not None:
                     cancellation = coding.guard_cancellation(task_id, cascade=body.cascade,
                         rationale=rationale, actor=actor, transitions=root_transitions)
-                except (ValueError, TypeError, KeyError, sqlite3.Error):
-                    raise HTTPException(status_code=409, detail={'code': 'coding_cancellation_reconciliation_required'}) from None
+                else:
+                    # Retained ownership during disabled admission/rollback
+                    # still belongs to the cancellation owner, never legacy.
+                    from runtime.workflows.coding_cancellation import cancel_locked
+                    cancellation = cancel_locked(org, task_id, cascade=body.cascade,
+                        rationale=rationale, actor=actor, transitions=root_transitions)
+            except (ValueError, TypeError, KeyError, sqlite3.Error):
+                raise HTTPException(status_code=409, detail={'code': 'coding_cancellation_reconciliation_required'}) from None
             if cancellation is not None:
                 to_cancel = cancellation['tasks']
                 prior_statuses = cancellation['prior']

@@ -161,7 +161,7 @@ class CodingStartStore:
         # This is an owned writer, never permission for the legacy mutation
         # below it. Reconstruct closure after the route's actual lock wait.
         from runtime.workflows.coding_cancellation import cancel_locked
-        return cancel_locked(self, task_id, cascade=cascade, rationale=rationale,
+        return cancel_locked(self.org, task_id, cascade=cascade, rationale=rationale,
                              actor=actor, transitions=transitions)
 
     def guard_native_mutation(self, task_id: str) -> None:

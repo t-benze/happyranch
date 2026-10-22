@@ -200,8 +200,15 @@ def outer(value: Any, *, original: dict | None, claim: dict | None, source: dict
     if value['release'] is not None:
         release = _closed(value['release'], 'owner_id task_id agent session_id owner_live cleanup_failed possible_launch quiescent removed')
         expected = native or original
-        _check(expected is not None and (release['owner_id'], release['task_id'], release['agent'], release['session_id']) ==
-               (expected['id'], expected['task_id'], expected['agent'], expected['session_id'])
+        # A missing current journal is itself adverse. The genuine previously
+        # committed claim still identifies its original release observation;
+        # this identity comparison creates no replacement native entry.
+        expected_identity = ((expected['id'], expected['task_id'], expected['agent'], expected['session_id'])
+            if expected is not None else
+            (source['result_claim']['owner_invocation_id'], source['task_id'], source['principal'], source['session_id'])
+            if source_tail else (claim['invocation_id'], task['id'], task['assigned_agent'], task['current_session_id'])
+            if claim is not None else None)
+        _check(expected_identity is not None and (release['owner_id'], release['task_id'], release['agent'], release['session_id']) == expected_identity
                and all(type(release[k]) is bool for k in ('owner_live', 'cleanup_failed', 'possible_launch', 'quiescent', 'removed')))
     if value['terminal'] is not None:
         terminal = _closed(value['terminal'], 'request terminal_reason attempt receipt cleanup_error')

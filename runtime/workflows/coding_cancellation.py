@@ -40,7 +40,7 @@ def affected(conn: Any, task_id: str, cascade: bool, saved: Any, budget: _Budget
     return selected, instances
 
 
-def cancel_locked(store: Any, task_id: str, *, cascade: bool, rationale: str,
+def cancel_locked(org: Any, task_id: str, *, cascade: bool, rationale: str,
                   actor: str, transitions: Any) -> dict | None:
     """Return None for legacy-only work; no task write occurs on that path.
 
@@ -51,7 +51,7 @@ def cancel_locked(store: Any, task_id: str, *, cascade: bool, rationale: str,
     from runtime.workflows.coding_dispatch import stamp
     from runtime.orchestrator.run_step import _capture_root_worktree_transition
     from runtime.infrastructure.workflow_schema import _read_workflow_schema
-    db, org = store.db, store.org
+    db = org.db
     with db._lock:
         conn = db._conn
         if conn.execute("SELECT 1 FROM sqlite_schema WHERE name='workflow_coding_runs' AND type='table'").fetchone() is None:
