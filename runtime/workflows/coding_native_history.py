@@ -535,7 +535,8 @@ def read_native(conn: Any, org: str, budget: Any, storage: Any, *, start: dict,
                 source=source, source_tail=source_tail, task=tasks[origin['task_id']], org=org,
                 host=state['host'], attempt_id=attempt['id'])
             if kind == 'held':
-                _check(observation['outer'] is not None)
+                _check(observation['outer'] is not None and facts['reason'] in (
+                    'coding_native_preparation_unsettled', 'coding_native_close_unavailable'))
         prebinding = uncertainty and facts['reason'] == 'coding_native_preparation_unsettled'
         missing_close = uncertainty and facts['reason'] == 'coding_native_close_unavailable'
         if uncertainty:

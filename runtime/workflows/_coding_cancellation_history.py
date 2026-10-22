@@ -205,6 +205,16 @@ def outer(value: Any, *, original: dict | None, claim: dict | None, source: dict
                and all(type(release[k]) is bool for k in ('owner_live', 'cleanup_failed', 'possible_launch', 'quiescent', 'removed')))
     if value['terminal'] is not None:
         terminal = _closed(value['terminal'], 'request terminal_reason attempt receipt cleanup_error')
+        request = _closed(terminal['request'],
+            'org invocation_kind logical_id executor_profile enqueued_at retry_attempt agent_id')
+        from runtime.platform.session_backend import TerminalReason
+        _check(type(terminal['terminal_reason']) is str
+               and terminal['terminal_reason'] in tuple(reason.value for reason in TerminalReason)
+               and request['invocation_kind'] == 'task' and type(request['retry_attempt']) is int
+               and request['retry_attempt'] >= 0 and type(request['enqueued_at']) in (int, float)
+               and request['enqueued_at'] >= 0 and type(request['executor_profile']) is str
+               and (terminal['cleanup_error'] is None or type(terminal['cleanup_error']) is str)
+               and (terminal['receipt'] is None or type(terminal['receipt']) is dict))
         _check(type(terminal['attempt']) is int and terminal['attempt'] >= 0
                and terminal['request']['org'] == org and terminal['request']['agent_id'] == task['assigned_agent'])
         expected_request = (source['task_id'] if source_tail else host['logical_request_key'] if host is not None
