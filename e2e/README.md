@@ -887,6 +887,12 @@ records. Disabled controls do not prove handler reentry or causal guard
 sensitivity. Owned context, listener, connections and workers close before daemon
 teardown; missing/unknown closure fails daily health.
 
+The forwarding loop checks actual HTTP response completion before touching the
+saved upstream socket again: `read1` can close that socket while returning the
+final nonempty Content-Length chunk. That chunk is still written and flushed in
+full. Unknown-length and chunked bodies continue through EOF or terminal chunk,
+and SSE retains streaming reads, deadlines and visible transport failures.
+
 The changed fixture/consumer contracts are: controller plan/peer/source registration
 must reject unexpected authority (nearest E04 task-only plan); the provider's
 finite CLI protocol must preserve same-file replay and final-callback ordering
