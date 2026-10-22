@@ -95,7 +95,7 @@ def publications(conn, org, budget) -> dict[str, HumanPublication]:
     for row in _bounded_rows(conn, 'workflow_admission_records',
             ('id', 'namespace', 'generation', 'request_digest', 'admitted_by'),
             (('text',), ('text',), ('integer',), ('text',), ('text',)), budget,
-            where="substr(id,1,25)='coding-settings-admission:'", maximum=1024):
+            where="substr(id,1,26)='coding-settings-admission:'", maximum=1024):
         values = budget.row(row, ('text', 'text', 'integer', 'text', 'text'), counted=True, charged=True)
         _check(values[0] not in actual and values[1] == 'org/' + org
                and values[2] > 0 and values[4] == 'human:founder')
