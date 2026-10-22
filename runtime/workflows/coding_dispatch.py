@@ -1,4 +1,4 @@
-"""Native owner for disabled development, independent review and QA.
+"""Native owner for disabled development, review, QA and final manager.
 
 Queue and launch admission remain unavailable until the whole coding engine is
 present. Original native writers compose complete readers and the coding
@@ -66,7 +66,8 @@ class CodingDispatcher:
         return asyncio.run_coroutine_threadsafe(coroutine, loop).result()
 
     def _entry(self, conn: Any, task_id: str) -> dict:
-        saved = queued_storage(conn, self.org.slug)
+        budget = _Budget()
+        saved = queued_storage(conn, self.org.slug, budget=budget)
         owner = saved.owners.get(task_id)
         _check(owner is not None)
         entry = saved.runs[owner[1]]
@@ -75,7 +76,7 @@ class CodingDispatcher:
             if selected['id'] != entry['attempt']['id']:
                 entry = {**entry, 'attempt': selected, 'native': {**entry['native'],
                     **entry['native']['stages'][selected['id']]}}
-        return entry
+        return {**entry, '_budget': budget}
 
     @contextmanager
     def _writer(self) -> Iterator[Any]:
@@ -351,7 +352,7 @@ class CodingDispatcher:
         # Frozen config was checked outside each awaited boundary by _policies.
         # Do not read files while owning this synchronous native writer.
         result = dict(format={'development': 'workflow-coding-native-admission@1',
-            'code_review': 'workflow-coding-review-admission@1', 'qa': 'workflow-coding-qa-admission@1'}[entry['attempt']['stage']],
+            'code_review': 'workflow-coding-review-admission@1', 'qa': 'workflow-coding-qa-admission@1', 'manager_closeout': 'workflow-coding-manager-admission@1'}[entry['attempt']['stage']],
             phase='callback' if callback else 'launch',
             authority=_capture(capture, identity('native-admission', entry['attempt']['id'],
                 invocation.identity, entry['run']['cas_version']), _canonical(entry['command'])),
@@ -454,7 +455,7 @@ class CodingDispatcher:
             admission=(invocation.coding_launch_admission if kind == 'session_bound' else
                        invocation.coding_callback_admission if kind == 'callback_recorded' else None))
         command = dict(format={'development': 'workflow-coding-internal-command@2',
-            'code_review': 'workflow-coding-native-review-command@1', 'qa': 'workflow-coding-native-qa-command@1'}[entry['attempt']['stage']], kind=kind,
+            'code_review': 'workflow-coding-native-review-command@1', 'qa': 'workflow-coding-native-qa-command@1', 'manager_closeout': 'workflow-coding-native-manager-command@1'}[entry['attempt']['stage']], kind=kind,
             source_event_ids=[previous['id']], source_event_digests=[previous['event_digest']],
             subject=None, producer_identity=producer, observation=observation)
         instance = entry['run']['instance_id']
@@ -472,7 +473,7 @@ class CodingDispatcher:
                           for k in sorted(entry['tasks'])]
         operation = dict(org_slug=self.org.slug, principal=principal, key=key, request_digest=_hash(_canonical(command)))
         body = dict(format={'development': 'workflow-coding-event@2',
-            'code_review': 'workflow-coding-native-review-event@1', 'qa': 'workflow-coding-native-qa-event@1'}[entry['attempt']['stage']],
+            'code_review': 'workflow-coding-native-review-event@1', 'qa': 'workflow-coding-native-qa-event@1', 'manager_closeout': 'workflow-coding-native-manager-event@1'}[entry['attempt']['stage']],
             id=event_id, instance_id=instance,
             event_seq=previous['event_seq'] + 1, event_kind=kind, attempt_id=attempt['id'], operation=operation,
             previous_digest=previous['event_digest'], before=before, after=after,
@@ -717,9 +718,9 @@ class CodingDispatcher:
                 event_time=now)
             if not source and safe and entry['native']['terminal'] == 'success':
                 entry = self._entry(conn, invocation.task.id)
-                from runtime.workflows.coding_progression import _settled, record_qa_in_writer, record_review_in_writer
+                from runtime.workflows.coding_progression import _settled, record_final_in_writer, record_qa_in_writer, record_review_in_writer
                 try:
-                    usable = _settled(entry)
+                    usable = _settled(entry, budget=entry['_budget'])
                 except (ValueError, TypeError, UnicodeError):
                     usable = None
                 if usable is None:
@@ -731,10 +732,133 @@ class CodingDispatcher:
                     record_review_in_writer(self, conn, entry)
                 elif entry['attempt']['stage'] == 'qa':
                     record_qa_in_writer(self, conn, entry)
+                elif entry['attempt']['stage'] == 'manager_closeout':
+                    record_final_in_writer(self, conn, entry)
         # Native close/move release was recorded and committed before any new
         # current-authority allocation, with no await or enqueue in that writer.
         from runtime.workflows.coding_progression import reconcile_run
         reconcile_run(self, entry['run']['instance_id'], self.org.orchestrator._queue)
+
+    def _selected_final_owner(self, conn: Any, principal: Any, instance: str) -> Any:
+        """Own original running coding leaf BEFORE any private history decoding.
+
+        Do not reuse or weaken the ordinary/v2 source-manager native predicate.
+        This domain read creates no owner, session, scope, job or permission.
+        """
+        principal.revalidate()
+        org = self.org
+        _check(principal.org_slug == org.slug and principal.principal_kind == 'agent'
+               and principal.proof_kind == 'task_session' and principal.principal_id != 'founder'
+               and org.teams.teams_for_manager(principal.principal_id) == (principal.team_slug,)
+               and org.sessions.get_context_by_session(principal.session_id) ==
+                   (org.slug, principal.task_id, principal.principal_id)
+               and org.sessions.get_active(principal.task_id, principal.principal_id) == principal.session_id
+               and not org.sessions.is_recovery_session(principal.task_id, principal.principal_id, principal.session_id)
+               and not org._runner_admission_closed and org.orchestrator._db is self.db)
+        row = conn.execute('SELECT a.id,a.state,a.principal,a.session_id,t.team,t.status,t.task_type,'
+            't.current_session_id,t.block_kind,t.cancelled_at,t.zombie_flagged_at,t.active_chain,t.active_fanout,t.blocked_on_job_ids '
+            'FROM workflow_coding_attempts a JOIN workflow_coding_runs r ON r.instance_id=a.instance_id '
+            'JOIN tasks t ON t.id=a.task_id WHERE a.instance_id=? AND a.task_id=? '
+            "AND a.stage='manager_closeout' AND r.state='manager_closeout' AND r.current_attempt_id=a.id",
+            (instance, principal.task_id)).fetchall()
+        _check(len(row) == 1)
+        a = row[0]
+        _check(a[1] == 'running' and a[2] == principal.principal_id and a[3] == principal.session_id
+               and a[4] == principal.team_slug and a[5] == 'in_progress' and a[6] == 'subtask'
+               and a[7] == principal.session_id and all(v is None for v in a[8:]))
+        _check(conn.execute('SELECT 1 FROM task_results WHERE task_id=? LIMIT 1', (principal.task_id,)).fetchone() is None)
+        store = self.db._task_pause_store
+        root, pause = store.held_uncommitted(principal.task_id)
+        owners = [v for v in store._live.values() if (v.task.id, v.agent, v.session_id) ==
+                  (principal.task_id, principal.principal_id, principal.session_id)]
+        _check(len(owners) == 1 and pause is not None and not pause['held'])
+        owner = owners[0]
+        _check(owner.owner == 'coding' and owner.workflow_dispatcher is self and owner.orch is org.orchestrator
+               and owner.admitted and owner.attempt_committed and owner.unsettled)
+        entries = [v for v in pause['journal']['entries'] if v['id'] == owner.identity]
+        _check(len(entries) == 1)
+        native = entries[0]
+        _check(native['owner'] == 'coding' and native['org'] == org.slug and native['root_task_id'] == root['id']
+               and (native['task_id'], native['agent'], native['session_id']) ==
+                   (principal.task_id, principal.principal_id, principal.session_id)
+               and native['phase'] == 'running' and native['generation'] == pause['generation']
+               and not native['context'].get('execution_unknown') and not native['context'].get('producer_settled'))
+        self.db._check_team_move_task_uncommitted(principal.task_id)
+        return owner
+
+    async def selected_final(self, *, principal: Any, instance: str) -> dict:
+        """Selected metadata only; no GitHub/file I/O in ownership/read snapshots."""
+        from runtime.orchestrator import prompt_loader
+        from runtime.workflows._coding_role_records import configuration
+        from runtime.workflows.coding_bootstrap import effective_bindings
+        from runtime.workflows.coding_progression import final_selection
+        from runtime.workflows.coding_start_records import effective_mapping
+        org = self.org
+        principal.revalidate()
+        policy = prompt_loader.load_agent(org.orchestrator._paths, principal.principal_id)
+        _check(policy is not None and policy.role == 'manager' and policy.executor and policy.team == principal.team_slug)
+        support = org.workflow_coding_start.support
+        references = support._schema_references()
+        capture = org.workflow_authority.capture_admission()
+        async with org.workflow_authority._async_writer_lock:
+            principal.revalidate()
+            async with org.teams_lock:
+                principal.revalidate()
+                async with org.db_lock:
+                    with org.sessions._get_binding_lease(principal.task_id, principal.principal_id):
+                        with support._read(capture) as (conn, current):
+                            self._selected_final_owner(conn, principal, instance)
+                            _check(current is not None)
+                            org.workflow_authority._validate_admission_uncommitted(conn, current)
+                            inventory = support._storage(conn, references)
+                            entry = inventory.queued.runs[instance]
+                            owner = self._selected_final_owner(conn, principal, instance)
+                            _check(entry['attempt']['task_id'] == principal.task_id
+                                   and entry['attempt']['principal'] == principal.principal_id
+                                   and entry['roles']['agent_manager'] ==
+                                       dict(principal=principal.principal_id, team=principal.team_slug)
+                                   and not entry['native'].get('ownership_unknown')
+                                   and entry['native']['claim'] is not None and entry['native']['host'] is not None
+                                   and entry['native']['claim']['invocation_id'] == owner.identity
+                                   and entry['native']['host']['invocation_id'] == owner.identity
+                                   and entry['native']['host']['handle_id'] is not None
+                                   and entry['native']['terminal'] is None and entry['native']['callback'] is None)
+                            snapshot = json.loads(current.ready.snapshot_bytes)
+                            configuration(entry['mapping'], snapshot)
+                            configuration(effective_mapping(entry['mapping'], entry['command']), snapshot)
+                            for task in entry['tasks']:
+                                self.db._check_team_move_task_uncommitted(task)
+                            self.db._check_team_move_workflow_uncommitted(binding_bytes=effective_bindings(instance, entry['roles']))
+                            result = final_selection(entry, budget=inventory.budget)
+                            _check(len(_canonical(result)) <= 262144)
+                            # Current live authorization is not an external-effect lease.
+                            org.workflow_authority._validate_admission_uncommitted(conn, current)
+                            self._selected_final_owner(conn, principal, instance)
+                            return result
+
+    def final_instruction(self, entry: dict, task_id: str, agent: str, session_id: str) -> str:
+        from runtime.workflows.coding_bootstrap import final_scope
+        from runtime.workflows.coding_progression import settled_upstreams
+        scope = json.loads(entry['attempt']['scope_bytes'])
+        pins, _ = settled_upstreams(entry, budget=entry['_budget'])
+        qa = next(a for a in entry['attempts'].values() if a['stage'] == 'qa')
+        _check(scope == final_scope(org=self.org.slug, instance=entry['run']['instance_id'],
+            command=entry['command'], roles=entry['roles'], qa=qa, subject=scope['subject'], task_id=task_id, upstream=pins))
+        command = dict(format='workflow-coding-finalize-command@1', operation_key=identity('finalize', entry['attempt']['id']), repository_path='ABSOLUTE_EXISTING_AUTHORIZED_WORKTREE',
+            instance_id=entry['run']['instance_id'], attempt_id=entry['attempt']['id'], revision=1,
+            task_id=task_id, session_id=session_id, principal=agent, subject=scope['subject'], upstream_results=pins)
+        supplement = dict(format='workflow-coding-final-manager@1', role='agent_manager', scope=scope,
+            task_id=task_id, session_id=session_id, attempt_id=entry['attempt']['id'], command=command,
+            tool='happyranch workflows coding finalize --org ' + self.org.slug + ' --session-id CURRENT --from-file ABS --json',
+            obligation='Use only existing authorized tools in your actual workspace. A descriptor grants no access. '
+                'The LOCAL command selects authentic own upstream results, observes both literal checks once, persists intent, '
+                'revalidates current ownership and calls the expected-head non-admin guard once. Keep original file/key and receipts; '
+                'never replay an incomplete intent or remerge after transport loss. Pending checks remain held, no job waits/decisions. '
+                'Preserve its canonical final-output@1 JSON STRING in your own summary, null verdict, no decision/jobs. '
+                'Save receipts before report-completion through this genuine task/agent/SID as FINAL action. '
+                'Callback alone cannot complete; successful host/quiescence and positive native outer closure are required.')
+        return '\n\n' + _canonical(supplement).decode('utf8')
+
 
     def development_instruction(self, task_id: str, agent: str, session_id: str) -> str:
         with self.db._lock:
@@ -745,6 +869,8 @@ class CodingDispatcher:
                    and attempt['state'] in ('queued', 'claimed', 'running')
                    and attempt['session_id'] in (None, session_id))
             from runtime.workflows.coding_bootstrap import qa_scope, review_scope
+            if attempt['stage'] == 'manager_closeout':
+                return self.final_instruction(entry, task_id, agent, session_id)
             development = attempt['stage'] == 'development'
             qa = attempt['stage'] == 'qa'
             scope = json.loads(attempt['scope_bytes'])

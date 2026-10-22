@@ -532,3 +532,16 @@ remain; no cleanup/activation authority follows. These source changes have no
 behavioral/migration/recovery proof; integration INCLUDING callback SKIPPED24342,
 Python units RETIRED. That C3 checkpoint had no COMPLETE writer; current D/E/F
 source and independent gates are described above. No live capability follows.
+
+
+The disabled coding final-manager path uses the LOCAL workflows coding finalize
+command inside its actual running original manager invocation, never a job or
+daemon PR service. It observes the shared waiter once (settle=0/timeout=0) with
+stricter exact-head actual successful literal lints; pending/missing/ambiguous/
+skipped/neutral checks hold. Coding source/carrier/stage jobs remain forbidden by
+unchanged document/legacy predicates, even when the selected role is agent_manager.
+Separately entitled ordinary legacy preparation may use existing job mechanisms;
+no such task/job or entitlement is inferred here. Save original intent/command/
+remote receipts before own FINAL callback; transport loss never reissues merge.
+No automatic held-manager reallocation or PR recovery service exists. Readiness
+remains disabled; SOURCE/static is not native or remote acceptance.

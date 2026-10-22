@@ -284,3 +284,18 @@ The final assigned manager inspects actual settled independent results and succe
 - Unit tests: `tests/daemon/test_pr_ci_waiter_gh.py`, `tests/daemon/test_pr_ci_merge_gh.py` (mock subprocess — NO network).
 - The pure engine functions (`wait_for_ci`, `guarded_merge`) are **unchanged** — only additive `__main__` blocks were appended.
 - **No new daemon route was created.** The abandoned route branch (PR #253, `task/TASK-1354`) is superseded and should not be referenced for guidance.
+
+
+The ROOT12299 step30 disabled final-manager source is documented in
+[the coding contract](2026-10-14-ordered-coding-workflow.md#disabled-live-final-manager-source).
+The fourth coding-owned manager uses a LOCAL single-attempt finalize command;
+only original settled QA PASS admits the new event@5 edge. Historical held QA
+records stay held. Own-session selected upstream metadata, strict actual exact-H
+Source Boundary Lint and Web Lint (Node 24) successes, saved intent and immediate
+live revalidation precede reviewed expected-head/no-admin guarded action. Actual
+remote commit/aware time precedes its own final-output@1 callback; daemon settlement
+only records performed work after host/positive outer closure. Partial intent or
+transport loss never retries; pending checks hold without coding jobs. Readiness
+remains unconditionally disabled. Source/static only; native/behavioral proof
+UNEXECUTED, units RETIRED/integration INCLUDING callback SKIPPED24342, no old-root
+waiver or execution/merge/activation grant.

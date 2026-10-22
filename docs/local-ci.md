@@ -1541,3 +1541,18 @@ three-attempt cold/current/schema/drain/replay/settlement observations; no new
 runner or readiness override. ROOT retains genuinely failed-child-linked final-head
 execution and entitled live-manager guarded expected-head/no-admin merge plus
 remote commit/aware-time observation before its own callback.
+
+
+The ROOT12299 step30 disabled final-manager source is documented in
+[the coding contract](superpowers/specs/2026-10-14-ordered-coding-workflow.md#disabled-live-final-manager-source).
+The fourth coding-owned manager uses a LOCAL single-attempt finalize command;
+only original settled QA PASS admits the new event@5 edge. Historical held QA
+records stay held. Own-session selected upstream metadata, strict actual exact-H
+Source Boundary Lint and Web Lint (Node 24) successes, saved intent and immediate
+live revalidation precede reviewed expected-head/no-admin guarded action. Actual
+remote commit/aware time precedes its own final-output@1 callback; daemon settlement
+only records performed work after host/positive outer closure. Partial intent or
+transport loss never retries; pending checks hold without coding jobs. Readiness
+remains unconditionally disabled. Source/static only; native/behavioral proof
+UNEXECUTED, units RETIRED/integration INCLUDING callback SKIPPED24342, no old-root
+waiver or execution/merge/activation grant.

@@ -749,3 +749,26 @@ results/receipts. No coding decision/job wait, staging or advancement command.
 Use only your genuine task/agent/SID report-completion as FINAL action. Native
 host and positive outer settlement remain separate; settled QA output stays held,
 even PASS, pending final-manager implementation. Readiness remains disabled.
+
+
+A workflow-coding-final-manager@1 supplement belongs only to its actual assigned
+coding-owned agent_manager invocation. SQL manager_closeout is translated explicitly;
+never classify it as legacy or reuse source/upstream/recovery SIDs. Preserve exact
+scope/release/mapping/revision/subject and all three original task/SID/INTEGER
+result/outcome/digest pins. Supply the closed finalize-command@1 from the supplement
+with your existing absolute authorized repository_path, saved stable operation_key
+and current SID to `happyranch workflows coding finalize --org ORG --session-id CURRENT
+--from-file ABS --json`. Actual entitlement for that local command is separately
+required; descriptors grant no access. It selects only your own current run evidence,
+observes exact successful checks once, saves task-local intent, immediately revalidates
+and calls the reviewed expected-head/no-admin guard. Preserve partial intent/action
+receipts and never rerun after uncertainty. Pending checks produce held output, no
+coding job/decision or automatic later manager allocation. Save exact canonical
+final-output@1 as your callback summary JSON STRING, stage=agent_manager, null verdict,
+no decisions/job waits; own findings and original causes only. Actual remote merge
+commit/aware time must be observed in THIS live session before claiming merged.
+Failed command remains failed/uncertain despite separate later effect observation.
+Callback through actual task/agent/SID is FINAL. Only genuine successful host and
+positive outer settlement can record performed work; daemon never performs PR I/O.
+Historical event@4 held QA PASS stays held; new event@5 accepts eligible settled QA
+PASS. Readiness remains disabled and source presence grants no execution/merge.

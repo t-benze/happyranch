@@ -136,6 +136,9 @@ class CodingStartStore:
                 self.db._check_team_move_workflow_uncommitted(binding_bytes=effective_bindings(instance_id, entry['roles']))
                 return self.project(instance_id, entry)
 
+    async def get_final(self, *, principal: Any, instance_id: str) -> dict:
+        return await self.org.workflow_coding_dispatch.selected_final(principal=principal, instance=instance_id)
+
     def guard_cancellation(self, task_id: str, *, cascade: bool) -> None:
         with self.db._lock:
             conn = self.db._conn
@@ -382,12 +385,15 @@ class CodingStartStore:
     @staticmethod
     def project(instance: str, entry: dict) -> dict:
         attempt = entry['attempt']
+        final = entry['native'].get('final_output')
+        closeout = (None if final is None else dict(result_id=attempt['result_id'], task_id=attempt['task_id'],
+            subject=final['subject'], outcome=final['outcome']))
         return CodingRunReceipt.model_validate(dict(format={1: 'workflow-coding-run@1', 2: 'workflow-coding-run@2',
-            3: 'workflow-coding-run@3'}[len(entry['attempts'])], instance_id=instance,
+            3: 'workflow-coding-run@3', 4: 'workflow-coding-run@4'}[len(entry['attempts'])], instance_id=instance,
             release=entry['command']['release'], mapping=entry['command']['mapping'], effective_roles=entry['roles'],
-            cas_version=entry['run']['cas_version'], current_revision=entry['run']['current_revision'], target_revision=1, state='held' if entry['native'].get('ownership_unknown') else entry['run']['state'],
-            current_attempt=dict(id=attempt['id'], task_id=attempt['task_id'], stage=attempt['stage'], state='uncertain' if entry['native'].get('ownership_unknown') else attempt['state'], principal=attempt['principal']),
-            history=[dict(id=e['id'], kind=e['event_kind'], event_seq=e['event_seq']) for e in entry['native']['history']], closeout=None,
+            cas_version=entry['run']['cas_version'], current_revision=entry['run']['current_revision'], target_revision=1, state='held' if entry['native'].get('ownership_unknown') else 'agent_manager' if entry['run']['state'] == 'manager_closeout' else entry['run']['state'],
+            current_attempt=dict(id=attempt['id'], task_id=attempt['task_id'], stage='agent_manager' if attempt['stage'] == 'manager_closeout' else attempt['stage'], state='uncertain' if entry['native'].get('ownership_unknown') else attempt['state'], principal=attempt['principal']),
+            history=[dict(id=e['id'], kind=e['event_kind'], event_seq=e['event_seq']) for e in entry['native']['history']], closeout=closeout,
             readiness=readiness())).model_dump()
 
 

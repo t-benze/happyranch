@@ -650,6 +650,14 @@ def register(sub: argparse._SubParsersAction) -> None:
     show.add_argument('--json', action='store_true')
     show.set_defaults(func=cmd_workflow_coding_run)
 
+    from cli.commands.workflow_coding_finalize import cmd_workflow_coding_finalize
+    finalize = coding_sub.add_parser('finalize', help='Own live final-manager local guarded action; no daemon effect')
+    finalize.add_argument('--org', required=True)
+    finalize.add_argument('--session-id', required=True)
+    finalize.add_argument('--from-file', required=True)
+    finalize.add_argument('--json', action='store_true', required=True)
+    finalize.set_defaults(func=cmd_workflow_coding_finalize)
+
     for form in ('mapping-publish', 'mapping-show', 'role-select'):
         command = coding_sub.add_parser(form, help='Agent-manager role defaults or nonallocating pinned selection')
         command.add_argument('--org')

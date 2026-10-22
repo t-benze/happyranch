@@ -4533,6 +4533,32 @@
         ]
       }
     },
+    "/api/v1/orgs/{slug}/workflows/coding/runs/{instance_id}/final-manager": {
+      "GET": {
+        "params": [
+          [
+            "instance_id",
+            "path"
+          ],
+          [
+            "session_id",
+            "query"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "403",
+          "404",
+          "409",
+          "422",
+          "500"
+        ]
+      }
+    },
     "/api/v1/orgs/{slug}/workflows/cutover": {
       "GET": {
         "params": [

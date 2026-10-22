@@ -68,6 +68,24 @@ def qa_scope(*, org: str, instance: str, command: dict, roles: dict, developer: 
             principal=reviewer['principal'], outcome='APPROVE', subject=subject))
 
 
+def final_brief(work: dict) -> str:
+    return ('Finalize only your own exact coding subject using the consumed final-manager supplement.\n'
+            'Use the LOCAL workflows coding finalize command once, current original SID, no decisions/jobs.\n'
+            'Preserve intent/action/remote receipts before your FINAL genuine callback; unavailable authority holds.\n'
+            + work['brief'])
+
+
+def final_scope(*, org: str, instance: str, command: dict, roles: dict, qa: dict,
+                subject: dict, task_id: str, upstream: dict) -> dict:
+    return dict(format='workflow-coding-final-scope@1', org_slug=org, instance_id=instance,
+        attempt_id=identity('attempt', instance, 4), task_id=task_id, stage='agent_manager', role='agent_manager',
+        principal=roles['agent_manager']['principal'], team=roles['agent_manager']['team'],
+        revision=1, attempt_sequence=1, assignment_generation=1, release=command['release'],
+        mapping=command['mapping'], mapping_digest=command['mapping']['digest'], context_id=identity('context', instance),
+        authorization=identity('authorization', instance), work_scope=command['work'], subject=subject,
+        predecessor_id=qa['id'], upstream_results=upstream)
+
+
 def pinned_rows(*, org: str, command: dict, source: dict, native_source: dict,
                 authority: dict, mapping: dict, roles: dict, template: dict,
                 carrier_id: str, instance_id: str, created_at: str) -> tuple[dict, dict, dict]:
