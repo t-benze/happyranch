@@ -4319,6 +4319,14 @@ genuine cancellation-event anchors. It changes no existing event family or
 `task_cancelled` audit shape/scope. Independent readers close original rows,
 causal membership, retained graphs and strict audit ordering, then derive only
 the ordinary-row overlay and freshly compare every target before COMMIT.
+Retained coding task originals compare at that later operation's independently
+reconstructed boundary, including admissible native observations already present
+there. The authenticated event chain and heartbeat audit ordering must agree
+with the cancellation capture interval; ambiguous or inconsistent order refuses.
+Every later native suffix still replays in full to exact current task/SQL equality,
+including executor_pid. Reader-derived boundary copies and traversal consume the
+same original allowance; no captured-row trust, field exemption, duplicate stop,
+native/effect clearance or history rewrite follows.
 Reverse coding/causal dependencies are discovered separately from requested
 mutation cascade through the complete authenticated start and edge captures.
 A point stop of a coding-dependent ordinary ancestor refuses before any task,

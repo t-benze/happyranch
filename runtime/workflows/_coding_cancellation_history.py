@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from datetime import datetime
 from typing import Any
 
 from runtime.workflows.coding_bootstrap import decode_row, identity
@@ -227,8 +228,124 @@ def _ordinary_batches(conn: Any, org: str, budget: Any, storage: Any) -> list:
             instances.append(instance)
         _check(instances == sorted(set(instances)))
         storage.add('audit_log', audit)
-        batches.append(dict(command=command, audits=value['audits'], originals=originals, retained=set(instances)))
+        batches.append(dict(command=command, audits=value['audits'], originals=originals,
+                            retained=set(instances), capture_audit=audit))
     return batches
+
+
+def native_checkpoint(history: list, event: dict | None, tasks: dict,
+                      observations: list, budget: Any) -> None:
+    """Retain reader-derived rows only, after closed native replay succeeds.
+
+    Each copy and its traversal consume the enclosing original allowance.
+    Nothing here is persisted or accepted from a writer/caller projection.
+    """
+    from runtime.workflows.coding_revision import _copy_allowance
+    point = dict(event=None if event is None else dict(id=event['id'],
+        event_seq=event['event_seq'], event_digest=event['event_digest'],
+        previous_digest=event['previous_digest'], created_at=event['created_at']),
+        tasks=tasks, observations=observations)
+    _copy_allowance(point, budget)
+    history.append(deepcopy(point))
+
+
+def retained_boundary(conn: Any, entry: dict, sample: dict, budget: Any) -> dict:
+    """Compose an authenticated later cancellation with the entire native tail.
+
+    The boundary comes from the already authenticated cancellation operation,
+    never a caller cutoff or its captured task rows. Event-chain order, native
+    audit IDs and exact heartbeat replay must agree with the operation time.
+    All suffix events were independently replayed by read_native; no suffix or
+    mutable field is exempt from that reader or the final current-SQL equality.
+    """
+    from runtime.workflows.coding_start_history import rows, same
+    from runtime.workflows.coding_native_history import _row
+    from runtime.workflows.coding_revision import _copy_allowance
+    earlier = entry['native']['cancellation']
+    history = entry['native']['cancellation_history']
+    _check(history and history[0]['event']['id'] == earlier['event']['id']
+           and history[0]['event']['event_digest'] == earlier['event']['event_digest'])
+    first = min(a['id'] for a in sample['audits'])
+    last = max(a['id'] for a in sample['audits'])
+    prior_audit = max(a['id'] for a in earlier['audits'])
+    _check(prior_audit < first)
+    boundary = datetime.fromisoformat(sample['command']['cancelled_at'].replace('Z', '+00:00'))
+    capture_end = boundary
+    for item in sample['audits']:
+        budget.step()
+        _copy_allowance(item['record'], budget)
+        audit = decode_row(item['record'])
+        instant = datetime.fromisoformat(audit['timestamp'])
+        _check(instant >= boundary)
+        capture_end = max(capture_end, instant)
+    if 'capture_audit' in sample:
+        instant = datetime.fromisoformat(sample['capture_audit']['timestamp'])
+        _check(instant >= capture_end)
+        capture_end = instant
+    _copy_allowance(history[0]['tasks'], budget)
+    current = deepcopy(history[0]['tasks'])
+    selected = None
+    crossed = False
+    previous = None
+    previous_time = None
+    for point in history:
+        budget.step()
+        # fold_heartbeats authenticates each per-task chain. Merge their audit
+        # order only after charging the intermediate traversal/allocation.
+        audits = []
+        for observation in point['observations']:
+            budget.step()
+            for audit in observation['records']:
+                budget.step()
+                audits.append(audit)
+        _copy_allowance(audits, budget)
+        for audit in sorted(audits, key=lambda a: a['id']):
+            budget.step()
+            _check(audit['id'] > prior_audit and not first <= audit['id'] <= last)
+            prior_audit = audit['id']
+            before_boundary = audit['id'] < first
+            instant = datetime.fromisoformat(audit['timestamp'])
+            _check(instant < boundary if before_boundary else instant > capture_end)
+            _check(not crossed or not before_boundary)
+            if not before_boundary and not crossed:
+                _copy_allowance(current, budget)
+                selected, crossed = deepcopy(current), True
+            body = _read_json(audit['payload'].encode('utf8'), budget, 1048576)
+            before = _row(body['before_record'])
+            _copy_allowance(before, budget)
+            after = {**before, 'last_heartbeat': body['observed_at'], 'updated_at': body['observed_at']}
+            _check(before['id'] in current and same(before, current[before['id']])
+                   and same(after, _row(body['after_record'])))
+            _copy_allowance(after, budget)
+            current[before['id']] = after
+        event = point['event']
+        if event is not None:
+            instant = datetime.fromisoformat(event['created_at'].replace('Z', '+00:00'))
+            _check((instant < boundary or instant > capture_end)
+                   and (previous_time is None or instant >= previous_time))
+            if previous is not None:
+                _check(event['event_seq'] == previous['event_seq'] + 1
+                       and event['previous_digest'] == previous['event_digest'])
+            before_boundary = instant < boundary
+            _check(not crossed or not before_boundary)
+            # A prefix event cannot consume a suffix heartbeat. Conversely,
+            # heartbeat audit order may locate the boundary before this event.
+            _check(not before_boundary or prior_audit < first)
+            if not before_boundary and not crossed:
+                _copy_allowance(current, budget)
+                selected, crossed = deepcopy(current), True
+            previous, previous_time = event, instant
+            _copy_allowance(point['tasks'], budget)
+            current = deepcopy(point['tasks'])
+        else:
+            _check(same(current, point['tasks']))
+    _check(previous['id'] == entry['native']['history'][-1]['id']
+           and same(current, entry['tasks']))
+    for key, row in current.items():
+        budget.step()
+        actual = list(rows(conn, 'tasks', budget, where='id=?', args=(key,), maximum=1))
+        _check(len(actual) == 1 and same(actual[0], row))
+    return current if selected is None else selected
 
 
 def complete(conn: Any, org: str, budget: Any, storage: Any) -> None:
@@ -258,7 +375,8 @@ def complete(conn: Any, org: str, budget: Any, storage: Any) -> None:
                     earlier = entry['native'].get('cancellation')
                     _check(earlier is not None and entry['run']['state'] == 'cancelled'
                            and max(a['id'] for a in earlier['audits']) < min(a['id'] for a in sample['audits']))
-                    for task_id, task in entry['tasks'].items():
+                    historical = retained_boundary(conn, entry, sample, budget)
+                    for task_id, task in historical.items():
                         budget.step()
                         _check(task['status'] in TERMINAL and task_id in originals
                                and same(task, originals[task_id]))

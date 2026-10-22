@@ -344,6 +344,7 @@ def read_native(conn: Any, org: str, budget: Any, storage: Any, *, start: dict,
     attempts = {attempt['id']: attempt}
     completed_states = {}
     cancellation = None
+    cancellation_history = []
     previous = start
     expected_principal = 'service:coding-dispatcher:' + org
     _check(len(events) <= min(4096, source['budgets']['coding_event_limit']))
@@ -396,6 +397,8 @@ def read_native(conn: Any, org: str, budget: Any, storage: Any, *, start: dict,
                 observations=observed, source=source, source_invocation=source_invocation,
                 states={**completed_states, attempt['id']: state})
             attempt = attempts[run['current_attempt_id']]
+            from runtime.workflows._coding_cancellation_history import native_checkpoint
+            native_checkpoint(cancellation_history, event, tasks, [], budget)
             for key, value in tasks.items():
                 anchors[key] = (event['id'], _hash(_canonical(encode_row(value))), anchors[key][2])
             previous = event
@@ -813,6 +816,9 @@ def read_native(conn: Any, org: str, budget: Any, storage: Any, *, start: dict,
         _check(same(after['run'], expected_run)
                and after['attempts'] == [dict(id=k, record=encode_row(expected_attempt if k == attempt['id'] else attempts[k])) for k in sorted(attempts)]
                and same(after['tasks'], [dict(id=k, record=encode_row(expected_tasks[k])) for k in sorted(expected_tasks)]))
+        if cancelled_native:
+            from runtime.workflows._coding_cancellation_history import native_checkpoint
+            native_checkpoint(cancellation_history, event, expected_tasks, actual_observations, budget)
         run, attempt, tasks = expected_run, expected_attempt, expected_tasks
         attempts[attempt['id']] = attempt
         for key, value in tasks.items():
@@ -822,6 +828,9 @@ def read_native(conn: Any, org: str, budget: Any, storage: Any, *, start: dict,
         storage.add('workflow_coding_events', event)
     _check(state['claim'] is None or state['host'] is not None)
     tasks, pending = fold_heartbeats(conn, org, budget, storage, tasks, anchors)
+    if cancellation is not None:
+        from runtime.workflows._coding_cancellation_history import native_checkpoint
+        native_checkpoint(cancellation_history, None, tasks, pending, budget)
     # A committed edge is complete: no half-written acceptance/contribution or
     # allocation prefix may be admitted on cold load.
     for historical in [*completed_states.values(), state]:
@@ -839,7 +848,8 @@ def read_native(conn: Any, org: str, budget: Any, storage: Any, *, start: dict,
                      source_invocation=source_invocation, history=state['history'], cancellation=cancellation)
     state.update(run=run, attempt=attempt, attempts=attempts, stages=states, tasks=tasks,
                  anchors=anchors, pending_observations=pending,
-                 queue_owner=storage.heartbeat_owners.get(leaf), source_invocation=source_invocation, cancellation=cancellation)
+                 queue_owner=storage.heartbeat_owners.get(leaf), source_invocation=source_invocation, cancellation=cancellation,
+                 cancellation_history=cancellation_history)
     return state
 
 

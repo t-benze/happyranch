@@ -1645,7 +1645,12 @@ with no G2 (P alone, P/S, multiple retained graphs), retained G1 plus fresh G2,
 and pre-write point-stop refusal for coding-dependent ordinary ancestors
 (live/cancelled graphs, deeper ancestry) while ordinary-only point stops remain.
 The all-retained stop appends only a distinct closed ordinary-operation audit;
-no second G1 cancellation fence/control/result. Missing/foreign/orphan/duplicate
+no second G1 cancellation fence/control/result. Genuine original PID observations
+before/between/after later ancestor stops require exact reconstructed historical
+boundary equality and complete independently replayed native suffix/current SQL
+closure. Event/audit/heartbeat order conflicts, arbitrary cutoffs and full-row drift
+must refuse on the same original aggregate allowance. This source correction has
+no executed native/race/rollback proof. Missing/foreign/orphan/duplicate
 or tampered overlays, audit IDs/order/actor/operation/original rows/membership,
 and exhausted original aggregate allowances refuse and roll back before controls.
 No ordinary live-to-cancelled overlay may appear in two independent batches.

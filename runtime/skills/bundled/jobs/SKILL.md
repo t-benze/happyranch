@@ -574,7 +574,12 @@ coding graph or ordinary sibling. With no fresh graph, a separate closed
 ordinary-operation audit anchors the original cancellation without another graph
 fence/control/result;
 complete readers authenticate every batch and the sole ordinary-row overlay
-against unchanged original admission bytes. A point stop of a coding-dependent
+against unchanged original admission bytes. Retained task originals compare at
+an independently reconstructed later capture boundary; authenticated event and
+heartbeat order must agree with its capture interval. Full native suffix replay
+and exact current SQL equality still include every field, including executor_pid,
+on the original shared copy/traversal allowance; no history rewrite or settlement
+inference follows. A point stop of a coding-dependent
 ordinary ancestor refuses before writes, independently of mutation cascade;
 ordinary-only point stops remain supported. Prepared/unknown ownership,
 missing/failed controls and unsettled outer proof retain the existing root-tail incomplete disposition, even
