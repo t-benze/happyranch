@@ -135,7 +135,7 @@ function groupKey(task: TaskRecord, by: GroupBy): string {
     case 'agent':
       return task.assigned_agent || UNASSIGNED_GROUP;
     case 'thread': {
-      const threadId = (task as Record<string, unknown>).dispatched_from_thread_id;
+      const threadId = task.originating_thread_id ?? task.dispatched_from_thread_id;
       if (threadId && typeof threadId === 'string' && threadId.length > 0) {
         return threadId;
       }

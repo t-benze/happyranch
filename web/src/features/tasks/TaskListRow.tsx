@@ -127,9 +127,9 @@ function directRevisits(task: TaskRecord): string[] {
   return [];
 }
 
-/** Thread reference the roots payload already carries (used for group-by). */
+/** Source thread from complete root lineage, with legacy-server fallback. */
 function threadRef(task: TaskRecord): string | null {
-  const t = (task as Record<string, unknown>).dispatched_from_thread_id;
+  const t = task.originating_thread_id ?? task.dispatched_from_thread_id;
   return typeof t === 'string' && t.length > 0 ? t : null;
 }
 

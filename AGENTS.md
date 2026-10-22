@@ -3804,3 +3804,20 @@ E2E/protected/executable-QA/test-authoring proof UNEXECUTED/FOUNDER-WAIVED139429
 Fresh FULL independent review then same-final-head scoped SOURCE QA return to
 ROOT10693; K3 controls/recovery/K4–K6 and operational acceptance remain root-owned.
 <!-- /K3b native service attribution: TASK12034 / ROOT10693 step93 -->
+
+
+**Root retry source-thread association.** Task details/lists/roots expose nullable
+`originating_thread_id`/`originating_task_id` from complete root revisit lineage;
+thread linked-task reads include valid root retries. Literal dispatch provenance
+and terminal routing stay unchanged; no backfill or authority follows. See
+[the read contract](docs/agent-guides/features-and-invariants.md#root-retry-source-thread-association).
+
+Association reads batch shared ancestry inside the selection/serialization
+snapshot and refuse aggregate exhaustion with HTTP503, never empty/null success.
+Per call limits are 4096 distinct lineage IDs, 8192 fetched rows (including
+repeated discovery/summaries), 16 MiB fetched value bytes and 128-ID batches;
+existing collection SQL/lock/row-size limits also apply. See the linked read
+contract for precise counting, `task_thread_origin_unavailable`/`census_database_*`
+refusals and cooperative-bound limits. Complete 200-node lineage remains valid;
+201-node/malformed lineage has null derived origin, with literal direct rows
+preserved on complete successful reads. No cross-snapshot cache is retained.

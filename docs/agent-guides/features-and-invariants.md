@@ -2822,7 +2822,7 @@ Traps:
 
 - Helper runs after task failure is finalized (no auto-revisit spawns; the task is already terminal FAILED).
 - Only root tasks fire followups.
-- Dispatcher identity comes from the `task_dispatched` audit row.
+- Dispatcher identity comes from the `thread_dispatch` audit row.
 - Cross-thread enqueue uses `asyncio.run_coroutine_threadsafe(queue.put(job), main_loop)`.
 - Terminal gate is completion/failed **plus** `superseded` (completion-class → `task_completed` kind). A thread-originated task auto-resolved by a continuation must still emit its followup; missing this terminal silently drops the superseded state from the thread lifecycle.
 - **GH-688 Phase 1 isolation.** `TASK_FOLLOWUP` is a causal one-shot direct mint (`mint_followup_invocation_with_cap_extend`), never coalesced into reply delivery state and never routed through the claim/settle surface — even with a reply backlog on the same pair, the followup fires as its own `TASK_FOLLOWUP` row.
@@ -3836,3 +3836,53 @@ and same-final-head scoped SOURCE QA are still required. Python units RETIRED;
 integration INCLUDING callback SKIPPED24342; behavioral/security/cleanup proof
 UNEXECUTED/FOUNDER-WAIVED139429/430, never PASS. No live operation follows.
 <!-- /TASK11932 current-ancestor correction and owner support boundary -->
+
+
+## Root retry source-thread association
+
+Task details, lists and roots expose additive nullable `originating_thread_id`
+and `originating_task_id`, derived from the complete root-only `revisit_of_task_id`
+chain (at most200 nodes). The original root must carry a literal thread dispatch;
+missing predecessors, cycles, children, overlong chains or conflicting literal
+thread IDs yield null derived fields. Brief text supplies no association.
+`dispatched_from_thread_id` retains genuine creation provenance, including null
+on existing revisits; nothing is written or backfilled. These fields confer no
+execution, dispatch, retry or notification authority.
+
+`GET /threads/{thread_id}/tasks` preserves its list/summary contract and direct
+rows, adds valid root revisits, deduplicates and sorts newest-first (ID breaks
+created-at ties). Summary rows also include literal dispatch and derived origin
+fields. Ordinary delegated children are not discovered through revisit traversal.
+Task UI thread grouping/column/detail use the derived origin with literal fallback
+for older servers; the detail rail and linked-task retry chips cite the original
+task with a revisit arrow. CLI details distinguishes `Thread`/`Origin task` from
+literal `Dispatched`. Existing terminal follow-up routing remains unchanged: it
+uses the original root's real `thread_dispatch` audit/dispatcher, not these fields.
+
+
+Association acquisition shares one coherent read snapshot with task selection
+and serialization; batched ancestry rows and validated suffixes are local to that
+call. A suffix's distance is retained, so a complete 200-node start succeeds and
+a 201-node start has null origin even when another selected start shares its
+ancestors. Thread discovery deduplicates root IDs at their shortest reverse
+distance from a direct root (at most 199 edges); children are never traversed.
+
+Each association call permits 4096 distinct lineage IDs (all discovered/referenced IDs, including
+missing IDs and the unacquired tail at the depth limit), 8192 fetched rows (including duplicate discovery and final summaries),
+and 16 MiB of fetched SQLite value bytes (UTF8 for text, raw bytes for BLOB,
+eight bytes for other values). Indexed dispatch/revisit/primary-key reads use
+batches of at most 128 IDs and a remaining-row-limit plus one refusal sentinel.
+Ancestry acquisition expands each node once; suffix validation resolves each
+acquired node once. Summary materialization occurs only after validation and
+uses the same row/byte allowance. The existing enclosing collection read scope
+also bounds all request SQL, lock admission, per-row size and decoding, including
+roots selection and every task serializer. These cooperative bounds do not
+promise hard wall time or process RSS. One fetched row can cross the local byte
+ceiling before refusal; the existing 4 MiB SQLite record limit still applies.
+
+Aggregate exhaustion is unavailable, never null origin, an empty association
+claim or a truncated successful list: task list/roots/detail and linked-task
+routes return HTTP503 with string `detail: task_thread_origin_unavailable` for
+these local ceilings, or the existing `census_database_*` refusal for enclosing
+SQL/size/deadline/admission limits. Successful response shapes and literal direct
+rows are preserved; malformed lineage alone still yields null derived fields.

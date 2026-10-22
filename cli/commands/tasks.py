@@ -419,6 +419,12 @@ def cmd_details(args: argparse.Namespace) -> None:
             display[-1] = f"{display[-1]} (this)"
             print(f"Chain:      {' ← '.join(display)}")
 
+    if task.get("originating_thread_id"):
+        print(f"Thread:     {task['originating_thread_id']}")
+        print(f"Origin task: {task['originating_task_id']}")
+    if task.get("dispatched_from_thread_id"):
+        print(f"Dispatched: {task['dispatched_from_thread_id']}")
+
     print(f"Task:       {task['task_id']}")
     print(f"Team:       {task.get('team', '-')}")
     print(f"Status:     {task['status']}")

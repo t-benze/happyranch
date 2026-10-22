@@ -1259,9 +1259,9 @@ function DetailColumn({
   // Latest responder state per agent — feeds the participants rail status
   // column (honest, derived from the same responder_status the strip shows).
   const statusByAgent = useMemo(() => latestResponderStatusByAgent(messages), [messages]);
-  // Tasks dispatched from this thread (THR-061). Called before the early
-  // returns so the hook order stays stable; self-gates on threadId.
+  // Direct dispatches and root retries; stable hook order, self-gates on threadId.
   const threadTasks = useThreadTasks(threadId);
+  const taskRevisitLabel = (id: string) => t('tasks.detail.revisitOf', { id });
   // Fresh (uncached input) token total for this thread — the "This thread ·
   // Fresh tokens" rail figure. Real, wired over the existing tokens rollup;
   // null (→ row omitted) when the thread has no recorded usage. Called before
@@ -1534,6 +1534,11 @@ function DetailColumn({
                           <span className="inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-current opacity-70" aria-hidden />
                         )}
                         <span className="truncate font-semibold">{taskStatusLabel(t.status)}</span>
+                        {t.originating_task_id && t.originating_task_id !== t.id && (
+                          <span title={taskRevisitLabel(t.originating_task_id)}>
+                            ↩ {t.originating_task_id}
+                          </span>
+                        )}
                       </span>
                       {slug ? (
                         <Link

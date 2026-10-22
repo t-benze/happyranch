@@ -15,7 +15,7 @@ import type {
 } from './types';
 
 /**
- * One task dispatched from a thread (THR-061). Mirrors the summary dict the
+ * A direct dispatch or associated root revisit. Mirrors the summary dict the
  * daemon returns from GET /threads/{thread_id}/tasks — see
  * `Database.list_tasks_by_thread`.
  */
@@ -26,6 +26,9 @@ export interface ThreadTaskSummary {
   assigned_agent: string | null;
   created_at: string;
   parent_task_id: string | null;
+  dispatched_from_thread_id?: string | null;
+  originating_thread_id?: string | null;
+  originating_task_id?: string | null;
 }
 
 export interface ComposeThreadBody {
