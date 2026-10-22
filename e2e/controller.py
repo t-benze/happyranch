@@ -1308,9 +1308,11 @@ def main() -> None:
     except BaseException as exc:
         # Save the actual first exception/traceback before any cleanup/export.
         controller.record_error("controller-action", exc)
-        if controller.browser:
-            controller.browser.poison(exc)  # No dispatcher re-entry after interruption.
-        controller._stage_failure_categories()
+        try:
+            controller._stage_failure_categories()
+        finally:
+            if controller.browser:
+                controller.browser.poison(exc)  # No dispatcher re-entry after interruption.
     finally:
         begin = time.monotonic()
         try:

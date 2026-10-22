@@ -529,13 +529,33 @@ is a required path check. macOS packaging remains manual/tag release activity.
 
 ## Bounded E2E recovery diagnostics (ROOT12610 / TASK12643)
 
-The controller latches the first actual exception/traceback before diagnostic
-work; record_error performs no I/O. Optional closed failure_categories metadata
-is published only at the three existing main failure/finalization boundaries,
-owner-only, nonrecursive, sticky on publication failure and bounded by the
-original effective deadline. Separate capture metadata follows the original[]
-invalidation attempt and preserves capture/invalidation exception precedence.
-No context/readiness/sanitation, browser/transport or lifecycle rule changes.
+The controller latches the first actually recorded exception/traceback before
+diagnostic work; record_error performs no I/O. After the action catch's existing
+`record_error("controller-action", exc)` completes, main tries the SAME earlier
+`_stage_failure_categories()` call before poison. Its local finally retains the
+SAME `if controller.browser` conditional `controller.browser.poison(exc)`
+ATTEMPT even if the ENTIRE writer invocation escapes. Earlier safe publication
+may precede poison's secondary throw or consumption of remaining time; neither
+publication nor poison completion is promised. The outer close/evidence finally,
+phase bookkeeping and selected raw-primary final raise are unchanged; when
+reached, that raise propagates the actual selected winner and its traceback.
+Exactly THREE existing owner-only nonrecursive main publisher calls remain:
+action catch, close-finalization and post-evidence. Off-owner/reentry skips
+without locks/waits. Protected-body caught metadata/I/O/alarm failure is sticky
+IF handler/reset assignments complete. Whole-call entry/handler/reset escape
+leaves unreached publication/active/latch assignments UNKNOWN; no active/sticky
+reset, pending repair or retry is promised.
+
+Optional work uses the SAME effective end=min(global, case, local, observation,
+inherited), including after an absorbed alarm. Earlier I/O can consume original
+time; no extra slack/reserve is added. Constructor failure, legacy-record_error-
+tail interruption, arbitrary later/repeated interruption, crash and hard OS-I/O
+remain limits on publication, poison and final propagation. A frozen earlier
+projection can be stale; unavailable/null/stale output cannot prove local poison
+executed and earns no context/readiness/case/cleanup/health credit. Separate
+capture metadata follows the original[] invalidation attempt and preserves
+capture/invalidation exception precedence. Writer/state/signal/clock, context/
+readiness/sanitation and browser/transport/lifecycle implementations are unchanged.
 
 The private category snapshot and result projection have exact finite keys,
 enums, numeric/source/null/stale semantics and no raw text. The reader uses
