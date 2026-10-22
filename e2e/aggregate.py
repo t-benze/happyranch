@@ -2335,6 +2335,7 @@ def main() -> int:
                         _diagnostic_projection(result, diagnostic_facts, args.source, root=True)
                     except (ValueError, KeyError, TypeError, IndexError, RecursionError, OverflowError):
                         health["errors"].append(f"e2e-{version}: invalid diagnostic metadata")
+                diagnostic_facts = None  # Release this decode's selected duplicate records.
                 if result is not None:
                     rows.append(result)
                     if result.get("python") != version or result.get("exercise") != "baseline":
@@ -2385,6 +2386,7 @@ def main() -> int:
                     metadata_invalid = True
             if metadata_invalid:
                 health["errors"].append(f"{label}: invalid diagnostic metadata")
+            raw_facts = row_facts = None  # No parser bookkeeping crosses label validation.
             if row is not None:
                 try:
                     if row["status"] != "PASS":
