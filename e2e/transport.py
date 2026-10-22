@@ -157,7 +157,10 @@ class BrowserRelay:
                             self.wfile.flush()
                             remaining()
                         else:
-                            while True:
+                            # read1 may close the response/socket while returning
+                            # the final nonempty chunk. Deliver it before checking
+                            # completion, without touching that socket again.
+                            while not response.isclosed():
                                 self.connection.settimeout(remaining())
                                 upstream_socket.settimeout(remaining())
                                 chunk = response.read1(65536)
