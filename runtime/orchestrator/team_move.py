@@ -357,9 +357,7 @@ class TeamMoveCoordinator:
                     # Retained workflow ownership still identifies an orphan
                     # when coding relation rows or the binding tag were lost.
                     coding_context = any(r['source_kind'] == 'coding-manager-result' for r in contexts)
-                    reserved_identity = (type(instance['id']) is str
-                                         and instance['id'].startswith('coding-root:'))
-                    if reserved or selected is not None or coding_context or reserved_identity:
+                    if reserved or selected is not None or coding_context:
                         inventory = coding_inventory()
                         selected = inventory.runs.get(instance['id'])
                         if (tag not in ('workflow-coding-binding@2', 'workflow-coding-binding@3')
