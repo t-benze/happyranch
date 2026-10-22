@@ -426,6 +426,8 @@ def relay(operation, argv, *, origin=None, cancel_fd=None, guardian=False,
                         child.kill(signal.SIGTERM)
                 effective = min(deadline, failure_deadline or deadline)
                 if now >= effective:
+                    if cause is None and prior is not None:
+                        os.write(2, ('PACKAGING_HELPER_SECONDARY_DEADLINE:' + operation + '\n').encode())
                     enter(prior if prior is not None else 124, now)
                 if cleanup is not None and now >= kill_at and not killed:
                     if child.pin:
@@ -551,7 +553,7 @@ def relay(operation, argv, *, origin=None, cancel_fd=None, guardian=False,
         status = prior if prior is not None else 125
     if status == 124:
         os.write(2, ('PACKAGING_HELPER_DEADLINE:' + operation + '\n').encode())
-    elif unresolved:
+    if unresolved:
         os.write(2, ('PACKAGING_HELPER_CLEANUP_UNRESOLVED:' + operation + '\n').encode())
     return int(status)
 
