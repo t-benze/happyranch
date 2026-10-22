@@ -7,7 +7,6 @@ Saved validity never supplies current access, readiness or permission.
 """
 from __future__ import annotations
 
-import base64
 import json
 import sqlite3
 import struct
@@ -20,8 +19,9 @@ from runtime.workflows.coding_authority_history import _Budget, _bounded_rows, _
 from runtime.workflows.coding_bootstrap import (
     decode_row, encode_row, identity, initial_scope, journal_rows, pinned_rows, task_brief,
 )
+from runtime.workflows._coding_settings_execution import _read_authority, _read_json
 from runtime.workflows.coding_saved_records import (
-    _Ancestry, _canonical, _capture, _check, _closed, _hash, _integer, _json, _roles, _timestamp, _token,
+    _canonical, _check, _closed, _hash, _integer, _roles, _timestamp, _token,
 )
 from runtime.workflows.coding_source_history import (
     _RESULT_TYPES, _TASK_COLUMNS, _TASK_TYPES, _session_start, _task,
@@ -146,7 +146,7 @@ def read_queued(conn: sqlite3.Connection, org: str, budget: _Budget, mappings: A
         _check(len(selected) >= 1 and 1 <= len(selected_attempts) <= 4)
         event = selected[0]
         actual_run = run
-        initial = _json(event['event_bytes'], 16777216)
+        initial = _read_json(event['event_bytes'], budget, 16777216)
         run = initial['after']['run']
         attempt = decode_row(initial['after']['attempts'][0]['record'])
         _check(event['id'] not in used_events and attempt['id'] not in used_attempts)
@@ -154,9 +154,8 @@ def read_queued(conn: sqlite3.Connection, org: str, budget: _Budget, mappings: A
             _check(selected_event['id'] not in used_events)
             used_events.add(selected_event['id'])
         _check(type(event['event_bytes']) is bytes and _hash(event['event_bytes']) == event['event_digest'])
-        payload = _closed(_json(event['event_bytes'], 16777216),
+        payload = _closed(_read_json(event['event_bytes'], budget, 16777216),
             'format id instance_id event_seq event_kind attempt_id operation previous_digest before after evidence created_at')
-        _decoded(payload, budget)
         _check(payload['format'] == 'workflow-coding-event@1'
                and payload['event_kind'] == 'run_started' and payload['event_seq'] == 1
                and payload['previous_digest'] is None)
@@ -219,16 +218,15 @@ def read_queued(conn: sqlite3.Connection, org: str, budget: _Budget, mappings: A
         mapping_entry = pin_entries[0]
         _check(command['mapping'] == dict(id=mapping_entry.mapping_id, generation=mapping_entry.generation,
                                          digest=mapping_entry.mapping_digest) and run['mapping_id'] == mapping_entry.mapping_id)
-        record = _json(mapping_entry.mapping_bytes, 1048576)
+        record = _read_json(mapping_entry.mapping_bytes, budget, 1048576)
         settings = _resolve_start(command, mappings, imported, budget)
         mapping = record['mapping']
         effective = effective_mapping(mapping, command)
         roles = effective['roles']
         _roles(roles, {k: [] for k in roles})
         _check(roles['agent_manager'] == dict(principal=source['principal'], team=source_before['team']))
-        grant, _ = _capture(evidence['authority'], org, _Ancestry())
+        grant, snapshot = _read_authority(evidence['authority'], org, budget)
         _check(grant == _canonical(command))
-        snapshot = json.loads(base64.b64decode(evidence['authority']['snapshot_bytes_base64'], validate=True))
         _configuration(mapping, snapshot, command, budget)
         _configuration(effective, snapshot, command, budget)
         carrier_id = facts['carrier_task_id']
@@ -256,7 +254,7 @@ def read_queued(conn: sqlite3.Connection, org: str, budget: _Budget, mappings: A
         context_rows = [r for r in evidence['rows'] if r.get('table') == 'workflow_contexts']
         _check(len(context_rows) == 1)
         frozen_context = decode_row(context_rows[0]['record'])
-        context_value = _json(frozen_context['context_bytes'], 1048576)
+        context_value = _read_json(frozen_context['context_bytes'], budget, 1048576)
         native_source = _closed(context_value['native_source'], 'ancestors session_start invocation checkpoints')
         checkpoints = native_source['checkpoints']
         _check(type(checkpoints) is list and 1 <= len(checkpoints) <= 5)

@@ -10,6 +10,38 @@ from typing import Any
 from runtime.workflows.coding_saved_records import _canonical, _check
 
 
+def _read_json(raw: bytes, budget: Any, limit: int = 1048576) -> Any:
+    """Reserve bounded decoded/canonical copies BEFORE nested JSON expansion."""
+    from runtime.workflows.coding_authority_history import _decoded
+    from runtime.workflows.coding_saved_records import _json
+    _check(type(raw) is bytes and 0 < len(raw) <= limit)
+    charge = 4 * len(raw)
+    _check(charge <= budget.remaining_bytes)
+    budget.consumed += charge
+    return _decoded(_json(raw, limit), budget)
+
+
+def _read_authority(value: dict, org: str, budget: Any) -> tuple[bytes, dict]:
+    """Charge nested captures to the SAME allowance; retain original predicates."""
+    import base64
+    from runtime.workflows._coding_settings_records import account
+    from runtime.workflows.coding_saved_records import _Ancestry, _capture, _closed
+    _closed(value, 'pin admission_record_id snapshot_bytes_base64 profile_evidence '
+                   'grant_bytes_base64 grant_digest')
+    account(value, budget)
+    decoded = {}
+    for field in ('snapshot_bytes_base64', 'grant_bytes_base64'):
+        text = value[field]
+        _check(type(text) is str and len(text) <= 4 * ((1048576 + 2) // 3))
+        # Includes base64/UTF8 copies made by the original pure capture reader.
+        charge = 4 * len(text)
+        _check(charge <= budget.remaining_bytes)
+        budget.consumed += charge
+        decoded[field] = _read_json(base64.b64decode(text, validate=True), budget)
+    grant, _ = _capture(value, org, _Ancestry())
+    return grant, decoded['snapshot_bytes_base64']
+
+
 def _settings_family(command: dict) -> bool:
     tag = command['format']
     _check(tag in ('workflow-coding-start@1', 'workflow-coding-start@2'))
@@ -28,6 +60,9 @@ def _configuration(mapping: dict, snapshot: dict, command: dict, budget: Any) ->
 
 def _current_configuration(mapping: dict, snapshot: dict, command: dict, budget: Any) -> None:
     from runtime.workflows.coding_start_records import effective_mapping
+    from runtime.workflows._coding_settings_records import account
+    account(snapshot, budget)
+    account(mapping, budget)
     # Unselected defaults/replacements remain historical configuration, not
     # dependencies of this admitted run. Old native predicates stay literal.
     if not _settings_family(command):

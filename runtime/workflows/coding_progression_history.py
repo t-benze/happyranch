@@ -5,12 +5,12 @@ carry no current authority and never supply a trusted writer after-image.
 """
 from __future__ import annotations
 
-import base64
 from typing import Any
 
 from runtime.workflows.coding_authority_history import _capture_admission, _decoded
 from runtime.workflows.coding_bootstrap import decode_row, encode_row, identity, final_brief, final_scope, qa_brief, qa_scope, review_brief, review_scope
-from runtime.workflows.coding_saved_records import _Ancestry, _canonical, _capture, _check, _closed, _hash, _json, _timestamp
+from runtime.workflows._coding_settings_execution import _read_authority, _read_json
+from runtime.workflows.coding_saved_records import _canonical, _check, _closed, _hash, _timestamp
 from runtime.workflows.coding_start_records import effective_mapping, parse_final_output, parse_stage_output
 
 EDGE_KINDS = ('artifact_staged', 'contribution_recorded', 'stage_queued', 'advance')
@@ -28,9 +28,7 @@ def admission(conn: Any, org: str, budget: Any, storage: Any, value: dict, *,
     from runtime.workflows.coding_start_history import rows, same
     value = _closed(value, 'format authority record tasks pause move sessions capacity_tasks work_hours max_revise_rounds')
     _check(value['format'] == ('workflow-coding-edge-admission@3' if final else 'workflow-coding-edge-admission@2' if qa else 'workflow-coding-edge-admission@1'))
-    budget.consumed += 4 * len(value['authority']['snapshot_bytes_base64'])
-    _check(budget.remaining_bytes >= 0)
-    grant, _ = _capture(value['authority'], org, _Ancestry())
+    grant, snapshot = _read_authority(value['authority'], org, budget)
     _check(grant == _canonical(command))
     pin = value['authority']['pin']
     expected = dict(id=identity('edge-admission', run['instance_id'], run['cas_version']),
@@ -39,8 +37,6 @@ def admission(conn: Any, org: str, budget: Any, storage: Any, value: dict, *,
     _check(value['authority']['admission_record_id'] == expected['id'] and same(value['record'], expected))
     _capture_admission(conn, expected, value['authority'], budget)
     storage.add('workflow_admission_records', expected)
-    snapshot = _json(base64.b64decode(value['authority']['snapshot_bytes_base64'], validate=True), 1048576)
-    _decoded(snapshot, budget)
     _current_configuration(mapping, snapshot, command, budget)
     _check(roles == effective_mapping(mapping, command)['roles'])
     _check(type(value['tasks']) is list and 1 <= len(value['tasks']) <= 512)
@@ -152,7 +148,7 @@ def replay(conn: Any, org: str, budget: Any, storage: Any, *, event: dict, body:
     _check(state['source_settled'] and state['cleanup_recorded'] and state['cleanup']
            and state['terminal'] == 'success' and callback is not None
            and not state.get('ownership_unknown') and current['state'] == 'completed')
-    subject = None if current['stage'] == 'development' else _json(current['scope_bytes'], 1048576)['subject']
+    subject = None if current['stage'] == 'development' else _read_json(current['scope_bytes'], budget, 1048576)['subject']
     _check(type(callback['output_summary']) is str and len(callback['output_summary']) <= 65536)
     # Reserve conservative UTF8/decoded/canonical copies before nested parsing.
     budget.consumed += 12 * len(callback['output_summary'])
@@ -257,7 +253,7 @@ def replay_qa(conn: Any, org: str, budget: Any, storage: Any, *, event: dict, bo
     budget.consumed += 12 * len(callback['output_summary'])
     _check(budget.remaining_bytes >= 0)
     output = parse_stage_output(callback, instance=run['instance_id'], attempt=current,
-        work=command['work'], subject=_json(current['scope_bytes'], 1048576)['subject'])
+        work=command['work'], subject=_read_json(current['scope_bytes'], budget, 1048576)['subject'])
     _decoded(output, budget)
     developer = attempts[identity('attempt', run['instance_id'], 1)]
     reviewer = attempts[identity('attempt', run['instance_id'], 2)]
@@ -403,10 +399,7 @@ def replay_final(conn: Any, org: str, budget: Any, storage: Any, *, event: dict,
         _check(current['stage'] == 'manager_closeout' and len(attempts) == 4
                and state.get('final_output') is None and facts['admission'] is None
                and facts['manager_task_id'] == current['task_id'])
-        budget.consumed += 4 * len(current['scope_bytes'])
-        _check(budget.remaining_bytes >= 0)
-        scope = _json(current['scope_bytes'], 1048576)
-        _decoded(scope, budget)
+        scope = _read_json(current['scope_bytes'], budget, 1048576)
         _check(scope == final_scope(org=org, instance=run['instance_id'], command=command, roles=roles,
             qa=attempts[identity('attempt', run['instance_id'], 3)], subject=subject,
             task_id=current['task_id'], upstream=pins,

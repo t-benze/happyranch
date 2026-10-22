@@ -13,8 +13,9 @@ from typing import Any
 
 from runtime.workflows.coding_authority_history import _decoded
 from runtime.workflows.coding_bootstrap import decode_row, encode_row, identity
+from runtime.workflows._coding_settings_execution import _read_authority, _read_json
 from runtime.workflows.coding_saved_records import (
-    _canonical, _check, _closed, _hash, _integer, _json, _timestamp, _token,
+    _canonical, _check, _closed, _hash, _integer, _timestamp, _token,
 )
 from runtime.workflows.coding_source_history import _TASK_COLUMNS, _TASK_TYPES
 
@@ -54,14 +55,14 @@ def _audit(conn: Any, budget: Any, row: dict, storage: Any) -> None:
     storage.add('audit_log', row)
 
 
-def _host(value: Any, claim: dict, sid: str, principal: str, org: str, attempt_id: str) -> dict:
+def _host(value: Any, claim: dict, sid: str, principal: str, org: str, attempt_id: str, budget: Any) -> dict:
     host = _closed(value, HOST_KEYS)
     _check(host['claim_token'] == claim['token'] and host['claim_owner'] == claim['owner']
            and host['invocation_id'] == claim['invocation_id'] and host['session_id'] == sid
            and host['host_attempt'] == 0 and type(host['host_attempt']) is int
            and host['launch_started'] is True)
     raw = base64.b64decode(host['request_bytes_base64'], validate=True)
-    request = _closed(_json(raw, 1048576),
+    request = _closed(_read_json(raw, budget, 1048576),
                       'org invocation_kind logical_id executor_profile enqueued_at retry_attempt agent_id')
     _check(host['request_digest'] == _hash(raw) and _canonical(request) == raw
            and request['org'] == org and request['invocation_kind'] == 'task'
@@ -116,7 +117,6 @@ def _admission(conn: Any, org: str, budget: Any, value: Any, *, callback: bool,
     """Independent original-time predicates; no current roster substitution."""
     from runtime.workflows._coding_settings_execution import _current_configuration, _native_format, _settings_family
     from runtime.workflows.coding_start_records import effective_mapping
-    from runtime.workflows.coding_saved_records import _capture, _Ancestry
     from runtime.workflows.coding_authority_history import _capture_admission
     from runtime.infrastructure.task_pause_controls import decode_journal
     from runtime.workflows.coding_start_history import rows, same
@@ -132,7 +132,7 @@ def _admission(conn: Any, org: str, budget: Any, value: Any, *, callback: bool,
     _check(same(original_native, native))
     native = original_native
     authority = value['authority']
-    grant, _ = _capture(authority, org, _Ancestry())
+    grant, snapshot = _read_authority(authority, org, budget)
     _check(grant == _canonical(command) and authority['admission_record_id'] == identity(
         'native-admission', attempt['id'], native['id'], run['cas_version']))
     pin = authority['pin']
@@ -141,7 +141,6 @@ def _admission(conn: Any, org: str, budget: Any, value: Any, *, callback: bool,
     _check(same(value['record'], expected_record))
     _capture_admission(conn, expected_record, authority, budget)
     storage.add('workflow_admission_records', expected_record)
-    snapshot = _json(base64.b64decode(authority['snapshot_bytes_base64'], validate=True), 1048576)
     _current_configuration(mapping, snapshot, command, budget)
     _check(roles == effective_mapping(mapping, command)['roles']
            and value['manager_teams'] == [roles['agent_manager']['team']]
@@ -256,7 +255,7 @@ def _admission(conn: Any, org: str, budget: Any, value: Any, *, callback: bool,
             _closed(bound, 'instance_id binding')
             binding = decode_row(bound['binding'])
             _check(_hash(binding['binding_bytes']) == binding['binding_digest'])
-            payload = _json(binding['binding_bytes'], 1048576)
+            payload = _read_json(binding['binding_bytes'], budget, 1048576)
             # Coding bindings carry unselected replacements as history. Only
             # the independently reconstructed effective four-role set is live.
             _check(not referenced(roles if bound['instance_id'] == run['instance_id'] else payload))
@@ -282,14 +281,13 @@ def fold_heartbeats(conn: Any, org: str, budget: Any, storage: Any, tasks: dict,
             from runtime.workflows.coding_source_history import _timestamp as native_timestamp
             native_timestamp(audit['timestamp'])
             _check(audit['task_id'] == task_id and audit['agent'] == 'orchestrator')
-            body = _closed(_json(audit['payload'].encode('utf8'), 1048576),
+            body = _closed(_read_json(audit['payload'].encode('utf8'), budget, 1048576),
                 'format instance_id task_id queue_owner session_id previous_audit_id anchor_event_id '
                 'anchor_task_digest before_record after_record observed_at')
             _check(body['format'] == 'workflow-coding-task-heartbeat@2'
                    and body['instance_id'] == storage.heartbeat_instance
                    and body['task_id'] == task_id and body['previous_audit_id'] == last_id
                    and body['anchor_event_id'] == anchor_id and body['anchor_task_digest'] == anchor_digest)
-            _decoded(body, budget)
             owner = _closed(body['queue_owner'], 'kind owner_id queue_generation claim_identity native')
             _check(owner['kind'] in ('source', 'attempt') and owner['kind'] != 'carrier')
             _token(owner['owner_id'])
@@ -327,7 +325,7 @@ def read_native(conn: Any, org: str, budget: Any, storage: Any, *, start: dict,
     storage.heartbeat_instance = start['instance_id']
     storage.native_source, storage.source_invocation = source, source_invocation
     storage.heartbeat_owners = {}
-    initial = _json(start['event_bytes'], 16777216)
+    initial = _read_json(start['event_bytes'], budget, 16777216)
     run = deepcopy(initial['after']['run'])
     attempt = decode_row(initial['after']['attempts'][0]['record'])
     leaf = attempt['task_id']
@@ -349,11 +347,8 @@ def read_native(conn: Any, org: str, budget: Any, storage: Any, *, start: dict,
         budget.step()
         if event['event_kind'] != 'stage_queued':
             continue
-        budget.consumed += 4 * len(event['event_bytes'])
-        _check(budget.remaining_bytes >= 0)
-        candidate = _closed(_json(event['event_bytes'], 16777216),
+        candidate = _closed(_read_json(event['event_bytes'], budget, 16777216),
             'format id instance_id event_seq event_kind attempt_id operation previous_digest before after evidence created_at')
-        _decoded(candidate, budget)
         if candidate['format'] == 'workflow-coding-event@4':
             evidence = _closed(candidate['evidence'], 'kind command origin authority rows facts native_task_observations')
             facts = _closed(evidence['facts'], 'format developer_attempt_id reviewer_attempt_id result_id output_digest contributor qa_task_id admission')
@@ -375,9 +370,8 @@ def read_native(conn: Any, org: str, budget: Any, storage: Any, *, start: dict,
         if kind in EDGE_KINDS:
             _check(event['instance_id'] == run['instance_id'] and type(event['event_bytes']) is bytes
                    and _hash(event['event_bytes']) == event['event_digest'])
-            body = _closed(_json(event['event_bytes'], 16777216),
+            body = _closed(_read_json(event['event_bytes'], budget, 16777216),
                 'format id instance_id event_seq event_kind attempt_id operation previous_digest before after evidence created_at')
-            _decoded(body, budget)
             _check(_canonical(body) == event['event_bytes']
                    and event['event_seq'] == previous['event_seq'] + 1
                    and event['previous_digest'] == previous['event_digest'])
@@ -410,15 +404,11 @@ def read_native(conn: Any, org: str, budget: Any, storage: Any, *, start: dict,
             continue
         _check(kind in KINDS and event['instance_id'] == run['instance_id'])
         _check(type(event['event_bytes']) is bytes and _hash(event['event_bytes']) == event['event_digest'])
-        body = _closed(_json(event['event_bytes'], 16777216),
+        body = _closed(_read_json(event['event_bytes'], budget, 16777216),
             'format id instance_id event_seq event_kind attempt_id operation previous_digest before after evidence created_at')
-        _decoded(body, budget)
         repaired = False
         if attempt['stage'] == 'manager_closeout':
-            budget.consumed += 4 * len(attempt['scope_bytes'])
-            _check(budget.remaining_bytes >= 0)
-            scope = _json(attempt['scope_bytes'], 1048576)
-            _decoded(scope, budget)
+            scope = _read_json(attempt['scope_bytes'], budget, 1048576)
             repaired = scope['format'] == 'workflow-coding-final-scope@2'
         uncertainty = body['format'] == 'workflow-coding-native-manager-event@3'
         if uncertainty:
@@ -584,12 +574,12 @@ def read_native(conn: Any, org: str, budget: Any, storage: Any, *, start: dict,
         elif kind == 'launch_reserved':
             _check(state['claim'] is not None and state['host'] is None and attempt['state'] == 'claimed'
                    and facts['retry'] == native['retry'])
-            host = _host(facts['host'], state['claim'], attempt['session_id'], attempt['principal'], org, attempt['id'])
+            host = _host(facts['host'], state['claim'], attempt['session_id'], attempt['principal'], org, attempt['id'], budget)
             _check(host['handle_id'] is host['backend'] is host['terminal_receipt'] is host['cleanup'] is None)
             state['host'] = host
         elif kind == 'launch_observed':
             _check(state['host'] is not None and state['host']['handle_id'] is None)
-            host = _host(facts['host'], state['claim'], attempt['session_id'], attempt['principal'], org, attempt['id'])
+            host = _host(facts['host'], state['claim'], attempt['session_id'], attempt['principal'], org, attempt['id'], budget)
             _check(host['handle_id'] is not None and host['backend'] is not None)
             _check(same({**host, 'handle_id': None, 'backend': None}, state['host']))
             expected_attempt['state'] = 'running'
@@ -599,7 +589,7 @@ def read_native(conn: Any, org: str, budget: Any, storage: Any, *, start: dict,
                    and facts['recovery_owner'] == command['producer_identity'])
             raw = base64.b64decode(facts['observation_bytes_base64'], validate=True)
             _check(_hash(raw) == facts['observation_digest'])
-            observed = _closed(_json(raw, 1048576), 'task_id agent session_id pid')
+            observed = _closed(_read_json(raw, budget, 1048576), 'task_id agent session_id pid')
             _integer(observed['pid'], 1)
             _check(observed == dict(task_id=leaf, agent=attempt['principal'], session_id=attempt['session_id'], pid=observed['pid'])
                    and facts['host'] == state['host'] and state['host']['handle_id'] is not None)
@@ -625,7 +615,7 @@ def read_native(conn: Any, org: str, budget: Any, storage: Any, *, start: dict,
             _check(state['host'] is not None and state['terminal'] is None
                    and facts['positive_no_launch'] is None and facts['outer_cleanup_pending'] is True
                    and facts['accepted_result_id'] == attempt['result_id'])
-            host = _host(facts['host'], state['claim'], attempt['session_id'], attempt['principal'], org, attempt['id'])
+            host = _host(facts['host'], state['claim'], attempt['session_id'], attempt['principal'], org, attempt['id'], budget)
             _check(same({**host, 'terminal_receipt': None, 'cleanup': None}, state['host']))
             receipt = host['terminal_receipt']
             safe = (type(receipt) is dict and receipt.get('quiescent') is True
@@ -648,7 +638,7 @@ def read_native(conn: Any, org: str, budget: Any, storage: Any, *, start: dict,
         elif kind == 'cleanup_settled':
             raw = base64.b64decode(facts['disposition_bytes_base64'], validate=True)
             _check(_hash(raw) == facts['disposition_digest'])
-            disposition = _closed(_json(raw, 1048576), 'kind reason processes invocation terminal tracker_clear reconciliation_complete task_tail_complete root_worktree_batch_complete settle_live_complete close release')
+            disposition = _closed(_read_json(raw, budget, 1048576), 'kind reason processes invocation terminal tracker_clear reconciliation_complete task_tail_complete root_worktree_batch_complete settle_live_complete close release')
             _check(type(facts['settled']) is bool and type(facts['execution_unknown']) is bool)
             _check(disposition['invocation'] == native and native is not None)
             original = source_invocation if source_tail else state['claim']
