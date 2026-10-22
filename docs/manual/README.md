@@ -9,7 +9,7 @@ Content lives in `pages/`; screenshots that do not exist yet are
 The search box is `components/ManualSearch.jsx`, set as the theme's
 `search.component`. It is adapted from nextra-theme-docs 3.3.1's built-in
 FlexSearch box (MIT, notice kept in the file) and keeps its index, matching,
-markup and keyboard behavior. It differs in three ways:
+markup and keyboard behavior. It differs in these ways:
 
 - A query typed while the search index is still loading gets its results as
   soon as the index is ready, with no further typing. A query cleared while
@@ -17,6 +17,16 @@ markup and keyboard behavior. It differs in three ways:
 - If the index fails to load, the box shows "Failed to load search index." and
   the next focus (or typing again) retries the load.
 - No search runs while the index is absent.
+- Choosing a result, by pointer or keyboard, moves focus to the selected
+  heading (or the page's h1) once that page is showing, so the next Tab starts
+  in the article. Upstream left focus in the search input, which in the closed
+  mobile menu is off screen. A selected heading is scrolled to below the
+  navbar; `styles/globals.css` keeps Nextra's navbar scroll padding while focus
+  is in the article. Focus does not move if the navigation fails, another
+  navigation replaces it, or focus has already gone elsewhere.
+- A plain click on a result starts one navigation, not two (Headless UI
+  already navigates on mousedown). Ctrl/Cmd/Shift/Alt-click keep the browser's
+  link behavior.
 
 It imports `flexsearch` and `@headlessui/react` directly, so both are declared
 in `package.json` at exactly the versions nextra-theme-docs 3.3.1 already

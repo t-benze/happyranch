@@ -66,6 +66,13 @@ body {
   font-feature-settings: 'ss01' 1, 'calt' 1;
 }
 
+/* Nextra drops the navbar scroll padding while anything has focus. Keep it
+   while focus is in the article, where a selected search result puts it
+   (components/ManualSearch.jsx), so a heading scrolled to clears the navbar. */
+html:has(.nextra-content :focus) {
+  scroll-padding-top: var(--nextra-navbar-height);
+}
+
 /* Body / UI text is Instrument Sans; headings are Newsreader (display). */
 .nextra-content h1,
 .nextra-content h2,

@@ -40,6 +40,18 @@
  *      rejected promise until a page reload.
  *   3. Searching is a no-op while the index is absent. Upstream threw an
  *      uncaught TypeError on every keystroke after a failed load.
+ * Changes from upstream (focus after selecting a result):
+ *   4. A plain left click on a result no longer starts a second navigation.
+ *      Headless UI already selects (and navigates) on mousedown; the result
+ *      link's own click pushed the same URL again, and Next.js then reported
+ *      both pushes as cancelled. Modified clicks keep the link's behavior.
+ *   5. Once the selected page is showing, focus moves to the selected heading
+ *      (or the article's h1). Upstream left focus in the search input, which
+ *      Headless UI refocuses one frame after a pointer selection; in the
+ *      closed mobile menu that input is off screen. A selected heading is
+ *      scrolled to again below the navbar (styles/globals.css keeps the
+ *      navbar scroll padding while focus is in the article). Nothing moves if
+ *      the navigation fails or is replaced, or focus went elsewhere.
  * `clsx` and `escape-string-regexp` are replaced by the small local helpers
  * below so no undeclared package is imported.
  */
@@ -85,6 +97,50 @@ function renderString(stringOrFunction, props = {}) {
       ? stringOrFunction(props)
       : stringOrFunction
   return result || ''
+}
+
+// Headless UI selects an option on mousedown; stop the result link's plain
+// click from pushing the same URL a second time (change 4 above).
+function preventRepeatNavigation(event) {
+  if (
+    event.button === 0 &&
+    !event.metaKey &&
+    !event.ctrlKey &&
+    !event.shiftKey &&
+    !event.altKey
+  ) {
+    event.preventDefault()
+  }
+}
+
+// Focuses the selected heading, or the article's h1, of the page now showing
+// (change 5 above). Does nothing if the URL is no longer the selected one or
+// focus is already somewhere other than the page or the search input.
+function focusSelectedResult(route, input) {
+  const target = new URL(route, location.href)
+  if (target.pathname !== location.pathname || target.hash !== location.hash) {
+    return
+  }
+  const active = document.activeElement
+  if (active && active !== document.body && active !== input) return
+  const main = document.querySelector('.nextra-content main')
+  if (!main) return
+  const id = target.hash && decodeURIComponent(target.hash.slice(1))
+  const heading =
+    (id && document.getElementById(id)) || main.querySelector('h1')
+  const element = heading && main.contains(heading) ? heading : main
+  if (!element.hasAttribute('tabindex')) {
+    element.setAttribute('tabindex', '-1')
+    element.addEventListener(
+      'blur',
+      () => element.removeAttribute('tabindex'),
+      { once: true }
+    )
+  }
+  element.focus({ preventScroll: true })
+  // Next.js scrolled to the heading while the search input could still have
+  // focus, when Nextra drops the navbar scroll padding; scroll again with it.
+  if (element === heading && target.hash) element.scrollIntoView()
 }
 
 const HighlightMatches = memo(function HighlightMatches({ value, match }) {
@@ -203,13 +259,32 @@ function Search({
     [onChange]
   )
 
+  // The animation frame of a pending focus move after a selection.
+  const focusFrame = useRef({ id: 0, unmounted: false })
+  useEffect(() => {
+    const frame = focusFrame.current
+    frame.unmounted = false
+    return () => {
+      frame.unmounted = true
+      cancelAnimationFrame(frame.id)
+    }
+  }, [])
+
   const handleSelect = useCallback(
     async searchResult => {
       if (!searchResult) return
+      const frame = focusFrame.current
+      cancelAnimationFrame(frame.id)
       inputRef.current?.blur()
-      await router.push(searchResult.route)
+      const navigated = await router.push(searchResult.route)
       setMenu(false)
       onChange('')
+      if (!navigated || frame.unmounted) return
+      // Frames run in request order, so this runs after Headless UI's own
+      // frame that refocuses the input after a pointer selection.
+      frame.id = requestAnimationFrame(() =>
+        focusSelectedResult(searchResult.route, inputRef.current)
+      )
     },
     [router, setMenu, onChange]
   )
@@ -291,6 +366,7 @@ function Search({
                 as={NextLink}
                 value={searchResult}
                 href={searchResult.route}
+                onClick={preventRepeatNavigation}
                 className={({ focus }) =>
                   cn(
                     '_mx-2.5 _break-words _rounded-md',
