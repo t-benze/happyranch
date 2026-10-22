@@ -147,6 +147,33 @@ def fixture(root):
     return source, output, app, mapping
 
 
+def python_spec_sources():
+    """Inspect actual Analysis inputs; this does not execute PyInstaller."""
+    spec_path = SOURCE / 'packaging/daemon.spec'
+    nodes = ast.parse(spec_path.read_text()).body
+    stop = max(i for i, node in enumerate(nodes) if any(
+        isinstance(value, ast.Call) and isinstance(value.func, ast.Name)
+        and value.func.id == 'Analysis' for value in ast.walk(node)))
+    calls = []
+
+    def capture(scripts, **kwargs):
+        calls.append((scripts, kwargs))
+
+    # Execute the shipping inputs through both calls; only Analysis itself is
+    # captured. Local variable names are not part of the observed contract.
+    exec(compile(ast.Module(body=nodes[:stop + 1], type_ignores=[]), str(spec_path), 'exec'),
+         dict(__file__=str(spec_path), Analysis=capture))
+    assert [scripts for scripts, _ in calls] == [
+        [str(SOURCE / 'runtime/daemon/__main__.py')], [str(SOURCE / 'cli/main.py')]]
+    for lane, (_, kwargs) in zip(('daemon', 'cli'), calls):
+        mode = kwargs.get('module_collection_mode', {})
+        expected = {'runtime.infrastructure.learnings_store': 'pyz+py'}
+        REPORT.append(dict(label=lane + ' Analysis retains renderer source and PYZ bytecode',
+                           actual=mode, expected=expected, exit=0 if mode == expected else 1,
+                           limitation='Analysis argument inspection only; no frozen execution or telemetry qualification.'))
+        assert mode == expected, (lane, 'renderer source retention missing or broadened', mode)
+
+
 def python_spec_notices(scratch, stdlib=None):
     """Run the shipping notice block, without PyInstaller or a native build."""
     spec_path = SOURCE / 'packaging/daemon.spec'
@@ -232,6 +259,7 @@ def python_spec_notices(scratch, stdlib=None):
 
 
 def run(scratch, stdlib=None):
+    python_spec_sources()
     os.umask(0o077)  # Match shipping private output allocations.
     scratch.mkdir(mode=0o700)
     python_spec_notices(scratch, stdlib)
