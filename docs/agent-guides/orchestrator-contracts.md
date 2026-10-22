@@ -3907,6 +3907,27 @@ the reservation. Queue insertion is not a task claim or an exactly-once crash
 boundary; startup may enqueue PENDING again. Other feedback paths, general chain
 advancement and restart policy are unchanged.
 
+The shared host-session owner (task/thread/dream/wake/schedule) finishes,
+reconciles/publishes and invokes the producer terminal hook before lease release.
+Concurrent run/cancel callers share one accounting/publication attempt; a different
+thread waits for settlement, including contained publisher Exception handling,
+before terminal/release. Same-thread claimed callback reentry remains a no-op.
+The condition never spans callbacks; every owner exit settles/notifies, without
+retrying callbacks or copying owner errors to waiters.
+THR307seq117 wires the process-group backend’s1s sampler and retains authenticated
+identity history through fresh terminal observation. A current original or
+previously authenticated live same-group witness is required before each group
+signal. Unknown/partial/capped observation closes the measurement gate and never
+becomes CLEAN from provider success; the original terminal reason survives
+cleanup_error. Sampling settles before terminal publication/release and cannot
+resurrect a retired token or alter final evidence. Finish waits its direct Popen
+when the bind-time terminal gate skips body/on_started/sampling. This does not
+prove native TaskInvocation journal settlement: the disposable verifier maps
+that consumer in source only. Known escaped survivors remain visible; unobserved
+between-sample escapes, independently owned Jobs, uncontained fallback, genuine
+Mac/systemd behavior, crash cleanup and historical ownership remain root-owned
+gaps. No callback or native ownership writer changes.
+
 ## Task memory render and impression (THR-091)
 
 `_run_agent` retains the structured `MemoryStore.render_memory_digest` result

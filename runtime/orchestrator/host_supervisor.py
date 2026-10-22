@@ -951,6 +951,7 @@ class _AttemptContext:
         self._monotonic = monotonic
         self._lock = threading.Lock()
         self._cond = threading.Condition(self._lock)
+        self._sample_lock = threading.Lock()
         self._terminal_reason: TerminalReason | None = None
         self._error: str | None = None
         self._cleanup_error: str | None = None
@@ -961,6 +962,8 @@ class _AttemptContext:
         self._finish_done = False
         self._finish_in_progress = False
         self._finalized = False
+        self._finalize_owner: int | None = None
+        self._finalize_settled = False
         self._receipt: Receipt | None = None
         self._samples: list[ResourceSample] = []
         self._max_retained_samples = max_retained_samples
@@ -1066,6 +1069,23 @@ class _AttemptContext:
 
     # ── sampling sink ─────────────────────────────────────────────
 
+    def sample_once(self, sampler, running: RunningHandle) -> bool:
+        """Settle an in-flight sample before terminal evidence is frozen.
+
+        Finish shares this lock. No late value/error can change the evidence
+        after finish or release, even when the sampler's bounded join expires.
+        """
+        with self._sample_lock:
+            with self._lock:
+                if self._finish_done:
+                    return False
+            try:
+                self.add_sample(sampler(running))
+            except Exception:
+                self.note_sample_error()
+                return False
+            return True
+
     def add_sample(self, sample: ResourceSample) -> None:
         """Retain one bounded sample; the oldest is dropped at capacity.
 
@@ -1127,6 +1147,12 @@ class _AttemptContext:
         the primary terminal reason is preserved separately). Concurrent
         callers (finish/cancel race) wait for the in-flight finish and see
         the same receipt."""
+        with self._sample_lock:
+            return self._finish_after_sample(backend, grace_seconds)
+
+    def _finish_after_sample(
+        self, backend: SessionBackend, grace_seconds: float | None
+    ) -> Receipt | None:
         grace = self._grace_seconds if grace_seconds is None else grace_seconds
         with self._cond:
             if self._finish_done:
@@ -1162,43 +1188,57 @@ class _AttemptContext:
         capabilities: Sequence[Capability],
         publisher: Callable[[Receipt], None],
     ) -> None:
-        """Residue-account + publish the receipt exactly once per attempt.
+        """Attempt residue accounting/publication once; wait for settlement.
 
-        Guarded separately from ``finish_once`` so whichever thread arrives
-        last (run path or cancel path) publishes exactly once."""
+        A different thread waits for the claiming owner's attempt, including
+        contained publication failure. Same-thread callback reentry is a no-op;
+        callbacks run outside the condition and every owner exit settles it.
+        Errors keep their existing owner-only propagation; callers never retry.
+        """
+        owner = threading.get_ident()
         with self._cond:
             if self._finalized:
+                if self._finalize_owner == owner:
+                    return
+                while not self._finalize_settled:
+                    self._cond.wait()
                 return
             self._finalized = True
-        receipt = self._receipt
-        if receipt is None:
-            return
-        accountant.account(receipt, capabilities)
-        if self.sample_failed():
-            # Census/measurement genuinely failed: tighten admission (fail-closed).
-            accountant.note_measurement_failure()
-        elif (
-            receipt.cleanup_status == CleanupStatus.INCOMPLETE
-            and Capability.KILLS_TREE_GUARANTEED in capabilities
-            and not receipt.survivors
-        ):
-            # Guaranteed teardown that could not be verified AND produced no
-            # verified census is an anomaly. Best-effort INCOMPLETE is an
-            # expected outcome for verified detached survivors: ``account``
-            # keeps them censused/charged/visible and blocks only on actual
-            # census/measurement failure or the conservative threshold.
-            accountant.note_measurement_failure()
+            self._finalize_owner = owner
         try:
-            publisher(receipt)
-        except Exception as exc:  # noqa: BLE001 — publication is contained
-            # A receipt-publication failure is operationally contained: it is
-            # logged, never replaces the primary terminal reason, never
-            # disrupts the cleanup ordering already completed above, and
-            # never leaks the admission lease (the run loop releases it
-            # exactly once in ``finally`` regardless).
-            logger.warning(
-                "host session receipt publisher raised (contained): %s", exc
-            )
+            receipt = self._receipt
+            if receipt is None:
+                return
+            accountant.account(receipt, capabilities)
+            if self.sample_failed():
+                # Census/measurement genuinely failed: tighten admission (fail-closed).
+                accountant.note_measurement_failure()
+            elif (
+                receipt.cleanup_status == CleanupStatus.INCOMPLETE
+                and Capability.KILLS_TREE_GUARANTEED in capabilities
+                and not receipt.survivors
+            ):
+                # Guaranteed teardown that could not be verified AND produced no
+                # verified census is an anomaly. Best-effort INCOMPLETE is an
+                # expected outcome for verified detached survivors: ``account``
+                # keeps them censused/charged/visible and blocks only on actual
+                # census/measurement failure or the conservative threshold.
+                accountant.note_measurement_failure()
+            try:
+                publisher(receipt)
+            except Exception as exc:  # noqa: BLE001 — publication is contained
+                # A receipt-publication failure is operationally contained: it is
+                # logged, never replaces the primary terminal reason, never
+                # disrupts the cleanup ordering already completed above, and
+                # never leaks the admission lease (the run loop releases it
+                # exactly once in ``finally`` regardless).
+                logger.warning(
+                    "host session receipt publisher raised (contained): %s", exc
+                )
+        finally:
+            with self._cond:
+                self._finalize_settled = True
+                self._cond.notify_all()
 
 
 # ── sampler thread ───────────────────────────────────────────────────
@@ -1241,13 +1281,8 @@ class _Sampler:
 
     def _loop(self) -> None:
         while not self._stop.is_set():
-            try:
-                sample = self._sampler(self._running)
-            except Exception:
-                self._ctx.note_sample_error()
-                # A broken sampler must not spin forever — stop sampling.
+            if not self._ctx.sample_once(self._sampler, self._running):
                 return
-            self._ctx.add_sample(sample)
             self._stop.wait(self._interval)
 
 
@@ -1769,7 +1804,9 @@ class HostSessionSupervisor:
         Safe to call from both the run path and the opaque cancel control:
         ``finish_once`` runs backend teardown exactly once (stragglers wait
         for the in-flight finish), and ``finalize_once`` accounts residue and
-        publishes the bounded receipt exactly once."""
+        attempts bounded receipt publication exactly once. Different-thread
+        finalizers wait until that attempt settles, even on an owner error;
+        same-thread claimed callback reentry remains a no-op."""
         if ctx.running() is None:
             # No live containment (e.g. spawn failure) — nothing to finish;
             # the backend already abandoned partial state.
@@ -1986,12 +2023,17 @@ def build_default_host_supervisor(
     """
     from runtime.platform.backend_factory import session_backend_for_wired_producer
 
+    selected = backend or session_backend_for_wired_producer()
     return HostSessionSupervisor(
-        backend=backend or session_backend_for_wired_producer(),
+        backend=selected,
         policy=policy or canary_policy(),
         publisher=publisher or _log_bounded_receipt,
         max_retry_attempts=max_retry_attempts,
         backoff_seconds=backoff_seconds,
+        # Wire the process-group owner's identity history, not a separate
+        # descendant-only sampler. Linux retains its existing kernel counters
+        # and their provenance; passthrough still claims no measurement.
+        sampler=selected.sample if getattr(selected, "name", None) == "macos-process-group" else None,
     )
 
 

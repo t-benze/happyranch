@@ -54,6 +54,249 @@ run is authorized by this cadence change.
 
 See [coverage gaps](python-test-reset.md) and [the case record](../e2e/README.md).
 
+## Focused disposable session lifecycle verification (THR307seq117)
+
+Only a current manager allocation under ROOT11948 authorizes this standalone
+venue; it is outside automatic CI, general integration and Product E2E. Use an
+ordinary Linux owned job, effective Python3.14 with active runtime dependencies,
+a fresh absolute directory in the actual task’s runtime task-tmp, and a concise
+output receipt. `--source-root` selects the immutable reviewed source; the same
+candidate verifier observes the registered baseline worktree.
+
+```bash
+python scripts/verify_session_lifecycle.py --mode candidate \
+  --source-root /absolute/guarded-worktree \
+  --scratch-root /absolute/runtime/task-tmp/TASK-ID \
+  --output /absolute/workspace/output/TASK-ID/candidate.json
+# baseline: same script, --mode baseline, --source-root registered design29d743a worktree
+# --case C1-group-builtin selects one existing variant in a fresh invocation
+# --selection K selects only its five accepted group/cancel/timeout/root-gone variants
+# --selection S or U explicitly requests a negative verifier diagnostic (default off)
+```
+
+Default baseline selects C1-escaped-known/C3-reused-identity only (90s total);
+default candidate selects the thirteen accepted variants (424s total). A mutually
+exclusive `--case` selects one of those existing variants. `--selection` accepts
+only B/H/K/W/T/C/R/E/L/F1/S/U: B is the baseline pair; H escaped-known; K group-builtin,
+group-custom, cancel, timeout-pipe and root-gone; W shutdown-bind; T timeout-pipe;
+C owner-isolation; R unreadable; E teardown-error; L late-in-group; F1 exactly
+C2-cancel/C2-cancel-publish-error in that order; S unreadable
+with the explicit heartbeat diagnostic; U group-builtin with the explicit W
+deadline diagnostic. B requires baseline mode and its exact accepted design HEAD;
+all other selections require candidate mode. Invalid/conflicting selectors refuse
+before any subprocess, source import, scratch creation or backend probe. There
+are no arbitrary executable inputs or general mutation runner. Normal C5 selection
+always retains BOTH permission/cap inputs within the shared20s action; S declares
+both but must fatally stop during permission and report cap as unexecuted.
+
+Every source still requires a clean tracked immutable HEAD, tree and three runtime
+hashes; source/observer/Python provenance remains in the raw report. A changed
+verifier cannot inherit an old verifier's GREEN or sensitivity evidence. Selected
+bounds are15s readiness +30s per selected variant +4s ONCE if the selection
+contains C4-owner-isolation +15s final: C-only64s/rescue49s, other single60s,
+B90s, K180s, F1 pair90s, full424s/rescue409s. Global rescue remains15s before
+each final deadline, measured from the original invocation start. Readiness
+proves process-local subreaper SET/GET plus exact P/Q adoption and specific wait
+before orphan cases. F remains driver/reaper; controlled W provides independent
+bounded rescue. Limits: eight fixture processes including F,32 threads,1024
+observer events,1MiB combined stdout+stderr+report,64MiB scratch;24s action for C4
+only and20s for every other variant, plus10s cleanup
+per variant. The entire report uses compact ordinary JSON, retaining every key,
+value, array order, repeated frozen snapshot, code descriptor and trace event.
+No compression, deduplication or truncation is applied. The report-only1MiB
+writer check does not prove combined output fit. Actual complete collection
+requires whole report+merged output strictly below1044480B, emitted receipt
+at most4096B INSIDE the shared1048576B cap, zero drops/errors/caps and both EOFs.
+Oversize/transport refusal is a charged failed attempt: stop FIRST, no retry or
+behavioral credit. Retained isolate sizes do not certify full-default capacity.
+
+The existing full-row collector template has prospective opportunities of10s
+setup, F424s/rescue409s,55s drain and11s receipt construction/exact writes/close/
+stdout emission, all clipped to ONE original monotonic500s deadline, nested
+inside supported native600s. It checks elapsed again after emission before a
+successful exit and rejects short writes. A provisional pre-emission COMPLETE
+receipt is retained unchanged after any later failure; parent acceptance also
+requires genuine native exit0, complete emitted bytes and a conservative native
+duration covering emission within500s, plus report/frozen/disposal checks.
+Current native duration_ms is a floored UTC timestamp difference, without a
+clock-adjustment bound; a conservative monotonic upper bound remains UNAVAILABLE
+from those fields alone. These checks are cooperative: blocking I/O, admission,
+Jobs locks/COMMIT, output delivery and callbacks have no hard timing guarantee.
+Deadline exhaustion latches failure; direct F polling/draining retains ownership
+until it exits, with no successful unbounded wait or added signaling/reaper.
+Unresolved work uses existing genuine supported Jobs wait/block/terminal handling
+and never establishes disposal. No full-row execution allocation follows.
+
+Dispatch establishes each action BEFORE probe/setup and clamps it
+to rescue; readiness15s and final15s reserve remain unchanged. C5’s two fault inputs share
+one action budget. Record backend evidence before separately labeled fixture
+rescue; an outer timeout never proves cleanup. Any unsafe residual stops later
+cases. Each W command/reply carries case/input/generation/sequence and monotonic
+rescue decision/action records with exact identities and signal outcomes. F
+requires a matching settlement acknowledgement before the next case/input; a
+missing or foreign acknowledgement stops acceptance. The protected observation
+interval closes after the last acceptance fact, including root/descendant and
+sentinel observations; the ordered W check rejects matching rescue decisions
+through that cutoff. An earlier receipt freeze alone cannot establish acceptance.
+The operational process-group probe launches its short-lived sleep directly in a
+new session, preserving group/identity checks. TERM and fallback KILL both require
+a bounded direct-child wait; failed or unknown disposal refuses healthy status,
+preserving any original probe failure. This covers the nonforking probe helper,
+not arbitrary descendant reaping or hard containment. Census enumeration alone
+is not disposal evidence; fallback error branches require their own observations.
+Before providers launch, `probe_report` events retain the actual original backend
+report at `backend_report` (before observer postconditions) and the actual cached
+or returned supervisor report at `supervisor_return`. Each contains the real
+backend/version, healthy, reason, evidence, probed_at and declared capability map,
+under the existing case/input/generation and event/output bounds. A
+`probe_exception` retains the failed observer/backend stage, actual exception
+type/message, whether an original report returned, and already observed helper
+returncode/identity and child-accounting facts. Absent observations stay absent;
+no extra probe, process read, helper, wait or signal recovers them. Supervisor
+exception degradation is separate from the original report, including an
+original unhealthy report followed by an accounting failure. Its unchanged
+unhealthy gate records `probe_refusal`, leaves providers unlaunched and the final
+interval UNREACHED, then retains fatal FAIL. It never supplies teardown RED or
+PASS. JOB4929's generation13 probe failed before C5-teardown-error launched;
+its discarded historical reason remains UNKNOWN and cannot be reconstructed
+from later fixture rescue. Its eleven passed variants/twelve input boundaries
+remain evidence only at head92153f71, with the invocation FAILED/exit3.
+Signal refusals, sentinel identity/liveness loss, missing/malformed heartbeat,
+failed heartbeat progress and unavailable oracle observations latch fatal fixture
+safety independently of product cleanup errors and stop subsequent cases/inputs.
+Sentinel creation/readiness uses the same fatal path and existing readiness
+budget. Interception stays installed through rescue and actual worker joins
+(including the real sampler). Unknown settlement keeps interception until exit.
+The pipe-timeout case allows at most3s to observe factory-sampled A1/A2 and an
+exact exited/zombie root via a non-reaping OS observation, with those exact
+descendants holding stdout, then starts the real2s
+communicator timeout; existing5s drain,5s TERM/2s KILL and up to2s sampler stop
+fit the original20s action allowance. Exit observation supplies no reap proof:
+production communication/backend owns the direct wait. F independently requires
+root disappearance and wait/terminal/release ordering before acceptance. C2 also
+requires terminal TIMEOUT, a typed LaunchResult with timed_out true and success
+false, and its typed ExecutorResult payload with failure_category provider_timeout
+and success false, retained in timeout_result. Rescue joins actual production
+workers before any fixture waits, within the original cleanup bound.
+The two F1 cancellation cases share the existing provider mode and real factory,
+communicator, cancellation, finish and account paths. Hold the real body return
+and the cancellation-owned publisher after actual account return; release only
+the body until the competing finalizer actually returns prematurely or calls
+Condition.wait directly on that same attempt/condition. A filtered thread-local
+trace in the existing run/control workers records loaded code/frame/receipt
+identities, calls, normal returns, exceptions and unwind; it refuses prior trace
+ownership, restores in worker finally and latches observer/cap errors without
+injecting them into subject code. A None return alone is not unwind evidence.
+The held snapshot records actual terminal/released/outcome/active values against
+0/0/absent/1 while publication is unfinished. Callback completion is distinct from
+entry; release_committed follows delegated real admission mutation. Real account,
+publisher completion/error handling, competitor completion, terminal-hook argument,
+committed release and run return establish the final ordering and same receipt.
+Normal cancellation has one successful publication; the error sibling has zero
+successes and one actual contained sentinel, and must also settle its waiter
+within the original action deadline. Both retain all former C2 safety, history,
+direct-wait, winner, quiescence/residue and exactly-once assertions.
+A saved premature external mismatch is emitted only AFTER normal dependency
+release, real run/control/sampler settlement and full frozen D1/LAST plus ordered
+W acceptance. Fixture rescue cannot establish F1 production settlement or
+failure_interval_complete. Observer/setup/health/deadline/settlement failure is
+never intended RED; stop the affected selection on its first failed case. No
+owner-function-return-before-waiter-return guarantee is asserted. Unproposed
+no-receipt/reentry/other exceptional branches remain source-reviewed UNVERIFIED.
+Setup/assertion failure retains its primary exception type/message/trace and
+assertion identity separately from finalization/safety/cleanup failures. Named
+target mismatches retain actual observed values and independently specified
+expected values. A failing assertion alone is never intended sensitivity RED.
+Before rescue, the failure finalizer completes independent S/J identity/liveness/
+progress, ledger identities, signal/budget and worker observations. It materializes
+ALL snapshot facts, including outcomes/errors, worker/sampler and guard state,
+BEFORE reading/storing the LAST monotonic cutoff, then obtains the unchanged attributed ordered
+W check. It must fit the original action deadline; cleanup time cannot fund
+acceptance. `before_fixture_rescue` reuses that frozen snapshot without a new
+acceptance observation. Missing/unknown W, ordinary matching rescue or unsafe/
+incomplete finalization invalidates intended RED and stops expansion, retaining
+the primary FAIL. Fatal stopped state never forces observations past refusal.
+Later actual settlement/outcomes remain separate and cannot upgrade acceptance.
+Production retains direct-child wait ownership; interceptors remain until actual
+backend/control/sampler settlement. L evaluates the independent live-child/
+receipt/gate contradiction before the retained structural fresh-observation check.
+
+Explicit C sensitivity timestamps the genuine captured A read BEFORE its event
+and12s barrier. B admission/readiness/control time is charged to both that barrier
+and the original24s C4 action established at dispatch BEFORE probe/setup. New
+verifier records explicitly emit `action_limit_seconds=24` and remaining
+`R_action`; historical `R20` records and their fixed readers retain their old
+interpretation. Attribute new-format records only to the new pinned verifier hash.
+At admission `h_max=max(0,min(8,R12-1,R_action-14))`, with
+at least5.5s opportunity required. The14s post-release reserve plans A9s (unchanged
+5s TERM +2s KILL/direct wait +2s sampler/control), B2s normal completion, final
+observations/W2s and1s slack. During holding, both remaining times are recomputed;
+actual completion, admitted window,14s action reserve or1s barrier margin releases
+the read promptly. Save any premature publication/release mismatch, release the
+genuine read and complete A/control then B through production before propagating
+the saved mismatch through the failure finalizer. Before recording normal C
+settlement or admitting its D1 interval, require BOTH actual returned A/B outcomes,
+no worker errors, settled actual workers/samplers and independently released leases.
+For each owner retain exactly one actual successful finish, its contained production
+direct wait, the same finish receipt's publication, terminal hook and lease release
+in that order. Process-local receipt identities link existing finish/publication
+events; actual Popen wait owner/operation/PID evidence excludes fixture waits.
+Concrete completion proof or a concrete normal-settlement failure remains in the
+raw record. Thread death or a timestamp alone cannot establish completion.
+Saved target mismatches remain separate: target receipt values/immutability,
+clean/quiescent results and successful target assertions are not completion gates.
+Missing/failed production completion preserves those mismatches and its own error,
+invalidates `failure_interval_complete` and fatally stops later cases/inputs;
+subsequent fixture rescue cannot backfill it. Normal C4 runs release promptly
+without requesting sensitivity. Infeasible admission or no attributable wrong
+value in the finite C window is missing sensitivity, never timeout-as-RED.
+Neither clock resets at hold admission. B retains its real12s communicator
+timeout, which can still expire; wrong terminal reasons/timeouts or missing normal
+settlement are actual failures. These conditional caps guarantee no timing;
+phase overruns/missing completion retain
+actual failure and only bounded safety rescue, never extended deadlines.
+
+S delegates the actual first-input heartbeat read beside a genuine permission
+cleanup_error, then supplies one malformed S observation. Its fatal latch remains
+set; no cap input or next backend probe is allowed. Unavailable finalizer evidence
+is explicit, never a complete production RED interval. U first independently
+proves EVERY nonsentinel rescue-ledger identity absent/nonlive, then supplies one
+earlier scoped W deadline within the original action. It records the real W
+decision with every action absent/nonlive and no signal, then final S/J facts and
+the unchanged ordered cutoff check MUST refuse that decision. Unsafe/unknown
+prerequisites, missing/unattributed decision or any signal invalidate U and stop.
+S/U retain FAIL/exit3 as negative diagnostics; neither is production RED or GREEN,
+and neither clears stopped, suppresses a latch or fabricates a W acknowledgement.
+
+Supported jobs accept explicit runtime caps up to86400s. Any future containing
+allocation must separately bound setup/hooks/static/final reporting overhead;
+unknown overhead is not zero and cannot borrow fixture time. A future authorized
+launcher must enforce ONE shared1MiB stdout+stderr+report counter; the verifier's
+report-size check alone does not establish that combined cap. No launcher is
+implemented by these prerequisites.
+Do not detach helpers or wait/poll a long job in the submitting session.
+
+Wrappers observe the real factory-selected `backend.sample`, its existing
+`LinuxProcReader.read_all` dependency after session capture, and low-level stat
+open/scandir inputs through `read_all_checked`; the private `_CHECKED_ROW_LIMIT`
+is reduced to8 only for row9 injection. No retired units/helpers or production
+test seam is used. Synthetic PID reuse proves signal selection only; synthetic
+S/J/B sentinels do not prove real SessionTracker/Jobs APIs, native journal
+settlement, kernel PID reuse, genuine macOS/systemd or real-provider behavior.
+Historical JOB4890/JOB4891 remain failed/incomplete with ownership UNPROVEN.
+Baseline setup failure is environment failure, never RED; missing assertions,
+failed cleanup and unexecuted cases stay explicit, never behavioral or
+test-authoring PASS. JOB4904/JOB4906 exhausted the two maker evidence attempts;
+the accepted Vnext prerequisite correction authorizes static checks/publication only, no maker
+fixture, baseline, mutation or repetition. Their original failures and baseline
+verifier/source hashes remain historical evidence, not corrected-verifier proof.
+JOB4920's scoped twelve-case GREEN remains only at its original source/verifier;
+JOB4918 remains a failure. All Vnext behavior, diagnostics, sensitivity/restoration
+and repetitions are UNEXECUTED. The accepted76-invocation/136-variant/147-boundary/
+6360s ceiling is a proposal, not an execution grant. Source requires renewed FULL
+independent cumulative review, returning to SAME manager BEFORE any behavioral
+allocation; do not auto-chain proofs/QA. Original gates/allocations remain.
+
 ## Commands and retained lanes
 
 ```bash

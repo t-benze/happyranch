@@ -32,8 +32,10 @@ from __future__ import annotations
 
 import os
 import sys
+import threading
 import time
 from collections.abc import Callable, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -42,6 +44,49 @@ from runtime.platform.session_backend import (
     ResourceSample,
     RunningHandle,
 )
+
+# Checked observations are consumed only by the process-group lifecycle owner.
+# Other readers retain their historical permissive measurement semantics.
+_CHECKED_ROW_LIMIT = 4096
+_CHECKED_SECONDS = 1.0
+_checked_read = threading.local()
+
+
+class ProcessObservationUnavailable(RuntimeError):
+    """An observation is incomplete; it supplies no proof of absence."""
+
+
+@contextmanager
+def _checked_observation():
+    previous = getattr(_checked_read, "deadline", None)
+    _checked_read.deadline = time.monotonic() + _CHECKED_SECONDS
+    try:
+        yield
+    finally:
+        _checked_read.deadline = previous
+
+
+def _check_observation_budget(rows: int = 0) -> None:
+    deadline = getattr(_checked_read, "deadline", None)
+    if deadline is not None and (rows > _CHECKED_ROW_LIMIT or time.monotonic() >= deadline):
+        raise ProcessObservationUnavailable("process observation budget exhausted")
+
+
+class _CheckedReader:
+    """Opt-in checked calls keep the existing read_all dependency observable."""
+
+    def read_all_checked(self) -> list[ProcessObservation]:
+        with _checked_observation():
+            result = self.read_all()
+            _check_observation_budget(len(result))
+            return result
+
+    def read_process_checked(self, pid: int) -> ProcessObservation | None:
+        with _checked_observation():
+            result = self.read_process(pid)
+            _check_observation_budget()
+            return result
+
 
 # ── observations ─────────────────────────────────────────────────────
 
@@ -145,7 +190,7 @@ def _parse_proc_stat(line: str) -> dict | None:
         return None
 
 
-class LinuxProcReader:
+class LinuxProcReader(_CheckedReader):
     """``/proc``-backed :class:`ProcessReader` (Linux).
 
     Reads ``stat`` (identity/ppid/pgid/CPU) and ``statm`` (RSS pages) in one
@@ -159,14 +204,18 @@ class LinuxProcReader:
 
     def read_all(self) -> list[ProcessObservation]:
         obs: list[ProcessObservation] = []
+        rows = 0
         with os.scandir(self._proc_root) as it:
             for entry in it:
+                _check_observation_budget(rows)
                 if not entry.is_dir():
                     continue
                 try:
                     pid = int(entry.name)
                 except ValueError:
                     continue  # not a numeric /proc entry
+                rows += 1
+                _check_observation_budget(rows)
                 stat = self._read_stat(pid)
                 if stat is None:
                     continue
@@ -221,8 +270,22 @@ class LinuxProcReader:
     def _read_stat(self, pid: int) -> dict | None:
         try:
             with open(f"{self._proc_root}/{pid}/stat", "r", encoding="utf-8") as fh:
-                return _parse_proc_stat(fh.read())
-        except (OSError, ValueError):
+                stat = _parse_proc_stat(fh.read())
+            if getattr(_checked_read, "deadline", None) is not None:
+                _check_observation_budget()
+                if stat is None or stat["pid"] != pid or not stat["start_identity"].isdigit():
+                    raise ProcessObservationUnavailable("invalid process stat observation")
+            return stat
+        except ProcessLookupError:
+            return None
+        except FileNotFoundError:
+            # A missing proc mount is not evidence that an identity vanished.
+            if getattr(_checked_read, "deadline", None) is not None and not os.path.isdir(self._proc_root):
+                raise ProcessObservationUnavailable("process observation root unavailable")
+            return None
+        except (OSError, ValueError) as exc:
+            if getattr(_checked_read, "deadline", None) is not None:
+                raise ProcessObservationUnavailable("process stat observation unavailable") from exc
             return None
 
     def _read_rss_pages(self, pid: int) -> int | None:
@@ -326,8 +389,15 @@ class _LibProc:
     def list_pids(self) -> list[int]:
         ctypes = self._ctypes
         size = self.PROC_PIDLISTFD_SIZE
+        if getattr(_checked_read, "deadline", None) is not None:
+            size = min(size, (_CHECKED_ROW_LIMIT + 1) * ctypes.sizeof(ctypes.c_int))
         buf = (ctypes.c_int * (size // ctypes.sizeof(ctypes.c_int)))()
         n = self._lib.proc_listpids(self.PROC_ALL_PIDS, 0, buf, size)
+        if getattr(_checked_read, "deadline", None) is not None:
+            _check_observation_budget()
+            if n <= 0 or n >= size or n % ctypes.sizeof(ctypes.c_int):
+                raise ProcessObservationUnavailable("libproc enumeration unavailable or capped")
+            _check_observation_budget(n // ctypes.sizeof(ctypes.c_int))
         if n <= 0:
             return []
         count = n // ctypes.sizeof(ctypes.c_int)
@@ -336,9 +406,17 @@ class _LibProc:
     def bsd_info(self, pid: int) -> dict | None:
         ctypes = self._ctypes
         info = self._ProcBsdinfo()
+        if getattr(_checked_read, "deadline", None) is not None:
+            ctypes.set_errno(0)
         n = self._lib.proc_pidinfo(
             pid, self.PROC_PIDTBSDINFO, 0, ctypes.byref(info), ctypes.sizeof(info)
         )
+        if getattr(_checked_read, "deadline", None) is not None and n != ctypes.sizeof(info):
+            import errno
+
+            if n <= 0 and ctypes.get_errno() == errno.ESRCH:
+                return None
+            raise ProcessObservationUnavailable("libproc identity observation unavailable")
         if n <= 0:
             return None
         return {
@@ -367,7 +445,7 @@ class LibProcUnavailable(RuntimeError):
     """libproc cannot be loaded on this host (non-macOS or missing library)."""
 
 
-class MacProcReader:
+class MacProcReader(_CheckedReader):
     """libproc-backed :class:`ProcessReader` (macOS).
 
     Enumerates every process with ``proc_listpids`` in one pass and reads
@@ -381,7 +459,8 @@ class MacProcReader:
 
     def read_all(self) -> list[ProcessObservation]:
         obs: list[ProcessObservation] = []
-        for pid in self._libproc.list_pids():
+        for row, pid in enumerate(self._libproc.list_pids(), 1):
+            _check_observation_budget(row)
             bsd = self._libproc.bsd_info(pid)
             if bsd is None:
                 continue  # exited during the pass
