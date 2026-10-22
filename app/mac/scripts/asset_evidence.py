@@ -13,6 +13,8 @@ import contextvars
 from dataclasses import asdict, dataclass
 import functools
 import hashlib
+import runpy
+import types
 import json
 import os
 from pathlib import Path
@@ -26,6 +28,14 @@ import sys
 import time
 import unicodedata
 import uuid
+
+# Private sibling; shared even when custody readers use run_path. No runtime import.
+_SUPERVISOR_NAME = '_happyranch_packaging_supervisor'
+if _SUPERVISOR_NAME not in sys.modules:
+    _module = types.ModuleType(_SUPERVISOR_NAME)
+    _module.__dict__.update(runpy.run_path(str(Path(__file__).with_name('packaging_supervisor.py'))))
+    sys.modules[_SUPERVISOR_NAME] = _module
+SUPERVISOR = sys.modules[_SUPERVISOR_NAME]
 
 KiB = 1024
 MiB = 1024 * KiB
@@ -1114,21 +1124,22 @@ def stage(kind, candidate, paths, run_id):
             # downstream retention assertion.
             exc.owners = tuple(r[0] for r in FONTS[1:] if 'Newsreader' in str(exc)) or tuple(r[0] for r in FONTS)
         try:
-            with root_for(paths.evidence_dir) as root:
-                failure = {
-                    'encoding': ENCODING, 'record_type': kind, 'state': 'INCOMPLETE',
-                    'candidate': asdict(candidate), 'run_id': run_id,
-                    'error': getattr(exc, 'category', type(exc).__name__),
-                    'subject': str(getattr(exc, 'subject', ''))[:1024],
-                    'original_exit': getattr(exc, 'original_exit', None),
-                    'refused_owners': list(getattr(exc, 'owners', ())),
-                }
-                if isinstance(exc, IconFailure):
-                    failure.update(process=exc.process, argv=exc.argv,
-                                   inspection_error=exc.inspection_error,
-                                   inputs=exc.inputs, tool_before=exc.tool_before,
-                                   operation_context=exc.operation_context)
-                create_once(root, FILES[kind], encoded(failure), ReadDomain(CAPS[kind], True))
+            with SUPERVISOR.failure_scope(getattr(exc, 'original_exit', None) or 1):
+                with root_for(paths.evidence_dir) as root:
+                    failure = {
+                        'encoding': ENCODING, 'record_type': kind, 'state': 'INCOMPLETE',
+                        'candidate': asdict(candidate), 'run_id': run_id,
+                        'error': getattr(exc, 'category', type(exc).__name__),
+                        'subject': str(getattr(exc, 'subject', ''))[:1024],
+                        'original_exit': getattr(exc, 'original_exit', None),
+                        'refused_owners': list(getattr(exc, 'owners', ())),
+                    }
+                    if isinstance(exc, IconFailure):
+                        failure.update(process=exc.process, argv=exc.argv,
+                                       inspection_error=exc.inspection_error,
+                                       inputs=exc.inputs, tool_before=exc.tool_before,
+                                       operation_context=exc.operation_context)
+                    create_once(root, FILES[kind], encoded(failure), ReadDomain(CAPS[kind], True))
         except (OSError, ValueError) as persistence:
             print(f'ASSET_FAILURE_PERSISTENCE_FAILED: {type(persistence).__name__}', file=sys.stderr)
         raise
@@ -1531,6 +1542,13 @@ def process_capture(argv, cwd, stdout_cap, stderr_cap, *, streams=None, stdout_c
     """
     start, wall = time.monotonic_ns(), time.time_ns()
     proc = selector = None
+    control = SUPERVISOR.Control()
+    try:
+        child = SUPERVISOR.Child(control)
+    except BaseException:
+        control.close()
+        raise
+    launched = False
     owned_fds = []
     code = None
     group_gone = False
@@ -1551,10 +1569,10 @@ def process_capture(argv, cwd, stdout_cap, stderr_cap, *, streams=None, stdout_c
         os.close(fd)
 
     def terminate(sig):
-        try:
-            os.killpg(proc.pid, sig)
-        except ProcessLookupError:
-            pass
+        child.kill(sig)
+
+    def poll_released():
+        return child.poll()
 
     with process_signals(failures):
         try:
@@ -1578,10 +1596,9 @@ def process_capture(argv, cwd, stdout_cap, stderr_cap, *, streams=None, stdout_c
             # error. Own the instance before init so pid/pipes remain reachable.
             # Recording handlers do not unwind the fork-to-pid handoff, and no
             # blocked signal mask is inherited by the child. Exactly one init.
-            proc = subprocess.Popen.__new__(subprocess.Popen)
-            checkpoint()
-            proc.__init__(argv, cwd=cwd, env=env, stdin=null_fd,
-                          stdout=out_write, stderr=err_write, start_new_session=True)
+            proc = child.launch(argv, cwd=cwd, env=env, stdin=null_fd,
+                                stdout=out_write, stderr=err_write, start_new_session=True)
+            launched = True
             checkpoint()
             for fd in (out_write, err_write, null_fd):
                 close_fd(fd)
@@ -1589,7 +1606,10 @@ def process_capture(argv, cwd, stdout_cap, stderr_cap, *, streams=None, stdout_c
                 os.set_blocking(fd, False)
                 selector.register(fd, selectors.EVENT_READ, index)
                 checkpoint()
-            while selector.get_map() or proc.poll() is None:
+            while True:
+                # Never reap a leader while pipe holders can retain its group.
+                if not selector.get_map() and poll_released() is not None:
+                    break
                 checkpoint()
                 now = time.monotonic()
                 if now >= deadline:
@@ -1600,7 +1620,7 @@ def process_capture(argv, cwd, stdout_cap, stderr_cap, *, streams=None, stdout_c
                     terminate(signal.SIGTERM)
                     # One short grace interval, then kill the entire owned group.
                     grace = time.monotonic() + 0.25
-                    while proc.poll() is None and time.monotonic() < grace:
+                    while time.monotonic() < grace:
                         checkpoint()
                         time.sleep(0.01)
                     terminate(signal.SIGKILL)
@@ -1640,35 +1660,33 @@ def process_capture(argv, cwd, stdout_cap, stderr_cap, *, streams=None, stdout_c
             # Each acquired resource gets its own attempt, even if an earlier
             # cleanup fails. No checkpoints here: signals keep the first failure
             # and cannot abort cleanup. Reaping has a finite independent bound.
+            proc = child.proc
             pid = getattr(proc, 'pid', None)
             if pid is not None:
                 try:
-                    if failures or proc.poll() is None:
+                    if child.pin:
                         terminate(signal.SIGKILL)
                 except BaseException as exc:
                     if not failures:
                         failures.append(exc)
                 try:
-                    code = proc.wait(timeout=1)
+                    code = child.reap(time.monotonic() + 1)
                 except BaseException as exc:
-                    code = proc.returncode  # Actual status if known; else None.
+                    code = getattr(proc, 'returncode', None)
                     if not failures:
                         failures.append(exc)
+                # A post-reap surviving/unknown group is refusal, never authority.
+                group_gone = launched and child.absent()
                 try:
-                    # EOF alone is not quiescence. Kill surviving descendants,
-                    # but never label an observed live/unknown group as gone.
-                    os.killpg(proc.pid, 0)
-                except ProcessLookupError:
-                    group_gone = True
+                    child.settle(all(eof), group_gone)
                 except BaseException as exc:
                     if not failures:
                         failures.append(exc)
-                else:
-                    try:
-                        terminate(signal.SIGKILL)
-                    except BaseException as exc:
-                        if not failures:
-                            failures.append(exc)
+            try:
+                control.close()
+            except BaseException as exc:
+                if not failures:
+                    failures.append(exc)
             # These endpoints are ours even if Popen init never returned.
             for fd in tuple(owned_fds):
                 try:

@@ -706,3 +706,71 @@ Its retained helper timing included 153 snapshots (19.4324 s total), publish-bui
 include startup/validation/tracing overhead. Native-only asset context/source
 validation was unexercised. This evidence does not establish native root cause,
 a performance fix, Darwin timing or package/launch acceptance.
+
+### Named helper deadlines and owned cleanup
+
+`packaging_supervisor.py` is the packaging-local standard-library owner used by
+Node custody, the Bash build adapter, archive manifest verification and the
+release verifier. Its finite operation table refuses unknown labels. There is
+no timeout override or operation retry. Clocks begin before child launch and
+include initialization, transport and private control handshakes.
+
+| Named work | Seconds |
+| --- | ---: |
+| Asset/freezer/web token-field; freezer/web fail; internal failure persistence | 30 |
+| Web read-input, compile-begin, compile-end, snapshot | 120 |
+| Web prepare/begin | 300 |
+| Other enumerated asset/freezer/web stages, embedded notices, manifest collect/verify | 600 |
+| Verifier preflight/native/resources/catalog/trust/inventory/archive/reconcile | 300 |
+| Verifier licenses; frozen-entrypoint diagnostic outer | 600 |
+| Existing capture and verifier inspection tools; failure diagnostic collector | 60 |
+| Build log finalization after finish/EOF | 10 |
+
+Internal failure persistence is additionally clipped to the original remaining
+operation clock; an unsupervised PyInstaller import has no external30s timer.
+The verifier's direct `ar -p` is specifically outer-contained by native300s;
+trust observations retain their existing60s arguments within trust300s. The
+seven frozen diagnostic calls retain60s each within the600s outer. These are
+not per-tool registered descendant-cleanup claims. Manifest validation bodies,
+notice texts, input guards, complete-build context passes/live reopens and all
+original read/JSON/diagnostic caps remain unchanged.
+
+The actual parent may signal its child group only while holding the positively
+unreaped direct-child handle. It disarms before every poll/reap and rearms only
+on a confirmed still-running result. Exceptional construction, ECHILD and
+ambiguous control never rearm. Open output pipes keep an exited leader pinned
+until cleanup, including resistant pipe holders. EOF with a live leader follows
+the separate disarm/poll/rearm path. Private registration informs settlement;
+it gives no other parent numeric kill authority. No post-reap kill or global
+process scan occurs. Group absence, EOF and actual status are observations, not
+proof of global descendant quiescence; parent loss/escape can leave cleanup
+UNKNOWN and must never be called complete containment.
+
+One shared5s outer cleanup allowance covers TERM (at most2s grace), held-child
+KILL, drain and reap/closure. Asset capture retains its stricter60s/0.25s/1s/1s
+schedule. Node has an independent D+10s SIGKILL fallback; failure is sticky and
+never admits a partial reply. The Bash3.2 adapter preserves original stdin and
+heredocs through asynchronous launch, assigns a token only after accepted status
+and bounded reply, and retains command-substitution trailing-LF behavior. Its
+same-module guardian owns the worker; D+10 fallback and D+12 timed observation
+slots never give Bash bare-PID kill authority or an unconditional wait.
+
+Finish retains the original npm/helper/signal status while attempting secondary
+freezer30s, web30s and diagnostic60s persistence independently. Tee retains the
+original build.log and stdout sinks; after writers close, its owner allows7s
+drain,1s TERM and remaining2s KILL/drain/reap within10s (shell observes at most12
+slots). Primary deadline124, cleanup-only125, actual child signals and existing
+nonzero failures remain distinct. Secondary failure cannot replace a primary.
+One600s helper plus ordinary cleanup/finish/logger allowance is750s, or780s
+with guardian/caller fallbacks; neither is a total-build or hard OS walltime.
+
+Compilers, npm producers, PyInstaller itself, compression, tiny scalar/environment
+checks and file operations remain workflow-only. This helper correction grants
+no native run or workflow acceptance. Build preflight uses a synchronous
+substitution: parent traps can be deferred until its300s+5s return. A late signal
+can leave an already-written one-shot marker; failed transport/status still
+withholds acceptance. Uninterruptible kernel I/O and scheduler/parent loss can
+exceed observed bounds. Actual Darwin Bash finish/logger, native freezer and
+archive/notices/hash/ZIP acceptance require their real native venue; portable
+relay checks do not establish those outcomes. Native18's aggregate cap and the
+native17/19 unknown stall causes are not resolved by these deadlines.
