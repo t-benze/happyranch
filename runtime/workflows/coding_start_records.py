@@ -84,6 +84,16 @@ class CodingStageOutput(Closed):
         return self
 
 
+class CodingRevisionStageOutput(CodingStageOutput):
+    format: Literal['workflow-coding-stage-output@2']
+    revision: Annotated[StrictInt, Field(ge=2, le=3)]
+
+
+def stage_output(value: dict) -> dict:
+    model = CodingRevisionStageOutput if value.get('format') == 'workflow-coding-stage-output@2' else CodingStageOutput
+    return _model(model, value).model_dump()
+
+
 def parse_stage_output(result: dict, *, instance: str, attempt: dict,
                        work: dict, subject: dict | None = None) -> dict:
     """Validate content against an already authenticated native result row.
@@ -97,7 +107,8 @@ def parse_stage_output(result: dict, *, instance: str, attempt: dict,
                (attempt['task_id'], attempt['session_id'], attempt['principal'])
            and result['status'] == 'completed' and result['decision_json'] is None
            and result['waiting_on_job_ids'] is None and type(result['output_summary']) is str)
-    output = _model(CodingStageOutput, _json(result['output_summary'].encode('utf8'), 65536)).model_dump()
+    output = stage_output(_json(result['output_summary'].encode('utf8'), 65536))
+    _check((output['format'] == 'workflow-coding-stage-output@2') is (attempt['revision'] > 1))
     _check((output['instance_id'], output['attempt_id'], output['revision'], output['stage']) ==
            (instance, attempt['id'], attempt['revision'], attempt['stage']))
     descriptor = output['subject']
@@ -204,8 +215,20 @@ class CodingFinalRunReceipt(CodingOrderedRunReceipt):
     history: list[CodingFinalEvent] = Field(min_length=1, max_length=4096)
 
 
+class CodingRevisionAttempt(QueuedAttempt):
+    stage: Literal['development', 'code_review', 'qa', 'agent_manager']
+
+
+class CodingRevisionRunReceipt(CodingFinalRunReceipt):
+    format: Literal['workflow-coding-run@5']
+    current_revision: Annotated[StrictInt, Field(ge=1, le=3)]
+    target_revision: Annotated[StrictInt, Field(ge=2, le=3)]
+    state: Literal['development', 'code_review', 'qa', 'agent_manager', 'held', 'complete']
+    current_attempt: CodingRevisionAttempt
+
+
 class CodingRunReceipt(RootModel[Annotated[
-        CodingInitialRunReceipt | CodingOrderedRunReceipt | CodingQARunReceipt | CodingFinalRunReceipt,
+        CodingInitialRunReceipt | CodingOrderedRunReceipt | CodingQARunReceipt | CodingFinalRunReceipt | CodingRevisionRunReceipt,
         Field(discriminator='format')]]):
     pass
 
@@ -256,6 +279,11 @@ class CodingFinalizeCommand(Closed):
                and self.principal not in {v.principal for v in
                    (self.upstream_results.development, self.upstream_results.code_review, self.upstream_results.qa)})
         return self
+
+
+class CodingRevisionFinalizeCommand(CodingFinalizeCommand):
+    format: Literal['workflow-coding-finalize-command@2']
+    revision: Annotated[StrictInt, Field(ge=2, le=3)]
 
 
 class CodingSelectedResult(Closed):
@@ -314,6 +342,14 @@ class CodingBoundFinalSelection(CodingFinalSelection):
     def bound(self) -> CodingBoundFinalSelection:
         validate_final_identity(self.model_dump(), org=self.workspace.org_slug)
         return self
+
+
+class CodingRevisionFinalSelection(CodingBoundFinalSelection):
+    format: Literal['workflow-coding-final-selection@3']
+    revision: Annotated[StrictInt, Field(ge=2, le=3)]
+
+
+BoundFinalSelection = Annotated[CodingBoundFinalSelection | CodingRevisionFinalSelection, Field(discriminator='format')]
 
 
 def selected_repository(mapping: dict, work: dict) -> dict:
@@ -455,7 +491,7 @@ class CodingFinalOutput(Closed):
             'coding-finalize-' + _hash(c.attempt_id.encode('utf8')), 'intent.json'))
         intent_body = dict(command=c.model_dump(), created_at=e.intent.created_at,
                            selected_digest=e.intent.selected_digest)
-        if self.format == 'workflow-coding-final-output@2':
+        if self.format in ('workflow-coding-final-output@2', 'workflow-coding-final-output@3'):
             intent_body.update(repository_reference=e.intent.repository_reference.model_dump(),
                                workspace=e.intent.workspace.model_dump(), origin=e.intent.origin)
         _check(e.intent.digest == _hash(_canonical(intent_body)))
@@ -522,6 +558,20 @@ class CodingBoundFinalOutput(CodingFinalOutput):
         return self
 
 
+class CodingRevisionFinalIntent(CodingBoundFinalIntent):
+    command: CodingRevisionFinalizeCommand
+
+
+class CodingRevisionFinalEvidence(CodingBoundFinalEvidence):
+    intent: CodingRevisionFinalIntent
+
+
+class CodingRevisionFinalOutput(CodingBoundFinalOutput):
+    format: Literal['workflow-coding-final-output@3']
+    revision: Annotated[StrictInt, Field(ge=2, le=3)]
+    evidence: CodingRevisionFinalEvidence
+
+
 def github_origin(origin: str) -> str:
     # No normalization: the configured raw UTF8 origin digest is checked separately.
     match = re.fullmatch(r'(?:https://github\.com/|git@github\.com:)([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+?)(?:\.git)?', origin)
@@ -540,7 +590,8 @@ def github_subject(subject: dict) -> tuple[str, int]:
 
 
 def parse_finalize(raw: bytes) -> dict:
-    return _model(CodingFinalizeCommand, _json(raw, 65536)).model_dump()
+    value = _json(raw, 65536)
+    return _model(CodingRevisionFinalizeCommand if value.get('format') == 'workflow-coding-finalize-command@2' else CodingFinalizeCommand, value).model_dump()
 
 
 def parse_final_output(result: dict, *, instance: str, attempt: dict, work: dict,
@@ -552,8 +603,9 @@ def parse_final_output(result: dict, *, instance: str, attempt: dict, work: dict
            and result['decision_json'] is None and result['waiting_on_job_ids'] is None
            and result['verdict'] is None and type(result['output_summary']) is str)
     raw = _json(result['output_summary'].encode('utf8'), 65536)
-    repaired = selected is not None and selected['format'] == 'workflow-coding-final-selection@2'
-    output = _model(CodingBoundFinalOutput if repaired else CodingFinalOutput, raw).model_dump()
+    revised = selected is not None and selected['format'] == 'workflow-coding-final-selection@3'
+    repaired = revised or selected is not None and selected['format'] == 'workflow-coding-final-selection@2'
+    output = _model(CodingRevisionFinalOutput if revised else CodingBoundFinalOutput if repaired else CodingFinalOutput, raw).model_dump()
     if repaired:
         intent = output['evidence']['intent']
         _check(intent['repository_reference'] == selected['repository_reference']

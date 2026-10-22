@@ -4173,3 +4173,37 @@ replacements stay intact by default; current-pin adoption is explicit. Options
 refresh/error never edits a draft or releases a fence; unchanged disabled-retain
 works without options. Rendered MSW checks prove UI/client
 behavior only. See the ordered-coding-workflow spec's Founder page section.
+
+
+## Disabled coding rejection and fresh revision gates — ROOT12568 C05/C07/C08
+
+Founder320seq4/18/27 and ROOT12568 step23 extend the earlier r1 checkpoints:
+authentic positively settled REQUEST_CHANGES/REVISE returns to ONE fresh r2/r3
+developer on the SAME admitted work/base. New head requires fresh independent
+review and only its APPROVE starts fresh QA. All original findings/contributors,
+result-absent authors, overrides/across-team bindings and lower limits remain;
+BLOCK/failed/unusable/unknown holds. No allocation beyond original revision3 cap.
+current_revision tracks fulfilled content; target_revision selects actual new work.
+Sequence/generation/CAS/host retry remain separate. Callback alone never advances.
+
+Explicit new event@7/edge@5/edge-command@5/admission@4, revision-scope@1,
+revision-native event/command@1 (uncertainty-only@2) and admission@1,
+stage-output@2/development-review-QA supplements@2, final-scope/selection/manager/
+output@3, LOCAL finalize-command@2 and public run@5 preserve literal old families
+and held history. Whole saved/native/current/cold/schema(data=False)/recovery/
+drain closure independently derives original callbacks/scopes/tasks/contributors/
+current exact subject on ONE aggregate budget, with no trusted after-image or
+per-revision reset. Complete validation precedes caller COMMIT, notification after.
+Final manager still performs only its own authorized LOCAL expected-head/non-admin
+action and independent remote observation before its genuine FINAL callback;
+no daemon-owned effect/recovery is added. CLI/served unions carry the new closed
+families; browser/native exclusions and document H/I remain unchanged.
+
+Readiness stays false. Source is distinct from installed/loaded/enabled acceptance.
+No DDL/auth/permission/grant/live operation/cleanup. Behavioral/SQL/native/proof
+NOT RUN; units RETIRED; integration INCLUDING callback/lifespan/SessionTracker
+SKIPPED24342; Swift missing proof UNEXECUTED/FOUNDER-EXEMPTED/NONBLOCKING320seq93.
+Fresh FULL independent review and separately root-routed scoped QA remain.
+Control/reassignment/operational and real scratch/Founder/across-team/override/
+two-org/backup/rollback/live-manager acceptance stay root-owned. Exact encodings
+and active/historical boundaries: ordered-coding-workflow spec, same section.

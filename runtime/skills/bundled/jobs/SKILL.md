@@ -553,3 +553,10 @@ assigned-principal workspace capture selects the task/attempt reservation across
 cwd/key/path variants. Partial or failed recording never permits another action.
 Selected/native/final-output@2/history reconstruct the SAME full root/reference;
 no daemon file reservation, job runner or new command entitlement is supplied.
+
+
+Coding revision2/3 final-manager@3 retains the same live-session-only LOCAL
+finalize boundary and captured native workspace/reference. Final-selection@3,
+finalize-command@2 and final-output@3 bind only the current exact-subject fresh
+results. Never move its action or receipt production into a job, daemon, recovery
+runner or old source/upstream SID. Existing reservations/unknown facts survive.

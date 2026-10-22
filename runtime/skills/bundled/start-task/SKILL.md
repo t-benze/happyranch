@@ -799,3 +799,29 @@ Each selected principal uses its own actual team and authorized tools. Preserve
 original owner/key/evidence on refusal or uncertainty; never fabricate an actor,
 callback, native settlement or clearance. Current native/Pause/move/repository
 authority and genuine final-session callback obligations remain unchanged.
+
+
+A bound workflow-coding-development@2 / review@2 / qa@2 supplement selects the
+actual new revision2/3 task/SID. Preserve its revision-scope@1, fixed original
+repository/object-format/base/paths/release/mapping/settings pins and actual
+attempt_sequence/assignment_generation. Development addresses EVERY attributed
+returned finding and produces a genuinely changed head; previous_subject is
+history, never output or authority. Review/QA independently assess the EXACT new
+subject and current upstream pins, using existing authorized tools and own
+findings. References grant no access. Return the supplied closed stage-output@2
+with revision2/3, same key inventory, stage-specific produced / APPROVE|
+REQUEST_CHANGES|BLOCK / PASS|REVISE|BLOCK. Summary is canonical UTF8 JSON STRING,
+completed status and null developer verdict or matching reviewer/QA outcome.
+Report real failed/blocked causes honestly; use only this task/agent/SID FINAL
+callback. No staging/coding decision/job wait or old receipt reuse. Historic @1
+supplements/outputs stay revision1. Fresh tasks/results are not new configured
+principal requirements on every revision.
+
+A bound workflow-coding-final-manager@3 selects current revision2/3 only. Preserve
+final-scope@3, actual native workspace/reference and ALL three fresh current-subject
+results. Supply finalize-command@2 from that supplement to the SAME LOCAL finalize
+command with actual current SID/authorized path and stable key. Preserve all existing
+reservation/current-selection/expected-head/non-admin/one-action/remote-observation
+rules above. Save canonical final-output@3 as own summary before actual FINAL
+callback; no daemon-owned merge/recovery, stale approvals or synthetic receipt.
+Readiness remains disabled; source is not installed/loaded/enabled acceptance.

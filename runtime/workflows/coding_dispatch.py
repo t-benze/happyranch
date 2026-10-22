@@ -297,7 +297,9 @@ class CodingDispatcher:
             invocation.store.held_uncommitted(invocation.task.id)
         if not callback and author_capacity_blocked(conn, author=invocation.agent, task_id=invocation.task.id, active_sessions=sessions):
             raise CodingStartError('coding_capacity_unavailable')
-        _check(entry['attempt']['revision'] == 1 and entry['attempt']['attempt_sequence'] == 1
+        from runtime.workflows.coding_revision import independent
+        independent(entry['attempts'], entry['roles'])
+        _check(1 <= entry['attempt']['revision'] <= min(3, entry['source']['budgets']['coding_revision_limit']) and entry['attempt']['attempt_sequence'] == 1
                and len(entry['attempts']) <= entry['source']['budgets']['coding_attempt_limit']
                and entry['run']['cas_version'] + (1 if callback else 2) <= entry['source']['budgets']['coding_event_limit'])
         return self._admission_observation(conn, entry, invocation, capture, sessions, callback=callback)
@@ -386,6 +388,9 @@ class CodingDispatcher:
         result['record'] = dict(id=result['authority']['admission_record_id'], namespace=pin['namespace'],
             generation=pin['generation'], request_digest=_hash(_canonical(entry['command'])),
             admitted_by='service:' + self.producer)
+        if entry['attempt']['revision'] > 1:
+            result.update(format='workflow-coding-revision-native-admission@1',
+                attempt_id=entry['attempt']['id'], revision=entry['attempt']['revision'])
         _check(len(_canonical(result)) <= 4194304)
         _check(conn.in_transaction)
         conn.execute('INSERT INTO workflow_admission_records VALUES (?,?,?,?,?)', tuple(result['record'][k]
@@ -476,7 +481,7 @@ class CodingDispatcher:
         _check(previous['event_seq'] < entry['source']['budgets']['coding_event_limit'])
         source_tail = invocation.task.id == entry['source']['task_id']
         repaired = (entry['attempt']['stage'] == 'manager_closeout' and
-                    json.loads(entry['attempt']['scope_bytes'])['format'] == 'workflow-coding-final-scope@2')
+                    json.loads(entry['attempt']['scope_bytes'])['format'] in ('workflow-coding-final-scope@2', 'workflow-coding-final-scope@3'))
         uncertainty = (repaired and not source_tail and kind == 'held' and facts.get('reason') in
                        ('coding_native_preparation_unsettled', 'coding_native_close_unavailable'))
         prebinding = uncertainty and facts['reason'] == 'coding_native_preparation_unsettled'
@@ -516,8 +521,8 @@ class CodingDispatcher:
             _check(prebinding or workspace is not None)
             observation['workspace'] = workspace
         manager_version = '3' if uncertainty else '2' if repaired else '1'
-        command = dict(format={'development': 'workflow-coding-internal-command@2',
-            'code_review': 'workflow-coding-native-review-command@1', 'qa': 'workflow-coding-native-qa-command@1', 'manager_closeout': 'workflow-coding-native-manager-command@' + manager_version}[entry['attempt']['stage']], kind=kind,
+        command = dict(format=(('workflow-coding-revision-native-command@2' if uncertainty else 'workflow-coding-revision-native-command@1') if entry['attempt']['revision'] > 1 else {'development': 'workflow-coding-internal-command@2',
+            'code_review': 'workflow-coding-native-review-command@1', 'qa': 'workflow-coding-native-qa-command@1', 'manager_closeout': 'workflow-coding-native-manager-command@' + manager_version}[entry['attempt']['stage']]), kind=kind,
             source_event_ids=[previous['id']], source_event_digests=[previous['event_digest']],
             subject=None, producer_identity=producer, observation=observation)
         instance = entry['run']['instance_id']
@@ -534,8 +539,8 @@ class CodingDispatcher:
         after['tasks'] = [dict(id=k, record=encode_row(dict(conn.execute('SELECT * FROM tasks WHERE id=?', (k,)).fetchone())))
                           for k in sorted(entry['tasks'])]
         operation = dict(org_slug=self.org.slug, principal=principal, key=key, request_digest=_hash(_canonical(command)))
-        body = dict(format={'development': 'workflow-coding-event@2',
-            'code_review': 'workflow-coding-native-review-event@1', 'qa': 'workflow-coding-native-qa-event@1', 'manager_closeout': 'workflow-coding-native-manager-event@' + manager_version}[entry['attempt']['stage']],
+        body = dict(format=(('workflow-coding-revision-native-event@2' if uncertainty else 'workflow-coding-revision-native-event@1') if entry['attempt']['revision'] > 1 else {'development': 'workflow-coding-event@2',
+            'code_review': 'workflow-coding-native-review-event@1', 'qa': 'workflow-coding-native-qa-event@1', 'manager_closeout': 'workflow-coding-native-manager-event@' + manager_version}[entry['attempt']['stage']]),
             id=event_id, instance_id=instance,
             event_seq=previous['event_seq'] + 1, event_kind=kind, attempt_id=attempt['id'], operation=operation,
             previous_digest=previous['event_digest'], before=before, after=after,
@@ -575,7 +580,7 @@ class CodingDispatcher:
         entry['attempts'][entry['attempt']['id']] = entry['attempt']
         event = dict(conn.execute('SELECT * FROM workflow_coding_events WHERE id=?', (entry['run']['last_event_id'],)).fetchone())
         entry['native'].update(claim=invocation.coding_claim, history=[*entry['native']['history'], event], pending_observations=[])
-        if entry['attempt']['stage'] == 'manager_closeout' and json.loads(entry['attempt']['scope_bytes'])['format'] == 'workflow-coding-final-scope@2':
+        if entry['attempt']['stage'] == 'manager_closeout' and json.loads(entry['attempt']['scope_bytes'])['format'] in ('workflow-coding-final-scope@2', 'workflow-coding-final-scope@3'):
             entry['native']['workspace'] = self._final_workspace(invocation, entry)
         host = self._host(invocation)
         self._append(conn, entry, 'launch_reserved', dict(host=host, retry=invocation._entry(
@@ -775,8 +780,13 @@ class CodingDispatcher:
                 settled=safe, execution_unknown=not safe, settlement_error=None if safe else 'coding_outer_settlement_unknown')
             # Preserve the authentic final entry even when close removed it.
             invocation.coding_settled_entry = native_entry
+            changes = {} if safe else dict(state='held')
+            if not source and safe and entry['native']['terminal'] == 'success':
+                from runtime.workflows.coding_revision import fulfilled_revision
+                if fulfilled_revision(entry['attempt'], entry['native']['callback'], entry['command']['work'], budget):
+                    changes['current_revision'] = entry['attempt']['revision']
             self._append(conn, entry, 'cleanup_settled', facts, invocation=invocation,
-                run_changes={} if safe else dict(state='held'),
+                run_changes=changes,
                 attempt_changes=(dict(state='completed') if not source and safe and entry['native']['terminal'] == 'success'
                                  else dict(state='uncertain') if not source and not safe else {}),
                 event_time=now)
@@ -893,7 +903,7 @@ class CodingDispatcher:
                             self.db._check_team_move_workflow_uncommitted(binding_bytes=effective_bindings(instance, entry['roles']))
                             _check(entry['native'].get('workspace') == self._final_workspace(owner, entry))
                             result = final_selection(entry, budget=inventory.budget)
-                            _check(result['format'] == 'workflow-coding-final-selection@2')
+                            _check(result['format'] in ('workflow-coding-final-selection@2', 'workflow-coding-final-selection@3'))
                             _check(len(_canonical(result)) <= 262144)
                             # Current live authorization is not an external-effect lease.
                             org.workflow_authority._validate_admission_uncommitted(conn, current)
@@ -907,17 +917,25 @@ class CodingDispatcher:
         from runtime.workflows.coding_start_records import selected_repository
         scope = json.loads(entry['attempt']['scope_bytes'])
         pins, _ = settled_upstreams(entry, budget=entry['_budget'])
-        qa = next(a for a in entry['attempts'].values() if a['stage'] == 'qa')
-        _check(scope == final_scope(org=self.org.slug, instance=entry['run']['instance_id'],
-            command=entry['command'], roles=entry['roles'], qa=qa, subject=scope['subject'], task_id=task_id, upstream=pins,
-            repository_reference=selected_repository(entry['mapping'], entry['command']['work'])))
+        if entry['attempt']['revision'] > 1:
+            from runtime.workflows.coding_revision import revision_scope
+            expected_scope = revision_scope(org=self.org.slug, instance=entry['run']['instance_id'],
+                command=entry['command'], roles=entry['roles'], attempt=entry['attempt'], attempts=entry['attempts'],
+                subject=scope['subject'], returns=[], upstream=pins,
+                repository_reference=selected_repository(entry['mapping'], entry['command']['work']))
+        else:
+            qa = next(a for a in entry['attempts'].values() if a['stage'] == 'qa')
+            expected_scope = final_scope(org=self.org.slug, instance=entry['run']['instance_id'],
+                command=entry['command'], roles=entry['roles'], qa=qa, subject=scope['subject'], task_id=task_id, upstream=pins,
+                repository_reference=selected_repository(entry['mapping'], entry['command']['work']))
+        _check(scope == expected_scope)
         workspace = entry['native'].get('workspace')
         _check(workspace is not None and (workspace['task_id'], workspace['principal'], workspace['session_id']) ==
                (task_id, agent, session_id) and workspace['invocation_id'] == entry['native']['claim']['invocation_id'])
-        command = dict(format='workflow-coding-finalize-command@1', operation_key=identity('finalize', entry['attempt']['id']), repository_path='ABSOLUTE_EXISTING_AUTHORIZED_WORKTREE',
-            instance_id=entry['run']['instance_id'], attempt_id=entry['attempt']['id'], revision=1,
+        command = dict(format='workflow-coding-finalize-command@2' if entry['attempt']['revision'] > 1 else 'workflow-coding-finalize-command@1', operation_key=identity('finalize', entry['attempt']['id']), repository_path='ABSOLUTE_EXISTING_AUTHORIZED_WORKTREE',
+            instance_id=entry['run']['instance_id'], attempt_id=entry['attempt']['id'], revision=entry['attempt']['revision'],
             task_id=task_id, session_id=session_id, principal=agent, subject=scope['subject'], upstream_results=pins)
-        supplement = dict(format='workflow-coding-final-manager@2', role='agent_manager', scope=scope,
+        supplement = dict(format='workflow-coding-final-manager@3' if entry['attempt']['revision'] > 1 else 'workflow-coding-final-manager@2', role='agent_manager', scope=scope,
             task_id=task_id, session_id=session_id, attempt_id=entry['attempt']['id'], command=command,
             workspace=entry['native']['workspace'], repository_reference=scope['repository_reference'],
             tool='happyranch workflows coding finalize --org ' + self.org.slug + ' --session-id CURRENT --from-file ABS --json',
@@ -928,6 +946,8 @@ class CodingDispatcher:
                 'Preserve its canonical final-output@2 JSON STRING in your own summary, null verdict, no decision/jobs. '
                 'Save receipts before report-completion through this genuine task/agent/SID as FINAL action. '
                 'Callback alone cannot complete; successful host/quiescence and positive native outer closure are required.')
+        if entry['attempt']['revision'] > 1:
+            supplement['obligation'] = supplement['obligation'].replace('final-output@2', 'final-output@3')
         if entry['command']['format'] == 'workflow-coding-start@2':
             supplement['settings'] = entry['command']['settings']
         return '\n\n' + _canonical(supplement).decode('utf8')
@@ -944,6 +964,8 @@ class CodingDispatcher:
             from runtime.workflows.coding_bootstrap import qa_scope, review_scope
             if attempt['stage'] == 'manager_closeout':
                 return self.final_instruction(entry, task_id, agent, session_id)
+            if attempt['revision'] > 1:
+                return self.revision_instruction(entry, task_id, agent, session_id)
             development = attempt['stage'] == 'development'
             qa = attempt['stage'] == 'qa'
             scope = json.loads(attempt['scope_bytes'])
@@ -990,6 +1012,46 @@ class CodingDispatcher:
                         command=entry['command'], roles=entry['roles'], developer=developer, subject=scope['subject']))
                 supplement['developer'] = scope['developer']
                 supplement['subject'] = scope['subject']
+        return '\n\n' + _canonical(supplement).decode('utf8')
+
+    def revision_instruction(self, entry: dict, task_id: str, agent: str, session_id: str) -> str:
+        from runtime.workflows.coding_revision import ROLES, returned_findings, revision_scope
+        from runtime.workflows.coding_revision_history import upstream_pins
+        from runtime.workflows.coding_start_records import selected_repository
+        a, budget = entry['attempt'], entry['_budget']
+        scope = _read_json(a['scope_bytes'], budget, 1048576)
+        prior = {k: v for k, v in entry['attempts'].items() if k != a['id']}
+        development = a['stage'] == 'development'
+        subject = scope['previous_subject'] if development else scope['subject']
+        returns = returned_findings(prior, entry['native']['stages'], entry['run']['instance_id'], entry['command']['work'], budget) if development else []
+        upstream = None if development else upstream_pins(prior, entry['native']['stages'], a['revision'],
+            entry['run']['instance_id'], entry['command']['work'], subject, budget,
+            through='development' if a['stage'] == 'code_review' else 'code_review')
+        _check(scope == revision_scope(org=self.org.slug, instance=entry['run']['instance_id'], command=entry['command'],
+            roles=entry['roles'], attempt=a, attempts=prior, subject=subject, returns=returns, upstream=upstream,
+            repository_reference=selected_repository(entry['mapping'], entry['command']['work'])))
+        output_subject = deepcopy(subject)
+        if development:
+            output_subject['head'] = None
+        supplement = dict(format={'development': 'workflow-coding-development@2', 'code_review': 'workflow-coding-review@2',
+            'qa': 'workflow-coding-qa@2'}[a['stage']], instance_id=entry['run']['instance_id'], attempt_id=a['id'],
+            task_id=task_id, session_id=session_id, role=ROLES[a['stage']], revision=a['revision'],
+            attempt_sequence=a['attempt_sequence'], assignment_generation=a['assignment_generation'],
+            scope_digest=a['scope_digest'], scope=scope, release=entry['command']['release'], mapping=entry['command']['mapping'],
+            work=entry['command']['work'], head=None if development else subject['head'],
+            output=dict(format='workflow-coding-stage-output@2', instance_id=entry['run']['instance_id'], attempt_id=a['id'],
+                revision=a['revision'], stage=a['stage'], subject=output_subject, findings='Your own nonblank findings, at most16384 UTF8 bytes.',
+                outcome='produced' if development else 'APPROVE|REQUEST_CHANGES|BLOCK' if a['stage'] == 'code_review' else 'PASS|REVISE|BLOCK'),
+            obligation=('Address ALL original returned_findings with a genuinely changed head on the SAME admitted base/paths. '
+                'Previous approvals do not apply.' if development else 'Independently assess this EXACT revision and subject using existing authorized tools. '
+                'Write your own findings; never copy or relabel previous approvals. Unavailable access/proof requires BLOCK.'),
+            final_callback=dict(task_id=task_id, agent=agent, session_id=session_id,
+                command='happyranch report-completion --org ' + self.org.slug + ' --from-file ABS',
+                obligation='Summary is canonical UTF8 JSON STRING of output, completed status; null verdict for development, exact outcome for review/QA. '
+                    'Only this genuine task/SID/agent. Callback is FINAL. No staging, decision, or job wait. '
+                    'Failed/blocked outcomes retain their true cause. References grant no access or execution authority.'))
+        if entry['command']['format'] == 'workflow-coding-start@2':
+            supplement['settings'] = entry['command']['settings']
         return '\n\n' + _canonical(supplement).decode('utf8')
 
 

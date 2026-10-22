@@ -134,7 +134,7 @@ def read_queued(conn: sqlite3.Connection, org: str, budget: _Budget, mappings: A
     run_rows = list(rows(conn, 'workflow_coding_runs', budget))
     attempts = list(rows(conn, 'workflow_coding_attempts', budget))
     events = list(rows(conn, 'workflow_coding_events', budget))
-    _check(len(run_rows) <= len(attempts) <= 4 * len(run_rows) and len(events) >= len(run_rows))
+    _check(len(run_rows) <= len(attempts) <= 10 * len(run_rows) and len(events) >= len(run_rows))
     used_attempts, used_events, used_sources = set(), set(), set()
     for run in run_rows:
         budget.step()
@@ -143,7 +143,7 @@ def read_queued(conn: sqlite3.Connection, org: str, budget: _Budget, mappings: A
         selected = [r for r in events if r['instance_id'] == instance]
         selected_attempts = [r for r in attempts if r['instance_id'] == instance]
         selected.sort(key=lambda row: row['event_seq'])
-        _check(len(selected) >= 1 and 1 <= len(selected_attempts) <= 4)
+        _check(len(selected) >= 1 and 1 <= len(selected_attempts) <= 10)
         event = selected[0]
         actual_run = run
         initial = _read_json(event['event_bytes'], budget, 16777216)
@@ -333,6 +333,7 @@ def read_queued(conn: sqlite3.Connection, org: str, budget: _Budget, mappings: A
             template=template, carrier_id=carrier_id, instance_id=instance, created_at=payload['created_at'])
         _check(same(evidence['rows'], journal_rows(expected_pins)))
         _capture_admission(conn, expected_pins['workflow_admission_records'][0], evidence['authority'], budget)
+        _check(len(selected_attempts) <= limits['coding_attempt_limit'])
         scope = _canonical(initial_scope(org=org, instance=instance, attempt=attempt['id'], command=command,
                                         roles=roles, context=context))
         _check(same(attempt, dict(id=identity('attempt', instance, 1), instance_id=instance,
@@ -424,7 +425,7 @@ def read_queued(conn: sqlite3.Connection, org: str, budget: _Budget, mappings: A
             _check(child['id'] == carrier_id or (child['status'] in ('completed', 'failed', 'cancelled', 'superseded')
                 and datetime.fromisoformat(child['created_at']) <= datetime.fromisoformat(payload['created_at'].replace('Z', '+00:00'))))
         _check({r['id'] for r in rows(conn, 'tasks', budget, where='parent_task_id=?',
-                                    args=(carrier_id,), maximum=4)} == {a['task_id'] for a in actual_attempts.values()})
+                                    args=(carrier_id,), maximum=10)} == {a['task_id'] for a in actual_attempts.values()})
         for table, row in (('workflow_coding_runs', run), ('workflow_coding_attempts', attempt), ('workflow_coding_events', event)):
             storage.add(table, row)
         storage.runs[instance] = dict(run=run, command=command, roles=roles, attempt=attempt, event=event,

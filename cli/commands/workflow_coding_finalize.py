@@ -16,13 +16,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import httpx
+from pydantic import TypeAdapter
 
 from cli._shared import require_absolute_payload_path, resolve_org_slug
 from runtime.runtime import port_file
 from runtime.daemon import pr_ci_merge, pr_ci_waiter
 from runtime.workflows.coding_saved_records import _canonical, _check, _constant, _hash, _json, _pairs
 from runtime.workflows.coding_start_records import (
-    CodingBoundFinalOutput, CodingBoundFinalSelection, CodingCheckEvidence,
+    CodingBoundFinalOutput, BoundFinalSelection, CodingRevisionFinalOutput, CodingCheckEvidence,
     github_origin, github_subject, parse_finalize, validate_final_identity,
 )
 
@@ -172,7 +173,7 @@ def _selected(client: httpx.Client, org: str, sid: str, command: dict) -> dict:
     response = client.get(f"/api/v1/orgs/{org}/workflows/coding/runs/{command['instance_id']}/final-manager",
                           params={'session_id': sid})
     _check(response.status_code == 200 and len(response.content) <= 262144)
-    result = CodingBoundFinalSelection.model_validate(_remote_json(response.content, 262144)).model_dump()
+    result = TypeAdapter(BoundFinalSelection).validate_python(_remote_json(response.content, 262144)).model_dump()
     validate_final_identity(result, org=org)
     for key in ('instance_id', 'attempt_id', 'task_id', 'session_id', 'principal', 'revision', 'subject', 'upstream_results'):
         _check(result[key] == command[key])
@@ -181,8 +182,8 @@ def _selected(client: httpx.Client, org: str, sid: str, command: dict) -> dict:
         original = result['results'][index]
         pin = result['upstream_results'][stage]
         _check(original['identity'] == pin and _hash(original['summary'].encode('utf8')) == pin['output_digest'])
-        from runtime.workflows.coding_start_records import CodingStageOutput
-        output = CodingStageOutput.model_validate(_json(original['summary'].encode('utf8'), 65536)).model_dump()
+        from runtime.workflows.coding_start_records import stage_output
+        output = stage_output(_json(original['summary'].encode('utf8'), 65536))
         _check((output['instance_id'], output['attempt_id'], output['revision'], output['stage'], output['subject'], output['outcome']) ==
                (command['instance_id'], pin['attempt_id'], command['revision'], stage, command['subject'], pin['outcome'])
                and original['verdict'] == (None if stage == 'development' else pin['outcome']))
@@ -270,7 +271,8 @@ def _execute(client: httpx.Client, org: str, sid: str, command: dict) -> dict:
                and evidence['command']['succeeded'] else 'uncertain' if evidence['command'] is not None else 'held')
     findings = ('Performed expected-head guarded action and observed exact remote merge in this invocation.' if outcome == 'merged'
                 else 'Finalization retained ' + outcome + ': ' + (guard.error_detail or error or guard.verdict))
-    output = CodingBoundFinalOutput.model_validate(dict(format='workflow-coding-final-output@2',
+    revised = command['format'] == 'workflow-coding-finalize-command@2'
+    output = (CodingRevisionFinalOutput if revised else CodingBoundFinalOutput).model_validate(dict(format='workflow-coding-final-output@3' if revised else 'workflow-coding-final-output@2',
         instance_id=command['instance_id'], attempt_id=command['attempt_id'], revision=command['revision'], stage='agent_manager',
         subject=command['subject'], upstream_results=command['upstream_results'], outcome=outcome,
         findings=findings, evidence=evidence)).model_dump()

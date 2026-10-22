@@ -2103,3 +2103,89 @@ selector, save, import or browser hint grants access or source execution readine
 Rendered evidence is `web/src/features/settings/sections/CodingSection.test.tsx`
 (MSW, real route/provider/client): UI/transport boundary only. Real Founder
 persistence/authority, native behavior and two-org acceptance stay ROOT12568's.
+
+
+## Disabled coding rejection and fresh revision gates — ROOT12568 C05/C07/C08
+
+Founder THR320seq4/18/27 and ROOT12568 step23 select this source continuation.
+Readiness/require_ready remain unconditionally false. This extends the earlier
+revision1 source checkpoints; literal old held review/QA/final-manager families
+keep their original interpretation and cannot be promoted into automatic return.
+No document H/I, coding.v1.json release bytes, DDL, auth, permissions, grants or
+live effect/enablement change is included.
+
+Only an authentic completed REQUEST_CHANGES or QA REVISE, its OWN original
+INTEGER result/task/SID/principal, successful host and positive original native
+outer closure can return to development. BLOCK, failed/unusable callbacks,
+callback-only, unknown or negative cleanup hold. The new current-authority
+transaction reselects the complete graph and original lower limits before ONE
+new development task/attempt. Rejection at revision3 or a lower admitted revision,
+attempt or event limit holds without reset. Original repo/object-format/base/
+paths/release/mapping/settings pins remain fixed; genuine r2/r3 output must change
+head. Every revised subject gets a new independent review task and only its
+APPROVE gets new QA; only current-revision APPROVE+PASS may reach final manager.
+Old results/findings/contributors stay history and never become fresh approvals.
+All retained developer assignments, including result-absent contributions, remain
+excluded from review/QA/manager principals. Four actual configured roles remain
+distinct; eligible overrides/across-team bindings are preserved. New tasks/SIDs/
+results do not require different configured reviewers on each content revision.
+
+current_revision is the last fulfilled content; while r2 development is pending,
+current1/target2, then authentic usable positively settled r2 yields current2/
+target2, even before next allocation. Content revision, stage-local attempt_sequence,
+role-local assignment_generation, CAS/event sequence and host retry are separate.
+The synchronous caller-owned writer has no await/I/O/notification/commit. Complete
+independent post-write validation precedes COMMIT; notification follows. Exceptions
+roll back task/event/attempt/allocator/pointers; prior genuine callbacks remain.
+Original-result replay finds the same successor once; stale or changed result
+cannot advance a later revision, and notification loss uses existing rediscovery.
+
+New closed event@7 / edge-command@5 / edge@5 / edge-admission@4 families encode
+the authentic return and all r2/r3 edges. Development uses ordered artifact_staged,
+contribution_recorded, stage_queued, advance; review/QA return or acceptance uses
+review_staged, stage_queued, advance. BLOCK is a single held review_staged.
+Native r2/r3 uses revision-native-event@1/revision-native-command@1 and
+revision-native-admission@1 (explicit attempt_id/revision); uncertainty-only
+revision-native-event/command@2 preserves final-manager preparation/close unknowns.
+Old bootstrap/development/review/QA/native-manager families remain literal.
+
+revision-scope@1 pins actual new task/attempt/revision/sequence/generation and
+unchanged work, current upstream identities and every retained contributor.
+New development additionally receives every prior development/review/QA
+summary (including all REQUEST_CHANGES/REVISE), verdict and INTEGER/task/SID/principal/revision/digest attribution, plus
+previous_subject; no old approval authorizes the revised head. Consumed development,
+review and QA supplements use @2 and exact stage-output@2 (revision2..3) with the
+same closed key inventory and stage-specific outcomes. Historical stage-output@1
+remains revision1 only. Real own callback is FINAL, canonical UTF8 JSON STRING,
+never a staging command, coding decision, borrowed SID or synthetic result.
+
+Final-scope@3 / final-selection@3 / final-manager@3 / final-output@3 and the LOCAL
+finalize-command@2 bind the current revision's exact subject and three fresh
+original upstream results, selected reference and actual native workspace. They
+retain the existing expected-head/non-admin live-manager action and separate
+remote observation before its own callback. Daemon completion/recovery performs
+no GitHub action. Historical final families stay revision1 only. Public run@5
+preserves the existing field inventory, adds revision2..3 target and current1..3,
+and selects development/review/QA/agent_manager/held/complete; old run@1..@4 stay
+literal. The existing CLI and served response unions select these closed variants.
+No browser/remote reachability is added; browser TS and native denial mirrors
+have no coding stage/result DTO to widen and retain their exclusion semantics.
+
+Current/saved/native/cold/schema(data=False)/recovery/drain readers independently
+reconstruct the entire ordered original lineage from callbacks and native proof,
+not writer after-images or current authority. Provisional future revision children
+must close into exactly replayed allocations. Missing/extra/orphan/fork/cycle/mixed/
+stale branches and incomplete prefixes refuse. One original aggregate row/byte/
+work/copy allowance spans all revisions, including post-write validation; no new
+per-revision allowance/cache or current roster is substituted for saved integrity.
+
+This is SOURCE implementation, distinct from installed/loaded/enabled acceptance.
+SQL/native/workflow/causal/restoration/repetition/rollback and original genuine
+scratch/operator/Founder/across-team/override/two-org/backup/rollback/live-manager
+acceptance remain NOT RUN/root-owned. Swift missing proof is UNEXECUTED /
+FOUNDER-EXEMPTED / NONBLOCKING320seq93, never PASS. Python units RETIRED;
+general integration INCLUDING callback/lifespan/SessionTracker SKIPPED24342.
+Required local/hosted checks are lint/static only. Fresh FULL independent review
+and manager-routed scoped QA renew on the new final head; no QA then-leg here.
+Minimum cancellation/reassignment/deferred recovery/held-to-new-manager and
+operational readiness remain separate root units. No live action or cleanup.

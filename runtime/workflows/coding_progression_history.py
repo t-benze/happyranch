@@ -20,14 +20,16 @@ KINDS = (*EDGE_KINDS, 'review_staged', 'manager_completed')
 
 def admission(conn: Any, org: str, budget: Any, storage: Any, value: dict, *,
               run: dict, tasks: dict, source: dict, roles: dict, mapping: dict, command: dict,
-              future_task_id: str, later_qa_tasks: set[str], qa: bool = False, final: bool = False) -> None:
+              future_task_id: str, later_qa_tasks: set[str], qa: bool = False, final: bool = False, destination: str | None = None,
+              target: int | None = None, attempt_count: int | None = None) -> None:
     """Reconstruct original authority, Pause, causal move and capacity predicates."""
     from runtime.infrastructure.task_pause_controls import decode_journal
     from runtime.workflows._coding_settings_execution import _current_configuration
     from runtime.workflows.coding_native_history import _row
     from runtime.workflows.coding_start_history import rows, same
-    value = _closed(value, 'format authority record tasks pause move sessions capacity_tasks work_hours max_revise_rounds')
-    _check(value['format'] == ('workflow-coding-edge-admission@3' if final else 'workflow-coding-edge-admission@2' if qa else 'workflow-coding-edge-admission@1'))
+    value = _closed(value, 'format authority record tasks pause move sessions capacity_tasks work_hours max_revise_rounds'
+        + (' destination target_revision attempt_count' if destination is not None else ''))
+    _check(value['format'] == ('workflow-coding-edge-admission@4' if destination is not None else 'workflow-coding-edge-admission@3' if final else 'workflow-coding-edge-admission@2' if qa else 'workflow-coding-edge-admission@1'))
     grant, snapshot = _read_authority(value['authority'], org, budget)
     _check(grant == _canonical(command))
     pin = value['authority']['pin']
@@ -102,7 +104,13 @@ def admission(conn: Any, org: str, budget: Any, storage: Any, value: dict, *,
            and run['cas_version'] + (3 if qa or final else 4) <= source['budgets']['coding_event_limit'])
     _check(value['capacity_tasks'] == [] and value['work_hours'] == []
            and type(value['sessions']) is list and len(value['sessions']) <= 1024)
-    reviewer = roles['agent_manager' if final else 'qa_engineer' if qa else 'code_reviewer']['principal']
+    from runtime.workflows.coding_revision import ROLES
+    if destination is not None:
+        _check(value['destination'] == destination and type(value['target_revision']) is int
+               and value['target_revision'] == target and 2 <= target <= min(3, source['budgets']['coding_revision_limit'])
+               and type(value['attempt_count']) is int and value['attempt_count'] == attempt_count
+               and attempt_count + 1 <= source['budgets']['coding_attempt_limit'])
+    reviewer = roles[ROLES[destination] if destination is not None else 'agent_manager' if final else 'qa_engineer' if qa else 'code_reviewer']['principal']
     for session in value['sessions']:
         _check(type(session) is list and len(session) == 3
                and all(type(item) is str and item for item in session) and session[1] != reviewer)
@@ -127,6 +135,11 @@ def replay(conn: Any, org: str, budget: Any, storage: Any, *, event: dict, body:
            later_qa_tasks: set[str], later_manager_tasks: set[str], settled_stages: dict) -> tuple:
     """Derive every target row from validated predecessors and actual callback."""
     from runtime.workflows.coding_start_history import same
+    if body['format'] == 'workflow-coding-event@7':
+        from runtime.workflows.coding_revision_history import replay_revision
+        return replay_revision(conn, org, budget, storage, event=event, body=body, previous=previous,
+            initial=initial, run=run, attempts=attempts, tasks=tasks, state=state, source=source, roles=roles,
+            mapping=mapping, command=command, settled_stages=settled_stages, future_tasks=later_qa_tasks | later_manager_tasks)
     if body['format'] in ('workflow-coding-event@5', 'workflow-coding-event@6'):
         return replay_final(conn, org, budget, storage, event=event, body=body, previous=previous,
             initial=initial, run=run, attempts=attempts, tasks=tasks, state=state, source=source,
