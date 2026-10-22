@@ -16,6 +16,7 @@ from dataclasses import asdict
 from datetime import datetime, timezone
 from typing import Any, Iterator
 
+from runtime.platform.session_backend import CleanupStatus, TerminalReason
 from runtime.workflows.coding_bootstrap import encode_row, identity
 from runtime.workflows.coding_saved_records import _canonical, _check, _hash
 from runtime.workflows.coding_start import CodingStartError, queued_storage, require_ready
@@ -698,8 +699,13 @@ class CodingDispatcher:
                 receipt = None if outcome.receipt is None else _native_value(asdict(outcome.receipt))
                 _check(receipt is None or receipt['terminal_reason'] == outcome.terminal_reason.value)
                 safe = (receipt is not None and host['handle_id'] is not None and receipt['backend'] == host['backend']
-                        and receipt['backend'] != 'passthrough' and receipt['quiescent'] is True
-                        and receipt['cleanup_status'] != 'incomplete' and not receipt['survivors'] and outcome.cleanup_error is None)
+                        and type(receipt['backend']) is str
+                        and receipt['backend'] in ('linux-systemd-cgroup-v2', 'macos-process-group')
+                        and type(receipt['terminal_reason']) is str
+                        and receipt['terminal_reason'] in tuple(reason.value for reason in TerminalReason)
+                        and receipt['quiescent'] is True and type(receipt['cleanup_status']) is str
+                        and receipt['cleanup_status'] in (CleanupStatus.CLEAN.value, CleanupStatus.TERM.value, CleanupStatus.KILL.value)
+                        and receipt['survivors'] == [] and outcome.cleanup_error is None)
                 result = entry['native']['callback']
                 classification = ('success' if safe and receipt['terminal_reason'] == 'success' and result is not None and result['status'] == 'completed'
                     else 'failed' if safe and result is not None and result['status'] == 'failed'

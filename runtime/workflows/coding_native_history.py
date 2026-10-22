@@ -11,6 +11,7 @@ import json
 from copy import deepcopy
 from typing import Any
 
+from runtime.platform.session_backend import CleanupStatus, TerminalReason
 from runtime.workflows.coding_authority_history import _decoded
 from runtime.workflows.coding_bootstrap import decode_row, encode_row, identity
 from runtime.workflows._coding_settings_execution import _read_authority, _read_json
@@ -647,10 +648,18 @@ def read_native(conn: Any, org: str, budget: Any, storage: Any, *, start: dict,
             receipt = host['terminal_receipt']
             # Only launch_observed can supply this identity; terminal replay
             # must not turn a handleless reservation into successful execution.
+            # Positive receipt facts must come from the supported containment
+            # backends and native enums; missing or unknown is never clean.
             safe = (host['handle_id'] is not None and host['backend'] is not None
                     and type(receipt) is dict and receipt.get('quiescent') is True
-                    and receipt.get('backend') == host['backend'] and host['backend'] != 'passthrough'
-                    and receipt.get('cleanup_status') != 'incomplete' and receipt.get('survivors') == []
+                    and type(receipt.get('backend')) is str
+                    and receipt['backend'] in ('linux-systemd-cgroup-v2', 'macos-process-group')
+                    and receipt['backend'] == host['backend']
+                    and type(receipt.get('terminal_reason')) is str
+                    and receipt['terminal_reason'] in tuple(reason.value for reason in TerminalReason)
+                    and type(receipt.get('cleanup_status')) is str
+                    and receipt['cleanup_status'] in (CleanupStatus.CLEAN.value, CleanupStatus.TERM.value, CleanupStatus.KILL.value)
+                    and receipt.get('survivors') == []
                     and host['cleanup'] == dict(error=None))
             result = state['callback']
             classification = ('success' if safe and receipt['terminal_reason'] == 'success' and result is not None and result['status'] == 'completed'
@@ -714,13 +723,20 @@ def read_native(conn: Any, org: str, budget: Any, storage: Any, *, start: dict,
                        and native['session_id'] == source['session_id'] and native['owner'] in ('ordinary', 'v2'))
                 terminal = disposition['terminal']
                 if safe:
+                    # Outer closure alone cannot supply missing host cleanup.
                     _closed(terminal, 'request terminal_reason attempt receipt cleanup_error')
                     receipt = terminal['receipt']
                     _check(type(terminal['attempt']) is int and terminal['attempt'] >= 0
                            and terminal['request']['logical_id'] == source['task_id']
                            and terminal['request']['org'] == org and terminal['request']['agent_id'] == source['principal']
                            and type(receipt) is dict and receipt.get('quiescent') is True
-                           and receipt.get('backend') != 'passthrough' and receipt.get('cleanup_status') != 'incomplete'
+                           and type(receipt.get('backend')) is str
+                           and receipt['backend'] in ('linux-systemd-cgroup-v2', 'macos-process-group')
+                           and type(receipt.get('terminal_reason')) is str
+                           and receipt['terminal_reason'] in tuple(reason.value for reason in TerminalReason)
+                           and receipt['terminal_reason'] == terminal['terminal_reason']
+                           and type(receipt.get('cleanup_status')) is str
+                           and receipt['cleanup_status'] in (CleanupStatus.CLEAN.value, CleanupStatus.TERM.value, CleanupStatus.KILL.value)
                            and receipt.get('survivors') == [] and terminal['cleanup_error'] is None
                            and not native['context'].get('execution_unknown'))
                 state['source_cleanup'] = facts
