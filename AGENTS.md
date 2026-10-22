@@ -4039,7 +4039,8 @@ The final callback summary is canonical workflow-coding-final-output@1 JSON
 STRING with exactly format, instance_id, attempt_id, revision, stage=agent_manager,
 subject, upstream_results, outcome=merged|held|uncertain, findings and evidence.
 Its closed bounded evidence binds intent command/digests/path, exact check/run
-records, immediate revalidation time, guard verdict, command argv/times/exit/
+records and original check/status/run snapshot paths/digests (including holds),
+immediate revalidation time, guard verdict, command argv/times/exit/
 success/original diagnostic and separate remote observation attribution.
 Findings are own/nonblank/at most16384UTF8 bytes. Verdict is null; decisions/job
 waits remain forbidden. Merged requires successful command, both exact successful

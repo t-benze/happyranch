@@ -331,9 +331,16 @@ class CodingRemoteEvidence(Closed):
         return self
 
 
+class CodingObservationFile(Closed):
+    name: str = Field(pattern=r'^(check-runs|statuses|run-[1-9][0-9]*)$')
+    path: str = Field(min_length=1, max_length=4096)
+    digest: str = Field(pattern=r'^[0-9a-f]{64}$')
+
+
 class CodingFinalEvidence(Closed):
     intent: CodingFinalIntent
     checks: list[CodingCheckEvidence] = Field(max_length=2)
+    observations: list[CodingObservationFile] = Field(max_length=4)
     revalidated_at: str | None
     guard_verdict: Literal['merged', 'merge_guard_review', 'merge_guard_qa', 'merge_guard_mergeable',
         'merge_failed', 'ci_failed', 'stale_head', 'checks_missing', 'timeout', 'pr_closed', 'pr_draft', 'github_error']
@@ -372,6 +379,9 @@ class CodingFinalOutput(Closed):
             created_at=e.intent.created_at, selected_digest=e.intent.selected_digest))))
         repo, number = github_subject(subject)
         head = subject['head']
+        _check(len({v.name for v in e.observations}) == len(e.observations))
+        for observation in e.observations:
+            _check(Path(observation.path) == path.parent / (observation.name + '.json'))
         if e.revalidated_at is not None:
             aware_time(e.revalidated_at)
         if e.command is not None:
@@ -389,7 +399,9 @@ class CodingFinalOutput(Closed):
                    and len(e.checks) == 2 and {v.name for v in e.checks} ==
                        {'Source Boundary Lint', 'Web Lint (Node 24)'}
                    and len({v.check_id for v in e.checks}) == 2
-                   and all(v.head == head for v in e.checks))
+                   and all(v.head == head for v in e.checks)
+                   and {v.name for v in e.observations} ==
+                       {'check-runs', 'statuses', *('run-' + str(v.run_id) for v in e.checks)})
             times = [datetime.fromisoformat(v.replace('Z', '+00:00')) for v in
                 (e.intent.created_at, e.revalidated_at, e.command.started_at,
                  e.remote.observed_at, e.command.finished_at)]

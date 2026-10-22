@@ -91,26 +91,38 @@ def _pr(repo: str, number: int, subject: dict) -> pr_ci_waiter.PRState:
     return pr_ci_waiter.PRState(head_sha=value['headRefOid'], open=value['state'] == 'OPEN', draft=value['isDraft'])
 
 
-def _checks(repo: str, head: str, evidence: list) -> list:
+def _checks(repo: str, head: str, evidence: list, directory: Path, observations: list) -> list:
     # Fetch all attempts, bounded to one complete page; never collapse duplicates.
+    def observe(name: str, value: dict) -> None:
+        path = directory / (name + '.json')
+        _write(path, value)
+        observations.append(dict(name=name, path=str(path), digest=_hash(_canonical(value))))
     raw = _api(f'repos/{repo}/commits/{head}/check-runs?per_page=100&filter=all')
+    observe('check-runs', raw)
     statuses = _api(f'repos/{repo}/commits/{head}/status?per_page=100')
+    observe('statuses', statuses)
     _check(type(raw['total_count']) is int and type(raw['check_runs']) is list
            and 0 <= raw['total_count'] == len(raw['check_runs']) <= 100
            and type(statuses['total_count']) is int and type(statuses['statuses']) is list
            and 0 <= statuses['total_count'] == len(statuses['statuses']) <= 100)
     _check(not any(v['context'] in CHECKS for v in statuses['statuses']))
-    selected = []
+    selected, runs = [], {}
     for name in CHECKS:
         candidates = [v for v in raw['check_runs'] if v['name'] == name]
-        _check(len(candidates) == 1)
+        if len(candidates) != 1:
+            raise ValueError(f'required check {name}: candidates={len(candidates)}; original snapshot retained')
         c = candidates[0]
+        if c['status'] != 'completed' or c['conclusion'] != 'success':
+            raise ValueError(f"required check {name}: id={c['id']} status={c['status']} conclusion={c['conclusion']}; original snapshot retained")
         _check(type(c['id']) is int and c['id'] > 0 and c['head_sha'] == head
                and c['status'] == 'completed' and c['conclusion'] == 'success')
         match = re.fullmatch(r'https://github\.com/' + re.escape(repo) + r'/actions/runs/([1-9][0-9]*)/job/([1-9][0-9]*)', c['details_url'])
         _check(match is not None and int(match[2]) == c['id'])
         run_id = int(match[1])
-        run = _api(f'repos/{repo}/actions/runs/{run_id}')
+        if run_id not in runs:
+            runs[run_id] = _api(f'repos/{repo}/actions/runs/{run_id}')
+            observe('run-' + str(run_id), runs[run_id])
+        run = runs[run_id]
         _check(type(run['id']) is int and run['id'] == run_id and run['repository']['full_name'] == repo
                and run['head_sha'] == head and run['check_suite_id'] == c['check_suite']['id']
                and run['status'] == 'completed' and run['conclusion'] == 'success')
@@ -151,13 +163,14 @@ def _execute(client: httpx.Client, org: str, sid: str, command: dict) -> dict:
     directory.parent.mkdir(parents=True, exist_ok=True)
     directory.mkdir()  # Existing/partial intent refuses; no automatic replay or second action.
     checks: list[dict] = []
+    observations: list[dict] = []
     error = ''
     try:
         waiter = pr_ci_waiter.wait_for_ci(repo=repo, pr_number=number,
             pinned_head_sha=command['subject']['head'], expected_checks=list(CHECKS),
             settle_seconds=0, timeout_seconds=0, poll_interval_seconds=0,
             fetch_pr_state=lambda: _pr(repo, number, command['subject']),
-            fetch_checks=lambda head: _checks(repo, head, checks), clock=pr_ci_waiter._RealClock())
+            fetch_checks=lambda head: _checks(repo, head, checks, directory, observations), clock=pr_ci_waiter._RealClock())
         ci = waiter.verdict
         error = waiter.error_detail or ''
     except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as exc:
@@ -167,10 +180,10 @@ def _execute(client: httpx.Client, org: str, sid: str, command: dict) -> dict:
         ci, error = 'checks_missing', 'strict two-check evidence missing'
     intent_body = dict(command=command, created_at=_now(), selected_digest=_hash(_canonical(selected)))
     _write(directory / 'selected.json', selected)
-    _write(directory / 'checks.json', dict(checks=checks, ci_verdict=ci, diagnostic=error))
+    _write(directory / 'checks.json', dict(checks=checks, observations=observations, ci_verdict=ci, diagnostic=error))
     _write(directory / 'intent.json', intent_body)
     evidence = dict(intent=dict(**intent_body, path=str(directory / 'intent.json'), digest=_hash(_canonical(intent_body))),
-        checks=checks, revalidated_at=None, guard_verdict=ci, command=None, remote=None, observation_diagnostic=error)
+        checks=checks, observations=observations, revalidated_at=None, guard_verdict=ci, command=None, remote=None, observation_diagnostic=error)
     # Keep exact original command/diagnostic in a separate receipt even on failure.
     def perform(method: str) -> pr_ci_merge.MergeResult:
         _check(method == 'merge' and _selected(client, org, sid, command) == selected)
