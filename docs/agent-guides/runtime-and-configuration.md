@@ -464,6 +464,16 @@ changed bytes under the same key conflict. Missing package I/O can hold a fresh
 import while exact saved replay remains readable. Any partial/foreign/malformed/
 extra/orphan/incorrectly typed relation refuses; failures roll back all new rows.
 
+Only the owned write-free existing-layout install_or_recover branch privately
+collects the validated audit device/inode/last-rowid. An outer Database RLock spans
+transaction exit and publication after successful COMMIT, publishing that exact
+prefix rather than a newer MAX. Validation failure, rollback, uncertain/failed
+COMMIT, interruption or detected identity/MAX regression cannot publish it.
+Caller transactions remain refused; fresh installation and public schema snapshots
+retain their behavior. Complete J/inventory/mapping/queued/source/data=False/FK/
+integrity checks remain; bounded mapping/queued paths do not trust watermarks.
+This assumes cooperative insert-only history, not arbitrary same-UID rewrites.
+
 Central J validation, including validate_data=False, source-data validation,
 startup/reopen, recovery pre-legacy discrimination and drain/downgrade all consume
 complete immutable import closure; no ID exemption or compiler-pin-only admission
@@ -733,6 +743,24 @@ is unavailable. The approved human risk override requires exact preview, stable
 org-wide key, canonical command and explicit confirmation of late producer/session
 writes, overlapping work, repeated external effects and missing owner/process/
 effect closure. This source supplies no live-use, deployment or restart authority.
+
+Startup and archived-thread resume cutover share a lazy, fully materialized
+release view and common lifecycle-family decoding only within one transaction's
+mutation-free segment. Unbuilt differs from proven-empty; every write invalidates
+both views and selected conclusions. Initialized pairs still pass evidence and
+permission checks before the no-op shortcut. Common sibling shape/size/duplicate/
+org/thread/audit-owner checks remain complete; selected initial/append/native
+agent/session histories replay on demand in caller order. Ordinary absent history
+remains None, distinct from bounded release missing/orphan/1024-row refusals.
+Permissions, live owners, holds, recovery, Pause, effects and raw census stay fresh.
+Terminal status alone is unsafe: callback consumption can precede cleanup, and
+settled=true/quiescent=false or sticky failed_cleanup retains unknown. Pending
+preservation still uses the stricter retry/deferral/live-owner predicate; nonpending
+history must be producer-settled and known before it stops preserving. Other
+callers reread normally. This is full common decoding with lazy selected replay,
+not unsettled-only pruning or lifecycle clearance. A legacy triggering_seq0 write
+followed by another participant's native_delivery_range refusal rolls back the
+whole cutover, without reusing the prewrite view or changing resume's prior commit.
 
 The append-only version1 `thread_delivery_release` companion retains real thread
 scope/permanent agent meanings and literal lifecycle-v1/unknown/retry history.
@@ -2376,12 +2404,13 @@ scheduler, API and CLI behavior do not depend on them. Local overrides
 `web/ARCHITECTURE.md` § Build-time UI flags.
 
 `scripts/daemon.sh start` removes a stale port file, launches the daemon, and
-waits up to `HAPPYRANCH_DAEMON_START_TIMEOUT` seconds (default `30`, positive
+waits up to `HAPPYRANCH_DAEMON_START_TIMEOUT` seconds (default `120`, positive
 integers only) for `GET /api/v1/health` to answer on the configured bind host.
 Wildcard bind addresses are probed through their loopback equivalent. If the
 background process exits or readiness times out, startup exits 1 and prints
 the last 20 lines of `daemon.log`; if `curl` is unavailable, it announces a
-fallback to the fresh `daemon.port` file.
+fallback to the fresh `daemon.port` file. Timeout can leave a possible launch
+running; actual-Python lifetime duplicate-start protection remains separate.
 
 After genuine successful Server startup, the serving lifespan's private diagnostic
 coordinator schedules one bounded off-loop pass; startup/readiness never waits
@@ -2404,6 +2433,20 @@ audit table exists. It applies to fresh and existing databases and is idempotent
 on reopen. It preserves historical rows, raw scopes, payload bytes, IDs and
 writer transaction boundaries; it adds no `task_results` index.
 
+The same post-executescript initializer also installs
+`CREATE INDEX IF NOT EXISTS idx_audit_log_action ON audit_log(action)` beside
+the task index. Fresh/supported existing initialization and reopen authenticate
+this exact explicit, nonunique, nonpartial, single ascending BINARY action key
+(the implicit rowid tail is allowed). A conflicting selected-name definition
+refuses without drop/repair. Existing rows/IDs/actions/payloads, queries and
+ascending-ID results remain unchanged. Current independent fresh/v0/v2/v2-organic
+whole-schema references include it through current Database; historical preimages,
+raw schema equality and preflight/layout ordering remain unchanged. A raw offline
+old DB needs the supported initializer before current-reference-dependent use.
+Strict older readers may refuse; rollback requires a reviewed compatible reader
+preserving both indexes/history, with no new workflow migration/version or live
+index installation. Initializer-wide atomicity and measured speedup are not claimed.
+
 For a separately authorized operator, install the reviewed source using the
 deployment procedure for that runtime, with its locked dependencies and
 compatible binaries. Before the ordinary restart, drain active consumers and
@@ -2417,7 +2460,7 @@ exact index SQL, `PRAGMA index_list('audit_log')` nonunique/nonpartial flags and
 task-scoped query should report `SEARCH audit_log USING INDEX
 idx_audit_log_task_id` without a temporary ORDER BY tree. Read back retained
 audit IDs/raw scopes and actual decoded results. Measure live startup after
-installation before claiming readiness within the default 30 seconds.
+installation before claiming readiness within the default 120 seconds.
 
 Rollback uses a reviewed compatible release that understands the complete
 indexed schema and preserves the index/history. A preceding reader whose v1

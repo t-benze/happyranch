@@ -590,10 +590,11 @@ def _validate_cutover_data(
 def _validate_installed(
     conn: sqlite3.Connection, *, expected_org_slug: str | None = None,
     validate_data: bool = True,
+    advances: list[tuple[tuple[int, int], int]] | None = None,
 ) -> Literal["F", "E", "G", "H", "I", "J"]:
     with _schema_snapshot(conn):
         return _read_installed(conn, expected_org_slug=expected_org_slug,
-                               validate_data=validate_data)[0]
+                               validate_data=validate_data, advances=advances)[0]
 
 
 @contextmanager
@@ -612,6 +613,7 @@ def _schema_snapshot(conn: sqlite3.Connection):
 def _read_installed(
     conn: sqlite3.Connection, *, expected_org_slug: str | None,
     validate_data: bool = True, budget: _Budget | None = None,
+    advances: list[tuple[tuple[int, int], int]] | None = None,
 ) -> tuple[Literal['F', 'E', 'G', 'H', 'I', 'J'], _CodingInventory | None]:
     actual = _layout(conn)
     names = {row[1] for row in actual[0]}
@@ -624,7 +626,7 @@ def _read_installed(
 
     from runtime.infrastructure.workflow_coding_schema import _read_coding_data
     coding = _read_coding_data(conn, layout=layout, expected_org_slug=expected_org_slug,
-                               budget=budget)
+                               budget=budget, advances=advances)
     # Unknown native admission owners (including unsupported coding families)
     # never become a legacy observation on an earlier workflow layout.
     from runtime.infrastructure.task_pause_controls import validate_pause_schema
@@ -683,16 +685,26 @@ class WorkflowCompatibilityStore:
         before_commit: Callable[[], None] | None = None,
         expected_org_slug: str | None = None,
     ) -> Literal["installed_legacy_only", "reopened"]:
-        with self._database.workflow_schema_transaction() as conn:
-            actual = _layout(conn)
-            if actual[0]:
-                _validate_installed(conn, expected_org_slug=expected_org_slug)
-                return "reopened"
-
-            _install_foundation(conn, expected_org_slug=expected_org_slug)
-            if before_commit is not None:
-                before_commit()
-            return "installed_legacy_only"
+        # Keep the connection exclusively owned through transaction exit AND
+        # publication. Only this existing-layout branch is write-free.
+        with self._database._lock:
+            advances: list[tuple[tuple[int, int], int]] = []
+            with self._database.workflow_schema_transaction() as conn:
+                actual = _layout(conn)
+                if actual[0]:
+                    _validate_installed(conn, expected_org_slug=expected_org_slug,
+                                        advances=advances)
+                    result = "reopened"
+                else:
+                    _install_foundation(conn, expected_org_slug=expected_org_slug)
+                    if before_commit is not None:
+                        before_commit()
+                    result = "installed_legacy_only"
+            # No exception/interruption/failed COMMIT reaches publication.
+            from runtime.infrastructure.workflow_coding_schema import _advance_audit_log_watermark
+            for file_key, last_id in advances:
+                _advance_audit_log_watermark(conn, file_key, last_id)
+            return result
 
 
 def install_or_recover(

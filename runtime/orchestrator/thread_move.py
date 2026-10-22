@@ -10,7 +10,7 @@ import time
 import uuid
 from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 
 from runtime.infrastructure.thread_admission import ThreadAdmissionStore, ThreadAttempt, ThreadLifecycle
 from runtime.infrastructure.team_move_store import MoveRequest, _decode
@@ -558,18 +558,28 @@ class ThreadMoveAdmission:
         return state is not None and not self._settled_without_owner(inv, state)
 
     def preserve_pair_uncommitted(self, thread_id: str, agent_id: str) -> bool:
+        from runtime.infrastructure.thread_delivery_release import delivery_view
+        return self._preserve_pair_uncommitted(thread_id, agent_id,
+            view=lambda: delivery_view(self.db, thread_id), read_state=self.store.read_uncommitted)
+
+    def _preserve_pair_uncommitted(
+        self, thread_id: str, agent_id: str, *, view: Callable[[], Any],
+        read_state: Callable[[Any], ThreadLifecycle | None],
+    ) -> bool:
+        # Cutover supplies only local lazy readers, never permission/live/hold
+        # conclusions. Every other caller retains fresh ordinary reads.
         if self.held_uncommitted(agent_id) is not None:
             return True
-        from runtime.infrastructure.thread_delivery_release import delivery_view, pair_permission
-        view = delivery_view(self.db, thread_id)
-        if not pair_permission(view, thread_id, agent_id):
+        from runtime.infrastructure.thread_delivery_release import pair_permission
+        materialized = view()
+        if not pair_permission(materialized, thread_id, agent_id):
             return True
         for raw in self.db._conn.execute("SELECT * FROM thread_invocations WHERE thread_id=? AND agent_name=?",
                 (thread_id, agent_id)):
             inv = self.db._row_to_invocation(raw)
-            if view is not None and view.released(inv.id):
+            if materialized is not None and materialized.released(inv.id):
                 continue  # Delivery interpretation only; census remains raw.
-            state = self.store.read_uncommitted(inv)
+            state = read_state(inv)
             if state is None:
                 continue
             if inv.status is ThreadInvocationStatus.PENDING and self._settled_without_owner(inv, state):
