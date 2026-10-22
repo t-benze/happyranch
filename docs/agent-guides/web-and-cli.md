@@ -4188,7 +4188,8 @@ new hold/transition and predecessor. Successor-native event/command@1,
 uncertainty-only@2 and admission@1 preserve native ownership; final-manager@4
 is the actual consumed supplement. Public run@6 retains field inventory and
 allows content revision1..3 for a successor; CLI/served schema share its reader.
-Selected/output/finalize families remain literal @2/r1 and @3/r2..3 as applicable.
+Selection/output remain literal @2/r1 and @3/r2..3; LOCAL finalize-command
+remains @1/r1 and @2/r2..3.
 Complete saved/native/current/schema(data=False)/cold/reopen/recovery/drain
 readers reject mixed/orphan/fork/incomplete history on ONE cumulative allowance,
 including target rereads. Old held/native/r1..r3 bytes and meanings remain.
