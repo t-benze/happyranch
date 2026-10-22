@@ -19,7 +19,7 @@ import httpx
 from cli._shared import require_absolute_payload_path, resolve_org_slug
 from runtime.runtime import port_file
 from runtime.daemon import pr_ci_merge, pr_ci_waiter
-from runtime.workflows.coding_saved_records import _canonical, _check, _hash, _json
+from runtime.workflows.coding_saved_records import _canonical, _check, _constant, _hash, _json, _pairs
 from runtime.workflows.coding_start_records import (
     CodingCheckEvidence, CodingFinalOutput, CodingFinalSelection, github_subject, parse_finalize,
 )
@@ -49,8 +49,18 @@ def _run(argv: list[str], *, cwd: Path | None = None) -> str:
     return result.stdout
 
 
+def _remote_json(raw: bytes, limit: int) -> dict:
+    # Provider/HTTP JSON is not our canonical persisted encoding. Preserve
+    # native types and reject duplicates/nonfinite values without requiring
+    # GitHub or JSONResponse to use our serializer/key order.
+    _check(type(raw) is bytes and 0 < len(raw) <= limit)
+    value = json.loads(raw.decode('utf8'), object_pairs_hook=_pairs, parse_constant=_constant)
+    _check(type(value) is dict)
+    return value
+
+
 def _api(path: str) -> dict:
-    return _json(_run(['gh', 'api', path]).encode('utf8'), 1048576)
+    return _remote_json(_run(['gh', 'api', path]).encode('utf8'), 1048576)
 
 
 def _local_subject(command: dict, repo: str, number: int) -> None:
@@ -71,7 +81,7 @@ def _local_subject(command: dict, repo: str, number: int) -> None:
 
 
 def _pr(repo: str, number: int, subject: dict) -> pr_ci_waiter.PRState:
-    value = _json(_run(['gh', 'pr', 'view', str(number), '--repo', repo, '--json',
+    value = _remote_json(_run(['gh', 'pr', 'view', str(number), '--repo', repo, '--json',
         'number,url,headRefOid,headRefName,isDraft,state,baseRefOid']).encode('utf8'), 65536)
     _check(type(value['number']) is int and value['number'] == number
            and value['url'] == f'https://github.com/{repo}/pull/{number}'
@@ -116,7 +126,7 @@ def _selected(client: httpx.Client, org: str, sid: str, command: dict) -> dict:
     response = client.get(f"/api/v1/orgs/{org}/workflows/coding/runs/{command['instance_id']}/final-manager",
                           params={'session_id': sid})
     _check(response.status_code == 200 and len(response.content) <= 262144)
-    result = CodingFinalSelection.model_validate(response.json()).model_dump()
+    result = CodingFinalSelection.model_validate(_remote_json(response.content, 262144)).model_dump()
     for key in ('instance_id', 'attempt_id', 'task_id', 'session_id', 'principal', 'revision', 'subject', 'upstream_results'):
         _check(result[key] == command[key])
     # Reparse the original selected full callback summaries locally. No recall fallback.
