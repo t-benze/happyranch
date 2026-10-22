@@ -334,7 +334,7 @@ def emit(value):
 
 def run(*argv):
     import runpy
-    custody = runpy.run_path(sys.argv[1])
+    custody = runpy.run_path(ASSET_HELPER)
     p = custody['SUPERVISOR'].inspection_run(argv)
     if p.returncode:
         fail('INSPECTION_TOOL_FAILURE', {'argv': argv, 'exit': p.returncode,

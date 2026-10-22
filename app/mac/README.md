@@ -321,6 +321,12 @@ validated cache under this run's freeze work path before invoking build tools.
 PyInstaller `--clean` therefore stays within the invocation's allocations,
 including for standalone freezer builds; external caches remain untouched.
 
+The read-only verifier captures the adjacent asset helper path before parsing
+the subcommand. Each shared Git/native tool call reopens that captured helper
+and uses its original supervisor inspection path; the subcommand is never used
+as a helper filename. Preflight validates source identity and the absent output
+path without constructing an app. This does not establish native acceptance.
+
 Success requires a real release executable, all eleven strong tsnet exports
 bound to fresh archive members, native component inspection, all 29 exact
 resources, exact frozen catalog JSON, manifest notices and ZIP reconciliation.
