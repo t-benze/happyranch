@@ -107,7 +107,8 @@ def manager_successor_scope(*, org: str, instance: str, command: dict, roles: di
     _copy_allowance(previous, budget)
     value = revision_scope(org=org, instance=instance, command=command, roles=roles, attempt=attempt,
         attempts=attempts, subject=subject, returns=[], upstream=upstream, repository_reference=repository_reference)
-    value.update(format='workflow-coding-final-scope@4', predecessor=dict(attempt_id=previous['id'],
+    value.update(format='workflow-coding-final-scope@4', predecessor_id=previous['id'],
+        predecessor=dict(attempt_id=previous['id'],
         task_id=previous['task_id'], session_id=previous['session_id'], result_id=previous['result_id'],
         principal=previous['principal'], scope_digest=previous['scope_digest']))
     return value
