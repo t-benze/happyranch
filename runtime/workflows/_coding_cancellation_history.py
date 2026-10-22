@@ -129,9 +129,6 @@ def complete(conn: Any, org: str, budget: Any, storage: Any) -> None:
     for records in storage.cancellations.values():
         sample = next(iter(records.values()))
         command, originals = sample['command'], sample['originals']
-        expected_owners = [dict(task_id=k, kind=v[0], instance_id=v[1])
-            for k, v in sorted(storage.owners.items()) if v[1] in records]
-        _check(same(command['owners'], expected_owners))
         pending, visited, instances = [command['target_task_id']], set(), set()
         while pending:
             budget.step()
@@ -144,12 +141,25 @@ def complete(conn: Any, org: str, budget: Any, storage: Any) -> None:
             owner = storage.owners.get(key)
             if owner is not None and owner[1] not in instances:
                 instances.add(owner[1])
-                _check(owner[1] in records)
-                pending.extend(storage.runs[owner[1]]['tasks'])
+                entry = storage.runs[owner[1]]
+                if owner[1] not in records:
+                    # A later ancestor stop retains this earlier terminal
+                    # graph byte-for-byte; no second event/control is owed.
+                    earlier = entry['native'].get('cancellation')
+                    _check(earlier is not None and entry['run']['state'] == 'cancelled'
+                           and max(a['id'] for a in earlier['audits']) < min(a['id'] for a in sample['audits']))
+                    for task_id, task in entry['tasks'].items():
+                        budget.step()
+                        _check(task['status'] in TERMINAL and task_id in originals
+                               and same(task, originals[task_id]))
+                pending.extend(entry['tasks'])
             if command['cascade'] and row['status'] not in TERMINAL:
                 pending.extend(r['id'] for r in rows(conn, 'tasks', budget,
                     where='parent_task_id=?', args=(key,), maximum=512))
-        _check(visited == set(originals) and instances == set(records))
+        _check(visited == set(originals) and set(records) <= instances)
+        expected_owners = [dict(task_id=k, kind=v[0], instance_id=v[1])
+            for k, v in sorted(storage.owners.items()) if v[1] in instances]
+        _check(same(command['owners'], expected_owners))
         for record in records.values():
             _check(same(command, record['command']) and same(sample['audits'], record['audits']))
         # Complete saved coding readers already check all mutable coding rows.
@@ -165,6 +175,22 @@ def complete(conn: Any, org: str, budget: Any, storage: Any) -> None:
                     'updated_at': command['cancelled_at']}
             found = list(rows(conn, 'tasks', budget, where='id=?', args=(key,), maximum=1))
             _check(len(found) == 1 and same(found[0], row))
+
+    # No row may receive two independent live-to-cancelled overlays. Replaying
+    # multiple graph events for ONE batch is distinct from another batch.
+    overlays = {}
+    for records in storage.cancellations.values():
+        record = next(iter(records.values()))
+        for key, original in record['originals'].items():
+            budget.step()
+            if original['status'] not in TERMINAL:
+                _check(key not in overlays)
+                overlays[key] = record
+    for historical in storage.cancellation_comparisons:
+        budget.step()
+        found = list(rows(conn, 'tasks', budget, where='id=?', args=(historical['id'],), maximum=1))
+        _check(len(found) == 1 and historical['id'] in overlays)
+        ancestry(found[0], historical, overlays[historical['id']])
 
 
 def outer(value: Any, *, original: dict | None, claim: dict | None, source: dict,
@@ -229,11 +255,28 @@ def outer(value: Any, *, original: dict | None, claim: dict | None, source: dict
         _check(expected_request is not None and terminal['request']['logical_id'] == expected_request)
 
 
+def defer_ancestry(actual: dict, historical: dict, storage: Any, budget: Any) -> None:
+    """Retain an unresolved equality obligation, never a validated row cache.
+
+    Full replay can encounter an older graph before the later ancestor batch.
+    Original predicates still use the unchanged capture. Complete batch closure
+    below must authenticate the sole overlay and freshly reread current SQL.
+    """
+    from runtime.workflows.coding_start_history import same
+    if same(actual, historical):
+        return
+    from runtime.workflows.coding_revision import _copy_allowance
+    _copy_allowance(historical, budget)
+    storage.cancellation_comparisons.append(historical)
+
+
 def ancestry(actual: dict, historical: dict, cancellation: dict | None) -> None:
     from runtime.workflows.coding_start_history import same
     expected = historical
-    if cancellation is not None and historical['id'] in cancellation['originals']:
-        _check(same(cancellation['originals'][historical['id']], historical))
+    if cancellation is not None:
+        _check(historical['status'] not in TERMINAL
+               and historical['id'] in cancellation['originals']
+               and same(cancellation['originals'][historical['id']], historical))
         command = cancellation['command']
         note = 'cancelled by ' + command['actor'] + (': ' + command['rationale'] if command['rationale'] else '')
         expected = {**historical, 'status': 'cancelled', 'block_kind': None, 'note': note,

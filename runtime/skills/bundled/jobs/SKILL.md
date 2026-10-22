@@ -568,8 +568,15 @@ Preserve original intent/action/receipt uncertainty and native preparation/
 terminal/outer ownership. Only a callback already committed under the exact
 original INTEGER/task/SID may drain or replay unchanged, without advancing.
 A stopped task, missing handle/control or transport loss supplies no cleanup,
-remote-effect clearance, reservation release or retry permission. The existing
-Founder task-cancel route owns cancellation; this skill grants no control tool.
+remote-effect clearance, reservation release or retry permission. A later ordinary
+ancestor batch with a live coding graph preserves earlier cancelled graphs and
+controls; complete readers authenticate that ancestor overlay against unchanged
+original admission bytes. Prepared/unknown ownership, missing/failed controls and
+unsettled outer proof retain the existing root-tail incomplete disposition, even
+without a PID and after a successful control return. Only positive original owner
+settlement permits the existing safe disposition; never clear tracker/journal
+ownership to force it. The existing Founder task-cancel route owns cancellation;
+this skill grants no control tool.
 Deferred native recovery/reassignment remain unavailable separately. Genuine
 current task/SID report-completion remains the final action; never fabricate
 an earlier result or another task's callback to work around a refusal.

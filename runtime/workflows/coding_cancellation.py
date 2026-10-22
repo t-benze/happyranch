@@ -86,9 +86,15 @@ def cancel_locked(org: Any, task_id: str, *, cascade: bool, rationale: str,
                     _check(conn.execute('SELECT 1 FROM workflow_instances WHERE root_task_id=? LIMIT 1', (key,)).fetchone() is None)
             live = {k: v for k, v in selected.items() if v['status'] not in TERMINAL}
             _check(live)
-            for instance in instances:
+            fresh = {i for i in instances if saved.runs[i]['run']['state'] != 'cancelled'}
+            # Retained graphs still belong to the complete closure, but never
+            # receive another cancellation event, task write or control.
+            for instance in instances - fresh:
+                _check(all(t['status'] in TERMINAL for t in saved.runs[instance]['tasks'].values()))
+            _check(fresh)
+            for instance in fresh:
                 entry = saved.runs[instance]
-                _check(entry['run']['state'] not in ('complete', 'cancelled')
+                _check(entry['run']['state'] != 'complete'
                        and entry['run']['cas_version'] < min(4096, entry['source']['budgets']['coding_event_limit']))
             from runtime.infrastructure.task_pause_controls import decode_journal
             native_owners = []
@@ -100,6 +106,16 @@ def cancel_locked(org: Any, task_id: str, *, cascade: bool, rationale: str,
                             native_owners.append(native)
             _check(len(native_owners) <= 512 and len({n['id'] for n in native_owners}) == len(native_owners))
             native_owners.sort(key=lambda n: n['id'])
+            # Native preparation has effects before a control/PID is published.
+            # Neither its absence nor a later successful control settles it.
+            teardown_incomplete = bool(native_owners)
+            for instance in instances:
+                native = saved.runs[instance]['native']
+                teardown_incomplete |= not native['source_settled'] or native.get('ownership_unknown', False)
+                for state in native['stages'].values():
+                    budget.step()
+                    owned = state['claim'] is not None or state.get('queue_owner') is not None or state['host'] is not None
+                    teardown_incomplete |= owned and not (state['cleanup_recorded'] and state['cleanup'])
             now = stamp()
             command = dict(format='workflow-coding-cancellation-command@1', target_task_id=task_id,
                 cascade=cascade, actor=actor, rationale=rationale, cancelled_at=now, native_owners=native_owners,
@@ -124,7 +140,7 @@ def cancel_locked(org: Any, task_id: str, *, cascade: bool, rationale: str,
                     audit = list(rows(conn, 'audit_log', budget, where='id=?', args=(audit_id,), maximum=1))
                     _check(len(audit) == 1)
                     audits.append(dict(table='audit_log', id=audit_id, record=encode_row(audit[0])))
-                for instance in sorted(instances):
+                for instance in sorted(fresh):
                     entry = saved.runs[instance]
                     previous = entry['native']['history'][-1]
                     principal = 'service:coding-cancellation:' + org.slug
@@ -155,7 +171,7 @@ def cancel_locked(org: Any, task_id: str, *, cascade: bool, rationale: str,
                         (payload['event_seq'], event_id, instance))
                 _read_workflow_schema(conn, expected_org_slug=org.slug, budget=budget)
                 conn.commit()
-            return dict(tasks=sorted(live), coding_tasks=sorted(set(live) & saved.owners.keys()), prior={k: TaskStatus(v['status']) for k, v in live.items()},
+            return dict(teardown_incomplete=teardown_incomplete, tasks=sorted(live), coding_tasks=sorted(set(live) & saved.owners.keys()), prior={k: TaskStatus(v['status']) for k, v in live.items()},
                         block_kinds={k: None if v['block_kind'] is None else BlockKind(v['block_kind']) for k, v in live.items()})
         except BaseException:
             conn.rollback()

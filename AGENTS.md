@@ -4266,7 +4266,12 @@ rediscovers the target/cascade and complete affected coding graphs, retains
 terminal tasks, and atomically writes native cancellation rows, original
 `task_cancelled` audits, run/attempt fences and closed cancellation events.
 A direct coding leaf stops its complete graph; an ordinary ancestor may stop
-multiple graphs. Partial/foreign/orphan/mixed or oversized closure refuses;
+multiple graphs. A later ancestor batch containing a live graph also retains
+previously cancelled graphs in its complete closure: their terminal tasks,
+results, events and native owners stay intact, with no second cancellation or
+repeated control. Readers authenticate the earlier batch, retained task equality
+and strict audit ordering before admitting that later batch.
+Partial/foreign/orphan/mixed or oversized closure refuses;
 complete independent target validation shares the original cumulative allowance
 and precedes COMMIT. Existing opaque native/prepared controls and worktree/tail
 ordering follow outside the writer. Coding controls never fall back to a PID.
@@ -4283,6 +4288,12 @@ never native quiescence, remote-effect absence, preparation cleanup or success.
 Affirmative owned queued prelaunch history is distinct from an absent handle.
 Missing/failed controls, unclosed preparation, reserved-no-handle, stale journals,
 unknown effect or missing terminal/outer proof retain the original owner.
+They also set the existing conservative root-tail teardown-incomplete disposition,
+including genuine prepared/unknown entries with no control/PID. Successful
+control return or absent PID is not settlement; coding batches retain ordinary
+outer tracker ownership too. Positively settled original owners keep their
+existing disposition. Ordinary-only and document draft/F5 cancellation retain
+their existing behavior.
 Fresh callback/launch/stage/successor/merge admission is fenced. A precommitted
 original INTEGER/task/SID callback may drain or replay exactly, read-only,
 without advancing. Tasks/runs remain cancelled when later native facts settle;
@@ -4291,7 +4302,14 @@ generation, lower limit, age or uncertainty is reset. No daemon PR I/O occurs.
 
 Saved/current/native/schema(data=False)/cold/reopen/recovery/drain consumers
 share the independent closed reader, including complete cross-graph audit/task
-closure. Public `workflow-coding-run@7` keeps the existing field inventory,
+closure. Start ancestry and every development/review/QA/final/revision/successor
+edge retain original admission predicates and captured bytes. A changed external
+row creates an unresolved equality obligation, resolved only after ALL independent
+batches close: freshly read current SQL must equal the sole authenticated
+cancellation overlay of that exact original row. No partial census, trusted
+after-image, mutable-field exemption or reusable validation cache is accepted;
+all copying/traversal/reads and post-write reconstruction share the ONE original
+aggregate allowance before COMMIT. Public `workflow-coding-run@7` keeps the existing field inventory,
 explicit cancelled state and cancelled-or-uncertain current attempt; the CLI
 and served route consume the same union. Literal old held/r1-r3/native/document/
 then histories retain their own meanings. Deferred native recovery still refuses

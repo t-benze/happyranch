@@ -2163,6 +2163,7 @@ async def cancel_task(
                 to_cancel = cancellation['tasks']
                 prior_statuses = cancellation['prior']
                 prior_block_kinds = cancellation['block_kinds']
+                root_tail_failed |= cancellation.get('teardown_incomplete', False)
             else:
                 # Rediscover ordinary membership after the actual lock wait too.
                 to_cancel, prior_statuses, prior_block_kinds = [], {}, {}
@@ -2190,6 +2191,11 @@ async def cancel_task(
                 from runtime.orchestrator.task_pause import prepared_cancel_controls
                 controls_by_agent = dict(org.sessions.iter_task_cancel_controls(tid))
                 controls_by_agent.update(prepared_cancel_controls(org.db, tid))
+                coding_task = cancellation is not None and tid in cancellation.get('coding_tasks', ())
+                if (coding_task and not controls_by_agent
+                        and prior_statuses[tid] == TaskStatus.IN_PROGRESS
+                        and prior_block_kinds[tid] is None):
+                    root_tail_failed = True
                 for agent, control in controls_by_agent.items():
                     controls_to_invoke.append((tid, agent, control))
                 # THR-207: a wired session's PID is diagnostic/restart evidence
@@ -2199,8 +2205,10 @@ async def cancel_task(
                 # (non-wired/legacy sessions — impossible in production because
                 # the control is registered before launch).
                 for agent, pid in org.sessions.iter_task_pids(tid):
-                    if agent not in controls_by_agent and not (cancellation is not None and tid in cancellation.get("coding_tasks", ())):
-                        pids_without_control.append((tid, agent, pid))
+                    if agent not in controls_by_agent:
+                        root_tail_failed |= cancellation is not None
+                        if not coding_task:
+                            pids_without_control.append((tid, agent, pid))
 
         # Phase 1b: fire thread followup for every cancelled task that had NO live
         # subprocess at cancel time.
@@ -2246,14 +2254,15 @@ async def cancel_task(
                 await asyncio.to_thread(control)
                 killed.append({"task_id": tid, "agent": agent})
             except Exception as exc:
+                root_tail_failed |= cancellation is not None
                 logger.warning(
                     "cancel %s: opaque cancel control invocation failed: %s",
                     tid, exc,
                 )
-            # Clear the tracker entry so a parent auto-resume (if one gets
-            # enqueued via run_step's dependent-child check) can't find a stale
-            # pid/control and mis-route a subsequent cancel.
-            if cancellation is None or tid not in cancellation.get("coding_tasks", ()):
+            # Coding batches retain both coding and ordinary outer owners.
+            # A control return cannot substitute for their owned settlement.
+            # Preserve the ordinary-only route's existing tracker semantics.
+            if cancellation is None:
                 org.sessions.clear(tid, agent)
         for tid, agent, pid in pids_without_control:
             try:
@@ -2262,10 +2271,12 @@ async def cancel_task(
             except ProcessLookupError:
                 pass
             except OSError as exc:
+                root_tail_failed |= cancellation is not None
                 logger.warning(
                     "cancel %s: os.kill(%s, SIGTERM) failed: %s", tid, pid, exc,
                 )
-            org.sessions.clear(tid, agent)
+            if cancellation is None:
+                org.sessions.clear(tid, agent)
 
         # Phase 3: publish terminal events for any live SSE tails. EventBus
         # recognises `task_failed` as terminal (see _TERMINAL_TYPES in

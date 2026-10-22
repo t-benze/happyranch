@@ -71,7 +71,8 @@ def admission(conn: Any, org: str, budget: Any, storage: Any, value: dict, *,
         _check(len(actual) == 1)
         row = actual[0]
         if key not in tasks:
-            _check(same(row, closure[key]))
+            from runtime.workflows._coding_cancellation_history import defer_ancestry
+            defer_ancestry(row, closure[key], storage, budget)
         else:
             for name in ('id', 'assigned_agent', 'team', 'brief', 'parent_task_id', 'revisit_of_task_id'):
                 _check(same(row[name], closure[key][name]))

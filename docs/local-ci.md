@@ -1640,8 +1640,15 @@ and literal exact-head Source Boundary Lint / Web Lint (Node 24). Existing
 operator CLI help, imports and idle served-schema summary may check the new
 run@7 registration; they do not exercise cancellation/native/SQL races.
 No tests/fixtures/assertions or proof venue are added by this increment.
-C11/F5/F8 execution/causal proof is NOT RUN / PROOF NOT RUN without an authentic
-entitled venue under THR320seq99. No old-root execution waiver is inherited.
+C11/F5/F8 cases include separately cancelled G1 then ancestor/live-G2 cascade,
+progressed development/review/QA/final/revision/successor ancestor overlays,
+prepared/unknown owners with no control/PID, missing/throwing controls, and
+positive-settlement/duplicate/exact-callback/rollback keepers. Complete readers
+must preserve original bytes/membership and independently close every batch;
+root-tail incomplete must retain unresolved ownership after business COMMIT.
+These are source requirements, not results of lint. C11/F5/F8 execution/causal
+proof is NOT RUN / PROOF NOT RUN without an authentic entitled venue under
+THR320seq99. No old-root execution waiver is inherited.
 Integration INCLUDING callback/lifespan/SessionTracker remains SKIPPED24342;
 Python units RETIRED; missing Swift proof remains UNEXECUTED /
 FOUNDER-EXEMPTED / NONBLOCKING320seq93. No E2E/build/native campaign follows.

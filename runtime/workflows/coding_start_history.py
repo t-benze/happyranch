@@ -73,6 +73,7 @@ class QueuedStorage:
     owners: dict = field(default_factory=dict)
     callbacks: dict = field(default_factory=dict)
     cancellations: dict = field(default_factory=dict)
+    cancellation_comparisons: list = field(default_factory=list)
 
     def add(self, table: str, row: dict) -> None:
         key = _canonical(encode_row(row))
@@ -380,12 +381,11 @@ def read_queued(conn: sqlite3.Connection, org: str, budget: _Budget, mappings: A
             tasks=after_tasks, source=source, roles=roles, authority=evidence['authority'],
             command_value=command, mapping=mapping, source_invocation=entry,
             source_ancestors=[decode_row(r) for r in native_source['ancestors']])
-        # A new cancellation may also stop a legacy ancestor. Reconstruct
-        # only that closed overlay AFTER its independent event/batch replay;
-        # all preceding historical native ancestor bytes remain unchanged.
-        from runtime.workflows._coding_cancellation_history import ancestry
+        # Another graph may carry a later ordinary-ancestor cancellation.
+        # Resolve changed equality only after ALL independent batches close.
+        from runtime.workflows._coding_cancellation_history import defer_ancestry
         for actual, historical in current_ancestors:
-            ancestry(actual, historical, native.get('cancellation'))
+            defer_ancestry(actual, historical, storage, budget)
         actual_attempts = {a['id']: a for a in selected_attempts}
         _check(len(actual_attempts) == len(selected_attempts)
                and same(native['run'], actual_run) and same(native['attempts'], actual_attempts))
