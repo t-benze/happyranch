@@ -283,6 +283,13 @@ uploaded. Diagnostic completeness does not establish release or legal closure.
 
 ## Read-only verifier
 
+The verifier captures its adjacent asset helper path before parsing the
+subcommand. Every shared Git/native tool call reopens that captured helper via
+`runpy.run_path(ASSET_HELPER)` and retains `SUPERVISOR.inspection_run(argv)`;
+the shifted subcommand argument is never the helper path. Preflight checks the
+exact clean source identity and absent output path without constructing an app.
+Portable preflight success does not establish native or package acceptance.
+
 All commands use Python standard library and, for native inspection, actual
 Mac `file/lipo/otool/nm/ar` tools. Trust inspection captures the installed spctl manual, codesign metadata and
 nested/outer integrity exits plus actual policy-assessment diagnostics. Tool
