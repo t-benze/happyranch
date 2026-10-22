@@ -1056,9 +1056,10 @@ class Session:
 
     def fail(self, error, original_exit=None):
         try:
-            create(self.paths.evidence_dir / 'freezer-failure.json', encoded({
-                'encoding': ENCODING, 'state': 'INCOMPLETE', 'run_id': self.run,
-                'error': str(error)[:4096], 'original_exit': original_exit, 'refused_owners': ['freezer']}), self.budget)
+            with ASSET['SUPERVISOR'].failure_scope(original_exit or 1):
+                create(self.paths.evidence_dir / 'freezer-failure.json', encoded({
+                    'encoding': ENCODING, 'state': 'INCOMPLETE', 'run_id': self.run,
+                    'error': str(error)[:4096], 'original_exit': original_exit, 'refused_owners': ['freezer']}), self.budget)
         except (OSError, ValueError) as persistence:
             print('FREEZER_FAILURE_PERSISTENCE:' + type(persistence).__name__, file=sys.stderr)
 

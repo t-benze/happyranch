@@ -834,3 +834,45 @@ Its retained helper timing included 153 snapshots (19.4324 s total), publish-bui
 include startup/validation/tracing overhead. Native-only asset context/source
 validation was unexercised. This evidence does not establish native root cause,
 a performance fix, Darwin timing or package/launch acceptance.
+
+Packaging helper invocations use the finite deadlines and held-direct-child
+lifecycle in `app/mac/scripts/packaging_supervisor.py`; see the named-helper
+table and ownership limits in [the Mac guide](../app/mac/README.md#named-helper-deadlines-and-owned-cleanup).
+Token/fail operations are30s, small web operations120s, web prepare/begin300s,
+and the enumerated larger helpers/notices600s. Existing per-tool60s bounds stay;
+verifier modes are300s except licenses600s, and frozen diagnostics have one600s
+outer. Internal failure persistence is30s clipped to the original clock only
+when an actual supervising owner is present. PyInstaller imports/freezer body,
+npm producers, compilers and archive compression remain workflow-only.
+
+The relay retains pending input/output across retryable nonblocking readiness
+loss, including stdout/stderr/fd3 sinks that alias one pipe; partial writes
+advance only the bytes delivered. These retries consume the original clock.
+Secondary and terminal diagnostics make only a best-effort nonblocking attempt
+within the existing cleanup window; unavailable diagnostics cannot replace the
+computed status or delay return by waiting for a sink. Borrowed stdio flags are
+restored after their last use. CLI error diagnostics likewise never wait.
+The first caught signal is latched through error and final settlement, including
+handler restoration, and the result is selected after restoration. With no
+earlier observed failure/deadline, it returns the conventional signal result
+even after a successful child poll; an earlier primary cause remains unchanged.
+The parent uses the genuine nonzero status already stored by its child poll or
+reap, including a child signal, before considering a later caught signal,
+exception or cleanup result. This applies before the caller receives that
+status and when reap subsequently raises; unobserved kernel exits do not imply
+an earlier owner observation.
+
+The outer cleanup allowance is one5s window; Node's D+10 KILL fallback and
+Bash's same-module guardian/D+12 observation slots are independent fallbacks.
+Only the actual parent with a positively unreaped handle can signal its group;
+registration never transfers kill authority, and no signaling follows reap.
+Bash preserves stdin/heredocs and admits only successful complete replies.
+Finish preserves the original failure/signal while attempting secondary
+persistence; tee finalization is10s after writers close, with the original log
+and stdout sinks. Deadline124, cleanup-only125 and actual failures/signals stay
+distinct. Parent/control loss and escapes retain UNKNOWN cleanup. Neither these
+allowances nor the750s ordinary/780s fallback single-helper-plus-finish totals
+are total-build/hard OS guarantees or native acceptance. Preflight may defer
+parent traps for300s+5s; a late one-shot marker never overrides failed status.
+No validation cap, diagnostic grant, notice/source selection or complete-build
+context/reopen accounting changes, and no native stall/cap-fix claim follows.

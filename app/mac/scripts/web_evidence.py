@@ -1726,7 +1726,9 @@ def main():
             result=dispatch(s,a)
         except (OSError,ValueError,KeyError,tarfile.TarError) as primary:
             if a.stage in ('compile-begin','compile-end','read-input','snapshot','publish-build'):
-                try:s.write('failure',{'original_exit':1,'stage':a.stage})
+                try:
+                    with A['SUPERVISOR'].failure_scope(1):
+                        s.write('failure',{'original_exit':1,'stage':a.stage})
                 except (OSError,ValueError,KeyError,tarfile.TarError) as secondary:primary.add_note('secondary failure receipt: '+str(secondary)[:4096])
             raise
     except BaseException:

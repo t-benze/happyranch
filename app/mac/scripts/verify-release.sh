@@ -2,7 +2,7 @@
 # Read-only packaging inspection; never imports runtime or executes skill helpers.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
-exec python3 - "$SCRIPT_DIR/asset_evidence.py" "$@" <<'PYTHON'
+exec python3 "$SCRIPT_DIR/packaging_supervisor.py" run "verifier-${1:-}" python3 - "$SCRIPT_DIR/asset_evidence.py" "$@" <<'PYTHON'
 import argparse
 import hashlib
 import json
@@ -333,7 +333,9 @@ def emit(value):
 
 
 def run(*argv):
-    p = subprocess.run(argv, capture_output=True, text=True, timeout=60)
+    import runpy
+    custody = runpy.run_path(sys.argv[1])
+    p = custody['SUPERVISOR'].inspection_run(argv)
     if p.returncode:
         fail('INSPECTION_TOOL_FAILURE', {'argv': argv, 'exit': p.returncode,
                                         'stdout': p.stdout, 'stderr': p.stderr})

@@ -70,21 +70,149 @@ RUN_ID="$(python3 -c 'import uuid; print(uuid.uuid4())')"
 printf '%s\n' "$RUN_ID" > "$OUTPUT/owner"
 printf '%s\n' "$PREFLIGHT" > "$OUTPUT/preflight.json"
 mkdir "$OUTPUT/diagnostics" "$OUTPUT/scratch"
-exec > >(tee "$OUTPUT/diagnostics/build.log") 2>&1
+# Shell PIDs below are result keys only. Numeric group signaling stays in the
+# actual Python parent, with its unreaped direct-child handle.
+SUPERVISOR="$SCRIPT_DIR/packaging_supervisor.py"
+PRIMARY_SIGNAL=0 HELPER_ACTIVE=0 HELPER_CONTROL_SENT=0 FINISHING=0
+helper_signal() {
+    if [ "$PRIMARY_SIGNAL" -eq 0 ]; then PRIMARY_SIGNAL="$1"; fi
+    if [ "$HELPER_ACTIVE" -eq 1 ] && [ "$HELPER_CONTROL_SENT" -eq 0 ]; then
+        HELPER_CONTROL_SENT=1
+        printf '%s' "$2" >&6 || :
+    fi
+}
+trap 'helper_signal 129 H' HUP
+trap 'helper_signal 130 I' INT
+trap 'helper_signal 143 T' TERM
+helper_limit() {
+    case "$1" in
+        asset-token-field|freezer-token-field|web-token-field|freezer-fail|web-fail) HELPER_LIMIT=30 ;;
+        web-read-input|web-compile-begin|web-compile-end|web-snapshot) HELPER_LIMIT=120 ;;
+        web-prepare|web-begin) HELPER_LIMIT=300 ;;
+        failure-diagnostics) HELPER_LIMIT=60 ;;
+        asset-begin|asset-check-public|asset-observe-dist|asset-check-dist|asset-observe-app|asset-icon|asset-verify|freezer-begin|freezer-accept|freezer-before-copy|freezer-copy|freezer-verify|web-publish-build|web-complete-build|web-accept-build|web-seal-dist|web-notices|web-verify|embedded-notices|manifest-collect|frozen-entrypoints) HELPER_LIMIT=600 ;;
+        *) printf 'PACKAGING_HELPER_OPERATION_UNKNOWN\n' >&2; return 125 ;;
+    esac
+}
+helper_transport() {
+    # Only after output admission. Exclusive private names; no recovered tokens.
+    local transport
+    transport="$(mktemp -d "$OUTPUT/scratch/helper.XXXXXX")" || return 125
+    [ -d "$transport" ] && [ ! -L "$transport" ] || return 125
+    (set -C; : > "$transport/reply") || return 125
+    [ -f "$transport/reply" ] && [ -O "$transport/reply" ] && [ ! -L "$transport/reply" ] || return 125
+    mkfifo -m 600 "$transport/control" "$transport/result" || return 125
+    HELPER_TRANSPORT="$transport"
+}
+helper_invoke() {
+    local capture="$1" destination="$2" operation="$3"
+    shift 3
+    local started="$SECONDS" slots line='' result='' pid status=125 bytes reply
+    helper_limit "$operation" || return "$?"
+    helper_transport || return "$?"
+    reply="$HELPER_TRANSPORT/reply"
+    if exec 6<>"$HELPER_TRANSPORT/control" 7<>"$HELPER_TRANSPORT/result"; then :; else
+        exec 6>&- 7>&-
+        return 125
+    fi
+    # Explicitly preserve the function's incoming stdin/heredoc before '&'.
+    if exec 10<&0; then :; else exec 6>&- 7>&-; return 125; fi
+    HELPER_ACTIVE=1 HELPER_CONTROL_SENT=0
+    if [ "$capture" -eq 1 ]; then
+        python3 "$SUPERVISOR" guardian "$operation" "$HELPER_TRANSPORT/control" "$HELPER_TRANSPORT/result" "$@" \
+            <&10 >"$reply" 4>&- 5>&- 6>&- 7>&- 8>&- 9>&- 10<&- &
+    else
+        python3 "$SUPERVISOR" guardian "$operation" "$HELPER_TRANSPORT/control" "$HELPER_TRANSPORT/result" "$@" \
+            <&10 4>&- 5>&- 6>&- 7>&- 8>&- 9>&- 10<&- &
+    fi
+    pid=$!
+    exec 10<&-
+    slots=$((HELPER_LIMIT + 12 - (SECONDS - started)))
+    # Interruptions spend a slot; a result precedes exit and never licenses an
+    # unconditional wait. PID existence is observation only, never a kill grant.
+    while [ "$slots" -gt 0 ]; do
+        slots=$((slots - 1))
+        if [ -z "$result" ]; then
+            if IFS= read -r -t 1 -u 7 line; then
+                case "$line" in
+                    'RESULT '*) result="${line#RESULT }" ;;
+                    *) break ;;
+                esac
+            fi
+        elif kill -0 "$pid" 2>/dev/null; then
+            # A timed FIFO read bounds observation without a sleeping process.
+            if IFS= read -r -t 1 -u 7 line; then break; fi
+        else
+            if wait "$pid"; then status=0; else status=$?; fi
+            case "$result" in
+                ''|*[!0-9-]*) status=125 ;;
+                -*) [ "$status" -eq "$((128 - result))" ] || status=125 ;;
+                *) [ "$status" -eq "$result" ] || status=125 ;;
+            esac
+            [ "$status" -ne 127 ] || status=125
+            break
+        fi
+    done
+    HELPER_ACTIVE=0
+    exec 6>&- 7>&-
+    if [ "$PRIMARY_SIGNAL" -ne 0 ] && [ "$FINISHING" -eq 0 ]; then status="$PRIMARY_SIGNAL"; fi
+    if [ "$status" -eq 0 ] && [ "$capture" -eq 1 ]; then
+        bytes="$(wc -c < "$reply")" || return 125
+        [ "$bytes" -le 4096 ] || { printf 'PACKAGING_HELPER_REPLY_CAP\n' >&2; return 125; }
+        # Same trailing-LF removal as the original command substitutions.
+        printf -v "$destination" '%s' "$(<"$reply")"
+    fi
+    if [ "$status" -eq 125 ]; then printf 'PACKAGING_HELPER_CLEANUP_UNRESOLVED:%s\n' "$operation" >&2; fi
+    return "$status"
+}
+helper_run() { helper_invoke 0 '' "$@"; }
+helper_into() { local destination="$1"; shift; helper_invoke 1 "$destination" "$@"; }
+# Tee still owns the original build.log destination and original stdout bytes.
+helper_transport
+LOGGER_TRANSPORT="$HELPER_TRANSPORT"
+exec 4<>"$LOGGER_TRANSPORT/control" 5<>"$LOGGER_TRANSPORT/result"
+exec 8>&1 9>&2
+exec > >(python3 "$SUPERVISOR" logger "$LOGGER_TRANSPORT/control" "$LOGGER_TRANSPORT/result" tee "$OUTPUT/diagnostics/build.log" 4>&- 5>&- 8>&- 9>&-) 2>&1
+LOGGER_PID=$!
+logger_finish() {
+    local slots=12 line='' result='' status=125
+    # Close all parent tee writers before the finalization clock starts.
+    exec 1>&8 2>&9 8>&- 9>&-
+    if printf F >&4; then :; else exec 4>&- 5>&-; return 125; fi
+    while [ "$slots" -gt 0 ]; do
+        slots=$((slots - 1))
+        if [ -z "$result" ]; then
+            if IFS= read -r -t 1 -u 5 line; then
+                case "$line" in 'RESULT '*) result="${line#RESULT }" ;; *) break ;; esac
+            fi
+        elif kill -0 "$LOGGER_PID" 2>/dev/null; then
+            if IFS= read -r -t 1 -u 5 line; then break; fi
+        else
+            if wait "$LOGGER_PID"; then status=0; else status=$?; fi
+            [ "$result" = 0 ] && [ "$status" -eq 0 ] || status=125
+            break
+        fi
+    done
+    exec 4>&- 5>&-
+    return "$status"
+}
 STAGE=export
 finish() {
     local code=$?
+    trap - EXIT
+    FINISHING=1
+    if [ "$code" -eq 0 ] && [ "$PRIMARY_SIGNAL" -ne 0 ]; then code="$PRIMARY_SIGNAL"; fi
     if [ "$code" -ne 0 ]; then
         printf 'BUILD_FAILED stage=%s exit=%s run=%s\n' "$STAGE" "$code" "$RUN_ID"
         # Preserve original process status even when custody persistence fails.
         if [ -n "${FREEZER_CONTEXT:-}" ]; then
-            python3 "$FREEZER" fail "${ASSET_ARGS[@]}" --freezer-context-sha256 "$FREEZER_CONTEXT" --original-exit "$code" || printf 'FREEZER_FAILURE_PERSISTENCE_FAILED\n' >&2
+            helper_run freezer-fail python3 "$FREEZER" fail "${ASSET_ARGS[@]}" --freezer-context-sha256 "$FREEZER_CONTEXT" --original-exit "$code" || printf 'FREEZER_FAILURE_PERSISTENCE_FAILED\n' >&2
         fi
         if [ -n "${WEB_CALLER:-}" ]; then
-            python3 "$WEB" fail --caller "$WEB_CALLER" --original-exit "$code" || printf 'WEB_FAILURE_PERSISTENCE_FAILED\n' >&2
+            helper_run web-fail python3 "$WEB" fail --caller "$WEB_CALLER" --original-exit "$code" || printf 'WEB_FAILURE_PERSISTENCE_FAILED\n' >&2
         fi
         # Evidence errors must never replace the original build exit.
-        python3 - "$OUTPUT" "$STAGE" "$code" "$RUN_ID" "$SOURCE_SHA" "$SOURCE_TREE" "$VERSION" "$BUILD" "$ARCH" "${INSPECTION_STAGE:-not-started}" <<'PYFAIL' || printf 'DIAGNOSTIC_COLLECTION_FAILED\n' >&2
+        helper_run failure-diagnostics python3 - "$OUTPUT" "$STAGE" "$code" "$RUN_ID" "$SOURCE_SHA" "$SOURCE_TREE" "$VERSION" "$BUILD" "$ARCH" "${INSPECTION_STAGE:-not-started}" <<'PYFAIL' || printf 'DIAGNOSTIC_COLLECTION_FAILED\n' >&2
 import gzip, hashlib, json, os, stat, sys
 from pathlib import Path
 output = Path(sys.argv[1]); stage, code, run_id, sha, tree, version, build, arch, inspection_stage = sys.argv[2:]
@@ -247,6 +375,13 @@ for fd in (fdout, diagfd, rootfd):
     os.close(fd)
 PYFAIL
     fi
+    if logger_finish; then :; else
+        printf 'BUILD_LOG_FINALIZATION_FAILED\n' >&2
+        if [ "$code" -eq 0 ]; then
+            if [ "$PRIMARY_SIGNAL" -ne 0 ]; then code="$PRIMARY_SIGNAL"; else code=125; fi
+        fi
+    fi
+    if [ "$code" -eq 0 ] && [ "$PRIMARY_SIGNAL" -ne 0 ]; then code="$PRIMARY_SIGNAL"; fi
     exit "$code"
 }
 trap finish EXIT
@@ -297,13 +432,13 @@ ASSET_ARGS=(--source "$REPO_ROOT" --exported-source "$SOURCE" --dist "$SOURCE/we
     --arch "$ARCH" --run-id "$RUN_ID")
 # Successful synchronous tokens are invocation-held expectations; never recover
 # them from candidate diagnostics or the legacy mapping. No eval or fallback.
-asset_field() { python3 "$ASSETS" token-field --token "$1" --field "$2"; }
-ASSET_START_TOKEN="$(python3 "$ASSETS" begin "${ASSET_ARGS[@]}" --iconutil-path "$ICONUTIL_PATH" \
-    --toolchains-path "$OUTPUT/diagnostics/toolchains.txt")"
-ASSET_CONTEXT="$(asset_field "$ASSET_START_TOKEN" context)"
-ASSET_SOURCE="$(asset_field "$ASSET_START_TOKEN" source)"
-ASSET_TOOLCHAINS="$(asset_field "$ASSET_START_TOKEN" toolchains_sha256)"
-ASSET_ICONUTIL="$(asset_field "$ASSET_START_TOKEN" iconutil_sha256)"
+asset_field() { helper_into "$1" asset-token-field python3 "$ASSETS" token-field --token "$2" --field "$3"; }
+helper_into ASSET_START_TOKEN asset-begin python3 "$ASSETS" begin "${ASSET_ARGS[@]}" --iconutil-path "$ICONUTIL_PATH" \
+    --toolchains-path "$OUTPUT/diagnostics/toolchains.txt"
+asset_field ASSET_CONTEXT "$ASSET_START_TOKEN" context
+asset_field ASSET_SOURCE "$ASSET_START_TOKEN" source
+asset_field ASSET_TOOLCHAINS "$ASSET_START_TOKEN" toolchains_sha256
+asset_field ASSET_ICONUTIL "$ASSET_START_TOKEN" iconutil_sha256
 STAGE=go
 cd "$PROJECT/tsnet-bridge"
 # Fresh archive in an exported immutable tree, readonly existing module graph.
@@ -317,15 +452,15 @@ nm -m libtsnet.a > "$OUTPUT/diagnostics/go-symbols.txt"
 STAGE=freeze
 cd "$SOURCE"
 # Verify the committed local wheel before the unchanged frozen sync.
-FREEZER_START="$(python3 "$FREEZER" begin "${ASSET_ARGS[@]}" --asset-context-sha256 "$ASSET_CONTEXT" --toolchains-sha256 "$ASSET_TOOLCHAINS")"
-freezer_field() { python3 "$FREEZER" token-field --token "$1" --field "$2"; }
-FREEZER_CONTEXT="$(freezer_field "$FREEZER_START" context)"
+helper_into FREEZER_START freezer-begin python3 "$FREEZER" begin "${ASSET_ARGS[@]}" --asset-context-sha256 "$ASSET_CONTEXT" --toolchains-sha256 "$ASSET_TOOLCHAINS"
+freezer_field() { helper_into "$1" freezer-token-field python3 "$FREEZER" token-field --token "$2" --field "$3"; }
+freezer_field FREEZER_CONTEXT "$FREEZER_START" context
 export HAPPYRANCH_FREEZER_CALLER
-HAPPYRANCH_FREEZER_CALLER="$(freezer_field "$FREEZER_START" caller)"
+freezer_field HAPPYRANCH_FREEZER_CALLER "$FREEZER_START" caller
 bash packaging/build_daemon.sh --dist-dir "$OUTPUT/scratch/freeze-dist" --work-dir "$OUTPUT/scratch/freeze-work"
-FREEZER_RETURN="$(python3 "$FREEZER" accept "${ASSET_ARGS[@]}" --freezer-context-sha256 "$FREEZER_CONTEXT")"
-FREEZER_INPUTS="$(freezer_field "$FREEZER_RETURN" inputs)"
-FREEZER_OUTPUT="$(freezer_field "$FREEZER_RETURN" output)"
+helper_into FREEZER_RETURN freezer-accept python3 "$FREEZER" accept "${ASSET_ARGS[@]}" --freezer-context-sha256 "$FREEZER_CONTEXT"
+freezer_field FREEZER_INPUTS "$FREEZER_RETURN" inputs
+freezer_field FREEZER_OUTPUT "$FREEZER_RETURN" output
 FREEZER_ARGS=(--freezer-context-sha256 "$FREEZER_CONTEXT" --freezer-inputs-sha256 "$FREEZER_INPUTS" --freezer-output-sha256 "$FREEZER_OUTPUT")
 cp "$OUTPUT/scratch/freeze-work/analysis.json" "$OUTPUT/diagnostics/analysis.json"
 cp "$OUTPUT/scratch/freeze-work/python-toolchain.json" "$OUTPUT/diagnostics/python-toolchain.json"
@@ -349,16 +484,16 @@ print(json.dumps({'candidate':dict(source_sha=sha,source_tree=tree,version=versi
  'run_id':run,'venue':'native','asset_context_sha256':context,'asset_source_sha256':source_token,'toolchains_sha256':tools,'originals':originals},sort_keys=True,separators=(',',':')))
 PYWEB
 )"
-web_field() { python3 "$WEB" token-field --token "$1" --field "$2"; }
-WEB_PREP_TOKEN="$(python3 "$WEB" prepare --caller "$WEB_CALLER")"
-WEB_PREPARATION="$(web_field "$WEB_PREP_TOKEN" record_sha256)"
-WEB_CONTEXT_TOKEN="$(python3 "$WEB" begin --caller "$WEB_CALLER" --preparation "$WEB_PREPARATION" --completion-leaf web-completion.jsonl)"
-WEB_CONTEXT="$(web_field "$WEB_CONTEXT_TOKEN" record_sha256)"
+web_field() { helper_into "$1" web-token-field python3 "$WEB" token-field --token "$2" --field "$3"; }
+helper_into WEB_PREP_TOKEN web-prepare python3 "$WEB" prepare --caller "$WEB_CALLER"
+web_field WEB_PREPARATION "$WEB_PREP_TOKEN" record_sha256
+helper_into WEB_CONTEXT_TOKEN web-begin python3 "$WEB" begin --caller "$WEB_CALLER" --preparation "$WEB_PREPARATION" --completion-leaf web-completion.jsonl
+web_field WEB_CONTEXT "$WEB_CONTEXT_TOKEN" record_sha256
 export HAPPYRANCH_WEB_CALLER="$WEB_CALLER" HAPPYRANCH_WEB_CONTEXT="$WEB_CONTEXT" HAPPYRANCH_WEB_PREPARATION="$WEB_PREPARATION"
 export HAPPYRANCH_WEB_HELPER="$WEB" HAPPYRANCH_WEB_PYTHON
 HAPPYRANCH_WEB_PYTHON="$(command -v python3)"
 # Emitted source maps are evidence; only the existing app-copy strips them.
-python3 "$ASSETS" check-public "${ASSET_ARGS[@]}" --asset-context-sha256 "$ASSET_CONTEXT" --asset-source-sha256 "$ASSET_SOURCE"
+helper_run asset-check-public python3 "$ASSETS" check-public "${ASSET_ARGS[@]}" --asset-context-sha256 "$ASSET_CONTEXT" --asset-source-sha256 "$ASSET_SOURCE"
 # The helper exclusively writes the admitted fixed leaf after genuine publish.
 # Preserve the actual lifecycle status; a postbuild failure defeats a valid marker.
 export HAPPYRANCH_WEB_COMPLETION_LEAF=web-completion.jsonl
@@ -371,12 +506,12 @@ unset HAPPYRANCH_WEB_CALLER HAPPYRANCH_WEB_CONTEXT HAPPYRANCH_WEB_PREPARATION HA
 if [ "$WEB_NPM_STATUS" -ne 0 ]; then
     exit "$WEB_NPM_STATUS"
 fi
-WEB_BUILD_TOKEN="$(python3 "$WEB" accept-build --caller "$WEB_CALLER" --context "$WEB_CONTEXT" --preparation "$WEB_PREPARATION" --completion-leaf web-completion.jsonl)"
-WEB_BUILD="$(web_field "$WEB_BUILD_TOKEN" record_sha256)"
-ASSET_DIST_TOKEN="$(python3 "$ASSETS" observe-dist "${ASSET_ARGS[@]}" --asset-context-sha256 "$ASSET_CONTEXT" --asset-source-sha256 "$ASSET_SOURCE")"
-ASSET_DIST="$(asset_field "$ASSET_DIST_TOKEN" sha256)"
-WEB_DIST_TOKEN="$(python3 "$WEB" seal-dist --caller "$WEB_CALLER" --context "$WEB_CONTEXT" --preparation "$WEB_PREPARATION" --build "$WEB_BUILD" --asset-dist "$ASSET_DIST")"
-WEB_DIST="$(web_field "$WEB_DIST_TOKEN" record_sha256)"
+helper_into WEB_BUILD_TOKEN web-accept-build python3 "$WEB" accept-build --caller "$WEB_CALLER" --context "$WEB_CONTEXT" --preparation "$WEB_PREPARATION" --completion-leaf web-completion.jsonl
+web_field WEB_BUILD "$WEB_BUILD_TOKEN" record_sha256
+helper_into ASSET_DIST_TOKEN asset-observe-dist python3 "$ASSETS" observe-dist "${ASSET_ARGS[@]}" --asset-context-sha256 "$ASSET_CONTEXT" --asset-source-sha256 "$ASSET_SOURCE"
+asset_field ASSET_DIST "$ASSET_DIST_TOKEN" sha256
+helper_into WEB_DIST_TOKEN web-seal-dist python3 "$WEB" seal-dist --caller "$WEB_CALLER" --context "$WEB_CONTEXT" --preparation "$WEB_PREPARATION" --build "$WEB_BUILD" --asset-dist "$ASSET_DIST"
+web_field WEB_DIST "$WEB_DIST_TOKEN" record_sha256
 STAGE=swift
 cd "$PROJECT"
 LINK_MAP="$OUTPUT/diagnostics/swift-link.map"
@@ -388,14 +523,14 @@ STAGE=assembly
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/web" "$APP/Contents/Resources/licenses"
 cp "$BIN_DIR/HappyRanchApp" "$APP/Contents/MacOS/HappyRanch"
 shasum -a 256 "$BIN_DIR/HappyRanchApp" "$APP/Contents/MacOS/HappyRanch" > "$OUTPUT/diagnostics/swift-release.sha256"
-python3 "$FREEZER" before-copy "${ASSET_ARGS[@]}" "${FREEZER_ARGS[@]}"
+helper_run freezer-before-copy python3 "$FREEZER" before-copy "${ASSET_ARGS[@]}" "${FREEZER_ARGS[@]}"
 cp -R "$OUTPUT/scratch/freeze-dist/happyranch-daemon" "$APP/Contents/Resources/daemon"
-python3 "$ASSETS" check-dist "${ASSET_ARGS[@]}" --asset-context-sha256 "$ASSET_CONTEXT" --asset-dist-sha256 "$ASSET_DIST"
+helper_run asset-check-dist python3 "$ASSETS" check-dist "${ASSET_ARGS[@]}" --asset-context-sha256 "$ASSET_CONTEXT" --asset-dist-sha256 "$ASSET_DIST"
 cp -R "$SOURCE/web/dist" "$APP/Contents/Resources/web/dist"
 # Keep web source-map graph outside shipped web; remove only fresh copied maps.
 find "$APP/Contents/Resources/web/dist" -name '*.map' -type f -delete
-ASSET_APP_TOKEN="$(python3 "$ASSETS" observe-app "${ASSET_ARGS[@]}" --asset-context-sha256 "$ASSET_CONTEXT" --asset-dist-sha256 "$ASSET_DIST")"
-ASSET_APP="$(asset_field "$ASSET_APP_TOKEN" sha256)"
+helper_into ASSET_APP_TOKEN asset-observe-app python3 "$ASSETS" observe-app "${ASSET_ARGS[@]}" --asset-context-sha256 "$ASSET_CONTEXT" --asset-dist-sha256 "$ASSET_DIST"
+asset_field ASSET_APP "$ASSET_APP_TOKEN" sha256
 cp "$SOURCE/LICENSE" "$APP/Contents/Resources/licenses/LICENSE"
 chmod 644 "$APP/Contents/Resources/licenses/LICENSE"
 for executable in happyranch-daemon happyranch; do
@@ -420,12 +555,12 @@ for src in files:
         raise SystemExit(f'RESOURCE_MISSING: {src.relative_to(source)}: {dest}')
     os.chmod(dest, stat.S_IMODE(src.stat().st_mode))
 PYMODES
-FREEZER_COPY_TOKEN="$(python3 "$FREEZER" copy "${ASSET_ARGS[@]}" "${FREEZER_ARGS[@]}")"
-FREEZER_COPY="$(freezer_field "$FREEZER_COPY_TOKEN" sha256)"
+helper_into FREEZER_COPY_TOKEN freezer-copy python3 "$FREEZER" copy "${ASSET_ARGS[@]}" "${FREEZER_ARGS[@]}"
+freezer_field FREEZER_COPY "$FREEZER_COPY_TOKEN" sha256
 STAGE=icon
-ASSET_ICON_TOKEN="$(python3 "$ASSETS" icon "${ASSET_ARGS[@]}" --asset-context-sha256 "$ASSET_CONTEXT" \
-    --iconutil-path "$ICONUTIL_PATH" --iconutil-sha256 "$ASSET_ICONUTIL")"
-ASSET_ICON="$(asset_field "$ASSET_ICON_TOKEN" sha256)"
+helper_into ASSET_ICON_TOKEN asset-icon python3 "$ASSETS" icon "${ASSET_ARGS[@]}" --asset-context-sha256 "$ASSET_CONTEXT" \
+    --iconutil-path "$ICONUTIL_PATH" --iconutil-sha256 "$ASSET_ICONUTIL"
+asset_field ASSET_ICON "$ASSET_ICON_TOKEN" sha256
 STAGE=plist
 python3 - "$PROJECT/scripts/Info.plist" "$APP/Contents/Info.plist" "$VERSION" "$BUILD" "$SOURCE_SHA" "$SOURCE_TREE" "$ARCH" <<'PY'
 import plistlib, sys
@@ -441,7 +576,7 @@ PY
 STAGE=notices
 cp -R "$OUTPUT/scratch/freeze-work/notices" "$APP/Contents/Resources/licenses/python"
 cp "$SOURCE/packaging/THIRD_PARTY_NOTICES.md" "$APP/Contents/Resources/licenses/THIRD_PARTY_NOTICES.md"
-ASSET_NOTICES_TOKEN="$(python3 - "$SOURCE" "$APP" "$OUTPUT" "$ASSETS" "$REPO_ROOT" "$RUN_ID" "$SOURCE_SHA" "$SOURCE_TREE" "$VERSION" "$BUILD" "$ARCH" "$ASSET_CONTEXT" "$ASSET_APP" "$WEB" "$WEB_CALLER" "$WEB_CONTEXT" "$WEB_PREPARATION" "$WEB_BUILD" "$WEB_DIST" <<'PYNOTICES'
+helper_into ASSET_NOTICES_TOKEN embedded-notices python3 - "$SOURCE" "$APP" "$OUTPUT" "$ASSETS" "$REPO_ROOT" "$RUN_ID" "$SOURCE_SHA" "$SOURCE_TREE" "$VERSION" "$BUILD" "$ARCH" "$ASSET_CONTEXT" "$ASSET_APP" "$WEB" "$WEB_CALLER" "$WEB_CONTEXT" "$WEB_PREPARATION" "$WEB_BUILD" "$WEB_DIST" <<'PYNOTICES'
 import hashlib, json, os, re, shutil, stat, sys
 from pathlib import Path
 source, app, output = map(Path, sys.argv[1:4])
@@ -739,11 +874,12 @@ components.extend(web_rows)
 # The token leaves this caller only after the observation mapping is written.
 print(json.dumps({'asset':font_token,'web':web_notice_token},separators=(',',':')))
 PYNOTICES
-)"
-python3 "$SOURCE/app/mac/scripts/manifest_notices.py" collect --source "$SOURCE" --app "$APP" \
+helper_run manifest-collect python3 "$SOURCE/app/mac/scripts/manifest_notices.py" collect --source "$SOURCE" --app "$APP" \
     --output "$OUTPUT" --mapping "$OUTPUT/diagnostics/license-mapping.json" > "$OUTPUT/diagnostics/manifest-notices.json"
-WEB_NOTICES="$(web_field "$(web_field "$ASSET_NOTICES_TOKEN" web)" record_sha256)"
-ASSET_NOTICES="$(asset_field "$(web_field "$ASSET_NOTICES_TOKEN" asset)" sha256)"
+web_field WEB_NOTICE_TOKEN "$ASSET_NOTICES_TOKEN" web
+web_field WEB_NOTICES "$WEB_NOTICE_TOKEN" record_sha256
+web_field ASSET_NOTICE_TOKEN "$ASSET_NOTICES_TOKEN" asset
+asset_field ASSET_NOTICES "$ASSET_NOTICE_TOKEN" sha256
 WEB_ARGS=(--web-tool-originals "$WEB_TOOL_ORIGINALS" --web-caller "$WEB_CALLER" --web-context-sha256 "$WEB_CONTEXT" --web-preparation-sha256 "$WEB_PREPARATION" --web-build-sha256 "$WEB_BUILD" --web-dist-sha256 "$WEB_DIST" --web-notices-sha256 "$WEB_NOTICES")
 STAGE=verification
 INSPECTION_STAGE=resources
@@ -753,7 +889,7 @@ bash "$VERIFY" native --app "$APP" --go-archive "$PROJECT/tsnet-bridge/libtsnet.
 # Requested frozen entry-point inspection outside source, with bounded subprocess
 # timeouts and no checkout/PYTHONPATH/development tool search path.
 INSPECTION_STAGE=cli
-python3 - "$APP" "$OUTPUT/diagnostics" <<'PY'
+helper_run frozen-entrypoints python3 - "$APP" "$OUTPUT/diagnostics" <<'PY'
 import json, os, subprocess, sys
 from pathlib import Path
 app, logs = map(Path, sys.argv[1:])

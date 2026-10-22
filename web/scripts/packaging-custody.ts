@@ -288,7 +288,9 @@ export class PackagingCustody {
     if (completeProgress) args.push('--complete-diagnostic-call', String(this.helperCalls), '--complete-diagnostic-bytes', String(COMPLETE_PROGRESS_CAP));
     let result: SpawnSyncReturns<Buffer>;
     try {
-      result = spawnSync(this.python, args, { input, maxBuffer: capture, stdio: snapshotProgress || completeProgress ? ['pipe', 'pipe', 'pipe', 2] : ['pipe', 'pipe', 'pipe'] });
+      const deadline = ({ 'read-input': 120, 'compile-begin': 120, 'compile-end': 120, snapshot: 120, 'publish-build': 600, 'complete-build': 600, fail: 30 } as Record<string, number>)[stage];
+      if (deadline === undefined) throw new Error('WEB_HELPER_OPERATION_UNKNOWN');
+      result = spawnSync(this.python, [path.join(path.dirname(this.helper), 'packaging_supervisor.py'), 'run', `web-${stage}`, this.python, ...args], { input, maxBuffer: capture, timeout: (deadline + 10) * 1000, killSignal: 'SIGKILL', stdio: snapshotProgress || completeProgress ? ['pipe', 'pipe', 'pipe', 2] : ['pipe', 'pipe', 'pipe'] });
     } catch (error) { this.progressMark('failed', helperProgress); throw error; }
     this.progressMark(result.error || result.status !== 0 ? 'failed' : 'end', helperProgress);
     if (result.error) { this.sticky ??= result.error; throw result.error; }
