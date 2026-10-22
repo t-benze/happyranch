@@ -482,7 +482,7 @@ class CodingDispatcher:
         source_tail = invocation.task.id == entry['source']['task_id']
         repaired = (entry['attempt']['stage'] == 'manager_closeout' and
                     json.loads(entry['attempt']['scope_bytes'])['format'] in ('workflow-coding-final-scope@2', 'workflow-coding-final-scope@3'))
-        uncertainty = (repaired and not source_tail and kind == 'held' and facts.get('reason') in
+        uncertainty = ((repaired or entry['attempt']['revision'] > 1) and not source_tail and kind == 'held' and facts.get('reason') in
                        ('coding_native_preparation_unsettled', 'coding_native_close_unavailable'))
         prebinding = uncertainty and facts['reason'] == 'coding_native_preparation_unsettled'
         claim = None if source_tail else getattr(invocation, 'coding_claim', entry['native']['claim'])

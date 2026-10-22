@@ -422,7 +422,7 @@ def read_native(conn: Any, org: str, budget: Any, storage: Any, *, start: dict,
             repaired = scope['format'] in ('workflow-coding-final-scope@2', 'workflow-coding-final-scope@3')
         uncertainty = body['format'] in ('workflow-coding-native-manager-event@3', 'workflow-coding-revision-native-event@2')
         if uncertainty:
-            _check(repaired and kind == 'held')
+            _check((repaired or attempt['revision'] > 1) and kind == 'held')
         manager_version = '3' if uncertainty else '2' if repaired else '1'
         _check(_canonical(body) == event['event_bytes'] and body['format'] == (
             ('workflow-coding-revision-native-event@2' if uncertainty else 'workflow-coding-revision-native-event@1') if attempt['revision'] > 1 else {
@@ -501,7 +501,7 @@ def read_native(conn: Any, org: str, budget: Any, storage: Any, *, start: dict,
             # This is a preparation observation, never a successful session,
             # launch, claim, workspace or cleanup witness.
             _check(state['claim'] is state['host'] is state.get('workspace') is None
-                   and observation['workspace'] is None and origin['claim'] is None
+                   and observation.get('workspace') is None and origin['claim'] is None
                    and attempt['state'] == 'queued' and attempt['session_id'] is attempt['result_id'] is None
                    and observation['queue_owner'] is not None)
             prepared = observation['queue_owner']['native']
@@ -539,6 +539,17 @@ def read_native(conn: Any, org: str, budget: Any, storage: Any, *, start: dict,
             elif not source_tail:
                 _check(native is not None and workspace['invocation_id'] == native['id']
                        and workspace['session_id'] == native['session_id'] == origin['session_id'])
+        elif missing_close:
+            _check(attempt['revision'] > 1 and native is None and state['claim'] is not None
+                   and state['host'] is not None and not state['cleanup_recorded']
+                   and state['claim']['invocation_id'] == state['claim']['pause_entry_id']
+                   and origin['session_id'] == attempt['session_id'])
+            if observation['queue_owner'] is not None:
+                prepared = observation['queue_owner']['native']
+                _check(prepared['id'] == state['claim']['invocation_id']
+                       and prepared['session_id'] == attempt['session_id']
+                       and prepared['fingerprint'] == state['claim']['task_fingerprint']
+                       and prepared['generation'] == state['claim']['pause_generation'])
         if kind in ('session_bound', 'callback_recorded'):
             _check(native is not None and observation['queue_owner'] is not None)
             _admission(conn, org, budget, observation['admission'], callback=kind == 'callback_recorded',

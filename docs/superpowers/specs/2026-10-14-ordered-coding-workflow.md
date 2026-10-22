@@ -2146,7 +2146,8 @@ contribution_recorded, stage_queued, advance; review/QA return or acceptance use
 review_staged, stage_queued, advance. BLOCK is a single held review_staged.
 Native r2/r3 uses revision-native-event@1/revision-native-command@1 and
 revision-native-admission@1 (explicit attempt_id/revision); uncertainty-only
-revision-native-event/command@2 preserves final-manager preparation/close unknowns.
+revision-native-event/command@2 preserves original preparation/close unknowns
+for every revised stage, including the final manager's original workspace when bound.
 Old bootstrap/development/review/QA/native-manager families remain literal.
 
 revision-scope@1 pins actual new task/attempt/revision/sequence/generation and

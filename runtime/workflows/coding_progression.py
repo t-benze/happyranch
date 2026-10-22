@@ -292,7 +292,7 @@ def advance_in_writer(dispatcher: Any, conn: Any, *, instance: str, result_id: i
         return advance_revision(dispatcher, conn, entry, result_id, capture, sessions, references, budget)
     qa = stage == 'code_review'
     final = stage == 'qa'
-    if stage == 'manager_closeout' or (qa and output['outcome'] not in ('APPROVE', 'REQUEST_CHANGES')) or (final and output['outcome'] != 'PASS'):
+    if stage == 'manager_closeout' or (qa and output['outcome'] != 'APPROVE') or (final and output['outcome'] != 'PASS'):
         return None
     _check(stage in ('development', 'code_review', 'qa'))
     upstream = settled_upstreams(entry, budget=budget)[0] if final else None
@@ -349,7 +349,7 @@ def record_review_in_writer(dispatcher: Any, conn: Any, entry: dict) -> None:
     if output is None or entry['attempt']['stage'] != 'code_review':
         return
     if output['outcome'] in ('APPROVE', 'REQUEST_CHANGES'):
-        return  # Separate current-authority writer owns the new QA edge.
+        return  # Separate current-authority writer owns QA or revision allocation.
     if entry['attempt']['revision'] > 1:
         from runtime.workflows.coding_revision_writer import hold_revision
         hold_revision(dispatcher, conn, entry, output)
@@ -367,7 +367,7 @@ def record_qa_in_writer(dispatcher: Any, conn: Any, entry: dict) -> None:
     if output is None or entry['attempt']['stage'] != 'qa':
         return
     if output['outcome'] in ('PASS', 'REVISE'):
-        return  # New current-authority transaction owns manager allocation.
+        return  # New current-authority transaction owns manager or revision allocation.
     if entry['attempt']['revision'] > 1:
         from runtime.workflows.coding_revision_writer import hold_revision
         hold_revision(dispatcher, conn, entry, output)
