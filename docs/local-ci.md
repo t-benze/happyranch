@@ -554,11 +554,21 @@ reserve remains positive. Owned timeout/expiry stops new cleanup; per-port1s is
 clipped to remaining time. Missing port observations are unknown. Staging,
 closure and cleanup failure are sticky through later read-only recollection/
 export; actual root absence never certifies process/unit/group closure.
-Original120s export performs no rescue teardown. Initial published metadata FAIL
-survives failed final replacement; incomplete detail has variants={} and BOTH
-cleanup.ok/timing.cleanup.ok=false in every fallback. Initial publication failure
-is never represented as a persisted FAIL. Required-member/native health rejection
-and complete-context raw sanitation remain unchanged.
+Original120s export performs no rescue teardown. Serialization, sanitation,
+required-detail checks and pending-file writes precede the final commit. SIGALRM
+is retired process-wide (including queued delivery) and disarmed before checking
+the SAME original export end minus one second and atomically replacing result.json.
+Successful replacement is terminal: no later deadline/alarm handling reclassifies
+it or depends on another write. Precommit failure preserves genuine initial FAIL
+when replacement never commits; incomplete detail has variants={} and BOTH
+cleanup.ok/timing.cleanup.ok=false in every fallback. The existing bounded FAIL
+fallback restores the alarm and checks the original export end before replacement;
+initial publication failure is never represented as a persisted FAIL. Admission
+is cooperative: OS I/O can overrun or a crash can interrupt it, with no hard timing,
+fsync/crash durability or actual product acceptance claim. Required-member/native
+health rejection and complete-context raw sanitation remain unchanged. The
+existing R3-07/X-02 and D/E authoring answers cover these final transitions;
+other accepted cases and memberships are retained.
 
 Corrected behavior NOT RUN; intended-failure/restored-pass PROOF NOT RUN. Native
 39765942783 remains HealthFAIL47/all56 EACH UNKNOWN/zero recordedPASS/no proved

@@ -388,6 +388,7 @@ def main() -> int:
     controller_snapshot = dict(availability="unavailable", snapshot=None)
     staging_incomplete = closure_incomplete = cleanup_incomplete = export_incomplete = False
     detail_complete = False
+    final_result_committed = False
 
     def latch_launcher(name: str, error: BaseException | None = None, *, category: str = "other") -> None:
         try:
@@ -808,10 +809,27 @@ def main() -> int:
 
         export = reserve("export", 120, hard_end)
 
-        def publish(row: dict) -> None:
+        def publish(row: dict, *, final: bool = False) -> None:
+            nonlocal final_result_committed
             temporary = output / "result.tmp"
+            destination = output / "result.json"
             temporary.write_text(json.dumps(row, indent=2))
-            temporary.replace(output / "result.json")
+            if not final:
+                if time.monotonic() >= export["deadline"]:
+                    raise TimeoutError("export deadline exhausted")
+                temporary.replace(destination)
+                return
+            # Finish all fallible preparation before the final admission check.
+            # Retire SIGALRM process-wide, including any queued alarm. A thread
+            # mask alone cannot cover an alarm delivered to a surviving watcher.
+            # Disarming and the SAME original E-1 check are both precommit.
+            signal.signal(signal.SIGALRM, signal.SIG_IGN)
+            signal.setitimer(signal.ITIMER_REAL, 0)
+            export_time()
+            os.replace(temporary, destination)
+            final_result_committed = True
+            # No postcommit deadline check: an admitted OS call can overrun or
+            # a crash can interrupt it. This is not hard timing/crash durability.
 
         def failure_receipt() -> dict:
             # Bounded metadata only: no raw exception/token text or partial PASS.
@@ -884,28 +902,32 @@ def main() -> int:
                 validate_timing(receipt)
             receipt.update(failure_categories())
             export_time()
-            publish(json.loads(redact(json.dumps(receipt))))
-            export_time()
+            publish(json.loads(redact(json.dumps(receipt))), final=True)
         except BaseException as exc:
-            export_failure.setdefault("first", (exc, exc.__traceback__))
-            export_incomplete = True
-            latch_launcher("export", exc)
-            export["ok"] = False
-            export["error"] = type(export_failure["first"][0]).__name__
-            export["finished"] = time.monotonic()
-            export["elapsed_seconds"] = export["finished"] - export["entered"]
-            receipt["status"] = "FAIL"
-            receipt.setdefault("failure_phase", "export")
-            try:
-                arm_deadline(export["deadline"])
-                publish(failure_receipt())
-            except BaseException:
-                # A successful initial FAIL remains if replacement never commits.
-                # False means persistence was unavailable, never a claimed receipt.
-                if not initial_fail_published:
-                    export_incomplete = True
+            if not final_result_committed:
+                receipt["status"] = "FAIL"
+                export_failure.setdefault("first", (exc, exc.__traceback__))
+                export_incomplete = True
+                latch_launcher("export", exc)
+                export["ok"] = False
+                export["error"] = type(export_failure["first"][0]).__name__
+                export["finished"] = time.monotonic()
+                export["elapsed_seconds"] = export["finished"] - export["entered"]
+                receipt.setdefault("failure_phase", "export")
+                try:
+                    signal.signal(signal.SIGALRM, interrupted)
+                    arm_deadline(export["deadline"])
+                    publish(failure_receipt())
+                except BaseException:
+                    # A successful initial FAIL remains if replacement never commits.
+                    # False means persistence was unavailable, never a claimed receipt.
+                    if not initial_fail_published:
+                        export_incomplete = True
+            # Successful replacement is terminal; never reclassify it or depend
+            # on a rescue write. Its alarm was already retired before commit.
         finally:
-            signal.setitimer(signal.ITIMER_REAL, 0)
+            if not final_result_committed:
+                signal.setitimer(signal.ITIMER_REAL, 0)
     return 0 if receipt["status"] == "PASS" else 1
 
 
