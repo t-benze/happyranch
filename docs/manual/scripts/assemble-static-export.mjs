@@ -2,6 +2,9 @@
 // into a static-host package: <destination>/site/ is the only directory to
 // upload or serve; <destination>/package-manifest.json sits beside it.
 // Usage: node scripts/assemble-static-export.mjs <manual-dir> <new-destination>
+// Manifest format matches the website's static package (happyranch-services
+// scripts/assemble-static-export.mjs): paths relative to the package root,
+// packageDigest = sha256 of the JSON payload without that field.
 import { createHash } from 'node:crypto'
 import { copyFile, lstat, mkdir, readFile, readdir, writeFile } from 'node:fs/promises'
 import path from 'node:path'
@@ -62,13 +65,13 @@ export async function assemble(source, destination) {
     const target = path.join(site, file.name)
     await mkdir(path.dirname(target), { recursive: true })
     await copyFile(file.full, target)
-    manifest.push({ path: file.name, bytes: file.size, sha256: sha256(await readFile(target)) })
+    manifest.push({ path: `site/${file.name}`, bytes: file.size, sha256: sha256(await readFile(target)) })
   }
   await writeFile(path.join(site, '_headers'), HEADERS)
-  manifest.push({ path: '_headers', bytes: Buffer.byteLength(HEADERS), sha256: sha256(HEADERS) })
+  manifest.push({ path: 'site/_headers', bytes: Buffer.byteLength(HEADERS), sha256: sha256(HEADERS) })
   manifest.sort((a, b) => (a.path < b.path ? -1 : 1))
-  const packageDigest = sha256(manifest.map((f) => `${f.sha256}  ${f.path}\n`).join(''))
-  const record = { target: 'static-export', buildId, fileCount: manifest.length, totalBytes: manifest.reduce((n, f) => n + f.bytes, 0), packageDigest, files: manifest }
+  const payload = { format: 1, target: 'static-export', buildId, files: manifest }
+  const record = { ...payload, packageDigest: sha256(JSON.stringify(payload)) }
   await writeFile(path.join(destination, 'package-manifest.json'), `${JSON.stringify(record, null, 2)}\n`)
   return record
 }
@@ -76,5 +79,6 @@ export async function assemble(source, destination) {
 if (import.meta.url === `file://${process.argv[1]}`) {
   const [source, destination] = process.argv.slice(2)
   const record = await assemble(path.resolve(source ?? ''), path.resolve(destination ?? ''))
-  console.log(`assembled static export ${record.buildId}: ${record.fileCount} files, ${record.totalBytes} bytes, packageDigest ${record.packageDigest}`)
+  const bytes = record.files.reduce((n, f) => n + f.bytes, 0)
+  console.log(JSON.stringify({ target: record.target, buildId: record.buildId, packageDigest: record.packageDigest, files: record.files.length, bytes }))
 }
