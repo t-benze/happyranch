@@ -19,6 +19,7 @@ from typing import Any, Iterator
 from runtime.workflows.coding_bootstrap import encode_row, identity
 from runtime.workflows.coding_saved_records import _canonical, _check, _hash
 from runtime.workflows.coding_start import CodingStartError, queued_storage, require_ready
+from runtime.workflows._coding_settings_execution import _read_json
 from runtime.workflows.coding_start_history import rows, same
 from runtime.workflows.coding_authority_history import _Budget
 
@@ -276,7 +277,7 @@ class CodingDispatcher:
         self.org.workflow_authority._validate_admission_uncommitted(conn, capture)
         # _entry reconstructed the complete mapping/settings/native closure on
         # this connection before any write. Current authority is independent.
-        current = json.loads(capture.ready.snapshot_bytes)
+        current = _read_json(capture.ready.snapshot_bytes, entry['_budget'])
         _current_configuration(entry['mapping'], current, entry['command'], entry['_budget'])
         _check(self.org.teams.teams_for_manager(entry['source']['principal']) ==
                (entry['roles']['agent_manager']['team'],))
@@ -885,7 +886,7 @@ class CodingDispatcher:
                                    and entry['native']['host']['invocation_id'] == owner.identity
                                    and entry['native']['host']['handle_id'] is not None
                                    and entry['native']['terminal'] is None and entry['native']['callback'] is None)
-                            snapshot = json.loads(current.ready.snapshot_bytes)
+                            snapshot = _read_json(current.ready.snapshot_bytes, inventory.budget)
                             _current_configuration(entry['mapping'], snapshot, entry['command'], inventory.budget)
                             for task in entry['tasks']:
                                 self.db._check_team_move_task_uncommitted(task)

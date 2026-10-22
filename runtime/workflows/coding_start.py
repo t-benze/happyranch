@@ -1,7 +1,6 @@
 """Genuine result-owned K3a bootstrap. No pre-callback allocation or launcher."""
 from __future__ import annotations
 
-import json
 import sqlite3
 from typing import Any
 from dataclasses import asdict
@@ -15,7 +14,7 @@ from runtime.orchestrator.org_config import load_org_config
 from runtime.orchestrator.task_pause import current_invocation
 from runtime.workflows._coding_import_support import CodingImportSupport, _capture
 from runtime.workflows._coding_release_history import read_release_import
-from runtime.workflows._coding_settings_execution import _configuration, _resolve_start
+from runtime.workflows._coding_settings_execution import _configuration, _read_json, _resolve_start
 from runtime.workflows.activation import author_capacity_blocked
 from runtime.workflows.coding_authority_history import _Budget
 from runtime.workflows.coding_bootstrap import effective_bindings, encode_row, identity, initial_scope, journal_rows, pinned_rows, task_brief
@@ -266,13 +265,13 @@ class CodingStartStore:
         _check(len(entries) == 1)
         selected = entries[0]
         _check(command['mapping'] == dict(id=selected.mapping_id, generation=selected.generation, digest=selected.mapping_digest))
-        record = json.loads(selected.mapping_bytes)
+        record = _read_json(selected.mapping_bytes, inventory.budget)
         _resolve_start(command, mappings, imported, inventory.budget, fresh=True)
         mapping = record['mapping']
         effective = effective_mapping(mapping, command)
         roles = effective['roles']
         _check(roles['agent_manager'] == dict(principal=claim.assigned_agent, team=claim.team))
-        snapshot = json.loads(capture.ready.snapshot_bytes)
+        snapshot = _read_json(capture.ready.snapshot_bytes, inventory.budget)
         _configuration(mapping, snapshot, command, inventory.budget)
         _configuration(effective, snapshot, command, inventory.budget)
         self.org.workflow_authority._validate_admission_uncommitted(conn, capture)

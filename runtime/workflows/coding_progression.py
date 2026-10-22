@@ -13,7 +13,7 @@ from typing import Any
 
 from runtime.models import TaskRecord
 from runtime.workflows._coding_import_support import _capture
-from runtime.workflows._coding_settings_execution import _current_configuration
+from runtime.workflows._coding_settings_execution import _current_configuration, _read_json
 from runtime.workflows.coding_authority_history import _Budget, _decoded
 from runtime.workflows.coding_bootstrap import effective_bindings, encode_row, identity, final_brief, final_scope, qa_brief, qa_scope, review_brief, review_scope
 from runtime.workflows.coding_saved_records import _canonical, _check, _hash
@@ -129,7 +129,7 @@ def _admission(dispatcher: Any, conn: Any, entry: dict, capture: Any, sessions: 
     _check(not org._runner_admission_closed and org.orchestrator._db is db)
     org.workflow_authority._validate_admission_uncommitted(conn, capture)
     mapping = entry['mapping']
-    current = json.loads(capture.ready.snapshot_bytes)
+    current = _read_json(capture.ready.snapshot_bytes, budget)
     _current_configuration(mapping, current, entry['command'], budget)
     roles, source = entry['roles'], entry['source']
     _check(org.teams.teams_for_manager(source['principal']) == (roles['agent_manager']['team'],)

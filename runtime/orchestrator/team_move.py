@@ -310,10 +310,10 @@ class TeamMoveCoordinator:
                 pending.append(related)
         tables = {r[0] for r in db._conn.execute("SELECT name FROM sqlite_schema WHERE type='table'")}
         if "workflow_instances" in tables:
-            from runtime.workflows.coding_authority_history import _Budget, _decoded
+            from runtime.workflows.coding_authority_history import _Budget
             from runtime.workflows.coding_start import queued_storage
             from runtime.workflows.coding_start_history import rows, same
-            from runtime.workflows.coding_saved_records import _json
+            from runtime.workflows._coding_settings_execution import _read_json
             budget = _Budget()
             coding = None
 
@@ -367,7 +367,7 @@ class TeamMoveCoordinator:
                                 or instance['root_task_id'] not in selected['tasks']
                                 or instance['binding_snapshot_id'] != selected['binding']['id']):
                             raise ValueError('coding_workflow_binding_not_closed')
-                        _decoded(_json(raw, 1048576), budget)
+                        _read_json(raw, budget)
                         # Historical replacements/defaults are not live roles.
                         # All actual task/team/history dependencies above remain.
                         related_to_move |= referenced(selected['roles'])
