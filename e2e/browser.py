@@ -520,6 +520,15 @@ class _ResponseObservation:
         self.group, self.browser, self.path = group, browser, path
         self.mode, self.document = group.mode, group.document
         self.target, self.start_url = browser.base + self.document, browser._url
+        # Old source ownership is separate from the pending target Request.
+        # These prerequisites constrain only precommit same-document handling.
+        self.source_lineage = browser._lineage
+        self.source_document_sequence = browser._document_sequence
+        self.source_url = browser.page.url if browser.page.url == self.start_url else None
+        self.source_navigation_pending = browser._navigation is not None
+        self.source_unredirected = (self.source_lineage is not None
+                                    and self.source_lineage.redirected_from is None
+                                    and self.source_lineage.redirected_to is None)
         self.lineage = browser._lineage if self.mode == "action" else None
         self.reached = self.start_url == self.target if self.mode == "action" else False
         self.navigation: Any = None
@@ -539,6 +548,10 @@ class _ResponseObservation:
                           source_sha=browser.controller.revision,
                           python=browser.controller.python, origin=browser.base,
                           org=path.split("/")[4], source_url=self.start_url,
+                          source_document_sequence=self.source_document_sequence,
+                          source_document_url=self.source_url,
+                          source_navigation_pending=self.source_navigation_pending,
+                          source_unredirected=self.source_unredirected,
                           boot_index=len(browser.controller.boots)-1,
                           boot=deepcopy(browser.controller.boots[-1]),
                           phase=(browser.controller.e07.get("phases") or [{}])[-1].get("name"),
@@ -871,7 +884,27 @@ class Browser:
                 else:
                     valid = self._lineage is not None and not scope.invalid
                     if scope.mode == "new-document":
-                        valid &= scope.commit is not None and url == scope.target
+                        if scope.commit is None:
+                            # A queued, nondeparting initialization of the OLD
+                            # document grants no target lineage or API readiness.
+                            valid &= (not scope.aborted
+                                      and scope.source_url == scope.start_url == scope.target == url == self.page.url
+                                      and scope.source_lineage is not None
+                                      and self._lineage is scope.source_lineage
+                                      and type(scope.source_document_sequence) is int
+                                      and scope.source_document_sequence > 0
+                                      and self._document_sequence == scope.source_document_sequence
+                                      and not scope.source_navigation_pending and scope.source_unredirected
+                                      and scope.source_lineage.redirected_from is None
+                                      and scope.source_lineage.redirected_to is None
+                                      and (self._navigation is None or (
+                                          self._navigation is scope.navigation and scope.navigation is not None
+                                          and scope.navigation.method == "GET"
+                                          and scope.navigation.url == scope.target
+                                          and scope.navigation.redirected_from is None
+                                          and scope.navigation.redirected_to is None)))
+                        else:
+                            valid &= self._lineage is scope.lineage and url == scope.target == self.page.url
                     elif scope.reached:
                         valid &= url == scope.target
                     else:
@@ -880,7 +913,8 @@ class Browser:
                             scope.reached = True
                     scope.invalid |= not valid
                 scope.note("commit" if new else "same-document", expected=valid,
-                           url=url if valid else None, document_sequence=self._document_sequence)
+                           url=url if valid else None, document_sequence=self._document_sequence,
+                           pending_navigation_sequence=self._navigation_sequence if self._navigation is not None else None)
             self.events.append(dict(event="native-navigation", new_document=new,
                                     sequence=self._sequence, path=urlsplit(url).path))
         except BaseException as exc:
@@ -1636,8 +1670,31 @@ class Browser:
         ):
             self.page.reload(timeout=c.remaining(4)*1000)
             self.controller.remaining()
-            main = self.page.get_by_role("main")
-            expect(main.locator("h1").get_by_text(status, exact=False).first).to_be_visible(timeout=c.remaining(4)*1000)
+            main = self._task_shell()
+            heading = self._task_surface("detail").locator("header > h1")
+            expect(heading).to_have_count(1, timeout=c.remaining(4)*1000)
+            expect(heading).to_be_visible(timeout=c.remaining(4)*1000)
+            identity, badge = heading.locator(":scope > span").nth(0), heading.locator(":scope > span").nth(1)
+            expect(heading.locator(":scope > span")).to_have_count(2, timeout=c.remaining(4)*1000)
+            expect(identity).to_have_text(task, timeout=c.remaining(4)*1000)
+            waiting = status == "in_progress" and expected["task"]["block_kind"] == "delegated"
+            qualifier = badge.locator(":scope > span:not([aria-hidden])")
+            expect(badge).to_have_text(re.compile(r"^" + re.escape(status)
+                                      + (r"\s*· Waiting on child work$" if waiting else r"$")),
+                                      timeout=c.remaining(4)*1000)
+            expect(qualifier).to_have_count(1 if waiting else 0, timeout=c.remaining(4)*1000)
+            if waiting:
+                expect(qualifier).to_have_text("· Waiting on child work", timeout=c.remaining(4)*1000)
+                expect(qualifier).to_be_visible(timeout=c.remaining(4)*1000)
+            expect(identity).to_be_visible(timeout=c.remaining(4)*1000)
+            expect(badge).to_be_visible(timeout=c.remaining(4)*1000)
+            header = dict(identity=identity.inner_text(timeout=c.remaining(4)*1000),
+                          status=badge.evaluate("el => [...el.childNodes].filter(n => n.nodeType === 3).map(n => n.nodeValue).join('').trim()",
+                                                timeout=c.remaining(4)*1000),
+                          qualifier=qualifier.inner_text(timeout=c.remaining(4)*1000) if waiting else None)
+            require(header == dict(identity=task, status=status,
+                                   qualifier="· Waiting on child work" if waiting else None),
+                    "E07 unique visible own header", header)
             self.controller.remaining()
             cancel = main.get_by_role("button", name="Cancel", exact=True)
             if status in {"cancelled", "completed"}:
@@ -1648,7 +1705,7 @@ class Browser:
             else:
                 expect(cancel).to_be_enabled(timeout=c.remaining(4)*1000)
                 self.controller.remaining()
-            record = dict(task=task, url=self.page.url, detail=detail.provisional_json(),
+            record = dict(task=task, url=self.page.url, header=header, detail=detail.provisional_json(),
                           recall=recall.provisional_json(), text=main.inner_text(timeout=self.controller.remaining(4)*1000),
                           cancel_disabled=cancel.is_disabled(timeout=self.controller.remaining(4)*1000), cancel_title=cancel.get_attribute("title", timeout=self.controller.remaining(4)*1000),
                           badges=self._native(lambda: main.get_by_text(status,exact=True)._impl_obj.all_text_contents(), group.end), at=time.monotonic())
@@ -1674,7 +1731,17 @@ class Browser:
         c = self.controller
         child_view = self.e07_detail(child,"in_progress", expected=expected[child])
         parent_view = self.e07_detail(parent,"in_progress", expected=expected[parent])
-        require("waiting on subtasks" in parent_view["text"] and child_view["detail"]["task"]["block_kind"] is None,
+        require(parent_view["header"] == dict(identity=parent, status="in_progress", qualifier="· Waiting on child work")
+                and child_view["header"] == dict(identity=child, status="in_progress", qualifier=None)
+                and parent_view["detail"]["task"]["task_id"] == parent
+                and parent_view["detail"]["task"]["status"] == "in_progress"
+                and parent_view["detail"]["task"]["block_kind"] == "delegated"
+                and parent_view["detail"]["task"]["child_wait"]["state"] == "waiting_children"
+                and child_view["detail"]["task"]["task_id"] == child
+                and child_view["detail"]["task"]["status"] == "in_progress"
+                and child_view["detail"]["task"]["block_kind"] is None
+                and child_view["detail"]["task"]["child_wait"] is None
+                and child_view["detail"]["task"]["parent_task_id"] == parent,
                 "E07 waiting parent and running child rendered")
         self.page.get_by_role("main").get_by_role("button",name="Cancel",exact=True).click(timeout=c.remaining(4)*1000)
         self.controller.remaining()
