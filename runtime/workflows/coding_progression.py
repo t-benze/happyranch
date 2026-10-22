@@ -60,6 +60,7 @@ def _admission(dispatcher: Any, conn: Any, entry: dict, capture: Any, sessions: 
     _check(pause is not None and root['id'] == source['root_ancestor_id'] and not pause['held'])
     pending, closure = [source['task_id']], {}
     while pending:
+        budget.step()
         key = pending.pop()
         if key in closure:
             continue

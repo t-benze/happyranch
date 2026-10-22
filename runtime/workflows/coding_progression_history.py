@@ -62,6 +62,7 @@ def admission(conn: Any, org: str, budget: Any, storage: Any, value: dict, *,
     _check(future_task_id not in closure)
     pending, discovered = [source['task_id']], set()
     while pending:
+        budget.step()
         key = pending.pop()
         if key == future_task_id or key in discovered:
             continue
