@@ -111,9 +111,12 @@ helper_invoke() {
     helper_limit "$operation" || return "$?"
     helper_transport || return "$?"
     reply="$HELPER_TRANSPORT/reply"
-    exec 6<>"$HELPER_TRANSPORT/control" 7<>"$HELPER_TRANSPORT/result"
+    if exec 6<>"$HELPER_TRANSPORT/control" 7<>"$HELPER_TRANSPORT/result"; then :; else
+        exec 6>&- 7>&-
+        return 125
+    fi
     # Explicitly preserve the function's incoming stdin/heredoc before '&'.
-    exec 10<&0
+    if exec 10<&0; then :; else exec 6>&- 7>&-; return 125; fi
     HELPER_ACTIVE=1 HELPER_CONTROL_SENT=0
     if [ "$capture" -eq 1 ]; then
         python3 "$SUPERVISOR" guardian "$operation" "$HELPER_TRANSPORT/control" "$HELPER_TRANSPORT/result" "$@" \

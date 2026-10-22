@@ -1542,12 +1542,7 @@ def process_capture(argv, cwd, stdout_cap, stderr_cap, *, streams=None, stdout_c
     """
     start, wall = time.monotonic_ns(), time.time_ns()
     proc = selector = None
-    control = SUPERVISOR.Control()
-    try:
-        child = SUPERVISOR.Child(control)
-    except BaseException:
-        control.close()
-        raise
+    control = child = None
     launched = False
     owned_fds = []
     code = None
@@ -1576,6 +1571,9 @@ def process_capture(argv, cwd, stdout_cap, stderr_cap, *, streams=None, stdout_c
 
     with process_signals(failures):
         try:
+            control = SUPERVISOR.Control()
+            control.local_deadline = deadline
+            child = SUPERVISOR.Child(control)
             env = dict(os.environ)
             if git_transport:
                 env = {k: os.environ[k] for k in ('PATH', 'HOME', 'TMPDIR', 'SYSTEMROOT') if k in os.environ}
@@ -1617,6 +1615,7 @@ def process_capture(argv, cwd, stdout_cap, stderr_cap, *, streams=None, stdout_c
                         break
                     timed_out = True
                 if (timed_out or overflow) and not killed:
+                    control.local_deadline = time.monotonic() + 2.25
                     terminate(signal.SIGTERM)
                     # One short grace interval, then kill the entire owned group.
                     grace = time.monotonic() + 0.25
@@ -1660,7 +1659,11 @@ def process_capture(argv, cwd, stdout_cap, stderr_cap, *, streams=None, stdout_c
             # Each acquired resource gets its own attempt, even if an earlier
             # cleanup fails. No checkpoints here: signals keep the first failure
             # and cannot abort cleanup. Reaping has a finite independent bound.
-            proc = child.proc
+            proc = child.proc if child is not None else None
+            # Release/reap/settlement all spend the same local cleanup window.
+            cleanup_cutoff = min(start / 1_000_000_000 + 62.25, time.monotonic() + 2.25)
+            if control is not None:
+                control.local_deadline = cleanup_cutoff
             pid = getattr(proc, 'pid', None)
             if pid is not None:
                 try:
@@ -1670,7 +1673,7 @@ def process_capture(argv, cwd, stdout_cap, stderr_cap, *, streams=None, stdout_c
                     if not failures:
                         failures.append(exc)
                 try:
-                    code = child.reap(time.monotonic() + 1)
+                    code = child.reap(min(cleanup_cutoff, time.monotonic() + 1))
                 except BaseException as exc:
                     code = getattr(proc, 'returncode', None)
                     if not failures:
@@ -1683,7 +1686,8 @@ def process_capture(argv, cwd, stdout_cap, stderr_cap, *, streams=None, stdout_c
                     if not failures:
                         failures.append(exc)
             try:
-                control.close()
+                if control is not None:
+                    control.close()
             except BaseException as exc:
                 if not failures:
                     failures.append(exc)

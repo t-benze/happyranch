@@ -91,6 +91,7 @@ class Control:
                 os.close(fd)
                 raise
         self.deadline = None
+        self.local_deadline = None
 
     def exchange(self, action, **data):
         if self.sock is None:
@@ -98,6 +99,8 @@ class Control:
         stop = time.monotonic() + 1
         if self.deadline is not None:
             stop = min(stop, self.deadline)
+        if self.local_deadline is not None:
+            stop = min(stop, self.local_deadline)
         self.sock.settimeout(max(0.000001, stop - time.monotonic()))
         raw = json.dumps(dict(action=action, **data), separators=(',', ':')).encode()
         if len(raw) > 512:
@@ -107,7 +110,7 @@ class Control:
         if reply.get('action') != action or reply.get('epoch') != data.get('epoch') or reply.get('ok') is not True:
             raise LifecycleError('PACKAGING_CONTROL_REFUSED')
         deadline = reply.get('deadline')
-        if not isinstance(deadline, (int, float)) or time.monotonic() >= deadline:
+        if not isinstance(deadline, (int, float)) or time.monotonic() >= min(deadline, self.local_deadline or deadline):
             raise LifecycleError('PACKAGING_CONTROL_DEADLINE')
         self.deadline = deadline
 
@@ -545,6 +548,8 @@ def relay(operation, argv, *, origin=None, cancel_fd=None, guardian=False,
                         sock.close()
                     except OSError:
                         control_unknown = True
+    if guardian and killed:
+        control_unknown = True  # Worker loss supplies no nested-helper settlement.
     complete = bool(outputs) and all(row[2] and not row[1] for row in outputs.values())
     absent = child.proc is not None and child.launched and child.absent()
     unresolved = control_unknown or nested is not None or not complete or not absent or code is None
@@ -565,8 +570,9 @@ def inspection_run(argv):
     """
     import io
     start = time.monotonic()
-    control = Control()
+    control = None
     child = None
+    owned_fds = set()
     fds, output = [], [bytearray(), bytearray()]
     eof = [False, False]
     code = None
@@ -575,11 +581,15 @@ def inspection_run(argv):
     cutoff = start + 60
     with signals() as caught:
         try:
+            control = Control()
+            control.local_deadline = cutoff
             child = Child(control)
             for _ in range(2):
                 fds.extend(os.pipe())
+                owned_fds.update(fds)
             child.launch(argv, stdin=None, stdout=fds[1], stderr=fds[3], start_new_session=True)
             for i in (1, 3):
+                owned_fds.remove(fds[i])
                 os.close(fds[i])
             readers = {fds[0]: 0, fds[2]: 1}
             for fd in readers:
@@ -591,6 +601,7 @@ def inspection_run(argv):
                     timeout = not caught
                     cleaning = True
                     cutoff = now + 5
+                    control.local_deadline = cutoff
                     if child.pin:
                         child.kill(caught[0] if caught else signal.SIGTERM)
                     kill_at, drain_at = now + 2, now + 3
@@ -631,21 +642,17 @@ def inspection_run(argv):
                         raise LifecycleError('PACKAGING_INSPECTION_CLEANUP_UNKNOWN')
                 except BaseException as exc:
                     error = error or exc
-            for i in (0, 2):
-                if len(fds) > i:
-                    try:
-                        os.close(fds[i])
-                    except OSError as exc:
-                        error = error or exc
-            # Partial setup can own writer ends before launch returns.
-            if child is None or not child.launched:
-                for i in (1, 3):
-                    if len(fds) > i:
-                        try:
-                            os.close(fds[i])
-                        except OSError:
-                            pass
-            control.close()
+            for fd in tuple(owned_fds):
+                owned_fds.remove(fd)
+                try:
+                    os.close(fd)
+                except OSError as exc:
+                    error = error or exc
+            if control is not None:
+                try:
+                    control.close()
+                except OSError as exc:
+                    error = error or exc
         if caught:
             raise LifecycleError('PACKAGING_INSPECTION_INTERRUPTED:' + str(caught[0]))
     if timeout:
