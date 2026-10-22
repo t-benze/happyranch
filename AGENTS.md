@@ -4129,7 +4129,8 @@ operator/rollback acceptance. No automatic held-manager reallocation exists.
 Founder-only GET/PUT `/api/v1/orgs/{slug}/settings/coding` owns one canonical
 DB coding section, two-generation CAS, original-key replay and a genuine human
 mapping/publication suffix. No YAML/default fallback, task/SID impersonation,
-repository grant, settings UI or readiness enablement follows. Complete native
+repository grant or readiness enablement follows. The later page below consumes
+this backend without changing its historical families. Complete native
 prefix/human suffix/current pointer validation composes through mapping inventory
 and cold/schema(data=False)/recovery/drain readers; old literal families remain.
 Fresh old-native publication after S1 refuses inside its transaction; historical
@@ -4159,7 +4160,16 @@ four org-wide cross-team selectors, one explicit frozen key/body per Save, 409
 draft retention with explicit adoption, a provider-lifetime per-org send fence
 (survives pane/org switches; fields locked while pending), uncertain-save lock
 with read-only GET(original key) released only by a committed receipt (absent
-key grants no write), rejected obsolete reads ignored, byte-identical disabled-retain and en/zh-CN copy. Initial E0
-cannot be saved there because no existing read supplies repository references or
-the authority pin; nothing is fabricated. Rendered MSW checks prove UI/client
+key grants no write), rejected obsolete reads ignored, byte-identical disabled-retain and en/zh-CN copy.
+The dedicated same-Founder-auth GET `/settings/coding/options` (TASK12651)
+supplies genuine imported release/current authority/configured repository
+selectors. The actual yielded capture, complete central inventory and ONE
+cumulative budget share one caller-owned read snapshot, without writes, a lease
+or repository/Git observations. Unavailable authority has no pin/choices;
+invalid history/budget refuses categorically. E0 requires explicit metadata
+adoption, four distinct across-team bindings and1..8 repositories with explicit
+sha1/sha256 formats. Initial replacements are visibly empty. Saved repositories/
+replacements stay intact by default; current-pin adoption is explicit. Options
+refresh/error never edits a draft or releases a fence; unchanged disabled-retain
+works without options. Rendered MSW checks prove UI/client
 behavior only. See the ordered-coding-workflow spec's Founder page section.

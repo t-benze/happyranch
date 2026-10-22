@@ -4101,8 +4101,16 @@ that survives pane unmount and org switches; fields lock while it is pending;
 409 keeps the draft/focus and needs explicit adoption of the current version;
 uncertain outcomes lock editing and offer only GET(original key), released only
 by a reconciled committed receipt (an absent key never authorizes a new write).
-Unchanged mappings are sent byte-identical (disabled-retain). E0 cannot be saved
-here: no existing read supplies initial repository references or authority pin.
+Unchanged mappings are sent byte-identical (disabled-retain), including when
+current options are unavailable. The dedicated same-Founder-auth read-only
+`/settings/coding/options` supplies genuine imported release/current authority
+and configured repository selectors through an independent per-org query.
+E0 requires explicit metadata adoption, four distinct role bindings and1..8
+repositories with explicit sha1/sha256 choices; initial replacements are empty.
+Saved mappings keep repositories/replacements by default; explicit adoption can
+use newer authority for changed roles. Options loading/error/refresh never changes
+a draft, receipt, original command or fence and never auto-sends. No access or
+observed object format is inferred. Copy is en/zh-CN.
 See [the page section](../superpowers/specs/2026-10-14-ordered-coding-workflow.md#founder-coding-settings-page--root12568--task12632).
 
 

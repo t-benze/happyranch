@@ -17,7 +17,7 @@
  *   read-only GET(original key) reconciliation. Only a reconciled committed
  *   receipt releases it; an absent key or a failed check never authorizes a
  *   new write.
- * - Unchanged roles keep the last accepted mapping byte-for-byte, so disabling
+ * - Unchanged mappings keep the last accepted mapping byte-for-byte, so disabling
  *   never forces replacement selections (disabled-retain).
  *
  * Saving configuration never enables coding execution.
@@ -31,6 +31,7 @@ import { useTranslation } from '@/hooks/i18n';
 import {
   useCodingSendFence,
   useCodingSettings,
+  useCodingSettingsOptions,
   useCodingSettingsActions,
   type CodingAgentBinding,
   type CodingConfiguration,
@@ -63,6 +64,11 @@ interface Draft {
   admission: Admission;
   roles: Record<RoleKey, string>;
   basis: Basis;
+  release: CodingConfiguration['release'] | null;
+  authority: CodingConfiguration['authority'] | null;
+  repositories: (Omit<CodingConfiguration['repository_references'][number], 'object_format'> & {
+    object_format: '' | 'sha1' | 'sha256';
+  })[];
 }
 
 type Hint = 'notWorker' | 'notManager' | 'notRegisteredManager' | 'noExecutor' | 'noTeam' | 'missingRepository';
@@ -134,6 +140,9 @@ function draftFrom(current: CodingSettingsCurrent, configuration: CodingConfigur
     admission: current.admission,
     roles: rolesOf(configuration),
     basis: { generation: current.generation, mapping_generation: current.mapping_generation },
+    release: configuration?.release ?? null,
+    authority: configuration?.authority ?? null,
+    repositories: configuration?.repository_references ?? [],
   };
 }
 
@@ -145,9 +154,19 @@ function shortDigest(digest: string | null | undefined): string {
   return digest ? `${digest.slice(0, 12)}…` : '—';
 }
 
+function sameMetadata(draft: Draft, options: { authority: Draft['authority']; release: Draft['release'] }): boolean {
+  return draft.authority?.namespace === options.authority?.namespace
+    && draft.authority?.generation === options.authority?.generation
+    && draft.authority?.snapshot_digest === options.authority?.snapshot_digest
+    && draft.release?.identity === options.release?.identity
+    && draft.release?.version === options.release?.version
+    && draft.release?.definition_digest === options.release?.definition_digest;
+}
+
 export function CodingSection(): JSX.Element {
   const { t } = useTranslation();
   const query = useCodingSettings();
+  const optionsQuery = useCodingSettingsOptions();
   const actions = useCodingSettingsActions();
   const fence = useCodingSendFence();
   const agentsQuery = useAgentsList();
@@ -157,6 +176,10 @@ export function CodingSection(): JSX.Element {
   const view = query.data;
   const configuration = view?.configuration ?? null;
   const current = view?.current;
+  // Errors/refreshes revoke usability of even cached options. They never edit
+  // the draft, touch settings receipts, release a fence or cause a send.
+  const options = !optionsQuery.isError && !optionsQuery.isFetching
+    && optionsQuery.data?.org_slug === view?.org_slug ? optionsQuery.data : undefined;
 
   const [draft, setDraft] = useState<Draft | null>(null);
   const [dirty, setDirty] = useState(false);
@@ -183,8 +206,8 @@ export function CodingSection(): JSX.Element {
       .map((team) => team.manager as string),
   ), [teamsQuery.data]);
   const repoKeys = useMemo(
-    () => (configuration?.repository_references ?? []).map((r) => r.repo_key),
-    [configuration],
+    () => (draft?.repositories ?? []).map((r) => r.repo_key),
+    [draft?.repositories],
   );
 
   const hintsFor = (role: RoleKey, c: Candidate): Hint[] => {
@@ -219,6 +242,12 @@ export function CodingSection(): JSX.Element {
   }
 
   const rolesChanged = configuration === null || ROLE_KEYS.some((r) => draft.roles[r] !== configuration.roles[r].principal);
+  const repositoriesChanged = JSON.stringify(draft.repositories) !== JSON.stringify(configuration?.repository_references ?? []);
+  const metadataChanged = !sameMetadata(draft, configuration ?? { release: null, authority: null });
+  const retain = configuration !== null && !rolesChanged && !repositoriesChanged && !metadataChanged;
+  const disabledRetain = retain && draft.admission === 'disabled';
+  const optionsReady = !!options?.release && !!options.authority && options.repository_choices.length > 0;
+  const currentMetadata = optionsReady && sameMetadata(draft, options);
   const basisStale = draft.basis.generation !== current.generation
     || draft.basis.mapping_generation !== current.mapping_generation;
   const saving = fence?.phase === 'sending';
@@ -241,10 +270,13 @@ export function CodingSection(): JSX.Element {
   };
 
   const validation = (): MessageKey | null => {
-    if (configuration === null) return 'settings.coding.initialUnavailable';
     if (basisStale) return 'settings.coding.adoptFirst';
     if (!distinct) return 'settings.coding.distinctRequired';
-    if (rolesChanged && ROLE_KEYS.some((r) => configuration.roles[r].principal !== draft.roles[r]
+    if (!disabledRetain && !optionsReady) return 'settings.coding.options.unavailable';
+    if (!disabledRetain && !currentMetadata) return 'settings.coding.options.adoptFirst';
+    if (draft.repositories.length < 1 || draft.repositories.length > 8
+      || draft.repositories.some((r) => !r.object_format)) return 'settings.coding.repositories.required';
+    if (rolesChanged && ROLE_KEYS.some((r) => configuration?.roles[r].principal !== draft.roles[r]
       && !candidates.some((c) => c.name === draft.roles[r] && c.team))) return 'settings.coding.selectionRequired';
     return null;
   };
@@ -261,15 +293,21 @@ export function CodingSection(): JSX.Element {
     if (actions.fence()) return;
     const problem = validation();
     if (problem) { setNotice(problem); return; }
-    if (!configuration) return;
-    const mapping: CodingConfiguration = rolesChanged
-      ? { ...configuration, roles: {
+    // Validation above has established the explicit complete draft. Retaining
+    // an unchanged Mapping sends the accepted object itself, byte-for-byte.
+    if (!draft.release || !draft.authority) return;
+    const mapping: CodingConfiguration = !retain
+      ? { release: draft.release, authority: draft.authority,
+        eligible_replacements: configuration?.eligible_replacements ?? {
+          implementer: [], code_reviewer: [], qa_engineer: [], agent_manager: [],
+        },
+        repository_references: draft.repositories as CodingConfiguration['repository_references'], roles: {
         implementer: binding('implementer'),
         code_reviewer: binding('code_reviewer'),
         qa_engineer: binding('qa_engineer'),
         agent_manager: binding('agent_manager'),
       } }
-      : configuration;
+      : configuration!;
     const command: CodingSettingsCommand = {
       format: 'workflow-coding-settings-command@1',
       org_slug: view.org_slug,
@@ -348,6 +386,15 @@ export function CodingSection(): JSX.Element {
     setOutcome({ kind: 'none' });
   };
 
+  const adoptOptions = () => {
+    if (actions.fence() || !optionsReady || !options) return;
+    edit({ release: options.release, authority: options.authority });
+  };
+  const repositoryChoices = [...new Map([
+    ...draft.repositories.map((r) => [r.repository_id, r] as const),
+    ...(options?.repository_choices ?? []).map((r) => [r.repository_id, r] as const),
+  ]).values()];
+
   const saveBlocked = locked;
 
   return (
@@ -382,6 +429,65 @@ export function CodingSection(): JSX.Element {
       )}
 
       {query.isFetching && <p role="status" className="text-text-secondary text-xs">{t('settings.coding.refreshing')}</p>}
+
+      <div className="border-border-default space-y-2 rounded-md border p-3 text-sm" data-testid="coding-options">
+        <p className="font-medium">{t('settings.coding.options.title')}</p>
+        <p className="text-text-secondary">{t('settings.coding.options.help')}</p>
+        {optionsQuery.isFetching && <p role="status">{t('settings.coding.options.loading')}</p>}
+        {optionsQuery.isError && <p className="text-feedback-danger">{t('settings.coding.options.error')}</p>}
+        {!optionsQuery.isFetching && !optionsQuery.isError && !optionsReady && <p>{t('settings.coding.options.unavailable')}</p>}
+        {optionsReady && options && <p className="font-mono break-all">{t('settings.coding.options.pin', {
+          generation: options.authority!.generation, digest: shortDigest(options.authority!.snapshot_digest),
+        })}</p>}
+        {draft.authority && <p className="font-mono break-all">{t('settings.coding.options.draftPin', {
+          generation: draft.authority.generation, digest: shortDigest(draft.authority.snapshot_digest),
+        })}</p>}
+        <div className="flex flex-wrap gap-2">
+          <Button size="sm" variant="secondary" onClick={() => void optionsQuery.refetch()} disabled={optionsQuery.isFetching}>
+            {t('settings.coding.options.refresh')}
+          </Button>
+          <Button size="sm" variant="secondary" data-testid="coding-adopt-options" onClick={adoptOptions} disabled={locked || !optionsReady}>
+            {t('settings.coding.options.adopt')}
+          </Button>
+        </div>
+      </div>
+
+      <fieldset className="space-y-2" disabled={locked}>
+        <legend className="mb-1 text-sm font-medium">{t('settings.coding.repositories.title')}</legend>
+        <p className="text-text-secondary text-xs">{t('settings.coding.repositories.help')}</p>
+        {repositoryChoices.map((choice) => {
+          const selectedRepo = draft.repositories.find((r) => r.repository_id === choice.repository_id);
+          return <div key={choice.repository_id} className="border-border-default space-y-1 rounded-md border p-2 text-sm">
+            <label className="flex items-center gap-2">
+              <input type="checkbox" checked={!!selectedRepo} aria-label={choice.repo_key}
+                disabled={!selectedRepo && !optionsReady}
+                onChange={() => {
+                  if (actions.fence()) return;
+                  if (selectedRepo) edit({ repositories: draft.repositories.filter((r) => r.repository_id !== choice.repository_id) });
+                  else if (optionsReady && draft.repositories.length < 8) edit({ repositories: [...draft.repositories, { ...choice, object_format: '' }] });
+                  else setNotice('settings.coding.repositories.required');
+                }} />
+              {choice.repo_key}
+            </label>
+            <p className="text-text-secondary font-mono text-xs break-all">{choice.repository_id}</p>
+            {selectedRepo && <label className="block">
+              {t('settings.coding.repositories.format', { repository: choice.repo_key })}
+              <select value={selectedRepo.object_format} className="bg-surface-sunken border-border-default ml-2 rounded border px-2 py-1"
+                onChange={(e) => {
+                  const value = e.target.value;
+                  if (value !== '' && value !== 'sha1' && value !== 'sha256') return;
+                  edit({ repositories: draft.repositories.map((r) => r.repository_id === choice.repository_id ? { ...r, object_format: value } : r) });
+                }}>
+                <option value="">{t('settings.coding.repositories.chooseFormat')}</option>
+                {[...new Set([selectedRepo.object_format, ...(options?.object_formats ?? [])])]
+                  .filter((format) => format !== '')
+                  .map((format) => <option key={format} value={format}>{format}</option>)}
+              </select>
+            </label>}
+          </div>;
+        })}
+        {configuration === null && <p className="text-text-secondary text-xs">{t('settings.coding.repositories.emptyReplacements')}</p>}
+      </fieldset>
 
       <fieldset className="space-y-2" disabled={locked}>
         <legend className="mb-1 text-sm font-medium">{t('settings.coding.admission.heading')}</legend>

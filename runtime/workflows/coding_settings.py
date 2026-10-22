@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import sqlite3
 from contextlib import asynccontextmanager
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from runtime.orchestrator.producer_move import native_writer
 from runtime.workflows._coding_import_support import CodingImportSupport
@@ -17,6 +17,9 @@ from runtime.workflows.authority import WorkflowAuthorityError
 from runtime.workflows.coding_authority_history import _Budget
 from runtime.workflows.coding_mapping_history import _read_mapping_storage
 from runtime.workflows.profile_coordinator import ProfileCoordinatorError
+
+if TYPE_CHECKING:
+    from runtime.workflows.templates import WorkflowTemplatePrincipal
 
 
 class CodingSettingsError(ValueError):
@@ -120,6 +123,22 @@ class CodingSettingsStore:
             raise CodingSettingsError('coding_settings_publication_uncertain',
                                       operation_key=operation_key) from None
         except (ValueError, TypeError, KeyError, RecursionError, OverflowError):
+            raise CodingSettingsError('coding_settings_invalid') from None
+
+    async def options(self, *, principal: WorkflowTemplatePrincipal) -> dict:
+        budget = _Budget()
+        try:
+            async with self._access(principal) as (references, capture):
+                with self.support._read(capture) as (conn, admitted_capture):
+                    self._principal(principal)
+                    _, inventory = self._state(conn, references, budget)
+                    from runtime.workflows._coding_settings_options import project_options
+                    result = project_options(self, conn, admitted_capture, inventory)
+                    self._principal(principal)
+                    return result
+        except CodingSettingsError:
+            raise
+        except (sqlite3.Error, ValueError, TypeError, KeyError, RecursionError, OverflowError):
             raise CodingSettingsError('coding_settings_invalid') from None
 
     def _replay(self, state, command, raw):

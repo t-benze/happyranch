@@ -2024,8 +2024,9 @@ team, configured repo keys). Hints and roster visibility grant nothing; the
 server stays authoritative. Founder is the owner, never a role option. Four
 distinct principals are required before sending. A changed mapping binds every
 role to its current actual team (an agent absent from the roster keeps its
-accepted binding for server judgement) and preserves eligible_replacements,
-repository_references, release and authority unchanged. An unchanged mapping is
+accepted binding for server judgement) and preserves eligible_replacements and
+repository references by default. Release/authority adoption and repository
+edits are explicit as described below. An unchanged mapping is
 sent as the accepted mapping itself, so disabling never forces new selections
 (disabled-retain). No reviewer/QA/manager override or workflow-start transport.
 
@@ -2053,16 +2054,51 @@ nor, by rejecting, error out that accepted view; a genuinely current failed read
 stays a visible refusal (F03). Locale changes cause no request. Copy ships in en
 and zh-CN.
 
-Initial E0 has `configuration:null`; no existing Founder read supplies the
-complete mapping's repository_references (repository_id/origin_digest/
-object_format) or current authority pin, so the page drafts roles but refuses a
-first save ("A first configuration cannot be saved from this page yet") and
-fabricates nothing. Producer gap: GET `/settings/coding` returns no initial
-mapping seed and `/teams/ensure-default` is a mutation, not a read. A backend
-owner must supply an accepted read for these values before first configuration.
-A changed mapping also reuses the saved authority pin; a later authority
-generation is refused by the server (`coding_settings_authority_unavailable`)
-and shown as a refusal.
+TASK12651 completes the original first-save/current-authority producer gap with
+GET `/api/v1/orgs/{slug}/settings/coding/options`. Existing settings view/save/
+command/receipt@1 and persisted families remain literal. This dedicated read
+uses the same bearer, `_require_human` and server-derived Founder principal as
+settings. It accepts no query or body, actor, task, SID or selection. The closed
+`workflow-coding-settings-options@1` contains exactly `format,org_slug,release,
+authority,repository_choices,object_formats`. Release is the genuine imported
+fixed Release or null; authority is the authenticated current pin or null.
+Each repository choice contains ONLY `repository_id,repo_key,origin_digest`.
+`object_formats:["sha1","sha256"]` are parser choices, never observed Git facts.
+
+References and file/profile discovery precede synchronous DB ownership. The
+settings authority→teams→DB locks compose CodingImportSupport's profile/publisher/
+DB read ownership and ONE caller-owned read transaction. Complete central schema/
+history/settings/import validation and selector projection share ONE existing
+`_Budget`, retaining source, decoded, canonical, projected and traversal charges
+and existing caps. The actual capture yielded by `_read` (possibly None) is
+used; current admission and the principal/org are revalidated before return.
+Projection traverses the complete configured repository inventory, dedupes whole
+choices and refuses malformed/exhausted collections, never truncating success.
+Choices are bounded to1024 in addition to cumulative limits. The sole identity
+formula remains `workflow-repository:` + SHA256(canonical JSON of
+`[org_slug,repo_key,SHA256(configured_origin_UTF8)]`). No raw origin, path,
+credential, private capture/finding, native reservation, lease, audit or DB write
+is exposed or added. Current-authority/profile unavailability yields null
+authority/empty repository choices while valid retained settings/import remain
+readable. Missing import yields null release. Invalid schema/history/budget or
+uncertain reads refuse categorically; they never become healthy E0/defaults.
+This point-in-time read is no lease across a later PUT; publication still decides.
+
+The independently keyed per-org options query never updates the settings view,
+operation receipt, draft or send fence. Refresh/loading/error/revocation and org
+switches are actual states; even cached options are unusable during refresh/error.
+Initial E0 still has `configuration:null`: Founder explicitly chooses four
+distinct current eligible bindings across teams, adopts available release/current
+authority and selects1..8 unique repositories with an explicit format per new
+selection. Replacements start visibly empty. Save with missing metadata/choices
+sends0 PUT; a complete Save sends one canonical command with actual E0 settings
+generation and authenticated mapping-generation tip through the unchanged fence.
+Saved repositories/replacements and the exact disabled-retain Mapping are retained
+by default. Explicit metadata adoption allows changed-role publication after
+authority advances; a delayed read never applies a new pin. Refresh or server409
+preserves draft/focus and never auto-sends, rekeys or changes a frozen command.
+Unchanged disabled-retain remains available when options are unavailable. No
+selector, save, import or browser hint grants access or source execution readiness.
 
 Rendered evidence is `web/src/features/settings/sections/CodingSection.test.tsx`
 (MSW, real route/provider/client): UI/transport boundary only. Real Founder

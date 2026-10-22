@@ -5467,6 +5467,16 @@ publication without clearing native ownership. Historical native families and
 current execution denials stay intact. See the
 [complete R2 contract](../superpowers/specs/2026-10-14-ordered-coding-workflow.md#canonical-founder-settings-backend-r2-source).
 
+The same-Founder-auth options GET composes the existing settings locks and
+CodingImportSupport's SELECT-only interval. It uses the actual yielded capture,
+complete central inventory and ONE cumulative budget; references/file/profile
+discovery precedes DB ownership, current admission/principal/org are revalidated.
+Only imported release/current pin/configured repository identities are projected.
+Unavailable current authority returns null pin/empty choices; malformed history,
+budget or uncertain reads refuse categorically. No lease, reservation, audit,
+write, Git probe or schema recursion is added. Metadata is a point-in-time
+observation; unchanged publication rechecks remain authoritative.
+
 
 ## Disabled settings-pinned coding start and native attribution
 

@@ -242,6 +242,19 @@ function useCodingSettings(): CodingSettingsQueryLike {
   };
 }
 
+function useCodingSettingsOptions() {
+  const slug = useRealOrgSlug();
+  const query = useQuery({
+    queryKey: ['settings', 'coding-options', slug],
+    queryFn: () => settingsApi.getCodingSettingsOptions(slug),
+    enabled: !!slug,
+    staleTime: 30_000,
+    retry: false,
+  });
+  return { data: query.data, isLoading: query.isLoading, isError: query.isError,
+    error: query.error, isFetching: query.isFetching, refetch: () => query.refetch() };
+}
+
 // Send ownership is settings-local and lives with the provider's QueryClient,
 // not with the mounted pane: leaving the route or switching org A->B->A keeps
 // org A's frozen command/key and fence. It is never persisted.
@@ -331,6 +344,7 @@ export const realSettingsApi: SettingsApi = {
   useUpdateDaemonCapacity,
   useNextWakes,
   useCodingSettings,
+  useCodingSettingsOptions,
   useCodingSettingsActions,
   useCodingSendFence,
 };

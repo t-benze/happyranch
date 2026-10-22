@@ -1602,6 +1602,21 @@ en↔zh-CN with no requests (TASK12642). It is UI/transport evidence
 only; it is not a required merge check and proves no backend persistence,
 authority or native behavior. Screenshots/browser runs are separate evidence.
 
+TASK12651 extends the same F6/F8-R2 record/runners for dedicated options and
+explicit first save: E0 complete/missing/foreign/unsafe options, required format,
+advanced-authority adoption with409 draft retention, options revocation with exact
+disabled-retain/original fence, and late org options isolation. Client cases
+check same-bearer/no-query GET and refuse malformed/unsafe/foreign/duplicate
+choices. Attributable pre-fix page and temporary validator-regression failures,
+byte-exact restoration and passing focused results belong in the maker/PR case
+record; these MSW assertions prove only UI/client behavior. OpenAPI summary and
+route classification remain supported static contracts. Genuine backend SQL/
+authority/persistence and screenshots/layout are NOT RUN without an authorized
+compatible venue; no new proof harness or build/native/E2E campaign follows.
+Swift proof stays UNEXECUTED / FOUNDER-EXEMPTED / NONBLOCKING320seq93, separate
+from99/v25. Units RETIRED; integration INCLUDING callback/lifespan/SessionTracker
+SKIPPED24342. Root-owned workflow/operator/live-manager acceptance remains.
+
 
 ## Settings-pinned engine composition evidence — TASK12615
 

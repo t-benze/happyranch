@@ -1757,3 +1757,12 @@ export interface CodingSettingsSave {
   configuration: CodingConfiguration;
   operation: CodingSettingsReceipt;
 }
+/** Current configuration selectors only; no repository access or Git facts. */
+export interface CodingSettingsOptions {
+  format: 'workflow-coding-settings-options@1';
+  org_slug: string;
+  release: CodingConfiguration['release'] | null;
+  authority: CodingConfiguration['authority'] | null;
+  repository_choices: Omit<CodingConfiguration['repository_references'][number], 'object_format'>[];
+  object_formats: ['sha1', 'sha256'];
+}

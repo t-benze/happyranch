@@ -11,6 +11,7 @@ from pydantic import Field, model_validator
 from runtime.workflows._coding_role_records import (
     Closed, MappingPin, Release, RoleMapping,
 )
+from runtime.workflows.repository_artifacts import Component, RepositoryAuthority, RepositoryId
 from runtime.workflows.artifacts import SHA256, Token
 from runtime.workflows.coding_authority_history import _Budget
 from runtime.workflows.coding_saved_records import (
@@ -97,6 +98,30 @@ class SettingsSave(Closed):
     operation: SettingsReceipt
     current: EffectiveSettings
     configuration: RoleMapping
+
+
+class SettingsRepositoryChoice(Closed):
+    repository_id: RepositoryId
+    repo_key: Component
+    origin_digest: SHA256
+
+
+class SettingsOptions(Closed):
+    format: Literal['workflow-coding-settings-options@1']
+    org_slug: str
+    release: Release | None
+    authority: RepositoryAuthority | None
+    repository_choices: list[SettingsRepositoryChoice] = Field(max_length=1024)
+    # Parser choices only; neither is an observed Git fact.
+    object_formats: tuple[Literal['sha1'], Literal['sha256']]
+
+    @model_validator(mode='after')
+    def addressed(self) -> SettingsOptions:
+        _org(self.org_slug)
+        _check(self.authority is None or self.authority.namespace == 'org/' + self.org_slug)
+        ids = [choice.repository_id for choice in self.repository_choices]
+        _check(len(ids) == len(set(ids)))
+        return self
 
 
 def parse_command(raw: bytes, org: str) -> dict:

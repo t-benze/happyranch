@@ -76,6 +76,13 @@ function receipt(key: string, generation: number) {
   };
 }
 
+function options(slug = A, generation = 7) {
+  return { format: 'workflow-coding-settings-options@1', org_slug: slug, release: RELEASE,
+    authority: { namespace: `org/${slug}`, generation, snapshot_digest: DIGEST },
+    repository_choices: [{ repository_id: 'workflow-repository:' + 'b'.repeat(64), repo_key: 'happyranch', origin_digest: DIGEST }],
+    object_formats: ['sha1', 'sha256'] };
+}
+
 interface Seen { method: string; path: string; search: string; body: unknown }
 let seen: Seen[] = [];
 
@@ -85,6 +92,7 @@ function stubShell(slug: string) {
     http.get(`/api/v1/orgs/${slug}/agents`, () => HttpResponse.json({ agents: ROSTER })),
     http.get(`/api/v1/orgs/${slug}/teams`, () => HttpResponse.json({ teams: TEAMS })),
     http.get(`/api/v1/orgs/${slug}/identities`, () => HttpResponse.json({ identities: [] })),
+    http.get(`/api/v1/orgs/${slug}/settings/coding/options`, () => HttpResponse.json(options(slug))),
   );
 }
 
@@ -92,7 +100,7 @@ beforeEach(() => {
   seen = [];
   server.events.on('request:start', async ({ request }) => {
     const url = new URL(request.url);
-    if (!url.pathname.endsWith('/settings/coding')) return;
+    if (!url.pathname.endsWith('/settings/coding') && !url.pathname.endsWith('/settings/coding/options')) return;
     const body = request.method === 'PUT' ? await request.clone().json() : null;
     seen.push({ method: request.method, path: url.pathname, search: url.search, body });
   });
@@ -126,8 +134,42 @@ describe('CodingSection — route, initial and populated states', () => {
     expect(screen.getByTestId('coding-current')).toHaveTextContent('4');
     expect(screen.getByRole('radio', { name: /Disabled/ })).toBeChecked();
     await user.click(screen.getByTestId('coding-save'));
-    expect(screen.getByRole('alert')).toHaveTextContent('A first configuration cannot be saved from this page yet.');
+    expect(screen.getByRole('alert')).toHaveTextContent('Choose four different agents.');
     expect(puts()).toHaveLength(0);
+  });
+
+  test('E0 explicitly adopts current options and selects repository format before one complete first save', async () => {
+    server.use(
+      http.get(`/api/v1/orgs/${A}/settings/coding`, () => HttpResponse.json(view(A, 0, 4, null))),
+      http.put(`/api/v1/orgs/${A}/settings/coding`, async ({ request }) => {
+        const body = await request.json() as { operation_key: string; mapping: unknown };
+        return HttpResponse.json({ format: 'workflow-coding-settings-save@1', org_slug: A,
+          operation: receipt(body.operation_key, 1), current: current(1, 5), configuration: body.mapping });
+      }),
+    );
+    const user = userEvent.setup();
+    mount();
+    await screen.findByTestId('coding-initial');
+    await user.selectOptions(select(/Developer/), 'dev_agent');
+    await user.selectOptions(select(/Independent reviewer/), 'code_reviewer');
+    await user.selectOptions(select(/^QA$/), 'qa_engineer');
+    await user.selectOptions(select(/Agent manager/), 'engineering_manager');
+    await user.click(screen.getByTestId('coding-save'));
+    expect(puts()).toHaveLength(0);
+    await user.click(screen.getByTestId('coding-adopt-options'));
+    await user.click(screen.getByRole('checkbox', { name: 'happyranch' }));
+    await user.click(screen.getByTestId('coding-save'));
+    expect(puts()).toHaveLength(0); // Selecting a repository never guesses its format.
+    await user.selectOptions(select(/Object format.*happyranch/), 'sha256');
+    await user.click(screen.getByTestId('coding-save'));
+    await screen.findByTestId('coding-saved');
+    expect(puts()).toHaveLength(1);
+    const expected = configuration();
+    expect(puts()[0].body).toEqual({ format: 'workflow-coding-settings-command@1', org_slug: A,
+      operation_key: expect.stringMatching(/^coding-settings:/), expected_generation: 0,
+      expected_mapping_generation: 4, admission: 'disabled', mapping: { ...expected,
+        eligible_replacements: { implementer: [], code_reviewer: [], qa_engineer: [], agent_manager: [] },
+        repository_references: [{ ...options().repository_choices[0], object_format: 'sha256' }] } });
   });
 
   test('a refused read is a visible refusal, never a default E0 view', async () => {
@@ -343,6 +385,124 @@ describe('CodingSection — conflict, uncertainty and reconciliation', () => {
 });
 
 describe('CodingSection — ordering, org isolation and locale', () => {
+  test.each(['release', 'authority', 'repositories', 'foreign', 'unsafe', 'error'] as const)(
+    'E0 options %s is categorical and cannot send a PUT', async (missing) => {
+      server.use(
+        http.get(`/api/v1/orgs/${A}/settings/coding`, () => HttpResponse.json(view(A, 0, 3, null))),
+        http.get(`/api/v1/orgs/${A}/settings/coding/options`, () => {
+          const value = options();
+          if (missing === 'error') return HttpResponse.json({ detail: { code: 'coding_settings_invalid' } }, { status: 503 });
+          return HttpResponse.json({ ...value,
+            ...(missing === 'release' ? { release: null } : {}),
+            ...(missing === 'authority' ? { authority: null } : {}),
+            ...(missing === 'repositories' ? { repository_choices: [] } : {}),
+            ...(missing === 'foreign' ? { org_slug: B } : {}),
+            ...(missing === 'unsafe' ? { authority: { ...value.authority, generation: 9007199254740992 } } : {}),
+          });
+        }),
+      );
+      const user = userEvent.setup();
+      mount();
+      await screen.findByTestId('coding-initial');
+      await user.selectOptions(select(/Developer/), 'dev_agent');
+      await user.selectOptions(select(/Independent reviewer/), 'code_reviewer');
+      await user.selectOptions(select(/^QA$/), 'qa_engineer');
+      await user.selectOptions(select(/Agent manager/), 'engineering_manager');
+      await waitFor(() => expect(screen.getByTestId('coding-adopt-options')).toBeDisabled());
+      expect(screen.getByTestId('coding-options')).toHaveTextContent(
+        ['foreign', 'unsafe', 'error'].includes(missing) ? 'Could not read current metadata' : 'Current imported release, authority and configured repository choices are required',
+      );
+      await user.click(screen.getByTestId('coding-save'));
+      expect(puts()).toHaveLength(0);
+    },
+  );
+
+  test('advanced authority stays outside an edited draft until explicit adoption; 409 keeps the new pin and never auto-sends', async () => {
+    let releaseOptions!: () => void;
+    const optionsGate = new Promise<void>((resolve) => { releaseOptions = resolve; });
+    server.use(
+      http.get(`/api/v1/orgs/${A}/settings/coding`, () => HttpResponse.json(view(A, 3, 6, configuration()))),
+      http.get(`/api/v1/orgs/${A}/settings/coding/options`, async () => { await optionsGate; return HttpResponse.json(options(A, 9)); }),
+      http.put(`/api/v1/orgs/${A}/settings/coding`, () => HttpResponse.json({ detail: {
+        code: 'coding_settings_generation_stale', current: current(5, 8),
+      } }, { status: 409 })),
+    );
+    const user = userEvent.setup();
+    const { client } = mount();
+    await screen.findByTestId('coding-current');
+    await user.selectOptions(select(/Developer/), 'frontend_engineer');
+    select(/Developer/).focus();
+    act(() => releaseOptions());
+    await waitFor(() => expect(screen.getByTestId('coding-adopt-options')).toBeEnabled());
+    expect(screen.getByTestId('coding-options')).toHaveTextContent('Draft authority: generation 7');
+    expect(select(/Developer/)).toHaveValue('frontend_engineer');
+    expect(select(/Developer/)).toHaveFocus();
+    await user.click(screen.getByTestId('coding-save'));
+    expect(puts()).toHaveLength(0);
+    await user.click(screen.getByTestId('coding-adopt-options'));
+    await user.click(screen.getByTestId('coding-save'));
+    await screen.findByTestId('coding-conflict');
+    expect(puts()).toHaveLength(1);
+    expect((puts()[0].body as { mapping: { authority: unknown } }).mapping.authority).toEqual(options(A, 9).authority);
+    select(/Developer/).focus();
+    await act(() => client.refetchQueries({ queryKey: ['settings', 'coding-options', A] }));
+    expect(select(/Developer/)).toHaveFocus();
+    expect(select(/Developer/)).toHaveValue('frontend_engineer');
+    expect(screen.getByTestId('coding-options')).toHaveTextContent('Draft authority: generation 9');
+    expect(puts()).toHaveLength(1);
+  });
+
+  test('options revocation permits exact disabled-retain and cannot release an uncertain original save', async () => {
+    let reads = 0;
+    server.use(
+      http.get(`/api/v1/orgs/${A}/settings/coding`, () => HttpResponse.json(view(A, 3, 6, configuration('retired_dev')))),
+      http.get(`/api/v1/orgs/${A}/settings/coding/options`, () => ++reads === 1
+        ? HttpResponse.json(options())
+        : HttpResponse.json({ detail: { code: 'coding_settings_invalid' } }, { status: 503 })),
+      http.put(`/api/v1/orgs/${A}/settings/coding`, () => HttpResponse.error()),
+    );
+    const user = userEvent.setup();
+    mount();
+    await screen.findByTestId('coding-current');
+    await user.click(screen.getByRole('button', { name: 'Refresh configuration metadata' }));
+    await screen.findByText('Could not read current metadata. Your draft and saved mapping are retained.');
+    await user.click(screen.getByRole('radio', { name: /Disabled/ }));
+    await user.click(screen.getByTestId('coding-save'));
+    await screen.findByTestId('coding-uncertain');
+    expect(puts()).toHaveLength(1);
+    const original = puts()[0].body as { mapping: unknown; operation_key: string };
+    expect(original.mapping).toEqual(configuration('retired_dev'));
+    await user.click(screen.getByRole('button', { name: 'Refresh configuration metadata' }));
+    await screen.findByText('Could not read current metadata. Your draft and saved mapping are retained.');
+    fireEvent.click(screen.getByTestId('coding-adopt-options'));
+    await user.click(screen.getByTestId('coding-save'));
+    expect(screen.getByTestId('coding-uncertain')).toHaveTextContent(original.operation_key);
+    expect(puts()).toHaveLength(1);
+    expect(select(/Developer/)).toBeDisabled();
+  });
+
+  test('a late org-A options read never supplies org B metadata or changes its draft', async () => {
+    let releaseA!: () => void;
+    const gate = new Promise<void>((resolve) => { releaseA = resolve; });
+    server.use(
+      http.get(`/api/v1/orgs/${A}/settings/coding`, () => HttpResponse.json(view(A, 0, 4, null))),
+      http.get(`/api/v1/orgs/${B}/settings/coding`, () => HttpResponse.json(view(B, 0, 8, null))),
+      http.get(`/api/v1/orgs/${A}/settings/coding/options`, async () => { await gate; return HttpResponse.json(options(A, 99)); }),
+    );
+    const user = userEvent.setup();
+    const { router, client } = mount();
+    await screen.findByTestId('coding-initial');
+    await user.selectOptions(select(/Developer/), 'frontend_engineer');
+    await act(() => router.navigate(`/orgs/${B}/settings/coding`));
+    await screen.findByTestId('coding-initial');
+    act(() => releaseA());
+    await waitFor(() => expect(client.isFetching()).toBe(0));
+    expect(screen.getByTestId('coding-options')).toHaveTextContent('Current authority: generation 7');
+    expect(screen.getByTestId('coding-options')).not.toHaveTextContent('99');
+    expect(select(/Developer/)).toHaveValue('');
+    expect(puts()).toHaveLength(0);
+  });
+
   test.each(['resolves', 'rejects'] as const)('a same-org read that %s after an accepted save cannot replace or error it', async (settles) => {
     let gets = 0;
     let releasePut!: () => void;

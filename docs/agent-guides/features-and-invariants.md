@@ -4187,7 +4187,13 @@ Coding defaults and admission are one canonical DB section owned by the dedicate
 Founder settings endpoint, with independent settings/mapping generations. Human
 publication appends genuine mapping/admission/two-audit history atomically; missing
 or corrupt current state refuses rather than falling back to YAML. Disabled may
-retain the exact prior Mapping under current publication authority. Source
+retain the exact prior Mapping under current publication authority. Configuration
+selectors come from the dedicated same-Founder-auth `/settings/coding/options`
+read, separate from historical views/receipts: genuine imported Release/current
+authority and bounded configured repository identities, with no raw origin or
+repository-access/object observation. E0 and changed-pin mappings require explicit
+metadata/format choices; refresh never modifies drafts or original send ownership.
+An unchanged disabled-retain Mapping remains usable without options. Source
 readiness remains disabled; configuration grants no access or launch authority.
 See [R2 settings](../superpowers/specs/2026-10-14-ordered-coding-workflow.md#canonical-founder-settings-backend-r2-source)
 for complete reader closure, replay and remaining operational acceptance.

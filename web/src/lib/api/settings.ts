@@ -100,7 +100,7 @@ export const putTeams = (
   request(`/orgs/${slug}/settings/teams`, { method: 'PUT', body: patch });
 
 import { getToken } from '../auth';
-import type { CodingSettingsCommand, CodingSettingsView, CodingSettingsSave } from './types';
+import type { CodingSettingsCommand, CodingSettingsOptions, CodingSettingsView, CodingSettingsSave } from './types';
 
 /** These closed grammars have ASCII field names and integer numeric values.
  * Construct a recursively sorted body for the existing JSON.stringify client;
@@ -139,6 +139,35 @@ export const getCodingSettings = async (
   });
   canonicalCodingBody(result); // Refuse an unrepresentable numeric readback.
   return result;
+};
+
+/** Dedicated current read. Historical views/receipts never seed these choices. */
+export const getCodingSettingsOptions = async (slug: string): Promise<CodingSettingsOptions> => {
+  const value = await request<CodingSettingsOptions>(`/orgs/${slug}/settings/coding/options`);
+  canonicalCodingBody(value);
+  const closed = (item: unknown, keys: string[]): item is Record<string, unknown> =>
+    !!item && typeof item === 'object' && !Array.isArray(item)
+    && Object.keys(item).length === keys.length && keys.every((key) => key in item);
+  const digest = (item: unknown) => typeof item === 'string' && /^[0-9a-f]{64}$/.test(item);
+  if (!closed(value, ['format', 'org_slug', 'release', 'authority', 'repository_choices', 'object_formats'])
+    || value.format !== 'workflow-coding-settings-options@1' || value.org_slug !== slug
+    || (value.release !== null && (!closed(value.release, ['identity', 'version', 'definition_digest'])
+      || value.release.identity !== 'release/happyranch/coding' || value.release.version !== 1
+      || value.release.definition_digest !== '6ee02be98738d3c95fe584b165abe07d0dbef66e510133c117ee0d62c953cad8'))
+    || (value.authority !== null && (!closed(value.authority, ['namespace', 'generation', 'snapshot_digest'])
+      || value.authority.namespace !== `org/${slug}` || !Number.isSafeInteger(value.authority.generation)
+      || value.authority.generation < 1 || !digest(value.authority.snapshot_digest)))
+    || !Array.isArray(value.repository_choices) || value.repository_choices.length > 1024
+    || value.repository_choices.some((choice) => !closed(choice, ['repository_id', 'repo_key', 'origin_digest'])
+      || typeof choice.repository_id !== 'string' || !/^workflow-repository:[0-9a-f]{64}$/.test(choice.repository_id)
+      || typeof choice.repo_key !== 'string' || !/^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$/.test(choice.repo_key)
+      || !digest(choice.origin_digest))
+    || new Set(value.repository_choices.map((choice) => choice.repository_id)).size !== value.repository_choices.length
+    || !Array.isArray(value.object_formats) || value.object_formats.length !== 2
+    || value.object_formats[0] !== 'sha1' || value.object_formats[1] !== 'sha256') {
+    throw new TypeError('coding settings options are invalid');
+  }
+  return value;
 };
 
 export const putCodingSettings = async (

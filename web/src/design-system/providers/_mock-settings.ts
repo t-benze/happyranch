@@ -171,6 +171,12 @@ export const mockSettingsApi: SettingsApi = {
     isFetching: false,
     refetch: () => Promise.resolve(CODING_SETTINGS_FIXTURE),
   }),
+  useCodingSettingsOptions: () => ({
+    ...ok({ format: 'workflow-coding-settings-options@1' as const, org_slug: 'prototype',
+      release: null, authority: null, repository_choices: [], object_formats: ['sha1', 'sha256'] as ['sha1', 'sha256'] }),
+    isFetching: false,
+    refetch: () => Promise.resolve(undefined),
+  }),
   useCodingSettingsActions: () => ({
     save: previewRefusal,
     readOperation: previewRefusal,

@@ -633,6 +633,11 @@ export interface SettingsApi {
   ) => QueryLike<import('@/lib/api/types').NextWakesResponse>;
   /** Founder coding configuration view for the routed org (org-keyed). */
   useCodingSettings: () => CodingSettingsQueryLike;
+  /** Independent current selectors; never a saved Mapping or operation receipt. */
+  useCodingSettingsOptions: () => QueryLike<import('@/lib/api/types').CodingSettingsOptions> & {
+    isFetching: boolean;
+    refetch: () => Promise<unknown>;
+  };
   /** Explicit single-send save and read-only original-key reconciliation,
    *  both bound to the org that was routed when the hook rendered. */
   useCodingSettingsActions: () => CodingSettingsActions;

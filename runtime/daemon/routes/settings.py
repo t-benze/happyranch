@@ -1137,7 +1137,7 @@ async def put_teams(slug: str, org: OrgDep, patch: TeamsPatch) -> dict:
 
 # Canonical coding configuration has its own complete-replacement owner. The
 # generic settings patch/YAML writer does not acquire a coding writable field.
-from runtime.workflows._coding_settings_records import SettingsCommand, SettingsSave, SettingsView
+from runtime.workflows._coding_settings_records import SettingsCommand, SettingsOptions, SettingsSave, SettingsView
 
 _CODING_RESPONSES = {
     401: {'description': 'Existing bearer required'},
@@ -1199,6 +1199,21 @@ async def get_coding_settings(slug: str, org: OrgDep, request: Request,
         principal = _coding_principal(request, org)
         key = _coding_query(request, read=True)
         return await CodingSettingsStore(org).get(principal=principal, operation_key=key)
+    except (ValueError, TypeError, KeyError) as exc:
+        _coding_error(exc)
+
+
+@router.get('/settings/coding/options', response_model=SettingsOptions, responses=_CODING_RESPONSES,
+            dependencies=[Depends(_require_human)])
+async def get_coding_settings_options(slug: str, org: OrgDep, request: Request) -> dict:
+    from runtime.workflows.coding_settings import CodingSettingsStore, CodingSettingsError
+    try:
+        principal = _coding_principal(request, org)
+        _coding_query(request, read=False)  # No mutation/actor/selection query.
+        async for chunk in request.stream():
+            if chunk:
+                raise CodingSettingsError('coding_settings_invalid_request')
+        return await CodingSettingsStore(org).options(principal=principal)
     except (ValueError, TypeError, KeyError) as exc:
         _coding_error(exc)
 

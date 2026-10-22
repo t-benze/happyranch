@@ -45,7 +45,7 @@ describe('daemon capacity conditional client', () => {
 // These fixtures make no settings persistence, authority or native claim.
 import { http, HttpResponse } from 'msw';
 import { server } from '@/test/server';
-import { getCodingSettings, putCodingSettings } from './settings';
+import { getCodingSettings, getCodingSettingsOptions, putCodingSettings } from './settings';
 import type { CodingSettingsCommand } from './types';
 
 const codingCommand: CodingSettingsCommand = {
@@ -120,4 +120,31 @@ describe('canonical coding settings HTTP mirror', () => {
       expected_generation: 9007199254740992 })).rejects.toBeInstanceOf(TypeError);
     expect(puts).toBe(0);
   });
+
+  test.each(['foreign', 'unsafe', 'duplicate', 'extra', 'format', 'release', 'repository'] as const)(
+    'rejects %s current options through the dedicated same-bearer GET', async (invalid) => {
+      let readUrl = '';
+      let bearer = '';
+      const repo = { repository_id: 'workflow-repository:' + 'b'.repeat(64), repo_key: 'repo', origin_digest: 'c'.repeat(64) };
+      const value = { format: 'workflow-coding-settings-options@1', org_slug: 'alpha',
+        release: codingCommand.mapping.release, authority: codingCommand.mapping.authority,
+        repository_choices: [repo], object_formats: ['sha1', 'sha256'],
+        ...(invalid === 'foreign' ? { org_slug: 'other' } : {}),
+        ...(invalid === 'unsafe' ? { authority: { ...codingCommand.mapping.authority, generation: 9007199254740992 } } : {}),
+        ...(invalid === 'duplicate' ? { repository_choices: [repo, repo] } : {}),
+        ...(invalid === 'extra' ? { origin: 'private' } : {}),
+        ...(invalid === 'format' ? { object_formats: ['sha1', 'guess'] } : {}),
+        ...(invalid === 'release' ? { release: { ...codingCommand.mapping.release, version: 2 } } : {}),
+        ...(invalid === 'repository' ? { repository_choices: [{ ...repo, origin_digest: 'invalid' }] } : {}),
+      };
+      server.use(http.get('/api/v1/orgs/alpha/settings/coding/options', ({ request: incoming }) => {
+        readUrl = new URL(incoming.url).pathname + new URL(incoming.url).search;
+        bearer = incoming.headers.get('authorization') ?? '';
+        return HttpResponse.json(value);
+      }));
+      await expect(getCodingSettingsOptions('alpha')).rejects.toBeInstanceOf(TypeError);
+      expect(readUrl).toBe('/api/v1/orgs/alpha/settings/coding/options');
+      expect(bearer).toBe('Bearer tok');
+    },
+  );
 });
