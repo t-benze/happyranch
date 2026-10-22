@@ -62,12 +62,14 @@ def ceiling(operation):
 
 
 @contextlib.contextmanager
-def signals():
+def signals(on_first=None):
     """Record once; handlers cannot unwind launch, disarm, reap or closure."""
     first, saved = [], {}
     def record(sig, _frame):
         if not first:
             first.append(sig)
+            if on_first is not None:
+                on_first(sig)
     try:
         for sig in (signal.SIGHUP, signal.SIGINT, signal.SIGTERM):
             saved[sig] = signal.getsignal(sig)
@@ -336,7 +338,7 @@ def relay(operation, argv, *, origin=None, cancel_fd=None, guardian=False,
     outputs = {}  # reader -> [sink, pending, eof]
     in_read = in_write = None
     input_eof = False
-    cause = None
+    cause = {}  # setdefault latches atomically even inside a signal handler.
     cleanup = None
     kill_at = drain_at = None
     killed = False
@@ -365,9 +367,8 @@ def relay(operation, argv, *, origin=None, cancel_fd=None, guardian=False,
         os.set_blocking(fd, False)
 
     def enter(reason, now):
-        nonlocal cause, cleanup, kill_at, drain_at, killed
-        if cause is None:
-            cause = reason
+        nonlocal cleanup, kill_at, drain_at, killed
+        reason = cause.setdefault('status', reason)
         if cleanup is not None:
             return
         cleanup = min(now + (1 if guardian and reason == 124 else 10 if guardian or logger else 5),
@@ -381,7 +382,13 @@ def relay(operation, argv, *, origin=None, cancel_fd=None, guardian=False,
             child.kill(signal.SIGKILL)
             killed = True
 
-    with signals() as caught:
+    def record_signal(sig):
+        # No I/O or cleanup from the handler. A child failure already observed
+        # by this owner (or an existing primary cause) precedes a late signal.
+        reason = prior if prior is not None else code if code not in (None, 0) else -sig
+        cause.setdefault('status', reason)
+
+    with signals(record_signal) as caught:
         try:
             # Snapshot aliases before changing ANY borrowed open-file flags.
             for fd in (0, 1, 2, *((3,) if DIAGNOSTIC_FD3 else ())):
@@ -445,14 +452,13 @@ def relay(operation, argv, *, origin=None, cancel_fd=None, guardian=False,
                                 enter(-number, now)
                 if logger_term is not None and now >= logger_term and not logger_termed:
                     logger_termed = True
-                    if cause is None:
-                        cause = 125
+                    cause.setdefault('status', 125)
                     cleanup, kill_at, drain_at = deadline, logger_term + 1, deadline - 1
                     if child.pin:
                         child.kill(signal.SIGTERM)
                 effective = min(deadline, failure_deadline or deadline)
                 if now >= effective:
-                    secondary = cause is None and prior is not None
+                    secondary = 'status' not in cause and prior is not None
                     enter(prior if prior is not None else 124, now)
                     if secondary:
                         _diagnostic(('PACKAGING_HELPER_SECONDARY_DEADLINE:' + operation + '\n').encode(), cleanup)
@@ -587,9 +593,9 @@ def relay(operation, argv, *, origin=None, cancel_fd=None, guardian=False,
             complete = bool(outputs) and all(row[2] and not row[1] for row in outputs.values())
             absent = child.proc is not None and child.launched and child.absent()
             unresolved = control_unknown or nested is not None or not complete or not absent or code is None
-            status = cause if cause is not None else code
+            status = cause.get('status', code)
             if status in (None, 0) and unresolved:
-                status = prior if prior is not None else 125
+                status = cause.setdefault('status', prior if prior is not None else 125)
             diagnostic_stop = min(stop, cleanup if cleanup is not None else deadline)
             if status == 124:
                 _diagnostic(('PACKAGING_HELPER_DEADLINE:' + operation + '\n').encode(), diagnostic_stop)
@@ -603,8 +609,10 @@ def relay(operation, argv, *, origin=None, cancel_fd=None, guardian=False,
                     except OSError:
                         control_unknown = True
             if status in (None, 0) and control_unknown:
-                status = prior if prior is not None else 125
-    return int(status)
+                status = cause.setdefault('status', prior if prior is not None else 125)
+    # Handlers are restored before the final read: signals recorded during
+    # diagnostics, flag restoration or handler restoration still participate.
+    return int(cause.get('status', status))
 
 
 def inspection_run(argv):

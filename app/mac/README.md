@@ -753,6 +753,10 @@ Secondary and terminal diagnostics make only a best-effort nonblocking attempt
 within the existing cleanup window; unavailable diagnostics cannot replace the
 computed status or delay return by waiting for a sink. Borrowed stdio flags are
 restored after their last use. CLI error diagnostics likewise never wait.
+The first caught signal is latched through error and final settlement, including
+handler restoration, and the result is selected after restoration. With no
+earlier observed failure/deadline, it returns the conventional signal result
+even after a successful child poll; an earlier primary cause remains unchanged.
 
 One shared5s outer cleanup allowance covers TERM (at most2s grace), held-child
 KILL, drain and reap/closure. Asset capture retains its stricter60s/0.25s/1s/1s
