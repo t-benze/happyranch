@@ -19,7 +19,7 @@ from runtime.workflows.coding_bootstrap import effective_bindings, encode_row, i
 from runtime.workflows.coding_saved_records import _canonical, _check, _hash
 from runtime.workflows.coding_start import CodingStartError, queued_storage, require_ready
 from runtime.workflows.coding_start_history import rows
-from runtime.workflows.coding_start_records import effective_mapping, parse_final_output, parse_stage_output
+from runtime.workflows.coding_start_records import effective_mapping, parse_final_output, parse_stage_output, selected_repository
 
 
 def settled_upstreams(entry: dict, *, budget: _Budget | None = None) -> tuple[dict, list]:
@@ -52,7 +52,7 @@ def settled_upstreams(entry: dict, *, budget: _Budget | None = None) -> tuple[di
 
 
 def final_selection(entry: dict, *, budget: _Budget | None = None) -> dict:
-    from runtime.workflows.coding_start_records import CodingFinalSelection
+    from runtime.workflows.coding_start_records import CodingBoundFinalSelection, CodingFinalSelection
     pins, results = settled_upstreams(entry, budget=budget)
     a = entry['attempt']
     if budget is not None:
@@ -61,7 +61,14 @@ def final_selection(entry: dict, *, budget: _Budget | None = None) -> dict:
     scope = json.loads(a['scope_bytes'])
     if budget is not None:
         _decoded(scope, budget)
-    selected = CodingFinalSelection.model_validate(dict(format='workflow-coding-final-selection@1',
+    repaired = scope['format'] == 'workflow-coding-final-scope@2'
+    bound = {}
+    if repaired:
+        reference = selected_repository(entry['mapping'], entry['command']['work'])
+        _check(scope['repository_reference'] == reference and entry['native'].get('workspace') is not None)
+        bound = dict(repository_reference=reference, workspace=entry['native']['workspace'])
+    selected = (CodingBoundFinalSelection if repaired else CodingFinalSelection).model_validate(dict(
+        format='workflow-coding-final-selection@2' if repaired else 'workflow-coding-final-selection@1', **bound,
         instance_id=entry['run']['instance_id'], attempt_id=a['id'], task_id=a['task_id'],
         session_id=a['session_id'], principal=a['principal'], revision=a['revision'],
         subject=scope['subject'], upstream_results=pins, results=results,
@@ -88,7 +95,7 @@ def _settled(entry: dict, *, budget: _Budget | None = None) -> dict | None:
     if attempt['stage'] == 'manager_closeout':
         selected = final_selection(entry, budget=budget)
         output = parse_final_output(result, instance=entry['run']['instance_id'], attempt=attempt,
-            work=entry['command']['work'], subject=scope['subject'], upstream=selected['upstream_results'])
+            work=entry['command']['work'], subject=scope['subject'], upstream=selected['upstream_results'], selected=selected)
         _check(output['evidence']['intent']['selected_digest'] == _hash(_canonical(selected)))
         _check(all(json.loads(v['summary'])['findings'] != output['findings'] for v in selected['results']))
         if budget is not None:
@@ -186,8 +193,9 @@ def _append(dispatcher: Any, conn: Any, entry: dict, kind: str, facts: dict,
     previous = entry['native']['history'][-1]
     current = entry['attempt']
     qa_edge = facts['format'] == 'workflow-coding-edge@2'
-    final_edge = facts['format'] == 'workflow-coding-edge@3'
-    internal = dict(format='workflow-coding-edge-command@3' if final_edge else 'workflow-coding-edge-command@2' if qa_edge else 'workflow-coding-edge-command@1', kind=kind,
+    final_edge = facts['format'] in ('workflow-coding-edge@3', 'workflow-coding-edge@4')
+    repaired = facts['format'] == 'workflow-coding-edge@4'
+    internal = dict(format='workflow-coding-edge-command@4' if repaired else 'workflow-coding-edge-command@3' if final_edge else 'workflow-coding-edge-command@2' if qa_edge else 'workflow-coding-edge-command@1', kind=kind,
         source_event_ids=[previous['id']], source_event_digests=[previous['event_digest']],
         subject=output['subject'], facts=facts)
     key = 'coding-internal:' + _hash(_canonical([entry['run']['instance_id'], kind, current['result_id'], internal]))
@@ -213,7 +221,7 @@ def _append(dispatcher: Any, conn: Any, entry: dict, kind: str, facts: dict,
     after['attempts'] = [dict(id=k, record=encode_row(a)) for k, a in sorted(entry['attempts'].items())]
     after['tasks'] = [dict(id=k, record=encode_row(t)) for k, t in sorted(entry['tasks'].items())]
     operation = dict(org_slug=dispatcher.org.slug, principal=principal, key=key, request_digest=_hash(_canonical(internal)))
-    body = dict(format='workflow-coding-event@5' if final_edge else 'workflow-coding-event@4' if qa_edge else 'workflow-coding-event@3', id=event_id, instance_id=entry['run']['instance_id'],
+    body = dict(format='workflow-coding-event@6' if repaired else 'workflow-coding-event@5' if final_edge else 'workflow-coding-event@4' if qa_edge else 'workflow-coding-event@3', id=event_id, instance_id=entry['run']['instance_id'],
         event_seq=previous['event_seq'] + 1, event_kind=kind, attempt_id=current['id'], operation=operation,
         previous_digest=previous['event_digest'], before=before, after=after, created_at=now,
         evidence=dict(kind=kind, command=internal, origin=dict(kind='settled_result', principal=current['principal'],
@@ -277,7 +285,8 @@ def advance_in_writer(dispatcher: Any, conn: Any, *, instance: str, result_id: i
         session_timeout_seconds=entry['source']['budgets']['session_timeout_seconds'])
     dispatcher.db._check_team_move_task_uncommitted(task)
     scope = _canonical(final_scope(org=dispatcher.org.slug, instance=instance, command=entry['command'],
-        roles=entry['roles'], qa=qa_attempt, subject=output['subject'], task_id=task_id, upstream=upstream)
+        roles=entry['roles'], qa=qa_attempt, subject=output['subject'], task_id=task_id, upstream=upstream,
+        repository_reference=selected_repository(entry['mapping'], entry['command']['work']))
         if final else qa_scope(org=dispatcher.org.slug, instance=instance, command=entry['command'],
         roles=entry['roles'], developer=developer, reviewer=reviewer, subject=output['subject'], task_id=task_id)
         if qa else review_scope(org=dispatcher.org.slug, instance=instance, command=entry['command'],
@@ -295,7 +304,7 @@ def advance_in_writer(dispatcher: Any, conn: Any, *, instance: str, result_id: i
             output_digest=_hash(entry['native']['callback']['output_summary'].encode('utf8')),
             contributor=developer['principal'], qa_task_id=task_id, admission=admission)
     if final:
-        facts = dict(format='workflow-coding-edge@3', upstream_results=upstream, result_id=result_id,
+        facts = dict(format='workflow-coding-edge@4', upstream_results=upstream, result_id=result_id,
             output_digest=_hash(entry['native']['callback']['output_summary'].encode('utf8')),
             manager_task_id=task_id, admission=admission)
     for kind in (('review_staged', 'stage_queued', 'advance') if qa or final else
@@ -346,7 +355,7 @@ def record_final_in_writer(dispatcher: Any, conn: Any, entry: dict) -> None:
     output = _settled(entry, budget=entry.get('_budget'))
     if output is None or entry['attempt']['stage'] != 'manager_closeout':
         return
-    facts = dict(format='workflow-coding-edge@3', upstream_results=output['upstream_results'],
+    facts = dict(format='workflow-coding-edge@4' if output['format'] == 'workflow-coding-final-output@2' else 'workflow-coding-edge@3', upstream_results=output['upstream_results'],
         result_id=entry['attempt']['result_id'],
         output_digest=_hash(entry['native']['callback']['output_summary'].encode('utf8')),
         manager_task_id=entry['attempt']['task_id'], admission=None)

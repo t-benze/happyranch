@@ -1650,13 +1650,13 @@ all adverse lineage remain preserved.
 <!-- TASK12509 / ROOT12299 live final-manager source -->
 ## Disabled live final-manager source
 
-ROOT12299 step30 / Founder THR320seq4/18/27 extends the same-PR disabled
+ROOT12299 step31 F01/F02 correction / Founder THR320seq4/18/27 extends the same-PR disabled
 engine through a fourth actual coding-owned attempt. Readiness/require_ready
 remain unconditionally disabled. This source adds no execution, repository
 access, credential, settings/@3, control/reassignment, merge or activation grant.
 The preceding first-edge/QA sections describe their source checkpoints; literal
 historical event@3 held reviews and event@4 held QA (including PASS) remain held.
-Only the new event@5/edge-command@3/edge-admission@3 family accepts an original
+The repaired event@6/edge-command@4 family with unchanged edge-admission@3 accepts an original
 successful/quiescent/positively outer-settled QA PASS while the run is still qa.
 It reselects all THREE original INTEGER callbacks, exact task/SID/principal/
 attempt/outcome/subject and genuine host/claim/positive tracker/task-tail/worktree/
@@ -1667,17 +1667,28 @@ run CAS and independent complete target validation; notification follows COMMIT.
 Original-result replay returns that leaf. The SQL stage remains manager_closeout;
 its explicit role/supplement/output/public translation is agent_manager.
 
-workflow-coding-final-scope@1 pins the actual manager, complete work/release/
-mapping/revision and all three upstream identities/outcomes/output digests.
-Native-manager-event@1/native-manager-command@1/manager-admission@1 bind its real
+workflow-coding-final-scope@2 additionally pins the ONE selected authenticated
+repository_reference (repo_key, raw configured-origin SHA256, opaque repository_id,
+object_format), selected from the command's pinned mapping/work. Native-manager-event@2/
+native-manager-command@2 and unchanged manager-admission@1 bind its real
 coding queue/claim/launch/heartbeat/callback/host/terminal/outer lifetime, ordinary
-worker_execution purpose and consumed workflow-coding-final-manager@1 supplement.
+worker_execution purpose and consumed workflow-coding-final-manager@2 supplement.
+At session_bound, coding-domain metadata captures workflow-coding-final-workspace@1:
+org_slug, literal absolute org_root and workspace_root, principal, task_id,
+attempt_id, original invocation_id and session_id. workspace_root is exactly the
+actual native OrgPaths.workspaces_dir / assigned principal; cwd/environment and
+caller paths supply no root. Every later native observation retains that SAME
+original capture. Selected live reads compare it with the actual current owner
+and OrgPaths again; independent historical readers reconstruct the full path
+and original native task/SID/claim/invocation relationship.
 The source wait/carrier never impersonates this task or reuses an upstream SID.
 The narrowly selected GET /workflows/coding/runs/{instance_id}/final-manager
 requires exactly session_id=CURRENT, the current original nonrecovery manager's
 OWN running leaf/run/attempt/principal/native owner, current Pause/move/authority/
-roles/scopes before private decoding and again on return. It returns only pinned
-metadata and the three original selected summaries/verdicts needed by that task.
+roles/scopes before private decoding and again on return. It returns workflow-coding-final-selection@2 with the selected repository reference,
+original workspace capture, pins and three original selected summaries/verdicts.
+The opaque repository ID is independently reconstructed by the EXISTING canonical
+org/key/origin-digest rule. Current mapping scopes remain a separate gate.
 It accepts no bearer; browser/remote access receives no new grant. Source-manager
 run-show and role publication predicates, SessionTracker and jobs document/legacy
 predicates remain unchanged. All file/network work is outside ownership locks.
@@ -1687,8 +1698,14 @@ The LOCAL `happyranch workflows coding finalize --org ORG --session-id CURRENT
 format, operation_key, repository_path (an existing absolute authorized worktree),
 instance_id, attempt_id, task_id, session_id, principal, revision=1, subject and
 upstream_results. Replace the supplement's repository_path instruction with that
-actual path; it grants no access. The command verifies SHA1/local origin and fixed
-B/H/branch plus exact actual GitHub repo/PR identity from pinned navigation. It
+actual path; it grants no access. The command checks literal no-follow workspace/
+checkout parents, the selected repo_key checkout and its authorized task worktrees,
+Git top-level/common-dir, SHA1 and fixed B/H/branch. It requires exactly ONE raw
+configured origin with its exact UTF8 digest matching the selected reference;
+missing/multiple/mismatched or rewritten effective origins refuse. No new origin
+normalization/adoption policy exists. The actionable GitHub target comes from
+that bound origin; descriptor navigation must agree and conveys no entitlement.
+It
 selects original INTEGER results through the own-manager read, reparses them on
 the identical subject and uses no task-prose/legacy recall or caller CI verdict.
 The shared waiter is observed ONCE with settle_seconds=0 and timeout_seconds=0;
@@ -1698,12 +1715,20 @@ actual completed SUCCESS for each literal Source Boundary Lint and Web Lint
 and completion times. Missing, stale, ambiguous, pending, inaccessible, failed,
 skipped or neutral data holds. Shared waiter/guard/extractor/adapter bytes stay.
 
-Before the guard, a task-owned output/<task_id>/coding-finalize-<attempt-digest>/
-intent.json retains command/subject/upstream/selection/check evidence. Exclusive
-attempt directory and receipt creation refuse existing or partial intent, even
-with a changed key; preserve it for owner inspection, never blindly repeat.
-The selected live boundary is revalidated immediately before the action, after
-guard PR/mergeability reads. The reviewed guard calls _gh_perform_merge exactly
+Before checks/action, ONE exclusive reservation is made at the original captured
+workspace_root/output/<task_id>/coding-finalize-<attempt-digest>/. Workspace,
+repository and task-worktree cwd, different keys and authorized repository_path
+variants all converge on this SAME directory. Cwd/key/path never selects a root.
+Literal parent/alias/containment checks refuse alternate paths. Existing/partial
+reservation, including failed recording or a concurrent second entrant, refuses
+without another action; preserve first evidence for owner inspection.
+intent.json binds the full workspace capture, selected reference, exact raw origin,
+command/subject/upstream/selection/check evidence and digests. Full output-path
+validation is required; a matching suffix is insufficient. These observations
+are not a racing-rename fence, OS security or remote exactly-once guarantee.
+The selected live identity/root boundary, local origin/checkout and reservation
+inode are revalidated immediately before the action, after guard PR/mergeability
+reads. Changed authority, root or reference refuses; current reads are not leases. The reviewed guard calls _gh_perform_merge exactly
 once with expected_head_sha=H, ordinary --merge and no admin fallback. Its actual
 return/failure diagnostic, native exit where exposed, command argv, timing and
 uncertainty are retained. The read-only adapter exposes successful exit0 through
@@ -1715,7 +1740,7 @@ A failed/lost action remains uncertain even if a separate later read confirms
 possible effect; both receipts survive and no second merge occurs. Recording
 failure refuses success. No daemon/run-settlement/recovery GitHub I/O exists.
 
-The final callback summary is canonical workflow-coding-final-output@1 JSON
+The final callback summary is canonical workflow-coding-final-output@2 JSON
 STRING with exactly format, instance_id, attempt_id, revision, stage=agent_manager,
 subject, upstream_results, outcome=merged|held|uncertain, findings and evidence.
 Its closed bounded evidence binds intent command/digests/path, exact check/run
@@ -1728,7 +1753,7 @@ checks and same-session valid remote confirmation before that own actual callbac
 Evidence is an attributable agent receipt, not proof of independent inspection or
 an atomic remote authority lease. Missing/malformed/foreign/copied evidence holds.
 Only successful host terminal/quiescence and positive native outer closure AFTER
-callback permit manager_completed/event@5 to record performed work and run.complete.
+callback permit manager_completed/event@6 to record performed work and run.complete.
 Held/uncertain cannot complete. Callback alone, remote effect alone, old ready or
 failed/unknown cleanup never completes or triggers a remote action/retry.
 
@@ -1736,7 +1761,12 @@ Independent readers derive all FOUR original attempts/scopes/callbacks/claims/
 hosts/heartbeats/ordered events/CAS/contributions/upstream/final pins and rows.
 Provisional later QA/manager discovery is charged to the enclosing cumulative
 budget and must close through complete replay; partial/foreign/orphan/dual/mixed/
-unknown graphs refuse. Old bytes/readers remain literal. Current/cold/reopen/
+unknown graphs refuse. New scope@2, selected@2, supplement@2, native-manager
+command/event@2, edge@4/event@6 and final-output@2 carry the repaired meanings.
+Literal old scope/selected/supplement/native-manager/final-output@1 and edge@3/
+event@5 preserve original readers/bytes. An old output cannot be promoted into
+repaired identity proof; copied foreign reference/root receipts and mixed
+families refuse. No backfill or compatibility promise follows. Current/cold/reopen/
 schema(data=False)/ownership/recovery/drain compose the same closed reader;
 recovery only rediscovers/records owned work or notifies committed queues.
 workflow-coding-run@4 projects agent_manager/held/complete and a bounded final

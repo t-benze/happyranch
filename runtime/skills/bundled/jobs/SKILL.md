@@ -545,3 +545,11 @@ no such task/job or entitlement is inferred here. Save original intent/command/
 remote receipts before own FINAL callback; transport loss never reissues merge.
 No automatic held-manager reallocation or PR recovery service exists. Readiness
 remains disabled; SOURCE/static is not native or remote acceptance.
+
+The repaired final-manager@2 path binds the selected authenticated repository
+reference to its repo_key checkout/raw-origin digest/opaque ID before checks or
+action, then again immediately before action. One original native OrgPaths/
+assigned-principal workspace capture selects the task/attempt reservation across
+cwd/key/path variants. Partial or failed recording never permits another action.
+Selected/native/final-output@2/history reconstruct the SAME full root/reference;
+no daemon file reservation, job runner or new command entitlement is supplied.

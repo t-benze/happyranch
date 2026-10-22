@@ -4045,14 +4045,19 @@ cooperative-bound limits. Bilingual responsive readiness requires final-head
 task-detail and thread-linked observations in en/zh-CN at 390×844 and 1440×900.
 
 
-The ROOT12299 step30 disabled final-manager source is documented in
+The ROOT12299 step31 disabled final-manager source is documented in
 [the coding contract](../superpowers/specs/2026-10-14-ordered-coding-workflow.md#disabled-live-final-manager-source).
 The fourth coding-owned manager uses a LOCAL single-attempt finalize command;
-only original settled QA PASS admits the new event@5 edge. Historical held QA
+only original settled QA PASS admits the repaired event@6 edge. Historical held QA
 records stay held. Own-session selected upstream metadata, strict actual exact-H
 Source Boundary Lint and Web Lint (Node 24) successes, saved intent and immediate
-live revalidation precede reviewed expected-head/no-admin guarded action. Actual
-remote commit/aware time precedes its own final-output@1 callback; daemon settlement
+live revalidation precede reviewed expected-head/no-admin guarded action. The selected
+mapped repo_key/raw-origin-digest/opaque-ID binds the actual checkout and GitHub
+target; navigation is consistency only. Original OrgPaths/assigned-principal
+workspace capture selects ONE task/attempt reservation across cwd/key/path
+variants, with full reference/root/output/native/history reconstruction. Existing
+or partial reservation refuses a second action, including failed recording. Actual
+remote commit/aware time precedes its own final-output@2 callback; daemon settlement
 only records performed work after host/positive outer closure. Partial intent or
 transport loss never retries; pending checks hold without coding jobs. Readiness
 remains unconditionally disabled. Source/static only; native/behavioral proof

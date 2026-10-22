@@ -132,7 +132,7 @@ def replay(conn: Any, org: str, budget: Any, storage: Any, *, event: dict, body:
            later_qa_tasks: set[str], later_manager_tasks: set[str], settled_stages: dict) -> tuple:
     """Derive every target row from validated predecessors and actual callback."""
     from runtime.workflows.coding_start_history import same
-    if body['format'] == 'workflow-coding-event@5':
+    if body['format'] in ('workflow-coding-event@5', 'workflow-coding-event@6'):
         return replay_final(conn, org, budget, storage, event=event, body=body, previous=previous,
             initial=initial, run=run, attempts=attempts, tasks=tasks, state=state, source=source,
             roles=roles, mapping=mapping, command=command, settled_stages=settled_stages)
@@ -358,13 +358,14 @@ def replay_final(conn: Any, org: str, budget: Any, storage: Any, *, event: dict,
                  settled_stages: dict) -> tuple:
     """Independent four-attempt reconstruction; old event@4 QA PASS stays held."""
     from runtime.workflows.coding_start_history import same
-    from runtime.workflows.coding_start_records import CodingFinalSelection
+    from runtime.workflows.coding_start_records import CodingBoundFinalSelection, CodingFinalSelection, selected_repository
     kind = event['event_kind']
-    _check(body['format'] == 'workflow-coding-event@5'
+    repaired = body['format'] == 'workflow-coding-event@6'
+    _check(body['format'] in ('workflow-coding-event@5', 'workflow-coding-event@6')
            and kind in ('review_staged', 'stage_queued', 'advance', 'manager_completed'))
     evidence = _closed(body['evidence'], 'kind command origin authority rows facts native_task_observations')
     facts = _closed(evidence['facts'], 'format upstream_results result_id output_digest manager_task_id admission')
-    _check(facts['format'] == 'workflow-coding-edge@3' and evidence['kind'] == kind
+    _check(facts['format'] == ('workflow-coding-edge@4' if repaired else 'workflow-coding-edge@3') and evidence['kind'] == kind
            and evidence['authority'] == initial['evidence']['authority'] and evidence['rows'] == [])
     current = attempts[run['current_attempt_id']]
     _check(event['attempt_id'] == current['id'] and run['state'] == current['stage']
@@ -403,17 +404,25 @@ def replay_final(conn: Any, org: str, budget: Any, storage: Any, *, event: dict,
         _check(current['stage'] == 'manager_closeout' and len(attempts) == 4
                and state.get('final_output') is None and facts['admission'] is None
                and facts['manager_task_id'] == current['task_id'])
+        budget.consumed += 4 * len(current['scope_bytes'])
+        _check(budget.remaining_bytes >= 0)
         scope = _json(current['scope_bytes'], 1048576)
+        _decoded(scope, budget)
         _check(scope == final_scope(org=org, instance=run['instance_id'], command=command, roles=roles,
             qa=attempts[identity('attempt', run['instance_id'], 3)], subject=subject,
-            task_id=current['task_id'], upstream=pins))
-        output = parse_final_output(callback, instance=run['instance_id'], attempt=current,
-            work=command['work'], subject=subject, upstream=pins)
-        selected = CodingFinalSelection.model_validate(dict(format='workflow-coding-final-selection@1',
+            task_id=current['task_id'], upstream=pins,
+            repository_reference=selected_repository(mapping, command['work']) if repaired else None))
+        bound = dict(repository_reference=selected_repository(mapping, command['work']),
+                     workspace=state['workspace']) if repaired else {}
+        selected = (CodingBoundFinalSelection if repaired else CodingFinalSelection).model_validate(dict(
+            format='workflow-coding-final-selection@2' if repaired else 'workflow-coding-final-selection@1', **bound,
             instance_id=run['instance_id'], attempt_id=current['id'], task_id=current['task_id'],
             session_id=current['session_id'], principal=current['principal'], revision=current['revision'],
             subject=subject, upstream_results=pins, results=results, release=command['release'],
             mapping=command['mapping'], scope_digest=current['scope_digest'])).model_dump()
+        _decoded(selected, budget)
+        output = parse_final_output(callback, instance=run['instance_id'], attempt=current,
+            work=command['work'], subject=subject, upstream=pins, selected=selected)
         _check(output['evidence']['intent']['selected_digest'] == _hash(_canonical(selected))
                and output['findings'] not in findings)
     else:
@@ -427,7 +436,7 @@ def replay_final(conn: Any, org: str, budget: Any, storage: Any, *, event: dict,
     origin = dict(kind='settled_result', principal=current['principal'], task_id=current['task_id'],
         session_id=current['session_id'], result_id=callback['id'], claim=state['claim'])
     _check(evidence['origin'] == origin)
-    internal = dict(format='workflow-coding-edge-command@3', kind=kind,
+    internal = dict(format='workflow-coding-edge-command@4' if repaired else 'workflow-coding-edge-command@3', kind=kind,
         source_event_ids=[previous['id']], source_event_digests=[previous['event_digest']], subject=subject, facts=facts)
     _check(evidence['command'] == internal)
     principal = 'service:coding-dispatcher:' + org
@@ -466,7 +475,8 @@ def replay_final(conn: Any, org: str, budget: Any, storage: Any, *, event: dict,
             task = {**pristine, 'id': task_id, 'assigned_agent': binding['principal'], 'team': binding['team'],
                 'brief': final_brief(command['work']), 'created_at': event['created_at'], 'updated_at': event['created_at']}
             scope = _canonical(final_scope(org=org, instance=run['instance_id'], command=command,
-                roles=roles, qa=current, subject=subject, task_id=task_id, upstream=pins))
+                roles=roles, qa=current, subject=subject, task_id=task_id, upstream=pins,
+                repository_reference=selected_repository(mapping, command['work']) if repaired else None))
             a = {**first, 'id': identity('attempt', run['instance_id'], 4), 'stage': 'manager_closeout',
                 'predecessor_id': current['id'], 'task_id': task_id, 'principal': binding['principal'],
                 'scope_bytes': scope, 'scope_digest': _hash(scope)}

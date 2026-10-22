@@ -7,7 +7,7 @@ from datetime import datetime
 from typing import Annotated, Literal
 from pydantic import Field, RootModel, StrictBool, StrictInt, field_validator, model_validator
 
-from runtime.workflows._coding_role_records import AgentBinding, Closed, MappingPin, Release, Roles
+from runtime.workflows._coding_role_records import AgentBinding, Closed, MappingPin, Release, RepositoryReference, Roles
 from runtime.workflows.artifacts import CodeChangeDescriptor, Token
 from runtime.workflows.coding_saved_records import (
     _check, _constant, _json, _model, _oid, _operation, _pairs, _paths, _repository,
@@ -268,6 +268,61 @@ class CodingFinalSelection(Closed):
     scope_digest: str = Field(pattern=r'^[0-9a-f]{64}$')
 
 
+class CodingFinalWorkspace(Closed):
+    """Original native OrgPaths observation, never a caller-selected directory."""
+    format: Literal['workflow-coding-final-workspace@1']
+    org_slug: Token
+    org_root: str = Field(min_length=1, max_length=4096)
+    workspace_root: str = Field(min_length=1, max_length=4096)
+    principal: Token
+    task_id: Token
+    attempt_id: Token
+    invocation_id: Token
+    session_id: Token
+
+    @model_validator(mode='after')
+    def original_path(self) -> CodingFinalWorkspace:
+        from pathlib import Path
+        for value in (self.org_root, self.workspace_root):
+            path = Path(value)
+            _check(path.is_absolute() and str(path) == value and '\x00' not in value
+                   and '..' not in path.parts)
+        _check(self.principal not in ('.', '..') and '/' not in self.principal
+               and self.workspace_root == str(Path(self.org_root) / 'workspaces' / self.principal))
+        return self
+
+
+class CodingBoundFinalSelection(CodingFinalSelection):
+    format: Literal['workflow-coding-final-selection@2']
+    repository_reference: RepositoryReference
+    workspace: CodingFinalWorkspace
+
+    @model_validator(mode='after')
+    def bound(self) -> CodingBoundFinalSelection:
+        validate_final_identity(self.model_dump(), org=self.workspace.org_slug)
+        return self
+
+
+def selected_repository(mapping: dict, work: dict) -> dict:
+    references = [r for r in mapping['repository_references']
+        if (r['repository_id'], r['object_format']) == (work['repository_id'], work['object_format'])]
+    _check(len(references) == 1)
+    return RepositoryReference.model_validate(references[0]).model_dump()
+
+
+def validate_final_identity(selected: dict, *, org: str) -> None:
+    """Pure full-path/reference reconstruction; filesystem checks belong to the local tool."""
+    reference, workspace = selected['repository_reference'], selected['workspace']
+    _check(workspace['org_slug'] == org and
+           (workspace['principal'], workspace['task_id'], workspace['attempt_id'], workspace['session_id']) ==
+           (selected['principal'], selected['task_id'], selected['attempt_id'], selected['session_id']))
+    from runtime.workflows.coding_saved_records import _canonical, _hash
+    _check(reference['repository_id'] == 'workflow-repository:' + _hash(_canonical(
+        [org, reference['repo_key'], reference['origin_digest']]))
+        and (reference['repository_id'], reference['object_format']) ==
+            (selected['subject']['repository']['id'], selected['subject']['object_format']))
+
+
 def aware_time(value: str) -> str:
     _check(type(value) is str and 0 < len(value) <= 128
            and datetime.fromisoformat(value.replace('Z', '+00:00')).utcoffset() is not None)
@@ -299,6 +354,12 @@ class CodingFinalIntent(Closed):
     path: str = Field(min_length=1, max_length=4096)
     digest: str = Field(pattern=r'^[0-9a-f]{64}$')
     selected_digest: str = Field(pattern=r'^[0-9a-f]{64}$')
+
+
+class CodingBoundFinalIntent(CodingFinalIntent):
+    repository_reference: RepositoryReference
+    workspace: CodingFinalWorkspace
+    origin: str = Field(min_length=1, max_length=4096)
 
 
 class CodingCommandEvidence(Closed):
@@ -349,6 +410,10 @@ class CodingFinalEvidence(Closed):
     observation_diagnostic: str = Field(max_length=16384)
 
 
+class CodingBoundFinalEvidence(CodingFinalEvidence):
+    intent: CodingBoundFinalIntent
+
+
 class CodingFinalOutput(Closed):
     format: Literal['workflow-coding-final-output@1']
     instance_id: Token
@@ -375,8 +440,12 @@ class CodingFinalOutput(Closed):
         path = Path(e.intent.path)
         _check(path.is_absolute() and tuple(path.parts[-4:]) == ('output', c.task_id,
             'coding-finalize-' + _hash(c.attempt_id.encode('utf8')), 'intent.json'))
-        _check(e.intent.digest == _hash(_canonical(dict(command=c.model_dump(),
-            created_at=e.intent.created_at, selected_digest=e.intent.selected_digest))))
+        intent_body = dict(command=c.model_dump(), created_at=e.intent.created_at,
+                           selected_digest=e.intent.selected_digest)
+        if self.format == 'workflow-coding-final-output@2':
+            intent_body.update(repository_reference=e.intent.repository_reference.model_dump(),
+                               workspace=e.intent.workspace.model_dump(), origin=e.intent.origin)
+        _check(e.intent.digest == _hash(_canonical(intent_body)))
         repo, number = github_subject(subject)
         head = subject['head']
         _check(len({v.name for v in e.observations}) == len(e.observations))
@@ -413,6 +482,40 @@ class CodingFinalOutput(Closed):
         return self
 
 
+class CodingBoundFinalOutput(CodingFinalOutput):
+    format: Literal['workflow-coding-final-output@2']
+    evidence: CodingBoundFinalEvidence
+
+    @model_validator(mode='after')
+    def bound_performed_only(self) -> CodingBoundFinalOutput:
+        from pathlib import Path
+        from runtime.workflows.coding_saved_records import _hash
+        intent = self.evidence.intent
+        command, workspace = intent.command.model_dump(), intent.workspace.model_dump()
+        validate_final_identity(dict(**command, workspace=workspace,
+            repository_reference=intent.repository_reference.model_dump()), org=workspace['org_slug'])
+        _check(intent.path == str(Path(workspace['workspace_root']) / 'output' / command['task_id'] /
+            ('coding-finalize-' + _hash(command['attempt_id'].encode('utf8'))) / 'intent.json'))
+        for observation in self.evidence.observations:
+            _check(observation.path == str(Path(intent.path).parent / (observation.name + '.json')))
+        _check(_hash(intent.origin.encode('utf8')) == intent.repository_reference.origin_digest)
+        repo, _ = github_subject(self.subject.model_dump())
+        _check(github_origin(intent.origin) == repo)
+        # Exact lexical checkout containment; the tool additionally checks no aliases and Git common-dir.
+        checkout = Path(workspace['workspace_root']) / 'repos' / intent.repository_reference.repo_key
+        local = Path(command['repository_path'])
+        _check(str(local) == command['repository_path'] and '..' not in local.parts
+               and (local == checkout or local.is_relative_to(checkout / '.claude' / 'worktrees')))
+        return self
+
+
+def github_origin(origin: str) -> str:
+    # No normalization: the configured raw UTF8 origin digest is checked separately.
+    match = re.fullmatch(r'(?:https://github\.com/|git@github\.com:)([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+?)(?:\.git)?', origin)
+    _check(match is not None)
+    return match[1]
+
+
 def github_subject(subject: dict) -> tuple[str, int]:
     _check(subject['object_format'] == 'sha1' and subject['comparison'] is not None)
     navigation = subject['navigation']
@@ -428,14 +531,20 @@ def parse_finalize(raw: bytes) -> dict:
 
 
 def parse_final_output(result: dict, *, instance: str, attempt: dict, work: dict,
-                       subject: dict, upstream: dict) -> dict:
+                       subject: dict, upstream: dict, selected: dict | None = None) -> dict:
     _check(type(result['id']) is int and result['id'] > 0 and result['id'] == attempt['result_id']
            and (result['task_id'], result['session_id'], result['agent']) ==
                (attempt['task_id'], attempt['session_id'], attempt['principal'])
            and attempt['stage'] == 'manager_closeout' and result['status'] == 'completed'
            and result['decision_json'] is None and result['waiting_on_job_ids'] is None
            and result['verdict'] is None and type(result['output_summary']) is str)
-    output = _model(CodingFinalOutput, _json(result['output_summary'].encode('utf8'), 65536)).model_dump()
+    raw = _json(result['output_summary'].encode('utf8'), 65536)
+    repaired = selected is not None and selected['format'] == 'workflow-coding-final-selection@2'
+    output = _model(CodingBoundFinalOutput if repaired else CodingFinalOutput, raw).model_dump()
+    if repaired:
+        intent = output['evidence']['intent']
+        _check(intent['repository_reference'] == selected['repository_reference']
+               and intent['workspace'] == selected['workspace'])
     _check((output['instance_id'], output['attempt_id'], output['revision'], output['subject'], output['upstream_results']) ==
            (instance, attempt['id'], attempt['revision'], subject, upstream))
     c = output['evidence']['intent']['command']

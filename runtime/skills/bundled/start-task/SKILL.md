@@ -751,7 +751,7 @@ host and positive outer settlement remain separate; settled QA output stays held
 even PASS, pending final-manager implementation. Readiness remains disabled.
 
 
-A workflow-coding-final-manager@1 supplement belongs only to its actual assigned
+A workflow-coding-final-manager@2 supplement belongs only to its actual assigned
 coding-owned agent_manager invocation. SQL manager_closeout is translated explicitly;
 never classify it as legacy or reuse source/upstream/recovery SIDs. Preserve exact
 scope/release/mapping/revision/subject and all three original task/SID/INTEGER
@@ -759,12 +759,19 @@ result/outcome/digest pins. Supply the closed finalize-command@1 from the supple
 with your existing absolute authorized repository_path, saved stable operation_key
 and current SID to `happyranch workflows coding finalize --org ORG --session-id CURRENT
 --from-file ABS --json`. Actual entitlement for that local command is separately
-required; descriptors grant no access. It selects only your own current run evidence,
+required; descriptors grant no access. Preserve the selected authenticated repository
+reference and original native OrgPaths workspace capture. Only its repo_key checkout/
+authorized task worktrees and exact raw-origin digest/opaque ID may identify the
+GitHub target; navigation alone cannot. ONE captured workspace task/attempt
+reservation applies across cwd/key/path variants. Full selected/native/output/
+history identity must agree; missing, foreign or aliased roots refuse. Preserve
+existing/partial reservations even after failed recording; never choose a new cwd
+or key to repeat an uncertain action. It selects only your own current run evidence,
 observes exact successful checks once, saves task-local intent, immediately revalidates
 and calls the reviewed expected-head/no-admin guard. Preserve partial intent/action
 receipts and never rerun after uncertainty. Pending checks produce held output, no
 coding job/decision or automatic later manager allocation. Save exact canonical
-final-output@1 as your callback summary JSON STRING, stage=agent_manager, null verdict,
+final-output@2 as your callback summary JSON STRING, stage=agent_manager, null verdict,
 no decisions/job waits; own findings and original causes only. Actual remote merge
 commit/aware time must be observed in THIS live session before claiming merged.
 Failed command remains failed/uncertain despite separate later effect observation.

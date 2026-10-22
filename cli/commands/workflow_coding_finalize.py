@@ -9,6 +9,7 @@ import argparse
 import json
 import os
 import re
+import stat
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -21,7 +22,8 @@ from runtime.runtime import port_file
 from runtime.daemon import pr_ci_merge, pr_ci_waiter
 from runtime.workflows.coding_saved_records import _canonical, _check, _constant, _hash, _json, _pairs
 from runtime.workflows.coding_start_records import (
-    CodingCheckEvidence, CodingFinalOutput, CodingFinalSelection, github_subject, parse_finalize,
+    CodingBoundFinalOutput, CodingBoundFinalSelection, CodingCheckEvidence,
+    github_origin, github_subject, parse_finalize, validate_final_identity,
 )
 
 CHECKS = ('Source Boundary Lint', 'Web Lint (Node 24)')
@@ -63,21 +65,53 @@ def _api(path: str) -> dict:
     return _remote_json(_run(['gh', 'api', path]).encode('utf8'), 1048576)
 
 
-def _local_subject(command: dict, repo: str, number: int) -> None:
-    root = Path(command['repository_path']).resolve(strict=True)
-    workspace = Path.cwd().resolve(strict=True)
-    _check(root.is_relative_to(workspace / 'repos') or root == workspace)
+def _literal_directory(path: Path, *, create: bool = False) -> Path:
+    """Literal no-follow observations, not a racing-rename or OS security fence."""
+    _check(path.is_absolute() and '..' not in path.parts)
+    current = Path(path.anchor)
+    for part in path.parts[1:]:
+        current /= part
+        if create:
+            try:
+                current.mkdir()
+            except FileExistsError:
+                pass
+        _check(stat.S_ISDIR(current.lstat().st_mode))  # symlinks, including parents, refuse
+    _check(path.resolve(strict=True) == path)
+    return path
+
+
+def _local_subject(command: dict, selected: dict, org: str) -> tuple[str, int, str]:
+    validate_final_identity(selected, org=org)
+    reference = selected['repository_reference']
+    workspace = _literal_directory(Path(selected['workspace']['workspace_root']))
+    checkout = _literal_directory(workspace / 'repos' / reference['repo_key'])
+    root = _literal_directory(Path(command['repository_path']))
+    _check(str(root) == command['repository_path'] and
+           (root == checkout or root.is_relative_to(checkout / '.claude' / 'worktrees')))
+    cwd = _literal_directory(Path.cwd())
+    _check(cwd == workspace or cwd == checkout or cwd.is_relative_to(checkout / '.claude' / 'worktrees'))
     def git(*args: str) -> str:
         return _run(['git', *args], cwd=root).strip()
     _check(git('rev-parse', '--show-object-format') == 'sha1')
-    origin = git('remote', 'get-url', 'origin')
-    match = re.fullmatch(r'(?:https://github\.com/|git@github\.com:)([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+?)(?:\.git)?', origin)
-    _check(match is not None and match[1] == repo)
+    _check(git('rev-parse', '--show-toplevel') == str(root))
+    common = _literal_directory(checkout / '.git')
+    _check(git('rev-parse', '--path-format=absolute', '--git-common-dir') == str(common)
+           and not (root / '.git').is_symlink())
+    # Exactly ONE raw configured URL, with the EXISTING UTF8 hashing semantics.
+    # get-url also detects url.* rewrites; ambiguity and unavailable identity refuse.
+    origin = _run(['git', 'config', '--get-all', 'remote.origin.url'], cwd=root).removesuffix('\n')
+    _check(_hash(origin.encode('utf8')) == reference['origin_digest'] and
+           _run(['git', 'remote', 'get-url', '--all', 'origin'], cwd=root).removesuffix('\n') == origin)
+    repo = github_origin(origin)
+    navigation_repo, number = github_subject(command['subject'])
+    _check(navigation_repo == repo)
     subject = command['subject']
     for oid in (subject['comparison']['base'], subject['head']):
         _check(git('rev-parse', '--verify', oid + '^{commit}') == oid)
     _check(git('rev-parse', '--verify', 'refs/remotes/origin/' + subject['navigation']['branch']) == subject['head'])
     _check(number > 0)
+    return repo, number, origin
 
 
 def _pr(repo: str, number: int, subject: dict) -> pr_ci_waiter.PRState:
@@ -138,7 +172,8 @@ def _selected(client: httpx.Client, org: str, sid: str, command: dict) -> dict:
     response = client.get(f"/api/v1/orgs/{org}/workflows/coding/runs/{command['instance_id']}/final-manager",
                           params={'session_id': sid})
     _check(response.status_code == 200 and len(response.content) <= 262144)
-    result = CodingFinalSelection.model_validate(_remote_json(response.content, 262144)).model_dump()
+    result = CodingBoundFinalSelection.model_validate(_remote_json(response.content, 262144)).model_dump()
+    validate_final_identity(result, org=org)
     for key in ('instance_id', 'attempt_id', 'task_id', 'session_id', 'principal', 'revision', 'subject', 'upstream_results'):
         _check(result[key] == command[key])
     # Reparse the original selected full callback summaries locally. No recall fallback.
@@ -156,12 +191,13 @@ def _selected(client: httpx.Client, org: str, sid: str, command: dict) -> dict:
 
 def _execute(client: httpx.Client, org: str, sid: str, command: dict) -> dict:
     selected = _selected(client, org, sid, command)
-    repo, number = github_subject(command['subject'])
-    _local_subject(command, repo, number)
+    repo, number, origin = _local_subject(command, selected, org)
     # Exactly one task-owned attempt directory, independent of caller operation key.
-    directory = Path.cwd() / 'output' / command['task_id'] / ('coding-finalize-' + _hash(command['attempt_id'].encode()))
-    directory.parent.mkdir(parents=True, exist_ok=True)
+    directory = Path(selected['workspace']['workspace_root']) / 'output' / command['task_id'] / ('coding-finalize-' + _hash(command['attempt_id'].encode()))
+    _check(command['task_id'] not in ('.', '..') and '/' not in command['task_id'])
+    _literal_directory(directory.parent, create=True)
     directory.mkdir()  # Existing/partial intent refuses; no automatic replay or second action.
+    reserved = directory.stat()
     checks: list[dict] = []
     observations: list[dict] = []
     error = ''
@@ -178,7 +214,8 @@ def _execute(client: httpx.Client, org: str, sid: str, command: dict) -> dict:
     # An incomplete two-check observation is held even if the generic waiter is permissive.
     if ci == 'ci_pass' and (len(checks) != 2 or {v['name'] for v in checks} != set(CHECKS)):
         ci, error = 'checks_missing', 'strict two-check evidence missing'
-    intent_body = dict(command=command, created_at=_now(), selected_digest=_hash(_canonical(selected)))
+    intent_body = dict(command=command, created_at=_now(), selected_digest=_hash(_canonical(selected)),
+        repository_reference=selected['repository_reference'], workspace=selected['workspace'], origin=origin)
     _write(directory / 'selected.json', selected)
     _write(directory / 'checks.json', dict(checks=checks, observations=observations, ci_verdict=ci, diagnostic=error))
     _write(directory / 'intent.json', intent_body)
@@ -187,6 +224,10 @@ def _execute(client: httpx.Client, org: str, sid: str, command: dict) -> dict:
     # Keep exact original command/diagnostic in a separate receipt even on failure.
     def perform(method: str) -> pr_ci_merge.MergeResult:
         _check(method == 'merge' and _selected(client, org, sid, command) == selected)
+        _check(_local_subject(command, selected, org) == (repo, number, origin))
+        _literal_directory(directory)
+        current = directory.stat()
+        _check((current.st_dev, current.st_ino) == (reserved.st_dev, reserved.st_ino))
         evidence['revalidated_at'] = _now()
         argv = ['gh', 'pr', 'merge', str(number), '--repo', repo, '--merge', '--match-head-commit', command['subject']['head']]
         receipt = dict(argv=argv, started_at=_now(), finished_at='', exit_code=None, succeeded=False, diagnostic='')
@@ -229,7 +270,7 @@ def _execute(client: httpx.Client, org: str, sid: str, command: dict) -> dict:
                and evidence['command']['succeeded'] else 'uncertain' if evidence['command'] is not None else 'held')
     findings = ('Performed expected-head guarded action and observed exact remote merge in this invocation.' if outcome == 'merged'
                 else 'Finalization retained ' + outcome + ': ' + (guard.error_detail or error or guard.verdict))
-    output = CodingFinalOutput.model_validate(dict(format='workflow-coding-final-output@1',
+    output = CodingBoundFinalOutput.model_validate(dict(format='workflow-coding-final-output@2',
         instance_id=command['instance_id'], attempt_id=command['attempt_id'], revision=command['revision'], stage='agent_manager',
         subject=command['subject'], upstream_results=command['upstream_results'], outcome=outcome,
         findings=findings, evidence=evidence)).model_dump()

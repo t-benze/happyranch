@@ -76,14 +76,17 @@ def final_brief(work: dict) -> str:
 
 
 def final_scope(*, org: str, instance: str, command: dict, roles: dict, qa: dict,
-                subject: dict, task_id: str, upstream: dict) -> dict:
-    return dict(format='workflow-coding-final-scope@1', org_slug=org, instance_id=instance,
+                subject: dict, task_id: str, upstream: dict, repository_reference: dict | None = None) -> dict:
+    scope = dict(format='workflow-coding-final-scope@1', org_slug=org, instance_id=instance,
         attempt_id=identity('attempt', instance, 4), task_id=task_id, stage='agent_manager', role='agent_manager',
         principal=roles['agent_manager']['principal'], team=roles['agent_manager']['team'],
         revision=1, attempt_sequence=1, assignment_generation=1, release=command['release'],
         mapping=command['mapping'], mapping_digest=command['mapping']['digest'], context_id=identity('context', instance),
         authorization=identity('authorization', instance), work_scope=command['work'], subject=subject,
         predecessor_id=qa['id'], upstream_results=upstream)
+    if repository_reference is not None:
+        scope.update(format='workflow-coding-final-scope@2', repository_reference=repository_reference)
+    return scope
 
 
 def pinned_rows(*, org: str, command: dict, source: dict, native_source: dict,

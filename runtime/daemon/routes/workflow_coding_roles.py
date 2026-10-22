@@ -15,7 +15,7 @@ from runtime.orchestrator.team_move import DeferredTeamMove
 from runtime.workflows._coding_role_records import (
     COMMAND_LIMIT, RoleCommand, RoleReceipt, SelectionCommand, SelectionReceipt,
 )
-from runtime.workflows.coding_start_records import CodingFinalSelection, CodingRunReceipt
+from runtime.workflows.coding_start_records import CodingBoundFinalSelection, CodingRunReceipt
 from runtime.workflows.artifacts import Token
 from runtime.workflows.authority import WorkflowAuthorityError
 from runtime.workflows.coding_roles import CodingRoleError
@@ -67,7 +67,7 @@ async def coding_run(request: Request, org: OrgDep, instance_id: Token, session_
     return await _handle(request, org, session_id, selection=False, instance_id=instance_id)
 
 
-@router.get('/workflows/coding/runs/{instance_id}/final-manager', response_model=CodingFinalSelection, responses=_RESPONSES)
+@router.get('/workflows/coding/runs/{instance_id}/final-manager', response_model=CodingBoundFinalSelection, responses=_RESPONSES)
 async def coding_final_run(request: Request, org: OrgDep, instance_id: Token, session_id: str) -> JSONResponse:
     return await _handle(request, org, session_id, selection=False, instance_id=instance_id, final=True)
 
