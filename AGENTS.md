@@ -3775,3 +3775,13 @@ ROOT10693; K3 controls/recovery/K4–K6 and operational acceptance remain root-o
 thread linked-task reads include valid root retries. Literal dispatch provenance
 and terminal routing stay unchanged; no backfill or authority follows. See
 [the read contract](docs/agent-guides/features-and-invariants.md#root-retry-source-thread-association).
+
+Association reads batch shared ancestry inside the selection/serialization
+snapshot and refuse aggregate exhaustion with HTTP503, never empty/null success.
+Per call limits are 4096 distinct lineage IDs, 8192 fetched rows (including
+repeated discovery/summaries), 16 MiB fetched value bytes and 128-ID batches;
+existing collection SQL/lock/row-size limits also apply. See the linked read
+contract for precise counting, `task_thread_origin_unavailable`/`census_database_*`
+refusals and cooperative-bound limits. Complete 200-node lineage remains valid;
+201-node/malformed lineage has null derived origin, with literal direct rows
+preserved on complete successful reads. No cross-snapshot cache is retained.

@@ -17,6 +17,8 @@ from runtime.daemon.routes._org_dep import OrgDep
 from runtime.daemon.runner import enqueue_task
 from runtime.daemon.state import DaemonState
 from runtime.daemon.thread_queue import ThreadJob
+from runtime.infrastructure.db.tasks import TaskThreadOriginUnavailable
+from runtime.infrastructure.memory_collection import CensusReadUnavailable
 from runtime.infrastructure.audit_logger import AuditLogger
 from runtime.infrastructure.artifact_store import ArtifactStore, InvalidArtifactName
 from runtime.infrastructure.thread_scoped_attachment_store import MAX_THREAD_ATTACHMENT_BYTES
@@ -1498,10 +1500,14 @@ async def list_thread_tasks_endpoint(
     org: OrgDep,
 ) -> list[dict]:
     """Return direct dispatches and associated root revisits, newest-first."""
-    t = org.db.get_thread(thread_id)
-    if t is None:
-        raise HTTPException(status_code=404, detail={"code": "not_found"})
-    return org.db.list_tasks_by_thread(thread_id)
+    try:
+        with org.db._memory_collection_read_budget(), org.db.coherent_read_view():
+            t = org.db.get_thread(thread_id)
+            if t is None:
+                raise HTTPException(status_code=404, detail={"code": "not_found"})
+            return org.db.list_tasks_by_thread(thread_id)
+    except (CensusReadUnavailable, TaskThreadOriginUnavailable) as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 # ---------------------------------------------------------------------------

@@ -29,6 +29,115 @@ class LineageTooDeep(Exception):
     """Ancestor walk exceeded the safety bound; indicates data corruption."""
 
 
+class TaskThreadOriginUnavailable(ValueError):
+    """The complete association read exceeded its finite acquisition limits."""
+
+
+# Read-model-only limits, below the existing collection SQL/row/byte ceilings.
+# No state survives the owning coherent read transaction.
+_THREAD_ORIGIN_NODES = 4096
+_THREAD_ORIGIN_ROWS = 8192
+_THREAD_ORIGIN_BYTES = 16 * 1024 * 1024
+_THREAD_ORIGIN_BATCH = 128
+_THREAD_ORIGIN_COLUMNS = "id, parent_task_id, revisit_of_task_id, dispatched_from_thread_id"
+
+
+class _TaskThreadOrigins:
+    """One snapshot's indexed acquisition and shared suffix validation.
+
+    Nodes include all referenced/missing IDs; rows/bytes include duplicate discovery
+    and final summaries. SQL work, lock admission, per-row size and elapsed SQL
+    are additionally bounded by the enclosing existing collection read scope.
+    """
+
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self.conn = conn
+        self.nodes: set[str] = set()
+        self.rows: dict[str, dict | None] = {}
+        self.fetched = 0
+        self.byte_count = 0
+        # A valid suffix stores its full distance, NOT a start's depth verdict.
+        self.resolved: dict[str, tuple[str, str, int] | None] = {}
+
+    def track(self, task_ids: list[str]) -> None:
+        for task_id in task_ids:
+            self.nodes.add(task_id)
+            if len(self.nodes) > _THREAD_ORIGIN_NODES:
+                raise TaskThreadOriginUnavailable("task_thread_origin_unavailable")
+
+    def read(self, sql: str, params: tuple) -> list[dict]:
+        # One extra sentinel detects exhaustion; a prefix is never returned.
+        cursor = self.conn.execute(sql + " LIMIT ?", (*params, _THREAD_ORIGIN_ROWS - self.fetched + 1))
+        result = []
+        for row in cursor:
+            self.fetched += 1
+            self.byte_count += sum(len(v.encode("utf-8")) if isinstance(v, str)
+                                   else len(v) if isinstance(v, bytes) else 8 for v in row)
+            if self.fetched > _THREAD_ORIGIN_ROWS or self.byte_count > _THREAD_ORIGIN_BYTES:
+                raise TaskThreadOriginUnavailable("task_thread_origin_unavailable")
+            result.append(dict(row))
+        return result
+
+    def remember(self, rows: list[dict]) -> None:
+        for row in rows:
+            self.track([row["id"]])
+            self.rows[row["id"]] = row
+
+    def ancestors(self, task_ids: list[str]) -> None:
+        self.track(task_ids)
+        frontier = set(task_ids)
+        visited: set[str] = set()
+        for _ in range(200):
+            if not frontier:
+                break
+            pending = list(frontier - self.rows.keys())
+            for offset in range(0, len(pending), _THREAD_ORIGIN_BATCH):
+                batch = pending[offset:offset + _THREAD_ORIGIN_BATCH]
+                marks = ",".join("?" for _ in batch)
+                self.remember(self.read(f"SELECT {_THREAD_ORIGIN_COLUMNS} FROM tasks WHERE id IN ({marks})", tuple(batch)))
+                for task_id in batch:
+                    self.rows.setdefault(task_id, None)
+            visited.update(frontier)
+            predecessors = {row["revisit_of_task_id"] for task_id in frontier
+                            if (row := self.rows[task_id]) is not None
+                            and row["parent_task_id"] is None and row["revisit_of_task_id"] is not None}
+            frontier = predecessors - visited
+            self.track(list(frontier))
+
+    def origin(self, task_id: str) -> dict:
+        path: list[dict] = []
+        seen: set[str] = set()
+        current = task_id
+        while current not in self.resolved:
+            row = self.rows.get(current)
+            if current in seen or row is None or row["parent_task_id"] is not None:
+                # An unacquired tail after 200 acquisition rounds cannot be a
+                # complete <=200-node suffix of ANY selected start in this batch.
+                self.resolved[current] = None
+                break
+            seen.add(current)
+            path.append(row)
+            predecessor = row["revisit_of_task_id"]
+            if predecessor is None:
+                thread_id = row["dispatched_from_thread_id"]
+                self.resolved[current] = (thread_id, current, 1) if thread_id else None
+                path.pop()
+                break
+            current = predecessor
+        suffix = self.resolved[current]
+        for row in reversed(path):
+            literal = row["dispatched_from_thread_id"]
+            if suffix is not None and (literal is None or literal == suffix[0]):
+                suffix = (suffix[0], suffix[1], suffix[2] + 1)
+            else:
+                suffix = None
+            self.resolved[row["id"]] = suffix
+        origin = self.resolved[task_id]
+        if origin is None or origin[2] > 200:
+            return {"originating_thread_id": None, "originating_task_id": None}
+        return {"originating_thread_id": origin[0], "originating_task_id": origin[1]}
+
+
 @dataclass(frozen=True)
 class VerifiedRetry:
     """Read-only provenance result; final spawn must revalidate under its writer lock."""
@@ -892,74 +1001,64 @@ class TasksMixin:
             for row in cursor.fetchall()
         ]
 
-    @_synchronized
     def get_task_thread_origin(self, task_id: str) -> dict:
-        """Derive a root's original thread without changing dispatch provenance.
+        """Single-task compatibility reader; no cache crosses its snapshot."""
+        return self.get_task_thread_origins([task_id])[task_id]
 
-        A complete root-only revisit chain is required. Missing/cyclic/overlong
-        history and conflicting literal dispatches yield no derived association.
-        This read model grants no dispatch, retry or follow-up authority.
+    def get_task_thread_origins(self, task_ids: list[str]) -> dict[str, dict]:
+        """Batch complete root lineage in the caller's coherent request view.
+
+        Malformed/missing/cyclic/conflicting or >200-node chains yield null
+        origin. Aggregate exhaustion raises, never masquerading as no origin.
         """
-        absent = {"originating_thread_id": None, "originating_task_id": None}
-        with self.coherent_read_view():
-            seen: set[str] = set()
-            dispatches: set[str] = set()
-            current_id = task_id
-            # Match the existing terminal follow-up's historical lineage bound.
-            for _ in range(200):
-                if current_id in seen:
-                    return absent
-                seen.add(current_id)
-                row = self._conn.execute(
-                    "SELECT id, parent_task_id, revisit_of_task_id, "
-                    "dispatched_from_thread_id FROM tasks WHERE id = ?",
-                    (current_id,),
-                ).fetchone()
-                if row is None or row["parent_task_id"] is not None:
-                    return absent
-                thread_id = row["dispatched_from_thread_id"]
-                if thread_id is not None:
-                    if not thread_id:
-                        return absent
-                    dispatches.add(thread_id)
-                predecessor = row["revisit_of_task_id"]
-                if predecessor is None:
-                    if thread_id is None or dispatches != {thread_id}:
-                        return absent
-                    return {"originating_thread_id": thread_id,
-                            "originating_task_id": row["id"]}
-                current_id = predecessor
-        return absent
+        if len(task_ids) > _THREAD_ORIGIN_NODES:
+            raise TaskThreadOriginUnavailable("task_thread_origin_unavailable")
+        with self._memory_collection_read_budget(), self.coherent_read_view():
+            reader = _TaskThreadOrigins(self._conn)
+            reader.ancestors(task_ids)
+            return {task_id: reader.origin(task_id) for task_id in task_ids}
 
-    @_synchronized
     def list_tasks_by_thread(self, thread_id: str) -> list[dict]:
-        """Return direct dispatches and their valid root revisits, newest-first.
+        """Complete direct rows plus valid root revisits, or bounded refusal.
 
-        Reverse traversal uses the existing dispatch/revisit indexes and a
-        200-node depth bound. Forward validation refuses partial/conflicting
-        lineage; UNION/IN deduplicate roots with multiple discovery paths.
-        Existing direct rows and summary fields remain, with additive provenance.
+        Indexed breadth-first discovery deduplicates nodes at their shortest
+        distance from any direct root. Only successful complete reads return
+        summaries; literal direct rows survive every lineage validation failure.
         """
-        with self.coherent_read_view():
-            rows = self._conn.execute(
-                "WITH RECURSIVE linked(id, depth) AS ("
-                " SELECT id, 1 FROM tasks WHERE dispatched_from_thread_id = ?"
-                " AND parent_task_id IS NULL"
-                " UNION SELECT t.id, l.depth + 1 FROM tasks t JOIN linked l"
-                " ON t.revisit_of_task_id = l.id"
-                " WHERE t.parent_task_id IS NULL AND l.depth < 200"
-                ") SELECT id, status, brief, assigned_agent, created_at,"
-                " parent_task_id, dispatched_from_thread_id FROM tasks"
-                " WHERE dispatched_from_thread_id = ? OR id IN (SELECT id FROM linked)"
-                " ORDER BY created_at DESC, id DESC",
-                (thread_id, thread_id),
-            ).fetchall()
+        with self._memory_collection_read_budget(), self.coherent_read_view():
+            reader = _TaskThreadOrigins(self._conn)
+            direct = reader.read(f"SELECT {_THREAD_ORIGIN_COLUMNS} FROM tasks WHERE dispatched_from_thread_id = ?", (thread_id,))
+            reader.remember(direct)
+            direct_ids = {row["id"] for row in direct}
+            discovered = set(direct_ids)
+            frontier = [row["id"] for row in direct if row["parent_task_id"] is None]
+            for _ in range(199):
+                if not frontier:
+                    break
+                following = []
+                for offset in range(0, len(frontier), _THREAD_ORIGIN_BATCH):
+                    batch = frontier[offset:offset + _THREAD_ORIGIN_BATCH]
+                    marks = ",".join("?" for _ in batch)
+                    rows = reader.read(f"SELECT {_THREAD_ORIGIN_COLUMNS} FROM tasks WHERE revisit_of_task_id IN ({marks}) AND parent_task_id IS NULL", tuple(batch))
+                    reader.remember(rows)
+                    for row in rows:
+                        if row["id"] not in discovered:
+                            discovered.add(row["id"])
+                            following.append(row["id"])
+                frontier = following
+            # Reuse discovery rows and acquire only missing ancestor rows.
+            reader.ancestors(list(discovered))
+            origins = {task_id: reader.origin(task_id) for task_id in discovered}
+            selected = [task_id for task_id in discovered if task_id in direct_ids
+                        or origins[task_id]["originating_thread_id"] == thread_id]
             result = []
-            for row in rows:
-                origin = self.get_task_thread_origin(row["id"])
-                if (row["dispatched_from_thread_id"] == thread_id
-                        or origin["originating_thread_id"] == thread_id):
-                    result.append({**dict(row), **origin})
+            for offset in range(0, len(selected), _THREAD_ORIGIN_BATCH):
+                batch = selected[offset:offset + _THREAD_ORIGIN_BATCH]
+                marks = ",".join("?" for _ in batch)
+                rows = reader.read("SELECT id, status, brief, assigned_agent, created_at, parent_task_id,"
+                                   f" dispatched_from_thread_id FROM tasks WHERE id IN ({marks})", tuple(batch))
+                result.extend({**row, **origins[row["id"]]} for row in rows)
+            result.sort(key=lambda row: (row["created_at"], row["id"]), reverse=True)
             return result
 
     @_synchronized

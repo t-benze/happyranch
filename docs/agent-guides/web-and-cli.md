@@ -4030,3 +4030,16 @@ original task with a revisit arrow. CLI details separates `Thread`/`Origin task`
 from literal `Dispatched`. Summary fields are additive; the existing dict responses
 have no property schema in the path/method/parameter/status OpenAPI snapshot.
 See [the complete lineage/read contract](features-and-invariants.md#root-retry-source-thread-association).
+
+
+Task list/roots/detail serialization batches origin ancestry within the same
+selection snapshot; thread linked-task discovery and summary materialization
+share a bounded read. Per call: 4096 distinct lineage IDs, 8192 fetched rows
+(including duplicates/summaries), 16 MiB fetched value bytes, 128-ID batches;
+existing enclosing collection SQL/lock/row-size limits also apply. HTTP503 string
+`detail: task_thread_origin_unavailable` (or existing `census_database_*`) means
+unavailable, never an empty list or no association. Invalid lineage still yields
+null origin, literal direct rows remain on complete successful reads, and the
+success shapes are unchanged. See the complete read contract for counting and
+cooperative-bound limits. Bilingual responsive readiness requires final-head
+task-detail and thread-linked observations in en/zh-CN at 390×844 and 1440×900.
