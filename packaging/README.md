@@ -36,10 +36,15 @@ Only direct inputs needed for manifest notices leave the spec: installed Python
 metadata/RECORD, selected interpreter/native owner paths and authenticated
 interpreter originals. This does not collect producer lifecycles or emitted
 archive closure. Missing/unrecognized required owners or original texts refuse.
+CPython LICENSE.txt is required independently of supplemental installed/vendor
+originals; its absence invokes only the existing exact-identity/stdlib-checked
+offline fallback. Each original retains its own source boundary.
 The full build collects notices after assembly, validates resources/basic app,
 checks frozen CLI/catalog, records unsigned trust observations, archives and
 reconciles actual ZIP/notice bytes and release identity. The retained resource
-catalog/runtime is unchanged.
+catalog/runtime is unchanged. Failure diagnostics use the current `basic` stage
+(its output remains `native.json`); REACHED records an attempted stage, including
+a failed attempt, and never asserts success.
 
 Run the existing focused portable commands outside CI with fresh task scratch:
 
@@ -48,6 +53,10 @@ python packaging/verify_manifest_notices.py --scratch /owned/new-notice-fixture
 python packaging/verify_mac_run_layout.py --scratch /owned/new-layout-fixture
 ```
 
+The first also accepts `--cpython-stdlib /owned/pinned-stdlib` for the three
+source originals pinned in `notice-data/identity-map.json`; these exercise the
+authenticated fallback with synthetic identity/Analysis, without executing a
+native interpreter. Without them that positive case is reported NOT RUN.
 The first uses authentic notices with synthetic resolved inputs, preassembled
 resources/plist/icon/Mach-O headers and a substituted ditto ZIP writer. The second
 uses actual workflow reservation/upload selectors and shipping source/path

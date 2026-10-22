@@ -220,7 +220,7 @@ for name, relative, kind in critical + inputs:
     # Compatibility fields never label a JSON byte-tail complete.
     row['truncated'] = not row['complete']
     write(name + '.bounds.json', encode(row)); rows.append(row)
-inspection_order = ['resources', 'native', 'cli', 'catalog', 'trust', 'licenses']
+inspection_order = ['resources', 'basic', 'cli', 'catalog', 'trust', 'licenses']
 reached = inspection_order.index(inspection_stage) if inspection_stage in inspection_order else -1
 manifest = {**summary, 'inspection_stages': {name: ('REACHED' if i <= reached else 'NOT_REACHED')
             for i, name in enumerate(inspection_order)}, 'inputs': rows, 'input_count': len(rows),

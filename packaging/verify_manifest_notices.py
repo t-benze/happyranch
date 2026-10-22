@@ -21,6 +21,8 @@ import struct
 import sys
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 SOURCE = Path(__file__).resolve().parent.parent
 H = runpy.run_path(str(SOURCE / 'app/mac/scripts/manifest_notices.py'))
@@ -145,9 +147,84 @@ def fixture(root):
     return source, output, app, mapping
 
 
-def run(scratch):
+def python_spec_notices(scratch, stdlib=None):
+    """Run the shipping notice block, without PyInstaller or a native build."""
+    spec_path = SOURCE / 'packaging/daemon.spec'
+    nodes = ast.parse(spec_path.read_text()).body
+    start = next(i for i, node in enumerate(nodes) if isinstance(node, ast.Assign)
+                 and any(isinstance(t, ast.Name) and t.id == 'notice_root' for t in node.targets))
+    stop = next(i for i, node in enumerate(nodes) if isinstance(node, ast.Expr)
+                and isinstance(node.value, ast.Call) and isinstance(node.value.func, ast.Subscript)
+                and isinstance(node.value.func.slice, ast.Constant)
+                and node.value.func.slice.value == 'python_snapshot')
+    block = compile(ast.Module(body=nodes[start:stop], type_ignores=[]), str(spec_path), 'exec')
+    helpers = runpy.run_path(str(SOURCE / 'packaging/notice-data/retained_notices.py'))
+    identity = helpers['identities'](SOURCE / 'packaging/notice-data')['python']
+    original = (SOURCE / 'packaging/notice-data/cpython-LICENSE').read_bytes()
+    cases = [('installed CPython plus vendor', True, True, None),
+             ('missing CPython with vendor refuses unsupported identity', False, True, 'PYTHON_NOTICE_IDENTITY_MISMATCH'),
+             ('missing CPython without vendor refuses unsupported identity', False, False, 'PYTHON_NOTICE_IDENTITY_MISMATCH')]
+    if stdlib is not None:
+        cases += [('authenticated fallback plus vendor', False, True, None),
+                  ('authenticated fallback stdlib mismatch', False, True, 'PYTHON_NOTICE_STDLIB_MISMATCH'),
+                  ('authenticated fallback original missing', False, True, 'cpython-LICENSE')]
+    else:
+        REPORT.append(dict(label='authenticated fallback positive', result='NOT RUN',
+                           limitation='Supply --cpython-stdlib with the three pinned source originals; native runtime acceptance remains UNEXECUTED.'))
+    for index, (label, installed, vendor, error) in enumerate(cases):
+        root = scratch / ('spec-' + str(index))
+        prefix, evidence = root / 'python', root / 'evidence'
+        prefix.mkdir(parents=True); evidence.mkdir()
+        if installed:
+            write(prefix / 'LICENSE.txt', original)
+        if vendor:
+            write(prefix / 'licenses/vendor.txt', b'Supplemental vendor original\n')
+        effective = SimpleNamespace(base_prefix=str(prefix), implementation=SimpleNamespace(name='cpython'),
+                                    executable=str(prefix / 'bin/python'), version=sys.version, platform=sys.platform)
+        machine = 'unsupported-fixture'
+        analysis = {}
+        if label.startswith('authenticated'):
+            effective.version = identity['toolchain']['version']
+            effective.platform = identity['toolchain']['platform']
+            machine = identity['toolchain']['machine']
+            selected_stdlib = root / 'stdlib'
+            for filename in identity['stdlib']:
+                write(selected_stdlib / filename, (stdlib / filename).read_bytes())
+            analysis = {lane: dict(pure=[dict(destination=Path(name).stem, source=str(selected_stdlib / name),
+                        kind='PYMODULE', sha256=digest) for name, digest in identity['stdlib'].items()])
+                        for lane in ('daemon', 'cli')}
+            if error == 'PYTHON_NOTICE_STDLIB_MISMATCH':
+                write(selected_stdlib / 'threading.py', b'changed stdlib fixture')
+        else:
+            selected_stdlib = prefix / 'stdlib'
+        write(evidence / 'python-toolchain.json', dict(executable=effective.executable,
+              version=effective.version, platform=effective.platform, machine=machine))
+        spec_dir = SOURCE / 'packaging'
+        if label == 'authenticated fallback original missing':
+            spec_dir = root / 'packaging'
+            for name in ('retained_notices.py', 'identity-map.json'):
+                write(spec_dir / 'notice-data' / name, (SOURCE / 'packaging/notice-data' / name).read_bytes())
+        env = dict(Path=Path, sys=effective, os=os, json=json, runpy=runpy,
+                   _SPEC_DIR=spec_dir, _PROJ=SOURCE, evidence=evidence, analysis=analysis)
+        try:
+            with patch('platform.machine', return_value=machine), patch('sysconfig.get_path', return_value=str(selected_stdlib)):
+                exec(block, env)
+        except (ValueError, FileNotFoundError) as exc:
+            assert error and error in str(exc), (label, str(exc))
+            assert not list((evidence / 'notices').iterdir()), label
+            REPORT.append(dict(label=label, result='REFUSED', error=str(exc)))
+        else:
+            assert error is None, (label, 'missing CPython original accepted')
+            retained = [Path(n['retained']).read_bytes() for n in env['python_component']['notices']]
+            assert retained == [original] + ([b'Supplemental vendor original\n'] if vendor else []), label
+            REPORT.append(dict(label=label, result='PASS', retained_sha256=[H['sha'](b) for b in retained],
+                               limitation='Synthetic effective identity/Analysis; authentic pinned notice/stdlib bytes. No native interpreter executed.'))
+
+
+def run(scratch, stdlib=None):
     os.umask(0o077)  # Match shipping private output allocations.
     scratch.mkdir(mode=0o700)
+    python_spec_notices(scratch, stdlib)
     source, output, app, mapping = fixture(scratch)
     facts = REPORT[-1]
     for label in ('missing selected Analysis input', 'different lane selection'):
@@ -336,10 +413,11 @@ def run(scratch):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--scratch', type=Path, required=True)
+    parser.add_argument('--cpython-stdlib', type=Path, help='Pinned CPython source fixtures, not a native interpreter')
     args = parser.parse_args()
     assert args.scratch.is_absolute() and not args.scratch.exists()
     try:
-        evidence = run(args.scratch)
+        evidence = run(args.scratch, args.cpython_stdlib)
     finally:
         write(args.scratch / 'evidence.json', REPORT)
     print(json.dumps(dict(cases='notice/archive/basic/status cases PASS portable only', evidence=str(evidence), commands=len(REPORT))))

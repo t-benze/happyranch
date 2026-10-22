@@ -187,24 +187,30 @@ notice_root.mkdir()
 notice_helpers = __import__('runpy').run_path(str(_SPEC_DIR / 'notice-data/retained_notices.py'))
 _manifest_notices = runpy.run_path(str(_PROJ / 'app/mac/scripts/manifest_notices.py'))
 source_root = Path(sys.base_prefix).resolve()
-python_originals = _manifest_notices['original_files'](source_root)
-# uv/python-build-standalone can retain separate component originals here.
-if (source_root / 'licenses').is_dir():
-    python_originals += sorted(p for p in (source_root / 'licenses').rglob('*') if not p.is_dir())
+installed_originals = _manifest_notices['original_files'](source_root)
+python_originals = [(p, source_root) for p in installed_originals
+                    if p == source_root / 'LICENSE.txt']
 if not python_originals:
     import platform
     import sysconfig
     effective = {'implementation': sys.implementation.name, 'executable': sys.executable,
                  'version': sys.version, 'platform': sys.platform, 'machine': platform.machine()}
     toolchain = json.loads(notice_helpers['safe_bytes'](evidence / 'python-toolchain.json', evidence))
-    source_root = _SPEC_DIR / 'notice-data'
+    fallback_root = _SPEC_DIR / 'notice-data'
     python_notice, _ = notice_helpers['python_original'](
-        source_root, effective, toolchain, Path(sysconfig.get_path('stdlib')), analysis)
-    python_originals = [python_notice]
+        fallback_root, effective, toolchain, Path(sysconfig.get_path('stdlib')), analysis)
+    python_originals = [(python_notice, fallback_root)]
+# Supplemental originals cannot satisfy the required CPython LICENSE.txt. Keep
+# their installed boundary even when the CPython original uses the offline root.
+python_originals += [(p, source_root) for p in installed_originals
+                     if p != source_root / 'LICENSE.txt']
+if (source_root / 'licenses').is_dir():
+    python_originals += [(p, source_root) for p in sorted((source_root / 'licenses').rglob('*'))
+                         if not p.is_dir()]
 python_component = {'version': sys.version, 'notices': []}
-for index, original in enumerate(python_originals):
+for index, (original, original_root) in enumerate(python_originals):
     target = notice_root / ('Python-' + str(index) + '-LICENSE.txt')
-    notice_helpers['retain'](original, source_root, target, notice_root)
+    notice_helpers['retain'](original, original_root, target, notice_root)
     python_component['notices'].append({'retained': str(target)})
 # A separate installed metadata/RECORD census is the manifest inventory input.
 # Do not derive membership from any retained component subset.

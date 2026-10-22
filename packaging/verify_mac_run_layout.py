@@ -111,6 +111,34 @@ def verify(root: Path) -> None:
     call('source mismatch refuses before allocation', mismatch, failure='SOURCE_COMMIT_MISMATCH')
     assert not (private / 'mismatch').exists()
 
+    # Execute the actual failure trap in the existing disposable layout fixture.
+    # No build commands or native tools run; resources is a completed fixture input.
+    failure_output = private / 'basic-failure'
+    failure_output.mkdir(mode=0o700)
+    (failure_output / 'diagnostics').mkdir(mode=0o700)
+    (failure_output / 'diagnostics/resources.json').write_text('{"fixture": "resources completed"}\n')
+    finish = build[build.index('finish() {'):build.index('trap finish EXIT')]
+    current = build[build.index('INSPECTION_STAGE=basic'):build.index('# Requested frozen entry-point')]
+    result = subprocess.run(['bash', '-euc', finish + '\ntrap finish EXIT\n' + current],
+        env=dict(os.environ, OUTPUT=str(failure_output), STAGE='verification', RUN_ID='fixture',
+                 SOURCE_SHA=sha, SOURCE_TREE=tree, VERSION='1.0.1', BUILD='1.0.1', ARCH='arm64',
+                 VERIFY=str(SOURCE / 'app/mac/scripts/verify-release.sh'), APP=str(failure_output / 'HappyRanch.app')), text=True, capture_output=True, timeout=30)
+    REPORT.append(dict(label='actual basic failure trap', exit=result.returncode,
+                       stdout=result.stdout, stderr=result.stderr))
+    assert result.returncode == 1 and 'RESOURCE_MISSING' in result.stderr, REPORT[-1]
+    bounded = failure_output / 'diagnostics/bounded'
+    summary = json.loads((bounded / 'failure.json').read_text())
+    index = json.loads((bounded / 'evidence-index.json').read_text())
+    assert summary['exit'] == 1 and summary['inspection_stage'] == 'basic', summary
+    assert summary['available'] is False and summary['approved_url'] is None, summary
+    assert index['inspection_stages'] == dict(resources='REACHED', basic='REACHED', cli='NOT_REACHED',
+                                            catalog='NOT_REACHED', trust='NOT_REACHED', licenses='NOT_REACHED'), index
+    resources = next(r for r in index['inputs'] if r['name'] == 'resources.json')
+    assert resources['complete'] is True and resources['disposition'] == 'COMPLETE', resources
+    REPORT.append(dict(label='basic attempted failure retains reached resources and later NOT_REACHED',
+                       summary=summary, stages=index['inspection_stages'], resources=resources,
+                       limitation='Actual basic reader refuses missing fixture resources; actual bounded trap retains synthetic earlier resources output. No native build or cleanup proof.'))
+
     success = next(s for s in steps if s['name'].startswith('Upload successful'))
     failure = next(s for s in steps if s['name'] == 'Retain bounded failure diagnostics')
     assert failure['if'] == "failure() && steps.run_paths.outputs.root != ''"
