@@ -62,6 +62,35 @@ are reused as executable assets; neither `integration_parent` nor
 platform-marked and callback selections still require their original parent.
 No old unit test is imported, collected, copied or executed.
 
+Both Node24 setup steps enable npm caching keyed by `web/package-lock.json`.
+Each launcher step discovers the runner npm prefix with a checked
+`npm config get cache` assignment and passes only its absolute `_cacache` path
+as `E2E_NPM_DOWNLOAD_STORE`; cancellation inherits it to the same installer.
+After admission/source/runner checks, the launcher copies public download bytes
+into private `root/cache/npm/_cacache` and always runs locked
+`npm ci --cache PRIVATE_PREFIX`. An absent bridge or missing store is a cold
+ordinary install, with unchanged registry, scripts, audit and lock/integrity
+validation. Stale/corrupt content remains subject to npm integrity handling;
+missing downloads still require the registry and installation can fail or time out.
+
+Only after npm ci succeeds does the launcher copy private `_cacache` bytes back
+to the declared runner store. These are ordinary copies into independent inodes;
+aliased paths, symlinks, hardlinked files, special entries and transfer errors
+fail visibly. This validation is not a hostile filesystem race guarantee.
+Live npm logs/config/credentials, `_npx`, `node_modules`, browser, daemon and
+provider state are never transferred. The closed child environment and private
+root cleanup remain; the ephemeral runner/action owns exported download bytes
+outside that root. Transfers consume the original720s action/900s outer bounds;
+the npm command retains240s. Export never runs in failure/interruption cleanup.
+
+The pinned setup-node action archives its discovered **whole runner npm prefix**,
+not selectively `_cacache`; only download bytes are exported from the private
+root. Its post-save requires job success and skips exact key hits, so a partial
+exact-hit entry is not refreshed. Concurrent jobs and failed/cancelled jobs do
+not guarantee warming. Cache presence never skips installation or determines
+PASS. Native warm/cold consumption, corrupt-store behavior, timing savings and
+cleanup proof are NOT RUN; this offers no outage immunity or measured speedup.
+
 The controller holds genuine provider processes while running the real CLI.
 The daemon consumes their callbacks after normal process exit. A transparent
 relay observes actual upstream HTTP200 and a newly reopened committed result

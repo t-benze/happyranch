@@ -32,12 +32,16 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
       - name: Execute standalone public-process E2E
         run: |
           set -euo pipefail
           uv python install '${{ matrix.python }}'
           e2e_python="$(uv python find '${{ matrix.python }}')"
-          python3 e2e/run.py --python "$e2e_python" --artifacts "$RUNNER_TEMP/e2e-${{ matrix.python }}"
+          e2e_npm_cache="$(npm config get cache)"
+          [[ "$e2e_npm_cache" == /* && "$e2e_npm_cache" != / && "$e2e_npm_cache" != *$'\n'* && "$e2e_npm_cache" != *$'\r'* ]] || { echo 'Invalid runner npm cache path' >&2; exit 1; }
+          E2E_NPM_DOWNLOAD_STORE="${e2e_npm_cache%/}/_cacache" python3 e2e/run.py --python "$e2e_python" --artifacts "$RUNNER_TEMP/e2e-${{ matrix.python }}"
       - name: Publish sanitized observations and absence receipts
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -71,12 +75,16 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
       - name: Signal the active owned launcher and verify closure
         run: |
           set -euo pipefail
           uv python install '${{ matrix.python }}'
           e2e_python="$(uv python find '${{ matrix.python }}')"
-          python3 e2e/cancellation.py --python "$e2e_python" --signal '${{ matrix.signal }}' --artifacts "$RUNNER_TEMP/e2e-cancel-${{ matrix.signal }}"
+          e2e_npm_cache="$(npm config get cache)"
+          [[ "$e2e_npm_cache" == /* && "$e2e_npm_cache" != / && "$e2e_npm_cache" != *$'\n'* && "$e2e_npm_cache" != *$'\r'* ]] || { echo 'Invalid runner npm cache path' >&2; exit 1; }
+          E2E_NPM_DOWNLOAD_STORE="${e2e_npm_cache%/}/_cacache" python3 e2e/cancellation.py --python "$e2e_python" --signal '${{ matrix.signal }}' --artifacts "$RUNNER_TEMP/e2e-cancel-${{ matrix.signal }}"
       - name: Publish signal, non-success and owned closure receipts
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
