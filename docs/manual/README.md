@@ -22,8 +22,11 @@ markup and keyboard behavior. It differs in these ways:
   in the article. Upstream left focus in the search input, which in the closed
   mobile menu is off screen. A selected heading is scrolled to below the
   navbar; `styles/globals.css` keeps Nextra's navbar scroll padding while focus
-  is in the article. Focus does not move if the navigation fails, another
-  navigation replaces it, or focus has already gone elsewhere.
+  is in the article. The move waits until React has committed the menu
+  closing, because that render re-creates Nextra's h2-h6 elements and would
+  drop focus from a heading focused before it. Focus does not move if the
+  navigation fails, another navigation replaces it, or focus has already gone
+  elsewhere.
 - A plain click on a result starts one navigation, not two (Headless UI
   already navigates on mousedown). Ctrl/Cmd/Shift/Alt-click keep the browser's
   link behavior.

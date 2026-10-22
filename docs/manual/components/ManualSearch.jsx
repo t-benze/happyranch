@@ -50,8 +50,12 @@
  *      Headless UI refocuses one frame after a pointer selection; in the
  *      closed mobile menu that input is off screen. A selected heading is
  *      scrolled to again below the navbar (styles/globals.css keeps the
- *      navbar scroll padding while focus is in the article). Nothing moves if
- *      the navigation fails or is replaced, or focus went elsewhere.
+ *      navbar scroll padding while focus is in the article). The move waits
+ *      for React to commit the menu closing: that render re-creates Nextra's
+ *      h2-h6 elements (its layout builds new heading components on every
+ *      render), so focus moved before it would be lost with the replaced
+ *      heading. Nothing moves if the navigation fails or is replaced, or focus
+ *      went elsewhere.
  * `clsx` and `escape-string-regexp` are replaced by the small local helpers
  * below so no undeclared package is imported.
  */
@@ -261,32 +265,31 @@ function Search({
     [onChange]
   )
 
-  // The animation frame of a pending focus move after a selection.
-  const focusFrame = useRef({ id: 0, unmounted: false })
+  // The selected result whose page focus moves to (change 5 above). It is set
+  // in the same update as closing the menu, so this effect runs after the
+  // commit that re-creates the page's headings. A new selection or unmounting
+  // cancels the pending move.
+  const [focusRequest, setFocusRequest] = useState(null)
   useEffect(() => {
-    const frame = focusFrame.current
-    frame.unmounted = false
-    return () => {
-      frame.unmounted = true
-      cancelAnimationFrame(frame.id)
-    }
-  }, [])
+    if (!focusRequest) return
+    // Frames run in request order, so this runs after Headless UI's own
+    // frame that refocuses the input after a pointer selection.
+    const id = requestAnimationFrame(() => {
+      setFocusRequest(null)
+      focusSelectedResult(focusRequest.route, inputRef.current)
+    })
+    return () => cancelAnimationFrame(id)
+  }, [focusRequest])
 
   const handleSelect = useCallback(
     async searchResult => {
       if (!searchResult) return
-      const frame = focusFrame.current
-      cancelAnimationFrame(frame.id)
+      setFocusRequest(null)
       inputRef.current?.blur()
       const navigated = await router.push(searchResult.route)
       setMenu(false)
       onChange('')
-      if (!navigated || frame.unmounted) return
-      // Frames run in request order, so this runs after Headless UI's own
-      // frame that refocuses the input after a pointer selection.
-      frame.id = requestAnimationFrame(() =>
-        focusSelectedResult(searchResult.route, inputRef.current)
-      )
+      if (navigated) setFocusRequest({ route: searchResult.route })
     },
     [router, setMenu, onChange]
   )
