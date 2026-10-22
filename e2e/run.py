@@ -16,6 +16,8 @@ import tempfile
 import time
 import traceback
 from pathlib import Path
+from contextlib import contextmanager
+from typing import Any, Callable
 
 from owned import Owned, identity
 
@@ -164,6 +166,205 @@ def daily_admission(source: Path) -> dict:
                 run_attempt=attempt, source_sha=sha, source_ref=ref, source_tree=tree)
 
 
+def _failure_error(error: BaseException) -> str:
+    """Closed subclass precedence; never inspect text, names, args or chains."""
+    for kinds, category in (
+        (UnicodeError, "unicode"), (TimeoutError, "timeout"),
+        ((KeyboardInterrupt, SystemExit, GeneratorExit, InterruptedError), "interruption"),
+        (AssertionError, "assertion"), (ValueError, "value"),
+        (OSError, "io"), (RuntimeError, "runtime"),
+    ):
+        if isinstance(error, kinds):
+            return category
+    return "other"
+
+
+def _failure_slot(stage: str, error: BaseException) -> tuple[str, str, float] | None:
+    at = time.monotonic()
+    if type(at) not in (int, float) or not 0 <= at <= 9007199254740991 or not math.isfinite(at):
+        return None
+    return stage, _failure_error(error), at
+
+
+def _failure_object(slot: tuple | None) -> dict | None:
+    return dict(zip(("stage", "error", "at"), slot)) if slot is not None else None
+
+
+def _failure_source(value: object) -> bool:
+    return type(value) is str and len(value) == 40 and all(c in "0123456789abcdef" for c in value)
+
+
+@contextmanager
+def _failure_directories(root: Path, check: Callable[[], None], *, coord: bool = True,
+                         owned: bool = True) -> Any:
+    """Pin literal no-follow ancestors; no repair or racing-rename guarantee."""
+    spelling = str(root)
+    parts = spelling.split("/")[1:]
+    if not spelling.startswith("/") or not parts or any(p in ("", ".", "..") for p in parts):
+        raise ValueError("invalid diagnostic root")
+    descriptors = []
+    links = []
+
+    def verify() -> None:
+        for parent, name, descriptor, original, private in links:
+            check()
+            named = os.stat(name, dir_fd=parent, follow_symlinks=False)
+            opened = os.fstat(descriptor)
+            if (not stat.S_ISDIR(named.st_mode) or not stat.S_ISDIR(opened.st_mode)
+                    or (named.st_dev, named.st_ino) != (original.st_dev, original.st_ino)
+                    or (opened.st_dev, opened.st_ino) != (original.st_dev, original.st_ino)
+                    or (private and (named.st_uid != os.geteuid() or opened.st_uid != os.geteuid()
+                                     or stat.S_IMODE(named.st_mode) != 0o700
+                                     or stat.S_IMODE(opened.st_mode) != 0o700))):
+                raise ValueError("diagnostic directory identity changed")
+            check()
+
+    try:
+        check()
+        current = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        descriptors.append(current)
+        check()
+        for index, name in enumerate(parts + (["coord"] if coord else [])):
+            check()
+            named = os.stat(name, dir_fd=current, follow_symlinks=False)
+            if not stat.S_ISDIR(named.st_mode):
+                raise ValueError("aliased diagnostic directory")
+            check()
+            descriptor = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=current)
+            descriptors.append(descriptor)
+            info = os.fstat(descriptor)
+            if (named.st_dev, named.st_ino) != (info.st_dev, info.st_ino):
+                raise ValueError("diagnostic directory changed before open")
+            links.append((current, name, descriptor, info, owned and index >= len(parts) - 1))
+            current = descriptor
+            verify()
+        yield current, verify
+        if coord:
+            verify()
+    finally:
+        for descriptor in reversed(descriptors):
+            os.close(descriptor)
+
+
+def _failure_file(info: os.stat_result) -> None:
+    if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
+            or stat.S_IMODE(info.st_mode) != 0o600 or info.st_nlink != 1):
+        raise ValueError("unsafe diagnostic file")
+
+
+def _read_failure_categories(root: Path | None, source: object, check: Callable[[], None],
+                             missing_ok: bool) -> tuple[dict, str | None]:
+    unavailable = dict(availability="unavailable", snapshot=None)
+    if root is None or not _failure_source(source):
+        return unavailable, None
+
+    def pairs(items: list[tuple]) -> dict:
+        result = {}
+        for key, value in items:
+            if key in result:
+                raise ValueError("duplicate diagnostic key")
+            result[key] = value
+        return result
+
+    def invalid_constant(_value: str) -> None:
+        raise ValueError("nonfinite diagnostic constant")
+
+    def slot(value: object) -> dict | None:
+        if value is None:
+            return None
+        if type(value) is not dict or set(value) != {"stage", "error", "at"}:
+            raise ValueError("invalid diagnostic slot")
+        stage, error, at = (value[key] for key in ("stage", "error", "at"))
+        if (type(stage) is not str or stage not in {"phase", "bounded", "restore", "context", "action",
+                                                    "teardown", "evidence", "browser", "other"}
+                or type(error) is not str or error not in {"unicode", "timeout", "interruption", "assertion",
+                                                          "value", "io", "runtime", "other"}
+                or type(at) not in (int, float) or not 0 <= at <= 9007199254740991
+                or not math.isfinite(at)):
+            raise ValueError("invalid diagnostic value")
+        return dict(stage=stage, error=error, at=at)
+
+    try:
+        check()
+        try:
+            with _failure_directories(root, check) as (directory, verify):
+                final, pending = "failure-categories.json", ".failure-categories.pending"
+
+                def no_pending() -> None:
+                    check()
+                    try:
+                        os.stat(pending, dir_fd=directory, follow_symlinks=False)
+                    except FileNotFoundError:
+                        check()
+                        return
+                    raise ValueError("unfinished diagnostic publication")
+
+                no_pending()
+                try:
+                    named = os.stat(final, dir_fd=directory, follow_symlinks=False)
+                except FileNotFoundError:
+                    verify()
+                    no_pending()
+                    check()
+                    return unavailable, None  # Literal final ENOENT only.
+                _failure_file(named)
+                check()
+                descriptor = os.open(final, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+                try:
+                    check()
+                    before = os.fstat(descriptor)
+                    _failure_file(before)
+                    if (before.st_dev, before.st_ino) != (named.st_dev, named.st_ino) or before.st_size > 4096:
+                        raise ValueError("diagnostic identity or size")
+                    verify()
+                    check()
+                    data = os.read(descriptor, 4097)  # ONE bounded read, no EOF retry.
+                    check()
+                    after = os.fstat(descriptor)
+                    named = os.stat(final, dir_fd=directory, follow_symlinks=False)
+                    _failure_file(after)
+                    _failure_file(named)
+                    stamp = lambda info: (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+                    if (stamp(before) != stamp(after) or stamp(after) != stamp(named)
+                            or len(data) > 4096 or len(data) != before.st_size):
+                        raise ValueError("short or changed diagnostic snapshot")
+                    no_pending()
+                    verify()
+                    check()
+                    decoded = data.decode("utf-8", errors="strict")
+                    check()
+                    value = json.loads(decoded, object_pairs_hook=pairs, parse_constant=invalid_constant)
+                    check()
+                    if (type(value) is not dict or set(value) != {"schema", "source_sha", "first_observed", "context_capture"}
+                            or type(value["schema"]) is not int or value["schema"] != 1
+                            or not _failure_source(value["source_sha"]) or value["source_sha"] != source):
+                        raise ValueError("invalid diagnostic envelope")
+                    snapshot = dict(schema=1, source_sha=source, first_observed=slot(value["first_observed"]),
+                                    context_capture=slot(value["context_capture"]))
+                    # Admit only while file/parent/pending identities still agree.
+                    verify()
+                    no_pending()
+                    named = os.stat(final, dir_fd=directory, follow_symlinks=False)
+                    _failure_file(named)
+                    if stamp(named) != stamp(before):
+                        raise ValueError("diagnostic identity changed while parsing")
+                    check()
+                finally:
+                    os.close(descriptor)
+            check()
+            return dict(availability="available", snapshot=snapshot), None
+        except FileNotFoundError as exc:
+            if missing_ok and exc.filename in (root.name, "coord"):
+                check()
+                return unavailable, None
+            raise
+    except TimeoutError:
+        raise  # Expiry is never an ordinary unavailable continuation.
+    except BaseException as exc:
+        check()  # An absorbed alarm or slow failing I/O cannot renew C.
+        return unavailable, _failure_error(exc)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--python", required=True, help="absolute supported interpreter")
@@ -178,7 +379,39 @@ def main() -> int:
                    variants={}, phases=[], source_sha=None, python=None,
                    exercise=args.exercise, signals=[])
     root = None
+    root_identity = None
     owner = None
+    action_failure = None
+    cleanup_failure: dict[str, tuple] = {}
+    export_failure: dict[str, tuple] = {}
+    launcher_slots: dict[str, tuple] = {}
+    controller_snapshot = dict(availability="unavailable", snapshot=None)
+    staging_incomplete = closure_incomplete = cleanup_incomplete = export_incomplete = False
+    detail_complete = False
+    final_result_committed = False
+
+    def latch_launcher(name: str, error: BaseException | None = None, *, category: str = "other") -> None:
+        try:
+            stage = "action" if name == "action" else "evidence" if name in {"collection", "export"} else "teardown"
+            if error is None:
+                at = time.monotonic()
+                slot = (stage, category, at) if type(at) in (int, float) and 0 <= at <= 9007199254740991 and math.isfinite(at) else None
+            else:
+                slot = _failure_slot(stage, error)
+            if slot is not None:
+                launcher_slots.setdefault(name, slot)
+        except BaseException:
+            pass  # Diagnostic completion cannot replace any actual error.
+
+    def failure_categories() -> dict:
+        source_sha = receipt.get("source_sha")
+        if not _failure_source(source_sha):
+            return {}
+        # Frozen validated controller state; export never rereads coord files.
+        projection = dict(schema=1, source_sha=source_sha, controller=controller_snapshot,
+                          launcher={name: _failure_object(launcher_slots.get(name)) for name in
+                                    ("action", "owner", "diagnostic_read", "collection", "port", "root", "export")})
+        return dict(failure_categories=projection)
     logs = []
     action_end, hard_end = started + 720, started + 900
     receipt["timing"] = dict(started=started, action_deadline=action_end,
@@ -226,6 +459,8 @@ def main() -> int:
         receipt["node"] = dict(path=node, version=node_version)
         root = Path(tempfile.mkdtemp(prefix="happyranch-e2e-"))
         root.chmod(0o700)
+        root_info = root.lstat()
+        root_identity = (root_info.st_dev, root_info.st_ino)
         for name in ("home", "config", "cache", "data", "tmp", "daemon", "client", "coord", "bin", "witness", "raw"):
             (root / name).mkdir(mode=0o700)
         owner = Owned(root)
@@ -315,6 +550,8 @@ def main() -> int:
         receipt.update(result)
         receipt["status"] = "PASS"
     except BaseException as exc:
+        action_failure = (exc, exc.__traceback__)  # Before formatting or diagnostic work.
+        latch_launcher("action", exc)
         receipt["failure_phase"] = "action"
         receipt["failure"] = repr(exc)
         receipt["traceback"] = traceback.format_exc()
@@ -335,10 +572,10 @@ def main() -> int:
                 text = text.replace(secret, "[REDACTED]")
             return text
 
-        def collect_evidence() -> None:
+        def collect_evidence() -> str | None:
             nonlocal token, redaction_context
             if not root or not root.exists():
-                return
+                return "other"
             # Capture once: partial removal must never erase trusted context.
             if not token:
                 try:
@@ -346,9 +583,9 @@ def main() -> int:
                 except TimeoutError:
                     raise  # Reserve expiry is not an ordinary token-read failure.
                 except (OSError, UnicodeError):
-                    return
+                    return "value"
             if not token:
-                return  # No raw text/receipt is safe without established context.
+                return "value"  # No raw text/receipt is safe without established context.
             context_path = root / "coord/redaction-context.json"
             if context_path.exists():
                 context = json.loads(context_path.read_text())
@@ -363,6 +600,12 @@ def main() -> int:
                     staged[path.name] = redact(path.read_text(errors="replace")).encode()
                 elif path.suffix == ".png":
                     staged[path.name] = path.read_bytes()
+            # Completion accounting does not relax or replace any reader oracle.
+            required = BASELINE_ARTIFACTS + [phase["name"] + ".txt" for phase in receipt["phases"]] if args.exercise == "baseline" else ["observations.json"]
+            if (not (root / "scenario.json").exists()
+                    or any(name not in staged or (name.endswith((".json", ".png")) and not staged[name]) for name in required)):
+                return "other"
+            return None
 
         def reserve(name: str, cap: float, outer: float) -> dict:
             entered = time.monotonic()
@@ -372,43 +615,193 @@ def main() -> int:
             return phase
 
         cleanup = reserve("cleanup", 60, min(action_end + 60, hard_end))
+        operations = {name: dict(attempted=False, complete=False) for name in
+                      ("owner", "diagnostic_read", "collection", "port_list", "ports", "root", "absence")}
+        owner_ok = False
+        current_attempt = "owner"
+
+        def cleanup_time() -> None:
+            if time.monotonic() >= cleanup["deadline"]:
+                raise TimeoutError("cleanup deadline exhausted")
+
+        def incomplete(name: str, error: BaseException | None = None, *, category: str = "other") -> None:
+            nonlocal staging_incomplete, closure_incomplete, cleanup_incomplete
+            if error is not None and receipt["timing"]["phase"] == "cleanup":
+                cleanup_failure.setdefault("first", (error, error.__traceback__))
+            cleanup_incomplete = True
+            if name == "collection":
+                staging_incomplete = True
+            elif name in {"owner", "port", "root"}:
+                closure_incomplete = True
+            latch_launcher(name, error, category=category)
+
+        def stage_evidence(check: Callable[[], None]) -> None:
+            nonlocal detail_complete
+            check()
+            try:
+                missing = collect_evidence()
+                if missing is not None:
+                    incomplete("collection", category=missing)
+                else:
+                    detail_complete = True
+            except BaseException as exc:
+                if receipt["timing"]["phase"] == "export":
+                    export_failure.setdefault("first", (exc, exc.__traceback__))
+                incomplete("collection", exc)
+                raise
+            check()
+
         try:
             arm_deadline(cleanup["deadline"])
+            operations["owner"]["attempted"] = True
             try:
                 receipt["cleanup"] = owner.cleanup() if owner else {"ok": False, "reason": "setup did not admit containment"}
+                owner_ok = receipt["cleanup"]["ok"] is True
+                operations["owner"]["complete"] = owner_ok
+                if not owner_ok:
+                    incomplete("owner")
+            except TimeoutError as exc:
+                incomplete("owner", exc)
+                raise
+            except BaseException as exc:
+                incomplete("owner", exc)
+            cleanup_time()  # Even a caught ordinary error may have exhausted C.
+
+            current_attempt = "diagnostic_read"
+            operations["diagnostic_read"]["attempted"] = True
+            try:
+                controller_snapshot, read_error = _read_failure_categories(
+                    root, receipt["source_sha"], cleanup_time, "failure_phase" in receipt)
+                operations["diagnostic_read"]["complete"] = read_error is None
+                if read_error is not None:
+                    incomplete("diagnostic_read", category=read_error)
+            except TimeoutError as exc:
+                incomplete("diagnostic_read", exc)
+                raise
+            cleanup_time()
+
+            current_attempt = "collection"
+            operations["collection"]["attempted"] = True
+            try:
+                stage_evidence(cleanup_time)
+                operations["collection"]["complete"] = detail_complete and not staging_incomplete
             except TimeoutError:
                 raise
-            except Exception as exc:
-                receipt["cleanup"] = dict(ok=False, error=repr(exc))
-            # Snapshot sanitized evidence before deleting its owned source. All
-            # port checks, data/socket removal and staging consume cleanup time.
-            collect_evidence()
-            if root:
-                ports = json.loads((root / "ports.json").read_text()) if (root / "ports.json").exists() else []
+            except BaseException:
+                pass  # Already latched; remaining existing teardown is independent.
+            cleanup_time()
+
+            current_attempt = "port"
+            operations["port_list"]["attempted"] = True
+            ports = None
+            try:
+                cleanup_time()
+                if root is None:
+                    incomplete("port")
+                else:
+                    # Missing metadata is unknown, never an invented empty list.
+                    ports = json.loads((root / "ports.json").read_text())
+                    if type(ports) is not list or any(type(port) is not int or not 0 < port < 65536 for port in ports):
+                        raise ValueError("invalid port observation")
+                    operations["port_list"]["complete"] = True
+            except TimeoutError as exc:
+                incomplete("port", exc)
+                raise
+            except BaseException as exc:
+                incomplete("port", exc)
+            cleanup_time()
+            if ports is not None and operations["port_list"]["complete"]:
                 import socket
                 absence = {}
-                for port in ports:
-                    with socket.socket() as sock:
-                        sock.settimeout(1)
-                        absence[str(port)] = sock.connect_ex(("127.0.0.1", port)) != 0
                 receipt["cleanup"]["ports_absent"] = absence
-                shutil.rmtree(root)
-                receipt["cleanup"]["data_absent"] = not root.exists()
-                receipt["cleanup"]["sockets_absent"] = not root.exists()
-                receipt["cleanup"]["ok"] &= all(absence.values()) and not root.exists()
-            cleanup["ok"] = receipt["cleanup"]["ok"] is True
+                operations["ports"]["attempted"] = True
+                for port in ports:
+                    cleanup_time()
+                    try:
+                        with socket.socket() as sock:
+                            cleanup_time()
+                            sock.settimeout(min(1, cleanup["deadline"] - time.monotonic()))
+                            absence[str(port)] = sock.connect_ex(("127.0.0.1", port)) != 0
+                        if not absence[str(port)]:
+                            incomplete("port")
+                    except TimeoutError as exc:
+                        incomplete("port", exc)
+                        # An individual ordinary 1s probe timeout may continue
+                        # only if the original overall allowance is still live.
+                    except BaseException as exc:
+                        incomplete("port", exc)
+                    cleanup_time()
+                operations["ports"]["complete"] = len(absence) == len(set(ports)) and all(absence.values())
+            cleanup_time()
+
+            current_attempt = "root"
+            operations["root"]["attempted"] = True
+            try:
+                if root is None or root_identity is None:
+                    incomplete("root")
+                else:
+                    with _failure_directories(root, cleanup_time, coord=False) as (directory, verify):
+                        verify()
+                        observed = os.fstat(directory)
+                        if (observed.st_dev, observed.st_ino) != root_identity:
+                            raise ValueError("owned root identity changed")
+                        cleanup_time()
+                        shutil.rmtree(root)  # ONE existing attempt, never export rescue.
+                        cleanup_time()
+                    operations["root"]["complete"] = True
+            except TimeoutError as exc:
+                incomplete("root", exc)
+                raise
+            except BaseException as exc:
+                incomplete("root", exc)
+            cleanup_time()
+            operations["absence"]["attempted"] = True
+            try:
+                if root is not None:
+                    with _failure_directories(root.parent, cleanup_time, coord=False, owned=False) as (parent, verify):
+                        verify()
+                        cleanup_time()
+                        try:
+                            os.stat(root.name, dir_fd=parent, follow_symlinks=False)
+                        except FileNotFoundError:
+                            absent = True  # Literal final ENOENT, pinned safe parent.
+                        else:
+                            absent = False
+                        verify()
+                        cleanup_time()
+                    receipt["cleanup"].update(data_absent=absent, sockets_absent=absent)
+                    operations["absence"]["complete"] = absent
+                    if not absent:
+                        incomplete("root")
+                else:
+                    incomplete("root")
+            except TimeoutError as exc:
+                incomplete("root", exc)
+                raise
+            except BaseException as exc:
+                incomplete("root", exc)
+            cleanup_time()
         except BaseException as exc:
-            receipt["cleanup"].update(ok=False, error=repr(exc))
-            cleanup["error"] = type(exc).__name__
+            incomplete(current_attempt, exc)
         finally:
             cleanup["finished"] = time.monotonic()
             cleanup["elapsed_seconds"] = cleanup["finished"] - cleanup["entered"]
-            cleanup["ok"] &= cleanup["finished"] < cleanup["deadline"]
+            if (cleanup["finished"] >= cleanup["deadline"]
+                    or not all(state["complete"] for state in operations.values())):
+                cleanup_incomplete = True
+            cleanup["ok"] = owner_ok and not (staging_incomplete or closure_incomplete or cleanup_incomplete)
+            receipt["cleanup"]["ok"] = cleanup["ok"]
+            if cleanup_failure:
+                first = cleanup_failure["first"][0]
+                cleanup["error"] = type(first).__name__
+                try:
+                    receipt["cleanup"].setdefault("error", repr(first))
+                except BaseException:
+                    pass
             if not cleanup["ok"]:
-                receipt["cleanup"]["ok"] = False
+                receipt["status"] = "FAIL"
                 receipt.setdefault("failure_phase", "cleanup")
-                # A timed-out cleanup may not have returned its normal receipt.
-                # Keep every observed identity/unit/group, without claiming absence.
+                # No new sample: preserve original observations, not absence.
                 if owner:
                     receipt["cleanup"].setdefault("identities", owner.pids.copy())
                     receipt["cleanup"].setdefault("observed_units", sorted(owner.units.copy()))
@@ -416,10 +809,27 @@ def main() -> int:
 
         export = reserve("export", 120, hard_end)
 
-        def publish(row: dict) -> None:
+        def publish(row: dict, *, final: bool = False) -> None:
+            nonlocal final_result_committed
             temporary = output / "result.tmp"
+            destination = output / "result.json"
             temporary.write_text(json.dumps(row, indent=2))
-            temporary.replace(output / "result.json")
+            if not final:
+                if time.monotonic() >= export["deadline"]:
+                    raise TimeoutError("export deadline exhausted")
+                temporary.replace(destination)
+                return
+            # Finish all fallible preparation before the final admission check.
+            # Retire SIGALRM process-wide, including any queued alarm. A thread
+            # mask alone cannot cover an alarm delivered to a surviving watcher.
+            # Disarming and the SAME original E-1 check are both precommit.
+            signal.signal(signal.SIGALRM, signal.SIG_IGN)
+            signal.setitimer(signal.ITIMER_REAL, 0)
+            export_time()
+            os.replace(temporary, destination)
+            final_result_committed = True
+            # No postcommit deadline check: an admitted OS call can overrun or
+            # a crash can interrupt it. This is not hard timing/crash durability.
 
         def failure_receipt() -> dict:
             # Bounded metadata only: no raw exception/token text or partial PASS.
@@ -430,26 +840,46 @@ def main() -> int:
             safe_cleanup.update(ok=False, observed_units=closure.get("observed_units", sorted(closure.get("units", {}))),
                                 observed_groups=closure.get("observed_groups", sorted(closure.get("groups", {}))))
             binding = {key: receipt[key] for key in ADMISSION_FIELDS + ("interpreter", "node") if key in receipt}
-            return dict(binding, schema=1, status="FAIL", source_sha=receipt["source_sha"],
+            safe_timing = dict(receipt["timing"], cleanup=dict(receipt["timing"]["cleanup"], ok=False))
+            return dict(binding, **failure_categories(), schema=1, status="FAIL", source_sha=receipt["source_sha"],
                         python=receipt["python"], exercise=args.exercise, skipped=0,
                         variants={}, signals=receipt["signals"], phases=receipt["phases"],
-                        cleanup=safe_cleanup, timing=receipt["timing"],
+                        cleanup=safe_cleanup, timing=safe_timing,
                         failure_phase=receipt.get("failure_phase", "export"),
                         failure="incomplete detailed evidence",
                         total_seconds=time.monotonic() - started)
 
+        initial_fail_published = False
+
+        def export_time() -> None:
+            if time.monotonic() >= export["deadline"] - 1:
+                raise TimeoutError("export deadline exhausted")
+
         try:
             arm_deadline(export["deadline"])
             publish(failure_receipt())
+            initial_fail_published = True
             # Keep the final second of this SAME allowance for a failure receipt.
             arm_deadline(export["deadline"] - 1)
             if root and root.exists():
                 # Preserve safe partial staging even if recollection fails.
                 for name, content in staged.items():
+                    export_time()
                     (output / name).write_bytes(content)
-                collect_evidence()  # Read-only partial diagnostics; never teardown.
+                    export_time()
+                try:
+                    stage_evidence(export_time)  # Read-only diagnostics; never teardown.
+                except BaseException as exc:
+                    export_failure.setdefault("first", (exc, exc.__traceback__))
+                    latch_launcher("export", exc)
+                    raise
+            export_time()
             for name, content in staged.items():
+                export_time()
                 (output / name).write_bytes(content)
+                export_time()
+            if not detail_complete or staging_incomplete:
+                raise ValueError("incomplete detailed evidence")
             if not token:
                 raise ValueError("redaction context unavailable")
             if receipt["status"] == "PASS" and args.exercise == "baseline":
@@ -457,9 +887,10 @@ def main() -> int:
                 if any(name not in staged or (name.endswith((".json", ".png")) and not staged[name]) for name in required):
                     raise ValueError("missing/empty baseline evidence")
             manifest = json.loads((source / "e2e" / "manifest.json").read_text())
+            export_time()
             export["finished"] = time.monotonic()
             export["elapsed_seconds"] = export["finished"] - export["entered"]
-            export["ok"] = True
+            export["ok"] = not export_incomplete
             receipt["evidence_seconds"] = export["elapsed_seconds"]
             receipt["total_seconds"] = export["finished"] - started
             receipt["target_exceeded"] = receipt["total_seconds"] > 600
@@ -469,21 +900,34 @@ def main() -> int:
                 receipt["status"] = "FAIL"
             if receipt["status"] == "PASS":
                 validate_timing(receipt)
-            publish(json.loads(redact(json.dumps(receipt))))
+            receipt.update(failure_categories())
+            export_time()
+            publish(json.loads(redact(json.dumps(receipt))), final=True)
         except BaseException as exc:
-            export["ok"] = False
-            export["error"] = type(exc).__name__
-            export["finished"] = time.monotonic()
-            export["elapsed_seconds"] = export["finished"] - export["entered"]
-            receipt["status"] = "FAIL"
-            receipt.setdefault("failure_phase", "export")
-            try:
-                arm_deadline(export["deadline"])
-                publish(failure_receipt())
-            except BaseException:
-                pass  # Initial FAIL survives; no work after the absolute bound.
+            if not final_result_committed:
+                receipt["status"] = "FAIL"
+                export_failure.setdefault("first", (exc, exc.__traceback__))
+                export_incomplete = True
+                latch_launcher("export", exc)
+                export["ok"] = False
+                export["error"] = type(export_failure["first"][0]).__name__
+                export["finished"] = time.monotonic()
+                export["elapsed_seconds"] = export["finished"] - export["entered"]
+                receipt.setdefault("failure_phase", "export")
+                try:
+                    signal.signal(signal.SIGALRM, interrupted)
+                    arm_deadline(export["deadline"])
+                    publish(failure_receipt())
+                except BaseException:
+                    # A successful initial FAIL remains if replacement never commits.
+                    # False means persistence was unavailable, never a claimed receipt.
+                    if not initial_fail_published:
+                        export_incomplete = True
+            # Successful replacement is terminal; never reclassify it or depend
+            # on a rescue write. Its alarm was already retired before commit.
         finally:
-            signal.setitimer(signal.ITIMER_REAL, 0)
+            if not final_result_committed:
+                signal.setitimer(signal.ITIMER_REAL, 0)
     return 0 if receipt["status"] == "PASS" else 1
 
 

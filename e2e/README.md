@@ -264,9 +264,18 @@ registration failure and nonadvancing synchronous work have no proven local
 phase-spanning/hard-preemption bound. Local stop does not prove process absence;
 only the unchanged outer Owned receipts establish it.
 
-Controller preserves the first error before cleanup/export, requests observer
-stop, and atomically stages small complete sanitized marks/trace before optional
-native teardown and bulky evidence. Resource attempts independently retain
+Controller selects the first actual error/traceback with an immutable in-memory
+winner before diagnostic time, legacy failure accumulation or I/O. `record_error`
+is latch-only. Separate first-observed and context-capture categories never
+replace that winner. Failed capture first attempts the original `[]` invalidation;
+its actual capture/invalidation exception precedence and readiness are unchanged.
+The owner-only nonrecursive category writer runs at exactly the existing main
+action catch, close-finalization and post-evidence boundaries. Failed publication
+is sticky and never retried; off-owner/reentry skips without locks or waits.
+Each optional operation checks the original effective end, including after an
+absorbed alarm. Constructor failure may leave no category snapshot.
+Controller requests observer stop, and atomically stages small complete sanitized
+marks/trace before optional native teardown and bulky evidence. Resource attempts independently retain
 secondary failures. Observer stop is not termination: join uses only positive
 existing work (at most1s), and full stable prefix snapshots report cutoff,
 liveness/error/join state and partial status. Nonterminal cancellation_hold keeps
@@ -330,9 +339,18 @@ allowances refuse launch; actions cannot borrow teardown or evidence time.
 
 Cleanup begins on normal completion, failure or catchable interruption. Its
 end is `min(cleanup entry + 60, original start + 780, original start + 900)`.
-Owned process/unit/group closure, all port checks and data/socket removal stay
-inside that allowance. Sanitized text/PNG evidence is staged in memory before
-removing its source, also inside cleanup. Serial per-unit query ceilings may
+Unchanged Owned process/unit/group closure is FIRST. Then one independent safe
+category read, valid-only evidence staging, existing port metadata/individual
+probes and one identity-checked owned-root removal/literal absence observation
+share that SAME original allowance. Ordinary failures do not skip remaining
+eligible attempts; Owned timeout or original expiry stops cleanup. Each observed
+port is probed once in existing order, with its1s timeout clipped to remaining
+time. Missing port metadata is unknown, never a successful empty list. Sanitized
+text/PNG evidence is staged in memory before removing its source. Staging,
+closure and cleanup incompleteness are sticky: later absence or successful
+read-only recollection cannot clear them. Both cleanup.ok and timing.cleanup.ok
+remain false when required work failed or is incomplete. Literal root absence
+supplies no process/unit/group absence. Serial per-unit query ceilings may
 exceed60s; timeout fails honestly and retains observed ownership, without a
 claim of absence. If cleanup fails, export may read partial diagnostics but
 performs no more teardown or actions.
@@ -342,20 +360,87 @@ partial data removal; later collection cannot erase it or replace sanitized
 staging with raw text. If no trustworthy context was captured (missing, empty
 or unreadable token), raw diagnostics and the detailed receipt are withheld.
 Known-safe staging is retained where available; bounded incomplete metadata
-reports FAIL, even when owned-root cleanup succeeds. This failure path does
-not establish complete evidence or runtime sanitation safety.
+has variants={} and reports FAIL, even when owned-root cleanup succeeds. This
+failure path does not establish complete evidence or runtime sanitation safety.
 
 Export has its own end `min(export entry + 120, original start + 900)`.
 It writes a metadata-only FAIL first, then sanitized detailed artifacts and
 the final receipt, keeping the last second of that same allowance for a bounded
-failure receipt. Serialization, missing data or timeout cannot produce PASS.
+failure receipt. Each metadata-only receipt copies timing with cleanup.ok=false
+alongside its false cleanup flag; it cannot certify incomplete detail as cleanup
+acceptance. This copy does not rewrite an actually complete in-memory cleanup
+outcome. Serialization, sanitation, required-detail checks and the pending-file
+write precede final replacement. After staging, the launcher retires SIGALRM
+process-wide (including queued delivery), disarms it and checks the SAME original
+export deadline minus one second before the atomic replacement. A thread mask
+alone would not cover alarm delivery through a surviving cleanup watcher.
+Successful replacement is the terminal commit: no subsequent deadline check,
+alarm restoration or failure rewrite can reclassify it. Precommit failure leaves
+an actually published initial FAIL when replacement does not commit; failed
+initial persistence is never claimed as a remote receipt. The existing bounded
+FAIL fallback restores the alarm and checks the original export end before
+replacement; success does not depend on that write. Export failure is sticky.
+Recollection is read-only, never teardown, and cannot erase prior
+staging/closure/cleanup failure. Incomplete detail still publishes variants={},
+with both cleanup flags false, even if safe partial members were written.
+Known serialization, missing-data or precommit expiry failures cannot admit PASS.
 No fresh120s is granted after900. Fractional `setitimer` alarms enforce positive
 remainders without integer truncation. Timing receipts retain original ends,
 command caps/entry/end, cleanup/export allowance/elapsed/outcome and failure
 phase; both daily baseline and cancellation consumers require complete timing.
-Elapsed export/total values are sampled at final receipt construction; its write
-still runs under the export timer. Hosted upload shares the remaining outer
-900s/15-minute job envelope; local timers cannot guarantee upload success.
+Elapsed export/total values are sampled at final receipt construction. Staging
+runs under the export timer; final replacement is cooperatively admitted after
+retiring that timer. An admitted OS call can overrun its check or be interrupted
+by a crash; there is no postcommit rollback, hard OS-I/O timing, fsync or crash
+durability guarantee. Hosted upload shares the remaining outer900s/15-minute job
+envelope; a terminal launcher commit does not establish upload or actual product
+acceptance.
+
+The optional `result.json.failure_categories` is a closed primitive-only channel,
+independent of raw detail sanitation. It is omitted without an admitted lowercase
+40-hex source SHA. Otherwise its exact keys are `schema,source_sha,controller,launcher`;
+schema is non-Boolean integer1. Controller has exactly `availability,snapshot`:
+`available` requires a fully validated private envelope, `unavailable` requires null.
+The private envelope at literal `ROOT/coord/failure-categories.json` has exactly
+`schema,source_sha,first_observed,context_capture`, with the same admitted SHA.
+Each slot is null or exactly `{stage,error,at}`. `at` is finite non-Boolean int/float
+in inclusive0..9007199254740991. Stages are exactly phase/bounded/restore/context/
+action/teardown/evidence/browser/other; unknown caller spellings map to other.
+Ordered built-in subclasses map UnicodeError→unicode, TimeoutError→timeout,
+KeyboardInterrupt/SystemExit/GeneratorExit/InterruptedError→interruption,
+AssertionError→assertion, ValueError→value, OSError→io, RuntimeError→runtime,
+otherwise other. No group/cause/context traversal or text-based signal inference.
+Launcher has exactly seven first-failure slots: action/owner/diagnostic_read/
+collection/port/root/export. Their stages are action; teardown for owner/read/
+port/root; evidence for collection/export. No exception text/name/args/traceback,
+path/URL/token/header/content or command output enters this projection.
+
+The writer traverses literal no-follow directory components, pins parent/root/
+coord identities and requires owned exact0700 root/coord. Final files must be
+regular owned exact0600/nlink1; no links/aliases/special files are followed.
+The sole `.failure-categories.pending` sibling must be literally absent before
+exclusive no-follow creation; any collision refuses without truncation/removal.
+At most4096 strict UTF8 bytes are atomically replaced descriptor-relatively after
+identity/deadline checks. Publication failure disables later attempts locally;
+no cleanup/retry/fsync/crash-durability or racing-rename guarantee is added.
+Reader never reads pending; any pending entry makes observation unavailable and
+incomplete. It reads at most4097 bytes ONCE and admits at most4096 with complete
+unchanged name/descriptor/parent identity and size. Strict UTF8/JSON rejects BOM,
+duplicate/extra/missing keys at every object, trailing content, nonfinite values,
+wrong types/enums/schema/source and parse/read failures. Rejected bytes/reasons
+are never exported. Safe literal final ENOENT is unavailable without read error;
+unsafe/unfinished/malformed input is unavailable plus sticky diagnostic-read
+incompleteness. Missing root/coord after an earlier failure/removal gives no new
+absence-as-error claim; unexpected required-parent loss is incomplete.
+
+The launcher validates and freezes the primitive controller snapshot before root
+removal and never rereads category files during export. Available means only a
+validated published snapshot, never latest/complete observation, initiating cause,
+successful capture or readiness. A stale final may survive a later failed write;
+null means only no observation in that snapshot. Missing diagnostics alone do
+not fail otherwise complete evidence. No category supplies variants, mandatory
+members, health or cleanup credit. Raw detail still requires unchanged complete
+context sanitation; old/native failures and unknown causes stay unchanged.
 
 The workflow starts the monotonic clock before checkout/tool setup. No budget exhaustion becomes a
 skip. Every enumerated variant must be present with PASS, and failed/missing
@@ -399,6 +484,110 @@ protected auth/identity/product mutation is authorized by this harness. The
 parent must resolve any proof-control authority gap before dependent execution;
 an unrelated setup failure is never attributable RED. Keep evidence in this
 case record/PR rather than inventing a second proof framework.
+
+### TASK-12643 accepted recovery case map (ROOT12610 / THR291)
+
+Parent step9 accepts TASK12634 revision2 section2 and this complete finite map
+(SHA256465bf5a03ab64d73e2d4677d35c9d58d40421d683a68a491366caa5ae8c3943a),
+after independent DESIGN ONLY PASS12637. The record below is preserved from that
+accepted proposal, with implementation status clarified; it adds no executable
+tests, manifest cases, proof framework or execution allocation.
+
+Native39765942783 remains HealthFAIL47, all56 EACH3.12/3.14 UNKNOWN, zero recorded
+PASS/no proved UNREACHED, scenario exit1 then cleanup/export ValueError, original
+assertion/URL/traceback unavailable; npm succeeded. TERM3.12/INT3.14 authentic PASS
+is diagnostic-only; JOB5234 completed0 is COLLECTION ONLY. Parent step6 owns
+FOUR-digest/ALL32-member355569B authentication and full ledgers, reused without
+collection/download rerun. Historical39758401569 EACH53PASS/interruptedE07/two
+UNREACHED/E05relay/signals,39713142724 npm240s/inference-only cause, dashboard503/
+ownership uncertainty, PR1168 admin-helper deviation and terminal12574/12445/12281
+remain historical. Product/reset acceptance INCOMPLETE. Protected12, RED/restoration/
+GREEN/repetitions remain unauthorized; abruptR/E04cap/persistentStop HELD;100MiB
+suffix fit unproved. No assertion is removed, skipped or weakened.
+
+All following expectations are design requirements, NOT new executed cases. Every item is NOT RUN; intended-failure/restored-pass evidence is PROOF NOT RUN because this maker authorizes source/lint work only, with no product execution, controls, mutation harness or case campaign. Historical native successes are attribution/context only. No keeper is deleted, skipped or weakened. No production/runtime export, flag, injection hook or test-only seam is required (answer4=NO for EVERY row). Shared answer blocks below explicitly name their full membership; table entries supply answers1–3 and each additional layer's distinct risk.
+
+Membership read from BOTH assessed ledgers, with EACH member UNKNOWN in EACH Python3.12/3.14 cell:
+
+| Group | Complete case membership |
+| --- | --- |
+| L1 | `E02.lifecycle-browser` |
+| L2 | `E06.literal-active`, `E06.literal-terminal`, `E06.committed-response-lost`, `E06.changed-active`, `E06.changed-terminal` |
+| L3 | `E03.stale`, `E03.fabricated`, `E03.no-slot`, `E03.unknown-task`, `E03.bearer-get-absent`, `E03.bearer-get-wrong`, `E03.bearer-post-absent`, `E03.bearer-post-wrong`, `E03.bearer-get-valid`, `E03.bearer-post-valid`, `E03.cross-alpha-beta`, `E03.cross-beta-alpha`, `E03.genuine-alpha`, `E03.genuine-beta`, `E03.browser-alpha`, `E03.browser-beta`, `E03.browser-alpha-return` |
+| L4 | `Pause.chain-drain`, `Pause.child-pause-denied`, `Pause.child-resume-denied`, `Pause.pause-idempotent`, `Pause.browser-pausing-en`, `Pause.browser-pausing-zh`, `Pause.overview-readonly`, `Pause.same-org-unheld`, `Pause.drained-before-restart`, `Pause.drained-restart`, `Pause.browser-paused-en`, `Pause.browser-paused-zh`, `Pause.resume-idempotent`, `Pause.stale-resume`, `Pause.restart-final`, `Pause.terminal-denied`, `Pause.resume-during-drain`, `Pause.drain-final`, `Pause.exact-closure` |
+| L5 | `E04.approve-exit0`, `E04.review-required-refused`, `E04.completed-exit7`, `E04.failed-timeout`, `E04.two-jobs-A-first`, `E04.two-jobs-B-first` |
+| L6 | `E05.compose-race`, `E05.reply-natural`, `E05.self-dispatch-followup`, `E05.consumed-token`, `E05.nonparticipant-task-send` |
+| L7 | `E07.cancel-cascade-browser`, `E07.cancel-terminal-unchanged`, `E07.cancelled-late-cli` |
+
+Counts1+5+17+19+6+5+3=56. Names above are a finite impact map, not a replacement result ledger.
+
+| Cases / validator or changed path | Answer1: precondition/action → independent observable contract / level | Answer2: credible regression | Answer3: keeper, gap and distinct risk |
+| --- | --- | --- | --- |
+| L1–L3, all named members | Existing public lifecycle/callback/replay/auth/org-switch journeys → retain their real CLI/API/browser/DB/audit assertions and valid sanitized marks; category-only fallback never supplies case success. Product E2E. | New exporter mistakes diagnostic availability for valid scenario evidence, or silently drops prior case marks. | Keep `scenarios.exercise` and Browser methods; `aggregate.validate` owns complete manifest/phase acceptance. These earlier journeys do not establish later unknown-token failure handling; no duplicate journeys proposed. |
+| L4, all19 members | Existing Pause/drain/one graceful owned restart/resume flow → original hold/counter/public/browser results, old/new boot logs remain sanitized, actual cleanup retained. Product E2E. | Replacing retained context with final bearer leaks an old boot secret; diagnostics/removal loses a restart ownership record. | Keep `pause.exercise`/pause browser assertions and owned census, with launcher validation. Unlike L1–L3 this crosses a real daemon generation; it still does not test malformed-context recovery. |
+| L5, all6 members | Genuine public job/CLI actions, parked owner/wakes and refusal → unchanged exact results, audits and finite capture/cleanup. Product E2E. | New fallback hides failed job/scenario or replaces an authentic refused result with PASS. | Keep `jobs.exercise`, `aggregate.validate_e04` including `validate_review_refusal`. Existing journey semantics differ from launcher evidence-error isolation; no new E04 behavior/control. |
+| L6, all5 members | Real thread browser/CLI/token issue/consume/replay/denial → complete known bearer+invocation sanitation, original durable/no-effect/relay predicates. Product E2E. | Category code prints invocation token/exception text, or an incomplete last-known context exports raw thread captures. | Keep `threads.exercise/frame/command`, `thread_provider.command/redaction_context`, `aggregate.validate_e05`. Thread tokens add a distinct producer-side full-stream/suffix risk not owned by final exporter. Dedicated sanitation sensitivity is unproved. |
+| L7, all3 members | Existing C-only cancellation/terminal refusal/original delayed CLI → unchanged prefix equality, launches, serialized content, ownership and full observation window. Product E2E. | Diagnostics changes E07 first-error ordering or permits invalid-context raw partial launch export. | Keep `e07.exercise/save`, `Controller.collect_e07_launches`, `aggregate.validate_e07`. It adds late captured streams and killed-client provenance; neither L6 nor TERM/INT proves these semantics. No inferred new E07 case. |
+| TERM3.12 / INT3.14 | Existing active witness → signal exact launcher15/2, exit1, absent owned processes/units/groups/ports/root within original limits. Disposable launcher diagnostic. | Reordered cleanup loses active identity or reports clean after timeout; category fallback marks interruption success. | Keep `cancellation_hold`, `cancellation.validate`, `aggregate.cancellation_controls`. Prior run39765942783 PASS is authentic only for these diagnostics. They do not own baseline unknown-context failure or product cancellation acceptance. |
+| `run.validate_timing`, `aggregate.validate/controls` | Complete actual phase records/56 variants each plus cleanup/export → only exact caps, actual valid records and successful complete execution admit health. Serialized validator. | New diagnostic field is allowed to override failed phase/export or empty variants. | Keep positive fixture and ALL9 existing controls: `missing-cell`, `skip`, `failed-variant`, `missing-variant`, `wrong-sha`, `cleanup`, `failed-job`, `failed-export`, `wrong-scenario-deadline`. Distinct from journeys: rejects forged aggregate shape; synthetic fixtures cannot prove cleanup execution. All controls NOT RUN. |
+| `aggregate.validate_e04`, `validate_review_refusal`, `validate_e05`, `validate_e07`, `aggregate.main` artifact discovery | Reopen actual exported members → independent content/provenance/browser/result/source equality; missing detailed evidence stays unhealthy even with readable categories. Serialized content validators. | Treat category file as observations, relax required members/failure lists/source hashes, or populate old PASS marks. | Keep existing independent readers, public refusal/body semantics, E05 source hashes and E07 C prefix/source/launch closure. Their distinct risk is internally consistent but false producer evidence. No dedicated new synthetic validator fixtures or sensitivity claimed. |
+| `cancellation.validate`, `aggregate.cancellation_controls` | Valid active/signal/cleanup receipt plus independently varied bad fields → reject invalid interruption closure. Serialized diagnostic validator. | Category success or root absence substitutes for launcher signal/contained-unit closure. | Keep positive fixture and ALL14 controls: `no-delivery`, `wrong-signal`, `false-success`, `not-active`, `missing-identity`, `missing-unit`, `live-cgroup`, `missing-port`, `data-residue`, `setup-failure`, `wrong-event`, `wrong-run`, `wrong-tree`, `missing-admission`. Distinct from baseline validators: real signal-to-launcher binding; controls NOT RUN. |
+| `daily_admission`, `validate_admission`, `aggregate.admission_controls` | Same actual main event/run/attempt/SHA/tree joins across four artifacts → diagnostics never become another run or source receipt. Admission validator. | Category sidecar substitutes source/run or marks manual event scheduled. | Keep existing schedule/manual positives and complete table-generated negatives for missing/wrong environment fields, unsupported events, checkout/tree/repository/default/cron/manual-ref/schedule mismatch. These functions/inputs are unchanged; no rerun/new cases proposed. Distinct risk is identity, not behavior or sanitation. |
+
+The new category and cleanup-isolation expectations have no attributable intended-failure/restored-pass pair. Current native FAIL documents the evidence gap but does NOT prove a category implementation's sensitivity or the hypothesized token failure. No authorized new venue exists in this leaf. Retired Python units are never an alternative; integration INCLUDING callback is SKIPPED24342/211270/271. Protected12, RED/restoration/GREEN and repetitions remain unauthorized. Do not create a production seam or restore tests to obtain proof.
+
+
+### Accepted recovery expectations and authoring answers
+
+These accepted rows cover only R1–R3 and their interactions; the L1–L7 memberships and validator maps above remain intact. IDs below are finite **design expectations**, not newly authored runnable tests, new manifest variants, or a campaign authorization. No new verifier/harness/venue/seam is proposed. Each observation is a shipping boundary (result.json, sanitized detailed members when admissible, original controller exit/traceback or actual owned cleanup observations), not a self-comparison with a helper.
+
+Environment/levels: **H** = existing disposable hosted Ubuntu harness CLI/process/file boundary, synthetic run root, real ownership and original clocks, in EACH existing CPython3.12/3.14 cell; **J** = existing serialized result/consumer boundary in that same environment; **C** = actual controller/launcher propagation/finalization boundary within H. Root/process/port ownership is serialized through the existing root allocation. No live host, PR/local runner, extra disposable venue or infrastructure is allocated. No behavioral command is run for these rows; source/AST/diff and lint are recorded separately. Source/design inspection can assess these expectations; it cannot prove them. All rows have corrected behavior NOT RUN and intended-failure/restored-pass PROOF NOT RUN. Native39765942783 is the preserved genuine failure, not intended RED for this source repair.
+
+| Requirement / case | Preconditions and action/input | Independently observable expected result, including final transition | Level / answer block |
+| --- | --- | --- | --- |
+| R1-01 valid | Safe existing0700 root/coord, no pending, exact0600/nlink1 final, matching SHA and two valid slots; read once before removal | result.failure_categories.controller available with only the exact validated envelope; deletion does not lose that in-memory projection; later failure receipt retains it. No readiness/case/health credit. | H+J / A |
+| R1-02 absent | Safe root/coord, literal final ENOENT, no pending; or constructor never produced detail | unavailable/snapshot=null, no fabricated error or capture success; action failure remains. Mere unpublished absence does not itself mint a cleanup failure or success. After root loss same staged unavailable remains. | H+J / A |
+| R1-03 unsafe | Symlink/dangling/alias parent, wrong root/coord uid/mode, or final link/hardlink/special/directory/wrong uid/mode | No unsafe open/write-through/root recreation. Fixed unavailable and diagnostic_read failure/incomplete cleanup when an attempted existing-root read is unsafe. Later eligible root work remains bounded and identity-gated. No raw reason exported. | H+J / A |
+| R1-04 unfinished/collision | Existing pending (regular or unsafe), with absent or older final; invoke writer/read | Writer never truncates/removes pending and refuses; reader unavailable/null. Existing final bytes survive; actual unfinished read is incomplete diagnostic work. No promised visibility of local publication failure. | H+J / A |
+| R1-05 size/UTF8 | Final of4096 acceptable bytes versus4097 overflow, invalid/truncated UTF8/BOM | Only strict complete at-most4096-byte envelope admitted; at most4097 read. Other inputs produce fixed unavailable, incomplete read attempt, no copied bytes. Finite remaining time governs later cleanup. | H+J / A |
+| R1-06 closed JSON | Duplicate/extra/missing keys at top or either SLOT, array/scalar/wrong slot type, invalid JSON or recursive depth | Every malformed form unavailable, fixed value category for validation (actual parsing exception uses map), no echo. Actual read failure remains sticky through fallback. No alternate permissive parser. | H+J / A |
+| R1-07 identity/schema | Wrong/missing/uppercase/non40/nonhex SHA, source unequal to admitted/result source, schema true/string/other integer | No available projection from another source; admitted source absent means whole optional member omitted. Existing admission joins still reject mismatched receipts independently. | H+J / A |
+| R1-08 enums/numbers | Every fixed stage/error, unknown spelling, null slots; test non-Boolean0 and2^53-1, finite fractional value, negative/too large/string/Boolean/nonfinite/overflow | Exact enums/domain accepted only; all out-of-domain forms unavailable. Unknown caller/error type maps to other at construction, but arbitrary incoming enum strings are rejected. Null means only no observation in snapshot. | H+J / A |
+| R1-09 null success ambiguity | Valid envelope with both slots null, then no further publication | available/null slots never certify error absence or successful capture, never fill missing variants/artifacts. Any underlying native health failure stays failure. | J / A |
+| R1-10 stale | Earlier valid published envelope; later write fails before pending creation or dies before a boundary; read prior final | available may contain old/null slots; no latest/complete/publication-failure guarantee. If pending exists instead, R1-04 unavailable applies. No overwrite of first controller latches or raw primary. | H+J / A |
+| R1-11 read/write expiry | Original effective end expires during read/parse/write/replace or an I/O error occurs | Before/after checks refuse new optional work. Expiry terminates applicable attempt sequence, not a recoverable unavailable branch. A committed replace may exist but no rollback/latest claim; initial safe result, if already published, survives. | H+C / A |
+| R2-01 nested first error | Action throws A; nested phase/bounded unwind and restoration throw B/C before finalization | Original selected raw A/traceback and its fixed first stage/category survive; later restored errors stay secondary in gated evidence. Original nonzero/propagation is preserved through final main raise; category never asserts product cause. | C / B |
+| R2-02 subclass/mapping | Known literals from every caller family, unknown dynamic name, UnicodeError/ValueError, TimeoutError/InterruptedError/OSError, RuntimeError with signal-like text, custom subclass and unrelated custom error | Closed stages and exact ordered built-in categories; no class-name/message projection or signal inference. Real signal receipt still owns signal identity. Final receipt contains only finite fields. | C+J / B |
+| R2-03 reentry | Writer active, native callback or signal calls record_error; nested request attempts writer | Raw/first categories latch before I/O; second writer skips without lock/wait/recursion. Current snapshot may omit new latch; next existing boundary may publish only with positive original time. Primary still propagates. | C / B |
+| R2-04 off-owner | Future nonowner record_error/writer request while owner snapshotting | First-winner memory only; nonowner writer skips/no enqueue/wait, no observer/relay dependency. Unpublished detail remains unknown. No new owner/thread lifecycle is admitted; original process outcome is unchanged. | C / B |
+| R2-05 writer failure | Any publication metadata/create/write/close/replace failure after raw latch | Local publication state failed, no record_error/_attempt recursion, first raw/traceback/category retained. Existing pending never truncated; subsequent optional work rechecks original deadline. Remote detail may be old/unavailable. | H+C / B |
+| R2-06 capture failure | Capture query/remember throws A; existing[] invalidation succeeds | [] attempt precedes diagnostic latch. Same A propagates with original traceback; separate first context slot records context/category without setting readiness or replacing first_observed. Unsafe detail withheld; no last-good/bearer-only republish. | C+J / B |
+| R2-07 invalidation failure | Capture throws A and original[] write throws B | Same B/traceback/exception precedence propagates as before; fixed context capture slot about A may latch after failed[] attempt and local invalidation_failed=true, never a successful invalidation claim. Writer/category errors cannot replace B or supply readiness. | C+J / B |
+| R2-08 expiry/constructor | SIGALRM absorbed by diagnostic best effort, or constructor fails before main try | Positive original end checked before each later optional step; expired means none begins. No changed timer/close/evidence/observer/native lifecycle. Constructor may have no controller snapshot; launcher action remains failure. | C / B |
+| R3-01 collection fails | Owned returned, category snapshot staged; valid-only collection throws or exits without required context after partial staging | Collection fixed first slot and staging_incomplete persist. Eligible ports/root still attempted once under C, and their true facts retained. Both cleanup ok fields false; fallback FAIL/variants={} even if root removed. | H+J / D |
+| R3-02 reader fails | Category read unsafe/invalid/I/O failure, with positive C after owner | diagnostic_read latched, unavailable snapshot staged; collection, ports/root independently eligible. Failure cannot skip later work or be erased by their success. True absences do not repair cleanup acceptance. | H+J / D |
+| R3-03 ports | Port list unreadable/missing on an admitted extant root, or first probe fails but time remains for another observed port | First port category latches, missing observations unknown; subsequent individual observed probes and root attempt only with time. Per-probe1s clipped to remaining C, no reset or new scan. cleanup/timing false through export. | H+J / D |
+| R3-04 root/partial removal | rmtree raises after partial deletion, literal absence observation fails, or identity changes | No removal through changed identity; residue/unknown preserved. Eligible literal observation may show actual absence but cannot clear root failure or certify units/groups. No retry/rescue removal during export. | H+J / D |
+| R3-05 owner failure | Owned returns false/ordinary error versus Owned TimeoutError | Existing owner receipt and uncertainty retained first. Ordinary error allows only already-authorized file work with positive C and identity gates; timeout ends cleanup sequence. No additional Owned signal/sample/wait. Native units/groups unknown unless independently proved by original owner receipt. | H+C / D |
+| R3-06 expiry | C expires after collection, between individual ports, or before root removal; an inner catch absorbed its alarm | No next attempt starts; required unattempted work unknown/incomplete, both ok fields false. Original C never recomputed. Export retains original E and may read diagnostics only, never resume teardown. | H+C / D |
+| R3-07 later export failure | Initial metadata FAIL was published; later detail write/serialization/recollection/pending write or original deadline admission fails before final replacement; otherwise replacement succeeds | Precommit failure retains the initial FAIL if replacement never commits; export slot latched when possible and export.ok=false. Fallback variants={}, no unsafe raw fields, both cleanup ok fields false for incompleteness. No unavailable persistence claim or reliance on a later rescue write. Successful final replacement is terminal, with alarm retired before the last original E-1 check and no postcommit deadline/alarm reclassification. OS-I/O overrun/crash persistence remains unguaranteed. | H+J / D |
+| R3-08 recollection success after failure | Cleanup staging failed/partial root remains; later E-bound recollection succeeds | Sticky cleanup/staging failure survives; safe partial members may be diagnostic, result cannot become PASS or regain marks in incomplete fallback. Later detail does not launder failed cleanup. | H+J / D |
+| R3-09 detailed withholding | Invalid/incomplete context with valid safe categories and genuine port/root absence; or all categories unavailable with otherwise valid detail | Categories never bypass sanitation, complete-context/required-member or native health failures. First scenario/nonzero remains failure. Optional metadata absence supplies no positive/negative fabricated behavior result by itself. | H+J / D |
+| X-01 R1+R2+R3 chain | Raw action A; nested restore B; capture C with failed[] D; boundary writer I/O fails; launcher read unavailable/failed; collection fails; one port throws; root removal succeeds; export fails | A remains raw original-primary if it won first; existing propagated capture/invalidation precedence is preserved; finite slots never overwritten. Later independent attempts occur only while C positive. True root absence is a fact only; both cleanup ok fields remain false, initial FAIL survives, variants={} on fallback, no raw secrets, native member/health failure independent. | C+H+J / E |
+| X-02 stale/null+root loss+expiry | Old/null validated snapshot read once; late controller writer fails; root removed; E expires after initial FAIL before final admission, or an alarm is queued at final replacement | Frozen old/null projection survives root loss but asserts no latest/complete cause. No re-read/recreation; precommit expiry preserves genuine initial FAIL when no later replacement commits, with original failed/incomplete deadline receipts. Successful final replacement is terminal despite queued alarm delivery; no later FAIL classification/rescue dependency. Prior latched failures remain non-PASS; a successful commit gives no actual product acceptance. Cooperative OS-I/O/crash limits remain. | H+J / E |
+
+Four authoring answers for **every changed named row**, with complete shared-block membership:
+
+| Block and exact membership | 1. Observable contract | 2. Credible regression | 3. Nearest keepers, precise gap and distinct additional-layer risks | 4. Test-only production seam |
+| --- | --- | --- | --- | --- |
+| A: R1-01–R1-11 | Exact optional result member/source/snapshot fields after cleanup and final receipt replacement; unsafe input never appears in artifacts; fixed unavailable/omission and original failure retained. | Admit duplicate keys/source drift/nonfinite value; follow/truncate alias or pending; call stale/null snapshot latest/complete; export raw rejected bytes. | Existing Controller first-error/private staging and run.failure_receipt are nearest, but no existing direct assertion owns the new closed category channel or hostile filesystem/JSON forms. Existing E07 finite launch-record reasons are a shape precedent, not a keeper for this schema. H sees actual inode/read/write/root-loss risks; J independently observes serialized admission/absence/shape and health noncredit, which cannot prove OS behavior. | NO for every listed case. Existing private runtime path and public exported artifact only. |
+| B: R2-01–R2-08 | Controller original exit/propagation, gated first traceback when export is admissible, separate fixed first/context slots in final result, no reentrant publication or new owner dependency. | Publish during record_error; overwrite first raw/category on restore; recurse on writer failure; diagnose before[]; swallow invalidation/expiry; infer signal from RuntimeError text. | Keep phase/bounded traceback restore, record_error, capture's[]/bare raise, prepare_redaction and main's final primary raise. They own current semantics but have no direct regression coverage for the proposed writer/latch interactions. Browser success/TERM/INT journeys lack these failure combinations. C observes original exception/finalization ordering; J observes only finite exported fields and cannot establish unexported raw traceback/causation. Source-only inspection of unavailable raw traces is not executed proof. | NO for every listed case. No new callback/export/injection/parameter/wrapper. |
+| D: R3-01–R3-09 | Actual owner-first cleanup and independently observed ports/literal root, original bound transitions, final nonzero/FAIL, sticky both-ok false and variants={} fallback through later export; R3-07 also requires persisted final disposition to agree with terminal commit. | Keep one try grouping; let port failure skip removal; reset C; continue after timeout; clear staging failure after root absence or recollection; perform teardown in export; reintroduce a fallible deadline/alarm path after final replacement. | Keep Owned.cleanup/PID-start/unit/group/watcher gates, run.collection/failure_receipt, validate_timing and cancellation.validate. Existing TERM/INT success closes its diagnostic only, never failed baseline collection/isolation. No direct keeper asserts these new combined failures or the R3-07 final-commit ordering. H sees real removal/port/deadline/queued-alarm effects; J sees serialized failure laundering/empty variants and final disposition; neither layer replaces the other. Aggregate metadata controls reject false shapes but cannot prove cleanup execution or publication ordering. | NO for every listed case. No Owned implementation change or test-only seam. |
+| E: X-01–X-02 | End-to-end failure precedence plus frozen safe projection and irreversible failure across controller death/root loss/export transition, while raw content stays withheld; X-02 includes terminal disposition matching successful final replacement. | Locally correct helper results are combined to erase first cause/cleanup failure, refresh source from stale file, admit partial evidence as complete, or rely on another write after a postcommit alarm. | Same B/D keepers, with precise unowned cross-process composition gap; no duplicate product journey is proposed. Distinct from A/B/D alone: launcher receipt projection can misattribute or launder a controller failure after source removal despite each local operation refusing correctly, including queued export alarms at final commitment. | NO for both cases. Existing main boundaries/artifacts only. |
+
+No existing success journey owns category-failure, cleanup-isolation or adversarial-sanitation sensitivity. No new runnable assertion is claimed for these design cases. Existing tooling/venue authorization does not permit a new fail/pass, protected mutation or repetition campaign here. Under current test-authoring skill, corrected behavior is **NOT RUN**, attributable intended-failure/restored-pass is **PROOF NOT RUN**. This honest limitation does not fabricate coverage and does not alone block design review; actual missing/unsound design requirements still warrant corrections. This source delivery preserves these case/keeper/gap records and current authority limits; no retired units, new verifier or test-only production seam can fill the gap.
+
+The full unaffected validator reference is TASK12631's **All validator/control memberships retained (NOT RUN here)**, byte-identical parent step8/qa-design-assessment.md SHA256d8c96b54c7e8be86244455a75098ab00985bae4b6c9a6c7d66c8cb9a62972799. Retain BOTH schedule/workflow_dispatch admission positives, all existing missing/wrong environment inputs, unsupported events, checkout/tree/repository/default/cron/manual-ref negatives, and per-event missing/conflicting comparisons for EACH ADMISSION_FIELDS member. Keep all original nine aggregate negatives and fourteen cancellation negatives listed above, all timing/nonoverlap/arithmetic caps and actual-content source/public/wire/CLI/browser/result/audit/provenance readers. These remain existing references, not reimplemented or executed validators. Optional categories cannot supply their required files or missing observations.
 
 ## Root-owned protected proof operations — not executed
 

@@ -5,10 +5,12 @@ import argparse
 import hashlib
 import http.client
 import json
+import math
 import os
 import shlex
 import shutil
 import signal
+import stat
 import socket
 import select
 import threading
@@ -29,6 +31,118 @@ def sha(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def _failure_stage(stage: object) -> str:
+    if type(stage) is not str:
+        return "other"
+    for category, names in (
+        ("phase", ("phase",)), ("bounded", ("bounded",)),
+        ("restore", ("phase-state-restore", "bound-state-restore", "timer-restore")),
+        ("context", ("redaction-context-unavailable", "context")),
+        ("action", ("controller-action",)),
+        ("teardown", ("controller-close", "thread-proxy-release", "late-transport-release",
+                      "provider-observer-join", "provider-observer-incomplete", "browser-teardown",
+                      "thread-proxy-close", "thread-proxy-closure", "late-transport-close", "late-transport-closure",
+                      "peer-socket-shutdown", "peer-stream-close", "peer-socket-close", "provider-server-close",
+                      "provider-socket-unlink", "cli-relay-close", "daemon-term", "daemon-wait", "daemon-log-close")),
+        ("evidence", ("controller-evidence", "stage-main-browser-trace", "stage-thread-browser-trace",
+                      "stage-scenario", "stage-browser-trace", "stage-primary-error", "export-e07",
+                      "export-launch-witness", "export-observations", "export-scenario", "export-browser-trace")),
+        ("browser", ("original-body-primary", "original-body-outcome", "native-page-close/crash",
+                     "native-observation", "native-observation-secondary", "native-tracker-detach",
+                     "bridge-wakeup-detach", "bridge-task-cancel", "group-local-detach", "terminal-stop-enforcement",
+                     "terminal-stop-exit", "terminal-stop-cancel", "terminal-stop", "terminal-tracker-detach",
+                     "browser-final-observation", "thread-context-close", "browser-context-close", "browser-close",
+                     "browser-terminal-stop", "browser-tracker-detach")),
+    ):
+        if stage in names:
+            return category
+    return "other"
+
+
+def _failure_error(error: BaseException) -> str:
+    """Closed subclass precedence; never inspect text, names, args or chains."""
+    for kinds, category in (
+        (UnicodeError, "unicode"), (TimeoutError, "timeout"),
+        ((KeyboardInterrupt, SystemExit, GeneratorExit, InterruptedError), "interruption"),
+        (AssertionError, "assertion"), (ValueError, "value"),
+        (OSError, "io"), (RuntimeError, "runtime"),
+    ):
+        if isinstance(error, kinds):
+            return category
+    return "other"
+
+
+def _failure_slot(stage: str, error: BaseException) -> tuple[str, str, float] | None:
+    at = time.monotonic()
+    if type(at) not in (int, float) or not 0 <= at <= 9007199254740991 or not math.isfinite(at):
+        return None
+    return stage, _failure_error(error), at
+
+
+def _failure_object(slot: tuple | None) -> dict | None:
+    return dict(zip(("stage", "error", "at"), slot)) if slot is not None else None
+
+
+def _failure_source(value: object) -> bool:
+    return type(value) is str and len(value) == 40 and all(c in "0123456789abcdef" for c in value)
+
+
+@contextmanager
+def _failure_directories(root: Path, check: Callable[[], None], *, coord: bool = True) -> Any:
+    """Pin literal no-follow ancestors; no repair or racing-rename guarantee."""
+    spelling = str(root)
+    parts = spelling.split("/")[1:]
+    if not spelling.startswith("/") or not parts or any(p in ("", ".", "..") for p in parts):
+        raise ValueError("invalid diagnostic root")
+    descriptors = []
+    links = []
+
+    def verify() -> None:
+        for parent, name, descriptor, original, private in links:
+            check()
+            named = os.stat(name, dir_fd=parent, follow_symlinks=False)
+            opened = os.fstat(descriptor)
+            if (not stat.S_ISDIR(named.st_mode) or not stat.S_ISDIR(opened.st_mode)
+                    or (named.st_dev, named.st_ino) != (original.st_dev, original.st_ino)
+                    or (opened.st_dev, opened.st_ino) != (original.st_dev, original.st_ino)
+                    or (private and (named.st_uid != os.geteuid() or opened.st_uid != os.geteuid()
+                                     or stat.S_IMODE(named.st_mode) != 0o700
+                                     or stat.S_IMODE(opened.st_mode) != 0o700))):
+                raise ValueError("diagnostic directory identity changed")
+            check()
+
+    try:
+        check()
+        current = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        descriptors.append(current)
+        check()
+        for index, name in enumerate(parts + (["coord"] if coord else [])):
+            check()
+            named = os.stat(name, dir_fd=current, follow_symlinks=False)
+            if not stat.S_ISDIR(named.st_mode):
+                raise ValueError("aliased diagnostic directory")
+            check()
+            descriptor = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=current)
+            descriptors.append(descriptor)
+            info = os.fstat(descriptor)
+            if (named.st_dev, named.st_ino) != (info.st_dev, info.st_ino):
+                raise ValueError("diagnostic directory changed before open")
+            links.append((current, name, descriptor, info, index >= len(parts) - 1))
+            current = descriptor
+            verify()
+        yield current, verify
+        verify()
+    finally:
+        for descriptor in reversed(descriptors):
+            os.close(descriptor)
+
+
+def _failure_file(info: os.stat_result) -> None:
+    if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
+            or stat.S_IMODE(info.st_mode) != 0o600 or info.st_nlink != 1):
+        raise ValueError("unsafe diagnostic file")
+
+
 class Controller:
     def __init__(self, args: argparse.Namespace) -> None:
         self.root, self.source = args.root, args.source
@@ -41,6 +155,13 @@ class Controller:
         self.primary_error: BaseException | None = None
         self.primary_traceback: Any = None
         self.failures: list[dict] = []
+        self._failure_raw: dict[str, tuple] = {}
+        self._failure_slots: dict[str, tuple] = {}
+        self._failure_writer_owner = threading.get_ident()
+        self._failure_writer_active = False
+        self._failure_publication_state = "not_attempted"
+        self._failure_publication_failed = False
+        self._failure_published: tuple | None = None
         self.observer_join: dict = dict(attempted=False, reason="nonterminal")
         self.redaction_ready = False
         self.boots = []
@@ -123,10 +244,23 @@ class Controller:
             tokens = [row["invocation_token"] for store in self.stores.values()
                       for row in store.query("SELECT invocation_token FROM thread_invocations")]
             self.remember_thread_secrets(tokens)
-        except BaseException:
-            # Existing launcher rejects an invalid private context and withholds
-            # raw exports. Never fall back to bearer-only on an unknown token set.
-            (self.root / "coord/redaction-context.json").write_text("[]")
+        except BaseException as capture_error:
+            # Keep the original [] attempt and its exception precedence. This
+            # diagnostic slot says nothing about successful invalidation.
+            try:
+                (self.root / "coord/redaction-context.json").write_text("[]")
+            except BaseException:
+                invalidation_failed = True
+                try:
+                    self._latch_capture_failure(capture_error)
+                except BaseException:
+                    pass
+                raise
+            invalidation_failed = False
+            try:
+                self._latch_capture_failure(capture_error)
+            except BaseException:
+                pass
             raise
 
     def provider_cli(self, start: dict, action: str, **arguments: Any) -> dict:
@@ -759,12 +893,119 @@ class Controller:
         require(variant not in self.results, "duplicate variant result", variant)
         self.results[variant] = dict(status="PASS", evidence=evidence or {}, at=time.monotonic())
 
+    def _latch_capture_failure(self, error: BaseException) -> None:
+        try:
+            slot = _failure_slot("context", error)
+            if slot is not None:
+                self._failure_slots.setdefault("context_capture", slot)
+        except BaseException:
+            pass  # Diagnostic interruption must not replace capture/invalidation.
+
     def record_error(self, stage: str, error: BaseException) -> None:
-        if self.primary_error is None:
-            self.primary_error = error
-            self.primary_traceback = error.__traceback__
-        # Fixed stage/type only until full sanitation context is established.
+        # Select actual object/traceback before time, legacy diagnostics or I/O.
+        # Literal-key setdefault prevents a nested callback replacing the winner.
+        winner = self._failure_raw.setdefault("first", (error, error.__traceback__, _failure_stage(stage)))
+        self.primary_error, self.primary_traceback = winner[:2]
+        try:
+            slot = _failure_slot(winner[2], winner[0])
+            if slot is not None:
+                self._failure_slots.setdefault("first_observed", slot)
+        except BaseException:
+            pass  # Raw winner is authoritative even if category completion fails.
         self.failures.append(dict(stage=stage, error=type(error).__name__, at=time.monotonic()))
+
+    def _stage_failure_categories(self) -> None:
+        if (threading.get_ident() != self._failure_writer_owner or self._failure_writer_active
+                or self._failure_publication_failed):
+            return
+        self._failure_writer_active = True
+        try:
+            def check() -> None:
+                if time.monotonic() >= self.effective_end():
+                    raise TimeoutError("diagnostic work deadline")
+
+            check()
+            slots = (self._failure_slots.get("first_observed"), self._failure_slots.get("context_capture"))
+            if self._failure_published == slots:
+                self._failure_publication_state = "skipped"
+                return
+            if not _failure_source(self.revision):
+                raise ValueError("diagnostic source unavailable")
+            envelope = dict(schema=1, source_sha=self.revision,
+                            first_observed=_failure_object(slots[0]), context_capture=_failure_object(slots[1]))
+            check()
+            data = json.dumps(envelope, allow_nan=False, separators=(",", ":")).encode("utf-8", errors="strict")
+            check()
+            if len(data) > 4096:
+                raise ValueError("diagnostic snapshot overflow")
+            with _failure_directories(self.root, check) as (directory, verify):
+                final, pending = "failure-categories.json", ".failure-categories.pending"
+
+                def final_info() -> os.stat_result | None:
+                    check()
+                    try:
+                        info = os.stat(final, dir_fd=directory, follow_symlinks=False)
+                    except FileNotFoundError:
+                        check()
+                        return None
+                    _failure_file(info)
+                    check()
+                    return info
+
+                previous = final_info()
+                check()
+                try:
+                    os.stat(pending, dir_fd=directory, follow_symlinks=False)
+                except FileNotFoundError:
+                    pass
+                else:
+                    raise ValueError("unfinished diagnostic publication")
+                verify()
+                check()
+                descriptor = os.open(pending, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600,
+                                     dir_fd=directory)
+                try:
+                    check()
+                    opened = os.fstat(descriptor)
+                    _failure_file(opened)
+                    named = os.stat(pending, dir_fd=directory, follow_symlinks=False)
+                    _failure_file(named)
+                    if (opened.st_dev, opened.st_ino) != (named.st_dev, named.st_ino):
+                        raise ValueError("diagnostic pending identity changed")
+                    verify()
+                    check()
+                    if os.write(descriptor, data) != len(data):
+                        raise OSError("short diagnostic write")
+                    check()
+                finally:
+                    os.close(descriptor)
+                check()
+                verify()
+                named = os.stat(pending, dir_fd=directory, follow_symlinks=False)
+                _failure_file(named)
+                if ((opened.st_dev, opened.st_ino) != (named.st_dev, named.st_ino)
+                        or named.st_size != len(data)):
+                    raise ValueError("diagnostic pending identity changed")
+                current = final_info()
+                if ((None if current is None else (current.st_dev, current.st_ino))
+                        != (None if previous is None else (previous.st_dev, previous.st_ino))):
+                    raise ValueError("diagnostic final identity changed")
+                verify()
+                check()
+                os.replace(pending, final, src_dir_fd=directory, dst_dir_fd=directory)
+                check()
+                committed = final_info()
+                if committed is None or (committed.st_dev, committed.st_ino) != (opened.st_dev, opened.st_ino):
+                    raise ValueError("diagnostic replacement identity changed")
+                verify()
+            check()
+            self._failure_published = slots
+            self._failure_publication_state = "published"
+        except BaseException:
+            self._failure_publication_state = "failed"
+            self._failure_publication_failed = True
+        finally:
+            self._failure_writer_active = False
 
     def _attempt(self, stage: str, action: Callable[[], Any], *, blocking: bool = True) -> Any:
         try:
@@ -1069,6 +1310,7 @@ def main() -> None:
         controller.record_error("controller-action", exc)
         if controller.browser:
             controller.browser.poison(exc)  # No dispatcher re-entry after interruption.
+        controller._stage_failure_categories()
     finally:
         begin = time.monotonic()
         try:
@@ -1077,10 +1319,12 @@ def main() -> None:
             controller.record_error("controller-close", exc)
         finally:
             controller.phases.append(dict(name="cleanup-drain", seconds=time.monotonic() - begin))
+        controller._stage_failure_categories()
         try:
             controller.evidence()
         except BaseException as exc:
             controller.record_error("controller-evidence", exc)
+        controller._stage_failure_categories()
         if controller.primary_error is not None:
             raise controller.primary_error.with_traceback(controller.primary_traceback)
 
