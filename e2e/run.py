@@ -253,10 +253,12 @@ def _failure_file(info: os.stat_result) -> None:
 
 
 def _read_failure_categories(root: Path | None, source: object, check: Callable[[], None],
-                             missing_ok: bool) -> tuple[dict, str | None]:
+                             missing_ok: bool) -> tuple[dict, str | None, str]:
     unavailable = dict(availability="unavailable", snapshot=None)
-    if root is None or not _failure_source(source):
-        return unavailable, None
+    if not _failure_source(source):
+        return unavailable, None, "source_unavailable"  # Internal only; never projected.
+    if root is None:
+        return unavailable, None, "root_unset"
 
     def pairs(items: list[tuple]) -> dict:
         result = {}
@@ -306,7 +308,7 @@ def _read_failure_categories(root: Path | None, source: object, check: Callable[
                     verify()
                     no_pending()
                     check()
-                    return unavailable, None  # Literal final ENOENT only.
+                    return unavailable, None, "final_missing"  # Literal final ENOENT only.
                 _failure_file(named)
                 check()
                 descriptor = os.open(final, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
@@ -352,17 +354,17 @@ def _read_failure_categories(root: Path | None, source: object, check: Callable[
                 finally:
                     os.close(descriptor)
             check()
-            return dict(availability="available", snapshot=snapshot), None
+            return dict(availability="available", snapshot=snapshot), None, "available"
         except FileNotFoundError as exc:
             if missing_ok and exc.filename in (root.name, "coord"):
                 check()
-                return unavailable, None
+                return unavailable, None, "root_missing" if exc.filename == root.name else "coord_missing"
             raise
     except TimeoutError:
         raise  # Expiry is never an ordinary unavailable continuation.
     except BaseException as exc:
         check()  # An absorbed alarm or slow failing I/O cannot renew C.
-        return unavailable, _failure_error(exc)
+        return unavailable, _failure_error(exc), "refused"
 
 
 def main() -> int:
@@ -386,6 +388,7 @@ def main() -> int:
     export_failure: dict[str, tuple] = {}
     launcher_slots: dict[str, tuple] = {}
     controller_snapshot = dict(availability="unavailable", snapshot=None)
+    diagnostic_read_observation = ("unknown", None)
     staging_incomplete = closure_incomplete = cleanup_incomplete = export_incomplete = False
     detail_complete = False
     final_result_committed = False
@@ -411,7 +414,15 @@ def main() -> int:
         projection = dict(schema=1, source_sha=source_sha, controller=controller_snapshot,
                           launcher={name: _failure_object(launcher_slots.get(name)) for name in
                                     ("action", "owner", "diagnostic_read", "collection", "port", "root", "export")})
-        return dict(failure_categories=projection)
+        result = dict(failure_categories=projection)
+        try:
+            state, outcome = diagnostic_read_observation
+            # Closed frozen values only; no private read or observation at export.
+            result["diagnostic_read_observation"] = dict(schema=1, source_sha=source_sha,
+                                                        state=state, outcome=outcome)
+        except BaseException:
+            pass  # Omit the whole addition if optional projection fails.
+        return result
     logs = []
     action_end, hard_end = started + 720, started + 900
     receipt["timing"] = dict(started=started, action_deadline=action_end,
@@ -670,8 +681,18 @@ def main() -> int:
             current_attempt = "diagnostic_read"
             operations["diagnostic_read"]["attempted"] = True
             try:
-                controller_snapshot, read_error = _read_failure_categories(
+                try:
+                    cleanup_time()
+                    diagnostic_read_observation = ("admitted", None)
+                except BaseException:
+                    pass  # Optional history cannot replace the actual read/error.
+                controller_snapshot, read_error, read_outcome = _read_failure_categories(
                     root, receipt["source_sha"], cleanup_time, "failure_phase" in receipt)
+                try:
+                    cleanup_time()
+                    diagnostic_read_observation = ("completed", read_outcome)
+                except BaseException:
+                    pass  # Mandatory snapshot/error assignment above still stands.
                 operations["diagnostic_read"]["complete"] = read_error is None
                 if read_error is not None:
                     incomplete("diagnostic_read", category=read_error)
@@ -783,6 +804,14 @@ def main() -> int:
             cleanup_time()
         except BaseException as exc:
             incomplete(current_attempt, exc)
+            try:
+                cleanup_time()
+                if (current_attempt == "owner" and not operations["diagnostic_read"]["attempted"]
+                        and controller_snapshot == dict(availability="unavailable", snapshot=None)
+                        and launcher_slots.get("diagnostic_read") is None):
+                    diagnostic_read_observation = ("unreached", None)
+            except BaseException:
+                pass  # Expiry/interruption retains the prior tuple; no rescue.
         finally:
             cleanup["finished"] = time.monotonic()
             cleanup["elapsed_seconds"] = cleanup["finished"] - cleanup["entered"]
