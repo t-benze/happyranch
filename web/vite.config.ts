@@ -5,16 +5,13 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { packagingCustody } from './scripts/packaging-custody';
-import { packagingTailwind } from './scripts/packaging-tailwind';
 
 // ------------------------------------------------------------ build-time UI feature flags
 //
 // THR-305. The SPA reads named booleans from ONE consumer module
 // (`src/config/features.ts`), which imports `@happyranch/feature-flags`. This
 // config resolves that specifier with `resolve.alias` only — no `define`, no
-// injected env, no plugin and no config-time import — because the Mac custody
-// validator pins those (app/mac/scripts/web_evidence.py). Profile data is read
+// injected env, no plugin and no config-time import. Profile data is read
 // with fs, so it is not a config dependency.
 //
 // Selection is fixed per startup/build:
@@ -379,10 +376,8 @@ export default defineConfig(async ({ command, mode, isPreview }) => {
     console.info(resolved.logLine);
     featureAlias = { [FEATURE_FLAGS_MODULE]: resolved.aliasTarget };
   }
-  const custody = packagingCustody();
   return {
-    plugins: [i18nEvidenceInstrumentation(), react(), custody ? packagingTailwind(custody) : (await import('@tailwindcss/vite')).default(), ...(custody?.plugins() ?? [])],
-    ...(custody ? { css: { postcss: { plugins: [] }, devSourcemap: false } } : {}),
+    plugins: [i18nEvidenceInstrumentation(), react(), (await import('@tailwindcss/vite')).default()],
     resolve: {
       alias: { ...featureAlias, '@': path.resolve(__dirname, 'src') },
     },

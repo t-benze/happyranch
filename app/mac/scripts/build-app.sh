@@ -4,9 +4,6 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd -P)"
 VERIFY="$SCRIPT_DIR/verify-release.sh"
-ASSETS="$SCRIPT_DIR/asset_evidence.py"
-FREEZER="$SCRIPT_DIR/freezer_evidence.py"
-WEB="$SCRIPT_DIR/web_evidence.py"
 WEB_TOOL_ORIGINALS=""
 VERSION="" BUILD="" SOURCE_SHA="" SOURCE_TREE="" ARCH="" OUTPUT=""
 while [ "$#" -gt 0 ]; do
@@ -70,149 +67,19 @@ RUN_ID="$(python3 -c 'import uuid; print(uuid.uuid4())')"
 printf '%s\n' "$RUN_ID" > "$OUTPUT/owner"
 printf '%s\n' "$PREFLIGHT" > "$OUTPUT/preflight.json"
 mkdir "$OUTPUT/diagnostics" "$OUTPUT/scratch"
-# Shell PIDs below are result keys only. Numeric group signaling stays in the
-# actual Python parent, with its unreaped direct-child handle.
-SUPERVISOR="$SCRIPT_DIR/packaging_supervisor.py"
-PRIMARY_SIGNAL=0 HELPER_ACTIVE=0 HELPER_CONTROL_SENT=0 FINISHING=0
-helper_signal() {
-    if [ "$PRIMARY_SIGNAL" -eq 0 ]; then PRIMARY_SIGNAL="$1"; fi
-    if [ "$HELPER_ACTIVE" -eq 1 ] && [ "$HELPER_CONTROL_SENT" -eq 0 ]; then
-        HELPER_CONTROL_SENT=1
-        printf '%s' "$2" >&6 || :
-    fi
-}
-trap 'helper_signal 129 H' HUP
-trap 'helper_signal 130 I' INT
-trap 'helper_signal 143 T' TERM
-helper_limit() {
-    case "$1" in
-        asset-token-field|freezer-token-field|web-token-field|freezer-fail|web-fail) HELPER_LIMIT=30 ;;
-        web-read-input|web-compile-begin|web-compile-end|web-snapshot) HELPER_LIMIT=120 ;;
-        web-prepare|web-begin) HELPER_LIMIT=300 ;;
-        failure-diagnostics) HELPER_LIMIT=60 ;;
-        asset-begin|asset-check-public|asset-observe-dist|asset-check-dist|asset-observe-app|asset-icon|asset-verify|freezer-begin|freezer-accept|freezer-before-copy|freezer-copy|freezer-verify|web-publish-build|web-complete-build|web-accept-build|web-seal-dist|web-notices|web-verify|embedded-notices|manifest-collect|frozen-entrypoints) HELPER_LIMIT=600 ;;
-        *) printf 'PACKAGING_HELPER_OPERATION_UNKNOWN\n' >&2; return 125 ;;
-    esac
-}
-helper_transport() {
-    # Only after output admission. Exclusive private names; no recovered tokens.
-    local transport
-    transport="$(mktemp -d "$OUTPUT/scratch/helper.XXXXXX")" || return 125
-    [ -d "$transport" ] && [ ! -L "$transport" ] || return 125
-    (set -C; : > "$transport/reply") || return 125
-    [ -f "$transport/reply" ] && [ -O "$transport/reply" ] && [ ! -L "$transport/reply" ] || return 125
-    mkfifo -m 600 "$transport/control" "$transport/result" || return 125
-    HELPER_TRANSPORT="$transport"
-}
-helper_invoke() {
-    local capture="$1" destination="$2" operation="$3"
-    shift 3
-    local started="$SECONDS" slots line='' result='' pid status=125 bytes reply
-    helper_limit "$operation" || return "$?"
-    helper_transport || return "$?"
-    reply="$HELPER_TRANSPORT/reply"
-    if exec 6<>"$HELPER_TRANSPORT/control" 7<>"$HELPER_TRANSPORT/result"; then :; else
-        exec 6>&- 7>&-
-        return 125
-    fi
-    # Explicitly preserve the function's incoming stdin/heredoc before '&'.
-    if exec 10<&0; then :; else exec 6>&- 7>&-; return 125; fi
-    HELPER_ACTIVE=1 HELPER_CONTROL_SENT=0
-    if [ "$capture" -eq 1 ]; then
-        python3 "$SUPERVISOR" guardian "$operation" "$HELPER_TRANSPORT/control" "$HELPER_TRANSPORT/result" "$@" \
-            <&10 >"$reply" 4>&- 5>&- 6>&- 7>&- 8>&- 9>&- 10<&- &
-    else
-        python3 "$SUPERVISOR" guardian "$operation" "$HELPER_TRANSPORT/control" "$HELPER_TRANSPORT/result" "$@" \
-            <&10 4>&- 5>&- 6>&- 7>&- 8>&- 9>&- 10<&- &
-    fi
-    pid=$!
-    exec 10<&-
-    slots=$((HELPER_LIMIT + 12 - (SECONDS - started)))
-    # Interruptions spend a slot; a result precedes exit and never licenses an
-    # unconditional wait. PID existence is observation only, never a kill grant.
-    while [ "$slots" -gt 0 ]; do
-        slots=$((slots - 1))
-        if [ -z "$result" ]; then
-            if IFS= read -r -t 1 -u 7 line; then
-                case "$line" in
-                    'RESULT '*) result="${line#RESULT }" ;;
-                    *) break ;;
-                esac
-            fi
-        elif kill -0 "$pid" 2>/dev/null; then
-            # A timed FIFO read bounds observation without a sleeping process.
-            if IFS= read -r -t 1 -u 7 line; then break; fi
-        else
-            if wait "$pid"; then status=0; else status=$?; fi
-            case "$result" in
-                ''|*[!0-9-]*) status=125 ;;
-                -*) [ "$status" -eq "$((128 - result))" ] || status=125 ;;
-                *) [ "$status" -eq "$result" ] || status=125 ;;
-            esac
-            [ "$status" -ne 127 ] || status=125
-            break
-        fi
-    done
-    HELPER_ACTIVE=0
-    exec 6>&- 7>&-
-    if [ "$PRIMARY_SIGNAL" -ne 0 ] && [ "$FINISHING" -eq 0 ]; then status="$PRIMARY_SIGNAL"; fi
-    if [ "$status" -eq 0 ] && [ "$capture" -eq 1 ]; then
-        bytes="$(wc -c < "$reply")" || return 125
-        [ "$bytes" -le 4096 ] || { printf 'PACKAGING_HELPER_REPLY_CAP\n' >&2; return 125; }
-        # Same trailing-LF removal as the original command substitutions.
-        printf -v "$destination" '%s' "$(<"$reply")"
-    fi
-    if [ "$status" -eq 125 ]; then printf 'PACKAGING_HELPER_CLEANUP_UNRESOLVED:%s\n' "$operation" >&2; fi
-    return "$status"
-}
-helper_run() { helper_invoke 0 '' "$@"; }
-helper_into() { local destination="$1"; shift; helper_invoke 1 "$destination" "$@"; }
-# Tee still owns the original build.log destination and original stdout bytes.
-helper_transport
-LOGGER_TRANSPORT="$HELPER_TRANSPORT"
-exec 4<>"$LOGGER_TRANSPORT/control" 5<>"$LOGGER_TRANSPORT/result"
-exec 8>&1 9>&2
-exec > >(python3 "$SUPERVISOR" logger "$LOGGER_TRANSPORT/control" "$LOGGER_TRANSPORT/result" tee "$OUTPUT/diagnostics/build.log" 4>&- 5>&- 8>&- 9>&-) 2>&1
-LOGGER_PID=$!
-logger_finish() {
-    local slots=12 line='' result='' status=125
-    # Close all parent tee writers before the finalization clock starts.
-    exec 1>&8 2>&9 8>&- 9>&-
-    if printf F >&4; then :; else exec 4>&- 5>&-; return 125; fi
-    while [ "$slots" -gt 0 ]; do
-        slots=$((slots - 1))
-        if [ -z "$result" ]; then
-            if IFS= read -r -t 1 -u 5 line; then
-                case "$line" in 'RESULT '*) result="${line#RESULT }" ;; *) break ;; esac
-            fi
-        elif kill -0 "$LOGGER_PID" 2>/dev/null; then
-            if IFS= read -r -t 1 -u 5 line; then break; fi
-        else
-            if wait "$LOGGER_PID"; then status=0; else status=$?; fi
-            [ "$result" = 0 ] && [ "$status" -eq 0 ] || status=125
-            break
-        fi
-    done
-    exec 4>&- 5>&-
-    return "$status"
-}
+# Foreground commands inherit the runner's ordinary cancellation/timeout control.
+# Preserve the first failure; diagnostics never turn a failed build into success.
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+exec > >(tee "$OUTPUT/diagnostics/build.log") 2>&1
 STAGE=export
 finish() {
     local code=$?
     trap - EXIT
-    FINISHING=1
-    if [ "$code" -eq 0 ] && [ "$PRIMARY_SIGNAL" -ne 0 ]; then code="$PRIMARY_SIGNAL"; fi
     if [ "$code" -ne 0 ]; then
         printf 'BUILD_FAILED stage=%s exit=%s run=%s\n' "$STAGE" "$code" "$RUN_ID"
-        # Preserve original process status even when custody persistence fails.
-        if [ -n "${FREEZER_CONTEXT:-}" ]; then
-            helper_run freezer-fail python3 "$FREEZER" fail "${ASSET_ARGS[@]}" --freezer-context-sha256 "$FREEZER_CONTEXT" --original-exit "$code" || printf 'FREEZER_FAILURE_PERSISTENCE_FAILED\n' >&2
-        fi
-        if [ -n "${WEB_CALLER:-}" ]; then
-            helper_run web-fail python3 "$WEB" fail --caller "$WEB_CALLER" --original-exit "$code" || printf 'WEB_FAILURE_PERSISTENCE_FAILED\n' >&2
-        fi
-        # Evidence errors must never replace the original build exit.
-        helper_run failure-diagnostics python3 - "$OUTPUT" "$STAGE" "$code" "$RUN_ID" "$SOURCE_SHA" "$SOURCE_TREE" "$VERSION" "$BUILD" "$ARCH" "${INSPECTION_STAGE:-not-started}" <<'PYFAIL' || printf 'DIAGNOSTIC_COLLECTION_FAILED\n' >&2
+        python3 - "$OUTPUT" "$STAGE" "$code" "$RUN_ID" "$SOURCE_SHA" "$SOURCE_TREE" "$VERSION" "$BUILD" "$ARCH" "${INSPECTION_STAGE:-not-started}" <<'PYFAIL' || printf 'DIAGNOSTIC_COLLECTION_FAILED\n' >&2
 import gzip, hashlib, json, os, stat, sys
 from pathlib import Path
 output = Path(sys.argv[1]); stage, code, run_id, sha, tree, version, build, arch, inspection_stage = sys.argv[2:]
@@ -375,13 +242,6 @@ for fd in (fdout, diagfd, rootfd):
     os.close(fd)
 PYFAIL
     fi
-    if logger_finish; then :; else
-        printf 'BUILD_LOG_FINALIZATION_FAILED\n' >&2
-        if [ "$code" -eq 0 ]; then
-            if [ "$PRIMARY_SIGNAL" -ne 0 ]; then code="$PRIMARY_SIGNAL"; else code=125; fi
-        fi
-    fi
-    if [ "$code" -eq 0 ] && [ "$PRIMARY_SIGNAL" -ne 0 ]; then code="$PRIMARY_SIGNAL"; fi
     exit "$code"
 }
 trap finish EXIT
@@ -396,21 +256,7 @@ export npm_config_cache="$OUTPUT/scratch/npm-cache"
 export CLANG_MODULE_CACHE_PATH="$OUTPUT/scratch/clang-cache"
 export GOTOOLCHAIN=local
 export GOCACHE="$OUTPUT/scratch/go-cache" GOMODCACHE="$OUTPUT/scratch/go-modules"
-# Reserve and validate wrapper temp/cache before the early uv version read.
-python3 -I - "$OUTPUT" "$SCRIPT_DIR" <<'PYTEMP'
-import os, stat, sys
-from pathlib import Path
-sys.path.insert(0, sys.argv[2])
-from asset_evidence import open_root
-output = Path(sys.argv[1])
-with open_root(output / 'scratch', output, True) as scratch:
-    for name in ('tmp', 'uv-cache'):
-        scratch.verify()
-        os.mkdir(name, mode=0o700, dir_fd=scratch.fd)
-        with open_root(output / 'scratch' / name, output, True) as child:
-            if stat.S_IMODE(os.fstat(child.fd).st_mode) != 0o700 or os.listdir(child.fd):
-                raise SystemExit('RELEASE_TEMP_CACHE_NOT_PRIVATE_EMPTY')
-PYTEMP
+mkdir "$TMPDIR" "$UV_CACHE_DIR"
 mkdir "$GOCACHE" "$GOMODCACHE"
 export MACOSX_DEPLOYMENT_TARGET=14.0 GOOS=darwin GOARCH=arm64 CGO_ENABLED=1
 {
@@ -426,19 +272,6 @@ export MACOSX_DEPLOYMENT_TARGET=14.0 GOOS=darwin GOARCH=arm64 CGO_ENABLED=1
     df -h "$OUTPUT"
 } > "$OUTPUT/diagnostics/toolchains.txt"
 ICONSET="$OUTPUT/scratch/AppIcon.iconset"
-ASSET_ARGS=(--source "$REPO_ROOT" --exported-source "$SOURCE" --dist "$SOURCE/web/dist"
-    --app "$APP" --output-dir "$OUTPUT" --evidence-dir "$OUTPUT/diagnostics" --iconset "$ICONSET"
-    --source-sha "$SOURCE_SHA" --source-tree "$SOURCE_TREE" --version "$VERSION" --build "$BUILD"
-    --arch "$ARCH" --run-id "$RUN_ID")
-# Successful synchronous tokens are invocation-held expectations; never recover
-# them from candidate diagnostics or the legacy mapping. No eval or fallback.
-asset_field() { helper_into "$1" asset-token-field python3 "$ASSETS" token-field --token "$2" --field "$3"; }
-helper_into ASSET_START_TOKEN asset-begin python3 "$ASSETS" begin "${ASSET_ARGS[@]}" --iconutil-path "$ICONUTIL_PATH" \
-    --toolchains-path "$OUTPUT/diagnostics/toolchains.txt"
-asset_field ASSET_CONTEXT "$ASSET_START_TOKEN" context
-asset_field ASSET_SOURCE "$ASSET_START_TOKEN" source
-asset_field ASSET_TOOLCHAINS "$ASSET_START_TOKEN" toolchains_sha256
-asset_field ASSET_ICONUTIL "$ASSET_START_TOKEN" iconutil_sha256
 STAGE=go
 cd "$PROJECT/tsnet-bridge"
 # Fresh archive in an exported immutable tree, readonly existing module graph.
@@ -451,67 +284,12 @@ ar -t libtsnet.a > "$OUTPUT/diagnostics/go-members.txt"
 nm -m libtsnet.a > "$OUTPUT/diagnostics/go-symbols.txt"
 STAGE=freeze
 cd "$SOURCE"
-# Verify the committed local wheel before the unchanged frozen sync.
-helper_into FREEZER_START freezer-begin python3 "$FREEZER" begin "${ASSET_ARGS[@]}" --asset-context-sha256 "$ASSET_CONTEXT" --toolchains-sha256 "$ASSET_TOOLCHAINS"
-freezer_field() { helper_into "$1" freezer-token-field python3 "$FREEZER" token-field --token "$2" --field "$3"; }
-freezer_field FREEZER_CONTEXT "$FREEZER_START" context
-export HAPPYRANCH_FREEZER_CALLER
-freezer_field HAPPYRANCH_FREEZER_CALLER "$FREEZER_START" caller
 bash packaging/build_daemon.sh --dist-dir "$OUTPUT/scratch/freeze-dist" --work-dir "$OUTPUT/scratch/freeze-work"
-helper_into FREEZER_RETURN freezer-accept python3 "$FREEZER" accept "${ASSET_ARGS[@]}" --freezer-context-sha256 "$FREEZER_CONTEXT"
-freezer_field FREEZER_INPUTS "$FREEZER_RETURN" inputs
-freezer_field FREEZER_OUTPUT "$FREEZER_RETURN" output
-FREEZER_ARGS=(--freezer-context-sha256 "$FREEZER_CONTEXT" --freezer-inputs-sha256 "$FREEZER_INPUTS" --freezer-output-sha256 "$FREEZER_OUTPUT")
-cp "$OUTPUT/scratch/freeze-work/analysis.json" "$OUTPUT/diagnostics/analysis.json"
 cp "$OUTPUT/scratch/freeze-work/python-toolchain.json" "$OUTPUT/diagnostics/python-toolchain.json"
 STAGE=web
 cd "$SOURCE/web"
-# Ordinary package executable modes are required by authenticated preparation.
-# Keep the parent mask and the already-created output/scratch/source private.
-(
-    umask 022
-    npm ci
-)
-# Direct caller identity, never recovered from a candidate receipt. Preparation
-# happens after ordinary postinstall and before tsc/Vite/config consumes tools.
-# Preparation also excludes native loader alternatives and resolution shadows.
-WEB_CALLER="$(python3 - "$SOURCE_SHA" "$SOURCE_TREE" "$VERSION" "$BUILD" "$ARCH" "$REPO_ROOT" "$SOURCE" "$APP" "$OUTPUT" "$ICONSET" "$RUN_ID" "$ASSET_CONTEXT" "$ASSET_SOURCE" "$ASSET_TOOLCHAINS" "$WEB_TOOL_ORIGINALS" <<'PYWEB'
-import json, sys
-from pathlib import Path
-sha,tree,version,build,arch,repo,source,app,output,iconset,run,context,source_token,tools,originals=sys.argv[1:]
-print(json.dumps({'candidate':dict(source_sha=sha,source_tree=tree,version=version,build=build,arch=arch),
- 'roots':dict(repo=repo,exported_source=source,dist=source+'/web/dist',app=app,output=output,evidence_dir=output+'/diagnostics',iconset=iconset),
- 'run_id':run,'venue':'native','asset_context_sha256':context,'asset_source_sha256':source_token,'toolchains_sha256':tools,'originals':originals},sort_keys=True,separators=(',',':')))
-PYWEB
-)"
-web_field() { helper_into "$1" web-token-field python3 "$WEB" token-field --token "$2" --field "$3"; }
-helper_into WEB_PREP_TOKEN web-prepare python3 "$WEB" prepare --caller "$WEB_CALLER"
-web_field WEB_PREPARATION "$WEB_PREP_TOKEN" record_sha256
-helper_into WEB_CONTEXT_TOKEN web-begin python3 "$WEB" begin --caller "$WEB_CALLER" --preparation "$WEB_PREPARATION" --completion-leaf web-completion.jsonl
-web_field WEB_CONTEXT "$WEB_CONTEXT_TOKEN" record_sha256
-export HAPPYRANCH_WEB_CALLER="$WEB_CALLER" HAPPYRANCH_WEB_CONTEXT="$WEB_CONTEXT" HAPPYRANCH_WEB_PREPARATION="$WEB_PREPARATION"
-export HAPPYRANCH_WEB_HELPER="$WEB" HAPPYRANCH_WEB_PYTHON
-HAPPYRANCH_WEB_PYTHON="$(command -v python3)"
-# Emitted source maps are evidence; only the existing app-copy strips them.
-helper_run asset-check-public python3 "$ASSETS" check-public "${ASSET_ARGS[@]}" --asset-context-sha256 "$ASSET_CONTEXT" --asset-source-sha256 "$ASSET_SOURCE"
-# The helper exclusively writes the admitted fixed leaf after genuine publish.
-# Preserve the actual lifecycle status; a postbuild failure defeats a valid marker.
-export HAPPYRANCH_WEB_COMPLETION_LEAF=web-completion.jsonl
-if npm run build -- --sourcemap; then
-    WEB_NPM_STATUS=0
-else
-    WEB_NPM_STATUS=$?
-fi
-unset HAPPYRANCH_WEB_CALLER HAPPYRANCH_WEB_CONTEXT HAPPYRANCH_WEB_PREPARATION HAPPYRANCH_WEB_HELPER HAPPYRANCH_WEB_PYTHON HAPPYRANCH_WEB_COMPLETION_LEAF
-if [ "$WEB_NPM_STATUS" -ne 0 ]; then
-    exit "$WEB_NPM_STATUS"
-fi
-helper_into WEB_BUILD_TOKEN web-accept-build python3 "$WEB" accept-build --caller "$WEB_CALLER" --context "$WEB_CONTEXT" --preparation "$WEB_PREPARATION" --completion-leaf web-completion.jsonl
-web_field WEB_BUILD "$WEB_BUILD_TOKEN" record_sha256
-helper_into ASSET_DIST_TOKEN asset-observe-dist python3 "$ASSETS" observe-dist "${ASSET_ARGS[@]}" --asset-context-sha256 "$ASSET_CONTEXT" --asset-source-sha256 "$ASSET_SOURCE"
-asset_field ASSET_DIST "$ASSET_DIST_TOKEN" sha256
-helper_into WEB_DIST_TOKEN web-seal-dist python3 "$WEB" seal-dist --caller "$WEB_CALLER" --context "$WEB_CONTEXT" --preparation "$WEB_PREPARATION" --build "$WEB_BUILD" --asset-dist "$ASSET_DIST"
-web_field WEB_DIST "$WEB_DIST_TOKEN" record_sha256
+(umask 022; npm ci)
+npm run build
 STAGE=swift
 cd "$PROJECT"
 LINK_MAP="$OUTPUT/diagnostics/swift-link.map"
@@ -523,14 +301,9 @@ STAGE=assembly
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/web" "$APP/Contents/Resources/licenses"
 cp "$BIN_DIR/HappyRanchApp" "$APP/Contents/MacOS/HappyRanch"
 shasum -a 256 "$BIN_DIR/HappyRanchApp" "$APP/Contents/MacOS/HappyRanch" > "$OUTPUT/diagnostics/swift-release.sha256"
-helper_run freezer-before-copy python3 "$FREEZER" before-copy "${ASSET_ARGS[@]}" "${FREEZER_ARGS[@]}"
 cp -R "$OUTPUT/scratch/freeze-dist/happyranch-daemon" "$APP/Contents/Resources/daemon"
-helper_run asset-check-dist python3 "$ASSETS" check-dist "${ASSET_ARGS[@]}" --asset-context-sha256 "$ASSET_CONTEXT" --asset-dist-sha256 "$ASSET_DIST"
 cp -R "$SOURCE/web/dist" "$APP/Contents/Resources/web/dist"
-# Keep web source-map graph outside shipped web; remove only fresh copied maps.
 find "$APP/Contents/Resources/web/dist" -name '*.map' -type f -delete
-helper_into ASSET_APP_TOKEN asset-observe-app python3 "$ASSETS" observe-app "${ASSET_ARGS[@]}" --asset-context-sha256 "$ASSET_CONTEXT" --asset-dist-sha256 "$ASSET_DIST"
-asset_field ASSET_APP "$ASSET_APP_TOKEN" sha256
 cp "$SOURCE/LICENSE" "$APP/Contents/Resources/licenses/LICENSE"
 chmod 644 "$APP/Contents/Resources/licenses/LICENSE"
 for executable in happyranch-daemon happyranch; do
@@ -555,12 +328,14 @@ for src in files:
         raise SystemExit(f'RESOURCE_MISSING: {src.relative_to(source)}: {dest}')
     os.chmod(dest, stat.S_IMODE(src.stat().st_mode))
 PYMODES
-helper_into FREEZER_COPY_TOKEN freezer-copy python3 "$FREEZER" copy "${ASSET_ARGS[@]}" "${FREEZER_ARGS[@]}"
-freezer_field FREEZER_COPY "$FREEZER_COPY_TOKEN" sha256
 STAGE=icon
-helper_into ASSET_ICON_TOKEN asset-icon python3 "$ASSETS" icon "${ASSET_ARGS[@]}" --asset-context-sha256 "$ASSET_CONTEXT" \
-    --iconutil-path "$ICONUTIL_PATH" --iconutil-sha256 "$ASSET_ICONUTIL"
-asset_field ASSET_ICON "$ASSET_ICON_TOKEN" sha256
+mkdir "$ICONSET"
+for size in 16 32 128 256 512; do
+    cp "$PROJECT/Resources/AppIcon.appiconset/icon_${size}.png" "$ICONSET/icon_${size}x${size}.png"
+    double=$((size * 2))
+    cp "$PROJECT/Resources/AppIcon.appiconset/icon_${double}.png" "$ICONSET/icon_${size}x${size}@2x.png"
+done
+iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/AppIcon.icns"
 STAGE=plist
 python3 - "$PROJECT/scripts/Info.plist" "$APP/Contents/Info.plist" "$VERSION" "$BUILD" "$SOURCE_SHA" "$SOURCE_TREE" "$ARCH" <<'PY'
 import plistlib, sys
@@ -574,322 +349,20 @@ data.update(CFBundleShortVersionString=version, CFBundleVersion=build,
 Path(dest).write_bytes(plistlib.dumps(data))
 PY
 STAGE=notices
-cp -R "$OUTPUT/scratch/freeze-work/notices" "$APP/Contents/Resources/licenses/python"
 cp "$SOURCE/packaging/THIRD_PARTY_NOTICES.md" "$APP/Contents/Resources/licenses/THIRD_PARTY_NOTICES.md"
-helper_into ASSET_NOTICES_TOKEN embedded-notices python3 - "$SOURCE" "$APP" "$OUTPUT" "$ASSETS" "$REPO_ROOT" "$RUN_ID" "$SOURCE_SHA" "$SOURCE_TREE" "$VERSION" "$BUILD" "$ARCH" "$ASSET_CONTEXT" "$ASSET_APP" "$WEB" "$WEB_CALLER" "$WEB_CONTEXT" "$WEB_PREPARATION" "$WEB_BUILD" "$WEB_DIST" <<'PYNOTICES'
-import hashlib, json, os, re, shutil, stat, sys
-from pathlib import Path
-source, app, output = map(Path, sys.argv[1:4])
-notice_data = source / 'packaging/notice-data'
-notice_helpers = __import__('runpy').run_path(str(notice_data / 'retained_notices.py'))
-mapping = json.loads((output / 'scratch/freeze-work/license-mapping.json').read_text())
-components = mapping['components']
-def sha(p):
-    return hashlib.sha256(p.read_bytes()).hexdigest()
-def emitted_source_sha256(path, root):
-    # Source modules have a separate policy from 256 KiB notice/manifest reads.
-    # 16 MiB gives >13x headroom over the largest of 1043 retained mapped inputs.
-    limit = 16 * 1024 * 1024
-    notice_helpers['safe_path'](path, root)
-    with os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK), 'rb') as stream:
-        before = os.fstat(stream.fileno())
-        if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1 or before.st_size > limit:
-            raise ValueError('EMITTED_SOURCE_UNVERIFIABLE: ' + str(path))
-        digest = hashlib.sha256(); size = 0
-        while True:
-            chunk = stream.read(min(65536, limit + 1 - size))
-            if not chunk:
-                break
-            size += len(chunk)
-            if size > limit:
-                raise ValueError('EMITTED_SOURCE_UNVERIFIABLE: ' + str(path))
-            digest.update(chunk)
-        after = os.fstat(stream.fileno())
-        if (size != before.st_size or after.st_nlink != 1
-                or (before.st_size, before.st_mtime_ns, before.st_ctime_ns)
-                != (after.st_size, after.st_mtime_ns, after.st_ctime_ns)):
-            raise ValueError('EMITTED_SOURCE_UNVERIFIABLE: ' + str(path))
-    # Empty regular JavaScript is a valid module; retain its exact empty digest.
-    return digest.hexdigest()
-def notice_candidates(root):
-    # Include unsafe entries too: a notice-named FIFO/directory is not absence.
-    return [p for p in sorted(root.iterdir()) if
-            any(n in p.name.lower() for n in ('license', 'notice', 'copying', 'copyright', 'patents'))]
-def texts(name, version, root, layer, inclusion):
-    notices = []; prepared = []
-    try:
-        # Validate the complete owner's sources and destinations before writing
-        # any notice. Preserve installed bytes, including shared Go callers.
-        for p in notice_candidates(root):
-            data = notice_helpers['safe_bytes'](p, root)
-            dest = Path('Contents/Resources/licenses') / layer / name / version / p.name
-            target = app / dest
-            notice_helpers['safe_path'](target, app)
-            if target.exists() and notice_helpers['safe_bytes'](target, app) != data:
-                raise ValueError('NOTICE_DESTINATION_CONFLICT')
-            prepared.append((p, dest, target, data))
-        for p, dest, target, data in prepared:
-            # An identical safe existing destination is never rewritten.
-            if not target.exists():
-                target.parent.mkdir(parents=True, exist_ok=True)
-                notice_helpers['safe_path'](target, app)
-                with target.open('xb') as stream:
-                    stream.write(data)
-            if notice_helpers['safe_bytes'](target, app) != data:
-                raise ValueError('NOTICE_RETAINED_HASH_MISMATCH')
-            digest = hashlib.sha256(data).hexdigest()
-            notices.append({'source': str(p), 'source_sha256': digest,
-                            'destination': str(dest), 'sha256': digest})
-    except (OSError, ValueError, RuntimeError) as exc:
-        reason = str(exc) if isinstance(exc, ValueError) else 'notice retention failed: ' + type(exc).__name__
-        if layer == 'web':
-            refused_package_roots.add(root)
-            for item in inclusion:
-                web_diagnostic(item, reason)
-        components.append({'component': name, 'version': version, 'scope': layer,
-                           'inclusion': inclusion, 'notices': [],
-                           'disposition': 'LICENSE_UNRESOLVED',
-                           'reason': reason})
-        return
-    components.append({'component': name, 'version': version, 'scope': layer,
-                       'inclusion': inclusion, 'notices': notices,
-                       'disposition': 'RETAINED_TEXT' if notices else 'LICENSE_MISSING'})
-# Stream go list's real dependency objects; Main maps to the root license.
-decoder = json.JSONDecoder()
-data = (output / 'diagnostics/go-deps.json').read_text(); modules = {}
-while data.strip():
-    row, end = decoder.raw_decode(data.lstrip()); data = data.lstrip()[end:]
-    module = row.get('Module')
-    if module and not module.get('Main'):
-        if module.get('Replace'):
-            raise SystemExit('GO_MODULE_REPLACEMENT_UNAPPROVED')
-        modules.setdefault(module['Path'], {'module': module, 'packages': []})['packages'].append(row['ImportPath'])
-for name, row in sorted(modules.items()):
-    mod = row['module']
-    texts(name, mod.get('Version', 'unknown'), Path(mod['Dir']), 'go', row['packages'])
-goroot = Path(__import__('subprocess').check_output(['go', 'env', 'GOROOT'], text=True).strip())
-texts('Go-runtime', __import__('subprocess').check_output(['go', 'env', 'GOVERSION'], text=True).strip(), goroot, 'go', ['fresh c-archive'])
-# Source maps identify emitted input modules. They do not assert whether every
-# included helper/asset or legal obligation was preserved by the bundler.
-web = (source / 'web').resolve(); node_modules = web / 'node_modules'; packages = {}
-# index.html's /src/main.tsx entry and Vite's @ alias select web/src.
-# Other source/virtual/generated inputs require explicit attribution evidence.
-first_party = web / 'src'
-# Retain only paths, hashes and fixed reasons, never metadata/source contents.
-# First 100 records, with bounded fields, survive even a later notices failure.
-web_diagnostics = {'records': [], 'omitted_records': 0, 'truncated': False}
-refused_package_roots = set()
-def web_diagnostic(inclusion, reason):
-    record = {'disposition': 'LICENSE_UNRESOLVED', 'reason': reason}
-    record.update({key: inclusion.get(key) for key in
-                   ('map', 'map_sha256', 'source_root', 'source', 'input', 'metadata', 'package_root')})
-    clipped = []
-    for key, value in record.items():
-        if isinstance(value, str) and len(value) > 512:
-            record[key] = value[:512]
-            clipped.append(key)
-    record['truncated_fields'] = clipped
-    # A byte cap also bounds escaped/non-ASCII path strings in serialized JSON.
-    while len(json.dumps(record).encode('utf-8')) > 2048:
-        key = max((k for k, v in record.items() if isinstance(v, str)), key=lambda k: len(record[k]))
-        record[key] = record[key][:len(record[key]) // 2]
-        if key not in clipped:
-            clipped.append(key)
-    if len(web_diagnostics['records']) < 100:
-        web_diagnostics['records'].append(record)
-    else:
-        web_diagnostics['omitted_records'] += 1
-    web_diagnostics['truncated'] |= bool(clipped) or web_diagnostics['omitted_records'] > 0
-    (output / 'diagnostics/web-attribution.json').write_text(json.dumps(web_diagnostics, indent=2) + '\n')
-def unresolved(inclusion, reason):
-    if inclusion.get('package_root'):
-        refused_package_roots.add(Path(inclusion['package_root']))
-    components.append({'component': inclusion.get('source') or inclusion['map'], 'scope': 'web',
-                       'disposition': 'LICENSE_UNRESOLVED', 'reason': reason,
-                       'inclusion': [inclusion.copy()], 'notices': []})
-    web_diagnostic(inclusion, reason)
-def identity(meta):
-    if not isinstance(meta, dict):
-        raise ValueError('package metadata is not an object')
-    name, version = meta.get('name'), meta.get('version')
-    if not isinstance(name, str) or not isinstance(version, str) or not name or not version:
-        raise ValueError('package name/version must be nonempty strings')
-    if not re.fullmatch(r'(?:@[a-z0-9][a-z0-9._-]*/)?[a-z0-9][a-z0-9._-]*', name):
-        raise ValueError('unsafe package name')
-    if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9.+_-]*', version):
-        raise ValueError('unsafe package version')
-    return name, version
-for map_path in sorted((web / 'dist').rglob('*.map')):
-    base = {'map': str(map_path.relative_to(web)), 'source': None,
-            'input': None, 'metadata': None}
-    if map_path.is_symlink() or not map_path.resolve().is_relative_to(web / 'dist'):
-        base['metadata'] = base['map']
-        unresolved(base, 'source map escapes emitted dist boundary')
-        continue
-    base['map_sha256'] = sha(map_path)
-    try:
-        graph = json.loads(map_path.read_text())
-        if not isinstance(graph, dict) or not isinstance(graph.get('sources'), list):
-            raise ValueError('source map must be an object with a sources array')
-        source_root = graph.get('sourceRoot', '')
-    except (OSError, ValueError) as exc:
-        base['metadata'] = base['map']
-        unresolved(base, 'unusable source map: ' + type(exc).__name__)
-        continue
-    for src in graph['sources']:
-        inclusion = base.copy(); inclusion['source'] = src if isinstance(src, str) else None
-        inclusion['source_root'] = source_root if isinstance(source_root, str) else None
-        inclusion['metadata'] = base['map']
-        if not isinstance(source_root, str) or Path(source_root).is_absolute() or '\\' in source_root or '\x00' in source_root:
-            unresolved(inclusion, 'sourceRoot must be a safe relative path string')
-            continue
-        if not isinstance(src, str) or not src or '\x00' in src or '\\' in src or Path(src).is_absolute():
-            unresolved(inclusion, 'emitted input must be a safe relative path string')
-            continue
-        # Use lexical location first: resolving a symlink must not reassign an
-        # input from its actual package to another dependency or the web app.
-        path = Path(os.path.abspath(map_path.parent / source_root / src))
-        inclusion['input'] = str(path)
-        try:
-            # JSON permits lone surrogates that the filesystem cannot encode.
-            # Validate both fields before any filesystem resolution/inspection.
-            os.fsencode(source_root)
-            os.fsencode(src)
-            os.fsencode(path)
-        except UnicodeEncodeError:
-            unresolved(inclusion, 'emitted input or sourceRoot is not filesystem-encodable')
-            continue
-        if not path.is_relative_to(node_modules):
-            try:
-                if 'node_modules' in Path(src).parts or 'node_modules' in Path(source_root).parts:
-                    raise ValueError('dependency input escapes its lexical package boundary')
-                if not path.is_relative_to(first_party):
-                    raise ValueError('emitted input is outside permitted first-party web/src boundary')
-                resolved = path.resolve()
-                if first_party.resolve() != first_party or not resolved.is_relative_to(first_party):
-                    raise ValueError('first-party input escapes its source boundary')
-                if 'node_modules' in resolved.relative_to(first_party).parts or not path.is_file():
-                    raise ValueError('first-party input is missing or is an unclassified dependency')
-            except (OSError, ValueError, RuntimeError) as exc:
-                unresolved(inclusion, str(exc) if isinstance(exc, ValueError) else 'emitted input path cannot be safely resolved')
-            continue  # Only positively classified first-party input may skip.
-        parts = path.relative_to(node_modules).parts
-        # The last node_modules segment identifies the innermost dependency,
-        # including nested and scoped packages. Never climb past this boundary.
-        start = max((i + 1 for i, part in enumerate(parts) if part == 'node_modules'), default=0)
-        count = 2 if start < len(parts) and parts[start].startswith('@') else 1
-        if len(parts) <= start + count:
-            unresolved(inclusion, 'dependency input has no package-local file')
-            continue
-        root = node_modules.joinpath(*parts[:start + count])
-        inclusion['package_root'] = str(root)
-        inclusion['metadata'] = str(root / 'package.json')
-        try:
-            if root.is_symlink() or not root.resolve().is_relative_to(node_modules) or root.resolve() != root:
-                raise ValueError('package boundary is symlinked or escaping')
-            if not path.resolve().is_relative_to(root) or not path.is_file():
-                raise ValueError('emitted input is missing or escapes package boundary')
-            # Inspect every encountered manifest. Anonymous format metadata may
-            # inherit only the validated identity at this same package root.
-            manifests = []; current = path.parent
-            while True:
-                metadata_path = current / 'package.json'
-                if metadata_path.exists() or metadata_path.is_symlink() or current == root:
-                    inclusion['metadata'] = str(metadata_path)
-                    if metadata_path.is_symlink() or not metadata_path.resolve().is_relative_to(root):
-                        raise ValueError('metadata escapes package boundary or is symlinked')
-                    try:
-                        metadata_bytes = notice_helpers['safe_bytes'](metadata_path, root)
-                        meta = json.loads(metadata_bytes)
-                    except (OSError, ValueError) as exc:
-                        raise ValueError('unusable package metadata: ' + type(exc).__name__) from None
-                    if not isinstance(meta, dict):
-                        raise ValueError('package metadata is not an object')
-                    found = identity(meta) if current == root or 'name' in meta or 'version' in meta else None
-                    manifests.append({'path': str(metadata_path),
-                                      'sha256': hashlib.sha256(metadata_bytes).hexdigest(), 'identity': found})
-                if current == root:
-                    break
-                current = current.parent
-            owner = manifests[-1]['identity']
-            for manifest in manifests:
-                if manifest['identity'] is not None and manifest['identity'] != owner:
-                    inclusion['metadata'] = manifest['path']
-                    raise ValueError('nested metadata identity conflicts with package owner')
-            inclusion['metadata'] = str(root / 'package.json')
-            inclusion['metadata_chain'] = manifests
-            inclusion['source_sha256'] = emitted_source_sha256(path, root)
-            packages.setdefault(root, {'identity': owner, 'inputs': []})['inputs'].append(inclusion)
-        except (OSError, ValueError, RuntimeError) as exc:
-            unresolved(inclusion, str(exc) if isinstance(exc, ValueError) else 'package input inspection failed: ' + type(exc).__name__)
-for root, row in sorted(packages.items()):
-    name, version = row['identity']
-    try:
-        if root in refused_package_roots:
-            raise ValueError('notice cannot resolve an already refused package input')
-        installed = notice_candidates(root)
-        if installed:
-            texts(name, version, root, 'web', row['inputs'])
-        else:
-            recovered = notice_helpers['radix_original'](notice_data, name, version, root, row['inputs'])
-            if recovered is None:
-                texts(name, version, root, 'web', row['inputs'])
-            else:
-                original, provenance = recovered
-                target = app / 'Contents/Resources/licenses/web' / name / version / 'LICENSE'
-                notice = notice_helpers['retain'](original, notice_data, target, app)
-                notice['provenance'] = provenance
-                components.append({'component': name, 'version': version, 'scope': 'web',
-                                   'inclusion': row['inputs'], 'notices': [notice],
-                                   'disposition': 'RETAINED_TEXT'})
-    except (OSError, ValueError, RuntimeError) as exc:
-        for inclusion in row['inputs']:
-            unresolved(inclusion, str(exc) if isinstance(exc, ValueError) else 'notice retention failed: ' + type(exc).__name__)
-# Manifest standard: retain original observations without a per-byte closure claim.
-mapping['source_tree'] = sys.argv[8]
-mapping['go_root'] = str(goroot)
-mapping['go_version'] = __import__('subprocess').check_output(['go', 'env', 'GOVERSION'], text=True).strip()
-mapping['go_originals'] = [str(p) for p in notice_candidates(goroot)]
-(output / 'diagnostics/web-attribution.json').write_text(json.dumps(web_diagnostics, indent=2) + '\n')
-license = app / 'Contents/Resources/licenses/LICENSE'
-components.append({'component': 'HappyRanch first-party code and 29 source resources',
-                   'disposition': 'RETAINED_TEXT', 'scope': 'pinned source and assembly',
-                   'notices': [{'source': str(source / 'LICENSE'), 'sha256': sha(license),
-                                'destination': 'Contents/Resources/licenses/LICENSE'}]})
-# Preserve actual asset/web original-source and integrity observations.
-asset = __import__('runpy').run_path(sys.argv[4])
-candidate = asset['Candidate'](*sys.argv[7:12])
-paths = asset['Paths'](Path(sys.argv[5]), source, source / 'web/dist', app, output,
-                       output / 'diagnostics', output / 'scratch/AppIcon.iconset')
-font_rows, font_token = asset['retain_font_notices'](candidate, paths, sys.argv[6], sys.argv[12], sys.argv[13])
-components.extend(font_rows)
-web_custody = __import__('runpy').run_path(sys.argv[14])
-@web_custody['web_bounded']
-def append_generated():
-    session = web_custody['Session'](web_custody['parse'](sys.argv[15].encode(), 256*1024))
-    return web_custody['retain_web_notices'](session, sys.argv[16], sys.argv[17], sys.argv[18], sys.argv[19], sys.argv[13], components)
-web_rows, web_notice_token = append_generated()
-components.extend(web_rows)
-(output / 'diagnostics/license-mapping.json').write_text(json.dumps(mapping, indent=2) + '\n')
-# The token leaves this caller only after the observation mapping is written.
-print(json.dumps({'asset':font_token,'web':web_notice_token},separators=(',',':')))
-PYNOTICES
-helper_run manifest-collect python3 "$SOURCE/app/mac/scripts/manifest_notices.py" collect --source "$SOURCE" --app "$APP" \
+python3 "$SOURCE/app/mac/scripts/manifest_notices.py" inputs --source "$SOURCE" --output "$OUTPUT" \
+    --source-tree "$SOURCE_TREE" --web-tool-originals "$WEB_TOOL_ORIGINALS"
+python3 "$SOURCE/app/mac/scripts/manifest_notices.py" collect --source "$SOURCE" --app "$APP" \
     --output "$OUTPUT" --mapping "$OUTPUT/diagnostics/license-mapping.json" > "$OUTPUT/diagnostics/manifest-notices.json"
-web_field WEB_NOTICE_TOKEN "$ASSET_NOTICES_TOKEN" web
-web_field WEB_NOTICES "$WEB_NOTICE_TOKEN" record_sha256
-web_field ASSET_NOTICE_TOKEN "$ASSET_NOTICES_TOKEN" asset
-asset_field ASSET_NOTICES "$ASSET_NOTICE_TOKEN" sha256
-WEB_ARGS=(--web-tool-originals "$WEB_TOOL_ORIGINALS" --web-caller "$WEB_CALLER" --web-context-sha256 "$WEB_CONTEXT" --web-preparation-sha256 "$WEB_PREPARATION" --web-build-sha256 "$WEB_BUILD" --web-dist-sha256 "$WEB_DIST" --web-notices-sha256 "$WEB_NOTICES")
 STAGE=verification
 INSPECTION_STAGE=resources
 bash "$VERIFY" resources --app "$APP" > "$OUTPUT/diagnostics/resources.json"
-INSPECTION_STAGE=native
-bash "$VERIFY" native --app "$APP" --go-archive "$PROJECT/tsnet-bridge/libtsnet.a" --link-map "$LINK_MAP" --evidence-dir "$OUTPUT/diagnostics" > "$OUTPUT/diagnostics/native.json"
+INSPECTION_STAGE=basic
+bash "$VERIFY" basic --app "$APP" > "$OUTPUT/diagnostics/native.json"
 # Requested frozen entry-point inspection outside source, with bounded subprocess
 # timeouts and no checkout/PYTHONPATH/development tool search path.
 INSPECTION_STAGE=cli
-helper_run frozen-entrypoints python3 - "$APP" "$OUTPUT/diagnostics" <<'PY'
+python3 - "$APP" "$OUTPUT/diagnostics" <<'PY'
 import json, os, subprocess, sys
 from pathlib import Path
 app, logs = map(Path, sys.argv[1:])
@@ -909,18 +382,11 @@ for i, argv in enumerate(commands):
 PY
 INSPECTION_STAGE=catalog
 bash "$VERIFY" catalog --app "$APP" --list-json "$OUTPUT/diagnostics/cli-5.stdout" --validate-json "$OUTPUT/diagnostics/cli-6.stdout" > "$OUTPUT/diagnostics/catalog.json"
-# Verify complete resolved inventory membership and all original text associations.
-# Refuse archive creation for concrete missing or mismatched owners/texts. Preserve
-# all diagnostic evidence and staged app for the owner; no success ZIP/upload.
 INSPECTION_STAGE=trust
 bash "$VERIFY" trust --app "$APP" > "$OUTPUT/diagnostics/trust.json"
 INSPECTION_STAGE=licenses
-bash "$VERIFY" licenses "${ASSET_ARGS[@]}" --mapping "$OUTPUT/diagnostics/license-mapping.json" \
-    --asset-context-sha256 "$ASSET_CONTEXT" --toolchains-sha256 "$ASSET_TOOLCHAINS" \
-    --iconutil-path "$ICONUTIL_PATH" --iconutil-sha256 "$ASSET_ICONUTIL" \
-    --asset-source-sha256 "$ASSET_SOURCE" --asset-dist-sha256 "$ASSET_DIST" --asset-app-sha256 "$ASSET_APP" \
-    --asset-icon-sha256 "$ASSET_ICON" --asset-notices-sha256 "$ASSET_NOTICES" \
-    "${FREEZER_ARGS[@]}" --freezer-copy-sha256 "$FREEZER_COPY" "${WEB_ARGS[@]}" > "$OUTPUT/diagnostics/licenses.json"
+bash "$VERIFY" licenses --source "$SOURCE" --app "$APP" --output-dir "$OUTPUT" \
+    --mapping "$OUTPUT/diagnostics/license-mapping.json" > "$OUTPUT/diagnostics/licenses.json"
 STAGE=archive
 ZIP="$OUTPUT/HappyRanch-${VERSION}-${BUILD}-${ARCH}.zip"
 bash "$SCRIPT_DIR/archive-app.sh" "$APP" "$OUTPUT" "$VERSION" "$BUILD" "$SOURCE_SHA" "$SOURCE_TREE" "$ARCH" "$RUN_ID"

@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Private freezer custody records. Code payloads are opaque; closure stays false.
+"""RETIRED / NONSHIPPING under Founder THR104 seq369.
+
+Historical implementation only; Mac build and all shipping readers do not import
+or invoke this file. Its former protocol is not a current acceptance gate.
+
+Private freezer custody records. Code payloads are opaque; closure stays false.
 
 This observer never runs a tool, compiler, archive payload or native transform.
 Caller tokens are required at the reader, and scratch generations must survive.

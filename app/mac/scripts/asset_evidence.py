@@ -1,7 +1,12 @@
 #!/usr/bin/env python3
-"""Private, bounded local packaging observations; never a rights/release approval.
+"""RETIRED / NONSHIPPING under Founder THR104 seq369.
 
-Only build-app.sh and verify-release.sh are production callers. All expectations
+Historical implementation only; Mac build and all shipping readers do not import
+or invoke this file. Its former protocol is not a current acceptance gate.
+
+Private, bounded local packaging observations; never a rights/release approval.
+
+Former callers were build-app.sh and verify-release.sh. All expectations
 come from the admitted invocation, not a candidate's stored documents. Stored
 records require the original subjects and native custodian evidence to be useful.
 """

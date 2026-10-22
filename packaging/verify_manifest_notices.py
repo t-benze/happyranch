@@ -17,6 +17,7 @@ import plistlib
 import runpy
 import shutil
 import subprocess
+import struct
 import sys
 import zipfile
 from pathlib import Path
@@ -81,10 +82,12 @@ def fixture(root):
         locks[location] = dict(version=version, resolved='pinned upstream 8ca9ba5ea52de03308fe8ced94f7b159a44d28ff')
         write(source / 'web' / location / 'package.json', dict(name='react-remove-scroll-bar', version=version))
         write(source / 'web' / location / 'LICENSE', (originals / 'LICENSE').read_bytes())
-    # Authentic Vite version, explicitly excluded as build-only here. Full
-    # production generated-web custody separately includes its actual tools.
+    # Generated-web tooling is included directly from resolved manifests.
     locks['node_modules/vite'] = dict(version='5.4.21+hr.css-relation.1', dev=True)
     write(source / 'web/node_modules/vite/package.json', dict(name='vite', version='5.4.21+hr.css-relation.1'))
+    write(source / 'web/node_modules/vite/LICENSE', (SOURCE / 'web/vendor/vite/LICENSE.md').read_bytes())
+    locks['node_modules/typescript'] = dict(version='5.0.0', dev=True)
+    write(source / 'web/node_modules/typescript/package.json', dict(name='typescript', version='5.0.0'))
     locks['node_modules/@esbuild/linux-x64'] = dict(version='0.21.5', optional=True, dev=True, os=['linux'], cpu=['x64'])
     write(source / 'web/package-lock.json', dict(lockfileVersion=3, packages=locks))
     pyversion = next(p['version'] for p in __import__('tomllib').loads((SOURCE / 'uv.lock').read_text())['package'] if p['name'] == 'pyinstaller' and 'path' in p['source'])
@@ -107,6 +110,7 @@ def fixture(root):
     shutil.copytree(SOURCE / 'web/public', source / 'web/public')
     shutil.copytree(SOURCE / 'web/public', app / 'Contents/Resources/web/dist')
     shutil.copytree(SOURCE / 'app/mac/Resources/AppIcon.appiconset', source / 'app/mac/Resources/AppIcon.appiconset')
+    write(source / 'packaging/THIRD_PARTY_NOTICES.md', (SOURCE / 'packaging/THIRD_PARTY_NOTICES.md').read_bytes())
     write(source / 'packaging/notice-data/font-assets.json', (SOURCE / 'packaging/notice-data/font-assets.json').read_bytes())
     # Authentic retained Go release originals; fixture needs no Go installation.
     goroot = source / 'fixture-go'
@@ -130,11 +134,19 @@ def fixture(root):
         dest = app / ('Contents/Resources/licenses/LICENSE' if row['path'] == 'LICENSE' else 'Contents/Resources/daemon/_internal/' + row['path'])
         write(dest, data)
         dest.chmod(int(row['posix_mode'], 8))
-    write(app / 'Contents/Info.plist', plistlib.dumps(dict(CFBundleShortVersionString='1.0.1', CFBundleVersion='1.0.1', GitCommitSHA='1' * 40, GitTreeSHA='2' * 40, ReleaseArchitecture='arm64')))
+    plist = plistlib.loads((SOURCE / 'app/mac/scripts/Info.plist').read_bytes())
+    plist.update(dict(CFBundleShortVersionString='1.0.1', CFBundleVersion='1.0.1', GitCommitSHA='1' * 40, GitTreeSHA='2' * 40, ReleaseArchitecture='arm64'))
+    write(app / 'Contents/Info.plist', plistlib.dumps(plist))
+    for name in ('Contents/MacOS/HappyRanch', 'Contents/Resources/daemon/happyranch-daemon', 'Contents/Resources/daemon/happyranch'):
+        write(app / name, struct.pack('<IIIIIIII', 0xfeedfacf, 0x100000c, 0, 2, 0, 0, 0, 0))
+        (app / name).chmod(0o755)
+    write(app / 'Contents/Resources/AppIcon.icns', b'preassembled icon fixture, not iconutil output')
+    write(app / 'Contents/Resources/web/dist/index.html', b'<html>preassembled fixture</html>')
     return source, output, app, mapping
 
 
 def run(scratch):
+    os.umask(0o077)  # Match shipping private output allocations.
     scratch.mkdir(mode=0o700)
     source, output, app, mapping = fixture(scratch)
     facts = REPORT[-1]
@@ -163,7 +175,7 @@ def run(scratch):
     assert py_snapshot['runtime'][0]['interpreter_library']['source'].endswith('/lib/libpython3.12.dylib')
     assert py_snapshot['distributions'][0]['name'] == 'PyInstaller'
     call('case1 real collector complete resolved fixture including R1 interpreter library', collect)
-    call('case1 independent live inventory verification', cli + ['verify', '--source', str(source), '--app', str(app), '--output', str(output), '--mapping', str(output / 'diagnostics/license-mapping.json')])
+    call('case1 independent live inventory verification', ['bash', str(SOURCE / 'app/mac/scripts/verify-release.sh'), 'licenses', '--source', str(source), '--app', str(app), '--output-dir', str(output), '--mapping', str(output / 'diagnostics/license-mapping.json')])
     manifest_path = app / H['MANIFEST']
     manifest_raw = manifest_path.read_bytes()
     manifest = json.loads(manifest_raw)
@@ -207,9 +219,9 @@ def run(scratch):
         bad_archive[2:4] = [str(bad_app), str(bad_output)]
         call('R1 uncollected vendor candidate refuses before archive ' + name, bad_archive, expected=1, env=env)
         assert not (bad_output / candidate_zip.name).exists()
-    for family in ('npm', 'go', 'python', 'asset'):
+    for family in ('npm', 'go', 'python', 'asset', 'runtime', 'font'):
         broken = copy.deepcopy(manifest)
-        removed = next(r for r in broken['components'] if r['family'] == family and r['selection'].startswith('included:'))
+        removed = next(r for r in broken['components'] if (r['family'] == family or (family == 'font' and r['family'] == 'asset' and 'Newsreader' in r['component'])) and r['selection'].startswith('included:'))
         broken['components'].remove(removed)
         write(manifest_path, broken)
         p = call('case2 missing owner ' + removed['id'], archive, expected=1, env=env)
@@ -266,11 +278,44 @@ def run(scratch):
     assert len({r['notices'][0]['sha256'] for r in packages}) == 1
     assert any('optional package not installed' in r['selection'] for r in manifest['components'])
     assert any('build-only' in r['selection'] for r in manifest['components'])
+    vite_owner = next(r for r in manifest['components'] if r['component'] == 'vite')
+    assert vite_owner['selection'].startswith('included:') and vite_owner['notices'], 'resolved generated-web tool must retain its original'
     assert len([r for r in manifest['components'] if r['family'] == 'asset' and 'Newsreader' in r['component']]) >= 2
     REPORT.append(dict(label='case4 multiple versions/shared authentic original/platform optional/build-only selections', exit=0, owners=len(manifest['components'])))
+    plist_path = app / 'Contents/Info.plist'
+    original_plist = plist_path.read_bytes()
+    for key, value in [('CFBundleExecutable', 'Other'), ('CFBundlePackageType', 'BNDL'), ('CFBundleVersion', ''), ('LSMinimumSystemVersion', '13.0')]:
+        changed = plistlib.loads(original_plist); changed[key] = value
+        write(plist_path, plistlib.dumps(changed))
+        call('case6 basic bundle rejects ' + key, archive, expected=1, env=env)
+        assert not candidate_zip.exists()
+    write(plist_path, original_plist)
+    executable = app / 'Contents/MacOS/HappyRanch'
+    executable_bytes = executable.read_bytes()
+    write(executable, struct.pack('<IIIIIIII', 0xfeedfacf, 0x1000007, 0, 2, 0, 0, 0, 0))
+    call('case6 actual x86_64 header refuses arm64', archive, expected=1, env=env)
+    assert not candidate_zip.exists()
+    write(executable, executable_bytes)
+    resource = app / 'Contents/Resources/web/dist/index.html'
+    resource_bytes = resource.read_bytes(); resource.unlink()
+    call('case6 missing web entry refuses archive', archive, expected=1, env=env)
+    assert not candidate_zip.exists()
+    write(resource, resource_bytes)
+    # Real failure status at the actual archive subprocess boundary, no supervisor.
+    ditto_bytes = ditto.read_bytes()
+    ditto.write_text('#!/bin/sh\nexit 19\n'); ditto.chmod(0o755)
+    failed = call('case7 ordinary compressor status', archive, expected=1, env=env)
+    assert failed.returncode == 19 and not candidate_zip.exists()
+    ditto.write_text('#!/bin/sh\nkill -TERM $$\n'); ditto.chmod(0o755)
+    failed = call('case7 compressor signal remains failure', archive, expected=1, env=env)
+    assert failed.returncode != 0 and not candidate_zip.exists()
+    ditto.write_bytes(ditto_bytes); ditto.chmod(0o755)
     call('case5 complete roundtrip', archive, env=env)
     call('case5 archived notices independent read', cli + ['archive', '--archive', str(candidate_zip)])
     notice_member = 'HappyRanch.app/' + row['notices'][0]['destination']
+    truncated = scratch / 'truncated.zip'
+    write(truncated, valid_zip.read_bytes()[:100])
+    call('case5 truncated ZIP', cli + ['archive', '--archive', str(truncated)], expected=1)
     for mode in ('missing', 'changed'):
         tampered = scratch / (mode + '.zip')
         with zipfile.ZipFile(valid_zip) as src, zipfile.ZipFile(tampered, 'x') as dest:
@@ -284,7 +329,7 @@ def run(scratch):
         args = verifier.copy()
         args[args.index(option) + 1] = value
         call('case5 independent rejection ' + option, args, expected=1)
-    REPORT.append(dict(label='limitations', native='UNEXECUTED', substitutions=['synthetic resolved manifests, installed RECORD, EXE.python_lib selection, standalone prefix and Analysis inputs; preassembled resource/plist candidate', 'ditto replaced with Python zipfile'], actual='shipping collector, manifest validator, archive shell, resources, ZIP inventory and receipt reconciliation', integration='SKIPPED THR243seq42'))
+    REPORT.append(dict(label='limitations', native='UNEXECUTED', substitutions=['synthetic resolved manifests, installed RECORD, EXE.python_lib selection, standalone prefix and Analysis inputs; preassembled resources/plist/icon and synthetic arm64 Mach-O headers; no compiled native app', 'ditto replaced with Python zipfile'], actual='shipping collector, manifest validator, archive shell, resources, ZIP inventory and receipt reconciliation', integration='SKIPPED THR243seq42'))
     return scratch / 'evidence.json'
 
 
@@ -297,4 +342,4 @@ if __name__ == '__main__':
         evidence = run(args.scratch)
     finally:
         write(args.scratch / 'evidence.json', REPORT)
-    print(json.dumps(dict(cases='1-5 PASS portable only', evidence=str(evidence), commands=len(REPORT))))
+    print(json.dumps(dict(cases='notice/archive/basic/status cases PASS portable only', evidence=str(evidence), commands=len(REPORT))))

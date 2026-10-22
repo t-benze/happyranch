@@ -1,3 +1,4 @@
+/** RETIRED / NONSHIPPING (THR104 seq369): Vite no longer imports this historical instrumentation. */
 /** Private, invocation-bound packaging observations. No release/rights predicate. */
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { createHash } from 'node:crypto';

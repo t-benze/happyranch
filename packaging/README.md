@@ -1,3 +1,73 @@
+# Frozen Mac packaging
+
+Current shipping contract: [Mac build](../app/mac/README.md),
+[manifest notices](manifest-notices.md), and
+[workflow limits/diagnostics](../docs/runbooks/mac-workflow-operations.md).
+Founder THR104 seq369 retires asset/freezer/web evidence and the packaging
+supervisor from every shipping producer and consumer. No closure-complete flag,
+mandatory evidence token, per-byte emitted proof or IPC replaces them.
+Historical source/originals/failures are preserved below and in Git history.
+
+For a standalone freeze, use a fresh disposable source checkout:
+
+```sh
+bash packaging/build_daemon.sh --dist-dir /owned/private/new-dist --work-dir /owned/private/new-work
+```
+
+Dist/work must be new, disjoint and outside source, with existing safe owned
+parents. The builder keeps no-follow ancestry descriptors, root/current-user
+owners, no group/other writes, device/identity rechecks and exclusive reservations.
+Private work children contain the managed Python install, UV/PyInstaller caches
+and temp data. Existing .venv, discovered uv.toml, enclosing pyproject or unexpected
+source UV configuration refuse before installer effects. All inherited UV and
+Python environment admission and download restrictions remain; selected
+CPython3.12.10 is managed-only, checked before sync and checked again in .venv.
+No shared framework/configuration is modified. Frozen sync/no-dotenv run uses
+the same explicit project and patch-bearing Python request with downloads disabled
+after the private install. The spec uses standard Analysis/PYZ/EXE/COLLECT, separate
+daemon+CLI archives and collision-checked shared data/native inputs.
+
+The existing Darwin PyInstaller6.21.0 wheel remains pinned with its original
+notices. Its opt-in custody API is inactive: the spec supplies no custom argument,
+caller or observer. There is no dependency/version/lock/wheel mutation. Vite
+uses the standard Tailwind plugin; its historical observer sink has no consumer.
+
+Only direct inputs needed for manifest notices leave the spec: installed Python
+metadata/RECORD, selected interpreter/native owner paths and authenticated
+interpreter originals. This does not collect producer lifecycles or emitted
+archive closure. Missing/unrecognized required owners or original texts refuse.
+The full build collects notices after assembly, validates resources/basic app,
+checks frozen CLI/catalog, records unsigned trust observations, archives and
+reconciles actual ZIP/notice bytes and release identity. The retained resource
+catalog/runtime is unchanged.
+
+Run the existing focused portable commands outside CI with fresh task scratch:
+
+```sh
+python packaging/verify_manifest_notices.py --scratch /owned/new-notice-fixture
+python packaging/verify_mac_run_layout.py --scratch /owned/new-layout-fixture
+```
+
+The first uses authentic notices with synthetic resolved inputs, preassembled
+resources/plist/icon/Mach-O headers and a substituted ditto ZIP writer. The second
+uses actual workflow reservation/upload selectors and shipping source/path
+preflight with fixture Git/marker bytes. Neither compiles an app or proves native
+execution, cleanup/quiescence, Mac14 installation, signing or public availability.
+Former directory-diagnostic/asset binding cases observe retired protocols; active
+path keepers now observe the shipping preflight/reservation instead.
+
+Required automated PR/merge checks remain Source Boundary Lint and Web Lint
+(Node24), static only, plus supported committed-source local all. Python units
+are RETIRED; integration INCLUDING callback is SKIPPED THR243seq42. Independent
+review/QA and ROOT's guarded merge/native/archive inspection remain separate.
+No CI policy or workflow definition changes are made.
+
+<details>
+<summary>Historical pre-seq369 contracts and failed evidence — retired, nonshipping</summary>
+
+Original investigations, failure records and superseded requirements follow.
+They do not activate helpers or impose acceptance gates on the current build.
+
 ## Manifest-notice shipping gate (THR104 seq260/266)
 
 Current shipping standard and finite verification: [manifest-notice contract](manifest-notices.md).
@@ -915,3 +985,5 @@ are total-build/hard OS guarantees or native acceptance. Preflight may defer
 parent traps for300s+5s; a late one-shot marker never overrides failed status.
 No validation cap, diagnostic grant, notice/source selection or complete-build
 context/reopen accounting changes, and no native stall/cap-fix claim follows.
+
+</details>
