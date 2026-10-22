@@ -11,10 +11,14 @@ import json
 import os
 import sqlite3
 import threading
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from runtime.workflows._coding_release_history import ReleaseImportHistory
     from runtime.workflows.coding_authority_history import _Budget
+    from runtime.workflows.coding_mapping_history import CodingMappingHistory
+    from runtime.workflows.coding_start_history import QueuedStorage
 
 # Accepted TASK10693 step34: 3987 UTF8 bytes, SHA256
 # 2c4b556671ef76582cdcbaed1e68d8575d9648ce29773f52c3d947ceaeeb0d70.
@@ -300,10 +304,34 @@ def _refuse_coding_metadata(raw: object, *, location: str, budget: _Budget | Non
         raise ValueError(f'workflow_coding_boundary_scan_bound: {location}') from exc
 
 
+@dataclass(frozen=True)
+class _CodingInventory:
+    """Local result of complete validation, never an accepted caller input.
+
+    Consume only in the enclosing connection/org/read interval, before writes.
+    Public readers discard this result; no cross-snapshot cache is installed.
+    """
+
+    budget: _Budget
+    imported: ReleaseImportHistory | None
+    mappings: CodingMappingHistory | None
+    queued: QueuedStorage
+
+
 def validate_coding_data(conn: sqlite3.Connection, *, layout: str,
                          expected_org_slug: str | None = None) -> None:
+    _read_coding_data(conn, layout=layout, expected_org_slug=expected_org_slug)
+
+
+def _read_coding_data(conn: sqlite3.Connection, *, layout: str,
+                      expected_org_slug: str | None,
+                      budget: _Budget | None = None) -> _CodingInventory | None:
     # Own a coherent snapshot only when the caller has none. Central callers
     # have already recognized the complete schema; no recursive schema read.
+    if budget is not None:
+        from runtime.workflows.coding_authority_history import _Budget
+        if type(budget) is not _Budget:
+            raise ValueError('workflow_coding_data_invalid_budget')
     owned = not conn.in_transaction
     # A snapshot we open ourselves holds no uncommitted rows of ours, so the
     # audit rows it verified are committed; advance only after it ends.
@@ -311,18 +339,20 @@ def validate_coding_data(conn: sqlite3.Connection, *, layout: str,
     if owned:
         conn.execute('BEGIN')
     try:
-        _validate_coding_data(conn, layout=layout, expected_org_slug=expected_org_slug,
-                              advances=advances)
+        inventory = _validate_coding_data(conn, layout=layout, expected_org_slug=expected_org_slug,
+                                          advances=advances, budget=budget)
     finally:
         if owned:
             conn.rollback()
     for file_key, last_id in advances or ():
         _advance_audit_log_watermark(conn, file_key, last_id)
+    return inventory
 
 
 def _validate_coding_data(conn: sqlite3.Connection, *, layout: str,
                           expected_org_slug: str | None,
-                          advances: list[tuple[tuple[int, int], int]] | None = None) -> None:
+                          advances: list[tuple[tuple[int, int], int]] | None = None,
+                          budget: _Budget | None = None) -> _CodingInventory | None:
     """Positive setup/import/mapping/queued closure; refuse unsupported coding families.
 
     No ID skip-list or trusted flag: each supported native row is compared in
@@ -337,12 +367,13 @@ def _validate_coding_data(conn: sqlite3.Connection, *, layout: str,
     mappings = None
     mapping_rows = {}
     queued = None
-    budget = None
     if layout == 'J' and expected_org_slug is not None:
         from runtime.workflows.coding_authority_history import (
             _Budget, _SetupHistoryReader, _bounded_rows, _read_setup_storage,
         )
-        budget = _Budget()
+        if budget is not None and type(budget) is not _Budget:
+            raise ValueError('workflow_coding_data_invalid_budget')
+        budget = _Budget() if budget is None else budget
         setups = _SetupHistoryReader(conn, expected_org_slug, budget)
         storage = _read_setup_storage(conn, expected_org_slug=expected_org_slug, reader=setups)
         from runtime.workflows._coding_release_history import read_release_import
@@ -365,7 +396,11 @@ def _validate_coding_data(conn: sqlite3.Connection, *, layout: str,
             raise ValueError('workflow_coding_mapping_release_missing')
         from runtime.workflows.coding_start_history import read_queued
         queued = read_queued(conn, expected_org_slug, budget, mappings, imported)
-    bounded_coding = mappings is not None or bool(queued and (queued.runs or queued.callbacks))
+    else:
+        budget = None  # Preserve the preceding layouts' standalone discriminator.
+    # Empty J is still a complete coding read: absence must not replenish or
+    # bypass the allowance for the subsequent native typed-row discrimination.
+    bounded_coding = budget is not None
     for table in CODING_TABLES:
         if table not in tables:
             if layout == 'J':
@@ -396,7 +431,9 @@ def _validate_coding_data(conn: sqlite3.Connection, *, layout: str,
             'workflow_coding_mappings', 'workflow_admission_records', 'audit_log', 'workflow_authorization_revisions')
         native_queued = queued is not None and table in (
             *queued.admitted.keys(), *CODING_TABLES)
-        if native_setup or native_import or native_mapping or native_queued:
+        # Bounded audit prefetch owns the original six-column native storage
+        # contract even without a mapping; observe every cell on that allowance.
+        if native_setup or native_import or native_mapping or native_queued or (bounded_coding and table == 'audit_log'):
             selected_columns = columns
         if not selected_columns:
             continue
@@ -492,6 +529,9 @@ def _validate_coding_data(conn: sqlite3.Connection, *, layout: str,
                 advances.append((file_key, last_id))  # applied after the owned snapshot ends
             else:
                 _advance_audit_log_watermark(conn, file_key, last_id)
+    if queued is not None:
+        return _CodingInventory(budget, imported, mappings, queued)
+    return None
 
 
 # audit_log is insert-only at runtime (AUTOINCREMENT id; only the one-time

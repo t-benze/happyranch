@@ -1190,10 +1190,38 @@ No counter is preset to exhaustion and no default limit is lowered. Each
 successful aggregate component also compares its exact candidate/byte/visit delta
 with independently fixed input arithmetic: full row/string sizes, canonical JSON
 member/delimiter counts and the original reservation contract. The schema has
-its own positive/refusal byte and traversal siblings: an individually admitted
-release component plus real populated native-result work crosses one shared
-allowance only in the complete J(data=False) reader. A second reader call never
-supplies a numeric expected-value oracle.
+its own positive/refusal byte and traversal siblings through the actual private
+`_read_workflow_schema` boundary. Input-only arithmetic includes all complete
+native scans and both retained source-row comparison passes. Traversal sizes
+come from fixed JSON grammar/member arithmetic. Byte siblings use sixteen bounded
+ordinary native result output values: release and the complete queued/native
+component each fit independently, while their complete-schema composition crosses
+16MiB. No production result or observed counter selects a fixture size.
+
+ROOT12299 step25 extends the same case table with23 complete-reader rows (65
+reader observations). Step26 / TASK12457 adds the pristine complete-J constructor
+sibling, for66 assigned reader observations plus the unchanged14 safeguards. Full populated
+release/old-document/native fixtures inspect original identity/version/command,
+six typed rows, absent mapping prefix and complete queued outcomes; separate public
+`validate_workflow_schema`/`_validate_installed(data=False)`/`validate_coding_data`
+returns remain J/J/None. Source-aware external profiling and SQL observe one
+complete acquisition and shared actual allowance identity, including supplied
+prior consumption and empty-J native typed/JSON discrimination. Wrong allowance
+types and malformed/reserved native metadata refuse categorically. Disposable
+controller SQL changes one retained row after acquisition to distinguish full
+storage/provenance/canonical equality from an ID exemption; these changes are
+explicit fixture inputs, never a product mutation or authentic human history.
+Every read retains original schema/rows/FKs/integrity and caller transaction;
+standalone complete reads open/end only their own snapshot. On the SAME connection,
+committed valid fixture changes require a new complete inventory in the next
+snapshot; later corruption refuses. Actual post-scope SELECT/fresh siblings retain
+cleanup and live2s/2048-event protection. No native runtime owner, actor, claim,
+readiness flag, import inventory or resource radius is added. Genuine
+`CodingImportSupport._storage`/`start_in_writer`/native positive paths remain a
+separate root-owned venue dependency. This increment requires its own actual
+intended sensitivity, byte-exact restoration, complete GREEN and five fresh
+process repetitions before any proof claim; historical42+14 receipts retain
+original-head attribution. Candidate8193/full F5/F8/native/all-org remain UNPROVED.
 
 TASK12380's native namespace refusal and unexecuted evidence remain historical.
 ROOT's later successful product-free probe grants no campaign permission. Each
@@ -1322,7 +1350,7 @@ M5 full typed publication equality weakening and M6 caller rollback regression.
 Each requires an initial complete GREEN, one intended full-table RED on an owned
 registered guarded local proof commit, byte-exact forward restoration and GREEN.
 Proof mutation remains forbidden until an actual initial complete GREEN exists.
-The accepted scoped completion requires all assigned42+14 observations and
+The historical step12 scoped completion required42+14 observations; step25 requires65+14 and
 allocated sensitivity/restoration/teardown proof. The authentic original
 candidate8193 native0/verifier2/42-INCOMPLETE receipt remains history, and the
 broader candidate8193 target remains explicitly UNPROVED. Assigned accounting
@@ -1405,3 +1433,61 @@ is the actual recursively invoked verifier-main result under the immutable veto.
 The physical namespace/controller exits and top-level verifier assertion result
 remain separately recorded. The closed loader selections pass the same interpreter,
 source-script and owned-output admission as the full command before dispatch.
+
+
+### Start-reader source composition and blocked support (ROOT12299)
+
+PR1165 is merged at `fee7aa7222dbc80e16492258c15f8fa3214fabad`;
+TASK12436/TASK12438 review/synthetic QA at `aa9e64ad3a568b080571f86c6453d191aa6c706b`
+belong to that prerequisite only. The next source change composes complete
+schema validation and `CodingImportSupport._storage` with start's pre-write
+mapping/import/queued inventory and native/child allowance. Retained source-data
+checks reuse the same local import history with full original-row comparison;
+empty J's native discrimination also consumes the allowance. Public return
+meanings, caller transaction ownership and fresh post-write validation remain.
+
+TASK12440 allocated source/static/publication only. TASK12448 / step25 added the
+complete-reader assertions above; its qualified0b021bf5 invocation returned
+native0/verifier2 before any reader case. That unchanged production initializer's
+two-column audit projection/six-column type mismatch remains setup INCOMPLETE,
+never sensitivity RED. ROOT12299 step26 / TASK12457 corrects only bounded-J audit
+selection to all SIX original columns with the same strict native storage types
+and cumulative allowance. Legacy/unscoped/unbounded audit behavior is unchanged.
+
+The nearest existing pristine complete-J construction now has a stable observable
+constructor sibling before dependent use: exception versus independent success,
+literal J, original native schema/rows, transaction ownership, installed coding
+tables, FKs and integrity. A failed constructor assertion records contract_error
+and missing dependent IDs; ordinary import/setup crashes remain setup_error.
+Neither becomes a successful row. Existing65 reader IDs/14 safeguards remain.
+Native audit fixture task_id uses a nonnull synthetic scope; its bytes are charged.
+Aggregate original-row oracles use the fixed variant provenance, independently of
+returned inventory/counters. No limit/type/schema/reference/manifest is weakened.
+
+TASK12457's same-command maker record retains actual constructor RED/GREEN,
+intended audit-storage/duplicate-acquisition/allowance-reset/comparison-charge/
+retained-equality/stale-snapshot/caller-rollback RED and byte-exact restored full
+GREEN, with local proof commits never published. Final-head full GREEN and five
+fresh-process full/sibling repetitions retain exact source/input/environment
+bookends, assertions, native/verifier exits and reap evidence in its task/PR case
+record. These are manual SYNTHETIC observations, separate from independent QA and
+lint-only automated checks. Native start and readiness overrides remain excluded.
+Existing `release-accounting`
+cases observe standalone queued/import/schema readers, not the whole
+`support._storage`/start pre-write read boundary. Its affected extension stays
+in this maintained command and conservative import manifest, using the
+same qualified namespace/frozen environment, independently fixed synthetic
+inputs, complete schema/rows, bounded trace/timers and exact clean source.
+It uses an independent query/counter oracle for single history acquisition,
+shared schema/native/child consumption, original-row/provenance refusal and
+fresh reconstruction after writes/snapshots, plus original transaction/replay
+observations. Actual start/native actors cannot be fabricated by synthetic
+fixtures; genuine native-boundary proof needs its separately authorized venue.
+Minimum support/allocation details are returned in TASK12440's source handoff.
+Affected private-reader maker proof is recorded separately from the still-missing
+genuine support/start/native venue and independent same-head executable QA; broader
+candidate8193/full F5/F8/runtime/all-org acceptance remains UNPROVED. No old-root
+waiver or historical42+14 campaign covers this source head. Full independent
+review returns directly to ROOT12299; root allocates actual same-head executable
+QA before a later live-manager guarded merge. Local `scripts/local_ci.sh all`
+and the two hosted required checks remain lint/static only.

@@ -85,11 +85,47 @@ remain history. They do not waive current allocated M1–M6/S1–S8 sensitivity,
 forward restoration, GREEN/five fresh-process repetitions or independent
 same-head executable QA. See docs/local-ci.md for exact command and exits.
 
-Full
-start_in_writer/support._storage schema/history composition remains unfinished;
-standalone template/source-data/role/import callers retain their defaults. New
-settings/progression and literal @3/team_move readers, repeated-binding inventory
-reuse, cold/recovery/drain integration and native controls remain root-owned
+The start_in_writer/support._storage pre-write composition now consumes the
+internally reconstructed complete-schema mapping/import/queued inventory under
+one cumulative allowance. Native source/result/ancestry and child reads share
+that allowance; separate pre-admission checkpoints retain their own validation.
+The retained source-data checker compares original release rows with that local
+import history instead of reconstructing the history per row. Complete J native
+discrimination is charged even without mappings/runs. No external inventory or
+validation flag is accepted. Local reuse ends at the first write; post-write
+complete validation reconstructs fresh state, and caller-owned transactions stay
+open. Public schema readers retain their layout/None returns. Standalone
+role/import/template readers retain their existing defaults and provenance.
+
+PR1165's prerequisite merged at fee7aa7222dbc80e16492258c15f8fa3214fabad,
+with independent TASK12436 APPROVE and synthetic executable TASK12438 PASS at
+reviewed aa9e64ad3a568b080571f86c6453d191aa6c706b (identical merge tree).
+Those receipts retain their original-head attribution. TASK12440 supplied the
+source composition; TASK12448 added65 reader/14 safeguard observations, but its
+first qualified0b021bf5 invocation returned native0/verifier2 before every reader
+case. That audit projection/type-arity failure remains setup INCOMPLETE, never
+sensitivity RED. ROOT12299 step26 / TASK12457 aligns bounded complete-J audit
+prefetch with all SIX original native columns and their unchanged strict storage
+types on the SAME allowance. Earlier-layout/unscoped/unbounded scanning is unchanged.
+
+The same maintained driver adds one pristine complete-J constructor assertion,
+for66 reader observations plus the unchanged14 safeguards. Constructor exception,
+layout/schema/native state and caller transaction are explicit observations before
+dependent use; failed constructor assertions leave dependent rows unexecuted and
+remain distinct from import/setup errors. Synthetic audit input uses its native
+nonnull task scope, and aggregate typed-row expectations follow independently fixed
+variant provenance. TASK12457 records attributable constructor RED/GREEN, allocated
+local-only sensitivity/restoration and actual full/sibling repetition evidence;
+its raw commands/heads/exits retain their own attribution. No inventory/resource,
+allowance/type/schema/reference or native-owner radius is expanded.
+
+Private-reader synthetic evidence does not establish actual
+support._storage/start/native positives; those still require a separately
+allocated genuine owner venue. Fresh FULL independent review and actual
+same-final-head executable QA remain gates before live-manager guarded merge;
+no native start or readiness override is supplied.
+New settings/progression and literal @3/team_move
+readers, repeated-binding inventory reuse and native controls remain root-owned
 prerequisites. No complete admission/readiness closure is claimed. The earlier
 SOURCE checkpoint's F5-R1c/F8-R1c UNEXECUTED venue statement is historical.
 TASK12407's42+14 GREEN/five repetitions remain historical, as do its adverse
@@ -99,8 +135,8 @@ actual emitted loader admission and the standalone reader's shared bounded scope
 M6/S1/S3/S4/S7/S8 require full-table intended RED and byte-exact restored GREEN;
 S1/S3 observe invalid admission presence with zero bwrap attempts, retaining the
 later native refusal. Unaffected variants retain original-head attribution.
-Exact final-head42+14 GREEN/five repetitions and independent review/executable QA
-remain mandatory; actual outcomes are in the same PR/task case record.
+PR1165 required exact-final-head42+14 GREEN/five repetitions and independent
+review/executable QA; its actual outcomes remain in that PR/task case record.
 Candidate8193 and broader native/runtime controls remain UNPROVED. Source review
 and static checks are not behavioral or test-authoring acceptance; no old-root
 waiver applies.

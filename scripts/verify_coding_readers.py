@@ -32,6 +32,7 @@ LOADER_ALIAS = '/lib64/ld-linux-x86-64.so.2'
 SUPPORT_CASES = tuple([f'L{i}' for i in range(4)]+[f'R{i}' for i in range(8)]+['A-traversal','A-bytes'])
 # Completion is tied to executed stable case IDs, never the absence of a TODO.
 REQUIRED_CASES = (
+    'F8-R1c.complete.constructor',
     'F5-R1c.absent.omitted', 'F5-R1c.absent.none',
     'F5-R1c.valid.omitted', 'F5-R1c.valid.none', 'F5-R1c.supplied.prior-work',
     'F5-R1c.wrong-budget', 'F5-R1c.foreign-org',
@@ -49,6 +50,12 @@ REQUIRED_CASES = (
     'F5-R1c.aggregate-candidates.component-b.positive',
     'F8-R1c.schema.aggregate-traversal.positive', 'F8-R1c.schema.aggregate-traversal.refusal',
     'F8-R1c.schema.aggregate-bytes.positive', 'F8-R1c.schema.aggregate-bytes.refusal',
+    *(f'F8-R1c.complete.{case}' for case in (
+        'empty.omitted', 'empty.none', 'empty.supplied', 'empty.native.positive',
+        'empty.native.storage', 'empty.native.coding', 'empty.native.malformed',
+        'omitted', 'none', 'supplied', 'wrong-budget', 'installed', 'public', 'data',
+        'retained.positive', 'retained.storage', 'retained.provenance', 'retained.canonical',
+        'caller-success', 'caller-refusal', 'fresh.before', 'fresh.changed', 'fresh.corrupt')),
 )
 
 
@@ -113,6 +120,9 @@ def schema(conn: sqlite3.Connection) -> list:
 
 # One resource scope for every reader, aggregate and finite support observation.
 class SupportIncomplete(RuntimeError):
+    pass
+
+class ConstructorContractFailure(RuntimeError):
     pass
 
 
@@ -393,7 +403,11 @@ try:
     sys.addaudithook(audit)
     resource_records()
     from runtime.infrastructure.database import Database
-    from runtime.infrastructure.workflow_schema import initialize_complete_org_schema, _validate_installed
+    from runtime.infrastructure.workflow_schema import (
+        initialize_complete_org_schema, _validate_installed, _read_workflow_schema,
+        validate_workflow_schema,
+    )
+    from runtime.infrastructure.workflow_coding_schema import validate_coding_data
     from runtime.workflows._coding_release_history import read_release_import
     from runtime.workflows.coding_authority_history import _Budget
     from runtime.workflows.coding_start import queued_storage
@@ -404,7 +418,42 @@ try:
     # the unchanged 2MiB per-file bound; both complete constructors are real.
     reference = Database(Path(':memory:'))
     try:
-        initialize_complete_org_schema(reference, expected_org_slug='release-reference', layout='J')
+        # Observe actual full construction before any dependent fixture use.
+        # A contract assertion failure is distinct from import/setup failure.
+        constructor_checks=[]
+        native_before=saved_rows(reference._conn)
+        schema_before=schema(reference._conn)
+        transaction_before=reference._conn.in_transaction
+        constructor_error=None;constructor_return=None;constructor_layout=None
+        try:
+            constructor_return=initialize_complete_org_schema(
+                reference, expected_org_slug='release-reference', layout='J')
+            constructor_layout=validate_workflow_schema(
+                reference._conn, expected_org_slug='release-reference')
+        except Exception as exc:
+            constructor_error=type(exc).__name__+': '+str(exc)
+        equal(constructor_checks,'pristine complete-J constructor exception',constructor_error,None)
+        equal(constructor_checks,'pristine complete-J constructor return',constructor_return,None)
+        equal(constructor_checks,'pristine complete-J recognized layout',constructor_layout,'J')
+        equal(constructor_checks,'constructor transaction ownership',
+            reference._conn.in_transaction,transaction_before)
+        native_after=saved_rows(reference._conn)
+        equal(constructor_checks,'constructor preserves all original native rows',
+            {name:native_after.get(name) for name in native_before},native_before)
+        schema_after={row['name']:row for row in schema(reference._conn)}
+        equal(constructor_checks,'constructor preserves original native schema',
+            [schema_after.get(row['name']) for row in schema_before],schema_before)
+        equal(constructor_checks,'constructor installs four complete coding tables',
+            sorted(name for name in schema_after if name.startswith('workflow_coding_')),
+            ['workflow_coding_attempts','workflow_coding_events','workflow_coding_mappings','workflow_coding_runs'])
+        equal(constructor_checks,'constructor foreign keys',
+            [tuple(r) for r in reference._conn.execute('PRAGMA foreign_key_check')],[])
+        equal(constructor_checks,'constructor native integrity',
+            [tuple(r) for r in reference._conn.execute('PRAGMA integrity_check')],[('ok',)])
+        result['cases'].append(dict(name='F8-R1c.complete.constructor',checks=constructor_checks))
+        if not all(check['passed'] for check in constructor_checks):
+            result['missing_cases']=sorted(set(cfg['required_cases'])-{'F8-R1c.complete.constructor'})
+            raise ConstructorContractFailure('pristine complete-J constructor assertion failed')
         reference_schema = schema(reference._conn)
         reference_digest = digest('\n'.join(str(r[0]) for r in reference._conn.execute(
             'SELECT sql FROM sqlite_master WHERE sql IS NOT NULL ORDER BY name')).encode())
@@ -511,24 +560,52 @@ try:
                 isolated.close()
         def observe(name: str, action: Callable[[], object], expected_category: str | None = None,
                     expect_import: bool = False, supplied: _Budget | None = None,
-                    kind: str | None = None) -> None:
+                    kind: str | None = None, **options: object) -> None:
             with independent_input() as fixture_input:
-                observe_input(name,action,expected_category,expect_import,supplied,kind)
+                observe_input(name,action,expected_category,expect_import,supplied,kind,**options)
                 result['cases'][-1]['fixture_input']=fixture_input
         def observe_input(name: str, action: Callable[[], object], expected_category: str | None,
-                          expect_import: bool, supplied: _Budget | None, kind: str | None) -> None:
+                          expect_import: bool, supplied: _Budget | None, kind: str | None,
+                          original_rows: list | None = None, source_change: object = None) -> None:
             checks = []
-            phases=[]
+            phases=[]; acquisition=[]; allowances=[]; inventories=[]; changes=[]
+            complete=kind in ('complete','public-complete','installed-complete','coding-data')
+            oracle_rows=expected if original_rows is None else original_rows
+            prior_work=None if supplied is None else vars(supplied).copy()
             old_profile=sys.getprofile()
             def phase(frame: object, event: str, arg: object) -> None:
                 if (supplied is not None and 'aggregate-candidates' in name and event in ('call','return')
                         and frame.f_code.co_name=='read_release_import'):
                     phases.append(dict(event=event,counters=vars(supplied).copy(),
                         forwarded=frame.f_locals.get('budget') is supplied))
+                module=frame.f_globals.get('__name__','')
+                function=frame.f_code.co_name
+                if not complete or not module.startswith('runtime.'):
+                    return
+                if event=='call' and function in ('_read_coding_data','read_release_import',
+                        '_read_mapping_storage','source_storage','read_queued'):
+                    acquisition.append(dict(module=module,source=frame.f_code.co_filename,function=function))
+                if event=='call' and function in ('read_release_import','_read_mapping_storage',
+                        'source_storage','read_queued','_bounded_rows','_refuse_coding_metadata'):
+                    budget=frame.f_locals.get('budget')
+                    allowances.append(dict(module=module,function=function,identity=id(budget),
+                        counters=None if budget is None else vars(budget).copy()))
+                if event=='return' and function=='_read_coding_data' and arg is not None:
+                    inventories.append(arg)
+                if (event=='call' and function=='_validate_source_data' and source_change is not None
+                        and not changes):
+                    # Test-side disposable SQL write AFTER independent acquisition.
+                    # It cannot rewrite the already reconstructed original rows.
+                    conn.execute('UPDATE workflow_template_drafts SET author_principal=? WHERE id=?',
+                        (source_change,draft))
+                    changes.append(encoded(source_change))
             with contained_scope(conn) as scope:
                 trace = scope['trace']
                 before = saved_rows(conn)
+                schema_before=[tuple(r) for r in conn.execute(
+                    'SELECT type,name,tbl_name,sql FROM sqlite_schema ORDER BY type,name')] if complete else None
                 transaction = conn.in_transaction
+                value=None
                 try:
                     sys.setprofile(phase)
                     try:
@@ -543,6 +620,40 @@ try:
                               dict(admitted={},runs={},owners={},callbacks={}))
                     elif kind == 'schema':
                         equal(checks,'recognized complete layout',value,'J')
+                    elif kind == 'complete':
+                        layout,inventory=value
+                        equal(checks,'private complete layout',layout,'J')
+                        equal(checks,'private inventory is acquired inventory',
+                            len(inventories)==1 and inventory is inventories[0],True)
+                    elif kind in ('public-complete','installed-complete','coding-data'):
+                        equal(checks,'independent public return',value,None if kind=='coding-data' else 'J')
+                    if complete:
+                        equal(checks,'one complete inventory',len(inventories),1)
+                        if inventories:
+                            inventory=inventories[0]
+                            equal(checks,'no synthetic mapping prefix',inventory.mappings,None)
+                            equal(checks,'complete queued outcomes',vars(inventory.queued),
+                                dict(admitted={},runs={},owners={},callbacks={}))
+                            equal(checks,'all child work uses acquired allowance',
+                                all(a['identity']==id(inventory.budget) for a in allowances),True)
+                            if supplied is not None:
+                                equal(checks,'supplied allowance identity',inventory.budget is supplied,True)
+                                equal(checks,'inherited work reaches first native acquisition',
+                                    allowances[0]['counters'],prior_work)
+                            if not oracle_rows:
+                                equal(checks,'complete absent publication',inventory.imported,None)
+                            else:
+                                imported=inventory.imported
+                                equal(checks,'complete original identity',imported.identity_id,identity)
+                                equal(checks,'complete original version',imported.version_id,version)
+                                equal(checks,'complete original command',encoded(imported.command_bytes),encoded(command))
+                                equal(checks,'complete six original typed rows',
+                                    [(t,{k:encoded(v) for k,v in row.items()}) for t,row in imported.rows],
+                                    [(t,{k:encoded(v) for k,v in row.items()}) for t,row in oracle_rows])
+                            for function in ('_read_coding_data','read_release_import',
+                                    '_read_mapping_storage','source_storage','read_queued'):
+                                equal(checks,'one complete acquisition '+function,
+                                    sum(a['function']==function for a in acquisition),1)
                     if expect_import:
                         equal(checks, 'returned identity', value.identity_id, identity)
                         equal(checks, 'returned version', value.version_id, version)
@@ -552,6 +663,18 @@ try:
                         equal(checks, 'six full typed publication rows', actual, oracle)
                 except ValueError as exc:
                     category = str(exc)
+                if source_change is not None:
+                    equal(checks,'retained comparison fixture change reached',changes,[encoded(source_change)])
+                    equal(checks,'no partially accepted complete inventory',value is None,True)
+                    # Independent pre-read whole-row oracle plus ONE intended
+                    # fixture change; all other native bytes must be identical.
+                    columns=next(r['columns'] for r in reference_schema if r['kind']=='table'
+                                 and r['name']=='workflow_template_drafts')
+                    names=[r[1] for r in columns]
+                    for row in before['workflow_template_drafts']:
+                        if row[names.index('id')]==encoded(draft):
+                            row[names.index('author_principal')]=encoded(source_change)
+                    before['workflow_template_drafts'].sort(key=repr)
                 if supplied is not None and 'aggregate-candidates' in name:
                     equal(checks,'real release phase count',len(phases),2)
                     if len(phases)==2:
@@ -563,12 +686,57 @@ try:
                 equal(checks, 'all native rows unchanged', digest(canonical(saved_rows(conn))), digest(canonical(before)))
                 equal(checks, 'no foreign key violation', list(conn.execute('PRAGMA foreign_key_check')), [])
                 equal(checks, 'native integrity', list(conn.execute('PRAGMA integrity_check')), [('ok',)])
+                if complete:
+                    schema_after=[tuple(r) for r in conn.execute(
+                        'SELECT type,name,tbl_name,sql FROM sqlite_schema ORDER BY type,name')]
+                    # Full raw schema is retained ONCE in fixture_schema;
+                    # whole-byte bookends avoid duplicating it per case under
+                    # the unchanged expanded/compressed observation bounds.
+                    equal(checks,'complete original schema unchanged',
+                        digest(canonical(schema_after)),digest(canonical(schema_before)))
+                    equal(checks,'independent whole native schema',digest(canonical(schema_after)),
+                        digest(canonical([(r['kind'],r['name'],r['table'],r['sql']) for r in reference_schema])))
+                    if not transaction:
+                        equal(checks,'standalone complete BEGIN',sum(r['sql']=='BEGIN' for r in trace),1)
+                        equal(checks,'standalone complete ROLLBACK',sum(r['sql']=='ROLLBACK' for r in trace),1)
                 check_trace(scope)
+            sibling=fresh_sibling(conn,checks) if complete else None
             result['cases'].append(dict(name=name, checks=checks, trace=trace,
-                counters=None if supplied is None else vars(supplied).copy(),phases=phases))
+                counters=None if supplied is None else vars(supplied).copy(),phases=phases,
+                acquisition=acquisition,allowances=allowances,sibling=sibling,
+                inventory_work=[vars(i.budget).copy() for i in inventories]))
             save()
         invalid = 'coding_release_import_history_invalid'
         conn.execute('BEGIN')
+        for label,options in [('omitted',{}),('none',{'budget':None}),
+                              ('supplied',{'budget':_Budget(consumed=17,accepted_rows=3,traversed=5)})]:
+            observe('F8-R1c.complete.empty.'+label,
+                lambda options=options:_read_workflow_schema(conn,expected_org_slug=org,**options),
+                supplied=options.get('budget'),kind='complete',original_rows=[])
+        conn.execute('SAVEPOINT empty_native')
+        insert('audit_log',dict(timestamp=stamp,agent='synthetic',action='synthetic_observation',
+            task_id='SYNTHETIC-EMPTY-TASK',payload='{"note":"ordinary"}'))
+        empty_budget=_Budget(consumed=17,accepted_rows=3,traversed=5)
+        observe('F8-R1c.complete.empty.native.positive',
+            lambda:_read_workflow_schema(conn,expected_org_slug=org,budget=empty_budget),
+            supplied=empty_budget,kind='complete',original_rows=[])
+        equal(result['cases'][-1]['checks'],'empty native bytes retain prior work',
+            empty_budget.consumed>=17+len(stamp)+len('synthetic')+len('synthetic_observation')+len('SYNTHETIC-EMPTY-TASK')+len('{"note":"ordinary"}'),True)
+        equal(result['cases'][-1]['checks'],'empty native candidates retain prior work',empty_budget.accepted_rows,4)
+        for label,column,value,category in [
+            ('storage','agent',b'synthetic','coding_authority_history_invalid'),
+            ('coding','payload','{"format":"workflow-coding-unknown@1"}',
+                'workflow_coding_data_unsupported: audit_log.payload; complete family reader required'),
+            ('malformed','payload','{"format":"workflow-coding-',
+                'workflow_coding_data_unsupported: audit_log.payload; malformed coding metadata'),
+        ]:
+            conn.execute('SAVEPOINT empty_refusal')
+            conn.execute('UPDATE audit_log SET '+column+'=?',(value,))
+            observe('F8-R1c.complete.empty.native.'+label,
+                lambda:_read_workflow_schema(conn,expected_org_slug=org),category,
+                kind='complete',original_rows=[])
+            conn.execute('ROLLBACK TO empty_refusal');conn.execute('RELEASE empty_refusal')
+        conn.execute('ROLLBACK TO empty_native');conn.execute('RELEASE empty_native')
         observe('F5-R1c.absent.omitted', lambda: read_release_import(conn,expected_org_slug=org),kind='absent')
         observe('F5-R1c.absent.none', lambda: read_release_import(conn,expected_org_slug=org,budget=None),kind='absent')
         publication()
@@ -677,6 +845,68 @@ try:
                 raise RuntimeError('populated native/document fixture not admitted')
         observe('F8-R1c.noncoding-old-history',old_history,kind='schema')
         result['populated_history_rows']=saved_rows(conn)
+
+        for label,options in [('omitted',{}),('none',{'budget':None}),
+                              ('supplied',{'budget':_Budget(consumed=17,accepted_rows=3,traversed=5)})]:
+            observe('F8-R1c.complete.'+label,
+                lambda options=options:_read_workflow_schema(conn,expected_org_slug=org,**options),
+                supplied=options.get('budget'),kind='complete')
+        observe('F8-R1c.complete.wrong-budget',
+            lambda:_read_workflow_schema(conn,expected_org_slug=org,budget={}),
+            'workflow_coding_data_invalid_budget',kind='complete')
+        for label,action,kind in [
+            ('installed',lambda:_validate_installed(conn,expected_org_slug=org,validate_data=False),'installed-complete'),
+            ('public',lambda:validate_workflow_schema(conn,expected_org_slug=org),'public-complete'),
+            ('data',lambda:validate_coding_data(conn,layout='J',expected_org_slug=org),'coding-data'),
+            ('retained.positive',lambda:_read_workflow_schema(conn,expected_org_slug=org),'complete'),
+        ]:
+            observe('F8-R1c.complete.'+label,action,kind=kind)
+        changed_provenance=json.loads(pub)
+        changed_provenance['publisher']['principal_id']='synthetic-other'
+        for label,changed in [('storage',pub.encode()),('provenance',canonical(changed_provenance).decode()),
+                              ('canonical',' '+pub)]:
+            observe('F8-R1c.complete.retained.'+label,
+                lambda:_read_workflow_schema(conn,expected_org_slug=org),
+                'workflow_source_data_corrupt',kind='complete',source_change=changed)
+
+        # A real caller transaction/sentinel, on independently committed input.
+        observe('F8-R1c.complete.caller-success',
+            lambda:_read_workflow_schema(conn,expected_org_slug=org),kind='complete')
+        conn.execute('SAVEPOINT complete_refusal')
+        conn.execute("UPDATE workflow_template_versions SET published_by='{' ")
+        observe('F8-R1c.complete.caller-refusal',
+            lambda:_read_workflow_schema(conn,expected_org_slug=org),invalid,kind='complete')
+        conn.execute('ROLLBACK TO complete_refusal');conn.execute('RELEASE complete_refusal')
+
+        # The SAME ordinary connection across standalone read snapshots. The
+        # controller commits supported fixture writes BETWEEN reads; no product
+        # result supplies expected rows or repairs a product transaction.
+        with independent_input() as fresh_input:
+            conn.commit()
+            observe_input('F8-R1c.complete.fresh.before',
+                lambda:_read_workflow_schema(conn,expected_org_slug=org),None,False,None,'complete')
+            later='2001-02-03T04:05:07.000000Z'
+            later_provenance=json.loads(pub);later_provenance['created_at']=later
+            later_pub=canonical(later_provenance).decode()
+            later_rows=[(t,dict(row)) for t,row in expected]
+            later_rows[0][1]['created_at']=later
+            later_rows[1][1].update(author_principal=later_pub,created_at=later)
+            later_rows[2][1].update(published_by=later_pub,published_at=later)
+            conn.execute('UPDATE workflow_template_identities SET created_at=? WHERE id=?',(later,identity))
+            conn.execute('UPDATE workflow_template_drafts SET author_principal=?,created_at=? WHERE id=?',
+                (later_pub,later,draft))
+            conn.execute('UPDATE workflow_template_versions SET published_by=?,published_at=? WHERE id=?',
+                (later_pub,later,version))
+            conn.commit()
+            observe_input('F8-R1c.complete.fresh.changed',
+                lambda:_read_workflow_schema(conn,expected_org_slug=org),None,False,None,'complete',
+                original_rows=later_rows)
+            conn.execute("UPDATE workflow_template_versions SET published_by='{' WHERE id=?",(version,))
+            conn.commit()
+            observe_input('F8-R1c.complete.fresh.corrupt',
+                lambda:_read_workflow_schema(conn,expected_org_slug=org),invalid,False,None,'complete')
+            for row in result['cases'][-3:]:
+                row['fixture_input']=fresh_input
 
         # Natural prior reader work: never preset an exhausted counter or
         # change an allowance. Every component has an immediately admitted
@@ -866,9 +1096,73 @@ try:
             cap['profile_evidence']['ready'].update(snapshot_digest=sdigest,snapshot_bytes_hex=raw.hex())
             cap['profile_evidence']['pointer']['snapshot_digest']=sdigest
             return proof
-        def schema_variant(name: str, proof: dict, category: str | None) -> None:
+        # Independent full-boundary arithmetic for a deliberately small retained
+        # fixture: fixed release, ordinary native results and no old document
+        # rows. The earlier complete/old-history cases retain those rows. This
+        # removes no case/assertion and avoids a parser-dependent size oracle.
+        scalar_names=set(('format compiler_pin validator_pin source_pin action owner kind '
+            'artifact_kind source_kind business_purpose identity release_identity namespace '
+            'authority_namespace org_namespace').split())
+        whole_tables={t for t,_ in expected}|{'workflow_authorization_revisions',
+            'workflow_active_authorizations','workflow_coding_mappings','workflow_coding_runs',
+            'workflow_coding_attempts','workflow_coding_events'}
+        scan_tables=[]
+        for item in reference_schema:
+            if item['kind']!='table' or not (item['name'].startswith('workflow_')
+                    or item['name'] in ('tasks','task_results','audit_log')):
+                continue
+            columns=[r[1] for r in item['columns']]
+            selected=columns if item['name'] in whole_tables else [c for c in columns
+                if c in scalar_names or ((c.endswith(('_bytes','_json')) or c=='payload')
+                    and c not in ('submission_bytes','candidate_bytes'))]
+            if selected:
+                scan_tables.append(item['name'])
+        def raw_size(row: object) -> int:
+            values=row.values() if type(row) is dict else row
+            return sum(len(v.encode() if type(v) is str else v) for v in values if type(v) in (str,bytes))
+        def decoded_visits(value: object) -> int:
+            if type(value) is dict:
+                return 1+sum(1+len(k)+(len(v) if type(v) is str else 0)+decoded_visits(v)
+                             for k,v in value.items())
+            if type(value) is list:
+                return 1+sum(decoded_visits(v) for v in value)
+            return 1
+        def hook_visits(value: object) -> int:
+            if type(value) is dict:
+                return 1+sum(hook_visits(v)+1+len(k)+(len(v) if type(v) is str else 0)+decoded_visits(v)
+                             for k,v in value.items())
+            if type(value) is list:
+                return sum(hook_visits(v) for v in value)
+            return 0
+        def metadata_visits(value: object) -> int:
+            return hook_visits(value)+decoded_visits(value)
+        def schema_work(proof: dict, native: list) -> dict:
+            work=release_work(proof)
+            snap=base64.b64decode(proof['admission']['capture']['snapshot_bytes_base64'])
+            published=canonical(proof).decode()
+            fixed=[(t,dict(row)) for t,row in expected]
+            fixed[1][1]['author_principal']=published
+            fixed[2][1]['published_by']=published
+            fields=sum(len(row) for _,row in fixed)
+            # Empty setup2/mapping1/source1/queued4 probes; whole selected
+            # table terminal pages; six complete original-row comparisons;
+            # source-data draft/version comparisons on BOTH outer passes.
+            work['accepted_rows']+=8+2*len(native)
+            work['consumed']+=(sum(raw_size(r) for r in native)+sum(raw_size(r) for _,r in fixed)
+                +2*len(pin['namespace'])+len(snap)+sum(len(r[-1].encode()) for r in native))
+            work['traversed']+=(8+sum(len(r)+1 for r in native)+len(scan_tables)
+                +sum(1+len(row)+fields for _,row in fixed)+4*fields
+                +3+5+metadata_visits(json.loads(snap))
+                +sum(3+metadata_visits(json.loads(r[-1])) for r in native))
+            return work
+        def schema_variant(name: str, proof: dict, category: str | None, summary_size: int | None = None) -> None:
             conn.execute('SAVEPOINT schema_variant')
             try:
+                # Disposable input-only simplification, preserved by rollback.
+                for table,key,value in [('workflow_template_identity_versions','template_identity_id',old_identity),
+                        ('workflow_template_versions','id',old_version),('workflow_template_drafts','id',old_draft),
+                        ('workflow_template_identities','id',old_identity)]:
+                    conn.execute('DELETE FROM '+table+' WHERE '+key+'=?',(value,))
                 cap=proof['admission']['capture'];raw=base64.b64decode(cap['snapshot_bytes_base64'])
                 published=canonical(proof).decode()
                 for table,column in [('workflow_template_versions','published_by'),('workflow_template_drafts','author_principal')]:
@@ -877,36 +1171,80 @@ try:
                              (raw,digest(raw),'synthetic-journal'))
                 conn.execute('UPDATE workflow_authority_pointers SET snapshot_digest=? WHERE namespace=?',
                              (digest(raw),pin['namespace']))
-                work=release_work(proof)
-                # Independent admission of the component is SETUP, never RED.
+                if summary_size is not None:
+                    for index in range(16):
+                        db._insert_task_result(task_id='SYNTHETIC-OLD-TASK',agent='synthetic_worker',
+                            session_id='SYNTHETIC-BYTES-'+str(index),output_summary='x'*summary_size,
+                            confidence_score=0,decision_json='{"action":"done"}')
+                native=list(conn.execute('SELECT * FROM task_results WHERE decision_json IS NOT NULL'))
+                # decision_json is explicitly selected below rather than assumed
+                # to be the final native column in the independent input oracle.
+                names=[r[1] for r in conn.execute('PRAGMA table_xinfo(task_results)')]
+                decision_index=names.index('decision_json')
+                native=[tuple(v for i,v in enumerate(r) if i!=decision_index)+(r[decision_index],) for r in native]
+                work=schema_work(proof,native)
+                # Each full component must fit BEFORE the composed boundary.
                 value=read_release_import(conn,expected_org_slug=org)
                 if value is None or value.command_bytes != command:
                     raise RuntimeError('schema aggregate release component unavailable')
-                observe(name,lambda:_validate_installed(conn,expected_org_slug=org,validate_data=False),
-                        category,kind='schema' if category is None else None)
-                result['cases'][-1]['independent_release_work']=work
+                component=_Budget()
+                queued=queued_storage(conn,org,budget=component)
+                expected_component=release_work(proof)
+                expected_component['accepted_rows']+=len(native)
+                expected_component['consumed']+=sum(raw_size(r) for r in native)
+                expected_component['traversed']+=5+sum(len(r)+1 for r in native)
+                if vars(queued)!=dict(admitted={},runs={},owners={},callbacks={}):
+                    raise RuntimeError('schema aggregate native component unavailable')
+                # Expected original rows follow this fixed fixture variant,
+                # independently of the acquired inventory and its counters.
+                variant_rows=[(table,dict(row)) for table,row in expected]
+                variant_rows[1][1]['author_principal']=published
+                variant_rows[2][1]['published_by']=published
+                budget=_Budget()
+                observe(name,lambda:_read_workflow_schema(conn,expected_org_slug=org,budget=budget),
+                        category,kind='complete',supplied=budget,original_rows=variant_rows)
+                row=result['cases'][-1]
+                row.update(independent_release_work=release_work(proof),independent_complete_work=work,
+                    native_input=dict(rows=len(native),bytes=sum(raw_size(r) for r in native),summary_size=summary_size))
+                equal(row['checks'],'independently admitted full native component',vars(component),expected_component)
+                if category is None:
+                    equal(row['checks'],'independent complete row/copy/traversal arithmetic',vars(budget),work)
+                elif summary_size is None:
+                    equal(row['checks'],'independent traversal crossing',work['traversed']>16384,True)
+                    equal(row['checks'],'actual original traversal guard',budget.traversed,16385)
+                    equal(row['checks'],'bytes are not first',budget.consumed<=16777216,True)
+                else:
+                    equal(row['checks'],'independent byte crossing',work['consumed']>16777216,True)
+                    equal(row['checks'],'traversal is not first',budget.traversed<=16384,True)
             finally:
                 conn.execute('ROLLBACK TO schema_variant');conn.execute('RELEASE schema_variant')
-        schema_variant('F8-R1c.schema.aggregate-traversal.positive',snapshot_variant(['x']*864),None)
-        schema_variant('F8-R1c.schema.aggregate-traversal.refusal',snapshot_variant(['x']*867),'coding_authority_history_invalid')
-        # Select the byte sibling using ONLY fixed input arithmetic. The
-        # release component remains individually below16MiB; the real queued
-        # native row bytes in the schema call must cross that same allowance.
-        low,high=20000,200000
-        while low+1<high:
-            middle=(low+high)//2
-            if release_work(snapshot_variant(['x'*middle]))['consumed']<=16777216:
-                low=middle
-            else:
-                high=middle
-        byte_proof=snapshot_variant(['x'*low])
-        byte_work=release_work(byte_proof)
-        if byte_work['consumed']+native_bytes<=16777216:
-            result['unproved']['F8-R1c.schema.aggregate-bytes.refusal']=dict(
-                reason='Fixed input byte granularity cannot reach schema-only crossing',
-                release=byte_work,native_bytes=native_bytes,rule_bytes=low)
-        schema_variant('F8-R1c.schema.aggregate-bytes.positive',snapshot_variant(['x'*(low-2)]),None)
-        schema_variant('F8-R1c.schema.aggregate-bytes.refusal',byte_proof,'coding_authority_history_invalid')
+        # Select sizes only by fixed input arithmetic, never reader counters or
+        # a binary search of production outcomes. One rule separates siblings.
+        native_columns=[r[1] for r in conn.execute('PRAGMA table_xinfo(task_results)')]
+        decision_index=native_columns.index('decision_json')
+        native_for_work=[tuple(v for i,v in enumerate(r) if i!=decision_index)+(r[decision_index],)
+            for r in conn.execute('SELECT * FROM task_results WHERE decision_json IS NOT NULL')]
+        traversal_size=next(n for n in range(1,1001)
+            if schema_work(snapshot_variant(['x']*n),native_for_work)['traversed']>16384)
+        schema_variant('F8-R1c.schema.aggregate-traversal.positive',snapshot_variant(['x']*(traversal_size-1)),None)
+        schema_variant('F8-R1c.schema.aggregate-traversal.refusal',snapshot_variant(['x']*traversal_size),'coding_authority_history_invalid')
+        # Free native output text is charged without JSON-character traversal.
+        # Sixteen individually bounded values make the complete byte guard
+        # reachable while release AND full queued/native components still fit.
+        conn.execute('SAVEPOINT byte_size_input')
+        for index in range(16):
+            db._insert_task_result(task_id='SYNTHETIC-OLD-TASK',agent='synthetic_worker',
+                session_id='SYNTHETIC-BYTES-'+str(index),output_summary='',
+                confidence_score=0,decision_json='{"action":"done"}')
+        byte_native=[tuple(v for i,v in enumerate(r) if i!=decision_index)+(r[decision_index],)
+            for r in conn.execute('SELECT * FROM task_results WHERE decision_json IS NOT NULL')]
+        base_bytes=schema_work(provenance,byte_native)['consumed']
+        summary_size=(16777216-base_bytes)//16
+        if not 0<summary_size<1048576:
+            raise RuntimeError('independent native byte fixture per-value bound')
+        conn.execute('ROLLBACK TO byte_size_input');conn.execute('RELEASE byte_size_input')
+        schema_variant('F8-R1c.schema.aggregate-bytes.positive',provenance,None,summary_size)
+        schema_variant('F8-R1c.schema.aggregate-bytes.refusal',provenance,'coding_authority_history_invalid',summary_size+1)
         conn.commit()
         # Caller-owned noncoding work uses a real native table; exact actual
         # schema columns are inspected rather than creating a harness store.
@@ -980,6 +1318,8 @@ try:
     result['assigned_completion']=dict(reader=not result['unproved'] and not result['missing_cases'] and not result['duplicate_cases'] and not result['unknown_cases'],
         support=not result['missing_support'] and not result['duplicate_support'] and not result['unknown_support'])
     result['complete'] = all(result['assigned_completion'].values())
+except ConstructorContractFailure as exc:
+    result['contract_error']=str(exc)
 except BaseException as exc:
     import traceback
     result['setup_error'] = type(exc).__name__+': '+str(exc)
