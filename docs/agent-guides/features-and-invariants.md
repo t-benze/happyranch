@@ -3882,9 +3882,11 @@ rows, adds valid root revisits, deduplicates and sorts newest-first (ID breaks
 created-at ties). Summary rows also include literal dispatch and derived origin
 fields. Ordinary delegated children are not discovered through revisit traversal.
 Task UI thread grouping/column/detail use the derived origin with literal fallback
-for older servers; the detail rail and linked-task retry chips cite the original
-task with a revisit arrow. CLI details distinguishes `Thread`/`Origin task` from
-literal `Dispatched`. Existing terminal follow-up routing remains unchanged: it
+for older servers; the task detail rail cites the original task with a revisit
+arrow, and thread linked-task retry chips keep full status plus the current task ID
+on the primary line with a labelled, linked secondary `Origin task` line for a
+distinct chain origin (never the immediate predecessor). CLI details distinguishes
+`Thread`/`Origin task` from literal `Dispatched`. Existing terminal follow-up routing remains unchanged: it
 uses the original root's real `thread_dispatch` audit/dispatcher, not these fields.
 
 

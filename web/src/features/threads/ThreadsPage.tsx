@@ -1251,7 +1251,7 @@ function DetailColumn({
   composer,
   slug,
 }: DetailColumnProps): JSX.Element {
-  const { t, locale } = useTranslation();
+  const { t, render, locale } = useTranslation();
   const queryClient = useQueryClient();
   // Real produced artifacts aggregated from the transcript (THREADDET-02).
   // Computed before the early returns so the hook order stays stable.
@@ -1261,7 +1261,6 @@ function DetailColumn({
   const statusByAgent = useMemo(() => latestResponderStatusByAgent(messages), [messages]);
   // Direct dispatches and root retries; stable hook order, self-gates on threadId.
   const threadTasks = useThreadTasks(threadId);
-  const taskRevisitLabel = (id: string) => t('tasks.detail.revisitOf', { id });
   // Fresh (uncached input) token total for this thread — the "This thread ·
   // Fresh tokens" rail figure. Real, wired over the existing tokens rollup;
   // null (→ row omitted) when the thread has no recorded usage. Called before
@@ -1524,34 +1523,51 @@ function DetailColumn({
                       (isActiveTaskStatus(a.status) ? 0 : 1) -
                       (isActiveTaskStatus(b.status) ? 0 : 1),
                   )
-                  .map((t) => (
-                    <li
-                      key={t.id}
-                      className={`text-mono-sm flex w-full items-center justify-between gap-1.5 rounded-full px-2 py-0.5 ${taskChipClass(t.status)}`}
-                    >
-                      <span className="inline-flex min-w-0 items-center gap-1.5">
-                        {isActiveTaskStatus(t.status) && (
-                          <span className="inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-current opacity-70" aria-hidden />
-                        )}
-                        <span className="truncate font-semibold">{taskStatusLabel(t.status)}</span>
-                        {t.originating_task_id && t.originating_task_id !== t.id && (
-                          <span title={taskRevisitLabel(t.originating_task_id)}>
-                            ↩ {t.originating_task_id}
+                  .map((t) => {
+                    // Chain ORIGIN (not the immediate predecessor): shown as a
+                    // labelled secondary line so it never squeezes the status
+                    // word or the current task ID off the primary line.
+                    const originId =
+                      t.originating_task_id && t.originating_task_id !== t.id ? t.originating_task_id : null;
+                    return (
+                      <li
+                        key={t.id}
+                        className={`text-mono-sm w-full px-2 py-0.5 ${originId ? 'rounded-md' : 'rounded-full'} ${taskChipClass(t.status)}`}
+                      >
+                        <div className="flex w-full items-center justify-between gap-1.5">
+                          <span className="inline-flex min-w-0 items-center gap-1.5">
+                            {isActiveTaskStatus(t.status) && (
+                              <span className="inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-current opacity-70" aria-hidden />
+                            )}
+                            <span className="truncate font-semibold">{taskStatusLabel(t.status)}</span>
                           </span>
+                          {slug ? (
+                            <Link
+                              to={`/orgs/${slug}/tasks/${t.id}`}
+                              className="shrink-0 font-mono opacity-80 hover:underline"
+                            >
+                              {t.id}
+                            </Link>
+                          ) : (
+                            <span className="shrink-0 font-mono opacity-80">{t.id}</span>
+                          )}
+                        </div>
+                        {originId && (
+                          <p className="break-words opacity-80">
+                            {render('threads.page.rail.originTask', {
+                              id: slug ? (
+                                <Link to={`/orgs/${slug}/tasks/${originId}`} className="font-mono hover:underline">
+                                  {originId}
+                                </Link>
+                              ) : (
+                                <span className="font-mono">{originId}</span>
+                              ),
+                            })}
+                          </p>
                         )}
-                      </span>
-                      {slug ? (
-                        <Link
-                          to={`/orgs/${slug}/tasks/${t.id}`}
-                          className="shrink-0 font-mono opacity-80 hover:underline"
-                        >
-                          {t.id}
-                        </Link>
-                      ) : (
-                        <span className="shrink-0 font-mono opacity-80">{t.id}</span>
-                      )}
-                    </li>
-                  ))}
+                      </li>
+                    );
+                  })}
               </ul>
             ) : (
               <p className="text-text-muted text-xs">{t('threads.page.rail.tasksEmpty')}</p>
