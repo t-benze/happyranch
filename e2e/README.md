@@ -667,43 +667,62 @@ UNKNOWN, unaffected by source delivery or fresh QA success.
 
 ### First-recorder and native-log observations (TASK12758 / ROOT12738)
 
-Manager acceptance of TASK12756 (dc939cf918ad4cef3c488a1788e70240175c7080977080c898d224a5d8d64e71),
-independent TASK12757 DESIGN ONLY, and its binding C1 correction select these
-FOUR-file source mechanisms. This extends the SAME13 keepers below; the original
-thirty rows, A/B/D/E answers, ALL56 L1–L7 membership/order EACH3.12/3.14,
-sixteen browser sites and complete validator/admission/control maps remain in
-this record and its accepted references. No executable case/injector/proof
-harness/venue or test-only production seam is added.
+Current manager step17 acceptance of TASK12768 (33947 UTF8 bytes,
+SHA2567446d38710ee11ff65c955b60ab5b2a33f175b3dc24f47ac9378f083d82ed981),
+independent TASK12769 DESIGN ONLY PASS, selects TASK12770's FOUR-file diagnostic
+eligibility revision. This replaces the older TASK12756/12757 inner-positivity
+and unknown-origin refusal rules for diagnostics only. The original thirty
+rows, A/B/D/E answers, ALL56 L1–L7 membership/order EACH3.12/3.14, sixteen browser
+sites and complete validator/admission/control maps remain. No executable
+case/injector/proof harness/venue or test-only production seam is added.
 
 `record_error` first inserts candidate raw W/object/savedTB and assigns the
-primary. Only `winner is candidate` can claim its separate pending snapshot;
-reentry before completion refuses it. Earlier P, later SAME object, off-owner,
-pending/refused/overflow/unreached state never receives later completion.
+primary before optional work. Only `winner is candidate` on the inserting owner
+can claim and complete its separate snapshot. Reentry before completion,
+earlier P, later SAME object, off-owner, pending/refused/interrupted/partially
+assigned state never receives later completion or terminal repair.
 `_snapshot_first_error` is memory only, with no category publication or I/O.
-The THREE existing category publishers, historical check/nonce, original
-capture A then [] invalidation B precedence and raw final raise remain.
+The THREE category publishers, historical check/nonce, original capture A then
+[] invalidation B precedence and raw final raise remain unchanged.
 
-The immutable record is exactly21 ASCII bytes `HRD1:S:SS:OO:BB:TT:R\n`.
-SS is PH/BD/RS/CT/AC/TD/EV/BR/OT. OO is RM/PH/BD/TS/WE/RD/CS/RS/CL/EV/MN/AL,
-using only the reviewed code objects: remaining, phase/bounded generators,
+The original constructor deadline G is pinned once in `_diagnostic_outer_end`.
+Diagnostic admission requires that SAME exact finite non-Boolean numeric G,
+unchanged type/value and still-positive monotonic allowance, through creator
+completion and selected send. Missing/invalid/drifted/exhausted G refuses.
+Expired inner case/local/phase minima alone do not veto failure reporting.
+No new end, reserve, interval, C/E borrowing or workload continuation follows:
+effective_end/remaining/phase/bounded/_timer_sync/publish_end, Store dynamic
+admission, category publication, close/evidence and cleanup/export keep their
+original bounds and alarms. A NEW actual raising interruption stops optional
+work through existing handlers; an earlier selected workload alarm is a first
+fact, not permission to renew work. Admission is cooperative, not hard timing.
+
+The immutable record is exactly23 ASCII bytes `HRD2:S:SS:OO:BB:TT:R:F\n`.
+SS is PH/BD/RS/CT/AC/TD/EV/BR/OT. OO is RM/PH/BD/TS/WE/RD/CS/RS/CL/EV/MN/AL/UN,
+using only reviewed code objects: remaining, phase/bounded generators,
 _timer_sync, publish_end, prepare_redaction, capture/remember_thread_secrets,
 close, evidence, main and its original expired closure. A require leaf maps
 only through its immediate reviewed caller. The saved walk is at most32 TB
-nodes; an unknown leaf/caller or overflow refuses, without nearest-ancestor,
-frame/text/locals/path/context/error/clock export or diagnostic import.
+nodes; missing/unrecognized leaf/caller or overflow yields UN without guessing
+an ancestor. No frame/text/locals/path/context/error/clock/token is exported.
+Same-source `_diagnostic_packet` refuses old21-byte HRD1:S packets; retained
+old logs keep their original meaning. HRD1:C collection markers are unchanged.
 
 BB=01..1F labels effective-minimum ties among actual present G=01,C=02,L=04,
-O=08,I=10 owners. Absent fallback attributes own no tie; only the original
-inactive inherited infinity sentinel is permitted. TT=01..7F includes those
-owners plus Python-phase20/native-phase40 at the timer minimum, with at most16
-phases. P requires an actual phase/bounded creator call before its ORIGINAL
-restoration; A describes first-recorder state only. No terminal resampling,
-lost-bound reconstruction, remaining(), timer renewal, reserve or shielding.
-In the completed-readiness observer-health source example, bounded restoration
-leaves local_bounds.end present: with the stated other absences, G+L tie gives
-BB=05/TT=05. This is actual-state calculation, never a hardcoded example result.
-The RM/action/A path can reach a positive selected handoff; it does not prove
-which failure occurred historically or reveal the deeper observer error.
+O=08,I=10 owners. Absent fallback attributes own no tie; only original inactive
+inherited infinity is a sentinel. TT=01..7F includes those owners plus
+Python-phase20/native-phase40 at the timer minimum, with at most16 actual phases.
+One creator monotonic observation classifies their combined minimum F=P if
+positive, E if expired. A completed malformed bounded observation yields
+F=U with BB=TT=00, never a guessed known subminimum. Exceptions or incomplete
+assignments refuse; they cannot become UNKNOWN-complete later. F=P/E requires
+nonzero in-range BB/TT, F=U requires both00, and OO=UN is independent of F.
+R=P requires an actual phase/bounded creator before ORIGINAL restoration;
+R=A describes first-recorder state only. First P then historical exhausted H0,
+or first E then historical positive H0 after restoration, are distinct honest
+histories. No terminal resampling or lost-bound reconstruction occurs.
+Completed-readiness leaves local_bounds.end present: with the stated other
+absences, actual G+L ties give BB05/TT05, never a hardcoded result.
 
 One atomic nonblocking/CLOEXEC anonymous UNIX datagram pair is attempted ONLY
 for scenarios. Directional shutdowns, private pass_fds/--_diagnostic-fd and
@@ -714,12 +733,16 @@ failure disables diagnostics before that single launch choice; Popen failure
 or interruption never retries. Registration/closure/custody gaps remain
 UNKNOWN. CLOEXEC supplies no fork-only or same-UID interference guarantee.
 
-The original adapter decision is saved before optional send. Full genuine
-module/token/frame/W/object/savedTB/head/outer/historical check/nonce plus the
-snapshot's OWN complete claim/W/TB join are required. One charged nonblocking
-send requires original positive work time. Success, constructor/pretry,
-unselected/collision, exhausted and poison/tail escapes send nothing;
-status83/1 alone cannot establish selection.
+The original adapter decision is saved byte-identically before optional send.
+The sole sender opportunity charges before validation. Full genuine module/
+token/frame/W/object/savedTB/head/outer/H0 claim/nonce/category/Boolean plus the
+snapshot's OWN complete claim/W/TB/owner join are required. H0true/false keep
+their historical meanings; missing H0 retains selected status1 but no packet.
+Encoding and the ONE MSG_DONTWAIT send require still-positive ORIGINAL G,
+independent of inner expiry. Success, constructor/pretry, unselected/collision,
+exhausted G and poison/replaced-head/tail escapes send nothing; status83/1,
+argv or direct exit alone cannot establish selection or custody. New raising
+interruptions escape; the saved adapter is never recomputed to mask them.
 
 Only the existing poll loop's genuine direct-controller exit, saved code/phase
 exit and original finished/seconds/interrupted assignments admit receiver work,
@@ -771,21 +794,26 @@ identity/propagation, H=existing disposable hosted EACH3.12/3.14 OS/native-log
 boundary, J=existing serialized acceptance consumers. They are design
 expectations, **not executed assertions**; no new runnable tests were authored.
 
-| Keeper | 1 Observable contract | 2 Credible regression | 3 Nearest keeper gap and distinct C/H/J risks | 4 Test-only seam |
+| Requirement / keeper: finite input and action | 1 Independent expected observable / level | 2 Realistic regression | 3 Nearest keeper gap; distinct C/H/J risks | 4 Seam |
 | --- | --- | --- | --- | --- |
-| R2-01 | SAME original W/TB at genuine final raise; only its creator snapshot survives restoration/selected association, including the early observer path. | Sample final bound, select close/evidence B, or let later same-object recording finish pending claim. | Existing phase/bounded/E07 raw keepers own local precedence, not new snapshot/selected/log association. C identity/first state; H actual fd/status/log; J cannot prove those private facts. | NO |
-| R2-02 | Only complete finite reviewed origin/site/bound labels leave the controller; RM identifies the known immediate require caller. | Export observer_error/text/frame/path, map nearest known ancestor or import arbitrary mapper. | Existing class/stage keepers lack code/site vocabulary. C exact mapping/privacy; H actual packet/native bytes; J has no marker parser/credit. | NO |
-| R2-03 | Reentry cannot replace W, repair pending snapshot or buy another send/write. | Outer creator completes after nested refusal, charge after call or resend on callback. | Existing writer-active keeper governs file publication, not private memory/send/output chance. C claim/reentry; H real one-send/write behavior; J noncredit cannot establish either. | NO |
-| R2-04 | Off-owner or prior-claim request leaves optional state unavailable without enqueue/wait or later completion. | Owner fills a nonowner/prior claim later or queues a helper. | Existing writer-owner keeper lacks new claim/descriptor lifetime. C owner/immutable P; H inherited fd/custody; J cannot infer owner from bytes. | NO |
-| R2-05 | Valid sample plus only exact absent peek after real termination/custody/end/R release may start ONE inherited-fd2 write; all second tuples/errors/unfinished links refuse. Short/output failure leaves UNKNOWN and original error intact. | Emit before probe, b''=absence, ignore invalid second, broad errno catch, retry, reopen/change flags, buffered output, or swallow real alarm under broad OSError/Exception. Permitting existing blocking fd2 is not a regression. | Existing file-writer keeper lacks queue uniqueness/real sink behavior. C charges/selection/propagation; H actual datagrams/flags/partial writes/backpressure/native retention; J original failure cannot prove transport. | NO |
-| R2-08 | Constructor/pretry/unselected/expiry bypass yields no selected observation; original status and inherited endpoint exclusion remain. Useful positive early path and exhausted/signal path stay distinct. | Treat83 as selection, pass fd broadly/adopt late, or send under fresh allowance. | Existing constructor/expiry row lacks private custody/handoff. C exact selected decision; H actual process/exec/signal/status; J cannot substitute later reaped code for null. | NO |
-| R3-01 | First failed collection operation can produce a complete finite line after original reservation, with eligible original cleanup and sticky safe FAIL. | Log before incomplete, combine decode/validate, overwrite first site, or skip independent removal on ordinary log failure. | Existing collection row owns failure/flags, not operation distinction in a surviving external log. C raw/TB/timeout precedence; H real context/root/native file; J safe FAIL cannot prove site/delivery. | NO |
-| R3-06 | SAME original command end covers both receives/close/write; original C/E cover collection/eligible cleanup/export, with unchanged raising signals and no renewal. Blocking write has no hard latency bound. | Re-arm action_end before probe/write, catch alarm and continue, repair in cleanup, or claim<=512 implies bounded I/O. | Existing expiry keeper misses inter-call/output stall. C raising-handler propagation/check ordering; H real kernel delay/partial/signal/closure; J timing arithmetic cannot certify syscall latency or teardown. | NO |
-| R3-07 | Persisted disposition matches actual terminal commit, with all optional output before publication admission. | Write/check/raise after final replace or require a rescue to preserve marker. | Existing12649 commit keeper must also constrain new optional hooks. C unwind; H replace/queued-alarm/native-output timing; J actual committed receipt relation. | NO |
-| R3-08 | Root loss/recollection cannot refresh frozen reader or complete an earlier unknown first claim. | Export rereads private categories/raw log or finishes pending site. | Existing frozen/recollection keeper lacks optional log lifetime. C immutable claim; H root/log/descriptor release; J stale/null/FAIL semantics cannot recover lost detail. | NO |
-| R3-09 | Invalid/missing full context continues to withhold raw detail; label presence yields no readiness/marks or cleanup acceptance. | Treat finite line as full context, allow bearer-only raw export or clear staging on later success. | Existing context/withholding keeper lacks new marker noncredit. C capture[]/first-error order; H real file/sanitization/removal; J empty variants and no false acceptance. | NO |
-| X-01 | Joint SAME-W creator snapshot→actual selected send→real direct exit→valid sample/absent peek→R release→one existing native write, plus first collection site→root loss→safe FAIL, only where each link is eligible. | Stitch epochs/claims, infer custody from code, accept first before peek, continue diagnostics after alarm, or call collection-only output a joint success. | R2 local identity/queue and R3 cleanup do not own cross-process survival. C authentic W/selection; H actual endpoints/log/backpressure/root; J independent frozen failure/withholding/commit. Concrete source path addresses F1; executed joint delivery remains unproved. | NO |
-| X-02 | Frozen evidence/initial FAIL/terminal commit survive root loss without later transport/snapshot repair or postcommit output. | Drain after deletion, retry short output, refresh reader, or output in terminal tail. | Existing frozen/commit keeper lacks optional endpoint/log lifetime. C propagation; H closure/removal/native log/replace; J immutable noncredit/receipt disposition. | NO |
+| R2-01: expired first case/local/phase with positive G; positive then expired; W versus earlier P/later restore B | SAME W/savedTB at genuine final raise; sealed first facts survive restoration; expired-inner selected report eligible. C/H/J noncredit. | Retain old inner gate, resample, select B or restore workload. | Phase/bounded/E07 owns precedence, formerly excluded this expiry. C creator/TB; H alarm/packet/log; J83 cannot prove identity. | NO |
+| R2-02: known/unknown first leaf or require caller; >32 TB; malformed owner/phase; actual ties/inactive infinity; P/E/U | Closed UN or U00 honestly distinguished from known facts; no ancestor/case/clock/text export. C/H/J. | Guess ancestor/minimum, refuse every unknown leaf or leak details. | Mapping keeper lacks complete unknown facts. C observation/privacy; H exact bytes; J no cause inference. | NO |
+| R2-03: no snapshot/pending before reservation or seal/reentry during seal/send/complete then later SAME object | Missing/refused never repaired; only creator seals; charges forbid another send/read/write. C/H/J. | Complete pending later, overwrite refusal, retry EAGAIN. | Active-writer keeper does not own snapshot claim. C reentry; H once-only transport; J absence proves neither. | NO |
+| R2-04: off-owner first; owner later same/prior claim; original G missing/nonfinite | No surrogate snapshot/enqueue/wait; private refusal never infers W/selection/result. C/H/J. | Owner repairs nonowner or substitutes nearest deadline. | Owner keeper needs original-G/refusal distinction. C ownership; H inherited custody; J cannot infer owner. | NO |
+| R2-05: failed setup/adoption/registration/send/sample; invalid/empty/oversize/flags/ancillary/firstEAGAIN; ANY second tuple vs exact EAGAIN/EWOULDBLOCK; failed release/short write | One launch/adoption/send/sample/peek, full R release before <=ONE fd2 write. Gaps UNKNOWN, no third read/fallback. C/H/J. | Accept b'' second, broaden errno, output before close, retry/pass fd broadly/swallow alarm. | File-writer keeper lacks datagram/fd2 custody. C charge/join; H OS flags/backpressure/retention; J result cannot prove transport. | NO |
+| R2-08: inner expired/G positive; G exhausted before/during operations; constructor/no-W/unselected/replaced-head/tail; H0true/false/missing; actual ALRM/RuntimeError/KeyboardInterrupt/SystemExit | Inner expiry alone no veto; exhausted G/invalid selection no send. Saved adapter unchanged; new raising optional interruption escapes, no second chance. C/H/J. |83-as-selection, recompute adapter, reserve/C/E/timer renewal or broad catch. | Expiry keeper conflated inner/G. C heads/H0 vs first fact; H actual signal/exec/status; J no reaped-code substitution. | NO |
+| R3-01: []/nonlist/empty/member-invalid/missing-bearer decoded predicates vs valid/decode failure; capture[] vs prepare expiry | SAME CONTEXT_VALIDATE only on decoded rejection, raw/TB/sticky reservation first; no value/writer inference or false[] claim. C/H/J. | Conflate decode/validate, infer[], log before reservation/bearer-only rescue. | Collection+R2-06/07 already own predicates. C A→[]→A/B; H files/removal; J withholding. | NO |
+| R3-06: G expires between send/sample/peek/release/write; C/E expiry; actual raising alarm at each optional call | No next optional attempt beyond its original end; new raising interruption stops sequence. Cleanup C/export E-1 unchanged. C/H/J. | Borrow C/E, restore action_end before sample, ignore checks or claim finite bytes bound latency. | Existing expiry needs reporting/work separation. C propagation; H kernel delay/partial output; J arithmetic cannot prove closure. | NO |
+| R3-07: precommit failure vs successful replacement/queued alarm | Initial FAIL survives no commit; committed replacement terminal, no postcommit diagnostics/check/reclassification. C/H/J. | After-commit marker/rescue/check or log-as-PASS. |12649 keeper already owns order; apply to revised packet. C unwind; H replace/alarm; J persisted disposition. | NO |
+| R3-08: root loss/old-null frozen read/later recollection/pending first snapshot | Frozen stays frozen, incomplete stays sticky, no snapshot/channel/root repair. C/H/J. | Reread/recreate in export; UN-as-absence. | Frozen keeper needs explicit U meaning. C first claim; H root/fd; J stale/null/failure. | NO |
+| R3-09: unsafe context+complete packet; absent packet+valid context | Full-context withholding unchanged; marker never readiness/artifact/cleanup/PASS; fallback variants={}. C/H/J. | Last-good/bearer-only/scenarios.txt/raw-TB rescue or marker acceptance. | Context keeper needs E/UN noncredit. C capture vs preparation; H sanitation; J required evidence. | NO |
+| X-01: ONE expired-first W→selected send→direct exit→sample/absent peek→R release→write, then collection rejection/root loss/incomplete export; each failed-link variant above | Joint observation only after EVERY actual link in SAME invocation/original ends; W/precedence/withholding/safe FAIL survive. C/H/J. | Stitch epochs/H0, infer custody from argv or substitute collection-only utility. | Local R2/serialized R3 lack composition. C W/H0; H actual endpoints/exit/log/root; J frozen failure/commit. | NO |
+| X-02: frozen/initial FAIL+root loss/G expiry/short output vs terminal commit | No later drain/retry/first-fact refresh/recollection repair/postcommit output. C/H/J. | Rescue/reopen/third read/unknown-as-latest/reclassify commit. | Frozen/commit keeper forbids later packet lifecycle. C propagation; H close/remove/write/replace; J immutable noncredit. | NO |
+
+R2-06/07 original capture/invalidation precedence and ownership remain with
+their original keepers. The SAME13 rows above specify finite inputs, actions,
+independent observables/final transitions, environment/levels and EACH four
+answers; C/H/J remain distinct risks. All original30 rows remain unchanged.
 
 Candidate **NOT RUN**; intended-failure/restored-pass **PROOF NOT RUN**;
 sensitivity **UNPROVED**. Static all/Source Boundary Lint/Web Lint(Node24),
@@ -794,12 +822,15 @@ behavioral/test-authoring/Product acceptance. Python units RETIRED; general
 integration INCLUDING callback SKIPPED24342/211270–271. No branch Product E2E,
 protected12/mutation/repetition or new execution allocation. Dynamic20 E05/24
 E07 source hashes must join genuine later bytes; old receipts remain historical.
-Latest assessed39984857420 remains FAILED/HealthFAIL47, EACH56 UNKNOWN/null/zero
-recordedPASS, final_missing/conditional83/collection ValueError then incomplete
-export; TERM3.12/INT3.14 are diagnostic-only. UNKNOWN is not UNREACHED; PR1180
-cause stays unproved. Complete manager step11 ledger17554B/SHA256
-fe621dbd20c8ead2f01519a7cc27bc0e1a69d218745412584b205f3ce1311d6a and ALL nine
-retained addenda/integrity preserve older failures/obligations by reference,
+Latest assessed40011623903 remains FAILED/HealthFAIL47, EACH56 UNKNOWN/null/zero
+recordedPASS, final_missing/direct83/BOTH CONTEXT_VALIDATE:F decoded-predicate rejection
+before raw merge, then root-loss sticky incomplete export; TERM3.12/INT3.14 are diagnostic-only. UNKNOWN is not UNREACHED; PR1180
+cause stays UNKNOWN. The markers do not establish[]/writer/bearer or original
+first cause. The exhausted-inner/positive-G E07/AL route is conditional source
+feasibility, not historical causality. The actual failed venue is no unavailable-
+capability exemption. No behavioral/Product/reset/test-authoring PASS follows. Complete manager step17 ledger17554B/SHA256
+fe621dbd20c8ead2f01519a7cc27bc0e1a69d218745412584b205f3ce1311d6a and ALL22
+retained integrity entries/prior addenda preserve older failures/obligations by reference,
 including old12724 UNKNOWN native custody and consumed ONE362/12741 history.
 Daily19UTC plus manager-owned reviewed-main-only Founder277 authority, original
 480/240/720/60/120/900 and31s isolation remain; no schedule/validator/product/

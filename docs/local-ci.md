@@ -625,26 +625,44 @@ merge, exact-main lints and later main-only product acceptance.
 
 ### First-recorder/native-log source (TASK12758 / ROOT12738)
 
-Accepted TASK12756 / independent12757 DESIGN ONLY plus manager C1 correction
-extend the [SAME13 keeper four answers and limits](../e2e/README.md#first-recorder-and-native-log-observations-task12758--root12738):
-R2-01/02/03/04/05/08, R3-01/06/07/08/09, X-01/02. Each has a distinct C identity/
-propagation, H actual hosted OS/native-log, J serialized noncredit risk; no
-runnable case/injector/verifier/venue/test-only seam is added. Original30 rows,
-ALL56 L1–L7 membership/order EACH3.12/3.14, sixteen browser sites and complete
-validator/admission/control references remain unchanged.
+Current step17 manager acceptance of TASK12768 (33947B/SHA256
+7446d38710ee11ff65c955b60ab5b2a33f175b3dc24f47ac9378f083d82ed981) after
+independent12769 DESIGN ONLY PASS selects TASK12770's diagnostic-only original-G
+eligibility replacement and the [SAME13 keeper four answers and limits](../e2e/README.md#first-recorder-and-native-log-observations-task12758--root12738):
+R2-01/02/03/04/05/08, R3-01/06/07/08/09, X-01/02. Each finite input/action has
+an independent observable/final transition and distinct C identity/propagation,
+H actual hosted OS/native-log, J serialized noncredit risks. No runnable case,
+injector/verifier/venue/test-only seam is added. Original30 rows and R2-06/07
+precedence, ALL56 L1–L7 membership/order EACH3.12/3.14, sixteen browser sites
+and complete validator/admission/control references remain unchanged.
 
-Raw W/object/savedTB/primary assignment comes first. Only inserting candidate
-identity can make a separate once-only pending/complete snapshot; reentry,
-off-owner, prior P/later SAME object, overflow, refused or interrupted claims
-cannot complete later. Map at most32 saved TB nodes and16 phases via exact
-reviewed code-object/immediate require-caller identities only. The21-byte
-`HRD1:S:SS:OO:BB:TT:R\n` closed grammar exports finite stage/origin/actual owner/
-timer-tie/P-or-A labels, never clocks/private text/paths/frames/locals/context.
-P requires the genuine phase/bounded creator before original restoration;
-otherwise A is observed first-recorder state. Missing fallback attributes own
-no tie. Completed-readiness leaves local_bounds.end present, so the stated
-G+L example gives05/05 by actual calculation, never hardcoding. Unknown
-leaf/caller/overflow/expiry refuses; no terminal resample or ancestor inference.
+Raw W/object/savedTB/primary assignment precedes optional work. Only inserting
+owner identity can complete its own once-only snapshot; reentry, off-owner,
+prior P/later SAME object, pending/refused/interrupted/partial claims cannot
+complete later. Pin constructor G once; require exact finite non-Boolean type/
+value, unchanged deadline and still-positive ORIGINAL G at diagnostic admission
+and completion/send. Invalid/missing/drifted/expired G refuses. Inner expiry
+alone permits failure reporting, never workload renewal, a fresh end/reserve,
+timer relaxation or C/E borrowing. Workload effective_end/remaining/phase/bounded/
+_timer_sync/publish_end, action/SQL admission, THREE publishers, capture/prepare/
+close/evidence and C/E rules remain unchanged. New raising interruptions stop
+optional work through the existing handlers; no status recomputation masks them.
+
+Map at most32 saved TB nodes and16 actual phases through reviewed code objects
+and immediate require caller only. Missing/unrecognized/overflow origin is UN,
+not a guessed ancestor. The exact23-byte `HRD2:S:SS:OO:BB:TT:R:F\n` closed grammar
+exports only stage/origin/actual owner/timer-tie/restoration/first-minimum labels.
+One creator observation classifies F=P/E; a complete malformed bounded read
+may yield U with BB=TT=00. F=P/E requires BB01..1F and TT01..7F. Exceptions or
+unfinished assignments refuse rather than complete UNKNOWN. UN is independent
+of F; no raw clocks/errors/paths/frames/locals/context/token leave memory.
+R=P requires the genuine phase/bounded creator before ORIGINAL restoration;
+R=A is first-recorder state. Missing fallback attributes own no tie, inactive
+inherited infinity alone is a sentinel. Actual G+L05/05 is calculated, never
+hardcoded. No terminal resample/repair/known subminimum inference. Same-source
+receiver refuses old21-byte HRD1:S; historical logs keep old meanings; HRD1:C
+is unchanged. First P/later H0true and first E/later H0false after restoration
+are possible; historical H0 never rewrites first facts or original G.
 
 ONE atomic nonblocking/CLOEXEC anonymous directional pair is scenarios-only;
 private pass_fds/argument, parent S release immediately around ONE Popen before
@@ -654,7 +672,10 @@ uses original single launch; actual Popen failure/interruption never retries.
 Unknown registration/release/custody stays UNKNOWN; no fork-only/same-UID fence.
 Original adapter decision precedes one charged nonblocking send requiring full
 module/token/frame/W/TB/head/historical-check/nonce AND own complete snapshot
-claim. No success/constructor/unselected/tail/exhausted send or status83/1 guess.
+claim/owner and complete H0 claim/nonce/category/Boolean. H0true/false retain
+meanings; missing H0 gives original selected status1 without a packet. Encoding
+and ONE MSG_DONTWAIT send recheck ORIGINAL G; no success/constructor/unselected/
+replaced-head/tail/exhausted-G send or status83/argv/direct-exit selection guess.
 
 After original-loop real direct exit, saved code/phase/finalization and log
 closure, SAME command end/alarm governs ONE charged513-byte consuming recvmsg.
@@ -694,10 +715,13 @@ only. Normal hooks/nonforce publication, independent FULL review, same-final-hea
 scoped SOURCE QA and manager guarded merge/exact-main two-lint receipts remain;
 every push renews gates. No branch Product E2E/test/build or protected proof is
 allocated. Units RETIRED; integration INCLUDING callback SKIPPED24342/211270–271.
-Latest39984857420 FAILED/HealthFAIL47 and EACH56 UNKNOWN/null/zero recordedPASS,
-final_missing/conditional83/collection ValueError then incomplete export persist;
-TERM3.12/INT3.14 diagnostic-only, PR1180 cause unproved. Complete step11 ledger/
-ALL nine retained addenda/integrity remain byte-exact references, including
+Latest40011623903 FAILED/HealthFAIL47 and EACH56 UNKNOWN/null/zero recordedPASS,
+final_missing/direct83/BOTH CONTEXT_VALIDATE:F decoded-predicate rejection then
+root-loss sticky incomplete export persist; no[]/writer/bearer/first-cause proof.
+The E07/AL exhausted-inner/positive-G route is conditional source feasibility,
+not historical causality. Actual failure is no unavailable-capability exemption;
+TERM3.12/INT3.14 diagnostic-only, PR1180 cause unproved. Complete step17 ledger/
+ALL22 retained integrity entries/prior attributed addenda remain byte-exact references, including
 old12724 UNKNOWN custody/effects/retirement and consumed ONE362/12741 history.
 Source delivery is distinct from Product/reset/test-authoring acceptance.
 Daily19UTC and later manager-owned reviewed-main-only Founder277 verification,
