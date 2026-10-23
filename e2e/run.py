@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import argparse
+import errno
 import hashlib
 import json
 import math
 import os
 import shutil
 import signal
+import socket
 import stat
 import subprocess
 import sys
@@ -27,6 +29,123 @@ BASELINE_ARTIFACTS = ["observations.json", "browser-events.json", "daemon.txt",
                       "lifecycle.png", "response-loss.png", "org-switch-0.png", "org-switch-1.png",
                       "org-switch-2.png", "org-switch-return-revalidated.png", "browser-final.png", "e07.json", "e07-prefix.json", "launch-witnesses.jsonl",
                       "e07-parent.png", "e07-child.png", "e07-list.png"]
+
+
+def _diagnostic_write(line: bytes, end: float) -> bool:
+    """One caller-charged native-fd2 opportunity, with no latency guarantee."""
+    if type(line) is not bytes or not 0 < len(line) <= 512 or time.monotonic() >= end:
+        return False
+    try:
+        count = os.write(2, line)  # Unchanged inherited fd; no buffering/flag work.
+    except TimeoutError:
+        raise  # A real raising alarm is never an ordinary optional I/O failure.
+    except OSError:
+        return False
+    return count == len(line) and time.monotonic() < end
+
+
+def _diagnostic_packet(data: bytes) -> bool:
+    if len(data) != 21:
+        return False
+    fields = data.split(b":")
+    return (len(fields) == 7 and fields[:2] == [b"HRD1", b"S"]
+            and fields[2] in (b"PH", b"BD", b"RS", b"CT", b"AC", b"TD", b"EV", b"BR", b"OT")
+            and fields[3] in (b"RM", b"PH", b"BD", b"TS", b"WE", b"RD", b"CS", b"RS", b"CL", b"EV", b"MN", b"AL")
+            and len(fields[4]) == len(fields[5]) == 2
+            and all(c in b"0123456789ABCDEF" for c in fields[4] + fields[5])
+            and 1 <= int(fields[4], 16) <= 31 and 1 <= int(fields[5], 16) <= 127
+            and fields[6] in (b"P\n", b"A\n"))
+
+
+class _ScenarioDiagnostic:
+    """Invocation-local ownership; refusal/charged calls cannot be repaired."""
+    def __init__(self, end: float) -> None:
+        self.end = end
+        self.receiver = self.sender = None
+        self.receiver_close_started = self.sender_close_started = False
+        self.receiver_released = self.sender_released = False
+        self.ready = False
+        self.sample_claimed = self.probe_claimed = self.output_claimed = False
+        self.descriptor = None
+        try:
+            if time.monotonic() >= end:
+                return
+            if not all(hasattr(socket, name) for name in ("SOCK_NONBLOCK", "SOCK_CLOEXEC", "MSG_DONTWAIT", "MSG_PEEK")):
+                return
+            self.receiver, self.sender = socket.socketpair(
+                socket.AF_UNIX, socket.SOCK_DGRAM | socket.SOCK_NONBLOCK | socket.SOCK_CLOEXEC)
+            self.receiver.shutdown(socket.SHUT_WR)
+            self.sender.shutdown(socket.SHUT_RD)
+            self.descriptor = self.sender.fileno()
+            self.ready = (self.descriptor > 2 and not self.receiver.getblocking() and not self.sender.getblocking()
+                          and not self.receiver.get_inheritable() and not self.sender.get_inheritable()
+                          and time.monotonic() < end)
+        except TimeoutError:
+            raise
+        except OSError:
+            self.ready = False  # Ordinary setup decline precedes ONE launch choice.
+        finally:
+            if not self.ready:
+                self.release()
+
+    def release_endpoint(self, name: str) -> bool:
+        if getattr(self, name + "_close_started"):
+            return getattr(self, name + "_released")
+        setattr(self, name + "_close_started", True)
+        endpoint = getattr(self, name)
+        if endpoint is None:
+            return False
+        try:
+            endpoint.close()
+        except TimeoutError:
+            raise
+        except OSError:
+            self.ready = False
+            return False
+        setattr(self, name + "_released", True)
+        return True
+
+    def release(self) -> None:
+        try:
+            self.release_endpoint("sender")
+        finally:
+            self.release_endpoint("receiver")
+
+    def receive(self) -> None:
+        # Called ONLY after the original loop's direct exit and original phase
+        # finalization/log closure. Endpoint close alone is not termination.
+        if not self.ready or not self.sender_released or self.sample_claimed:
+            return
+        self.sample_claimed = True
+        if time.monotonic() >= self.end:
+            return
+        try:
+            data, ancillary, flags, _ = self.receiver.recvmsg(513, 0, socket.MSG_DONTWAIT)
+        except TimeoutError:
+            raise
+        except OSError:
+            return  # Including first EAGAIN: no valid sample, so no probe.
+        if ancillary or flags or not _diagnostic_packet(data):
+            return
+        if not self.ready or not self.sender_released or time.monotonic() >= self.end:
+            return
+        self.probe_claimed = True
+        try:
+            self.receiver.recvmsg(1, 0, socket.MSG_PEEK | socket.MSG_DONTWAIT)
+        except TimeoutError:
+            raise
+        except OSError as exc:
+            if exc.errno not in (errno.EAGAIN, errno.EWOULDBLOCK):
+                return
+        else:
+            return  # ANY tuple, including b''/invalid/truncated/ancillary, refuses ALL.
+        if not self.ready or not self.sender_released or time.monotonic() >= self.end:
+            return
+        if not self.release_endpoint("receiver"):
+            return
+        self.output_claimed = True
+        if self.ready and self.receiver_released and time.monotonic() < self.end:
+            _diagnostic_write(b"HRD1:controller:" + data, self.end)
 
 
 def arm_deadline(deadline: float) -> None:
@@ -499,37 +618,55 @@ def main() -> int:
             arm_deadline(end)  # Reject exhaustion before opening logs or spawning.
             log = root / "raw" / (name + ".txt")
             logs.append(log)
-            with log.open("w") as stream:
-                arm_deadline(end)
-                process = subprocess.Popen(argv, cwd=cwd, env=env, stdout=stream, stderr=subprocess.STDOUT)
-                owner.add(process.pid)
-                active_phase = dict(name=name, argv=argv, pid=process.pid, exit=None,
-                                    entered=begin, deadline=end, cap_seconds=cap, allowance_seconds=end - begin)
-                receipt["phases"].append(active_phase)
-                try:
-                    while process.poll() is None:
-                        if time.monotonic() >= end:
-                            raise TimeoutError(f"{name} action deadline")
-                        ready = root / "cancellation-ready.json"
-                        if args.exercise == "cancellation" and ready.exists() and not (output / "active.json").exists():
-                            witness = json.loads(ready.read_text())
-                            owner.sample()
-                            with owner.lock:
-                                if (owner.pids.get(witness["provider"]["pid"]) == witness["provider"]["pid_start"]
-                                        and owner.units and owner.groups):
-                                    active = dict(witness, launcher=dict(pid=os.getpid(), start=identity(os.getpid())),
-                                                  owned=dict(identities=dict(owner.pids), units=sorted(owner.units),
-                                                             groups=sorted(owner.groups)), source_sha=receipt["source_sha"])
-                                    temporary = output / "active.tmp"
-                                    temporary.write_text(json.dumps(active, indent=2))
-                                    temporary.replace(output / "active.json")
-                        time.sleep(0.02)
-                    code = process.returncode
-                    active_phase["exit"] = code
-                finally:
-                    active_phase["finished"] = time.monotonic()
-                    active_phase["seconds"] = active_phase["finished"] - begin
-                    active_phase["interrupted"] = process.poll() is None
+            diagnostic = None
+            launch_argv, launch_options = argv, {}  # Disabled fallback chosen BEFORE optional setup.
+            try:
+                if name == "scenarios":
+                    diagnostic = _ScenarioDiagnostic(end)
+                    if diagnostic.ready:
+                        launch_argv = [*argv, "--_diagnostic-fd", str(diagnostic.descriptor)]
+                        launch_options = {"pass_fds": (diagnostic.descriptor,)}
+                with log.open("w") as stream:
+                    arm_deadline(end)
+                    try:
+                        process = subprocess.Popen(launch_argv, cwd=cwd, env=env, stdout=stream,
+                                                   stderr=subprocess.STDOUT, **launch_options)
+                    finally:
+                        if diagnostic is not None:
+                            diagnostic.release_endpoint("sender")  # Before owner.add/wait, also on Popen failure.
+                    owner.add(process.pid)
+                    active_phase = dict(name=name, argv=launch_argv, pid=process.pid, exit=None,
+                                        entered=begin, deadline=end, cap_seconds=cap, allowance_seconds=end - begin)
+                    receipt["phases"].append(active_phase)
+                    try:
+                        while process.poll() is None:
+                            if time.monotonic() >= end:
+                                raise TimeoutError(f"{name} action deadline")
+                            ready = root / "cancellation-ready.json"
+                            if args.exercise == "cancellation" and ready.exists() and not (output / "active.json").exists():
+                                witness = json.loads(ready.read_text())
+                                owner.sample()
+                                with owner.lock:
+                                    if (owner.pids.get(witness["provider"]["pid"]) == witness["provider"]["pid_start"]
+                                            and owner.units and owner.groups):
+                                        active = dict(witness, launcher=dict(pid=os.getpid(), start=identity(os.getpid())),
+                                                      owned=dict(identities=dict(owner.pids), units=sorted(owner.units),
+                                                                 groups=sorted(owner.groups)), source_sha=receipt["source_sha"])
+                                        temporary = output / "active.tmp"
+                                        temporary.write_text(json.dumps(active, indent=2))
+                                        temporary.replace(output / "active.json")
+                            time.sleep(0.02)
+                        code = process.returncode
+                        active_phase["exit"] = code
+                    finally:
+                        active_phase["finished"] = time.monotonic()
+                        active_phase["seconds"] = active_phase["finished"] - begin
+                        active_phase["interrupted"] = process.poll() is None
+                if diagnostic is not None:
+                    diagnostic.receive()  # SAME command end/alarm, after actual exit/finalization.
+            finally:
+                if diagnostic is not None:
+                    diagnostic.release()
             arm_deadline(action_end)
             if code:
                 raise RuntimeError(f"{name} exited {code}")
@@ -575,6 +712,8 @@ def main() -> int:
         staged: dict[str, bytes] = {}
         token = ""
         redaction_context: list[str] = []
+        collection_window = "UNKNOWN"
+        collection_diagnostic: dict[str, tuple] = {}
 
         def redact(text: str) -> str:
             if not token:
@@ -584,11 +723,13 @@ def main() -> int:
             return text
 
         def collect_evidence() -> str | None:
-            nonlocal token, redaction_context
+            nonlocal token, redaction_context, collection_window
+            collection_window = "ROOT"
             if not root or not root.exists():
                 return "other"
             # Capture once: partial removal must never erase trusted context.
             if not token:
+                collection_window = "TOKEN_READ"
                 try:
                     token = (root / "daemon" / "daemon.token").read_text().strip()
                 except TimeoutError:
@@ -596,26 +737,50 @@ def main() -> int:
                 except (OSError, UnicodeError):
                     return "value"
             if not token:
+                collection_window = "TOKEN_EMPTY"
                 return "value"  # No raw text/receipt is safe without established context.
             context_path = root / "coord/redaction-context.json"
+            collection_window = "CONTEXT_PRESENT"
             if context_path.exists():
-                context = json.loads(context_path.read_text())
+                collection_window = "CONTEXT_READ"
+                context_text = context_path.read_text()
+                collection_window = "CONTEXT_DECODE"
+                context = json.loads(context_text)
+                collection_window = "CONTEXT_VALIDATE"
                 if not isinstance(context, list) or not context or not all(isinstance(s, str) and s for s in context) or token not in context:
                     raise ValueError("invalid retained redaction context")
                 redaction_context = context
+            collection_window = "SCENARIO_PRESENT"
             if (root / "scenario.json").exists():
-                result = json.loads((root / "scenario.json").read_text())
+                collection_window = "SCENARIO_READ"
+                scenario_text = (root / "scenario.json").read_text()
+                collection_window = "SCENARIO_DECODE"
+                result = json.loads(scenario_text)
+                collection_window = "SCENARIO_MERGE"
                 receipt.update({k: result[k] for k in ("variants", "scenario_phases", "e07") if k in result})
-            for path in (root / "raw").glob("*"):
+            collection_window = "RAW_ENUM"
+            paths = iter((root / "raw").glob("*"))
+            while True:
+                collection_window = "RAW_ENUM"
+                try:
+                    path = next(paths)
+                except StopIteration:
+                    break
                 if path.suffix in {".txt", ".json", ".jsonl"}:
-                    staged[path.name] = redact(path.read_text(errors="replace")).encode()
+                    collection_window = "TEXT_READ"
+                    text = path.read_text(errors="replace")
+                    collection_window = "REDACT"
+                    staged[path.name] = redact(text).encode()
                 elif path.suffix == ".png":
+                    collection_window = "IMAGE_READ"
                     staged[path.name] = path.read_bytes()
             # Completion accounting does not relax or replace any reader oracle.
+            collection_window = "REQUIRED"
             required = BASELINE_ARTIFACTS + [phase["name"] + ".txt" for phase in receipt["phases"]] if args.exercise == "baseline" else ["observations.json"]
             if (not (root / "scenario.json").exists()
                     or any(name not in staged or (name.endswith((".json", ".png")) and not staged[name]) for name in required)):
                 return "other"
+            collection_window = "UNKNOWN"  # Success is not a failed operation window.
             return None
 
         def reserve(name: str, cap: float, outer: float) -> dict:
@@ -635,31 +800,58 @@ def main() -> int:
             if time.monotonic() >= cleanup["deadline"]:
                 raise TimeoutError("cleanup deadline exhausted")
 
-        def incomplete(name: str, error: BaseException | None = None, *, category: str = "other") -> None:
+        def incomplete(name: str, error: BaseException | None = None, *, category: str = "other") -> tuple | None:
             nonlocal staging_incomplete, closure_incomplete, cleanup_incomplete
             if error is not None and receipt["timing"]["phase"] == "cleanup":
                 cleanup_failure.setdefault("first", (error, error.__traceback__))
             cleanup_incomplete = True
+            first_collection = name == "collection" and not staging_incomplete
             if name == "collection":
                 staging_incomplete = True
             elif name in {"owner", "port", "root"}:
                 closure_incomplete = True
             latch_launcher(name, error, category=category)
+            # Sticky reservation above is FIRST. An interrupted/unreached claim
+            # cannot be filled by recollection: staging_incomplete already owns it.
+            if first_collection:
+                claim = (receipt["timing"]["phase"], collection_window, "F" if error is not None else "U", object())
+                if collection_diagnostic.setdefault("claim", claim) is claim:
+                    return claim
+            return None
+
+        def observe_collection(claim: tuple | None) -> None:
+            if claim is None or collection_diagnostic.get("claim") is not claim or "output" in collection_diagnostic:
+                return
+            collection_diagnostic["output"] = claim  # Charge before eligibility/write.
+            phase, window, kind, _ = claim
+            windows = ("ROOT", "TOKEN_READ", "TOKEN_EMPTY", "CONTEXT_PRESENT", "CONTEXT_READ", "CONTEXT_DECODE",
+                       "CONTEXT_VALIDATE", "SCENARIO_PRESENT", "SCENARIO_READ", "SCENARIO_DECODE", "SCENARIO_MERGE",
+                       "RAW_ENUM", "TEXT_READ", "REDACT", "IMAGE_READ", "REQUIRED", "UNKNOWN")
+            if phase not in ("cleanup", "export") or window not in windows or kind not in ("F", "U"):
+                return
+            end = receipt["timing"][phase]["deadline"] - (1 if phase == "export" else 0)
+            if time.monotonic() >= end:
+                return
+            line = ("HRD1:C:" + phase.upper() + ":" + window + ":" + kind + "\n").encode("ascii")
+            _diagnostic_write(line, end)
 
         def stage_evidence(check: Callable[[], None]) -> None:
             nonlocal detail_complete
             check()
             try:
                 missing = collect_evidence()
-                if missing is not None:
-                    incomplete("collection", category=missing)
-                else:
-                    detail_complete = True
             except BaseException as exc:
                 if receipt["timing"]["phase"] == "export":
                     export_failure.setdefault("first", (exc, exc.__traceback__))
-                incomplete("collection", exc)
+                claim = incomplete("collection", exc)
+                observe_collection(claim)  # Outside the collector's catch scope.
                 raise
+            else:
+                if missing is not None:
+                    claim = incomplete("collection", category=missing)
+                    observe_collection(claim)
+                else:
+                    detail_complete = True
             check()
 
         try:
@@ -732,7 +924,6 @@ def main() -> int:
                 incomplete("port", exc)
             cleanup_time()
             if ports is not None and operations["port_list"]["complete"]:
-                import socket
                 absence = {}
                 receipt["cleanup"]["ports_absent"] = absence
                 operations["ports"]["attempted"] = True

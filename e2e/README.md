@@ -665,6 +665,146 @@ PR1180 causality remains unproved. ROOT12738 owns subsequent reviewed-main-only
 verification; failed12724 preparation/effects/retirement remain separately OPEN /
 UNKNOWN, unaffected by source delivery or fresh QA success.
 
+### First-recorder and native-log observations (TASK12758 / ROOT12738)
+
+Manager acceptance of TASK12756 (dc939cf918ad4cef3c488a1788e70240175c7080977080c898d224a5d8d64e71),
+independent TASK12757 DESIGN ONLY, and its binding C1 correction select these
+FOUR-file source mechanisms. This extends the SAME13 keepers below; the original
+thirty rows, A/B/D/E answers, ALL56 L1–L7 membership/order EACH3.12/3.14,
+sixteen browser sites and complete validator/admission/control maps remain in
+this record and its accepted references. No executable case/injector/proof
+harness/venue or test-only production seam is added.
+
+`record_error` first inserts candidate raw W/object/savedTB and assigns the
+primary. Only `winner is candidate` can claim its separate pending snapshot;
+reentry before completion refuses it. Earlier P, later SAME object, off-owner,
+pending/refused/overflow/unreached state never receives later completion.
+`_snapshot_first_error` is memory only, with no category publication or I/O.
+The THREE existing category publishers, historical check/nonce, original
+capture A then [] invalidation B precedence and raw final raise remain.
+
+The immutable record is exactly21 ASCII bytes `HRD1:S:SS:OO:BB:TT:R\n`.
+SS is PH/BD/RS/CT/AC/TD/EV/BR/OT. OO is RM/PH/BD/TS/WE/RD/CS/RS/CL/EV/MN/AL,
+using only the reviewed code objects: remaining, phase/bounded generators,
+_timer_sync, publish_end, prepare_redaction, capture/remember_thread_secrets,
+close, evidence, main and its original expired closure. A require leaf maps
+only through its immediate reviewed caller. The saved walk is at most32 TB
+nodes; an unknown leaf/caller or overflow refuses, without nearest-ancestor,
+frame/text/locals/path/context/error/clock export or diagnostic import.
+
+BB=01..1F labels effective-minimum ties among actual present G=01,C=02,L=04,
+O=08,I=10 owners. Absent fallback attributes own no tie; only the original
+inactive inherited infinity sentinel is permitted. TT=01..7F includes those
+owners plus Python-phase20/native-phase40 at the timer minimum, with at most16
+phases. P requires an actual phase/bounded creator call before its ORIGINAL
+restoration; A describes first-recorder state only. No terminal resampling,
+lost-bound reconstruction, remaining(), timer renewal, reserve or shielding.
+In the completed-readiness observer-health source example, bounded restoration
+leaves local_bounds.end present: with the stated other absences, G+L tie gives
+BB=05/TT=05. This is actual-state calculation, never a hardcoded example result.
+The RM/action/A path can reach a positive selected handoff; it does not prove
+which failure occurred historically or reveal the deeper observer error.
+
+One atomic nonblocking/CLOEXEC anonymous UNIX datagram pair is attempted ONLY
+for scenarios. Directional shutdowns, private pass_fds/--_diagnostic-fd and
+parent sender release immediately around the ONE Popen precede owner.add/wait.
+The child adopts that exact fd, validates actual OS nonblocking/family/type and
+restores CLOEXEC BEFORE Controller/observer/exec descendants. Ordinary setup
+failure disables diagnostics before that single launch choice; Popen failure
+or interruption never retries. Registration/closure/custody gaps remain
+UNKNOWN. CLOEXEC supplies no fork-only or same-UID interference guarantee.
+
+The original adapter decision is saved before optional send. Full genuine
+module/token/frame/W/object/savedTB/head/outer/historical check/nonce plus the
+snapshot's OWN complete claim/W/TB join are required. One charged nonblocking
+send requires original positive work time. Success, constructor/pretry,
+unselected/collision, exhausted and poison/tail escapes send nothing;
+status83/1 alone cannot establish selection.
+
+Only the existing poll loop's genuine direct-controller exit, saved code/phase
+exit and original finished/seconds/interrupted assignments admit receiver work,
+after log closure, still under SAME command end/alarm BEFORE larger action
+restoration/raise-on-code. Charge ONE `recvmsg(513,0,MSG_DONTWAIT)` sample;
+exact complete grammar, no ancillary and zero unexplained/truncation flags
+are required. Invalid/empty/oversized/error/first-EAGAIN means no probe/write.
+Only valid first permits ONE charged `recvmsg(1,0,MSG_PEEK|MSG_DONTWAIT)`.
+ANY successful second tuple, including b''/invalid/truncated/ancillary, refuses
+ALL. Only exact second EAGAIN/EWOULDBLOCK is candidate absence, followed by
+custody/end postcheck, complete R release and original-end prewrite check.
+No third call/retry/drain/new poll/reap/wait/EOF inference or receiver in
+cleanup/export. Python-call counts are not hard kernel-syscall guarantees.
+
+Each complete eligible observation consumes ONE <=512B fixed-ASCII unbuffered
+`os.write(2,line)` opportunity to unchanged inherited launcher fd2. Existing
+regular cancellation launcher.log and blocking native pipe are permitted.
+Controller lines use `HRD1:controller:` plus the exact packet; collection lines
+are `HRD1:C:CLEANUP:LL:K\n` or `HRD1:C:EXPORT:LL:K\n`, K=F/U. LL is ROOT,
+TOKEN_READ,TOKEN_EMPTY,CONTEXT_PRESENT,CONTEXT_READ,CONTEXT_DECODE,
+CONTEXT_VALIDATE,SCENARIO_PRESENT,SCENARIO_READ,SCENARIO_DECODE,SCENARIO_MERGE,
+RAW_ENUM,TEXT_READ,REDACT,IMAGE_READ,REQUIRED,UNKNOWN. Labels describe completed
+operation windows, not exact throw instructions. Valid token plus context `[` /
+`[]`, or valid context plus scenario `[`, are source counterexamples for decode /
+validate / scenario-decode respectively, never native cause proof.
+
+Original raw error/TB and sticky incomplete reservation precede the first site
+claim; one failed/unavailable claim spans C/E and never repairs on recollection.
+Absent-context policy is unchanged, frozen reader/withholding and independently
+eligible original C ports/root removal remain. E keeps its original E-1 cutoff,
+safe FAIL/variants={} and terminal successful replacement; no diagnostic in
+publish/after commit. Full markers grant no readiness/result/health/cleanup
+credit, and no raw/scenarios.txt rescue or validator decoder exists.
+
+No dup/reopen/path/flag/buffering/flush/helper/readiness wait/application retry,
+timer extension/deferred/postcommit output. TimeoutError precedes OSError;
+ordinary short/OSError consumes UNKNOWN chance, while actual raising alarm,
+RuntimeError, KeyboardInterrupt/SystemExit escapes optional handling through
+genuine outer handlers. Saved child exit/finalization remains real; an exit
+error not yet raised is never fabricated to hide an interruption. Blocking I/O
+can delay signals, consume C and lose cleanup/publication. Finite bytes promise
+no kernel latency, delivery, retention, durability or later cleanup opportunity;
+partial lines are never reconstructed. Only completed assignments are protected.
+
+The following EACH13 four answers cover all accepted setup/adoption/registration,
+selection, mapping/owner/tie, reentry, queue/error/expiry/close/write/signal,
+collection/frozen/root-loss/recollection and terminal subinputs. C=actual local
+identity/propagation, H=existing disposable hosted EACH3.12/3.14 OS/native-log
+boundary, J=existing serialized acceptance consumers. They are design
+expectations, **not executed assertions**; no new runnable tests were authored.
+
+| Keeper | 1 Observable contract | 2 Credible regression | 3 Nearest keeper gap and distinct C/H/J risks | 4 Test-only seam |
+| --- | --- | --- | --- | --- |
+| R2-01 | SAME original W/TB at genuine final raise; only its creator snapshot survives restoration/selected association, including the early observer path. | Sample final bound, select close/evidence B, or let later same-object recording finish pending claim. | Existing phase/bounded/E07 raw keepers own local precedence, not new snapshot/selected/log association. C identity/first state; H actual fd/status/log; J cannot prove those private facts. | NO |
+| R2-02 | Only complete finite reviewed origin/site/bound labels leave the controller; RM identifies the known immediate require caller. | Export observer_error/text/frame/path, map nearest known ancestor or import arbitrary mapper. | Existing class/stage keepers lack code/site vocabulary. C exact mapping/privacy; H actual packet/native bytes; J has no marker parser/credit. | NO |
+| R2-03 | Reentry cannot replace W, repair pending snapshot or buy another send/write. | Outer creator completes after nested refusal, charge after call or resend on callback. | Existing writer-active keeper governs file publication, not private memory/send/output chance. C claim/reentry; H real one-send/write behavior; J noncredit cannot establish either. | NO |
+| R2-04 | Off-owner or prior-claim request leaves optional state unavailable without enqueue/wait or later completion. | Owner fills a nonowner/prior claim later or queues a helper. | Existing writer-owner keeper lacks new claim/descriptor lifetime. C owner/immutable P; H inherited fd/custody; J cannot infer owner from bytes. | NO |
+| R2-05 | Valid sample plus only exact absent peek after real termination/custody/end/R release may start ONE inherited-fd2 write; all second tuples/errors/unfinished links refuse. Short/output failure leaves UNKNOWN and original error intact. | Emit before probe, b''=absence, ignore invalid second, broad errno catch, retry, reopen/change flags, buffered output, or swallow real alarm under broad OSError/Exception. Permitting existing blocking fd2 is not a regression. | Existing file-writer keeper lacks queue uniqueness/real sink behavior. C charges/selection/propagation; H actual datagrams/flags/partial writes/backpressure/native retention; J original failure cannot prove transport. | NO |
+| R2-08 | Constructor/pretry/unselected/expiry bypass yields no selected observation; original status and inherited endpoint exclusion remain. Useful positive early path and exhausted/signal path stay distinct. | Treat83 as selection, pass fd broadly/adopt late, or send under fresh allowance. | Existing constructor/expiry row lacks private custody/handoff. C exact selected decision; H actual process/exec/signal/status; J cannot substitute later reaped code for null. | NO |
+| R3-01 | First failed collection operation can produce a complete finite line after original reservation, with eligible original cleanup and sticky safe FAIL. | Log before incomplete, combine decode/validate, overwrite first site, or skip independent removal on ordinary log failure. | Existing collection row owns failure/flags, not operation distinction in a surviving external log. C raw/TB/timeout precedence; H real context/root/native file; J safe FAIL cannot prove site/delivery. | NO |
+| R3-06 | SAME original command end covers both receives/close/write; original C/E cover collection/eligible cleanup/export, with unchanged raising signals and no renewal. Blocking write has no hard latency bound. | Re-arm action_end before probe/write, catch alarm and continue, repair in cleanup, or claim<=512 implies bounded I/O. | Existing expiry keeper misses inter-call/output stall. C raising-handler propagation/check ordering; H real kernel delay/partial/signal/closure; J timing arithmetic cannot certify syscall latency or teardown. | NO |
+| R3-07 | Persisted disposition matches actual terminal commit, with all optional output before publication admission. | Write/check/raise after final replace or require a rescue to preserve marker. | Existing12649 commit keeper must also constrain new optional hooks. C unwind; H replace/queued-alarm/native-output timing; J actual committed receipt relation. | NO |
+| R3-08 | Root loss/recollection cannot refresh frozen reader or complete an earlier unknown first claim. | Export rereads private categories/raw log or finishes pending site. | Existing frozen/recollection keeper lacks optional log lifetime. C immutable claim; H root/log/descriptor release; J stale/null/FAIL semantics cannot recover lost detail. | NO |
+| R3-09 | Invalid/missing full context continues to withhold raw detail; label presence yields no readiness/marks or cleanup acceptance. | Treat finite line as full context, allow bearer-only raw export or clear staging on later success. | Existing context/withholding keeper lacks new marker noncredit. C capture[]/first-error order; H real file/sanitization/removal; J empty variants and no false acceptance. | NO |
+| X-01 | Joint SAME-W creator snapshot→actual selected send→real direct exit→valid sample/absent peek→R release→one existing native write, plus first collection site→root loss→safe FAIL, only where each link is eligible. | Stitch epochs/claims, infer custody from code, accept first before peek, continue diagnostics after alarm, or call collection-only output a joint success. | R2 local identity/queue and R3 cleanup do not own cross-process survival. C authentic W/selection; H actual endpoints/log/backpressure/root; J independent frozen failure/withholding/commit. Concrete source path addresses F1; executed joint delivery remains unproved. | NO |
+| X-02 | Frozen evidence/initial FAIL/terminal commit survive root loss without later transport/snapshot repair or postcommit output. | Drain after deletion, retry short output, refresh reader, or output in terminal tail. | Existing frozen/commit keeper lacks optional endpoint/log lifetime. C propagation; H closure/removal/native log/replace; J immutable noncredit/receipt disposition. | NO |
+
+Candidate **NOT RUN**; intended-failure/restored-pass **PROOF NOT RUN**;
+sensitivity **UNPROVED**. Static all/Source Boundary Lint/Web Lint(Node24),
+independent FULL review and same-final-head scoped SOURCE QA cannot establish
+behavioral/test-authoring/Product acceptance. Python units RETIRED; general
+integration INCLUDING callback SKIPPED24342/211270–271. No branch Product E2E,
+protected12/mutation/repetition or new execution allocation. Dynamic20 E05/24
+E07 source hashes must join genuine later bytes; old receipts remain historical.
+Latest assessed39984857420 remains FAILED/HealthFAIL47, EACH56 UNKNOWN/null/zero
+recordedPASS, final_missing/conditional83/collection ValueError then incomplete
+export; TERM3.12/INT3.14 are diagnostic-only. UNKNOWN is not UNREACHED; PR1180
+cause stays unproved. Complete manager step11 ledger17554B/SHA256
+fe621dbd20c8ead2f01519a7cc27bc0e1a69d218745412584b205f3ce1311d6a and ALL nine
+retained addenda/integrity preserve older failures/obligations by reference,
+including old12724 UNKNOWN native custody and consumed ONE362/12741 history.
+Daily19UTC plus manager-owned reviewed-main-only Founder277 authority, original
+480/240/720/60/120/900 and31s isolation remain; no schedule/validator/product/
+runtime/auth/permission/privacy/access/dependency or deployment change follows.
+
 ### Advisory terminal interpretation (TASK12709 / accepted12707-12708)
 
 This extends the SAME recovery record after ROOT12610 step28 acceptance of

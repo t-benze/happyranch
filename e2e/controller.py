@@ -159,6 +159,9 @@ class Controller:
         self._failure_slots: dict[str, tuple] = {}
         self._failure_check: dict[str, tuple] = {}
         self._failure_writer_owner = threading.get_ident()
+        self._diagnostic_snapshot: dict[str, Any] = {}
+        self._diagnostic_recorder_active = False
+        self._diagnostic_alarm_code = getattr(args, "_diagnostic_alarm_code", None)
         self._failure_writer_active = False
         self._failure_publication_state = "not_attempted"
         self._failure_publication_failed = False
@@ -905,15 +908,125 @@ class Controller:
     def record_error(self, stage: str, error: BaseException) -> None:
         # Select actual object/traceback before time, legacy diagnostics or I/O.
         # Literal-key setdefault prevents a nested callback replacing the winner.
-        winner = self._failure_raw.setdefault("first", (error, error.__traceback__, _failure_stage(stage)))
+        candidate = (error, error.__traceback__, _failure_stage(stage))
+        winner = self._failure_raw.setdefault("first", candidate)
         self.primary_error, self.primary_traceback = winner[:2]
+        prior_recording = self._diagnostic_recorder_active
+        if prior_recording:
+            self._diagnostic_snapshot["refused"] = True
+        self._diagnostic_recorder_active = True
         try:
-            slot = _failure_slot(winner[2], winner[0])
-            if slot is not None:
-                self._failure_slots.setdefault("first_observed", slot)
-        except BaseException:
-            pass  # Raw winner is authoritative even if category completion fails.
-        self.failures.append(dict(stage=stage, error=type(error).__name__, at=time.monotonic()))
+            self._snapshot_first_error(winner, candidate, sys._getframe(1).f_code)
+            try:
+                slot = _failure_slot(winner[2], winner[0])
+                if slot is not None:
+                    self._failure_slots.setdefault("first_observed", slot)
+            except BaseException:
+                pass  # Raw winner is authoritative even if category completion fails.
+            self.failures.append(dict(stage=stage, error=type(error).__name__, at=time.monotonic()))
+        finally:
+            self._diagnostic_recorder_active = prior_recording
+
+    def _snapshot_first_error(self, winner: tuple, candidate: tuple, caller: Any) -> None:
+        """Memory only; a missing/unfinished creator claim is never repaired."""
+        state = self._diagnostic_snapshot
+        if winner is not candidate:
+            if "complete" not in state:
+                state["refused"] = True  # Includes reentry before creator reservation.
+            return
+        if threading.get_ident() != self._failure_writer_owner or state:
+            state["refused"] = True
+            return
+        claim = (winner, object())
+        if state.setdefault("claim", claim) is not claim:
+            state["refused"] = True
+            return
+        try:
+            bounds = self._diagnostic_bounds()
+            if bounds is None:
+                state["refused"] = True
+                return
+            end, owners, ties = bounds
+            if time.monotonic() >= end:
+                state["refused"] = True
+                return
+            codes = {
+                Controller.remaining.__code__: "RM", Controller.phase.__wrapped__.__code__: "PH",
+                Controller.bounded.__wrapped__.__code__: "BD", Controller._timer_sync.__code__: "TS",
+                Controller.publish_end.__code__: "WE", Controller.prepare_redaction.__code__: "RD",
+                Controller.capture_thread_secrets.__code__: "CS", Controller.remember_thread_secrets.__code__: "RS",
+                Controller.close.__code__: "CL", Controller.evidence.__code__: "EV",
+                main.__code__: "MN",
+            }
+            if type(self._diagnostic_alarm_code) is type(main.__code__):
+                codes[self._diagnostic_alarm_code] = "AL"
+            node, previous, leaf = winner[1], None, None
+            for _ in range(32):
+                if node is None:
+                    break
+                previous, leaf = leaf, node.tb_frame.f_code
+                node = node.tb_next
+            if node is not None or leaf is None:
+                state["refused"] = True
+                return
+            origin = codes.get(previous if leaf is require.__code__ else leaf)
+            if origin is None:
+                state["refused"] = True
+                return
+            stages = dict(phase="PH", bounded="BD", restore="RS", context="CT", action="AC",
+                          teardown="TD", evidence="EV", browser="BR", other="OT")
+            restoration = "P" if (
+                (winner[2] == "phase" and caller is Controller.phase.__wrapped__.__code__)
+                or (winner[2] == "bounded" and caller is Controller.bounded.__wrapped__.__code__)
+            ) else "A"
+            labels = (stages[winner[2]], origin, f"{owners:02X}", f"{ties:02X}", restoration)
+            # Check the SAME observed end AND current original allowance, without
+            # remaining(), a terminal resample, or any completion by another call.
+            if (state.get("refused") or state.get("claim") is not claim
+                    or self._failure_raw.get("first") is not winner
+                    or time.monotonic() >= min(end, self.effective_end())):
+                state["refused"] = True
+                return
+            state["complete"] = (claim, winner, winner[1], labels)
+        except (AttributeError, KeyError, TypeError, ValueError, OverflowError):
+            state["refused"] = True
+        # Real alarms/RuntimeError/KeyboardInterrupt/SystemExit escape. Historical
+        # category handling below is unchanged; it grants no diagnostic retry.
+
+    def _diagnostic_bounds(self) -> tuple[float, int, int] | None:
+        """Read actual active owners; missing fallback attributes own no tie."""
+        absent = object()
+        active = [(1, self.deadline)]
+        for bit, value in ((2, getattr(self, "case_deadline", absent)),
+                           (4, getattr(self.local_bounds, "end", absent)),
+                           (8, getattr(self, "observation_end", absent))):
+            if value is not absent:
+                active.append((bit, value))
+        inherited = self.inherited_alarm
+        if type(inherited) not in (int, float):
+            return None
+        if inherited != float("inf"):
+            active.append((16, inherited))
+        if any(type(value) not in (int, float) or not math.isfinite(value) for _, value in active):
+            return None
+        phases = self.timer_phases
+        if type(phases) is not list or len(phases) > 16:
+            return None
+        work_end = min(value for _, value in active)
+        timers = list(active)
+        for phase in phases:
+            if (type(phase) is not tuple or len(phase) != 2 or type(phase[0]) is not str
+                    or phase[0] not in ("python", "native") or type(phase[1]) not in (int, float)
+                    or not math.isfinite(phase[1])):
+                return None
+            timers.append((32 if phase[0] == "python" else 64, phase[1]))
+        timer_end = min(value for _, value in timers)
+        owners = sum(bit for bit, value in active if value == work_end)
+        ties = 0
+        for bit, value in timers:
+            if value == timer_end:
+                ties |= bit
+        return min(work_end, timer_end), owners, ties
 
     def _stage_failure_categories(self) -> None:
         if (threading.get_ident() != self._failure_writer_owner or self._failure_writer_active
@@ -1312,6 +1425,88 @@ def _failure_terminal_status(error: BaseException, entry: dict, token: object, f
     return None
 
 
+def _adopt_diagnostic_sender(descriptor: int | None) -> socket.socket | None:
+    """Own the private fd once, before constructor/observer/exec descendants."""
+    if descriptor is None or descriptor <= 2:
+        return None
+    sender = None
+    adopted = False
+    release_error = None
+    try:
+        sender = socket.socket(fileno=descriptor)  # Adoption, never duplication.
+        sender.set_inheritable(False)
+        adopted = (sender.family == socket.AF_UNIX
+                   and sender.getsockopt(socket.SOL_SOCKET, socket.SO_TYPE) == socket.SOCK_DGRAM
+                   and not os.get_blocking(descriptor) and not sender.get_inheritable())
+    except TimeoutError:
+        raise
+    except OSError:
+        pass
+    finally:
+        # A close failure escapes: do not construct descendants with unknown
+        # inheritable custody, or retry a potentially reused numeric descriptor.
+        if not adopted:
+            try:
+                if sender is None:
+                    os.close(descriptor)
+                else:
+                    sender.close()
+            except TimeoutError:
+                raise
+            except OSError as exc:
+                release_error = exc
+    if release_error is not None:
+        raise release_error
+    return sender if adopted else None
+
+
+def _send_selected_diagnostic(error: BaseException, entry: dict, token: object, frame: Any) -> None:
+    """Independent full join; advisory status 1/83 is never selection proof."""
+    sender = entry.get("diagnostic_sender")
+    selected = entry.get("selected")
+    if sender is None or selected is None or entry.get("diagnostic_send_claimed"):
+        return
+    entry["diagnostic_send_claimed"] = True
+    entry_token, entry_frame, controller, winner, saved, head, claim, observation = selected
+    outer = error.__traceback__
+    if not (entry_token is token and entry.get("token") is token
+            and entry_frame is frame and entry.get("frame") is frame
+            and controller._failure_raw.get("first") is winner
+            and controller.primary_error is winner[0] and error is winner[0]
+            and controller.primary_traceback is saved and saved is winner[1]
+            and head.tb_frame.f_code is main.__code__ and head.tb_next is saved
+            and outer is not None and outer.tb_frame is frame and outer.tb_next is head):
+        return
+    categories = ("unicode", "timeout", "interruption", "assertion", "value", "io", "runtime", "other")
+    if not (type(claim) is tuple and len(claim) == 2 and claim[0] is winner
+            and type(claim[1]) is object and controller._failure_check.get("claim") is claim
+            and type(observation) is tuple and len(observation) == 4
+            and controller._failure_check.get("observation") is observation
+            and observation[0] is claim and observation[1] is winner
+            and type(observation[2]) is str and observation[2] in categories
+            and type(observation[3]) is bool):
+        return
+    state = controller._diagnostic_snapshot
+    complete = state.get("complete")
+    if (state.get("refused") or type(complete) is not tuple or len(complete) != 4
+            or complete[0] is not state.get("claim") or complete[0][0] is not winner
+            or complete[1] is not winner or complete[2] is not saved
+            or threading.get_ident() != controller._failure_writer_owner):
+        return
+    end = controller.effective_end()
+    if not math.isfinite(end) or time.monotonic() >= end:
+        return
+    data = ("HRD1:S:" + ":".join(complete[3]) + "\n").encode("ascii")
+    if state.get("refused") or time.monotonic() >= min(end, controller.effective_end()):
+        return
+    try:
+        sender.send(data, socket.MSG_DONTWAIT)  # ONE charged call; no retry/flush.
+    except TimeoutError:
+        raise
+    except OSError:
+        return  # Full/closed/interrupted ordinary send remains UNKNOWN.
+
+
 def main(_terminal: dict | None = None) -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", type=Path, required=True)
@@ -1319,10 +1514,17 @@ def main(_terminal: dict | None = None) -> None:
     parser.add_argument("--sha", required=True)
     parser.add_argument("--deadline", type=float, required=True)
     parser.add_argument("--exercise", choices=["baseline", "cancellation"], default="baseline")
+    parser.add_argument("--_diagnostic-fd", type=int, default=None, help=argparse.SUPPRESS)
     args = parser.parse_args()
     def expired(_signum, _frame):
         raise TimeoutError("controller absolute work deadline")
     signal.signal(signal.SIGALRM, expired)
+    sender = _adopt_diagnostic_sender(args._diagnostic_fd)
+    if _terminal is not None:
+        _terminal["diagnostic_sender"] = sender
+    elif sender is not None:
+        sender.close()
+    args._diagnostic_alarm_code = expired.__code__
     controller = Controller(args)
     def interrupted(signum: int, _frame: object) -> None:
         for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
@@ -1396,9 +1598,21 @@ if __name__ == "__main__":
     _entry_frame = sys._getframe()
     _entry = {"token": _entry_token, "frame": _entry_frame}
     try:
-        main(_entry)
-    except BaseException as _error:
-        _status = _failure_terminal_status(_error, _entry, _entry_token, _entry_frame)
-        if _status is not None:
-            raise SystemExit(_status) from None
-        raise
+        try:
+            main(_entry)
+        except BaseException as _error:
+            _status = _failure_terminal_status(_error, _entry, _entry_token, _entry_frame)
+            _send_selected_diagnostic(_error, _entry, _entry_token, _entry_frame)
+            if _status is not None:
+                raise SystemExit(_status) from None
+            raise
+    finally:
+        _sender = _entry.get("diagnostic_sender")
+        if _sender is not None:
+            _entry["diagnostic_sender"] = None
+            try:
+                _sender.close()
+            except TimeoutError:
+                raise
+            except OSError:
+                pass  # UNKNOWN release, no numeric-fd retry or changed status.
