@@ -2019,6 +2019,15 @@ Earlier B/C/D checkpoint absence statements describe those historical units.
 
 The planner projects native launch allow rules with explicit `cli=True`, matching
 both native executor launch consumers; native settings rendering retains `cli=False`.
+Naming consumers use the registry's `(kind, canonical_id)` keys, with separate
+agent and Founder identities and no ID-derived labels. Preview inputs and stable
+verification hash the complete native Subject records in sorted native-key order
+as a canonical JSON list, retaining kind, ID, lifecycle, label, revision and
+classification, including unrelated identities. Missing required labels refuse.
+Public current-name projection uses a separate native read and refuses missing
+agent labels; this does not certify a coherent whole-service preview snapshot.
+This consumer correction supplies no saved-request rewrite or runtime adoption;
+full preview/service/HTTP and move behavior remain UNEXECUTED by this correction.
 The planner uses native AgentDef/TeamsRegistry validation and instruction/skill
 selectors, without materializing, creating an ArtifactStore root, building a
 package or emitting an event. It pins the three exact before/after images,

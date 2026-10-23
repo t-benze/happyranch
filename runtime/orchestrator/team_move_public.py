@@ -114,6 +114,8 @@ def preview_view(operation, preview, capability):
     from runtime.identities.registry import read_name_metadata
     request = preview.request
     labels = read_name_metadata(operation.org)
+    if any(("agent", agent) not in labels or labels[("agent", agent)].current_label is None for agent in AGENTS):
+        raise TeamMoveError("team_move_current_names_unavailable")
     threads = operation.move.threads.census(AGENTS)
     candidates = [{"invocation_id": fact["invocation_id"], "thread_id": fact["thread_id"],
         "agent_id": fact["agent_id"]} for fact in threads if fact["code"] == "thread_running"]
@@ -127,7 +129,7 @@ def preview_view(operation, preview, capability):
             "SELECT id,root_task_id,status FROM workflow_instances WHERE status NOT IN ('complete','cancelled') ORDER BY id")]
     return {"version": 1, "capability": capability, "request": public_request(request).model_dump(mode="json"),
         "request_digest": _digest(_bytes(public_request(request))),
-        "current_names": [{"agent_id": agent, "current_name": labels[agent].current_label} for agent in AGENTS],
+        "current_names": [{"agent_id": agent, "current_name": labels[("agent", agent)].current_label} for agent in AGENTS],
         "canonical_diff": [{"path": image.path, "before_digest": image.before_digest,
             "after_digest": image.after_digest, "diff": text_diff(base64.b64decode(image.before_base64),
                 base64.b64decode(image.after_base64), image.path)} for image in request.files],
