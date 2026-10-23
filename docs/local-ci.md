@@ -572,6 +572,57 @@ See [the existing case record](../e2e/README.md#task-12643-accepted-recovery-cas
 for all thirty R1/R2/R3/X expectations, A/B/D/E four answers, keeper gaps and
 full56 EACH3.12/3.14 L1–L7 plus TERM/INT/validator references.
 
+### E07 selection before final save (TASK12746 / ROOT12738)
+
+Accepted TASK12722 design / independent TASK12741 DESIGN ONLY assessment extend
+ONLY existing R2-01 and X-01 in [the recovery case record](../e2e/README.md#e07-caller-precedence-task12746--accepted12722-12741-root12738),
+including four authoring answers and keeper gaps for EACH row. The existing E07
+try body now has `except BaseException as exc`, existing
+`c.record_error("controller-action", exc)` and bare raise immediately before its
+EXISTING finally/save. No helper, publisher, local finalizer rethrow or fourth
+file is selected. Save/deletion/publication bytes/order, successful saves/marks,
+absolute ends/timers and dynamic consumers remain unchanged.
+
+Completed reservation protects the actually caught A/object/saved traceback at
+main's selected final raise when reached, even if final save/capture B, failed[]
+C, serialize/sanitize/write/deletion/publication B still propagates locally.
+A prior P remains immutable. Finalizer-only failures retain existing selection;
+pre-try/nested-masked inputs get no new guarantee. SystemExit/KeyboardInterrupt/
+GeneratorExit, callback reentry, signals and interruption before/after reservation
+or recorder tail protect only completed selection; remaining state stays UNKNOWN.
+Expired shorter/global ends retain identical bounds and no forced diagnostic
+credit, shielding, restoration, widening or diagnostic reserve.
+
+X-01 composes this input with separate capture/[] metadata, writer refusal/escape,
+conditional poison ATTEMPT, close/evidence, frozen/stale/unavailable reads,
+collection/root loss/export and terminal commit. Raw-first literal-key ownership,
+THREE main writers, full-context redaction/[] order/withholding, sticky false
+cleanup flags/variants={} and E05/E07 dynamic source joins remain. This is a
+selection-opportunity fix, not an evidence-loss cure or cleanup/redaction/
+publication guarantee. C observes actual identity/propagation; H real processes,
+files, clocks and cleanup; J serialized attribution/noncredit, never private
+identity or native-path proof. All original30 rows/maps/prior extensions remain.
+
+Candidate behavior **NOT RUN**; intended-failure/restored-pass **PROOF NOT RUN**;
+sensitivity **UNPROVED**. Finding-specific source/AST/diff inspection and required
+`scripts/local_ci.sh all` plus Source Boundary Lint / Web Lint (Node 24) are
+static-only evidence, not behavioral/test-authoring/Product PASS. No local/PR
+Product E2E, protected12/mutation/restoration/repetition, new verifier/harness/
+venue or test campaign is allocated. Python units RETIRED; general integration
+INCLUDING callback SKIPPED24342/211270–271. Daily19UTC plus Founder277 reviewed-
+main-only on-demand verification and original480/240/720/60/120/900 remain.
+
+Latest assessed39840207990 is FAILED/HealthFAIL47 at c8987b81, EACH3.12/3.14 all56
+UNKNOWN/null, zero recorded passes, final_missing and cleanup/export ValueError.
+UNKNOWN is not UNREACHED. Genuine failure is not an unavailable-support exemption;
+TERM/INT success remains diagnostic-only, four archives/32-member attribution
+collection-only. Historical failures/CI contradictions/dashboard503/ownership
+uncertainty/merge-helper deviation remain. PR1180 causality is unproved. Separate
+failed12724 preparation/effects/retirement stay OPEN/UNKNOWN; clean source or fresh
+QA does not settle old custody. ROOT12738 retains the complete remaining ledger,
+independent FULL review/same-final-head scoped QA, normal hooks/nonforce, guarded
+merge, exact-main lints and later main-only product acceptance.
+
 The accepted12707–12708 / TASK12709 terminal observation extends the
 [existing recovery record](../e2e/README.md#advisory-terminal-interpretation-task12709--accepted12707-12708).
 Actual W is `_failure_raw["first"]`, its original object/saved traceback, never

@@ -534,6 +534,9 @@ def exercise(c: Controller) -> None:
         save(c)
         for variant in VARIANTS:
             c.mark(variant,dict(e07_file="e07.json",source_sha=c.revision))
+    except BaseException as exc:
+        c.record_error("controller-action", exc)
+        raise
     finally:
         save(c)
         if hasattr(c,"case_deadline"):
