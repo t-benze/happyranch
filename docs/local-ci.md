@@ -572,56 +572,97 @@ See [the existing case record](../e2e/README.md#task-12643-accepted-recovery-cas
 for all thirty R1/R2/R3/X expectations, A/B/D/E four answers, keeper gaps and
 full56 EACH3.12/3.14 L1–L7 plus TERM/INT/validator references.
 
-### E07 selection before final save (TASK12746 / ROOT12738)
+### E07 terminal scope and precedence (TASK12778 / ROOT12738)
 
-Accepted TASK12722 design / independent TASK12741 DESIGN ONLY assessment extend
-ONLY existing R2-01 and X-01 in [the recovery case record](../e2e/README.md#e07-caller-precedence-task12746--accepted12722-12741-root12738),
-including four authoring answers and keeper gaps for EACH row. The existing E07
-try body now has `except BaseException as exc`, existing
-`c.record_error("controller-action", exc)` and bare raise immediately before its
-EXISTING finally/save. No helper, publisher, local finalizer rethrow or fourth
-file is selected. Save/deletion/publication bytes/order, successful saves/marks,
-absolute ends/timers and dynamic consumers remain unchanged.
+Manager step25 accepts exact TASK12776 design37103B/SHA256
+`2fd2a058e4297c3e8268069df95a70d23909c3d1c42d2c37263e0b75d376b22a`
+after independent TASK12777 PASS — DESIGN ONLY under Founder THR291seq362.
+This replaces the older E07 body-catch-only failure-tail wording. ONLY existing
+R2-01/X-01 extend in [the recovery case record](../e2e/README.md#e07-caller-precedence-task12746--accepted12722-12741-root12738),
+with EACH accepted finite input→action→FINAL observable→C/H/J subinput, separate
+four answers, keepers and distinct risks. Original30/SAME13/ordered56 EACH3.12/
+3.14/L1–L7,16sites/full validator/control/admission maps and dynamic20E05/24E07
+actual-source joins remain. The case record adds no separate runnable test,
+fixture, seam, framework, venue or execution campaign.
 
-Completed reservation protects the actually caught A/object/saved traceback at
-main's selected final raise when reached, even if final save/capture B, failed[]
-C, serialize/sanitize/write/deletion/publication B still propagates locally.
-A prior P remains immutable. Finalizer-only failures retain existing selection;
-pre-try/nested-masked inputs get no new guarantee. SystemExit/KeyboardInterrupt/
-GeneratorExit, callback reentry, signals and interruption before/after reservation
-or recorder tail protect only completed selection; remaining state stays UNKNOWN.
-Expired shorter/global ends retain identical bounds and no forced diagnostic
-credit, shielding, restoration, widening or diagnostic reserve.
+`e07.exercise` keeps workload/body catch/final save under the original case,
+offsets16/28/36/42/50/C50/G and all saves/marks. The terminal BaseException guard
+reserves the actual combined outgoing/object/saved TB BEFORE recorder/release,
+including finalizer-only B/C. Save B/failed[] C retains local precedence over
+body A/body-recorder D; save success after D leaves D outgoing. Completed raw
+W=A/earlier P, savedTB/primary/creator remain separate and immutable; no masked
+input is reconstructed or refused/unfinished creator repaired. Saved suffix plus
+real rethrow frames remains, with interruptible tuple stores/reservation/claims/
+seals and further signals; no guaranteed delivery or frozen exception object.
 
-X-01 composes this input with separate capture/[] metadata, writer refusal/escape,
-conditional poison ATTEMPT, close/evidence, frozen/stale/unavailable reads,
-collection/root loss/export and terminal commit. Raw-first literal-key ownership,
-THREE main writers, full-context redaction/[] order/withholding, sticky false
-cleanup flags/variants={} and E05/E07 dynamic source joins remain. This is a
-selection-opportunity fix, not an evidence-loss cure or cleanup/redaction/
-publication guarantee. C observes actual identity/propagation; H real processes,
-files, clocks and cleanup; J serialized attribution/noncredit, never private
-identity or native-path proof. All original30 rows/maps/prior extensions remain.
+Release requires authentic SAME live last E07 phase-end identity AND exact
+built-in-list absence of ALL timer_phases immediately before deletion. Positive,
+native and expired residuals ALL refuse. Missing/malformed/unknown/interrupted
+proof retains the case, never enters wrapper publication, independently syncs
+current owners only. Absent case invents no owner/deletion/publication; unmatched/
+unregistered retains, earlier authentic SAME object qualifies only with empty
+phases. No numeric guess, phase clearing/copy/renewal or generic timer cure.
 
-Candidate behavior **NOT RUN**; intended-failure/restored-pass **PROOF NOT RUN**;
-sensitivity **UNPROVED**. Finding-specific source/AST/diff inspection and required
-`scripts/local_ci.sh all` plus Source Boundary Lint / Web Lint (Node 24) are
-static-only evidence, not behavioral/test-authoring/Product PASS. No local/PR
-Product E2E, protected12/mutation/restoration/repetition, new verifier/harness/
-venue or test campaign is allocated. Python units RETIRED; general integration
-INCLUDING callback SKIPPED24342/211270–271. Daily19UTC plus Founder277 reviewed-
-main-only on-demand verification and original480/240/720/60/120/900 remain.
+This preserves residual custody against deletion-caused widening under ordinary
+sequential objects: sole main-thread phase appender, sole E07 caller after returned
+threads, no appender/callback/await/yield between successful proof and deletion;
+raising signals abandon that branch. Recheck this premise on source changes.
+F1 before-effect phase deletion with T<Cend<G, now>Cend retains expired authentic
+Cend and refuses main capture. Positive/absent-case residual timer admission
+weaknesses remain pre-existing completed possibilities, not UNKNOWN or cured.
+After-effect empty-list release may conditionally allow capture; no atomicity,
+rollback, restored duration, hard timing or unregistered-release guarantee.
 
-Latest assessed39840207990 is FAILED/HealthFAIL47 at c8987b81, EACH3.12/3.14 all56
-UNKNOWN/null, zero recorded passes, final_missing and cleanup/export ValueError.
-UNKNOWN is not UNREACHED. Genuine failure is not an unavailable-support exemption;
-TERM/INT success remains diagnostic-only, four archives/32-member attribution
-collection-only. Historical failures/CI contradictions/dashboard503/ownership
-uncertainty/merge-helper deviation remain. PR1180 causality is unproved. Separate
-failed12724 preparation/effects/retirement stay OPEN/UNKNOWN; clean source or fresh
-QA does not settle old custody. ROOT12738 retains the complete remaining ledger,
-independent FULL review/same-final-head scoped QA, normal hooks/nonforce, guarded
-merge, exact-main lints and later main-only product acceptance.
+When eligible, deletion and publication/current-owner sync are independently
+attempted when reached despite save/recorder/deletion error. Completed incoming
+outgoing/TB wins locally; without one, first completed tail assignment wins.
+Later recorders cannot replace it/W or retry publication. Normal success has
+ONE existing publish/internal sync, no extra success sync/workload/save. Actual
+before/after-effect deletion/publication/sync and queued-signal/rethrow limits
+remain; attempt alone proves no effect or completion.
+
+After E07 EXIT, authentic expired case/empty phases/ALL other original effective
+bounds positive can permit unchanged main fresh full BOTH-store capture/token
+union and sanitized partial failure/scenario/browser staging BEFORE fallible
+joins. Positive G alone is insufficient: local/observation/inherited bounds,
+poison and saved transport caps remain. THREE main publishers/conditional poison
+ATTEMPT/full W-TB-H0-token-frame-head-claim joins remain; capture B→[]→B versus
+failed[]→C, preparation-expiry-without[], full-context readiness/withholding,
+frozen category read, sticky collection failure through root loss, C60/E120/E-1,
+safe initial FAIL and terminal committed replacement stay. No last-good/bearer-
+only/raw rescue, E07 retry/capture/save, closure/delivery or Product credit follows.
+Safe partial bytes may coexist with FAIL/variants={}/false cleanup flags.
+
+Candidate **NOT RUN**; intended-failure/restored-pass **PROOF NOT RUN**;
+sensitivity **UNPROVED** for EACH R2-01/X-01 subinput. Actual failed venues are
+not unavailable-support exemptions. Source/AST/diff inspection, required durable
+`scripts/local_ci.sh all`, Source Boundary Lint and Web Lint (Node 24) are
+static-only, never behavioral/test-authoring/Product PASS. Python units RETIRED;
+general integration INCLUDING callback/lifespan/SessionTracker SKIPPED24342/
+211270–271. No local/PR Product or protected12/mutation/restoration/repetition.
+
+Latest assessed40025778820 remains FAILED/HealthFAIL47/EACH56UNKNOWN-null/zero
+recordedPASS/final_missing/direct83/cleanup-export ValueError. BOTH selected
+HRD2:S:AC:AL:02:02:A:E establish alarm leaf/action/exhausted case minimum/tie only;
+CONTEXT_VALIDATE:F decoded predicate rejection only; no operation/[]/writer/
+bearer/PR1180 cause. Actual TERM15/3.12-INT2/3.14 witnesses/closure diagnostic-only.
+Earlier failures and source/static history stay attributed, seq388 hypothesis
+unproved/seq390 E07 LAST corrected. ROOT12738 owns complete byte-exact17554B/
+fe621dbd ledger WITH ALL22 prior advances/current step25, failed12753/12755/
+BLOCK22272 and old12724 OPEN/UNKNOWN native custody/effects/retirement. No reset,
+identity swap, journal clear, consumed362 reuse or manufactured closure follows.
+
+Daily19UTC/standing MANAGER277 reviewed-main-only admission, ALL56 EACH3.12/3.14/
+FOURarchives-allmembers/source-event-run-attempt-tree/realTERM-INT/timing/cleanup/
+nativeHealth,480/240/720/60/120/900,31s populated-cache isolation, locked dependency
+integrity/registry/install/public API-browser-CLI-result-audit remain. Protected12/
+mutation/restoration/repetition unauthorized; abruptR/E04cap/persistentStop HELD;
+100MiBfitUNPROVED;Mac11743unimplemented11640budget3of3 exhausted. No product/schema/
+auth/permission/privacy/access/budget/schedule/monitor/SLA/Jenkins/Mac/provision/
+host/deploy/restart changes. Fresh independent FULL review then same-final-head
+scoped SOURCE QA, hooks/nonforce publication and SAME manager guarded merge/
+independent remote confirmation/exact-main TWOstatic remain separate gates before
+its later reviewed-main Product decision; every push renews them.
 
 ### First-recorder/native-log source (TASK12758 / ROOT12738)
 
