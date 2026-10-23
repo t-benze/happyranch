@@ -159,6 +159,7 @@ class Controller:
         self._failure_slots: dict[str, tuple] = {}
         self._failure_check: dict[str, tuple] = {}
         self._failure_writer_owner = threading.get_ident()
+        self._diagnostic_outer_end = self.deadline
         self._diagnostic_snapshot: dict[str, Any] = {}
         self._diagnostic_recorder_active = False
         self._diagnostic_alarm_code = getattr(args, "_diagnostic_alarm_code", None)
@@ -942,14 +943,22 @@ class Controller:
             state["refused"] = True
             return
         try:
+            end = self._diagnostic_outer_end
+            if (type(end) not in (int, float) or not math.isfinite(end)
+                    or type(self.deadline) is not type(end) or self.deadline != end
+                    or time.monotonic() >= end):
+                state["refused"] = True
+                return
             bounds = self._diagnostic_bounds()
+            observed = time.monotonic()
+            if observed >= end:
+                state["refused"] = True
+                return
             if bounds is None:
-                state["refused"] = True
-                return
-            end, owners, ties = bounds
-            if time.monotonic() >= end:
-                state["refused"] = True
-                return
+                owners, ties, first_state = 0, 0, "U"
+            else:
+                minimum, owners, ties = bounds
+                first_state = "P" if observed < minimum else "E"
             codes = {
                 Controller.remaining.__code__: "RM", Controller.phase.__wrapped__.__code__: "PH",
                 Controller.bounded.__wrapped__.__code__: "BD", Controller._timer_sync.__code__: "TS",
@@ -966,25 +975,22 @@ class Controller:
                     break
                 previous, leaf = leaf, node.tb_frame.f_code
                 node = node.tb_next
-            if node is not None or leaf is None:
-                state["refused"] = True
-                return
-            origin = codes.get(previous if leaf is require.__code__ else leaf)
-            if origin is None:
-                state["refused"] = True
-                return
+            origin = (codes.get(previous if leaf is require.__code__ else leaf, "UN")
+                      if node is None and leaf is not None else "UN")
             stages = dict(phase="PH", bounded="BD", restore="RS", context="CT", action="AC",
                           teardown="TD", evidence="EV", browser="BR", other="OT")
             restoration = "P" if (
                 (winner[2] == "phase" and caller is Controller.phase.__wrapped__.__code__)
                 or (winner[2] == "bounded" and caller is Controller.bounded.__wrapped__.__code__)
             ) else "A"
-            labels = (stages[winner[2]], origin, f"{owners:02X}", f"{ties:02X}", restoration)
-            # Check the SAME observed end AND current original allowance, without
-            # remaining(), a terminal resample, or any completion by another call.
+            labels = (stages[winner[2]], origin, f"{owners:02X}", f"{ties:02X}", restoration, first_state)
+            # Only ORIGINAL G admits reporting. Expired inner first facts never
+            # renew work, and an unfinished creator claim is never repaired.
             if (state.get("refused") or state.get("claim") is not claim
                     or self._failure_raw.get("first") is not winner
-                    or time.monotonic() >= min(end, self.effective_end())):
+                    or threading.get_ident() != self._failure_writer_owner
+                    or type(self.deadline) is not type(end) or self.deadline != end
+                    or time.monotonic() >= end):
                 state["refused"] = True
                 return
             state["complete"] = (claim, winner, winner[1], labels)
@@ -994,7 +1000,7 @@ class Controller:
         # category handling below is unchanged; it grants no diagnostic retry.
 
     def _diagnostic_bounds(self) -> tuple[float, int, int] | None:
-        """Read actual active owners; missing fallback attributes own no tie."""
+        """Complete bounded owner read; malformed facts have no known subminimum."""
         absent = object()
         active = [(1, self.deadline)]
         for bit, value in ((2, getattr(self, "case_deadline", absent)),
@@ -1003,23 +1009,24 @@ class Controller:
             if value is not absent:
                 active.append((bit, value))
         inherited = self.inherited_alarm
-        if type(inherited) not in (int, float):
-            return None
-        if inherited != float("inf"):
-            active.append((16, inherited))
-        if any(type(value) not in (int, float) or not math.isfinite(value) for _, value in active):
-            return None
         phases = self.timer_phases
         if type(phases) is not list or len(phases) > 16:
             return None
-        work_end = min(value for _, value in active)
-        timers = list(active)
+        phase_timers = []
+        malformed = type(inherited) not in (int, float)
+        if not malformed and inherited != float("inf"):
+            active.append((16, inherited))
         for phase in phases:
             if (type(phase) is not tuple or len(phase) != 2 or type(phase[0]) is not str
                     or phase[0] not in ("python", "native") or type(phase[1]) not in (int, float)
                     or not math.isfinite(phase[1])):
-                return None
-            timers.append((32 if phase[0] == "python" else 64, phase[1]))
+                malformed = True
+            else:
+                phase_timers.append((32 if phase[0] == "python" else 64, phase[1]))
+        if malformed or any(type(value) not in (int, float) or not math.isfinite(value) for _, value in active):
+            return None
+        work_end = min(value for _, value in active)
+        timers = active + phase_timers
         timer_end = min(value for _, value in timers)
         owners = sum(bit for bit, value in active if value == work_end)
         ties = 0
@@ -1493,11 +1500,14 @@ def _send_selected_diagnostic(error: BaseException, entry: dict, token: object, 
             or complete[1] is not winner or complete[2] is not saved
             or threading.get_ident() != controller._failure_writer_owner):
         return
-    end = controller.effective_end()
-    if not math.isfinite(end) or time.monotonic() >= end:
+    end = getattr(controller, "_diagnostic_outer_end", None)
+    if (type(end) not in (int, float) or not math.isfinite(end)
+            or type(getattr(controller, "deadline", None)) is not type(end) or controller.deadline != end
+            or time.monotonic() >= end):
         return
-    data = ("HRD1:S:" + ":".join(complete[3]) + "\n").encode("ascii")
-    if state.get("refused") or time.monotonic() >= min(end, controller.effective_end()):
+    data = ("HRD2:S:" + ":".join(complete[3]) + "\n").encode("ascii")
+    if (state.get("refused") or type(getattr(controller, "deadline", None)) is not type(end) or controller.deadline != end
+            or time.monotonic() >= end):
         return
     try:
         sender.send(data, socket.MSG_DONTWAIT)  # ONE charged call; no retry/flush.

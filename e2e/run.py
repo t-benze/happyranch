@@ -45,16 +45,18 @@ def _diagnostic_write(line: bytes, end: float) -> bool:
 
 
 def _diagnostic_packet(data: bytes) -> bool:
-    if len(data) != 21:
+    if len(data) != 23:
         return False
     fields = data.split(b":")
-    return (len(fields) == 7 and fields[:2] == [b"HRD1", b"S"]
+    return (len(fields) == 8 and fields[:2] == [b"HRD2", b"S"]
             and fields[2] in (b"PH", b"BD", b"RS", b"CT", b"AC", b"TD", b"EV", b"BR", b"OT")
-            and fields[3] in (b"RM", b"PH", b"BD", b"TS", b"WE", b"RD", b"CS", b"RS", b"CL", b"EV", b"MN", b"AL")
+            and fields[3] in (b"RM", b"PH", b"BD", b"TS", b"WE", b"RD", b"CS", b"RS", b"CL", b"EV", b"MN", b"AL", b"UN")
             and len(fields[4]) == len(fields[5]) == 2
             and all(c in b"0123456789ABCDEF" for c in fields[4] + fields[5])
-            and 1 <= int(fields[4], 16) <= 31 and 1 <= int(fields[5], 16) <= 127
-            and fields[6] in (b"P\n", b"A\n"))
+            and fields[6] in (b"P", b"A")
+            and ((fields[7] in (b"P\n", b"E\n")
+                  and 1 <= int(fields[4], 16) <= 31 and 1 <= int(fields[5], 16) <= 127)
+                 or (fields[7] == b"U\n" and fields[4] == fields[5] == b"00")))
 
 
 class _ScenarioDiagnostic:
