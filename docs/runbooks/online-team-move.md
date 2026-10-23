@@ -87,6 +87,17 @@ the admitted operator to show and explicit SAME-operation recovery, never normal
 attachment of partial files. `team_move_authority_not_ready` preserves a bounded
 native `authority_unavailable_code`; resolve that publisher through its own owner.
 `team_move_names_unavailable` requires native naming readiness, not a name rewrite.
+The operation's `team_move_current_names_unavailable` also requires actual native
+metadata for both agent IDs and the distinct Founder identity. Consumers use
+`(kind, canonical_id)` keys. Initial and stable naming digests cover every native
+Subject record in sorted native-key order as a strict canonical JSON list,
+including unrelated identities and all six metadata fields. Public current names
+come from a separate native read and refuse missing agent labels; that read does
+not prove coherence with the earlier operation snapshot. This source correction
+does not rewrite saved requests or establish full planner/service/HTTP behavior.
+Reviewed source, installed checkout and loaded daemon identity remain separate;
+preserve the SAME saved key/body and existing custody on any failure. Runtime
+adoption and actual preview/apply remain with their authorized release/Founder owners.
 Stopping/busy owners must finish their real lifecycle. Admission refuses503 with
 `team_move_capability_unavailable` and actual `incomplete_reasons`; no unknown is
 treated as availability. Move-specific task/thread/job/cleanup blockers still

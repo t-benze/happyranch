@@ -25,6 +25,15 @@ from runtime.orchestrator.team_move_canonical import AGENTS, capture_images, che
 from runtime.orchestrator.team_move_context import canonical, materialize_context, plan_context, verify_context
 
 
+def _naming_digest(metadata):
+    """Pin every native Subject, ordered by its (kind, canonical_id) key.
+
+    Each record already contains both key fields; a sequence retains the full
+    metadata without passing tuple-keyed mappings to canonical JSON.
+    """
+    return _digest(canonical([asdict(subject) for _, subject in sorted(metadata.items())]))
+
+
 @dataclass(frozen=True)
 class MovePreview:
     request: MoveRequest
@@ -50,7 +59,8 @@ class TeamMoveOperation:
         if snapshot != ready.snapshot_bytes:
             raise TeamMoveError("team_move_current_authority_stale")
         labels = read_name_metadata(self.org)
-        if any(agent not in labels or labels[agent].current_label is None for agent in (*AGENTS, "founder")):
+        required_names = tuple(("agent", agent) for agent in AGENTS) + (("founder", "founder"),)
+        if any(key not in labels or labels[key].current_label is None for key in required_names):
             raise TeamMoveError("team_move_current_names_unavailable")
         paths = OrgPaths(self.org.root)
         config, _config_identity = read_regular(paths.org_config_path)
@@ -61,7 +71,7 @@ class TeamMoveOperation:
         document = json.loads(snapshot)
         return ExpectedInputs(canonical_digest=_digest(snapshot + b"\x00" + config),
             roster_digest=images[-1].before_digest,
-            naming_digest=_digest(canonical({key: asdict(value) for key, value in sorted(labels.items())})),
+            naming_digest=_naming_digest(labels),
             profile_digest=_digest(canonical(profiles)), dependency_digest=_digest(canonical(dependencies)),
             policy_digest=_digest(canonical(self._policy_inputs([s["team"] for s in document["active_policy_selectors"]]))),
             skill_selection_digest=_digest(canonical([list(plan.specs) for plan in (*before_contexts, *after_contexts)])),
@@ -607,7 +617,7 @@ class TeamMoveOperation:
         self._validate_policy_config(config)
         selectors = self._policy_inputs([s["team"] for s in json.loads(original)["active_policy_selectors"]])
         if (_digest(original + b"\x00" + config) != request.expected.canonical_digest
-                or _digest(canonical({k: asdict(v) for k, v in sorted(labels.items())})) != request.expected.naming_digest
+                or _naming_digest(labels) != request.expected.naming_digest
                 or _digest(canonical(authority._profile_projection())) != request.expected.profile_digest
                 or _digest(canonical(dependencies)) != request.expected.dependency_digest
                 or _digest(canonical(selectors)) != request.expected.policy_digest):

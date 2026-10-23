@@ -695,6 +695,16 @@ only D's pure native planner and returns exact founder-only diff/digests,
 context/permission/skill deltas, complete blockers/owners, drain candidates and
 org-wide publication impact. It reserves nothing. Internal canonical images
 stay private; never copy these admitted diffs to shared artifacts/logs.
+Native metadata is keyed by `(kind, canonical_id)`: affected agents and Founder
+are distinct subjects. Required current labels must exist, without ID fallback.
+Initial expected inputs and later stable verification use the same naming digest:
+SHA256 of strict canonical JSON for all native Subject records as a list sorted
+by native tuple key. Each record retains kind, canonical_id, lifecycle,
+current_label, revision and classification; unrelated metadata remains included.
+Public current-name projection makes a separate native read with explicit missing
+agent-label refusal. It supplies no whole-service snapshot guarantee. The bounded
+consumer correction changes no public/durable fields, versions or saved requests;
+isolated serialization evidence is not full planner/service/HTTP or move proof.
 Only already-running captured threads can drain (at most30s); pending tasks,
 paused roots/children/jobs/workflows/remote/cleanup uncertainty remain blockers.
 `can_drain_threads` identifies candidate turns, not clearance of hard blockers.
