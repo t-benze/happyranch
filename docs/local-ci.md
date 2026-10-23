@@ -623,6 +623,86 @@ QA does not settle old custody. ROOT12738 retains the complete remaining ledger,
 independent FULL review/same-final-head scoped QA, normal hooks/nonforce, guarded
 merge, exact-main lints and later main-only product acceptance.
 
+### First-recorder/native-log source (TASK12758 / ROOT12738)
+
+Accepted TASK12756 / independent12757 DESIGN ONLY plus manager C1 correction
+extend the [SAME13 keeper four answers and limits](../e2e/README.md#first-recorder-and-native-log-observations-task12758--root12738):
+R2-01/02/03/04/05/08, R3-01/06/07/08/09, X-01/02. Each has a distinct C identity/
+propagation, H actual hosted OS/native-log, J serialized noncredit risk; no
+runnable case/injector/verifier/venue/test-only seam is added. Original30 rows,
+ALL56 L1–L7 membership/order EACH3.12/3.14, sixteen browser sites and complete
+validator/admission/control references remain unchanged.
+
+Raw W/object/savedTB/primary assignment comes first. Only inserting candidate
+identity can make a separate once-only pending/complete snapshot; reentry,
+off-owner, prior P/later SAME object, overflow, refused or interrupted claims
+cannot complete later. Map at most32 saved TB nodes and16 phases via exact
+reviewed code-object/immediate require-caller identities only. The21-byte
+`HRD1:S:SS:OO:BB:TT:R\n` closed grammar exports finite stage/origin/actual owner/
+timer-tie/P-or-A labels, never clocks/private text/paths/frames/locals/context.
+P requires the genuine phase/bounded creator before original restoration;
+otherwise A is observed first-recorder state. Missing fallback attributes own
+no tie. Completed-readiness leaves local_bounds.end present, so the stated
+G+L example gives05/05 by actual calculation, never hardcoding. Unknown
+leaf/caller/overflow/expiry refuses; no terminal resample or ancestor inference.
+
+ONE atomic nonblocking/CLOEXEC anonymous directional pair is scenarios-only;
+private pass_fds/argument, parent S release immediately around ONE Popen before
+owner.add/wait and child adoption/OS-state validation/CLOEXEC before constructor/
+observer/exec descendants preserve conditional custody. Ordinary setup decline
+uses original single launch; actual Popen failure/interruption never retries.
+Unknown registration/release/custody stays UNKNOWN; no fork-only/same-UID fence.
+Original adapter decision precedes one charged nonblocking send requiring full
+module/token/frame/W/TB/head/historical-check/nonce AND own complete snapshot
+claim. No success/constructor/unselected/tail/exhausted send or status83/1 guess.
+
+After original-loop real direct exit, saved code/phase/finalization and log
+closure, SAME command end/alarm governs ONE charged513-byte consuming recvmsg.
+Only exact complete grammar/no ancillary/flags permits ONE charged1-byte PEEK.
+ANY second tuple including b'' refuses ALL; only exact second EAGAIN/EWOULDBLOCK
+permits custody/end postcheck, complete R release and prewrite end check. No
+third call/retry/drain/new poll/reap/wait/EOF inference/cleanup-export receiver.
+
+Each eligible controller observation or first collection failure/unavailable
+site consumes ONE <=512B fixed-ASCII direct unbuffered os.write to unchanged
+inherited fd2, including the regular cancellation launcher.log destination
+or a blocking native pipe. No dup/reopen/flags/buffering/flush/readiness wait/
+helper/retry/reserve/shield/timer extension/deferred/postcommit work. TimeoutError
+precedes OSError; ordinary short/error consumes UNKNOWN chance. Real alarm/
+RuntimeError/KeyboardInterrupt/SystemExit ends optional work and propagates
+through original handlers, preserving actual child phase exit/interruption.
+Finite bytes/Python-call limits promise no kernel-call count, I/O latency,
+retention/durability, cleanup opportunity or repeated-interruption immunity.
+Blocking output may prevent cleanup or even E entry; no fabricated child error.
+
+Collection windows distinguish context read/decode/validation and scenario
+read/decode/merge, plus ROOT/token/presence/raw-next/text/redact/image/required/
+UNKNOWN. Original raw/TB/sticky incomplete precedes a first F/U claim across
+C/E; no recollection repair, logging in signal handlers or raw rescue. Context
+`[` versus `[]` and malformed scenario are source counterexamples, never
+historical cause proof. Original absent-context policy, frozen reader,
+independently eligible C ports/root removal, E-1/safe FAIL/variants={} and final
+replacement remain. No new work in publish/after commit, marker decoder or
+result/health/readiness/cleanup credit; THREE category publishers and capture
+A then [] invalidation B precedence remain. E05's20/E07's24 dynamic source joins
+consume genuine later hashes, never pinned old receipts.
+
+Candidate **NOT RUN**, intended-failure/restored-pass **PROOF NOT RUN**,
+sensitivity **UNPROVED**. Required guarded `scripts/local_ci.sh all` through a
+durable job and exactly Source Boundary Lint / Web Lint (Node 24) are static
+only. Normal hooks/nonforce publication, independent FULL review, same-final-head
+scoped SOURCE QA and manager guarded merge/exact-main two-lint receipts remain;
+every push renews gates. No branch Product E2E/test/build or protected proof is
+allocated. Units RETIRED; integration INCLUDING callback SKIPPED24342/211270–271.
+Latest39984857420 FAILED/HealthFAIL47 and EACH56 UNKNOWN/null/zero recordedPASS,
+final_missing/conditional83/collection ValueError then incomplete export persist;
+TERM3.12/INT3.14 diagnostic-only, PR1180 cause unproved. Complete step11 ledger/
+ALL nine retained addenda/integrity remain byte-exact references, including
+old12724 UNKNOWN custody/effects/retirement and consumed ONE362/12741 history.
+Source delivery is distinct from Product/reset/test-authoring acceptance.
+Daily19UTC and later manager-owned reviewed-main-only Founder277 verification,
+original480/240/720/60/120/900,31s isolation and exclusions remain unchanged.
+
 The accepted12707–12708 / TASK12709 terminal observation extends the
 [existing recovery record](../e2e/README.md#advisory-terminal-interpretation-task12709--accepted12707-12708).
 Actual W is `_failure_raw["first"]`, its original object/saved traceback, never
