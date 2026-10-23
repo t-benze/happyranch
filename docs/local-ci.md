@@ -1641,7 +1641,12 @@ operator CLI help, imports and idle served-schema summary may check the new
 run@7 registration; they do not exercise cancellation/native/SQL races.
 No tests/fixtures/assertions or proof venue are added by this increment.
 C11/F5/F8 cases include separately cancelled G1 then ordinary ancestor cascade
-with no G2 (P alone, P/S, multiple retained graphs), retained G1 plus fresh G2,
+with no G2 (P alone, P/S, multiple retained graphs), then higher live Q through
+terminal ordinary P. Retained discovery follows authenticated dependency paths
+separately from the live mutation walk; newly captured rows below stopped paths
+must be terminal and graphs already cancelled. Hidden live work refuses, unrelated
+ordinary subtrees stay untouched, and P/G1 retain original rows. Cases also cover
+normally reachable retained G1 plus fresh G2,
 and pre-write point-stop refusal for coding-dependent ordinary ancestors
 (live/cancelled graphs, deeper ancestry) while ordinary-only point stops remain.
 The all-retained stop appends only a distinct closed ordinary-operation audit;
@@ -1665,3 +1670,12 @@ THR320seq99. No old-root execution waiver is inherited.
 Integration INCLUDING callback/lifespan/SessionTracker remains SKIPPED24342;
 Python units RETIRED; missing Swift proof remains UNEXECUTED /
 FOUNDER-EXEMPTED / NONBLOCKING320seq93. No E2E/build/native campaign follows.
+
+Founder THR320seq136's sole recovery ROOT12727 retains clean committed-head
+static all, both literal final-head hosted lint receipts, normal hooks/nonforce
+publication, FULL independent review and separately routed scoped QA. Genuine
+four-stage/schema-import/operator/scratch availability is no longer a source-merge
+prerequisite. Real workflow/Founder persistence/across-team/two-org/backup/reopen/
+rollback acceptance remains NOT RUN/open, required before ordinary work/activation.
+Historical checkpoints and failed roots are not rewritten or revived. Readiness
+and require_ready remain unconditionally disabled; no E2E/build/live run follows.

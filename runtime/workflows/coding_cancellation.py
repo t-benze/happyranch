@@ -20,23 +20,35 @@ TERMINAL = ('completed', 'failed', 'cancelled', 'superseded')
 
 def affected(conn: Any, task_id: str, cascade: bool, saved: Any, budget: _Budget) -> tuple[dict, set]:
     """Fixed-point task descendants AND complete coding owners; no caller proof."""
-    pending, selected, instances = [task_id], {}, set()
-    while pending:
+    pending, retained, selected, instances = [task_id], [], {}, set()
+    while pending or retained:
         budget.step()
-        key = pending.pop()
+        retaining = not pending
+        key = retained.pop() if retaining else pending.pop()
         if key in selected:
             continue
         found = list(rows(conn, 'tasks', budget, where='id=?', args=(key,), maximum=1))
         _check(len(found) == 1 and len(selected) < 512)
         row = found[0]
+        # Discovery below a stopped ordinary parent grants no live mutation.
+        _check(not retaining or row['status'] in TERMINAL)
         selected[key] = row
         owner = saved.owners.get(key)
         if owner is not None and owner[1] not in instances:
+            _check(not retaining or saved.runs[owner[1]]['run']['state'] == 'cancelled')
             instances.add(owner[1])
-            pending.extend(saved.runs[owner[1]]['tasks'])
+            (retained if retaining else pending).extend(saved.runs[owner[1]]['tasks'])
         if cascade and row['status'] not in TERMINAL:
             pending.extend(r['id'] for r in rows(conn, 'tasks', budget,
                 where='parent_task_id=?', args=(key,), maximum=512))
+        elif cascade and owner is None and key in saved.cancellation_dependencies:
+            # Authenticate retained coding closure independently of the legacy
+            # point-stop walk. Unrelated ordinary descendants stay untouched.
+            for child in rows(conn, 'tasks', budget,
+                    where='parent_task_id=?', args=(key,), maximum=512):
+                budget.step()
+                if child['id'] in saved.cancellation_dependencies or child['id'] in saved.owners:
+                    retained.append(child['id'])
     return selected, instances
 
 

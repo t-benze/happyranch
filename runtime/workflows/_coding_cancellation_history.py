@@ -356,17 +356,22 @@ def complete(conn: Any, org: str, budget: Any, storage: Any) -> None:
     batches.extend(({}, record) for record in ordinary)
     for records, sample in batches:
         command, originals = sample['command'], sample['originals']
-        pending, visited, instances = [command['target_task_id']], set(), set()
-        while pending:
+        pending, retained, visited, instances = [command['target_task_id']], [], set(), set()
+        while pending or retained:
             budget.step()
-            key = pending.pop()
+            retaining = not pending
+            key = retained.pop() if retaining else pending.pop()
             if key in visited:
                 continue
             _check(key in originals and len(visited) < 512)
             visited.add(key)
             row = originals[key]
+            _check(not retaining or row['status'] in TERMINAL)
             owner = storage.owners.get(key)
             if owner is not None and owner[1] not in instances:
+                # A terminal ordinary path can retain a genuine earlier fence,
+                # never introduce a fresh live graph into this operation.
+                _check(not retaining or owner[1] not in records)
                 instances.add(owner[1])
                 entry = storage.runs[owner[1]]
                 if owner[1] not in records:
@@ -380,10 +385,18 @@ def complete(conn: Any, org: str, budget: Any, storage: Any) -> None:
                         budget.step()
                         _check(task['status'] in TERMINAL and task_id in originals
                                and same(task, originals[task_id]))
-                pending.extend(entry['tasks'])
+                (retained if retaining else pending).extend(entry['tasks'])
             if command['cascade'] and row['status'] not in TERMINAL:
                 pending.extend(r['id'] for r in rows(conn, 'tasks', budget,
                     where='parent_task_id=?', args=(key,), maximum=512))
+            elif command['cascade'] and owner is None and key in storage.cancellation_dependencies:
+                # Recompute the retained census independently, using original
+                # terminal rows and the complete authenticated dependency set.
+                for child in rows(conn, 'tasks', budget,
+                        where='parent_task_id=?', args=(key,), maximum=512):
+                    budget.step()
+                    if child['id'] in storage.cancellation_dependencies or child['id'] in storage.owners:
+                        retained.append(child['id'])
         _check(visited == set(originals) and set(records) <= instances)
         if 'retained' in sample:
             _check(instances == sample['retained'])

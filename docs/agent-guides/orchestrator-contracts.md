@@ -5594,6 +5594,16 @@ multiple graphs. A later ordinary ancestor stop also commits when every coding
 graph was already cancelled, with or without ordinary siblings. Previously
 cancelled graphs stay in the complete closure: their terminal tasks, results,
 events, causes and native owners remain intact, with no second fence or control.
+For G1 cancelled, then ordinary P cancelled, then higher live Q, retained
+coding discovery crosses terminal ordinary dependency intermediates independently
+of the live mutation walk. Only authenticated coding dependency paths are
+followed below a terminal ordinary row; newly captured rows there must be
+terminal and newly discovered graphs must have an earlier genuine cancellation.
+Hidden live work refuses rather than expanding legacy mutation semantics;
+unrelated ordinary subtrees remain untouched. P and G1 retain their exact rows,
+while Q and its normally reachable live ordinary siblings receive their sole
+overlay. Multiple retained graphs and a normally reachable fresh G2 compose in
+the same operation; only G2 receives a fresh fence.
 When no fresh coding graph exists, the distinct task-scoped audit action
 `coding_ordinary_cancellation` carries `workflow-coding-ordinary-cancellation@1`:
 the original command, exact ordinary task audits, operation digest and earlier
@@ -5666,6 +5676,14 @@ race/causal proof NOT RUN / PROOF NOT RUN without a genuine authorized venue
 (THR320seq99). Python units RETIRED; general integration INCLUDING callback/
 lifespan/SessionTracker SKIPPED24342; all missing Swift proof UNEXECUTED /
 FOUNDER-EXEMPTED / NONBLOCKING320seq93. Static checks prove no workflow behavior.
-FULL independent final-head reviewer returns directly ROOT12568; scoped QA is
-later root-routed. No schema/auth/permission/grant/restart/deploy/live experiment,
-merge or cleanup is authorized by this increment.
+Founder THR320seq136 authorizes source recovery under sole ROOT12727 without
+reviving failed ROOT12568 or predecessors. Genuine four-stage execution,
+schema-import/operator/scratch availability are no longer source-merge
+prerequisites. Real workflow/Founder persistence/across-team/two-org/backup/
+reopen/rollback acceptance remains NOT RUN/open and required before ordinary
+work or activation. Historical checkpoint evidence and failures stay attributed
+to their original owners/heads. Fresh FULL independent final-head review and
+separately root-routed scoped QA remain required; the actual entitled final
+manager alone owns expected-head/non-admin guarded merge and independent remote
+confirmation in its own live session before callback. No schema/auth/permission/
+grant/restart/deploy/live experiment, self-merge or cleanup is authorized here.

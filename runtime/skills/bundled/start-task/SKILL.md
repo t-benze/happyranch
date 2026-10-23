@@ -852,7 +852,13 @@ original INTEGER/task/SID may drain or replay unchanged, without advancing.
 A stopped task, missing handle/control or transport loss supplies no cleanup,
 remote-effect clearance, reservation release or retry permission. A later ordinary
 ancestor batch preserves earlier cancelled graphs even without another live
-coding graph or ordinary sibling. With no fresh graph, a separate closed
+coding graph or ordinary sibling. After G1 then ordinary P are cancelled, a
+higher live Q retains G1 through terminal ordinary dependency paths. This is
+separate from live mutation: newly captured rows below the stopped path must
+be terminal, graphs already cancelled, and unrelated ordinary subtrees stay
+untouched. Hidden live work refuses. Only normally reachable live ordinary rows
+receive their sole overlay; a normally reachable fresh G2 is fenced once.
+With no fresh graph, a separate closed
 ordinary-operation audit anchors the original cancellation without another graph
 fence/control/result;
 complete readers authenticate every batch and the sole ordinary-row overlay
@@ -869,6 +875,11 @@ without a PID and after a successful control return. Only positive original owne
 settlement permits the existing safe disposition; never clear tracker/journal
 ownership to force it. The existing Founder task-cancel route owns cancellation;
 this skill grants no control tool.
+Founder THR320seq136 removes genuine four-stage/schema-import/operator/scratch
+availability as source-merge prerequisites under sole recovery ROOT12727.
+Real workflow/Founder persistence/across-team/two-org/backup/reopen/rollback
+acceptance remains NOT RUN/open and required before ordinary work/activation.
+Readiness remains unconditionally disabled; this grants no live allocation.
 Deferred native recovery/reassignment remain unavailable separately. Genuine
 current task/SID report-completion remains the final action; never fabricate
 an earlier result or another task's callback to work around a refusal.
