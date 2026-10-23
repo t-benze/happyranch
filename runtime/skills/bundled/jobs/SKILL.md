@@ -532,3 +532,72 @@ remain; no cleanup/activation authority follows. These source changes have no
 behavioral/migration/recovery proof; integration INCLUDING callback SKIPPED24342,
 Python units RETIRED. That C3 checkpoint had no COMPLETE writer; current D/E/F
 source and independent gates are described above. No live capability follows.
+
+
+The disabled coding final-manager path uses the LOCAL workflows coding finalize
+command inside its actual running original manager invocation, never a job or
+daemon PR service. It observes the shared waiter once (settle=0/timeout=0) with
+stricter exact-head actual successful literal lints; pending/missing/ambiguous/
+skipped/neutral checks hold. Coding source/carrier/stage jobs remain forbidden by
+unchanged document/legacy predicates, even when the selected role is agent_manager.
+Separately entitled ordinary legacy preparation may use existing job mechanisms;
+no such task/job or entitlement is inferred here. Save original intent/command/
+remote receipts before own FINAL callback; transport loss never reissues merge.
+No automatic held-manager reallocation or PR recovery service exists. Readiness
+remains disabled; SOURCE/static is not native or remote acceptance.
+
+The repaired final-manager@2 path binds the selected authenticated repository
+reference to its repo_key checkout/raw-origin digest/opaque ID before checks or
+action, then again immediately before action. One original native OrgPaths/
+assigned-principal workspace capture selects the task/attempt reservation across
+cwd/key/path variants. Partial or failed recording never permits another action.
+Selected/native/final-output@2/history reconstruct the SAME full root/reference;
+no daemon file reservation, job runner or new command entitlement is supplied.
+
+
+Coding revision2/3 final-manager@3 retains the same live-session-only LOCAL
+finalize boundary and captured native workspace/reference. Final-selection@3,
+finalize-command@2 and final-output@3 bind only the current exact-subject fresh
+results. Never move its action or receipt production into a job, daemon, recovery
+runner or old source/upstream SID. Existing reservations/unknown facts survive.
+
+
+Coding cancellation is a business stop. Stop fresh repository/stage/result/
+successor/finalize work when the authorized original task cancellation wins.
+Preserve original intent/action/receipt uncertainty and native preparation/
+terminal/outer ownership. Only a callback already committed under the exact
+original INTEGER/task/SID may drain or replay unchanged, without advancing.
+A stopped task, missing handle/control or transport loss supplies no cleanup,
+remote-effect clearance, reservation release or retry permission. A later ordinary
+ancestor batch preserves earlier cancelled graphs even without another live
+coding graph or ordinary sibling. After G1 then ordinary P are cancelled, a
+higher live Q retains G1 through terminal ordinary dependency paths. This is
+separate from live mutation: newly captured rows below the stopped path must
+be terminal, graphs already cancelled, and unrelated ordinary subtrees stay
+untouched. Hidden live work refuses. Only normally reachable live ordinary rows
+receive their sole overlay; a normally reachable fresh G2 is fenced once.
+With no fresh graph, a separate closed
+ordinary-operation audit anchors the original cancellation without another graph
+fence/control/result;
+complete readers authenticate every batch and the sole ordinary-row overlay
+against unchanged original admission bytes. Retained task originals compare at
+an independently reconstructed later capture boundary; authenticated event and
+heartbeat order must agree with its capture interval. Full native suffix replay
+and exact current SQL equality still include every field, including executor_pid,
+on the original shared copy/traversal allowance; no history rewrite or settlement
+inference follows. A point stop of a coding-dependent
+ordinary ancestor refuses before writes, independently of mutation cascade;
+ordinary-only point stops remain supported. Prepared/unknown ownership,
+missing/failed controls and unsettled outer proof retain the existing root-tail incomplete disposition, even
+without a PID and after a successful control return. Only positive original owner
+settlement permits the existing safe disposition; never clear tracker/journal
+ownership to force it. The existing Founder task-cancel route owns cancellation;
+this skill grants no control tool.
+Founder THR320seq136 removes genuine four-stage/schema-import/operator/scratch
+availability as source-merge prerequisites under sole recovery ROOT12727.
+Real workflow/Founder persistence/across-team/two-org/backup/reopen/rollback
+acceptance remains NOT RUN/open and required before ordinary work/activation.
+Readiness remains unconditionally disabled; this grants no live allocation.
+Deferred native recovery/reassignment remain unavailable separately. Genuine
+current task/SID report-completion remains the final action; never fabricate
+an earlier result or another task's callback to work around a refusal.

@@ -1,12 +1,12 @@
 """SELECT-only complete queued K3a closure under the enclosing native budget.
 
 The initial start is reconstructed independently, followed by the closed
-first-development native reader. Unsupported control/stage families refuse.
+ordered edges and native reviewer/QA readers. Unsupported later-stage/control
+families refuse.
 Saved validity never supplies current access, readiness or permission.
 """
 from __future__ import annotations
 
-import base64
 import json
 import sqlite3
 import struct
@@ -14,13 +14,14 @@ from typing import Any, Iterator
 from dataclasses import dataclass, field
 from datetime import datetime
 
-from runtime.workflows._coding_role_records import RECORD_FORMAT, configuration
+from runtime.workflows._coding_settings_execution import _configuration, _resolve_start
 from runtime.workflows.coding_authority_history import _Budget, _bounded_rows, _capture_admission, _decoded
 from runtime.workflows.coding_bootstrap import (
     decode_row, encode_row, identity, initial_scope, journal_rows, pinned_rows, task_brief,
 )
+from runtime.workflows._coding_settings_execution import _read_authority, _read_json
 from runtime.workflows.coding_saved_records import (
-    _Ancestry, _canonical, _capture, _check, _closed, _hash, _integer, _json, _roles, _timestamp, _token,
+    _canonical, _check, _closed, _hash, _integer, _roles, _timestamp, _token,
 )
 from runtime.workflows.coding_source_history import (
     _RESULT_TYPES, _TASK_COLUMNS, _TASK_TYPES, _session_start, _task,
@@ -71,6 +72,9 @@ class QueuedStorage:
     runs: dict = field(default_factory=dict)
     owners: dict = field(default_factory=dict)
     callbacks: dict = field(default_factory=dict)
+    cancellations: dict = field(default_factory=dict)
+    cancellation_comparisons: list = field(default_factory=list)
+    cancellation_dependencies: set = field(default_factory=set)
 
     def add(self, table: str, row: dict) -> None:
         key = _canonical(encode_row(row))
@@ -96,6 +100,8 @@ def read_queued(conn: sqlite3.Connection, org: str, budget: _Budget, mappings: A
             continue
         _decoded(envelope, budget)
         decision = parse_native_decision(raw.encode('utf8'))
+        if decision['workflow']['format'] == 'workflow-coding-start@2':
+            _resolve_start(decision['workflow'], mappings, imported, budget)
         _integer(row['id'], 1)
         _check(row['status'] == 'completed' and row['waiting_on_job_ids'] is None)
         issuer = dict(task_id=row['task_id'], session_id=row['session_id'], principal=row['agent'])
@@ -131,7 +137,7 @@ def read_queued(conn: sqlite3.Connection, org: str, budget: _Budget, mappings: A
     run_rows = list(rows(conn, 'workflow_coding_runs', budget))
     attempts = list(rows(conn, 'workflow_coding_attempts', budget))
     events = list(rows(conn, 'workflow_coding_events', budget))
-    _check(len(attempts) == len(run_rows) and len(events) >= len(run_rows))
+    _check(len(run_rows) <= len(attempts) <= 10 * len(run_rows) and len(events) >= len(run_rows))
     used_attempts, used_events, used_sources = set(), set(), set()
     for run in run_rows:
         budget.step()
@@ -140,21 +146,19 @@ def read_queued(conn: sqlite3.Connection, org: str, budget: _Budget, mappings: A
         selected = [r for r in events if r['instance_id'] == instance]
         selected_attempts = [r for r in attempts if r['instance_id'] == instance]
         selected.sort(key=lambda row: row['event_seq'])
-        _check(len(selected) >= 1 and len(selected_attempts) == 1)
-        event, actual_attempt = selected[0], selected_attempts[0]
+        _check(len(selected) >= 1 and 1 <= len(selected_attempts) <= 10)
+        event = selected[0]
         actual_run = run
-        initial = _json(event['event_bytes'], 16777216)
+        initial = _read_json(event['event_bytes'], budget, 16777216)
         run = initial['after']['run']
         attempt = decode_row(initial['after']['attempts'][0]['record'])
         _check(event['id'] not in used_events and attempt['id'] not in used_attempts)
         for selected_event in selected:
             _check(selected_event['id'] not in used_events)
             used_events.add(selected_event['id'])
-        used_attempts.add(attempt['id'])
         _check(type(event['event_bytes']) is bytes and _hash(event['event_bytes']) == event['event_digest'])
-        payload = _closed(_json(event['event_bytes'], 16777216),
+        payload = _closed(_read_json(event['event_bytes'], budget, 16777216),
             'format id instance_id event_seq event_kind attempt_id operation previous_digest before after evidence created_at')
-        _decoded(payload, budget)
         _check(payload['format'] == 'workflow-coding-event@1'
                and payload['event_kind'] == 'run_started' and payload['event_seq'] == 1
                and payload['previous_digest'] is None)
@@ -217,18 +221,17 @@ def read_queued(conn: sqlite3.Connection, org: str, budget: _Budget, mappings: A
         mapping_entry = pin_entries[0]
         _check(command['mapping'] == dict(id=mapping_entry.mapping_id, generation=mapping_entry.generation,
                                          digest=mapping_entry.mapping_digest) and run['mapping_id'] == mapping_entry.mapping_id)
-        record = _json(mapping_entry.mapping_bytes, 1048576)
-        _check(record['format'] == RECORD_FORMAT)
+        record = _read_json(mapping_entry.mapping_bytes, budget, 1048576)
+        settings = _resolve_start(command, mappings, imported, budget)
         mapping = record['mapping']
         effective = effective_mapping(mapping, command)
         roles = effective['roles']
         _roles(roles, {k: [] for k in roles})
         _check(roles['agent_manager'] == dict(principal=source['principal'], team=source_before['team']))
-        grant, _ = _capture(evidence['authority'], org, _Ancestry())
+        grant, snapshot = _read_authority(evidence['authority'], org, budget)
         _check(grant == _canonical(command))
-        snapshot = json.loads(base64.b64decode(evidence['authority']['snapshot_bytes_base64'], validate=True))
-        configuration(mapping, snapshot)
-        configuration(effective, snapshot)
+        _configuration(mapping, snapshot, command, budget)
+        _configuration(effective, snapshot, command, budget)
         carrier_id = facts['carrier_task_id']
         _check(carrier_id in after_tasks and carrier_id != source['task_id'])
         carrier, leaf = after_tasks[carrier_id], after_tasks[attempt['task_id']]
@@ -254,7 +257,7 @@ def read_queued(conn: sqlite3.Connection, org: str, budget: _Budget, mappings: A
         context_rows = [r for r in evidence['rows'] if r.get('table') == 'workflow_contexts']
         _check(len(context_rows) == 1)
         frozen_context = decode_row(context_rows[0]['record'])
-        context_value = _json(frozen_context['context_bytes'], 1048576)
+        context_value = _read_json(frozen_context['context_bytes'], budget, 1048576)
         native_source = _closed(context_value['native_source'], 'ancestors session_start invocation checkpoints')
         checkpoints = native_source['checkpoints']
         _check(type(checkpoints) is list and 1 <= len(checkpoints) <= 5)
@@ -294,10 +297,11 @@ def read_queued(conn: sqlite3.Connection, org: str, budget: _Budget, mappings: A
         _check(chain[-1]['parent_task_id'] is None and source['root_ancestor_id'] == chain[-1]['id']
                and source['parent_task_id'] == source_before['parent_task_id'])
         # Current ancestry may have native observations, but no owner/edge drift.
+        current_ancestors = []
         for historical in chain[1:]:
             current = _task(conn, historical['id'], budget)
             actual = {c.name: c.value.decode('utf8') if c.storage_class == 'text' else c.value for c in current.columns}
-            _check(same(actual, historical))
+            current_ancestors.append((actual, historical))
         start = _session_start(conn, dict(task_id=source['task_id'], session_id=source['session_id'], principal=source['principal']), budget)
         actual_start = {c.name: c.value.decode('utf8') if c.storage_class == 'text' else c.value for c in start.columns}
         _check(same(native_source['session_start'], actual_start))
@@ -333,6 +337,7 @@ def read_queued(conn: sqlite3.Connection, org: str, budget: _Budget, mappings: A
             template=template, carrier_id=carrier_id, instance_id=instance, created_at=payload['created_at'])
         _check(same(evidence['rows'], journal_rows(expected_pins)))
         _capture_admission(conn, expected_pins['workflow_admission_records'][0], evidence['authority'], budget)
+        _check(len(selected_attempts) <= limits['coding_attempt_limit'])
         scope = _canonical(initial_scope(org=org, instance=instance, attempt=attempt['id'], command=command,
                                         roles=roles, context=context))
         _check(same(attempt, dict(id=identity('attempt', instance, 1), instance_id=instance,
@@ -377,7 +382,17 @@ def read_queued(conn: sqlite3.Connection, org: str, budget: _Budget, mappings: A
             tasks=after_tasks, source=source, roles=roles, authority=evidence['authority'],
             command_value=command, mapping=mapping, source_invocation=entry,
             source_ancestors=[decode_row(r) for r in native_source['ancestors']])
-        _check(same(native['run'], actual_run) and same(native['attempt'], actual_attempt))
+        # Another graph may carry a later ordinary-ancestor cancellation.
+        # Resolve changed equality only after ALL independent batches close.
+        from runtime.workflows._coding_cancellation_history import defer_ancestry
+        for actual, historical in current_ancestors:
+            defer_ancestry(actual, historical, storage, budget)
+        actual_attempts = {a['id']: a for a in selected_attempts}
+        _check(len(actual_attempts) == len(selected_attempts)
+               and same(native['run'], actual_run) and same(native['attempts'], actual_attempts))
+        _check(not (set(actual_attempts) & used_attempts))
+        used_attempts.update(actual_attempts)
+        actual_attempt = actual_attempts[actual_run['current_attempt_id']]
         after_tasks = native['tasks']
         run, attempt = actual_run, actual_attempt
         for task_id, expected in after_tasks.items():
@@ -408,24 +423,30 @@ def read_queued(conn: sqlite3.Connection, org: str, budget: _Budget, mappings: A
             for key in keys:
                 budget.step()
                 _check(conn.execute(f'SELECT 1 FROM {table} WHERE {column}=? LIMIT 1', (key,)).fetchone() is None)
-        callbacks = list(rows(conn, 'task_results', budget, where='task_id=?', args=(leaf['id'],)))
-        _check(same(callbacks, [] if native['callback'] is None else [native['callback']]))
-        budget.step()
-        _check(conn.execute('SELECT 1 FROM tasks WHERE parent_task_id=? LIMIT 1', (leaf['id'],)).fetchone() is None)
+        for owned_attempt in actual_attempts.values():
+            owned_state = native['stages'][owned_attempt['id']]
+            callbacks = list(rows(conn, 'task_results', budget, where='task_id=?', args=(owned_attempt['task_id'],)))
+            _check(same(callbacks, [] if owned_state['callback'] is None else [owned_state['callback']]))
+            budget.step()
+            _check(conn.execute('SELECT 1 FROM tasks WHERE parent_task_id=? LIMIT 1', (owned_attempt['task_id'],)).fetchone() is None)
+            storage.add('workflow_coding_attempts', owned_attempt)
         for child in rows(conn, 'tasks', budget, where='parent_task_id=?', args=(source['task_id'],)):
             _check(child['id'] == carrier_id or (child['status'] in ('completed', 'failed', 'cancelled', 'superseded')
                 and datetime.fromisoformat(child['created_at']) <= datetime.fromisoformat(payload['created_at'].replace('Z', '+00:00'))))
-        _check([r['id'] for r in rows(conn, 'tasks', budget, where='parent_task_id=?',
-                                    args=(carrier_id,), maximum=2)] == [leaf['id']])
+        _check({r['id'] for r in rows(conn, 'tasks', budget, where='parent_task_id=?',
+                                    args=(carrier_id,), maximum=10)} == {a['task_id'] for a in actual_attempts.values()})
         for table, row in (('workflow_coding_runs', run), ('workflow_coding_attempts', attempt), ('workflow_coding_events', event)):
             storage.add(table, row)
         storage.runs[instance] = dict(run=run, command=command, roles=roles, attempt=attempt, event=event,
-                                    source=source, binding=expected_pins['workflow_binding_snapshots'][0],
-                                    native=native, authority=evidence['authority'], tasks=after_tasks)
+                                    source=source, attempts=actual_attempts, mapping=mapping, binding=expected_pins['workflow_binding_snapshots'][0],
+                                    native=native, authority=evidence['authority'], tasks=after_tasks, settings=settings)
         for task_id, kind in ((source['task_id'], 'coding_source_waiting'),
-                              (carrier_id, 'coding_carrier'), (leaf['id'], 'coding_attempt')):
+                              (carrier_id, 'coding_carrier'),
+                              *((a['task_id'], 'coding_attempt') for a in actual_attempts.values())):
             _check(task_id not in storage.owners)
             storage.owners[task_id] = (kind, instance)
+    from runtime.workflows._coding_cancellation_history import complete
+    complete(conn, org, budget, storage)
     from runtime.workflows.coding_native_history import validate_native_journals
     validate_native_journals(conn, org, budget, storage)
     _check(used_attempts == {r['id'] for r in attempts} and used_events == {r['id'] for r in events})

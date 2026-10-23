@@ -15,7 +15,7 @@ from runtime.orchestrator.team_move import DeferredTeamMove
 from runtime.workflows._coding_role_records import (
     COMMAND_LIMIT, RoleCommand, RoleReceipt, SelectionCommand, SelectionReceipt,
 )
-from runtime.workflows.coding_start_records import CodingRunReceipt
+from runtime.workflows.coding_start_records import BoundFinalSelection, CodingRunReceipt
 from runtime.workflows.artifacts import Token
 from runtime.workflows.authority import WorkflowAuthorityError
 from runtime.workflows.coding_roles import CodingRoleError
@@ -67,8 +67,13 @@ async def coding_run(request: Request, org: OrgDep, instance_id: Token, session_
     return await _handle(request, org, session_id, selection=False, instance_id=instance_id)
 
 
+@router.get('/workflows/coding/runs/{instance_id}/final-manager', response_model=BoundFinalSelection, responses=_RESPONSES)
+async def coding_final_run(request: Request, org: OrgDep, instance_id: Token, session_id: str) -> JSONResponse:
+    return await _handle(request, org, session_id, selection=False, instance_id=instance_id, final=True)
+
+
 async def _handle(request: Request, org: Any, session_id: str, *, selection: bool,
-                  instance_id: str | None = None) -> JSONResponse:
+                  instance_id: str | None = None, final: bool = False) -> JSONResponse:
     if 'authorization' in request.headers:
         raise HTTPException(403, detail={'code': 'bearer_not_accepted'})
     if list(request.query_params.multi_items()) != [('session_id', session_id)] or not session_id:
@@ -109,7 +114,10 @@ async def _handle(request: Request, org: Any, session_id: str, *, selection: boo
             else:
                 from runtime.workflows.coding_saved_records import _token
                 _token(instance_id)
-                result = await org.workflow_coding_start.get(principal=principal, instance_id=instance_id)
+                if final:
+                    result = await org.workflow_coding_start.get_final(principal=principal, instance_id=instance_id)
+                else:
+                    result = await org.workflow_coding_start.get(principal=principal, instance_id=instance_id)
         else:
             if request.headers.get('content-type', '').split(';', 1)[0].strip().lower() != 'application/json':
                 raise CodingRoleError('coding_role_invalid_request')

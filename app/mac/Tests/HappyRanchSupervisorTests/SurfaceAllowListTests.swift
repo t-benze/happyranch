@@ -26,6 +26,54 @@ struct SurfaceAllowListTests {
         #expect(policy.isAllowed(method: "POST", path: "/tasks", rawPath: "/tasks?next=" + family))
     }
 
+    @Test("final-manager GET denies raw and normalized one-pass aliases independently")
+    func deniesFinalManagerGetAliases() {
+        let policy = SurfaceAllowList.default
+        let family = "/workflows/coding/runs/instance-1/final-manager"
+        for prefix in ["", "/api/v1", "/orgs/alpha", "/api/v1/orgs/alpha", "/api/v42/orgs/alpha"] {
+            for suffix in ["", "/", "?session_id=sess-1", "/?session_id=sess-1"] {
+                let target = prefix + family + suffix
+                #expect(!policy.isAllowed(method: "GET", path: "/tasks", rawPath: target))
+                #expect(!policy.isAllowed(method: "GET", path: target, rawPath: "/tasks"))
+            }
+        }
+        for target in [
+            "/api/v1/orgs/alpha/workflows/coding/runs/instance-1/%66inal-manager",
+            "/api/v1/orgs/alpha/workflows%2Fcoding%2Fruns%2Finstance-1%2Ffinal-manager",
+            "/api/v1/orgs/alpha/workflows%2fcoding%2fruns%2finstance-1%2ffinal-manager",
+            "/%61pi/v1/%6Frgs/alpha/workflows/coding/runs/instance-1/final-manager",
+            "/api/v1/orgs/alpha/workflows/coding/runs/instance-1/final-manager%2F",
+        ] {
+            #expect(!policy.isAllowed(method: "GET", path: "/tasks", rawPath: target))
+            #expect(!policy.isAllowed(method: "GET", path: target, rawPath: "/tasks"))
+        }
+    }
+
+    @Test("final-manager gate preserves exact boundaries, method and configured policy")
+    func preservesFinalManagerBoundariesAndConfiguredPolicy() {
+        let policy = SurfaceAllowList.default
+        for target in [
+            "/workflows/coding/runs//final-manager",
+            "/workflows/coding/runs/instance-1/final-managers",
+            "/workflows/coding/runs/instance-1/final-manager/child",
+            "/workflows/coding/runs/instance-1/final-manager//",
+            "/tasks?next=/workflows/coding/runs/instance-1/final-manager",
+            "/workflows/coding/runs/instance-1/%2566inal-manager",
+        ] {
+            #expect(policy.isAllowed(method: "GET", path: "/tasks", rawPath: target))
+            #expect(policy.isAllowed(method: "GET", path: target, rawPath: "/tasks"))
+        }
+        let family = "/workflows/coding/runs/instance-1/final-manager"
+        #expect(policy.isAllowed(method: "POST", path: "/tasks", rawPath: family))
+        #expect(policy.isAllowed(method: "POST", path: family, rawPath: "/tasks"))
+
+        let emptyPolicy = SurfaceAllowList()
+        for target in [family, "/api/v1/orgs/alpha/workflows/coding/runs/instance-1/%66inal-manager"] {
+            #expect(emptyPolicy.isAllowed(method: "GET", path: "/tasks", rawPath: target))
+            #expect(emptyPolicy.isAllowed(method: "GET", path: target, rawPath: "/tasks"))
+        }
+    }
+
     @Test("review stage denies raw and normalized aliases independently before forwarding")
     func deniesCurrentReviewerStageAliases() {
         let policy = SurfaceAllowList.default

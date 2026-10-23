@@ -111,17 +111,18 @@ def _history(conn: sqlite3.Connection, org_slug: str,
                and identity not in identities and generation not in generations
                and (principal, key) not in operations and digest not in digests
                and digest == _digest(raw))
-        saved = read_saved_mapping_record(raw, expected_org_slug=org_slug)
+        saved = read_saved_mapping_record(raw, expected_org_slug=org_slug, budget=budget)
         _check(saved.command_bytes is not None)
         record = _decoded(json.loads(raw), budget)
         command = _decoded(json.loads(saved.command_bytes), budget)
         # WorkflowTemplatePrincipal.operation_principal convention. This is
         # historical attribution, not construction of an authenticated actor.
-        operation_principal = 'agent:' + record['issuer']['principal']
+        human = record['format'] == 'workflow-coding-agent-read-role-record@2'
+        operation_principal = ('human:' if human else 'agent:') + record['issuer']['principal']
         _check(principal == operation_principal
                and release == record['mapping']['release']['identity']
                and key == command['operation_key']
-               and generation == command['expected_generation'] + 1
+               and generation == command['expected_mapping_generation' if human else 'expected_generation'] + 1
                and request_digest == record['command_digest'] == _digest(saved.command_bytes)
                and created_at == record['created_at'])
         identities.add(identity)
@@ -140,7 +141,11 @@ def _history(conn: sqlite3.Connection, org_slug: str,
     previous_time: datetime | None = None
     admissions: set[str] = set()
     result: list[HistoricalCodingMapping] = []
-    for expected_generation, (values, storage_classes, command_raw, record) in enumerate(required, 1):
+    previous_mapping, previous_snapshot = None, None
+    previous_audit = 0
+    # Validate the whole inventory even for an old selected pin: later human
+    # publications must not hide an orphan, a native suffix or broken current state.
+    for expected_generation, (values, storage_classes, command_raw, record) in enumerate(inventory, 1):
         budget.step()
         _check(values[3] == expected_generation)
         timestamp = datetime.fromisoformat(values[9].replace('Z', '+00:00'))
@@ -165,13 +170,29 @@ def _history(conn: sqlite3.Connection, org_slug: str,
             # Exact canonical U must belong to a genuine native issuance with
             # its own earlier complete prefix/admission/publication closure.
             histories.append(setups.setup(setup['id'], _canonical(setup)))
-        original = mapping_capture(conn, org_slug, values[0], command_raw, record, budget,
-                                   inventory=captures)
+        from runtime.workflows._coding_settings_history import HUMAN_RECORD, HumanPublication, human_mapping
+        command = _decoded(json.loads(command_raw), budget)
+        if record['format'] == HUMAN_RECORD:
+            original = captures.by_mapping.get(values[0])
+            _check(type(original) is HumanPublication)
+            previous_snapshot = human_mapping(values, record, command, previous_mapping,
+                                               previous_snapshot, original, budget)
+            _check(original.audit_rows[0]['id'] > previous_audit)
+            previous_audit = original.audit_rows[1]['id']
+        else:
+            _check(previous_snapshot is None)  # Native history is a prefix only.
+            original = mapping_capture(conn, org_slug, values[0], command_raw, record, budget,
+                                       inventory=captures)
+            _check(original.audit_record._value('id') > previous_audit)
+            previous_audit = original.audit_record._value('id')
+        previous_mapping = record['mapping']
         if expected_rows is not None:
             # Derive these complete typed rows from the validated record ONCE,
             # while it is decoded. IDs only locate candidates for full equality.
             rows = (('workflow_coding_mappings', dict(zip(columns, values, strict=True))),
-                    ('workflow_admission_records', expected), ('audit_log', audit_values(original)))
+                    ('workflow_admission_records', expected))
+            rows += tuple(('audit_log', row) for row in (original.audit_rows
+                if type(original) is HumanPublication else (audit_values(original),)))
             for table, row in rows:
                 budget.step()
                 index = expected_rows.setdefault(table, {})
@@ -180,7 +201,10 @@ def _history(conn: sqlite3.Connection, org_slug: str,
                 index[identity] = row
         result.append(HistoricalCodingMapping(
             *values, storage_classes, command_raw, tuple(histories), original))
-    return CodingMappingHistory(tuple(result))
+    from runtime.workflows._coding_settings_history import current_snapshot
+    full = CodingMappingHistory(tuple(result))
+    current_snapshot(conn, org_slug, budget, full, captures)
+    return CodingMappingHistory(tuple(result[:target_generation]))
 
 
 def read_mapping_history(conn: sqlite3.Connection, *, expected_org_slug: str,
@@ -240,6 +264,10 @@ def _read_mapping_storage(conn: sqlite3.Connection, *, expected_org_slug: str,
         finally:
             cursor.close()
         if row is None:
+            from runtime.workflows._coding_mapping_admission import _MappingCaptures
+            from runtime.workflows._coding_settings_history import current_snapshot
+            captures = captures if captures is not None else _MappingCaptures(conn, expected_org_slug, budget)
+            current_snapshot(conn, expected_org_slug, budget, None, captures)
             return None, {}
         budget.candidate()
         _check(row[0] is not None and row[1] == 'text')

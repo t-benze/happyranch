@@ -1,4 +1,4 @@
-"""Independent SELECT-only first-development native event reconstruction.
+"""Independent SELECT-only development, review, QA and final-manager reconstruction.
 
 This is a coding-specific closed transition reader, never a generic task change
 bus. Unsupported mutations refuse. Original run_started and native captures stay
@@ -11,10 +11,12 @@ import json
 from copy import deepcopy
 from typing import Any
 
+from runtime.platform.session_backend import CleanupStatus, TerminalReason
 from runtime.workflows.coding_authority_history import _decoded
 from runtime.workflows.coding_bootstrap import decode_row, encode_row, identity
+from runtime.workflows._coding_settings_execution import _read_authority, _read_json
 from runtime.workflows.coding_saved_records import (
-    _canonical, _check, _closed, _hash, _integer, _json, _timestamp, _token,
+    _canonical, _check, _closed, _hash, _integer, _timestamp, _token,
 )
 from runtime.workflows.coding_source_history import _TASK_COLUMNS, _TASK_TYPES
 
@@ -54,14 +56,14 @@ def _audit(conn: Any, budget: Any, row: dict, storage: Any) -> None:
     storage.add('audit_log', row)
 
 
-def _host(value: Any, claim: dict, sid: str, principal: str, org: str, attempt_id: str) -> dict:
+def _host(value: Any, claim: dict, sid: str, principal: str, org: str, attempt_id: str, budget: Any) -> dict:
     host = _closed(value, HOST_KEYS)
     _check(host['claim_token'] == claim['token'] and host['claim_owner'] == claim['owner']
            and host['invocation_id'] == claim['invocation_id'] and host['session_id'] == sid
            and host['host_attempt'] == 0 and type(host['host_attempt']) is int
            and host['launch_started'] is True)
     raw = base64.b64decode(host['request_bytes_base64'], validate=True)
-    request = _closed(_json(raw, 1048576),
+    request = _closed(_read_json(raw, budget, 1048576),
                       'org invocation_kind logical_id executor_profile enqueued_at retry_attempt agent_id')
     _check(host['request_digest'] == _hash(raw) and _canonical(request) == raw
            and request['org'] == org and request['invocation_kind'] == 'task'
@@ -114,21 +116,27 @@ def _admission(conn: Any, org: str, budget: Any, value: Any, *, callback: bool,
                command: dict, mapping: dict, roles: dict, source: dict, tasks: dict,
                run: dict, attempt: dict, native: dict, claim: dict | None, source_ancestors: list, storage: Any) -> None:
     """Independent original-time predicates; no current roster substitution."""
-    from runtime.workflows._coding_role_records import configuration
+    from runtime.workflows._coding_settings_execution import _current_configuration, _native_format, _settings_family
     from runtime.workflows.coding_start_records import effective_mapping
-    from runtime.workflows.coding_saved_records import _capture, _Ancestry
     from runtime.workflows.coding_authority_history import _capture_admission
     from runtime.infrastructure.task_pause_controls import decode_journal
     from runtime.workflows.coding_start_history import rows, same
+    new = _settings_family(command)
     value = _closed(value, 'format phase authority manager_teams tasks bindings pause invocation move capacity '
-                    'max_revise_rounds effective_bindings_base64 record')
-    _check(value['format'] == 'workflow-coding-native-admission@1'
+                    'max_revise_rounds effective_bindings_base64 record'
+                    + (' settings mapping' if new and attempt['stage'] == 'development' else '')
+                    + (' attempt_id revision' if attempt['revision'] > 1 or attempt['attempt_sequence'] > 1 else ''))
+    if new and attempt['stage'] == 'development':
+        _check(same(value['settings'], command['settings']) and same(value['mapping'], command['mapping']))
+    if attempt['revision'] > 1 or attempt['attempt_sequence'] > 1:
+        _check(value['attempt_id'] == attempt['id'] and type(value['revision']) is int and value['revision'] == attempt['revision'])
+    _check(value['format'] == ('workflow-coding-successor-native-admission@1' if attempt['attempt_sequence'] > 1 else 'workflow-coding-revision-native-admission@1' if attempt['revision'] > 1 else _native_format(command, attempt['stage']))
            and value['phase'] == ('callback' if callback else 'launch'))
     original_native = value['invocation']
     _check(same(original_native, native))
     native = original_native
     authority = value['authority']
-    grant, _ = _capture(authority, org, _Ancestry())
+    grant, snapshot = _read_authority(authority, org, budget)
     _check(grant == _canonical(command) and authority['admission_record_id'] == identity(
         'native-admission', attempt['id'], native['id'], run['cas_version']))
     pin = authority['pin']
@@ -137,9 +145,7 @@ def _admission(conn: Any, org: str, budget: Any, value: Any, *, callback: bool,
     _check(same(value['record'], expected_record))
     _capture_admission(conn, expected_record, authority, budget)
     storage.add('workflow_admission_records', expected_record)
-    snapshot = _json(base64.b64decode(authority['snapshot_bytes_base64'], validate=True), 1048576)
-    configuration(mapping, snapshot)
-    configuration(effective_mapping(mapping, command), snapshot)
+    _current_configuration(mapping, snapshot, command, budget)
     _check(roles == effective_mapping(mapping, command)['roles']
            and value['manager_teams'] == [roles['agent_manager']['team']]
            and roles['agent_manager']['principal'] == source['principal'])
@@ -156,6 +162,10 @@ def _admission(conn: Any, org: str, budget: Any, value: Any, *, callback: bool,
         _check(key in closure and same(closure[key], row) and row['cancelled_at'] is None
                and row['zombie_flagged_at'] is None)
     leaf = tasks[attempt['task_id']]
+    role = {'development': 'implementer', 'code_review': 'code_reviewer',
+            'qa': 'qa_engineer', 'manager_closeout': 'agent_manager'}[attempt['stage']]
+    _check((leaf['assigned_agent'], leaf['team']) ==
+           (roles[role]['principal'], roles[role]['team']))
     chain, seen = [], set()
     current = leaf
     while True:
@@ -163,7 +173,8 @@ def _admission(conn: Any, org: str, budget: Any, value: Any, *, callback: bool,
         seen.add(current['id'])
         chain.append(current)
         _check(current['cancelled_at'] is None and current['zombie_flagged_at'] is None
-               and current['team'] == roles['agent_manager']['team']
+               and current['team'] == (roles[role]['team'] if new and current['id'] == leaf['id']
+                                       else roles['agent_manager']['team'])
                and current['status'] not in ('completed', 'failed', 'cancelled', 'superseded'))
         if current['parent_task_id'] is None:
             break
@@ -192,11 +203,14 @@ def _admission(conn: Any, org: str, budget: Any, value: Any, *, callback: bool,
            and f['agent'] == leaf['assigned_agent'] == attempt['principal'])
     limits = source['budgets']
     _check(type(value['max_revise_rounds']) is int and value['max_revise_rounds'] == limits['max_revise_rounds']
-           and attempt['revision'] == attempt['attempt_sequence'] == 1 and limits['coding_attempt_limit'] >= 1
+           and 1 <= attempt['revision'] <= min(3, limits['coding_revision_limit'])
+           and (attempt['attempt_sequence'] == 1 or attempt['attempt_sequence'] == 2
+                and attempt['stage'] == 'manager_closeout' and limits['coding_same_principal_retry_limit'] >= 1)
+           and limits['coding_attempt_limit'] >= ({'manager_closeout': 4, 'qa': 3, 'code_review': 2}.get(attempt['stage'], 1))
            and leaf['session_timeout_seconds'] == limits['session_timeout_seconds']
            and tasks[source['task_id']]['orchestration_step_count'] == limits['source_step']
            and tasks[source['task_id']]['revision_count'] == limits['source_revision']
-           and run['state'] == 'development' and run['cas_version'] + (1 if callback else 2) <= limits['coding_event_limit'])
+           and run['state'] == attempt['stage'] and run['cas_version'] + (1 if callback else 2) <= limits['coding_event_limit'])
     if callback:
         _check(value['capacity'] is None and claim is not None
                and native['id'] == claim['invocation_id'] == claim['pause_entry_id']
@@ -247,7 +261,7 @@ def _admission(conn: Any, org: str, budget: Any, value: Any, *, callback: bool,
             _closed(bound, 'instance_id binding')
             binding = decode_row(bound['binding'])
             _check(_hash(binding['binding_bytes']) == binding['binding_digest'])
-            payload = _json(binding['binding_bytes'], 1048576)
+            payload = _read_json(binding['binding_bytes'], budget, 1048576)
             # Coding bindings carry unselected replacements as history. Only
             # the independently reconstructed effective four-role set is live.
             _check(not referenced(roles if bound['instance_id'] == run['instance_id'] else payload))
@@ -273,14 +287,13 @@ def fold_heartbeats(conn: Any, org: str, budget: Any, storage: Any, tasks: dict,
             from runtime.workflows.coding_source_history import _timestamp as native_timestamp
             native_timestamp(audit['timestamp'])
             _check(audit['task_id'] == task_id and audit['agent'] == 'orchestrator')
-            body = _closed(_json(audit['payload'].encode('utf8'), 1048576),
+            body = _closed(_read_json(audit['payload'].encode('utf8'), budget, 1048576),
                 'format instance_id task_id queue_owner session_id previous_audit_id anchor_event_id '
                 'anchor_task_digest before_record after_record observed_at')
             _check(body['format'] == 'workflow-coding-task-heartbeat@2'
                    and body['instance_id'] == storage.heartbeat_instance
                    and body['task_id'] == task_id and body['previous_audit_id'] == last_id
                    and body['anchor_event_id'] == anchor_id and body['anchor_task_digest'] == anchor_digest)
-            _decoded(body, budget)
             owner = _closed(body['queue_owner'], 'kind owner_id queue_generation claim_identity native')
             _check(owner['kind'] in ('source', 'attempt') and owner['kind'] != 'carrier')
             _token(owner['owner_id'])
@@ -295,6 +308,7 @@ def fold_heartbeats(conn: Any, org: str, budget: Any, storage: Any, tasks: dict,
             storage.heartbeat_owners[task_id] = captured
             before, after = _row(body['before_record']), _row(body['after_record'])
             _check(same(before, tasks[task_id]) and body['session_id'] == before['current_session_id'])
+            _check(before['cancelled_at'] is None)
             _timestamp(body['observed_at'])
             _check(after['last_heartbeat'] == after['updated_at'] == body['observed_at'])
             _check(same(after, {**before, 'last_heartbeat': body['observed_at'], 'updated_at': body['observed_at']}))
@@ -312,13 +326,13 @@ def fold_heartbeats(conn: Any, org: str, budget: Any, storage: Any, tasks: dict,
 def read_native(conn: Any, org: str, budget: Any, storage: Any, *, start: dict,
                 events: list, tasks: dict, source: dict, roles: dict, authority: dict,
                 command_value: dict, mapping: dict, source_invocation: dict, source_ancestors: list) -> dict:
-    """Replay admitted first-development kinds without trusting writer projections."""
+    """Replay each admitted stage without trusting writer projections."""
     from runtime.infrastructure.task_pause_controls import decode_journal
     from runtime.workflows.coding_start_history import rows, same
     storage.heartbeat_instance = start['instance_id']
     storage.native_source, storage.source_invocation = source, source_invocation
     storage.heartbeat_owners = {}
-    initial = _json(start['event_bytes'], 16777216)
+    initial = _read_json(start['event_bytes'], budget, 16777216)
     run = deepcopy(initial['after']['run'])
     attempt = decode_row(initial['after']['attempts'][0]['record'])
     leaf = attempt['task_id']
@@ -327,18 +341,130 @@ def read_native(conn: Any, org: str, budget: Any, storage: Any, *, start: dict,
         source['result_claim']['owner_invocation_id'] if key == source['task_id'] else None) for key in tasks}
     state = dict(claim=None, host=None, terminal=None, source_settled=False, source_cleanup=None, cleanup=False, cleanup_recorded=False,
                  callback=None, invocation=None, history=[start])
+    attempts = {attempt['id']: attempt}
+    completed_states = {}
+    cancellation = None
+    cancellation_history = []
     previous = start
     expected_principal = 'service:coding-dispatcher:' + org
     _check(len(events) <= min(4096, source['budgets']['coding_event_limit']))
+    # Explicit future QA/manager/revision allocations may be absent from an
+    # earlier snapshot. Provisional discovery grants no validity: ordered replay
+    # below must derive exactly these allocations and their complete native rows.
+    later_qa_tasks, later_manager_tasks, later_revision_tasks, later_successor_tasks = set(), set(), set(), set()
+    for event in events:
+        budget.step()
+        if event['event_kind'] != 'stage_queued':
+            continue
+        candidate = _closed(_read_json(event['event_bytes'], budget, 16777216),
+            'format id instance_id event_seq event_kind attempt_id operation previous_digest before after evidence created_at')
+        if candidate['format'] in ('workflow-coding-event@7', 'workflow-coding-event@8'):
+            evidence = _closed(candidate['evidence'], 'kind command origin authority rows facts native_task_observations')
+            facts = _closed(evidence['facts'], 'format source_attempt_id result_id output_digest outcome next_attempt_id next_task_id destination target_revision admission')
+            task_id = facts['next_task_id']
+            successor = candidate['format'] == 'workflow-coding-event@8'
+            selected_tasks = later_successor_tasks if successor else later_revision_tasks
+            _check(facts['format'] == ('workflow-coding-edge@6' if successor else 'workflow-coding-edge@5') and type(task_id) is str
+                   and task_id.startswith('TASK-') and task_id not in selected_tasks)
+            selected_tasks.add(task_id)
+        elif candidate['format'] == 'workflow-coding-event@4':
+            evidence = _closed(candidate['evidence'], 'kind command origin authority rows facts native_task_observations')
+            facts = _closed(evidence['facts'], 'format developer_attempt_id reviewer_attempt_id result_id output_digest contributor qa_task_id admission')
+            _check(facts['format'] == 'workflow-coding-edge@2')
+            task_id = facts['qa_task_id']
+            _check(type(task_id) is str and task_id.startswith('TASK-') and not later_qa_tasks)
+            later_qa_tasks.add(task_id)
+        elif candidate['format'] in ('workflow-coding-event@5', 'workflow-coding-event@6'):
+            evidence = _closed(candidate['evidence'], 'kind command origin authority rows facts native_task_observations')
+            facts = _closed(evidence['facts'], 'format upstream_results result_id output_digest manager_task_id admission')
+            _check(facts['format'] == ('workflow-coding-edge@4' if candidate['format'] == 'workflow-coding-event@6' else 'workflow-coding-edge@3'))
+            task_id = facts['manager_task_id']
+            _check(type(task_id) is str and task_id.startswith('TASK-') and not later_manager_tasks)
+            later_manager_tasks.add(task_id)
     for event in events:
         budget.step()
         kind = event['event_kind']
+        if kind == 'cancelled':
+            _check(cancellation is None)
+            from runtime.workflows._coding_cancellation_history import replay as replay_cancellation
+            candidate = _read_json(event['event_bytes'], budget, 16777216)
+            observations = candidate['evidence']['native_task_observations']
+            _check(type(observations) is list)
+            end = max((o['to_audit_id'] for o in observations), default=0)
+            tasks, observed = fold_heartbeats(conn, org, budget, storage, tasks, anchors, through=end)
+            run, attempts, tasks, cancellation = replay_cancellation(conn, org, budget, storage,
+                event=event, previous=previous, body=candidate, run=run, attempts=attempts, tasks=tasks,
+                observations=observed, source=source, source_invocation=source_invocation,
+                states={**completed_states, attempt['id']: state})
+            attempt = attempts[run['current_attempt_id']]
+            from runtime.workflows._coding_cancellation_history import native_checkpoint
+            native_checkpoint(cancellation_history, event, tasks, [], budget)
+            for key, value in tasks.items():
+                anchors[key] = (event['id'], _hash(_canonical(encode_row(value))), anchors[key][2])
+            previous = event
+            state['history'].append(event)
+            continue
+        from runtime.workflows.coding_progression_history import KINDS as EDGE_KINDS, replay
+        if kind in EDGE_KINDS:
+            _check(cancellation is None)
+            _check(event['instance_id'] == run['instance_id'] and type(event['event_bytes']) is bytes
+                   and _hash(event['event_bytes']) == event['event_digest'])
+            body = _closed(_read_json(event['event_bytes'], budget, 16777216),
+                'format id instance_id event_seq event_kind attempt_id operation previous_digest before after evidence created_at')
+            _check(_canonical(body) == event['event_bytes']
+                   and event['event_seq'] == previous['event_seq'] + 1
+                   and event['previous_digest'] == previous['event_digest'])
+            for name in ('id', 'instance_id', 'event_seq', 'event_kind', 'attempt_id', 'previous_digest', 'created_at'):
+                _check(same(body[name], event[name]))
+            _timestamp(event['created_at'])
+            observations = body['evidence']['native_task_observations']
+            _check(type(observations) is list)
+            end = max((o['to_audit_id'] for o in observations), default=0)
+            tasks, observed = fold_heartbeats(conn, org, budget, storage, tasks, anchors, through=end)
+            _check(same(observed, observations))
+            old_id = attempt['id']
+            run, attempts, tasks = replay(conn, org, budget, storage, event=event, body=body,
+                previous=previous, initial=initial, run=run, attempts=attempts, tasks=tasks,
+                state=state, source=source, roles=roles, mapping=mapping, command=command_value,
+                later_qa_tasks=later_qa_tasks | later_manager_tasks | later_revision_tasks | later_successor_tasks,
+                later_manager_tasks=later_manager_tasks | later_revision_tasks | later_successor_tasks, settled_stages=completed_states)
+            attempt = attempts[run['current_attempt_id']]
+            if attempt['id'] != old_id:
+                completed_states[old_id] = {k: v for k, v in state.items() if k != 'history'}
+                state = dict(claim=None, host=None, terminal=None, callback=None, invocation=None,
+                    source_settled=state['source_settled'], source_cleanup=state['source_cleanup'],
+                    cleanup=False, cleanup_recorded=False, history=state['history'])
+                leaf = attempt['task_id']
+                storage.heartbeat_claims[leaf] = ('attempt', None)
+            for key, value in tasks.items():
+                anchors[key] = (event['id'], _hash(_canonical(encode_row(value))), anchors.get(key, (None, None, None))[2])
+            previous = event
+            state['history'].append(event)
+            storage.add('workflow_coding_events', event)
+            continue
         _check(kind in KINDS and event['instance_id'] == run['instance_id'])
         _check(type(event['event_bytes']) is bytes and _hash(event['event_bytes']) == event['event_digest'])
-        body = _closed(_json(event['event_bytes'], 16777216),
+        body = _closed(_read_json(event['event_bytes'], budget, 16777216),
             'format id instance_id event_seq event_kind attempt_id operation previous_digest before after evidence created_at')
-        _decoded(body, budget)
-        _check(_canonical(body) == event['event_bytes'] and body['format'] == 'workflow-coding-event@2')
+        repaired = False
+        if attempt['stage'] == 'manager_closeout':
+            scope = _read_json(attempt['scope_bytes'], budget, 1048576)
+            repaired = scope['format'] in ('workflow-coding-final-scope@2', 'workflow-coding-final-scope@3', 'workflow-coding-final-scope@4')
+        cancelled_native = body['format'] == 'workflow-coding-cancelled-native-event@1'
+        _check(cancelled_native is (cancellation is not None))
+        if cancelled_native:
+            _check(kind in ('launch_observed', 'host_reconciled', 'terminal_recorded', 'cleanup_settled', 'held'))
+        uncertainty = body['format'] in ('workflow-coding-native-manager-event@3', 'workflow-coding-revision-native-event@2', 'workflow-coding-successor-native-event@2')
+        if cancelled_native:
+            uncertainty = kind == 'held' and body['evidence']['facts'].get('reason') in (
+                'coding_native_preparation_unsettled', 'coding_native_close_unavailable')
+        if uncertainty:
+            _check((cancelled_native or repaired or attempt['revision'] > 1) and kind == 'held')
+        manager_version = '3' if uncertainty else '2' if repaired else '1'
+        _check(_canonical(body) == event['event_bytes'] and body['format'] == ('workflow-coding-cancelled-native-event@1' if cancelled_native else
+            ('workflow-coding-successor-native-event@2' if uncertainty else 'workflow-coding-successor-native-event@1') if attempt['attempt_sequence'] > 1 else ('workflow-coding-revision-native-event@2' if uncertainty else 'workflow-coding-revision-native-event@1') if attempt['revision'] > 1 else {
+            'development': 'workflow-coding-event@2', 'code_review': 'workflow-coding-native-review-event@1',
+            'qa': 'workflow-coding-native-qa-event@1', 'manager_closeout': 'workflow-coding-native-manager-event@' + manager_version}[attempt['stage']]))
         for name in ('id', 'instance_id', 'event_seq', 'event_kind', 'attempt_id', 'previous_digest', 'created_at'):
             _check(same(body[name], event[name]))
         _check(event['event_seq'] == previous['event_seq'] + 1
@@ -349,10 +475,11 @@ def read_native(conn: Any, org: str, budget: Any, storage: Any, *, start: dict,
         facts = _closed(evidence['facts'], FACTS[kind])
         command = _closed(evidence['command'],
             'format kind source_event_ids source_event_digests subject producer_identity observation')
-        _check(command['format'] == 'workflow-coding-internal-command@2' and command['kind'] == kind
+        _check(command['format'] == ('workflow-coding-cancelled-native-command@1' if cancelled_native else ('workflow-coding-successor-native-command@2' if uncertainty else 'workflow-coding-successor-native-command@1') if attempt['attempt_sequence'] > 1 else ('workflow-coding-revision-native-command@2' if uncertainty else 'workflow-coding-revision-native-command@1') if attempt['revision'] > 1 else {'development': 'workflow-coding-internal-command@2',
+            'code_review': 'workflow-coding-native-review-command@1', 'qa': 'workflow-coding-native-qa-command@1', 'manager_closeout': 'workflow-coding-native-manager-command@' + manager_version}[attempt['stage']]) and command['kind'] == kind
                and command['source_event_ids'] == [previous['id']]
                and command['source_event_digests'] == [previous['event_digest']] and command['subject'] is None)
-        observation = _closed(command['observation'], 'facts invocation queue_owner admission')
+        observation = _closed(command['observation'], 'facts invocation queue_owner admission' + (' workspace' if repaired else '') + (' outer' if cancelled_native else ''))
         _check(same(observation['facts'], facts))
         if kind not in ('session_bound', 'callback_recorded'):
             _check(observation['admission'] is None)
@@ -381,7 +508,7 @@ def read_native(conn: Any, org: str, budget: Any, storage: Any, *, start: dict,
         end = max((o['to_audit_id'] for o in observations), default=0)
         tasks, actual_observations = fold_heartbeats(conn, org, budget, storage, tasks, anchors, through=end)
         _check(same(actual_observations, observations))
-        _check(same(before['run'], run) and before['attempts'] == [dict(id=attempt['id'], record=encode_row(attempt))]
+        _check(same(before['run'], run) and before['attempts'] == [dict(id=k, record=encode_row(attempts[k])) for k in sorted(attempts)]
                and same(before['tasks'], [dict(id=k, record=encode_row(tasks[k])) for k in sorted(tasks)]))
         expected_run = {**run, 'cas_version': run['cas_version'] + 1, 'last_event_id': event['id']}
         expected_attempt, expected_tasks = deepcopy(attempt), deepcopy(tasks)
@@ -399,9 +526,79 @@ def read_native(conn: Any, org: str, budget: Any, storage: Any, *, start: dict,
         if observation['queue_owner'] is not None:
             task_id = origin['task_id']
             queue_owner = _queue_owner(observation['queue_owner'], kind='source' if source_tail else 'attempt',
-                task=tasks[task_id], source=source, org=org, expected=storage.heartbeat_owners.get(task_id),
+                task=cancellation['originals'][task_id] if cancelled_native else tasks[task_id],
+                source=source, org=org, expected=storage.heartbeat_owners.get(task_id),
                 source_invocation=source_invocation)
             storage.heartbeat_owners[task_id] = queue_owner
+        if cancelled_native:
+            from runtime.workflows._coding_cancellation_history import outer
+            original_owners = [n for n in cancellation['command']['native_owners'] if n['task_id'] == origin['task_id']]
+            original_owner = original_owners[0] if len(original_owners) == 1 else None
+            outer(observation['outer'], original=original_owner, claim=None if source_tail else state['claim'],
+                source=source, source_tail=source_tail, task=tasks[origin['task_id']], org=org,
+                host=state['host'], attempt_id=attempt['id'])
+            if kind == 'held':
+                _check(observation['outer'] is not None and facts['reason'] in (
+                    'coding_native_preparation_unsettled', 'coding_native_close_unavailable'))
+        prebinding = uncertainty and facts['reason'] == 'coding_native_preparation_unsettled'
+        missing_close = uncertainty and facts['reason'] == 'coding_native_close_unavailable'
+        if uncertainty:
+            _check((cancelled_native or not source_tail) and (prebinding or missing_close)
+                   and facts['required_action'] == 'original_owner_reconciliation')
+        if prebinding:
+            # This is a preparation observation, never a successful session,
+            # launch, claim, workspace or cleanup witness.
+            _check(state['claim'] is state['host'] is state.get('workspace') is None
+                   and observation.get('workspace') is None and origin['claim'] is None
+                   and attempt['state'] == ('cancelled' if cancelled_native else 'queued')
+                   and attempt['session_id'] is attempt['result_id'] is None
+                   and (observation['queue_owner'] is not None or cancelled_native and original_owner is not None))
+            prepared = observation['queue_owner']['native'] if observation['queue_owner'] is not None else original_owner
+            _check(command['producer_identity'] == 'coding-dispatcher:' + org + ':' + prepared['id']
+                   and origin['session_id'] == prepared['session_id'])
+            if native is not None:
+                for key in ('id', 'org', 'root_task_id', 'task_id', 'agent', 'session_id',
+                            'owner', 'owner_identity', 'fingerprint', 'generation'):
+                    _check(native[key] == prepared[key])
+        elif repaired:
+            from runtime.workflows.coding_start_records import CodingFinalWorkspace
+            workspace = CodingFinalWorkspace.model_validate(observation['workspace']).model_dump()
+            _decoded(workspace, budget)
+            # Reconstruct the original native task/SID/invocation and full OrgPaths relationship.
+            _check(workspace['org_slug'] == org and workspace['task_id'] == attempt['task_id']
+                   and workspace['principal'] == attempt['principal'] and workspace['attempt_id'] == attempt['id'])
+            if kind == 'session_bound':
+                _check(state.get('workspace') is None and native is not None and not source_tail
+                       and workspace['invocation_id'] == native['id']
+                       and workspace['session_id'] == native['session_id'] == facts['session_id'])
+                state['workspace'] = workspace
+            else:
+                _check(workspace == state.get('workspace'))
+            if missing_close:
+                _check(native is None and state['claim'] is not None and state['host'] is not None
+                       and not state['cleanup_recorded']
+                       and workspace['invocation_id'] == state['claim']['invocation_id'] == state['claim']['pause_entry_id']
+                       and workspace['session_id'] == attempt['session_id'] == origin['session_id'])
+                if observation['queue_owner'] is not None:
+                    prepared = observation['queue_owner']['native']
+                    _check(prepared['id'] == workspace['invocation_id']
+                           and prepared['session_id'] == workspace['session_id']
+                           and prepared['fingerprint'] == state['claim']['task_fingerprint']
+                           and prepared['generation'] == state['claim']['pause_generation'])
+            elif not source_tail:
+                _check(native is not None and workspace['invocation_id'] == native['id']
+                       and workspace['session_id'] == native['session_id'] == origin['session_id'])
+        elif missing_close and not source_tail:
+            _check((cancelled_native or attempt['revision'] > 1) and native is None and state['claim'] is not None
+                   and state['host'] is not None and not state['cleanup_recorded']
+                   and state['claim']['invocation_id'] == state['claim']['pause_entry_id']
+                   and origin['session_id'] == attempt['session_id'])
+            if observation['queue_owner'] is not None:
+                prepared = observation['queue_owner']['native']
+                _check(prepared['id'] == state['claim']['invocation_id']
+                       and prepared['session_id'] == attempt['session_id']
+                       and prepared['fingerprint'] == state['claim']['task_fingerprint']
+                       and prepared['generation'] == state['claim']['pause_generation'])
         if kind in ('session_bound', 'callback_recorded'):
             _check(native is not None and observation['queue_owner'] is not None)
             _admission(conn, org, budget, observation['admission'], callback=kind == 'callback_recorded',
@@ -448,12 +645,12 @@ def read_native(conn: Any, org: str, budget: Any, storage: Any, *, start: dict,
         elif kind == 'launch_reserved':
             _check(state['claim'] is not None and state['host'] is None and attempt['state'] == 'claimed'
                    and facts['retry'] == native['retry'])
-            host = _host(facts['host'], state['claim'], attempt['session_id'], attempt['principal'], org, attempt['id'])
+            host = _host(facts['host'], state['claim'], attempt['session_id'], attempt['principal'], org, attempt['id'], budget)
             _check(host['handle_id'] is host['backend'] is host['terminal_receipt'] is host['cleanup'] is None)
             state['host'] = host
         elif kind == 'launch_observed':
             _check(state['host'] is not None and state['host']['handle_id'] is None)
-            host = _host(facts['host'], state['claim'], attempt['session_id'], attempt['principal'], org, attempt['id'])
+            host = _host(facts['host'], state['claim'], attempt['session_id'], attempt['principal'], org, attempt['id'], budget)
             _check(host['handle_id'] is not None and host['backend'] is not None)
             _check(same({**host, 'handle_id': None, 'backend': None}, state['host']))
             expected_attempt['state'] = 'running'
@@ -463,7 +660,7 @@ def read_native(conn: Any, org: str, budget: Any, storage: Any, *, start: dict,
                    and facts['recovery_owner'] == command['producer_identity'])
             raw = base64.b64decode(facts['observation_bytes_base64'], validate=True)
             _check(_hash(raw) == facts['observation_digest'])
-            observed = _closed(_json(raw, 1048576), 'task_id agent session_id pid')
+            observed = _closed(_read_json(raw, budget, 1048576), 'task_id agent session_id pid')
             _integer(observed['pid'], 1)
             _check(observed == dict(task_id=leaf, agent=attempt['principal'], session_id=attempt['session_id'], pid=observed['pid'])
                    and facts['host'] == state['host'] and state['host']['handle_id'] is not None)
@@ -489,12 +686,23 @@ def read_native(conn: Any, org: str, budget: Any, storage: Any, *, start: dict,
             _check(state['host'] is not None and state['terminal'] is None
                    and facts['positive_no_launch'] is None and facts['outer_cleanup_pending'] is True
                    and facts['accepted_result_id'] == attempt['result_id'])
-            host = _host(facts['host'], state['claim'], attempt['session_id'], attempt['principal'], org, attempt['id'])
+            host = _host(facts['host'], state['claim'], attempt['session_id'], attempt['principal'], org, attempt['id'], budget)
             _check(same({**host, 'terminal_receipt': None, 'cleanup': None}, state['host']))
             receipt = host['terminal_receipt']
-            safe = (type(receipt) is dict and receipt.get('quiescent') is True
-                    and receipt.get('backend') == host['backend'] and host['backend'] != 'passthrough'
-                    and receipt.get('cleanup_status') != 'incomplete' and receipt.get('survivors') == []
+            # Only launch_observed can supply this identity; terminal replay
+            # must not turn a handleless reservation into successful execution.
+            # Positive receipt facts must come from the supported containment
+            # backends and native enums; missing or unknown is never clean.
+            safe = (host['handle_id'] is not None and host['backend'] is not None
+                    and type(receipt) is dict and receipt.get('quiescent') is True
+                    and type(receipt.get('backend')) is str
+                    and receipt['backend'] in ('linux-systemd-cgroup-v2', 'macos-process-group')
+                    and receipt['backend'] == host['backend']
+                    and type(receipt.get('terminal_reason')) is str
+                    and receipt['terminal_reason'] in tuple(reason.value for reason in TerminalReason)
+                    and type(receipt.get('cleanup_status')) is str
+                    and receipt['cleanup_status'] in (CleanupStatus.CLEAN.value, CleanupStatus.TERM.value, CleanupStatus.KILL.value)
+                    and receipt.get('survivors') == []
                     and host['cleanup'] == dict(error=None))
             result = state['callback']
             classification = ('success' if safe and receipt['terminal_reason'] == 'success' and result is not None and result['status'] == 'completed'
@@ -512,7 +720,7 @@ def read_native(conn: Any, org: str, budget: Any, storage: Any, *, start: dict,
         elif kind == 'cleanup_settled':
             raw = base64.b64decode(facts['disposition_bytes_base64'], validate=True)
             _check(_hash(raw) == facts['disposition_digest'])
-            disposition = _closed(_json(raw, 1048576), 'kind reason processes invocation terminal tracker_clear reconciliation_complete task_tail_complete root_worktree_batch_complete settle_live_complete close release')
+            disposition = _closed(_read_json(raw, budget, 1048576), 'kind reason processes invocation terminal tracker_clear reconciliation_complete task_tail_complete root_worktree_batch_complete settle_live_complete close release')
             _check(type(facts['settled']) is bool and type(facts['execution_unknown']) is bool)
             _check(disposition['invocation'] == native and native is not None)
             original = source_invocation if source_tail else state['claim']
@@ -558,13 +766,20 @@ def read_native(conn: Any, org: str, budget: Any, storage: Any, *, start: dict,
                        and native['session_id'] == source['session_id'] and native['owner'] in ('ordinary', 'v2'))
                 terminal = disposition['terminal']
                 if safe:
+                    # Outer closure alone cannot supply missing host cleanup.
                     _closed(terminal, 'request terminal_reason attempt receipt cleanup_error')
                     receipt = terminal['receipt']
                     _check(type(terminal['attempt']) is int and terminal['attempt'] >= 0
                            and terminal['request']['logical_id'] == source['task_id']
                            and terminal['request']['org'] == org and terminal['request']['agent_id'] == source['principal']
                            and type(receipt) is dict and receipt.get('quiescent') is True
-                           and receipt.get('backend') != 'passthrough' and receipt.get('cleanup_status') != 'incomplete'
+                           and type(receipt.get('backend')) is str
+                           and receipt['backend'] in ('linux-systemd-cgroup-v2', 'macos-process-group')
+                           and type(receipt.get('terminal_reason')) is str
+                           and receipt['terminal_reason'] in tuple(reason.value for reason in TerminalReason)
+                           and receipt['terminal_reason'] == terminal['terminal_reason']
+                           and type(receipt.get('cleanup_status')) is str
+                           and receipt['cleanup_status'] in (CleanupStatus.CLEAN.value, CleanupStatus.TERM.value, CleanupStatus.KILL.value)
                            and receipt.get('survivors') == [] and terminal['cleanup_error'] is None
                            and not native['context'].get('execution_unknown'))
                 state['source_cleanup'] = facts
@@ -575,23 +790,37 @@ def read_native(conn: Any, org: str, budget: Any, storage: Any, *, start: dict,
                        and facts['host_identity'] == state['host']['logical_request_key'])
                 if safe and state['terminal'] == 'success':
                     expected_attempt['state'] = 'completed'
+                    from runtime.workflows.coding_revision import fulfilled_revision
+                    if fulfilled_revision(attempt, state['callback'], command_value['work'], budget):
+                        expected_run['current_revision'] = attempt['revision']
 
                 else:
                     expected_run['state'] = 'held'
                 state['cleanup'] = safe
                 state['cleanup_recorded'] = True
         elif kind == 'held':
-            _check(facts['owner_event_ids'] == [previous['id']] and facts['resume_state'] == 'development'
+            _check(facts['owner_event_ids'] == [previous['id']] and facts['resume_state'] == attempt['stage']
                    and type(facts['reason']) is str and facts['required_owner'] == command['producer_identity']
                    and type(facts['required_action']) is str)
             expected_run['state'] = 'held'
         if not source_tail and state['claim'] is not None:
             _check(origin['claim'] == state['claim'] and origin['session_id'] == expected_attempt['session_id']
                    and command['producer_identity'] == state['claim']['owner'])
+        if cancelled_native:
+            # Native observations may settle ONLY their original owner. They
+            # cannot turn a business cancellation into task/workflow success.
+            expected_run.update(state='cancelled', current_revision=run['current_revision'])
+            expected_attempt['state'] = attempt['state']
+            if kind == 'terminal_recorded':
+                expected_tasks[leaf] = deepcopy(tasks[leaf])
         _check(same(after['run'], expected_run)
-               and after['attempts'] == [dict(id=attempt['id'], record=encode_row(expected_attempt))]
+               and after['attempts'] == [dict(id=k, record=encode_row(expected_attempt if k == attempt['id'] else attempts[k])) for k in sorted(attempts)]
                and same(after['tasks'], [dict(id=k, record=encode_row(expected_tasks[k])) for k in sorted(expected_tasks)]))
+        if cancelled_native:
+            from runtime.workflows._coding_cancellation_history import native_checkpoint
+            native_checkpoint(cancellation_history, event, expected_tasks, actual_observations, budget)
         run, attempt, tasks = expected_run, expected_attempt, expected_tasks
+        attempts[attempt['id']] = attempt
         for key, value in tasks.items():
             anchors[key] = (event['id'], _hash(_canonical(encode_row(value))), anchors[key][2])
         previous = event
@@ -599,8 +828,28 @@ def read_native(conn: Any, org: str, budget: Any, storage: Any, *, start: dict,
         storage.add('workflow_coding_events', event)
     _check(state['claim'] is None or state['host'] is not None)
     tasks, pending = fold_heartbeats(conn, org, budget, storage, tasks, anchors)
-    state.update(run=run, attempt=attempt, tasks=tasks, anchors=anchors, pending_observations=pending,
-                 queue_owner=storage.heartbeat_owners.get(leaf), source_invocation=source_invocation)
+    if cancellation is not None:
+        from runtime.workflows._coding_cancellation_history import native_checkpoint
+        native_checkpoint(cancellation_history, None, tasks, pending, budget)
+    # A committed edge is complete: no half-written acceptance/contribution or
+    # allocation prefix may be admitted on cold load.
+    for historical in [*completed_states.values(), state]:
+        _check(historical.get('edge_index', 0) in (0, 4) and historical.get('qa_edge_index', 0) in (0, 3)
+               and historical.get('final_edge_index', 0) in (0, 3)
+               and historical.get('revision_edge_index', 0) in (0, historical.get('revision_edge_length', -1))
+               and historical.get('manager_edge_index', 0) in (0, 2))
+    _check(later_successor_tasks == {a['task_id'] for a in attempts.values() if a['attempt_sequence'] > 1})
+    _check(later_revision_tasks == {a['task_id'] for a in attempts.values() if a['revision'] > 1 and a['attempt_sequence'] == 1})
+    _check(later_qa_tasks == {a['task_id'] for a in attempts.values() if a['stage'] == 'qa' and a['revision'] == 1})
+    _check(later_manager_tasks == {a['task_id'] for a in attempts.values() if a['stage'] == 'manager_closeout' and a['revision'] == 1 and a['attempt_sequence'] == 1})
+    states = {**completed_states, attempt['id']: {k: v for k, v in state.items() if k != 'history'}}
+    for key, value in states.items():
+        value.update(attempt=attempts[key], queue_owner=storage.heartbeat_owners.get(attempts[key]['task_id']),
+                     source_invocation=source_invocation, history=state['history'], cancellation=cancellation)
+    state.update(run=run, attempt=attempt, attempts=attempts, stages=states, tasks=tasks,
+                 anchors=anchors, pending_observations=pending,
+                 queue_owner=storage.heartbeat_owners.get(leaf), source_invocation=source_invocation, cancellation=cancellation,
+                 cancellation_history=cancellation_history)
     return state
 
 
@@ -640,16 +889,25 @@ def validate_native_journals(conn: Any, org: str, budget: Any, storage: Any) -> 
             owner = storage.owners.get(native['task_id'])
             _check(owner is not None and owner[0] == 'coding_attempt' and native['task_id'] not in selected)
             selected.add(native['task_id'])
-            if native['phase'] == 'unknown' or native['context'].get('execution_unknown'):
+            if (native['phase'] == 'unknown' or native['context'].get('execution_unknown')
+                    or storage.runs[owner[1]]['native'].get('cancellation') is not None):
                 uncertain.add(native['task_id'])
             entry = storage.runs[owner[1]]
-            attempt, state = entry['attempt'], entry['native']
+            attempt = next(a for a in entry['attempts'].values() if a['task_id'] == native['task_id'])
+            state = entry['native']['stages'][attempt['id']]
             _check(native['agent'] == attempt['principal'] and native['org'] == org
                    and native['root_task_id'] == row['root_task_id'] == entry['source']['root_ancestor_id']
                    and native['generation'] <= row['generation'] and native['owner_identity'] == {})
+            cancellation = state.get('cancellation')
+            if cancellation is not None:
+                original = [n for n in cancellation['command']['native_owners'] if n['id'] == native['id']]
+                _check(len(original) == 1)
+                for key in ('id', 'task_id', 'agent', 'session_id', 'owner', 'owner_identity', 'fingerprint', 'generation'):
+                    _check(original[0][key] == native[key])
             if state['claim'] is None:
-                task = entry['tasks'][attempt['task_id']]
-                _check(attempt['state'] == 'queued' and native['phase'] in ('prepared', 'unknown')
+                task = (cancellation['originals'][attempt['task_id']] if cancellation is not None
+                        else entry['tasks'][attempt['task_id']])
+                _check(attempt['state'] == ('cancelled' if cancellation is not None and task['status'] not in ('completed', 'failed', 'cancelled', 'superseded') else 'queued') and native['phase'] in ('prepared', 'unknown')
                        and native['fingerprint'] == dict(status=task['status'], block_kind=task['block_kind'],
                            count=task['orchestration_step_count'], session_id=task['current_session_id'],
                            agent=task['assigned_agent'], fanout=task['active_fanout'], jobs=task['blocked_on_job_ids'],
@@ -667,10 +925,16 @@ def validate_native_journals(conn: Any, org: str, budget: Any, storage: Any) -> 
                 _check(not (state['cleanup_recorded'] and state['cleanup']))
         storage.add('task_pause_controls', row)
     for entry in storage.runs.values():
-        state = entry['native']
-        # Missing native ownership never proves teardown. Retain the original
-        # J claim/host identity and expose uncertainty until its actual late
-        # owner commits a positive cleanup observation.
-        state['ownership_unknown'] = (entry['attempt']['task_id'] in uncertain or ((state['claim'] is not None or state['queue_owner'] is not None)
-            and not (state['cleanup_recorded'] and state['cleanup'])
-            and entry['attempt']['task_id'] not in selected))
+        for attempt in entry['attempts'].values():
+            state = entry['native']['stages'][attempt['id']]
+            # Missing native ownership never proves teardown, including an
+            # earlier attempt after the current pointer has advanced.
+            captured_preparation = (state.get('cancellation') is not None and any(
+                n['task_id'] == attempt['task_id'] for n in state['cancellation']['command']['native_owners']))
+            state['ownership_unknown'] = (attempt['task_id'] in uncertain or ((state['claim'] is not None or state['queue_owner'] is not None or captured_preparation)
+                and not (state['cleanup_recorded'] and state['cleanup'])
+                and attempt['task_id'] not in selected))
+        current = entry['native']['stages'][entry['attempt']['id']]
+        entry['native']['ownership_unknown'] = (any(s['ownership_unknown'] for s in entry['native']['stages'].values())
+            or entry['native'].get('cancellation') is not None and not entry['native']['source_settled'])
+        entry['native']['queue_owner'] = current['queue_owner']

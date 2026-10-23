@@ -4045,3 +4045,275 @@ null origin, literal direct rows remain on complete successful reads, and the
 success shapes are unchanged. See the complete read contract for counting and
 cooperative-bound limits. Bilingual responsive readiness requires final-head
 task-detail and thread-linked observations in en/zh-CN at 390×844 and 1440×900.
+
+
+The ROOT12299 step31 disabled final-manager source is documented in
+[the coding contract](../superpowers/specs/2026-10-14-ordered-coding-workflow.md#disabled-live-final-manager-source).
+The fourth coding-owned manager uses a LOCAL single-attempt finalize command;
+only original settled QA PASS admits the repaired event@6 edge. Historical held QA
+records stay held. Own-session selected upstream metadata, strict actual exact-H
+Source Boundary Lint and Web Lint (Node 24) successes, saved intent and immediate
+live revalidation precede reviewed expected-head/no-admin guarded action. The selected
+mapped repo_key/raw-origin-digest/opaque-ID binds the actual checkout and GitHub
+target; navigation is consistency only. Original OrgPaths/assigned-principal
+workspace capture selects ONE task/attempt reservation across cwd/key/path
+variants, with full reference/root/output/native/history reconstruction. Existing
+or partial reservation refuses a second action, including failed recording. Actual
+remote commit/aware time precedes its own final-output@2 callback; daemon settlement
+only records performed work after host/positive outer closure. Partial intent or
+transport loss never retries; pending checks hold without coding jobs. Readiness
+remains unconditionally disabled. Source/static only; native/behavioral proof
+UNEXECUTED, units RETIRED/integration INCLUDING callback SKIPPED24342, no old-root
+waiver or execution/merge/activation grant.
+
+ROOT12299 step32 source correction adds uncertainty-only native-manager command/event@3:
+prebinding holds retain the actual original preparation/queue identity with absent
+workspace/claim/host; missing-close holds retain the original bound workspace/claim
+and absent current native close. Independent readers keep both held and preserve
+literal @1/@2. Successful selected output still needs complete original capture.
+The own-current-original-final-manager GET is exactly browser-excluded and denied
+by the existing native raw/normalized gate before unchanged credential handling.
+Route fixture four-answer evidence is recorded; attributable RED/GREEN and native
+gate proof remain UNEXECUTED/unallocated, never test-authoring PASS. Only source,
+lint/static, normal hooks/publication; units RETIRED, integration INCLUDING callback
+SKIPPED24342. Genuine final-head executable QA/live-manager action stays root-owned.
+
+### Founder coding settings API
+
+The real TypeScript mirror provides `settings.getCodingSettings(slug, operationKey?)`
+and `settings.putCodingSettings(slug, command)` for GET/PUT `/settings/coding`.
+PUT sends the complete canonical settings command, including both expected
+generations, once through the existing bearer client. Keep its original key/body
+and explicitly GET that key after transport uncertainty; current configuration
+may be newer than the returned original receipt. Unsafe JavaScript integers
+refuse rather than round a CAS. This backend has no new CLI command;
+existing agent mapping publication cannot replace Founder-owned defaults after
+S1. The page below consumes this client. No configuration save enables the currently disabled engine. See
+[R2](../superpowers/specs/2026-10-14-ordered-coding-workflow.md#canonical-founder-settings-backend-r2-source).
+
+### Founder coding settings page
+
+`/orgs/:slug/settings/coding` mounts `CodingSection` outside the general settings
+gate through `useCodingSettings`/`useCodingSettingsActions`; the real provider
+keys the view by org and ignores a read settling (or rejecting) after a later
+accepted save or readback. Four org-wide cross-team selectors show Name · ID, team/role and
+advisory hints; the server decides eligibility. One explicit Save sends one
+frozen key/body held in a provider-lifetime org send fence (`useCodingSendFence`)
+that survives pane unmount and org switches; fields lock while it is pending;
+409 keeps the draft/focus and needs explicit adoption of the current version;
+uncertain outcomes lock editing and offer only GET(original key), released only
+by a reconciled committed receipt (an absent key never authorizes a new write).
+Unchanged mappings are sent byte-identical (disabled-retain), including when
+current options are unavailable. The dedicated same-Founder-auth read-only
+`/settings/coding/options` supplies genuine imported release/current authority
+and configured repository selectors through an independent per-org query.
+E0 requires explicit metadata adoption, four distinct role bindings and1..8
+repositories with explicit sha1/sha256 choices; initial replacements are empty.
+Saved mappings keep repositories/replacements by default; explicit adoption can
+use newer authority for changed roles. Options loading/error/refresh never changes
+a draft, receipt, original command or fence and never auto-sends. No access or
+observed object format is inferred. Copy is en/zh-CN.
+See [the page section](../superpowers/specs/2026-10-14-ordered-coding-workflow.md#founder-coding-settings-page--root12568--task12632).
+
+
+## Settings-pinned coding start syntax
+
+`happyranch workflows coding run-start --from-file ABS --emit-decision` accepts
+closed start@2 with settings:{generation,snapshot_digest} plus the existing
+mapping Pin, and retains historical start@1 parsing. It only prints a decision
+for the selected executable manager's own genuine callback; it allocates nothing
+and proves no pin/actor authority. The callback schema mirrors these literal
+variants. There is no browser workflow-start transport or TS command mirror.
+The existing settings API types/client and public run projections retain their
+shapes. Source readiness remains disabled; real Founder settings-page acceptance
+is a separate ROOT12568 obligation.
+
+
+## Disabled coding rejection and fresh revision gates — ROOT12568 C05/C07/C08
+
+Founder320seq4/18/27 and ROOT12568 step23 extend the earlier r1 checkpoints:
+authentic positively settled REQUEST_CHANGES/REVISE returns to ONE fresh r2/r3
+developer on the SAME admitted work/base. New head requires fresh independent
+review and only its APPROVE starts fresh QA. All original findings/contributors,
+result-absent authors, overrides/across-team bindings and lower limits remain;
+BLOCK/failed/unusable/unknown holds. No allocation beyond original revision3 cap.
+current_revision tracks fulfilled content; target_revision selects actual new work.
+Sequence/generation/CAS/host retry remain separate. Callback alone never advances.
+
+Explicit new event@7/edge@5/edge-command@5/admission@4, revision-scope@1,
+revision-native event/command@1 (uncertainty-only@2) and admission@1,
+stage-output@2/development-review-QA supplements@2, final-scope/selection/manager/
+output@3, LOCAL finalize-command@2 and public run@5 preserve literal old families
+and held history. Whole saved/native/current/cold/schema(data=False)/recovery/
+drain closure independently derives original callbacks/scopes/tasks/contributors/
+current exact subject on ONE aggregate budget, with no trusted after-image or
+per-revision reset. Complete validation precedes caller COMMIT, notification after.
+Final manager still performs only its own authorized LOCAL expected-head/non-admin
+action and independent remote observation before its genuine FINAL callback;
+no daemon-owned effect/recovery is added. CLI/served unions carry the new closed
+families; browser/native exclusions and document H/I remain unchanged.
+
+Readiness stays false. Source is distinct from installed/loaded/enabled acceptance.
+No DDL/auth/permission/grant/live operation/cleanup. Behavioral/SQL/native/proof
+NOT RUN; units RETIRED; integration INCLUDING callback/lifespan/SessionTracker
+SKIPPED24342; Swift missing proof UNEXECUTED/FOUNDER-EXEMPTED/NONBLOCKING320seq93.
+Fresh FULL independent review and separately root-routed scoped QA remain.
+Control/reassignment/operational and real scratch/Founder/across-team/override/
+two-org/backup/rollback/live-manager acceptance stay root-owned. Exact encodings
+and active/historical boundaries: ordered-coding-workflow spec, same section.
+
+
+## Disabled settled no-action manager successor — ROOT12568
+
+A NEW genuine manager attempt may follow only a newly recorded complete bound
+held callback whose validated effect evidence affirmatively records a pre-action
+guard refusal, no command/remote effect and no action revalidation, AND original
+successful host, positive source/outer settlement and no unknown native owner.
+Partial intent, callback-only, unknown/preparation/close/no-handle evidence,
+uncertain action, merged/complete/cancelled work and literal historical held
+families cannot enter. Unsupported held subtypes retain their original owner.
+
+The same bound currently eligible manager receives one new task/queued attempt,
+same content revision/subject/reference/three original current upstream results,
+predecessor identity and all retained contributors. Stage sequence becomes2;
+role generation/CAS/events increase independently. Same-principal retry remains1
+and original lower cumulative limits remain; no principal reselection, revision,
+host retry, source revival, settings remap or budget reset occurs. Current
+settings/authority/ancestry/Pause/move/independence/capacity are revalidated in
+one caller-owned writer. Exact accepted original-result replay returns the SAME
+successor before fresh capacity checks. Full independent target reconstruction
+precedes COMMIT; notification follows, and cold recovery rediscovers that queue.
+Superseded callbacks cannot settle the current attempt.
+
+Additive event@8/edge@6/edge-command@6/admission@5 and final-scope@4 encode the
+new hold/transition and predecessor. Successor-native event/command@1,
+uncertainty-only@2 and admission@1 preserve native ownership; final-manager@4
+is the actual consumed supplement. Public run@6 retains field inventory and
+allows content revision1..3 for a successor; CLI/served schema share its reader.
+Selection/output remain literal @2/r1 and @3/r2..3; LOCAL finalize-command
+remains @1/r1 and @2/r2..3.
+Complete saved/native/current/schema(data=False)/cold/reopen/recovery/drain
+readers reject mixed/orphan/fork/incomplete history on ONE cumulative allowance,
+including target rereads. Old held/native/r1..r3 bytes and meanings remain.
+
+The new actor independently rechecks its repository/base/head/results/checks and
+current entitlements in its OWN live SID. Only that actor may perform its fresh
+expected-head non-admin action and independently observe remote MERGED/full
+actual commit/aware time BEFORE its own callback. Never reuse a predecessor
+intent, reservation, action or receipt. The daemon performs no PR I/O or effect
+recovery. Readiness/require_ready stay false; no allocation is executed here.
+Source/static delivery is separate from installed/loaded/enabled acceptance.
+Native/SQL/workflow/CAS/replay/rollback proof is NOT RUN / PROOF NOT RUN without
+an entitled genuine venue. Python units RETIRED; integration INCLUDING callback/
+lifespan/SessionTracker SKIPPED24342; missing Swift proof UNEXECUTED /
+FOUNDER-EXEMPTED / NONBLOCKING320seq93. Fresh FULL independent reviewer is next;
+root separately routes QA. Deferred-native reconciliation,
+reassignment and operational/scratch/Founder/two-org/rollback/live acceptance
+remain separately bounded root work. No DDL/release/auth/permission/live effect.
+
+
+## Coding-owned cancellation — ROOT12568 C11/F5/F8
+
+The existing authorized task-cancel route now composes a coding cancellation
+writer even while coding admission is disabled. Under the real DB lock it
+rediscovers the target/cascade and complete affected coding graphs, retains
+terminal tasks, and atomically writes native cancellation rows, original
+`task_cancelled` audits, run/attempt fences and closed cancellation events.
+A direct coding leaf stops its complete graph; an ordinary ancestor may stop
+multiple graphs. A later ordinary ancestor stop also commits when every coding
+graph was already cancelled, with or without ordinary siblings. Previously
+cancelled graphs stay in the complete closure: their terminal tasks, results,
+events, causes and native owners remain intact, with no second fence or control.
+For G1 cancelled, then ordinary P cancelled, then higher live Q, retained
+coding discovery crosses terminal ordinary dependency intermediates independently
+of the live mutation walk. Only authenticated coding dependency paths are
+followed below a terminal ordinary row; newly captured rows there must be
+terminal and newly discovered graphs must have an earlier genuine cancellation.
+Hidden live work refuses rather than expanding legacy mutation semantics;
+unrelated ordinary subtrees remain untouched. P and G1 retain their exact rows,
+while Q and its normally reachable live ordinary siblings receive their sole
+overlay. Multiple retained graphs and a normally reachable fresh G2 compose in
+the same operation; only G2 receives a fresh fence.
+When no fresh coding graph exists, the distinct task-scoped audit action
+`coding_ordinary_cancellation` carries `workflow-coding-ordinary-cancellation@1`:
+the original command, exact ordinary task audits, operation digest and earlier
+genuine cancellation-event anchors. It changes no existing event family or
+`task_cancelled` audit shape/scope. Independent readers close original rows,
+causal membership, retained graphs and strict audit ordering, then derive only
+the ordinary-row overlay and freshly compare every target before COMMIT.
+Retained coding task originals compare at that later operation's independently
+reconstructed boundary, including admissible native observations already present
+there. The authenticated event chain and heartbeat audit ordering must agree
+with the cancellation capture interval; ambiguous or inconsistent order refuses.
+Every later native suffix still replays in full to exact current task/SQL equality,
+including executor_pid. Reader-derived boundary copies and traversal consume the
+same original allowance; no captured-row trust, field exemption, duplicate stop,
+native/effect clearance or history rewrite follows.
+Reverse coding/causal dependencies are discovered separately from requested
+mutation cascade through the complete authenticated start and edge captures.
+A point stop of a coding-dependent ordinary ancestor refuses before any task,
+audit, ownership, control or tail mutation, including cancelled graphs and deep
+ancestry. Ordinary-only point cancellation retains its existing behavior.
+Partial/foreign/orphan/mixed or oversized closure refuses;
+complete independent target validation shares the original cumulative allowance
+and precedes COMMIT. Existing opaque native/prepared controls and worktree/tail
+ordering follow outside the writer. Coding controls never fall back to a PID.
+Duplicate cancellation allocates no result, task or new control invocation.
+
+`workflow-coding-cancellation-command@1` records the original target/cascade,
+actor/rationale/time, complete affected task originals, coding owner IDs and
+actual native owner snapshots. `workflow-coding-cancellation-event@1` stores
+that closure once with the original audits and previous-event/CAS anchor;
+readers derive every resulting task/run/attempt row independently. Closed
+`workflow-coding-cancelled-native-event@1` / command@1 admit only original
+handle/PID/terminal/outer observations. A cancellation is a business stop,
+never native quiescence, remote-effect absence, preparation cleanup or success.
+Affirmative owned queued prelaunch history is distinct from an absent handle.
+Missing/failed controls, unclosed preparation, reserved-no-handle, stale journals,
+unknown effect or missing terminal/outer proof retain the original owner.
+They also set the existing conservative root-tail teardown-incomplete disposition,
+including genuine prepared/unknown entries with no control/PID. Successful
+control return or absent PID is not settlement; coding batches retain ordinary
+outer tracker ownership too. Positively settled original owners keep their
+existing disposition. Ordinary-only and document draft/F5 cancellation retain
+their existing behavior.
+Fresh callback/launch/stage/successor/merge admission is fenced. A precommitted
+original INTEGER/task/SID callback may drain or replay exactly, read-only,
+without advancing. Tasks/runs remain cancelled when later native facts settle;
+no finalizer reservation, historical result/subject/contributor/effect evidence,
+generation, lower limit, age or uncertainty is reset. No daemon PR I/O occurs.
+
+Saved/current/native/schema(data=False)/cold/reopen/recovery/drain consumers
+share the independent closed reader, including complete cross-graph audit/task
+closure. Start ancestry and every development/review/QA/final/revision/successor
+edge retain original admission predicates and captured bytes. A changed external
+row creates an unresolved equality obligation, resolved only after ALL independent
+batches close: freshly read current SQL must equal the sole authenticated
+cancellation overlay of that exact original row. No partial census, trusted
+after-image, mutable-field exemption or reusable validation cache is accepted;
+all copying/traversal/reads and post-write reconstruction share the ONE original
+aggregate allowance before COMMIT. Public `workflow-coding-run@7` keeps the existing field inventory,
+explicit cancelled state and cancelled-or-uncertain current attempt; the CLI
+and served route consume the same union. Literal old held/r1-r3/native/document/
+then histories retain their own meanings. Deferred native recovery still refuses
+`coding_native_recovery_unavailable`; reassignment remains separately bounded.
+The current supplements require stopping fresh work on cancellation and retaining
+the original callback/effect/native owner, without granting a new control tool.
+
+SOURCE delivery only: readiness remains false, installed source is untouched,
+loaded identity UNVERIFIED and enabled acceptance absent. Native/SQL/workflow/
+race/causal proof NOT RUN / PROOF NOT RUN without a genuine authorized venue
+(THR320seq99). Python units RETIRED; general integration INCLUDING callback/
+lifespan/SessionTracker SKIPPED24342; all missing Swift proof UNEXECUTED /
+FOUNDER-EXEMPTED / NONBLOCKING320seq93. Static checks prove no workflow behavior.
+Founder THR320seq136 authorizes source recovery under sole ROOT12727 without
+reviving failed ROOT12568 or predecessors. Genuine four-stage execution,
+schema-import/operator/scratch availability are no longer source-merge
+prerequisites. Real workflow/Founder persistence/across-team/two-org/backup/
+reopen/rollback acceptance remains NOT RUN/open and required before ordinary
+work or activation. Historical checkpoint evidence and failures stay attributed
+to their original owners/heads. Fresh FULL independent final-head review and
+separately root-routed scoped QA remain required; the actual entitled final
+manager alone owns expected-head/non-admin guarded merge and independent remote
+confirmation in its own live session before callback. No schema/auth/permission/
+grant/restart/deploy/live experiment, self-merge or cleanup is authorized here.

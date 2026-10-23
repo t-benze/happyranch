@@ -157,8 +157,7 @@ class TaskInvocation:
 
     def prepare(self) -> None:
         if self.owner == "coding":
-            from runtime.workflows.coding_start import require_ready
-            require_ready()
+            self.orch._workflow_coding_dispatch.require_task_ready(self.task.id)
         with self.store.writer(self.task.id, admission=True) as (root, row):
             self.store.held_uncommitted(self.task.id)
             self.orch._team_moves.check_task_uncommitted(self.task)

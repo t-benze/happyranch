@@ -27,10 +27,74 @@ def task_brief(work: dict) -> str:
             'no developer head or approval exists.\n' + work['brief'])
 
 
+def review_brief(work: dict) -> str:
+    return ('Independently review the exact coding subject in the bound supplement.\n'
+            'Use existing authorized repository tools; unavailable access requires BLOCK.\n'
+            'Return genuine APPROVE, REQUEST_CHANGES or BLOCK with findings.\n' + work['brief'])
+
+
+def review_scope(*, org: str, instance: str, command: dict, roles: dict,
+                 developer: dict, subject: dict) -> dict:
+    """Same-team first-edge scope; unrelated cross-team @3 pins stay reserved."""
+    return dict(format='workflow-coding-review-scope@1', org_slug=org, instance_id=instance,
+        attempt_id=identity('attempt', instance, 2), stage='code_review', role='code_reviewer',
+        principal=roles['code_reviewer']['principal'], team=roles['code_reviewer']['team'],
+        revision=1, attempt_sequence=1, assignment_generation=1, release=command['release'],
+        mapping_digest=command['mapping']['digest'], context_id=identity('context', instance),
+        authorization=identity('authorization', instance), work_scope=command['work'],
+        subject=subject, developer=dict(attempt_id=developer['id'], task_id=developer['task_id'],
+            session_id=developer['session_id'], result_id=developer['result_id'], principal=developer['principal']))
+
+
+def qa_brief(work: dict) -> str:
+    return ('Independently QA the exact produced and approved coding subject in the bound supplement.\n'
+            'Use existing authorized repository tools; unavailable access or proof requires BLOCK.\n'
+            'Return genuine PASS, REVISE or BLOCK with your own findings.\n' + work['brief'])
+
+
+def qa_scope(*, org: str, instance: str, command: dict, roles: dict, developer: dict,
+             reviewer: dict, subject: dict, task_id: str) -> dict:
+    return dict(format='workflow-coding-qa-scope@1', org_slug=org, instance_id=instance,
+        attempt_id=identity('attempt', instance, 3), task_id=task_id, stage='qa', role='qa_engineer',
+        principal=roles['qa_engineer']['principal'], team=roles['qa_engineer']['team'],
+        revision=1, attempt_sequence=1, assignment_generation=1, release=command['release'],
+        mapping=command['mapping'], mapping_digest=command['mapping']['digest'], context_id=identity('context', instance),
+        authorization=identity('authorization', instance), work_scope=command['work'], subject=subject,
+        developer=dict(attempt_id=developer['id'], task_id=developer['task_id'],
+            session_id=developer['session_id'], result_id=developer['result_id'],
+            principal=developer['principal'], outcome='produced', subject=subject),
+        reviewer=dict(attempt_id=reviewer['id'], task_id=reviewer['task_id'],
+            session_id=reviewer['session_id'], result_id=reviewer['result_id'],
+            principal=reviewer['principal'], outcome='APPROVE', subject=subject))
+
+
+def final_brief(work: dict) -> str:
+    return ('Finalize only your own exact coding subject using the consumed final-manager supplement.\n'
+            'Use the LOCAL workflows coding finalize command once, current original SID, no decisions/jobs.\n'
+            'Preserve intent/action/remote receipts before your FINAL genuine callback; unavailable authority holds.\n'
+            + work['brief'])
+
+
+def final_scope(*, org: str, instance: str, command: dict, roles: dict, qa: dict,
+                subject: dict, task_id: str, upstream: dict, repository_reference: dict | None = None) -> dict:
+    scope = dict(format='workflow-coding-final-scope@1', org_slug=org, instance_id=instance,
+        attempt_id=identity('attempt', instance, 4), task_id=task_id, stage='agent_manager', role='agent_manager',
+        principal=roles['agent_manager']['principal'], team=roles['agent_manager']['team'],
+        revision=1, attempt_sequence=1, assignment_generation=1, release=command['release'],
+        mapping=command['mapping'], mapping_digest=command['mapping']['digest'], context_id=identity('context', instance),
+        authorization=identity('authorization', instance), work_scope=command['work'], subject=subject,
+        predecessor_id=qa['id'], upstream_results=upstream)
+    if repository_reference is not None:
+        scope.update(format='workflow-coding-final-scope@2', repository_reference=repository_reference)
+    return scope
+
+
 def pinned_rows(*, org: str, command: dict, source: dict, native_source: dict,
                 authority: dict, mapping: dict, roles: dict, template: dict,
                 carrier_id: str, instance_id: str, created_at: str) -> tuple[dict, dict, dict]:
-    """One explicit @2 branch; historical @1 custody bytes keep their readers."""
+    """Literal agent-read families; historical custody bytes keep their readers."""
+    from runtime.workflows._coding_settings_execution import _settings_family
+    settings = _settings_family(command)
     root = identity('root', org, source['task_id'], source['result']['id'], _hash(_canonical(command)))
     _check(root == instance_id)
     activation_id = identity('activation', root)
@@ -53,6 +117,10 @@ def pinned_rows(*, org: str, command: dict, source: dict, native_source: dict,
         repository_reference=reference, work_scope=command['work'], authority=authority,
         source=source, native_source=native_source, authorization_id=authorization_id,
         binding_snapshot_id=binding_id, activation_id=activation_id, activation_revision=1)
+    if settings:
+        authorization.update(format='workflow-coding-authorization@3', settings=command['settings'], mapping=command['mapping'])
+        binding.update(format='workflow-coding-binding@3', settings=command['settings'], mapping=command['mapping'])
+        context.update(format='workflow-coding-context@3', settings=command['settings'])
     grant, bound, ctx = map(_canonical, (authorization, binding, context))
     pin = authority['pin']
     digest = _hash(_canonical(command))
@@ -60,7 +128,7 @@ def pinned_rows(*, org: str, command: dict, source: dict, native_source: dict,
     rows = {
         'workflow_authorization_revisions': [dict(id=authorization_id, namespace=namespace,
             revision=1, authority_bytes=grant, authority_digest=_hash(grant),
-            source_pin='workflow-coding-agent-read-start@1', created_at=created_at)],
+            source_pin='workflow-coding-agent-read-start@2' if settings else 'workflow-coding-agent-read-start@1', created_at=created_at)],
         'workflow_active_authorizations': [dict(namespace=namespace, authorization_revision_id=authorization_id)],
         'workflow_binding_snapshots': [dict(id=binding_id, template_version_id=template['version_id'],
             authorization_revision_id=authorization_id, binding_bytes=bound,
@@ -85,13 +153,17 @@ def pinned_rows(*, org: str, command: dict, source: dict, native_source: dict,
 
 def initial_scope(*, org: str, instance: str, attempt: str, command: dict,
                   roles: dict, context: dict) -> dict:
-    return dict(format='workflow-coding-scope@2', org_slug=org, instance_id=instance,
+    scope = dict(format='workflow-coding-scope@2', org_slug=org, instance_id=instance,
         attempt_id=attempt, stage='development', role='implementer',
         principal=roles['implementer']['principal'], team=roles['implementer']['team'],
         revision=1, attempt_sequence=1, assignment_generation=1, release=command['release'],
         mapping_digest=command['mapping']['digest'], context_id=identity('context', instance),
         authorization=context['authorization_id'], work_scope=command['work'],
         inputs=[], artifact=None, predecessor=None)
+    from runtime.workflows._coding_settings_execution import _settings_family
+    if _settings_family(command):
+        scope.update(format='workflow-coding-scope@3', settings=command['settings'], mapping=command['mapping'])
+    return scope
 
 
 def journal_rows(pins: dict) -> list:

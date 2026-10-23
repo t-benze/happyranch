@@ -1680,3 +1680,89 @@ export interface OwnerReviewSelection {
   successor: { revision_operation_id: string; human_request_id: string | null } | null;
   return: { eligible: boolean; reason: string | null; required_action: string | null };
 }
+
+// Canonical Founder coding configuration. Mapping publications confer no grant.
+export interface CodingAgentBinding { principal: string; team: string }
+export interface CodingRoles {
+  implementer: CodingAgentBinding;
+  code_reviewer: CodingAgentBinding;
+  qa_engineer: CodingAgentBinding;
+  agent_manager: CodingAgentBinding;
+}
+export interface CodingRelease {
+  identity: 'release/happyranch/coding';
+  version: 1;
+  definition_digest: '6ee02be98738d3c95fe584b165abe07d0dbef66e510133c117ee0d62c953cad8';
+}
+export interface CodingMappingPin { id: string; generation: number; digest: string }
+export interface CodingConfiguration {
+  release: CodingRelease;
+  roles: CodingRoles;
+  eligible_replacements: { [K in keyof CodingRoles]: CodingAgentBinding[] };
+  repository_references: {
+    repository_id: string; repo_key: string; origin_digest: string; object_format: 'sha1' | 'sha256';
+  }[];
+  authority: { namespace: string; generation: number; snapshot_digest: string };
+}
+export interface CodingSettingsCommand {
+  format: 'workflow-coding-settings-command@1';
+  org_slug: string;
+  operation_key: string;
+  expected_generation: number;
+  expected_mapping_generation: number;
+  admission: 'disabled' | 'explicit';
+  mapping: CodingConfiguration;
+}
+export interface CodingSettingsSnapshot {
+  format: 'workflow-coding-settings-snapshot@1';
+  org_slug: string;
+  generation: number;
+  admission: 'disabled' | 'explicit';
+  release: CodingRelease;
+  mapping: CodingMappingPin;
+  operation_key: string;
+  request_digest: string;
+  previous_snapshot_digest: string | null;
+  published_at: string;
+  published_by: 'human:founder';
+}
+export interface CodingSettingsCurrent {
+  generation: number;
+  admission: 'disabled' | 'explicit';
+  release: CodingRelease | null;
+  mapping: CodingMappingPin | null;
+  snapshot_digest: string | null;
+  mapping_generation: number;
+}
+export interface CodingSettingsReceipt {
+  format: 'workflow-coding-settings-receipt@1';
+  operation_key: string;
+  request_digest: string;
+  snapshot: CodingSettingsSnapshot;
+  snapshot_digest: string;
+  publication_audit_id: number;
+  replayed: boolean;
+}
+export interface CodingSettingsView {
+  format: 'workflow-coding-settings-view@1';
+  org_slug: string;
+  current: CodingSettingsCurrent;
+  configuration: CodingConfiguration | null;
+  operation: CodingSettingsReceipt | null;
+}
+export interface CodingSettingsSave {
+  format: 'workflow-coding-settings-save@1';
+  org_slug: string;
+  current: CodingSettingsCurrent;
+  configuration: CodingConfiguration;
+  operation: CodingSettingsReceipt;
+}
+/** Current configuration selectors only; no repository access or Git facts. */
+export interface CodingSettingsOptions {
+  format: 'workflow-coding-settings-options@1';
+  org_slug: string;
+  release: CodingConfiguration['release'] | null;
+  authority: CodingConfiguration['authority'] | null;
+  repository_choices: Omit<CodingConfiguration['repository_references'][number], 'object_format'>[];
+  object_formats: ['sha1', 'sha256'];
+}

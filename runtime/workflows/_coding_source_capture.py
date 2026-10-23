@@ -257,7 +257,7 @@ def _decode_capture(audit: NativeSourceRecord, org_slug: str, budget: _Budget) -
         _native_json(result, ('decision_json', 'risks_flagged', 'waiting_on_job_ids', 'local_ci'), budget)
         decision = _closed(_json(command, budget), 'action workflow')
         _check(decision['action'] == 'workflow_start' and type(decision['workflow']) is dict
-               and decision['workflow'].get('format') == 'workflow-coding-start@1')
+               and decision['workflow'].get('format') in ('workflow-coding-start@1', 'workflow-coding-start@2'))
         # Check the COMPLETE command grammar even in unselected inventory
         # entries. This self radius is syntax only; the containing reader
         # separately binds the selected command to the actual INITIAL P.

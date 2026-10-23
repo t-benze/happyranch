@@ -639,7 +639,7 @@ def register(sub: argparse._SubParsersAction) -> None:
     workflow_sub = workflows.add_subparsers(dest="workflows_command", required=True)
     coding = workflow_sub.add_parser('coding', help='Fixed release import and agent-manager role defaults; no coding run allocation')
     coding_sub = coding.add_subparsers(dest='coding_command', required=True)
-    start = coding_sub.add_parser('run-start', help='Compose a result-owned start decision; allocates nothing')
+    start = coding_sub.add_parser('run-start', help='Compose settings-pinned start@2 or historical start@1; allocates nothing')
     start.add_argument('--from-file', required=True)
     start.add_argument('--emit-decision', action='store_true', required=True)
     start.set_defaults(func=cmd_workflow_coding_run)
@@ -649,6 +649,14 @@ def register(sub: argparse._SubParsersAction) -> None:
     show.add_argument('--session-id', required=True)
     show.add_argument('--json', action='store_true')
     show.set_defaults(func=cmd_workflow_coding_run)
+
+    from cli.commands.workflow_coding_finalize import cmd_workflow_coding_finalize
+    finalize = coding_sub.add_parser('finalize', help='Own live final-manager local guarded action; no daemon effect')
+    finalize.add_argument('--org', required=True)
+    finalize.add_argument('--session-id', required=True)
+    finalize.add_argument('--from-file', required=True)
+    finalize.add_argument('--json', action='store_true', required=True)
+    finalize.set_defaults(func=cmd_workflow_coding_finalize)
 
     for form in ('mapping-publish', 'mapping-show', 'role-select'):
         command = coding_sub.add_parser(form, help='Agent-manager role defaults or nonallocating pinned selection')

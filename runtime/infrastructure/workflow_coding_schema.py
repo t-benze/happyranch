@@ -399,6 +399,11 @@ def _validate_coding_data(conn: sqlite3.Connection, *, layout: str,
         from runtime.workflows.coding_start_history import read_queued
         queued = read_queued(conn, expected_org_slug, budget, mappings, imported)
     else:
+        # A canonical settings pointer is a coding-family fact even without J
+        # mappings/audits. Earlier layouts cannot silently treat it as absent.
+        if 'org_settings' in tables and conn.execute(
+                "SELECT 1 FROM org_settings WHERE section='coding' LIMIT 1").fetchone() is not None:
+            raise ValueError('workflow_coding_settings_requires_complete_J_reader')
         budget = None  # Preserve the preceding layouts' standalone discriminator.
     # Empty J is still a complete coding read: absence must not replenish or
     # bypass the allowance for the subsequent native typed-row discrimination.

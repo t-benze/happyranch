@@ -2515,6 +2515,77 @@
         ]
       }
     },
+    "/api/v1/orgs/{slug}/settings/coding": {
+      "GET": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "operation_key",
+            "query"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "401",
+          "403",
+          "404",
+          "409",
+          "422",
+          "503"
+        ]
+      },
+      "PUT": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "401",
+          "403",
+          "404",
+          "409",
+          "422",
+          "503"
+        ]
+      }
+    },
+    "/api/v1/orgs/{slug}/settings/coding/options": {
+      "GET": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "401",
+          "403",
+          "404",
+          "409",
+          "422",
+          "503"
+        ]
+      }
+    },
     "/api/v1/orgs/{slug}/settings/daemon-capacity": {
       "GET": {
         "params": [
@@ -4508,6 +4579,32 @@
       }
     },
     "/api/v1/orgs/{slug}/workflows/coding/runs/{instance_id}": {
+      "GET": {
+        "params": [
+          [
+            "instance_id",
+            "path"
+          ],
+          [
+            "session_id",
+            "query"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "403",
+          "404",
+          "409",
+          "422",
+          "500"
+        ]
+      }
+    },
+    "/api/v1/orgs/{slug}/workflows/coding/runs/{instance_id}/final-manager": {
       "GET": {
         "params": [
           [

@@ -275,6 +275,8 @@ export const COVERAGE_MANIFEST: readonly NamespaceCoverage[] = [
       'executors',
       'preferences',
     ],
+    // THR-320 Founder coding page; `coding` also names other route modules.
+    qualifiedRouteTokens: ['SettingsPage.tsx:coding'],
     status: 'translated',
     surfaces: [
       'SettingsPage',
@@ -282,6 +284,7 @@ export const COVERAGE_MANIFEST: readonly NamespaceCoverage[] = [
       'DaemonCapacitySection',
       'OrganizationSection',
       'ExecutorsSection',
+      'CodingSection',
       'PreferencesSection',
       'EligibilityEditorDialog',
     ],

@@ -1966,3 +1966,183 @@ waiver or historical42+14 campaign covers this source head. Full independent
 review returns directly to ROOT12299; root allocates actual same-head executable
 QA before a later live-manager guarded merge. Local `scripts/local_ci.sh all`
 and the two hosted required checks remain lint/static only.
+
+
+## First coding edge source — ROOT12299 / TASK12488
+
+The development -> code_review writer, complete two-attempt readers and selected
+reviewer lifetime remain behind disabled coding readiness. This assignment runs
+only clean exact-head scripts/local_ci.sh all, normal hooks and one hosted
+Source Boundary Lint / Web Lint (Node24) observation. The existing OpenAPI
+snapshot generator may check served metadata parity; it is not behavioral proof.
+No new tests, verifier assertions, runner or native experiment is allocated.
+F1/F2/F3/F4/F5/F8 native progression, negatives, red-green, mutation/restoration,
+repetition and executable QA remain UNEXECUTED. Python units RETIRED; general
+integration INCLUDING callback/lifespan/SessionTracker SKIPPED24342. No old-root
+waiver applies. Existing synthetic complete-reader evidence proves its original
+reader scope only. The root must allocate the existing real OrgState/start/
+TaskInvocation/RetryClaim/callback/host/outer venue and readiness prerequisites;
+no fake native fixture, patched readiness, ad hoc E2E or build substitutes for it.
+
+
+## ROOT12299 step29 approved review to independent QA source
+
+TASK12502 continues SAME PR1170 with a disabled exact-subject approved-review to
+one independent qa edge and conservative held QA outcome. It extends step28;
+readiness stays false and final-manager/merge/operational prerequisites remain.
+Required clean committed exact-head `scripts/local_ci.sh all` is lint/static only,
+with Python3.14 and Node24, normal hooks and nonforce publication. Observe the
+actual exact-head Source Boundary Lint and Web Lint (Node24) once without waiting,
+dispatch or rerun. Every push renews independent FULL review and actual head gates.
+The allowed existing `uv run --python 3.14 python scripts/generate_openapi_snapshot.py
+--check` operator compares route/method/parameter/status summaries, not full
+response-component validation, runtime or behavioral acceptance.
+
+No tests/assertions/verifier support, product/native/SQL experiment, E2E or build
+is allocated. F1/F2/F3/F4/F5/F8 native/behavior/negative/red-green/mutation/
+restoration/repetition/executable QA remain UNEXECUTED; no old-root waiver or
+test-authoring PASS. Python units RETIRED; integration INCLUDING callback/lifespan/
+SessionTracker SKIPPED24342. Existing-owner native dependencies add the actual QA
+constructor, pinned upstream developer+reviewer results and explicit QA supplement,
+three-attempt cold/current/schema/drain/replay/settlement observations; no new
+runner or readiness override. ROOT retains genuinely failed-child-linked final-head
+execution and entitled live-manager guarded expected-head/no-admin merge plus
+remote commit/aware-time observation before its own callback.
+
+
+The ROOT12299 step31 disabled final-manager source is documented in
+[the coding contract](superpowers/specs/2026-10-14-ordered-coding-workflow.md#disabled-live-final-manager-source).
+The fourth coding-owned manager uses a LOCAL single-attempt finalize command;
+only original settled QA PASS admits the repaired event@6 edge. Historical held QA
+records stay held. Own-session selected upstream metadata, strict actual exact-H
+Source Boundary Lint and Web Lint (Node 24) successes, saved intent and immediate
+live revalidation precede reviewed expected-head/no-admin guarded action. The selected
+mapped repo_key/raw-origin-digest/opaque-ID binds the actual checkout and GitHub
+target; navigation is consistency only. Original OrgPaths/assigned-principal
+workspace capture selects ONE task/attempt reservation across cwd/key/path
+variants, with full reference/root/output/native/history reconstruction. Existing
+or partial reservation refuses a second action, including failed recording. Actual
+remote commit/aware time precedes its own final-output@2 callback; daemon settlement
+only records performed work after host/positive outer closure. Partial intent or
+transport loss never retries; pending checks hold without coding jobs. Readiness
+remains unconditionally disabled. Source/static only; native/behavioral proof
+UNEXECUTED, units RETIRED/integration INCLUDING callback SKIPPED24342, no old-root
+waiver or execution/merge/activation grant.
+
+ROOT12299 step32 source correction adds uncertainty-only native-manager command/event@3:
+prebinding holds retain the actual original preparation/queue identity with absent
+workspace/claim/host; missing-close holds retain the original bound workspace/claim
+and absent current native close. Independent readers keep both held and preserve
+literal @1/@2. Successful selected output still needs complete original capture.
+The own-current-original-final-manager GET is exactly browser-excluded and denied
+by the existing native raw/normalized gate before unchanged credential handling.
+Route fixture four-answer evidence is recorded; attributable RED/GREEN and native
+gate proof remain UNEXECUTED/unallocated, never test-authoring PASS. Only source,
+lint/static, normal hooks/publication; units RETIRED, integration INCLUDING callback
+SKIPPED24342. Genuine final-head executable QA/live-manager action stays root-owned.
+
+### R2 canonical coding settings source
+
+The existing focused `cd web && npm test -- --run src/lib/api/settings.test.ts
+src/test/openapi-coverage.test.ts` observes actual shared-client canonical request
+bytes, one-send behavior (401/503), explicit original-key GET and W1 route shape.
+It does not prove backend persistence, human authority, CAS, interruption,
+concurrency or native execution. Existing `uv run --python 3.14 python
+scripts/generate_openapi_snapshot.py --check` compares the served summary only.
+Required clean committed-head `scripts/local_ci.sh all` remains a durable-job,
+lint/static-only check. Missing stateful/native venue proof is honestly NOT RUN;
+Founder320seq99/v25 permits review with that limitation. Swift proof is
+UNEXECUTED / FOUNDER-EXEMPTED / NONBLOCKING93; integration INCLUDING callback,
+lifespan and SessionTracker SKIPPED24342; Python units RETIRED. No E2E/build/native
+campaign, proof framework or new merge check is introduced.
+
+
+### Founder coding settings page — TASK12632
+
+`cd web && CI=1 npm test -- --run src/features/settings/sections/CodingSection.test.tsx`
+renders the real route/provider/client over MSW: E0/refusal/populated states,
+complete canonical save, disabled-retain, distinctness, 409 retention, uncertain
+lock plus original-key GET (committed; 404/error/repeat stay locked with one PUT),
+fields locked during a pending save, same-org late-read ordering (resolve and
+reject), send ownership across A→B→A during/after the PUT, org A→B isolation and
+en↔zh-CN with no requests (TASK12642). It is UI/transport evidence
+only; it is not a required merge check and proves no backend persistence,
+authority or native behavior. Screenshots/browser runs are separate evidence.
+
+TASK12651 extends the same F6/F8-R2 record/runners for dedicated options and
+explicit first save: E0 complete/missing/foreign/unsafe options, required format,
+advanced-authority adoption with409 draft retention, options revocation with exact
+disabled-retain/original fence, and late org options isolation. Client cases
+check same-bearer/no-query GET and refuse malformed/unsafe/foreign/duplicate
+choices. Attributable pre-fix page and temporary validator-regression failures,
+byte-exact restoration and passing focused results belong in the maker/PR case
+record; these MSW assertions prove only UI/client behavior. OpenAPI summary and
+route classification remain supported static contracts. Genuine backend SQL/
+authority/persistence and screenshots/layout are NOT RUN without an authorized
+compatible venue; no new proof harness or build/native/E2E campaign follows.
+Swift proof stays UNEXECUTED / FOUNDER-EXEMPTED / NONBLOCKING320seq93, separate
+from99/v25. Units RETIRED; integration INCLUDING callback/lifespan/SessionTracker
+SKIPPED24342. Root-owned workflow/operator/live-manager acceptance remains.
+
+
+## Settings-pinned engine composition evidence — TASK12615
+
+This increment changes closed start syntax and coding reader composition, not
+routes/classification or settings-client transport. The supported idle-schema
+operator checks served-summary parity; CLI help checks command registration.
+They do not prove full callback schema semantics, persisted settings pins,
+cross-team progression, native move projection or interrupted settlement.
+Accepted F5-R1a/b/c and F6/F8-R2a/b/e executable contracts remain NOT RUN / PROOF
+NOT RUN without the genuine compatible venue. Under Founder320seq99/v25, no new
+proof tooling or routine unchanged W1/client repetition is required. Missing Swift
+proof remains UNEXECUTED / FOUNDER-EXEMPTED / NONBLOCKING93; Python units RETIRED,
+integration INCLUDING callback/lifespan/SessionTracker SKIPPED24342. Required
+clean committed-head local all and both hosted exact-head lints remain static
+only, through normal hooks/nonforce publication and independent full review.
+
+
+ROOT12568 cancellation source uses the existing task-owned clean committed-head
+`scripts/local_ci.sh all` lane, normal hooks
+and literal exact-head Source Boundary Lint / Web Lint (Node 24). Existing
+operator CLI help, imports and idle served-schema summary may check the new
+run@7 registration; they do not exercise cancellation/native/SQL races.
+No tests/fixtures/assertions or proof venue are added by this increment.
+C11/F5/F8 cases include separately cancelled G1 then ordinary ancestor cascade
+with no G2 (P alone, P/S, multiple retained graphs), then higher live Q through
+terminal ordinary P. Retained discovery follows authenticated dependency paths
+separately from the live mutation walk; newly captured rows below stopped paths
+must be terminal and graphs already cancelled. Hidden live work refuses, unrelated
+ordinary subtrees stay untouched, and P/G1 retain original rows. Cases also cover
+normally reachable retained G1 plus fresh G2,
+and pre-write point-stop refusal for coding-dependent ordinary ancestors
+(live/cancelled graphs, deeper ancestry) while ordinary-only point stops remain.
+The all-retained stop appends only a distinct closed ordinary-operation audit;
+no second G1 cancellation fence/control/result. Genuine original PID observations
+before/between/after later ancestor stops require exact reconstructed historical
+boundary equality and complete independently replayed native suffix/current SQL
+closure. Event/audit/heartbeat order conflicts, arbitrary cutoffs and full-row drift
+must refuse on the same original aggregate allowance. This source correction has
+no executed native/race/rollback proof. Missing/foreign/orphan/duplicate
+or tampered overlays, audit IDs/order/actor/operation/original rows/membership,
+and exhausted original aggregate allowances refuse and roll back before controls.
+No ordinary live-to-cancelled overlay may appear in two independent batches.
+Cases also retain progressed development/review/QA/final/revision/successor ancestor overlays,
+prepared/unknown owners with no control/PID, missing/throwing controls, and
+positive-settlement/duplicate/exact-callback/rollback keepers. Complete readers
+must preserve original bytes/membership and independently close every batch;
+root-tail incomplete must retain unresolved ownership after business COMMIT.
+These are source requirements, not results of lint. C11/F5/F8 execution/causal
+proof is NOT RUN / PROOF NOT RUN without an authentic entitled venue under
+THR320seq99. No old-root execution waiver is inherited.
+Integration INCLUDING callback/lifespan/SessionTracker remains SKIPPED24342;
+Python units RETIRED; missing Swift proof remains UNEXECUTED /
+FOUNDER-EXEMPTED / NONBLOCKING320seq93. No E2E/build/native campaign follows.
+
+Founder THR320seq136's sole recovery ROOT12727 retains clean committed-head
+static all, both literal final-head hosted lint receipts, normal hooks/nonforce
+publication, FULL independent review and separately routed scoped QA. Genuine
+four-stage/schema-import/operator/scratch availability is no longer a source-merge
+prerequisite. Real workflow/Founder persistence/across-team/two-org/backup/reopen/
+rollback acceptance remains NOT RUN/open, required before ordinary work/activation.
+Historical checkpoints and failed roots are not rewritten or revived. Readiness
+and require_ready remain unconditionally disabled; no E2E/build/live run follows.

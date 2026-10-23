@@ -706,3 +706,180 @@ access, inspection or execution authority. Head remains absent until you actuall
 produce the commit. Report only your own result through the supplied genuine
 task/SID final callback. No coding staging or advancement command is available
 in this disabled slice; never substitute a document staging command.
+
+
+A bound workflow-coding-development@1 or workflow-coding-review@1 supplement
+selects only your actual assigned stage/task/SID. Preserve release/mapping,
+revision, repository/object-format/fixed-base/paths and the reviewer's exact
+produced head/PR/developer result. Use existing authorized repository tools;
+metadata grants no access. Development introduces only its genuinely produced
+full commit; reviewer independently inspects that exact subject and returns
+APPROVE, REQUEST_CHANGES or BLOCK (including unavailable access).
+For a completed stage, summary is the canonical UTF8 JSON STRING of the closed
+workflow-coding-stage-output@1 envelope: format, instance_id, attempt_id,
+revision=1, stage=development|code_review, subject, findings, outcome. subject
+uses workflow-code-change@1 with kind=code-change, repository:{id}, object_format,
+head, comparison:{base}, navigation:{branch,pr_url}; findings are nonblank and
+at most16384 UTF8 bytes. Serialize sorted keys, compact separators, Unicode
+verbatim, finite values, no duplicates/unknown fields or trailing newline.
+Development outcome=produced and top-level verdict=null; completed reviewer
+verdict equals its exact outcome. Report actual failed/blocked causes without
+inventing a subject or receipt. Use your own genuine final report-completion
+callback as the FINAL action. No staging/advancement command is available;
+never substitute document staging. Callback alone does not advance, and a
+review result does not grant QA/final-manager execution or merge authority.
+
+
+A bound workflow-coding-qa@1 supplement selects only the actual assigned qa
+stage, selected qa_engineer role, task and current SID. Preserve its full
+workflow-coding-qa-scope@1: release/mapping/revision/work, actual QA assignment,
+exact repository/object-format/B/H/branch/PR and original developer AND independent
+reviewer attempt/task/SID/INTEGER result/outcome/subject. Use only existing
+authorized repository tools. Independently inspect that exact subject and write
+your own findings; use BLOCK for unavailable access or required proof. Metadata
+and prior approval grant no permission and never substitute for your inspection.
+For a completed assessment, summary is a canonical UTF8 JSON STRING with exactly
+format=workflow-coding-stage-output@1, instance_id, attempt_id, revision=1,
+stage=qa, subject (unchanged full workflow-code-change@1), findings (nonblank,
+at most16384 UTF8 bytes), outcome=PASS|REVISE|BLOCK. Top-level verdict exactly
+matches outcome. Use sorted keys/compact separators, Unicode verbatim, finite
+values and no duplicates/extra keys/trailing newline. Report genuine own
+failed/blocked causes without copying another principal findings or inventing
+results/receipts. No coding decision/job wait, staging or advancement command.
+Use only your genuine task/agent/SID report-completion as FINAL action. Native
+host and positive outer settlement remain separate; settled QA output stays held,
+even PASS, pending final-manager implementation. Readiness remains disabled.
+
+
+A workflow-coding-final-manager@2 supplement belongs only to its actual assigned
+coding-owned agent_manager invocation. SQL manager_closeout is translated explicitly;
+never classify it as legacy or reuse source/upstream/recovery SIDs. Preserve exact
+scope/release/mapping/revision/subject and all three original task/SID/INTEGER
+result/outcome/digest pins. Supply the closed finalize-command@1 from the supplement
+with your existing absolute authorized repository_path, saved stable operation_key
+and current SID to `happyranch workflows coding finalize --org ORG --session-id CURRENT
+--from-file ABS --json`. Actual entitlement for that local command is separately
+required; descriptors grant no access. Preserve the selected authenticated repository
+reference and original native OrgPaths workspace capture. Only its repo_key checkout/
+authorized task worktrees and exact raw-origin digest/opaque ID may identify the
+GitHub target; navigation alone cannot. ONE captured workspace task/attempt
+reservation applies across cwd/key/path variants. Full selected/native/output/
+history identity must agree; missing, foreign or aliased roots refuse. Preserve
+existing/partial reservations even after failed recording; never choose a new cwd
+or key to repeat an uncertain action. It selects only your own current run evidence,
+observes exact successful checks once, saves task-local intent, immediately revalidates
+and calls the reviewed expected-head/no-admin guard. Preserve partial intent/action
+receipts and never rerun after uncertainty. Pending checks produce held output, no
+coding job/decision or automatic later manager allocation. Save exact canonical
+final-output@2 as your callback summary JSON STRING, stage=agent_manager, null verdict,
+no decisions/job waits; own findings and original causes only. Actual remote merge
+commit/aware time must be observed in THIS live session before claiming merged.
+Failed command remains failed/uncertain despite separate later effect observation.
+Callback through actual task/agent/SID is FINAL. Only genuine successful host and
+positive outer settlement can record performed work; daemon never performs PR I/O.
+Historical event@4 held QA PASS stays held; repaired event@6 accepts eligible settled QA
+PASS. Readiness remains disabled and source presence grants no execution/merge.
+
+The native-manager command/event@3 uncertainty records retain actual original
+preparation identity before binding, or original workspace/claim with missing
+current close after binding. Both remain held; no selected output, cleanup or
+successful settlement follows. Literal native-manager@1/@2 remain unchanged.
+The final-manager GET remains own-current-original CLI-only, browser-excluded and
+native-remote-denied. Source/static evidence supplies no runtime or authoring PASS.
+
+
+For a settings-pinned coding start, use the actual bound start@2 command with its
+settings generation/snapshot_digest and mapping Pin. `run-start --emit-decision`
+validates syntax and prints only the closed decision for the selected executable
+manager's own genuine callback; no allocation or authority follows. Historical
+start@1 retains its reader. Coding readiness remains unconditionally disabled.
+New-family stage supplements carry the original settings pin and authenticated
+scope; later defaults or disable publications do not replace that assignment.
+Each selected principal uses its own actual team and authorized tools. Preserve
+original owner/key/evidence on refusal or uncertainty; never fabricate an actor,
+callback, native settlement or clearance. Current native/Pause/move/repository
+authority and genuine final-session callback obligations remain unchanged.
+
+
+A bound workflow-coding-development@2 / review@2 / qa@2 supplement selects the
+actual new revision2/3 task/SID. Preserve its revision-scope@1, fixed original
+repository/object-format/base/paths/release/mapping/settings pins and actual
+attempt_sequence/assignment_generation. Development addresses EVERY attributed
+returned finding and produces a genuinely changed head; previous_subject is
+history, never output or authority. Review/QA independently assess the EXACT new
+subject and current upstream pins, using existing authorized tools and own
+findings. References grant no access. Return the supplied closed stage-output@2
+with revision2/3, same key inventory, stage-specific produced / APPROVE|
+REQUEST_CHANGES|BLOCK / PASS|REVISE|BLOCK. Summary is canonical UTF8 JSON STRING,
+completed status and null developer verdict or matching reviewer/QA outcome.
+Report real failed/blocked causes honestly; use only this task/agent/SID FINAL
+callback. No staging/coding decision/job wait or old receipt reuse. Historic @1
+supplements/outputs stay revision1. Fresh tasks/results are not new configured
+principal requirements on every revision.
+
+A bound workflow-coding-final-manager@3 selects current revision2/3 only. Preserve
+final-scope@3, actual native workspace/reference and ALL three fresh current-subject
+results. Supply finalize-command@2 from that supplement to the SAME LOCAL finalize
+command with actual current SID/authorized path and stable key. Preserve all existing
+reservation/current-selection/expected-head/non-admin/one-action/remote-observation
+rules above. Save canonical final-output@3 as own summary before actual FINAL
+callback; no daemon-owned merge/recovery, stale approvals or synthetic receipt.
+Readiness remains disabled; source is not installed/loaded/enabled acceptance.
+
+
+A bound workflow-coding-final-manager@4 is a NEW genuine same-subject attempt,
+not a content revision or permission to replay its predecessor. Preserve its
+final-scope@4/predecessor, actual current attempt/task/SID/workspace/reference,
+all retained contributors and three original current upstream results. Use only
+its own supplied LOCAL finalize-command@1 (r1) or @2 (r2/3), stable own key and
+existing authorized repository tools. Independently recheck repository/base/head,
+original results/checks/current entitlements in THIS live session. Never reuse
+an old intent/reservation/action/result/callback or infer safety from absent PID,
+ended SID, task label or held state. Partial/uncertain effects stay with the
+original owner. Only this actual new manager may perform its fresh expected-head
+non-admin guarded action and independently observe remote MERGED/full actual
+commit/aware time BEFORE preserving own final-output@2 (r1) or @3 (r2/3) and
+its own genuine FINAL callback. No daemon effect/recovery, new role selection,
+job wait or coding decision. Historical @2/@3 instructions retain their meanings;
+readiness remains false and no live allocation/enablement follows source delivery.
+
+
+Coding cancellation is a business stop. Stop fresh repository/stage/result/
+successor/finalize work when the authorized original task cancellation wins.
+Preserve original intent/action/receipt uncertainty and native preparation/
+terminal/outer ownership. Only a callback already committed under the exact
+original INTEGER/task/SID may drain or replay unchanged, without advancing.
+A stopped task, missing handle/control or transport loss supplies no cleanup,
+remote-effect clearance, reservation release or retry permission. A later ordinary
+ancestor batch preserves earlier cancelled graphs even without another live
+coding graph or ordinary sibling. After G1 then ordinary P are cancelled, a
+higher live Q retains G1 through terminal ordinary dependency paths. This is
+separate from live mutation: newly captured rows below the stopped path must
+be terminal, graphs already cancelled, and unrelated ordinary subtrees stay
+untouched. Hidden live work refuses. Only normally reachable live ordinary rows
+receive their sole overlay; a normally reachable fresh G2 is fenced once.
+With no fresh graph, a separate closed
+ordinary-operation audit anchors the original cancellation without another graph
+fence/control/result;
+complete readers authenticate every batch and the sole ordinary-row overlay
+against unchanged original admission bytes. Retained task originals compare at
+an independently reconstructed later capture boundary; authenticated event and
+heartbeat order must agree with its capture interval. Full native suffix replay
+and exact current SQL equality still include every field, including executor_pid,
+on the original shared copy/traversal allowance; no history rewrite or settlement
+inference follows. A point stop of a coding-dependent
+ordinary ancestor refuses before writes, independently of mutation cascade;
+ordinary-only point stops remain supported. Prepared/unknown ownership,
+missing/failed controls and unsettled outer proof retain the existing root-tail incomplete disposition, even
+without a PID and after a successful control return. Only positive original owner
+settlement permits the existing safe disposition; never clear tracker/journal
+ownership to force it. The existing Founder task-cancel route owns cancellation;
+this skill grants no control tool.
+Founder THR320seq136 removes genuine four-stage/schema-import/operator/scratch
+availability as source-merge prerequisites under sole recovery ROOT12727.
+Real workflow/Founder persistence/across-team/two-org/backup/reopen/rollback
+acceptance remains NOT RUN/open and required before ordinary work/activation.
+Readiness remains unconditionally disabled; this grants no live allocation.
+Deferred native recovery/reassignment remain unavailable separately. Genuine
+current task/SID report-completion remains the final action; never fabricate
+an earlier result or another task's callback to work around a refusal.
