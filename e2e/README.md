@@ -619,51 +619,156 @@ Four authoring answers for **every changed named row**, with complete shared-blo
 
 ### E07 caller precedence (TASK12746 / accepted12722-12741, ROOT12738)
 
-This extends ONLY existing R2-01 and X-01, following ROOT12738's explicit
-acceptance of TASK12722's proposal and TASK12741's independent DESIGN ONLY PASS.
-All original thirty rows, prior extensions, L1–L7 memberships/order, sixteen
-shared browser sites and validator maps remain. C/H/J are the existing design
-environments above, with their original isolation; no execution is allocated.
+ROOT12738 step25 accepts the exact TASK12776 scope-finalization design
+(37103 UTF8 bytes, SHA256
+`2fd2a058e4297c3e8268069df95a70d23909c3d1c42d2c37263e0b75d376b22a`)
+after independent TASK12777 **PASS — DESIGN ONLY**. TASK12778 extends ONLY
+existing R2-01 and X-01 below under Founder THR291seq362. This replaces the
+older body-catch-only failure-tail contract; the original thirty rows, SAME13,
+L1–L7 exact ordered56 EACH3.12/3.14, sixteen shared browser sites and full
+validator/control/admission maps remain. C/H/J retain their existing disposable
+hosted Ubuntu environments, synthetic roots and process/port isolation; no
+execution or new venue is allocated.
 
-`e07.exercise` now catches the actual body input with `except BaseException`,
-calls existing `record_error("controller-action", exc)`, then bare raises BEFORE
-its existing final `save(c)`. The final save, case-deadline deletion and conditional
-publication retain their bytes/order. This supplies an earlier selection
-opportunity, not an evidence-loss cure or cleanup/redaction/publication guarantee.
-No helper, publisher, local finalizer rethrow or test-only seam is added.
+`e07.exercise` retains its original workload/body catch/final `save(c)` under
+the original case, including offsets16/28/36/42/50, C50/G, all saves and marks.
+The terminal wrapper catches the actual combined outgoing with `BaseException`
+and saves its object/TB BEFORE recording or release, including finalizer-only
+errors. Final-save B or failed[] C still supersedes body A or body-recorder D
+locally; completed raw W=A/earlier P and its savedTB/primary/creator facts stay
+independent and immutable. When save succeeds after recorder D, D is the local
+outgoing. The added recorder cannot reconstruct an already-masked input or
+repair an unfinished/refused creator. Saved suffixes plus genuine rethrow
+frames remain; the exception object is not frozen. Tuple stores, reservation,
+creator claims/seals and further signals remain interruptible.
 
-| Existing rows: finite subinputs | Required observable result / existing level |
+Release requires BOTH the SAME live case object as the last authentic E07
+phase end AND `type(c.timer_phases) is list and not c.timer_phases` immediately
+before deletion. ALL positive, native and expired residual entries refuse.
+Missing/malformed/unknown/interrupted proof retains the case and never enters
+wrapper publication; only independent current-owner synchronization follows.
+An absent case creates no owner, deletion or publication. Assignment before
+registration/unmatched records refuse; an earlier authentic matching SAME
+object qualifies only with the empty list. Numeric equality is no ownership
+proof. Nothing clears/copies/renews phases, repairs generic timer enforcement,
+or guarantees release of an unregistered owner.
+
+This is RELATIVE protection against deletion-caused widening under ordinary
+sequential source-created objects. Controller.phase alone appends on the main
+thread; the sole main caller follows returned threads. Between successful
+built-in-list proof and ordinary deletion there is no appender/callback, browser
+call, await or yield. Raising signals abandon the branch. This premise must be
+rechecked on source changes; it is no concurrency/atomicity/hard timing promise.
+For the F1 before-effect phase-deletion continuation T<Cend<G, now>Cend, retained
+Python/native T keeps expired authentic Cend installed, so unchanged main
+prepare_redaction/Store refuse capture even if sync disarms T. Positive or absent
+case timer-only admission weaknesses remain pre-existing completed possibilities,
+not UNKNOWN and not cured here. After-effect deletion may leave an empty list
+and conditionally permit release. No rollback or duration restoration follows.
+
+Eligible deletion and existing publication/sync are independently attempted
+when reached, even if save/recorder/deletion failed. Incoming outgoing/TB wins
+locally across later tail errors when guards finish; without incoming, the
+first completed tail assignment wins. A recorder escape may reach the outer
+handler again but never retries publication. Normal success has ONE existing
+publish_end/internal sync, no extra success sync/workload/save/mark. Failure of
+proof never reaches that publication branch. Further interruption can prevent
+completion or delivery; attempt alone proves no deletion/publication effect.
+
+After E07 EXIT, authentic expired case plus empty phases and EVERY other
+original effective bound positive may allow unchanged main full fresh BOTH-store
+capture and remembered token union, with sanitized failure/scenario/browser
+prefixes staged before fallible joins. This is conditional useful failure
+evidence, no E07 retry/save/capture/reserve interval. Positive G alone is
+insufficient; local/observation/inherited ends, browser poison and saved transport
+caps still apply. Main's THREE publishers/conditional poison ATTEMPT, full
+W/TB/H0/token/frame/head/claim joins, capture B→[]→B versus failed[]→C, readiness
+and withholding stay unchanged. Prepare expiry alone writes no[]. No last-good,
+bearer-only or raw rescue is allowed. Frozen category read, sticky collection
+failure through root loss, original C60/E120/E-1, safe initial FAIL and terminal
+committed replacement remain. Safe staged partial detail may survive with
+FAIL/variants={}/false cleanup flags; it proves neither delivery nor closure.
+
+Every following subinput extends BOTH R2-01 and X-01 and inherits its separately
+named four-answer block. W is completed raw winner, savedTB its stored reference,
+P earlier winner, A body input, B final-save/capture input, C failed[] input;
+T/Cend/G denote timer/case/global ends. The FINAL observables are required
+behavior, not an execution claim. C is actual local/controller propagation;
+H is actual hosted process/file/timer/ownership; J is the independent frozen
+serialized consumer in the SAME existing environment.
+
+| Finite subinput: requirement / preconditions → action | Observable FINAL result → level |
 | --- | --- |
-| R2-01, X-01: body and finalizer succeed | Catch unused; identical saves, marks, deletion/publication and assertions. C/H. |
-| R2-01, X-01: caught body A, no prior winner; final save succeeds | Completed recorder selection reserves SAME A/saved traceback before save; bare raise retains propagation and main's selected final raise uses A/TB when reached. C. |
-| R2-01, X-01: A, then save/capture B, failed[] C, serialize/sanitize/write, deletion or publication B | Completed reservation preserves A/TB at main's final raise when reached. B/C can still propagate locally; capture's separate context slot describes capture B only if completed. Case-bound deletion/publication may remain unreached. C/H; J only observes admissible serialized attribution/noncredit. |
-| R2-01, X-01: prior selected P, then caught A/finalizer B | Literal raw-first winner P/object/TB remains immutable; A/B never replace P. C. |
-| R2-01, X-01: body normal, finalizer-only failure | Catch does not intercept finally; existing selection unchanged. C/H. |
-| R2-01, X-01: pre-try failure or input already masked by nested finalization | No new selection guarantee or recovered initiating input. C. |
-| R2-01, X-01: SystemExit/KeyboardInterrupt/GeneratorExit, callback reentry, signal/interruption before/after reservation or recorder tail | Only completed raw selection is protected. Unreached/partial assignments and subsequent escape remain UNKNOWN; no shielding or guaranteed final raise. C/H. |
-| R2-01, X-01: shorter case/local/observation/inherited or global end expired | Identical absolute ends, timers and dynamic consumers; no deletion/restoration/widening/reserve. Exhausted checks stay exhausted, with no forced diagnostic credit. C/H/J. |
+| Normal body + save; authentic case; no residual → terminal tail | Identical workload/saves/marks; delete authentic case, one existing success publication/internal sync, normal return. J unchanged validators still require complete acceptance, not a wrapper success claim. C/H/J. |
+| Body A; no prior W; save succeeds → unwind and eligible release | W=A/savedTB/creator facts; actual local outgoing A; main selected A when reached. Release only with both checks, otherwise original gate remains. C/H. |
+| Body A, final capture B; [] succeeds → continued main | W=A/P, actual local outgoing B; original[] attempt precedes diagnostic latch, readiness not inferred. Empty/authentic release may allow NEW full main capture conditionally; residual+expired Cend refuses it. C/H/J. |
+| Body A OR normal, capture B then [] fails C → unwind | Actual outgoing C/TB; W=A/P if already selected, otherwise C gets pre-release first opportunity. B not invented as W; context B slot proves neither invalidation nor readiness. Same conditional capture/refusal branches as preceding row. C/H/J. |
+| Normal body; finalizer-only sanitize/serialize/write/SIGALRM B; no prior W → pre-release catch | Genuine B/object/TB/creator opportunity before deletion/optional work; B retained locally across secondary tails and offered to main. No initiating earlier masked input reconstructed. C/H. |
+| Prior P; later body A/save B/release D → exit | W=P/savedTB/creator unchanged; local B if save fails, A if save succeeds; release D secondary. Main selected P only with real final raise/join. C/H/J. |
+| Body recorder-tail D AFTER completed A/P; save normal OR save B → exit | Local outgoing D OR later B respectively, never silently A. Raw W=A/P. Added recorder/release errors cannot replace completed outgoing/TB. C/H. |
+| Recorder interrupted BEFORE OR AFTER reservation; partial primary/claim/seal; callback reentry; SystemExit/KeyboardInterrupt/GeneratorExit → ordinary unwind | Only actual completed W/assignments protected, refused creator stays refused. BaseException retained; finalizer/release attempts when reached, no guaranteed delivery/repair. Partial unknown not used to dismiss a later completed unsafe path. C/H; J cannot infer private transitions. |
+| Save error, secondary recorder/ownership/deletion/publication/sync errors → finish guards | Retain actual save outgoing/TB and W. Failed check retains case, no publish; eligible deletion failure still independently reaches publication/sync when reached; later errors cannot replace selected local outgoing. C/H/J. |
+| No incoming throwable; proof/deletion D OR publication E OR sync F first, later errors → exit | First actual completed outgoing assignment wins, offered to recorder; final raise fails/noncredits even after marks. No fabricated rollback/owner recreation. Actual deletion-before/after-effect distinguished below. C/H/J. |
+| F1 T<Cend<G, now>Cend; authentic expired case; Python OR native residual from interrupted phase deletion BEFORE effect → tail then main | Residual check refuses deletion. Same Cend remains installed, no wrapper publication, sync may disarm T. prepare_redaction/Store still refuse capture through Cend. Original outgoing and raw W unchanged; safe withholding/noncredit, not UNKNOWN completed continuation. C/H/J. |
+| Residual Python OR native T still POSITIVE at check, expires LATER; authentic case expired → continued main after T | Same refusal even while T positive, case kept; main capture refused under expired Cend both before/after T. Filtering only currently expired timers is a regression. C/H/J. |
+| Earlier phase deletion interrupted AFTER effect; authentic expired case, list genuinely empty, other original effective ends positive → tail/main | Absence succeeds; eligible case release can permit existing main full capture/safe partial staging as detailed above. Phase deletion error/outgoing/W remain real failures; no closure/PASS inference. C/H/J. |
+| Authentic expired case, no retained phase after normal full unwind → release then full main capture | Concrete useful path: original A/P reserved, save B/C retained, case deleted, main three publishers/poison ATTEMPT unchanged; successful fresh BOTH-store union permits sanitized failure/scenario/browser prefixes before fallible joins. Missing members/failed joins still FAIL. C/H/J. |
+| Ownership proof fails OR timer list missing/malformed/unknown OR interrupted check → continue | No deletion or widened wrapper publication; present case retained. Expired case refuses main capture; positive case retains its existing horizon. Original outgoing/W take precedence; no incoming makes real proof error outgoing. C/H/J. |
+| No case: signal before FIRST phase assignment; pre-try prefix separately → exit/main | No case invented, no deletion/publication, sync existing owners only. Main capture subject to unchanged effective ends; absent-case timer-only weakness is pre-existing, no deletion widening claimed. Prefix before try remains outside wrapper. C/H/J. |
+| Assignment before interrupted phase append; empty/unmatched last record OR earlier exact matching registered E07 end → release check | Unregistered/unmatched retains installed owner; earlier SAME live authenticated object can qualify only with empty timer list. No numeric guess or previous owner restoration. Actual caller does not bring a surviving foreign threads/jobs owner into E07; abstract unmatched data always refuses. C/H/J. |
+| Eligible case deletion interrupted BEFORE effect OR AFTER effect → complete later handlers/main | Before: case stays, expired Cend denies capture even if publication attempted/fails; after: case absent with proven no residual, only other original effective ends gate capture. No claimed deletion on mere attempt; W/outgoing survive finished guards. C/H/J. |
+| Case POSITIVE + residual T expired OR T positive-then-expires; also case ABSENT + residual → main | No release/wrapper publication. Existing effective_end may allow capture across T before Cend (or until G if absent); explicitly pre-existing limitation, not global cure, new deletion widening or UNKNOWN. No fake case gate to fix it. C/H/J. |
+| G expired OR local expired OR observation expired OR inherited expired → eligible release/continued main | Original numeric ends unchanged; each effective minimum still refuses main capture, no borrowed C/E or renewed save/work. Any residual timer still prevents release independently. Prepare expiry alone does NOT write[]. C/H/J. |
+| Publication interruption BEFORE write / pending write / AFTER replace / internal sync, or queued alarm during fallback/rethrow → completed tail | Actual publication effects only; no retry/rollback/duration restoration. Earlier outgoing/W survive completed guards; further interruption can stop delivery. Empty-list custody persists; main admission still uses actual remaining original bounds. C/H/J. |
+| Capture invalidation B/C OR prepare-expiry-without[] OR withheld full context → main/collection | Preserve[] precedence and full-context predicate. No last-good/bearer-only rescue or category-as-readiness; unsafe detail withheld; original W/TB/first facts retained if guards complete. C/H/J; R2-06/07/R3-09 keepers. |
+| Frozen reader stale/null/unavailable; collection fails then root lost → export | First frozen tuple not refreshed; sticky incompleteness survives real absence. Only actually safe staged bytes survive in memory; root loss proves no private state/closure. C/H/J; R3-01/08/09. |
+| Safe partial staging then missing member/export precommit failure OR successful final replacement with queued alarm → terminal outcome | Actual sanitized staged detail can persist despite FAIL/variants={}/false cleanup flags. Initial safe FAIL survives no replacement; committed replacement terminal after original alarm retirement/E-1 check, no postcommit reclassification/rescue. C/H/J; R3-07/X-02. |
+| Input masked BEFORE existing body catch or inside nested save/capture → outer/main | No recovered initiating object/cause; actual outgoing only. Existing main/frozen/withholding/noncredit semantics unchanged. C/H/J. |
 
-Four authoring answers for EACH affected row (all subinputs above):
+Four answers apply separately to EACH R2-01 and X-01 subinput above: normal; body/save A/B/C/P; finalizer-only; recorder-tail/partial/reentry/BaseException; secondary/no-incoming; F1 expired/positive-then-expires Python/native; before/after-effect phase/case deletion; empty/residual/unknown/absent/unmatched/unregistered owner; case-positive/absent; global/local/observation/inherited expiry; publication/sync/queued alarm; capture/invalidation/withheld; frozen/root-loss/sticky export/terminal commit; pre-try/masked. Shared blocks name all subinputs rather than create parallel coverage.
 
-| Row | 1. Observable boundary | 2. Credible regression | 3. Precise keeper gap and distinct layer risks | 4. Test-only production seam |
+| Row | 1 Observable contract | 2 Credible regression | 3 Keeper / distinct layer risk | 4 Test-only seam |
 | --- | --- | --- | --- | --- |
-| R2-01 | Actual local raw object/saved traceback and unwind through main's selected final raise: A or earlier P survives fallible E07 finalization when that raise is reached. Success/finalizer-only paths retain prior selection. | Omit/reorder the catch after save, narrow it to Exception, select B first, overwrite P, or replace bare raise. | Existing phase/bounded/raw/main keepers reserve THEIR inputs; they miss the E07 try-to-final-save gap. Extend this row rather than duplicate helper coverage. C observes actual identity/propagation; H owns real process/file/clock/cleanup consequences; J cannot prove private identity or native path from an exit byte/null field. | NO new export, flag, wrapper, parameter, injection or dead path. |
-| X-01 | Compose the actual E07 input with capture B/failed[] C, writer refusal/whole-call escape, conditional poison ATTEMPT, close/evidence failures, frozen/stale/unavailable readers, collection/root loss/export and terminal commitment, preserving withholding and failure noncredit. | Omit/reorder/narrow the catch, overwrite P or replace bare raise; treat reservation as publication, reuse invalidated context, clear a bound or reclassify after terminal commit. | R2-01 owns local precedence; X-01 needs THIS formerly unreserved E07 input across its chain. R2-06/07 and R3-09 retain capture/withholding; R3-07/X-02 retain terminal commitment. C sees propagation/ATTEMPT, H real files/processes/clocks/pending/cleanup/root loss, J frozen serialized attribution and noncredit. J proves neither poison execution nor private identity/native path. | NO; existing boundaries only, no new runnable test/driver/venue. |
+| R2-01 EACH named subinput | Actual local outgoing/TB and immutable W/savedTB/creator through E07/main selected raise WHEN reached; pre-release finalizer-only selection; release ONLY authentic+empty; refusal retains expired-case main-capture denial. Relative positive/absent limits explicit. | Release before final save/recording; hide release behind save success; let recorder/tail overwrite outgoing/P; narrow BaseException; numeric owner guess; ignore residual/native/positive timers or insert a check-to-delete appender. | Extend existing R2-01. Phase/bounded own THEIR unwind, old E07 catch only body A: none owns failed terminal save plus safe release/continued-main residual refusal. C actual object/suffix/creator/attempts, H actual owner/work-end/timer/process/file consequences; J serialized fields cannot prove those private transitions. No duplicate helper coverage. | NO export/parameter/flag/injection/dead path; ordinary actual-boundary locals only. |
+| X-01 EACH named subinput | Compose A/P/B/C+eligible release OR refusal with THREE publishers/conditional poison ATTEMPT, full capture/safe staging, frozen reader/root-loss/export/commit, withholding/sticky failure/noncredit. | Delete despite residual expiry; treat release/diagnostics as readiness/PASS; retry E07; last-good/bearer-only context; reset sticky failure/borrow C/E; use removal as closure or reclassify commit. | R2-01 stops at local/main propagation. R2-06/07 retain capture[], R3-01/09 collection/withholding, R3-07/X-02 commit. X-01 owns composition. C actual propagation/poison attempt, H actual context/pending/files/timers/joins/root, J independent frozen sanitation/attribution/noncredit; J proves neither C/H nor native closure from null/83. | NO new verifier/fixture/driver/venue/carrier/runnable case or production seam. |
 
-Raw-first literal-key immutability, THREE main writers and conditional poison
-ATTEMPT remain. Full-context capture/[] ordering and withholding, frozen readers,
-sticky false cleanup flags/variants={} and terminal commit remain; reservation
-supplies no readiness or export credit. E05/E07 source joins read current bytes
-dynamically, without manifest/consumer edits or reuse of old source receipts.
-Candidate behavior **NOT RUN**; intended-failure/restored-pass **PROOF NOT RUN**;
-sensitivity **UNPROVED**. Source/static inspection is not behavioral,
-test-authoring or Product PASS. Latest assessed run39840207990 remains FAILED /
-HealthFAIL47 at c8987b81: all56 EACH3.12/3.14 UNKNOWN/null, zero recorded passes,
-final_missing and cleanup/export ValueError. UNKNOWN is not UNREACHED; the genuine
-native failure is not an unavailable-support exemption or proof of this repair.
-PR1180 causality remains unproved. ROOT12738 owns subsequent reviewed-main-only
-verification; failed12724 preparation/effects/retirement remain separately OPEN /
-UNKNOWN, unaffected by source delivery or fresh QA success.
+Candidate **NOT RUN**; intended-failure/restored-pass **PROOF NOT RUN**; sensitivity **UNPROVED**, for EACH affected row/subinput. This finite case table adds no separate runnable test or fixture; the candidate wrapper has not executed. Existing actual failed venues are genuine failures, not unavailable-support exemptions or attributable intended-failure proof. The current gate adds no execution authority, mutation campaign, repeat requirement or test-authoring PASS.
+
+Raw-first literal-key immutability, original THREE main writers, genuine
+selected handoff joins, full-context withholding and all failure noncredit
+remain. E05/E07 source joins dynamically read the genuine current20/24 members;
+no manifest/consumer edit or old receipt substitution is made. Keep ALL9 aggregate
+controls, ALL14 cancellation controls, complete schedule/manual admission maps,
+and the original16 browser sites1/4/5/6/7/8/10/11/15/16/18/19/22/23/24/25.
+No runnable test/seam/framework/venue/proof campaign is added.
+
+Latest assessed40025778820 remains FAILED/HealthFAIL47 at91ff3f9a, EACH3.12/3.14
+all56 UNKNOWN/null, zero recordedPASS, final_missing/direct83/cleanup-export
+ValueError. BOTH HRD2:S:AC:AL:02:02:A:E identify selected alarm leaf/action/exhausted
+case minimum/tie ONLY; decoded CONTEXT_VALIDATE:F identifies predicate rejection
+ONLY. No operation/[]/writer/bearer/PR1180 cause proof follows. TERM15/3.12 and
+INT2/3.14 actual witnesses/owned closure are diagnostic-only. Earlier failures,
+53/56/loss/scheduled partial/CI contradictions/dashboard503/native uncertainty
+and merge-helper deviation retain their original attribution. Seq388's rendered/
+locale/child_wait hypothesis remains unproved; seq390 corrects E07 to LAST.
+
+ROOT12738 retains the byte-exact17554B ledger/SHA256
+`fe621dbd20c8ead2f01519a7cc27bc0e1a69d218745412584b205f3ce1311d6a`
+WITH ALL22 step3–24 addenda and current step25; no historical field is rewritten.
+Failed12753/12755/BLOCK22272 and every predecessor remain. Original12724
+preparation/custody/effects/retirement stay separately OPEN/UNKNOWN; source/QA
+supplies no historical closure or reuse of the consumed362 exception.
+Independent FULL review/same-final-head scoped SOURCE QA, normal hooks/nonforce,
+manager guarded merge/exact-main TWOstatic and separate manager-reviewed-main
+Product admission remain. Units RETIRED; general integration INCLUDING callback/
+lifespan/SessionTracker SKIPPED24342/211270–271. Daily19UTC/standing manager277,
+ALL56 EACH3.12/3.14/FOURarchives/allmembers/realTERM-INT/nativeHealth,
+480/240/720/60/120/900,31s populated-cache isolation, locked dependency integrity/
+registry/install and public API/browser/CLI/result/audit remain. Protected12/
+mutation/restoration/repetition unauthorized; abruptR/E04cap/persistentStop HELD;
+100MiBfit UNPROVED;Mac11743 unimplemented/11640budget3of3 exhausted. No product/
+schema/auth/permission/privacy/access/budget/schedule/monitor/SLA/Jenkins/Mac/
+provision/host/deploy/restart/reset/reconciliation authority is added.
 
 ### First-recorder and native-log observations (TASK12758 / ROOT12738)
 
