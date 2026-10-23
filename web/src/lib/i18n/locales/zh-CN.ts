@@ -1158,6 +1158,7 @@ export const zhCN: Record<MessageKey, MessageValue> = {
   'threads.page.rail.tasksLoading': '加载中…',
   'threads.page.rail.tasksError': '无法加载任务',
   'threads.page.rail.tasksEmpty': '此会话尚未派发任务',
+  'threads.page.rail.originTask': '源任务：{id}',
   'threads.page.rail.thisThread': '此会话',
   'threads.page.rail.freshTokens': '新输入令牌',
   'threads.page.rail.cost': '成本',
