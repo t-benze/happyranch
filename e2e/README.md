@@ -617,6 +617,54 @@ Four authoring answers for **every changed named row**, with complete shared-blo
 | D: R3-01–R3-09 | Actual owner-first cleanup and independently observed ports/literal root, original bound transitions, final nonzero/FAIL, sticky both-ok false and variants={} fallback through later export; R3-07 also requires persisted final disposition to agree with terminal commit. | Keep one try grouping; let port failure skip removal; reset C; continue after timeout; clear staging failure after root absence or recollection; perform teardown in export; reintroduce a fallible deadline/alarm path after final replacement. | Keep Owned.cleanup/PID-start/unit/group/watcher gates, run.collection/failure_receipt, validate_timing and cancellation.validate. Existing TERM/INT success closes its diagnostic only, never failed baseline collection/isolation. No direct keeper asserts these new combined failures or the R3-07 final-commit ordering. H sees real removal/port/deadline/queued-alarm effects; J sees serialized failure laundering/empty variants and final disposition; neither layer replaces the other. Aggregate metadata controls reject false shapes but cannot prove cleanup execution or publication ordering. | NO for every listed case. No Owned implementation change or test-only seam. |
 | E: X-01–X-02 | End-to-end selected-error precedence and frozen safe projection/noncredit across controller death/root loss/export, with full-context raw withholding. X-01 retains original chain plus earlier snapshot/later poison-close-capture-failure/expiry and caller-finally interaction; X-02 retains terminal disposition matching successful final replacement. | Locally correct helpers combine to skip poison on whole-call writer escape, erase first error/cleanup failure, refresh stale source, admit partial detail, treat unavailable/stale J output as proof poison ran, or rely on another write after a postcommit alarm. | Same B/D keepers and precise cross-process composition gap; extend X-01 only. C owns actual propagation/poison attempt/finalization; H owns actual publication/refusal/root-loss effects; J uniquely owns frozen failure semantics after source loss and can misattribute/launder failure despite correct local refusal. J cannot prove OS or poison execution or repair unknown active/latch state. Preserve12649 X-02 precommit/terminal commitment and queued-alarm semantics. | NO for both cases. Existing main boundaries/artifacts only; no new journey, verifier or seam. |
 
+### E07 caller precedence (TASK12746 / accepted12722-12741, ROOT12738)
+
+This extends ONLY existing R2-01 and X-01, following ROOT12738's explicit
+acceptance of TASK12722's proposal and TASK12741's independent DESIGN ONLY PASS.
+All original thirty rows, prior extensions, L1–L7 memberships/order, sixteen
+shared browser sites and validator maps remain. C/H/J are the existing design
+environments above, with their original isolation; no execution is allocated.
+
+`e07.exercise` now catches the actual body input with `except BaseException`,
+calls existing `record_error("controller-action", exc)`, then bare raises BEFORE
+its existing final `save(c)`. The final save, case-deadline deletion and conditional
+publication retain their bytes/order. This supplies an earlier selection
+opportunity, not an evidence-loss cure or cleanup/redaction/publication guarantee.
+No helper, publisher, local finalizer rethrow or test-only seam is added.
+
+| Existing rows: finite subinputs | Required observable result / existing level |
+| --- | --- |
+| R2-01, X-01: body and finalizer succeed | Catch unused; identical saves, marks, deletion/publication and assertions. C/H. |
+| R2-01, X-01: caught body A, no prior winner; final save succeeds | Completed recorder selection reserves SAME A/saved traceback before save; bare raise retains propagation and main's selected final raise uses A/TB when reached. C. |
+| R2-01, X-01: A, then save/capture B, failed[] C, serialize/sanitize/write, deletion or publication B | Completed reservation preserves A/TB at main's final raise when reached. B/C can still propagate locally; capture's separate context slot describes capture B only if completed. Case-bound deletion/publication may remain unreached. C/H; J only observes admissible serialized attribution/noncredit. |
+| R2-01, X-01: prior selected P, then caught A/finalizer B | Literal raw-first winner P/object/TB remains immutable; A/B never replace P. C. |
+| R2-01, X-01: body normal, finalizer-only failure | Catch does not intercept finally; existing selection unchanged. C/H. |
+| R2-01, X-01: pre-try failure or input already masked by nested finalization | No new selection guarantee or recovered initiating input. C. |
+| R2-01, X-01: SystemExit/KeyboardInterrupt/GeneratorExit, callback reentry, signal/interruption before/after reservation or recorder tail | Only completed raw selection is protected. Unreached/partial assignments and subsequent escape remain UNKNOWN; no shielding or guaranteed final raise. C/H. |
+| R2-01, X-01: shorter case/local/observation/inherited or global end expired | Identical absolute ends, timers and dynamic consumers; no deletion/restoration/widening/reserve. Exhausted checks stay exhausted, with no forced diagnostic credit. C/H/J. |
+
+Four authoring answers for EACH affected row (all subinputs above):
+
+| Row | 1. Observable boundary | 2. Credible regression | 3. Precise keeper gap and distinct layer risks | 4. Test-only production seam |
+| --- | --- | --- | --- | --- |
+| R2-01 | Actual local raw object/saved traceback and unwind through main's selected final raise: A or earlier P survives fallible E07 finalization when that raise is reached. Success/finalizer-only paths retain prior selection. | Omit/reorder the catch after save, narrow it to Exception, select B first, overwrite P, or replace bare raise. | Existing phase/bounded/raw/main keepers reserve THEIR inputs; they miss the E07 try-to-final-save gap. Extend this row rather than duplicate helper coverage. C observes actual identity/propagation; H owns real process/file/clock/cleanup consequences; J cannot prove private identity or native path from an exit byte/null field. | NO new export, flag, wrapper, parameter, injection or dead path. |
+| X-01 | Compose the actual E07 input with capture B/failed[] C, writer refusal/whole-call escape, conditional poison ATTEMPT, close/evidence failures, frozen/stale/unavailable readers, collection/root loss/export and terminal commitment, preserving withholding and failure noncredit. | Omit/reorder/narrow the catch, overwrite P or replace bare raise; treat reservation as publication, reuse invalidated context, clear a bound or reclassify after terminal commit. | R2-01 owns local precedence; X-01 needs THIS formerly unreserved E07 input across its chain. R2-06/07 and R3-09 retain capture/withholding; R3-07/X-02 retain terminal commitment. C sees propagation/ATTEMPT, H real files/processes/clocks/pending/cleanup/root loss, J frozen serialized attribution and noncredit. J proves neither poison execution nor private identity/native path. | NO; existing boundaries only, no new runnable test/driver/venue. |
+
+Raw-first literal-key immutability, THREE main writers and conditional poison
+ATTEMPT remain. Full-context capture/[] ordering and withholding, frozen readers,
+sticky false cleanup flags/variants={} and terminal commit remain; reservation
+supplies no readiness or export credit. E05/E07 source joins read current bytes
+dynamically, without manifest/consumer edits or reuse of old source receipts.
+Candidate behavior **NOT RUN**; intended-failure/restored-pass **PROOF NOT RUN**;
+sensitivity **UNPROVED**. Source/static inspection is not behavioral,
+test-authoring or Product PASS. Latest assessed run39840207990 remains FAILED /
+HealthFAIL47 at c8987b81: all56 EACH3.12/3.14 UNKNOWN/null, zero recorded passes,
+final_missing and cleanup/export ValueError. UNKNOWN is not UNREACHED; the genuine
+native failure is not an unavailable-support exemption or proof of this repair.
+PR1180 causality remains unproved. ROOT12738 owns subsequent reviewed-main-only
+verification; failed12724 preparation/effects/retirement remain separately OPEN /
+UNKNOWN, unaffected by source delivery or fresh QA success.
+
 ### Advisory terminal interpretation (TASK12709 / accepted12707-12708)
 
 This extends the SAME recovery record after ROOT12610 step28 acceptance of
