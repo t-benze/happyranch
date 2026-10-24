@@ -1667,10 +1667,11 @@ HappyRanch is an org-agnostic runtime for operating a multi-agent organization s
 **Current THR-279 v2 final-return diagnostic.** When the automatic v2 hook's final continuation call returns a bounded non-success status, the hook records that exact closed status and reason through the existing best-effort `authority_hook` `capture_failure` action before requesting the unchanged `final_commit_failed` refusal. A raised finalizer exception retains its distinct existing diagnostic. This changes no continuation decision, refusal code, audit action, task note, or identity semantics.
 
 **Startup refusal safety (THR308seq133/127, ROOT12801).** Private Database-owned
-startup reads freshly materialize complete ordered history per read and retain
-only optional authenticated immutable scalar anchors for exclusion. An anchored
-exact/read/refusal failure quarantines its root before bounded logging; pending
-also excludes later same-root attempts. Missing attribution fails task recovery
+startup reads share complete ordered root history in discovery and exact getters
+only within one exact Database/connection/invocation and stable coherent epochs.
+Fresh projections retain optional authenticated immutable scalar anchors for
+exclusion. An anchored exact/read/refusal failure quarantines its root before
+bounded logging; pending also excludes later same-root attempts. Missing attribution fails task recovery
 globally. Readable inert admissions still use the shipping completion/parser,
 including legacy fallback, with zero writes/fence; absent admission proof alone
 is no new eligibility rule. The existing refusal writer independently authenticates
@@ -1682,10 +1683,20 @@ or unexpected transaction abort startup before later effects and suppress the
 entire daemon finally worktree batch. Caller read transactions remain untouched;
 the full sweep rejects them before Pause/workflow work. Earlier genuine commits
 remain intact. General readers/writers and generic coherent_read_view retain
-their contracts. Cross-read sharing is not implemented in this safety prerequisite.
-S1–S3/affected Q3/Q4 behavior and sensitivity remain NOT RUN/PROOF NOT RUN without
-the accepted producer/barrier/downstream observer, owned by ROOT12801; static
-checks and source review are distinct. See the schema-refusal recovery spec.
+their contracts. Outside autocommit connection/data_version/total_changes/
+schema_version bookends enclose a pinned main-table snapshot under the RLock;
+no hit/target/absence/anchor escapes before clean matching closure. Movement or
+unavailable tokens discard the whole memo; only clean ownership/cleanup permits
+one fresh uncached coherent fallback. Caller transactions bypass sharing.
+Canonical/result/binding/owner checks and shipping parsing remain fresh.
+Only closed read-only validators inspect private decoded graphs alongside raw
+scalar row tuples. Public readers return independent objects. LRU retention is
+at most 8 roots, 4096 rows/root, 8 MiB recursively accounted objects/metadata;
+oversize/unsupported accounting evaluates full history uncached. No RSS/time
+bound follows. Invalidate before refusal/tails, failures and scope exit.
+S1–S3/Q1–Q5 behavior, query counts and sensitivity remain NOT RUN/PROOF NOT RUN
+without the accepted producer/barrier/downstream observer, owned by ROOT12801;
+static checks and source review are distinct. See the schema-refusal recovery spec.
 
 Keep this file short. It is loaded at the start of every Claude Code session. Detailed reference lives in `docs/agent-guides/`; read only the guide that matches the files you are touching.
 

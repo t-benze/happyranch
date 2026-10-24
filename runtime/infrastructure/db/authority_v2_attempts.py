@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import json
+import sqlite3
+import sys
 import uuid
+from collections import OrderedDict
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator, TypeVar
 
 from runtime.infrastructure.db._shared import (
     _late_database_now as _now,
@@ -122,15 +125,51 @@ class _V2StartupRefusalPhases:
         self.committed = True
 
 
-class _V2StartupReads:
-    """Database-owned, invocation-local composition; no retained audit history.
+_V2_STARTUP_ROOT_CAP = 8
+_V2_STARTUP_ROW_CAP = 4096
+_V2_STARTUP_BYTE_CAP = 8 * 1024 * 1024
+_StartupResult = TypeVar("_StartupResult")
 
-    General readers keep their historical conversions. Only this startup path
-    materializes strict full history before the validators can swallow failures.
+
+def _v2_startup_retained_size(value: Any) -> int:
+    """Actual closed builtin graph sizes, once per identity; no serialization."""
+    seen: set[int] = set()
+    pending = [value]
+    size = 0
+    while pending:
+        item = pending.pop()
+        if id(item) in seen:
+            continue
+        seen.add(id(item))
+        kind = type(item)
+        if kind not in (dict, OrderedDict, tuple, list, str, bytes, int, float, bool, type(None)):
+            raise ValueError("unsupported startup retained object")
+        size += sys.getsizeof(item)
+        if kind in (dict, OrderedDict):
+            for key, child in item.items():
+                pending.extend((key, child))
+        elif kind in (tuple, list):
+            pending.extend(item)
+    return size
+
+
+class _V2StartupReads:
+    """Exact Database/connection/invocation owner of private full-root history.
+
+    Only obligation and admitted-stage validators consume the decoded graph,
+    read-only inside locked views. Targets/anchors contain scalars; public
+    readers, shipping parsers and writers never receive these containers.
     """
 
     def __init__(self, db: Any) -> None:
         self.db = db
+        # Values are (complete raw scalar row tuples, private decoded history).
+        # Accepted entries move to pending during a speculative closure; they
+        # become reusable across reads only after matching outside bookends.
+        self._memo: OrderedDict[str, tuple[tuple, list[dict]]] = OrderedDict()
+        self._pending: OrderedDict[str, tuple[tuple, list[dict]]] = OrderedDict()
+        self._epoch: tuple | None = None
+        self._closed = False
         self.unsafe: _V2StartupConnectionUnsafe | None = None
         with db._lock:
             try:
@@ -142,7 +181,24 @@ class _V2StartupReads:
                 self._abort("connection_entry", exc)
             self.check()
 
+    def __enter__(self) -> _V2StartupReads:
+        self.check()
+        return self
+
+    def __exit__(self, *_exc: Any) -> None:
+        with self.db._lock:
+            self.invalidate()
+            self._closed = True
+
+    def invalidate(self) -> None:
+        """Drop accepted AND speculative references before effects or escape."""
+        with self.db._lock:
+            self._memo.clear()
+            self._pending.clear()
+            self._epoch = None
+
     def _abort(self, reason: str, *causes: BaseException) -> None:
+        self.invalidate()
         if self.unsafe is None:
             self.unsafe = _V2StartupConnectionUnsafe(reason, *causes)
         else:
@@ -158,7 +214,8 @@ class _V2StartupReads:
         with self.db._lock:
             try:
                 if (
-                    self.db._conn is not self.conn
+                    self._closed
+                    or self.db._conn is not self.conn
                     or self.conn.in_transaction is not self.caller_owned
                     or self.conn.execute("SELECT 1").fetchone()[0] != 1
                 ):
@@ -172,7 +229,7 @@ class _V2StartupReads:
             self._abort("caller_transaction")
 
     @contextmanager
-    def read(self) -> Iterator[None]:
+    def _view(self) -> Iterator[None]:
         with self.db._lock:
             self.check()
             body_error = None
@@ -181,6 +238,11 @@ class _V2StartupReads:
                     try:
                         if conn is not self.conn:
                             self._abort("read_connection_changed")
+                        # BEGIN alone does not pin a snapshot. Even an exact
+                        # miss/cache hit must first read a real main table.
+                        conn.execute(
+                            "SELECT root_task_id FROM main.authority_policy_v2_attempts LIMIT 1",
+                        ).fetchone()
                         yield
                     except BaseException as exc:
                         # Exit the existing view normally so its cleanup error
@@ -202,12 +264,109 @@ class _V2StartupReads:
                     raise _V2StartupEvidenceUnavailable("startup_evidence_unavailable") from body_error
                 raise body_error.with_traceback(body_error.__traceback__)
 
+    def _bookend(self) -> tuple | None:
+        """Outside autocommit observations only; metadata failure disables reuse."""
+        self.check()
+        if self.caller_owned:
+            return None
+        try:
+            # The supported Database uses default DEFERRED isolation, no
+            # attachments, and ordinary isolated reads. Drift bypasses sharing.
+            databases = tuple(tuple(row) for row in self.conn.execute("PRAGMA database_list"))
+            if (
+                self.conn.isolation_level != ""
+                or self.conn.autocommit != sqlite3.LEGACY_TRANSACTION_CONTROL
+                or len(databases) != 1 or databases[0][1] != "main"
+                or self.conn.execute("PRAGMA read_uncommitted").fetchone()[0] != 0
+            ):
+                return None
+            data_version = self.conn.execute("PRAGMA main.data_version").fetchone()[0]
+            changes = self.conn.total_changes
+            schema_version = self.conn.execute("PRAGMA main.schema_version").fetchone()[0]
+            if any(type(value) is not int for value in (data_version, changes, schema_version)):
+                return None
+            return (id(self.conn), data_version, changes, schema_version, databases,
+                    self.conn.isolation_level, self.conn.autocommit)
+        except Exception:
+            # This is not affirmative connection health. The caller checks
+            # ownership/usability again before any uncached fallback.
+            return None
+
+    def _read(self, operation: Callable[[], _StartupResult]) -> _StartupResult:
+        with self.db._lock:
+            try:
+                opening = self._bookend()
+                if opening is None:
+                    self.invalidate()
+                    with self._view():
+                        return operation()
+                if opening != self._epoch:
+                    self.invalidate()
+                    self._epoch = opening
+                # Keep the already-accounted equal epoch object on hits.
+                self._pending, self._memo = self._memo, self._pending
+                with self._view():
+                    result = operation()
+                closing = self._bookend()
+                if closing == opening:
+                    self._memo, self._pending = self._pending, self._memo
+                    return result
+                # Never release a speculative target, anchor, absence or hit.
+                del result
+                self.invalidate()
+                self.check()
+                # Exactly ONE uncached coherent fallback, after affirmative
+                # clean owned exit. Unsafe view cleanup always escapes above.
+                with self._view():
+                    return operation()
+            except BaseException:
+                self.invalidate()
+                raise
+
+    def _history(self, root: str) -> list[dict]:
+        # Only called by _project inside _read's locked coherent closure.
+        if root in self._pending:
+            self._pending.move_to_end(root)
+            return self._pending[root][1]
+        rows = self.conn.execute(
+            "SELECT * FROM audit_log WHERE task_id = ? ORDER BY id", (root,),
+        ).fetchall()
+        # Match get_audit_logs exactly, including truthy-payload decoding,
+        # JSON scalar types, Unicode, empty payloads and malformed siblings.
+        history = []
+        for row in rows:
+            item = dict(row)
+            if item.get("payload"):
+                item["payload"] = json.loads(item["payload"])
+            history.append(item)
+        if self._epoch is not None and rows and len(rows) <= _V2_STARTUP_ROW_CAP:
+            try:
+                raw = tuple(tuple(row) for row in rows)
+                self._pending[root] = (raw, history)
+                # The graph includes entry tuples, keys, raw/decoded scalars,
+                # OrderedDict storage and epoch/attachment metadata. Session
+                # field storage is also charged; borrowed DB/connection owners
+                # themselves are not cache allocations.
+                while self._pending:
+                    size = (
+                        sys.getsizeof(self) + sys.getsizeof(self.__dict__)
+                        + _v2_startup_retained_size((self._pending, self._memo, self._epoch))
+                    )
+                    if len(self._pending) <= _V2_STARTUP_ROOT_CAP and size <= _V2_STARTUP_BYTE_CAP:
+                        break
+                    self._pending.popitem(last=False)
+            except Exception:
+                # Unsupported/failed accounting never changes full evaluation.
+                self.invalidate()
+        return history
+
     def _project(
         self, row: Any,
     ) -> tuple[AuthorityPolicyV2HousekeepingTarget, _V2StartupAnchor | None]:
-        # No action/stage prefilter, prefix, or cross-read reuse. JSON parsing
-        # of every truthy payload must finish before any absence conversion.
-        history = self.db.get_audit_logs(row["root_task_id"])
+        # Full strict history precedes every legacy absence conversion. These
+        # are the ONLY decoded aliases: both validators read without mutation,
+        # and return scalars/frozen projections, never rows/payload containers.
+        history = self._history(row["root_task_id"])
         target = self.db._v2_housekeeping_target_from_row(
             row, obligation_code=self.db._authenticate_v2_obligation_uncommitted(
                 dict(row), _history=history,
@@ -219,19 +378,19 @@ class _V2StartupReads:
     def discover(
         self,
     ) -> list[tuple[AuthorityPolicyV2HousekeepingTarget, _V2StartupAnchor | None]]:
-        with self.read():
+        def project() -> list[tuple[AuthorityPolicyV2HousekeepingTarget, _V2StartupAnchor | None]]:
             rows = self.conn.execute(
                 """SELECT * FROM authority_policy_v2_attempts
                    WHERE finalization_state='unfinalized'
                    ORDER BY created_at, attempt_id""",
             ).fetchall()
-            targets = [self._project(row) for row in rows]
-        return targets
+            return [self._project(row) for row in rows]
+        return self._read(project)
 
     def exact(
         self, target: AuthorityPolicyV2HousekeepingTarget,
     ) -> tuple[AuthorityPolicyV2HousekeepingTarget | None, _V2StartupAnchor | None]:
-        with self.read():
+        def project() -> tuple[AuthorityPolicyV2HousekeepingTarget | None, _V2StartupAnchor | None]:
             row = self.conn.execute(
                 """SELECT * FROM authority_policy_v2_attempts
                    WHERE root_task_id=? AND manager_agent=?
@@ -239,11 +398,12 @@ class _V2StartupReads:
                 (target.root_task_id, target.manager_agent,
                  target.manager_session_id, target.result_id),
             ).fetchone()
-            result = (None, None) if row is None else self._project(row)
-        return result
+            return (None, None) if row is None else self._project(row)
+        return self._read(project)
 
     def refuse(self, **identity: Any) -> AuthorityPolicyV2HousekeepingOutcome:
         with self.db._lock:
+            self.invalidate()
             self.check()
             phases = _V2StartupRefusalPhases()
             error = None
