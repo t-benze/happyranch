@@ -519,6 +519,20 @@ sealed anonymous archive descriptors retain their existing handoff after regular
 unlinked-inode and immutable-seal admission; this certifies no arbitrary incoming
 nonsecrecy. Only literal / enters the original independent managed holder/context
 and installed AND loaded-authority route; local exclusion grants no authority.
+
+On the existing Linux-amd64 package's supported Python 3.12–3.14 runtimes,
+sealing constant exports depend on interpreter build headers. Package creation
+and descriptor verification use native exports when present, otherwise the
+Linux UAPI values for `F_ADD_SEALS`/`F_GET_SEALS` and the exact
+`WRITE|GROW|SHRINK|SEAL` mask. The two creation flags remain
+`MFD_CLOEXEC|MFD_ALLOW_SEALING`, with the same native-or-Linux-ABI selection.
+The real `os.memfd_create` operation is required; unsupported platforms,
+missing memfd support and rejected creation or sealing refuse with the existing
+`package_input_invalid` category. No ordinary-file substitute is accepted, and
+partial creation failures close the owned descriptors before any handoff.
+This compatibility handling supplies no kernel, installation or self-heal proof;
+source compilation and static inspection cannot establish those outcomes.
+
 The existing inventory traversal also supplies metadata-only preflight before
 tree effects, without reading contents or creating a new scanner. Default full
 schema2 byte/mode identities, whole-tree OLD retain/restore and commit classifiers

@@ -14,6 +14,7 @@ import tempfile
 import zipfile
 import subprocess
 import stat
+import sys
 import time
 from typing import Callable, Mapping
 
@@ -345,6 +346,22 @@ def managed_body_guard(kind: str, *, entry_ns: int | None = None):
         os.close(descriptor)
 
 
+def _package_sealing_constants() -> tuple[int, int, int, int]:
+    # CPython exports depend on build headers, including on supported 3.12-3.14.
+    # Linux UAPI: asm-generic/fcntl.h base=1024; linux/fcntl.h ADD=base+9,
+    # GET=base+10, SEAL/SHRINK/GROW/WRITE=1/2/4/8; linux/memfd.h flags=1/2.
+    # These are Linux ABI arguments only, never an emulation of missing support.
+    if sys.platform != "linux":
+        raise PackageError("package_input_invalid")
+    required = (getattr(fcntl, "F_SEAL_WRITE", 0x0008)
+                | getattr(fcntl, "F_SEAL_GROW", 0x0004)
+                | getattr(fcntl, "F_SEAL_SHRINK", 0x0002)
+                | getattr(fcntl, "F_SEAL_SEAL", 0x0001))
+    flags = getattr(os, "MFD_CLOEXEC", 0x0001) | getattr(os, "MFD_ALLOW_SEALING", 0x0002)
+    return (getattr(fcntl, "F_ADD_SEALS", 1033),
+            getattr(fcntl, "F_GET_SEALS", 1034), required, flags)
+
+
 def _managed_package_outer(package: Path | None, operation: str, deadline: int) -> dict[str, object]:
     if os.geteuid() != 0 or operation not in {"package-install", "package-uninstall"}:
         raise PackageError("managed_package_context_required")
@@ -356,17 +373,24 @@ def _managed_package_outer(package: Path | None, operation: str, deadline: int) 
     descriptors: list[int] = []
 
     def sealed(name: str, raw: bytes, executable: bool = False) -> int:
-        descriptor = os.memfd_create(name, os.MFD_CLOEXEC | os.MFD_ALLOW_SEALING)
-        descriptors.append(descriptor)
-        view = memoryview(raw)
-        while view:
-            count = os.write(descriptor, view)
-            if count <= 0:
-                raise PackageError("package_input_invalid")
-            view = view[count:]
-        os.fchmod(descriptor, 0o755 if executable else 0o600)
-        os.lseek(descriptor, 0, os.SEEK_SET)
-        fcntl.fcntl(descriptor, fcntl.F_ADD_SEALS, fcntl.F_SEAL_WRITE | fcntl.F_SEAL_GROW | fcntl.F_SEAL_SHRINK | fcntl.F_SEAL_SEAL)
+        add_seals, _get_seals, required, flags = _package_sealing_constants()
+        create = getattr(os, "memfd_create", None)
+        if not callable(create):
+            raise PackageError("package_input_invalid")
+        try:
+            descriptor = create(name, flags)
+            descriptors.append(descriptor)
+            view = memoryview(raw)
+            while view:
+                count = os.write(descriptor, view)
+                if count <= 0:
+                    raise PackageError("package_input_invalid")
+                view = view[count:]
+            os.fchmod(descriptor, 0o755 if executable else 0o600)
+            os.lseek(descriptor, 0, os.SEEK_SET)
+            fcntl.fcntl(descriptor, add_seals, required)
+        except OSError as exc:
+            raise PackageError("package_input_invalid") from exc
         return descriptor
 
     try:
@@ -1020,9 +1044,9 @@ def _require_package_source(package: Path) -> None:
         try:
             descriptor = int(package.name)
             metadata = os.fstat(descriptor)
-            required = fcntl.F_SEAL_WRITE | fcntl.F_SEAL_GROW | fcntl.F_SEAL_SHRINK | fcntl.F_SEAL_SEAL
+            _add_seals, get_seals, required, _flags = _package_sealing_constants()
             if (not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 0
-                    or fcntl.fcntl(descriptor, fcntl.F_GET_SEALS) & required != required):
+                    or fcntl.fcntl(descriptor, get_seals) & required != required):
                 raise PackageError("package_input_invalid")
         except OSError as exc:
             raise PackageError("package_input_invalid") from exc
