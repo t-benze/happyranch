@@ -2364,11 +2364,26 @@ Contract (founder-approved in THR-028, refined in THR-078):
    `admitted` non-escalate causal result is read-only and does not fence the
    task from ordinary recovery in that boot.
 
-   The THR308seq133/127 safety prerequisite adds private strict startup reads
-   and optional authenticated exclusion-only anchors. Attributable later
-   exact/refusal failures quarantine the root before bounded logging, skipping
-   all later same-root work; pending also excludes siblings. Ambiguous attribution
-   fails task recovery globally. No early diagnostic append is added and local
+   THR308seq133/127 uses one private Database/connection-bound startup reader
+   invocation with optional authenticated exclusion-only anchors. Both discovery
+   and exact getters share complete strictly decoded root histories only after
+   stable outside autocommit connection/data_version/total_changes/schema_version
+   bookends enclose a pinned main-table coherent read under the RLock. Exact
+   getters each open a current closure; no speculative target/hit/absence escapes
+   before clean matching exit. Local writes (including rollback), other-connection
+   commits (including results-only), schema/attachment/isolation/ownership drift
+   or unavailable tokens clear all entries; only clean cleanup permits one
+   fresh uncached fallback. Current identity/authority checks and shipping parsing
+   remain fresh. Private raw scalar tuples/decoded graphs reach only closed
+   read-only validators; public audit readers allocate independent graphs.
+   LRU caps of 8 roots/4096 rows per root/8 MiB recursively accounted retention,
+   including metadata; oversize/failed accounting evaluates full history uncached.
+   Transient allocations/SQLite/RSS/time are not bounded. Memo references clear
+   before refusal/tails, on failure and invocation exit. S1–S3/Q1–Q5 behavior/
+   query counts/sensitivity remain NOT RUN/PROOF NOT RUN, owned by ROOT12801.
+   Attributable later exact/refusal failures quarantine the root before bounded
+   logging, skipping all later same-root work; pending also excludes siblings.
+   Ambiguous attribution fails task recovery globally. No early diagnostic append is added and local
    quarantine is not durable fencing. Unrelated roots continue only with known
    clean owned cleanup and a usable connection. Failed cleanup or unresolved
    COMMIT/connection state instead aborts the sweep, skips its entire finally

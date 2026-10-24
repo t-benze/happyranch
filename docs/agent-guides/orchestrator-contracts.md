@@ -3411,12 +3411,13 @@ final `continued` attempts are not pre-final work and stay with the existing
 settlement/publication reconciliation. This seam never evaluates policy,
 remints evidence, falls back to ordinary/v1 enqueue, or creates a successor.
 
-The THR308seq133/127 safety prerequisite uses a private Database-owned startup
-composition, with thin store forwarding. Each discovery/exact read freshly loads
-the full ordered history through the shipping strict decoder before general
-ValueError-to-None or swallowed-obligation conversions. General callers retain
-those contracts, including escaping TypeError/storage cases. Optional frozen
-scalar anchors authenticate canonical/admission/result/session/binding/reference/
+The THR308seq133/127 startup composition is private and Database-owned, with
+thin store forwarding and an explicit invocation lifetime. Discovery and exact
+getters share complete ordered root histories only across accepted coherent
+epochs on the exact Database/connection. Strict decoding of every truthy payload
+precedes general ValueError-to-None or swallowed-obligation conversions.
+General callers retain those contracts, including escaping TypeError/storage
+cases. Optional frozen scalar anchors authenticate canonical/admission/result/session/binding/reference/
 owner/boot identity and any candidate linkage; they grant exclusion only. An
 earlier sibling never authenticates another attempt. Missing admission proof
 alone neither relabels inert residue nor blocks the independent refusal writer.
@@ -3448,10 +3449,41 @@ before Pause/workflow effects. Unsafe signaling escapes authority catches, skips
 the ENTIRE finally worktree batch and propagates through `_build_state` before
 publication/app/listener/serving. Only in-memory context reset and bounded logging
 are attempted; cleanup remains incomplete. Normal clean ordering/batching and
-BaseException propagation remain. No generic coherent_read_view/run_step change,
-cross-read memo, query-reduction claim or live operation follows. S1–S3/affected
-Q3/Q4 behavior and sensitivity remain NOT RUN/PROOF NOT RUN without the accepted
-producer/barrier/downstream observer; ROOT12801 owns that explicit limitation.
+BaseException propagation remain. No generic coherent_read_view/run_step change
+or live operation follows.
+
+Under the existing RLock, outside autocommit connection identity,
+main.data_version, total_changes and main.schema_version bookends enclose each
+owned coherent_read_view and a real main-table snapshot pin. Only matching clean
+closure releases hits/targets/absence/anchors or admits speculative entries.
+Within discovery, repeated roots can reuse pending complete history; every exact
+getter opens its own current closure. Moved/missing/failed tokens, local DML
+(including rollback), concurrent commits (including results-only), attachment/
+isolation/schema drift or changed ownership invalidate the entire memo. Only
+affirmative clean exit permits one uncached coherent fallback; no retry loop or
+fallback after sticky unsafe cleanup/COMMIT. Caller-owned helpers clear/bypass
+sharing and join their existing transaction without transaction control.
+
+Canonical/admission/result/session/binding/owner checks and the actual shipping
+completion/parser decisions stay fresh. No target, absence or authentication
+verdict is cached. Before real refusal and subsequent tails/effects, on failure
+and at invocation exit, all accepted/pending references are dropped. The writer
+independently authenticates inside its own transaction. Complete raw scalar row
+tuples and private decoded graphs are retained only for the closed read-only
+obligation and admitted-stage validators (through the scalar anchor builder).
+No parser/callback/formatter/writer/public consumer receives their containers;
+public audit graphs remain independently allocated.
+
+Ordinary private caps are 8 roots, 4096 retained rows/root and 8 MiB aggregate
+recursive actual object sizes, once per identity, including containers/entry/
+key/bookend metadata. LRU evicts complete entries; oversize/unsupported or failed
+accounting evaluates complete evidence uncached, never a prefix or false absence.
+Eviction and exit drop pending references too. These are retention bounds,
+excluding transient fetch/parse/traversal and SQLite native memory; no hard
+RSS/time/whole-startup bound or speedup is promised.
+S1–S3/Q1–Q5 behavior, separate discovery/exact query counts and sensitivity remain
+NOT RUN/PROOF NOT RUN without the accepted producer/barrier/downstream observer;
+ROOT12801 owns that explicit limitation.
 
 For a persisted result, the zombie reaper first invokes the real guarded
 `_consume_completion_report`. A v2 session then clears `zombie_flagged_at` only
