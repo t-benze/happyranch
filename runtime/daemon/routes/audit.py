@@ -6,12 +6,15 @@ this route is the one read path we want to keep stable.
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
+from starlette.responses import StreamingResponse
 
 from runtime.daemon.auth import require_token
 from runtime.daemon.routes._org_dep import OrgDep
 from runtime.infrastructure.database import _decode_cursor
-from runtime.infrastructure.memory_collection import CensusReadUnavailable, _census_budget
+from runtime.infrastructure.memory_collection import (
+    CensusReadUnavailable, _census_budget, acquire_memory_collection_response,
+)
 
 router = APIRouter(dependencies=[require_token()])
 
@@ -19,6 +22,33 @@ router = APIRouter(dependencies=[require_token()])
 # reinterpret). Used by the enrichment path to cross-reference the threads table
 # for dream-origin markers (A4, §4.12 PRD final).
 _THREAD_SCOPE_PREFIX = "THR-"
+
+
+@router.get("/audit/memory-collection", responses={422: {}, 503: {}})
+def get_memory_collection(slug: str, org: OrgDep, request: Request) -> StreamingResponse:
+    """Acquire one complete observation-only envelope under server-owned limits."""
+    if request.scope.get("query_string"):
+        raise HTTPException(status_code=422, detail="Memory collection acquisition takes no parameters")
+    with _census_budget(captures=2) as budget:
+        try:
+            body, fence = acquire_memory_collection_response(org)
+            budget.check()
+        except Exception as exc:
+            # No partial envelope or underlying file/provider exception leaks.
+            raise HTTPException(status_code=503, detail="acquisition_unavailable") from exc
+
+        def chunks():
+            # Retain only this response's original private budget through actual
+            # transport. A late transfer cannot become a complete successful body.
+            # These cooperative checks cannot cancel a stalled OS send.
+            for offset in range(0, len(body), 65536):
+                fence()
+                yield body[offset:offset + 65536]
+            fence()
+
+        # Do not advertise Content-Length: completion must follow the iterator's
+        # final deadline check, rather than the last data chunk alone.
+        return StreamingResponse(chunks(), media_type="application/json", headers={"Cache-Control": "no-store"})
 
 
 def _enrich_thread_dream_origin(entries: list[dict], db) -> list[dict]:

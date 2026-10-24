@@ -257,6 +257,16 @@ logs/screenshots/review packets to Shared Artifacts as an ownership workaround.
    not crash/fsync durability or hard OS-I/O timing. Deadline checks precede successful
    read results and never reclassify an already successful publication COMMIT.
 
+   The canonical HTTP memory report uses the one authenticated parameter-free
+   GET /api/v1/orgs/{slug}/audit/memory-collection, closed tables/view/outputs/cutoff,
+   with aware UTC server cutoff and no multipage fallback. One server-owned
+   original budget/fence spans full internal snapshots, selected captures, files,
+   outputs, failed-pair acknowledgement, serialization and transport. All original
+   caps and both identity allowances remain; caller cutoff affects reporting only.
+   CLI role bracketing and buffered JSON/text reduction/rendering share its original
+   client deadline through success. This acquisition grants no health/B/C/epoch
+   acceptance or hard OS-I/O/stdout timing; existing auth/native policy is unchanged.
+
 
 3. **Consult the knowledge base.** Before planning, check for durable knowledge relevant to this task.
 

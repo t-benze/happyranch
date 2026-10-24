@@ -2501,10 +2501,36 @@ lower duplicate bytes alone prove neither complete acquisition nor durable healt
 Both report front doors remove their former all-history/task preflight. Empty or
 short no-epoch diagnostics remain CLOSED. Closing and locked publication rereads
 recompute membership and compare controls as well as records; no prepared-ID
-shortcut, writer repair or new endpoint is supplied. Work/transport/SQL limits
+shortcut or writer repair is supplied. The single server-owned aggregate GET
+below replaces the canonical client's multipage acquisition. Work/transport/SQL limits
 and their cooperative timing/server-work/RSS limitations are recorded in the
 corrective memory spec. HTTP/decoder/cursor/SELECT failures yield
-`acquisition_unavailable`, without partial CLI stdout.
+`acquisition_unavailable`, without partial acquisition output.
+
+Founder THR-091 seq605/608 adds exactly one authenticated zero-durable-write
+`GET /api/v1/orgs/{slug}/audit/memory-collection` on the existing audit router.
+It takes no query parameters and returns exactly `tables`, `view`, `outputs`,
+`cutoff`; the aware UTC cutoff belongs to the server acquisition. This is raw
+acquisition evidence, never health, acceptance or an epoch receipt. The canonical
+HTTP reader consumes this strict envelope with no fallback to paged acquisition.
+One request-local original budget and observer/context/boot/source identity fence
+cover both full current internal snapshots, complete selected captures, metadata,
+files, outputs, serialization/transport and all movement-only fresh-pair attempts.
+Both original96-file/1GiB allowances and all original SQL/wait/work/record/closure/
+request/response/transport/deadline caps remain cumulative; none replenishes.
+Both full snapshots and captures must validate before movement classification;
+immutable history loss/change, hard/malformed/sticky state or identity drift
+refuses immediately. Complete raw failed pairs must receive charged synchronous
+write+flush acknowledgement before retry. A pair exceeding the original4MiB
+record limit honestly refuses; it is never filtered or split to fit. SQL ownership
+never spans file/metadata/output/network work. The serialized response remains
+capped at16MiB and transport at128MiB, with cooperative checks through final stream
+completion. CLI role bracketing, reduction and buffered JSON/text rendering share
+one original client deadline, including explicit report cutoffs and no-control
+returns. A caller cutoff affects reporting only, never server admission. No hard
+OS-I/O/RSS/cancellation/stdout timing, native-policy change, live qualification,
+B/C PASS, epoch start or day14 capacity claim follows from source/static evidence.
+
 Natural population excludes designated probes/retries, recovery and all
 pre-start invocations from qualifying metrics. Credited late events on old
 tuples remain visible to the retirement diagnostic and can close eligibility. D1 remains the later of

@@ -414,8 +414,9 @@ preboot dependency records do not inflate their natural denominators.
 Acquisition refuses beyond 100000 work records/64 MiB encoded work per capture
 (including overlapping discovery/owner reads), 4 MiB per record, 4096 closure
 steps, 8192 HTTP requests, 16 MiB raw response or 128 MiB transport bytes.
-Paired HTTP captures share a 30-second cooperative deadline and twice the
-per-capture record/byte work allocation. HTTP streams refuse nonidentity content
+The server-owned aggregate pair and its strict HTTP consumer each retain the
+original 30-second cooperative deadline and twice the per-capture record/byte
+work allocation across all attempts. HTTP streams refuse nonidentity content
 encoding, malformed UTF8/JSON/duplicate keys, cursors, ordering and incomplete
 original output. A request has at most a five-second socket timeout and the
 remaining acquisition budget; client refusal does not cancel an already-running
@@ -440,16 +441,39 @@ UTF8 replacement, truncation and missing-file semantics. Collection validation
 independently refuses missing/incomplete/replaced/truncated output; commit uses
 the already prepared validated bytes without file I/O under its DB lock.
 Selected LIMIT/byte counts and sampled VM instructions are not SQL rows-examined
-or hard RSS/wall-time guarantees. No schema/index/writer/new endpoint or response
-envelope is added.
+or hard RSS/wall-time guarantees. No schema/index/writer is added.
 
-HTTP uses only existing /audit since/action/task filters and keyed task details,
-ancestry recall, direct revisits and job/output reads. Positively referenced
-probe jobs also select complete same-agent task candidates in the original job
-window through existing assigned_agent task pages; probe roots retain all direct
-children. Claimed receipt IDs alone cannot establish slot uniqueness. Roles
-bracket the report.
-Native snapshots are coherent; paired HTTP captures compare full membership,
+Founder THR-091 seq605/608 adds exactly one authenticated zero-durable-write
+`GET /api/v1/orgs/{slug}/audit/memory-collection` on the existing audit router.
+It takes no query parameters and returns exactly `tables`, `view`, `outputs`,
+`cutoff`; the aware UTC cutoff belongs to the server acquisition. This is raw
+acquisition evidence, never health, acceptance or an epoch receipt. The canonical
+HTTP reader consumes this strict envelope with no fallback to paged acquisition.
+One request-local original budget and observer/context/boot/source identity fence
+cover both full current internal snapshots, complete selected captures, metadata,
+files, outputs, serialization/transport and all movement-only fresh-pair attempts.
+Both original96-file/1GiB allowances and all original SQL/wait/work/record/closure/
+request/response/transport/deadline caps remain cumulative; none replenishes.
+Both full snapshots and captures must validate before movement classification;
+immutable history loss/change, hard/malformed/sticky state or identity drift
+refuses immediately. Complete raw failed pairs must receive charged synchronous
+write+flush acknowledgement before retry. A pair exceeding the original4MiB
+record limit honestly refuses; it is never filtered or split to fit. SQL ownership
+never spans file/metadata/output/network work. The serialized response remains
+capped at16MiB and transport at128MiB, with cooperative checks through final stream
+completion. CLI role bracketing, reduction and buffered JSON/text rendering share
+one original client deadline, including explicit report cutoffs and no-control
+returns. A caller cutoff affects reporting only, never server admission. No hard
+OS-I/O/RSS/cancellation/stdout timing, native-policy change, live qualification,
+B/C PASS, epoch start or day14 capacity claim follows from source/static evidence.
+
+
+HTTP consumes the single server-owned aggregate GET above. Its native selector
+retains the same task detail, ancestry, direct-revisit and job/output closure.
+Positively referenced probe jobs still select complete same-agent task candidates
+in the original job window; probe roots retain all direct children. Claimed
+receipt IDs alone cannot establish slot uniqueness. Roles bracket the CLI report.
+Native snapshots are coherent; the server-owned pair compares full membership,
 raw records/outputs and ordered task/serving bookends using the relation above.
 Only the three valid rendering timestamp paths have unary exclusions; heartbeat
 and accompanying updated_at movement is a checked ordered-pair exception.
