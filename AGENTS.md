@@ -4481,6 +4481,16 @@ workspace/native ancestry, active or UNKNOWN all-runtime owners and unavailable
 observations refuse before setup effects. It uses the existing source environment
 for read-only F/E/G/H/I/J preflight, never live Database/OrgState constructors.
 
+After positive maintenance clearance, human confirmation and revalidation,
+private durable command intent precedes stop; result/uncertainty receipts retain
+observed exits and bounded stream digests without copying lifecycle log bodies.
+Receipt-only/partial recovery directories are incomplete; only manifest.json
+establishes a complete backup. Failed receipt persistence prevents later effects.
+The start-reported uv wrapper PID and daemon.pid Python PID remain distinct:
+checked executable/source/home/custody, fresh start identities and direct ancestry
+must agree, then status uses the actual daemon PID/port. Both identities are
+revalidated through serving/import; missing/moving/reused facts hold.
+
 Private complete recovery inventory and WAL-inclusive SQLite backups precede
 locked dependency/UI preparation and each needed original F/E→G→H→I→J writer.
 Every writer requires its exact check result, exit0, original post-check0 and

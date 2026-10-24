@@ -4377,7 +4377,16 @@ send. Lost output/send, crash, mismatch, existing original or later absence reta
 that original owner/key/body/digest and permits GET readback/original-owner
 reconciliation only, never automatic POST replay/new key. Private command receipts
 and backup manifest give exact commands/exits and recovery locations; uncertainty
-is not rewritten as success.
+is not rewritten as success. After positive maintenance clearance/confirmation/
+revalidation, durable command intent precedes stop; failure/interruption retains
+observed result or unresolved intent, exact argv, actual/null exit and bounded
+stream digests at the printed existing receipt path. Lifecycle log bodies remain
+in original custody. Receipt-only INCOMPLETE.json and BACKUP-STARTED.json are not
+complete backup; only manifest.json establishes that. Failed persistence prevents
+later effects. The start-reported uv wrapper and daemon.pid Python child have
+separate authenticated start/executable/source/home/ancestry identities; status
+and serving checks use the actual daemon PID/port with repeated pair validation.
+Missing/reused/moving identity holds, independently of loaded-source coverage.
 
 Import stays held when existing serving observations cannot establish required
 loaded workflow owners or actual UI facts. Current selected memory fingerprints

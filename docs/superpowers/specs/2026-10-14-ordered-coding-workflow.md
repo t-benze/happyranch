@@ -2424,7 +2424,13 @@ Earlier-layout profile/recovery histories without a complete supported
 ownership composition retain their original owner hold. No settlement writer runs.
 
 After positive observations and human coordination, every effect revalidates the
-same membership, ownership and source. Original stop must positively close;
+same membership, ownership and source. Before stop, private durable receipt-only
+INCOMPLETE.json and per-command intent are saved; each observed result retains
+actual/null exit, bounded digest scope, time/output/interruption or launch/closure
+uncertainty and safe diagnostics, without arbitrary lifecycle logs/private stderr.
+Unclosed intent or failed receipt persistence holds all later effects.
+BACKUP-STARTED.json adds inventory without losing pre-stop evidence; only complete
+manifest.json establishes backup. Original stop must positively close;
 stale/force-killed/ambiguous outcomes stop. Exclusive private recovery inventory
 covers affected registered runtime/org/config/durable DB/files, old source,
 environment and served UI. SQLite backup includes committed WAL, validates
@@ -2442,7 +2448,13 @@ Already-later layouts use full current readers; populated J is never certified
 by an empty-J message. Failed/uncertain commands retain last accepted layout and
 original owner, with no writer replay or automatic restart.
 
-Start runs once. Existing serving/runtime/org/health/audit and actual UI bytes plus
+Start runs once. Its printed uv wrapper PID is distinct from the Python PID in
+daemon.pid. Checked observations bind both to fresh original start identities,
+selected executable/source/home/custody and the direct wrapper-to-child ancestry;
+status compares the actual daemon PID/daemon.port. Repeated pair/file validation
+through serving/import holds on absent, reused, unrelated or moving identity.
+Closed identities are saved separately from private process environment contents.
+Existing serving/runtime/org/health/audit and actual UI bytes plus
 human page observation must establish required facts. The current memory loaded
 identity covers selected functions, not all workflow compatibility owners; missing
 coverage holds import for the original serving observer. No fabricated attestation

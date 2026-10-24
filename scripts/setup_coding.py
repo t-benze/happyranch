@@ -18,6 +18,7 @@ import sqlite3
 import stat
 import subprocess
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import quote
@@ -186,65 +187,95 @@ class Coordinator:
                 'pyvenv': digest(read_file(self.source / '.venv/pyvenv.cfg')), 'version': sys.version}
 
     def command(self, argv, *, cwd=None, accept=(0,), private=False):
-        """Bounded streams, exact exit, no shell, no retry or effect cleanup."""
+        """Persist intent before launch and bounded observed results before return."""
         import tempfile
-        # Temporary streams bound RAM; stop the original child on output/time
-        # overflow but retain uncertainty. Never proceed after such a result.
-        import time
-        base = self.receipts
-        with tempfile.TemporaryFile(dir=base) as out, tempfile.TemporaryFile(dir=base) as err:
-            child = subprocess.Popen(argv, cwd=cwd or self.source, stdout=out, stderr=err)
-            deadline = time.monotonic() + 1800
-            uncertain = False
-            try:
-                while child.poll() is None:
-                    if out.tell() > _LIMIT or err.tell() > _LIMIT or time.monotonic() > deadline:
-                        uncertain = True
-                        child.terminate()
-                        try:
-                            child.wait(timeout=10)
-                        except subprocess.TimeoutExpired:
-                            child.kill()
-                            child.wait()
-                        break
-                    time.sleep(.1)
-            except BaseException:
-                child.terminate()
-                try:
-                    child.wait(timeout=10)
-                except subprocess.TimeoutExpired:
-                    child.kill()
-                    child.wait()
-                raise
-            out.seek(0)
-            err.seek(0)
-            stdout, stderr = out.read(_LIMIT + 1), err.read(_LIMIT + 1)
-        if len(stdout) > _LIMIT or len(stderr) > _LIMIT:
-            uncertain = True
-        result = {'argv': [str(x) for x in argv], 'cwd': str(cwd or self.source),
-                  'exit': child.returncode, 'stdout_digest': digest(stdout), 'stderr_digest': digest(stderr),
-                  'uncertain': uncertain}
-        if private:
-            # Migration/import outputs have closed diagnostics. Lifecycle failure
-            # output can include arbitrary daemon.log bodies, so retain its
-            # digests only and leave the original log with its existing owner.
-            lifecycle = 'scripts/daemon.sh' in argv
-            safe_lifecycle = stdout in (b'daemon stopped\n', b'not running\n', b'daemon not running\n', b'daemon force-killed\n')
-            if not lifecycle or safe_lifecycle:
-                result.update(stdout=stdout.decode('utf8', errors='replace'), stderr=stderr.decode('utf8', errors='replace') if not lifecycle else '')
-        self.commands.append(result)
+        lifecycle = 'scripts/daemon.sh' in argv
+        if lifecycle and not self.receipts:
+            raise Hold('durable pre-stop evidence unavailable; no lifecycle effect')
+        intent = {'argv': [str(x) for x in argv], 'cwd': str(cwd or self.source),
+                  'requested_at': datetime.now(timezone.utc).isoformat(),
+                  'last_accepted_layout': self.last_layout}
+        if lifecycle and argv[-1] == 'start':
+            intent['start_floor'] = self.start_floor
+        if lifecycle and hasattr(self, 'original_process'):
+            intent['original_daemon_process'] = self.original_process
+        prefix = None
         if self.receipts:
             self.counter += 1
-            exclusive(self.receipts / f'command-{self.counter:03d}.json', canonical(result))
-            # Only original known migration/lifecycle/CLI diagnostics are stored
-            # verbatim. Package output can contain credentials/registry URLs.
-            if private and 'stdout' in result:
-                exclusive(self.receipts / f'command-{self.counter:03d}.stdout', stdout)
-                exclusive(self.receipts / f'command-{self.counter:03d}.stderr', stderr)
-        if uncertain or child.returncode not in accept:
-            raise Hold(f'command {argv[0]} {argv[1:]} exit={child.returncode}, uncertain={uncertain}; '
-                       f'last accepted layout {self.last_layout}; preserve original command/owner; evidence {self.receipts}')
-        return child.returncode, stdout.decode('utf8', errors='strict'), stderr.decode('utf8', errors='strict')
+            prefix = self.receipts / f'command-{self.counter:03d}'
+            # An intent without a result is deliberately unresolved. Failure to
+            # durably save intent prevents Popen, including the original stop.
+            exclusive(prefix.with_suffix('.intent.json'), canonical(intent))
+        child, failure, cleanup_failure = None, None, None
+        stdout, stderr = b'', b''
+        sizes, exit_code, reason = None, None, None
+        try:
+            with tempfile.TemporaryFile(dir=self.receipts) as out, tempfile.TemporaryFile(dir=self.receipts) as err:
+                try:
+                    child = subprocess.Popen(argv, cwd=cwd or self.source, stdout=out, stderr=err)
+                    deadline = time.monotonic() + 1800
+                    while child.poll() is None:
+                        if max(os.fstat(out.fileno()).st_size, os.fstat(err.fileno()).st_size) > _LIMIT:
+                            reason = 'output_limit'
+                            break
+                        if time.monotonic() > deadline:
+                            reason = 'timeout'
+                            break
+                        time.sleep(.1)
+                except BaseException as exc:
+                    failure = exc
+                    reason = 'interrupted' if isinstance(exc, KeyboardInterrupt) else 'subprocess_observation_failed'
+                finally:
+                    if child is not None:
+                        try:
+                            if child.poll() is None:
+                                child.terminate()
+                                try:
+                                    child.wait(timeout=10)
+                                except subprocess.TimeoutExpired:
+                                    child.kill()
+                                    child.wait(timeout=10)
+                            exit_code = child.returncode
+                        except BaseException as exc:
+                            cleanup_failure = type(exc).__name__
+                            reason = reason or 'child_closure_unobserved'
+                    sizes = [os.fstat(stream.fileno()).st_size for stream in (out, err)]
+                    out.seek(0)
+                    err.seek(0)
+                    stdout, stderr = out.read(_LIMIT), err.read(_LIMIT)
+        except BaseException as exc:
+            failure = failure or exc
+            reason = reason or ('interrupted' if isinstance(exc, KeyboardInterrupt) else 'command_capture_failed')
+        complete = sizes == [len(stdout), len(stderr)]
+        if not complete:
+            reason = reason or 'output_capture_incomplete'
+        result = dict(intent, finished_observation_at=datetime.now(timezone.utc).isoformat(),
+                      exit=exit_code, exit_observed=exit_code is not None,
+                      launch_observed=child is not None, child_pid=child.pid if child is not None else None,
+                      stdout_digest=digest(stdout), stderr_digest=digest(stderr),
+                      captured_bytes=[len(stdout), len(stderr)], observed_stream_bytes=sizes,
+                      streams_complete=complete, uncertain=reason is not None, uncertainty=reason,
+                      failure_type=type(failure).__name__ if failure else None, cleanup_failure=cleanup_failure)
+        if lifecycle:
+            # Arbitrary daemon.log tails and private stderr stay in original
+            # custody. Even a known stdout must not cause raw stderr to leak.
+            result['original_log'] = str(self.home / 'daemon.log')
+            safe = stdout in (b'daemon stopped\n', b'not running\n', b'daemon not running\n', b'daemon force-killed\n')
+            safe = safe or re.fullmatch(rb'(daemon started|running) \(pid [1-9][0-9]*, port [1-9][0-9]*\)\n', stdout) is not None
+            if complete and safe:
+                result['stdout'] = stdout.decode('utf8')
+        elif private and complete:
+            result.update(stdout=stdout.decode('utf8', errors='replace'), stderr=stderr.decode('utf8', errors='replace'))
+        self.commands.append(result)
+        if prefix:
+            exclusive(prefix.with_suffix('.json'), canonical(result))
+            if private and not lifecycle and complete:
+                exclusive(prefix.with_suffix('.stdout'), stdout)
+                exclusive(prefix.with_suffix('.stderr'), stderr)
+        if reason is not None or exit_code not in accept:
+            raise Hold(f'command {argv[0]} {argv[1:]} exit={exit_code}, uncertainty={reason}; '
+                       f'last accepted layout {self.last_layout}; preserve original command/owner; evidence {self.receipts}') from None
+        return exit_code, stdout.decode('utf8', errors='strict'), stderr.decode('utf8', errors='strict')
 
     def prepare_source(self):
         git = self.tools['git']['path']
@@ -299,14 +330,20 @@ class Coordinator:
                 or {o['path']: o['layout'] for o in current['orgs']} != expected):
             raise Hold('runtime/org/database membership or identity changed')
         self.process_boundary(offline=offline)
+        if not offline and hasattr(self, 'started'):
+            self.revalidate_start()
         if not offline:
             self.live_scope()
+            if hasattr(self, 'started'):
+                self.revalidate_start()
         return current
 
     def live_scope(self):
         """Supplement durable history with actual serving/native observations."""
         from cli.client.client import OpcClient
         with OpcClient.from_env() as client:
+            if hasattr(self, 'started') and client.base_url != f'http://127.0.0.1:{self.started["port"]}':
+                raise Hold('serving client port differs from authenticated daemon; import held')
             health = client.get('/api/v1/health')
             if health.status_code != 200 or health.json().get('active_runtime') != str(self.runtime):
                 raise Hold('original serving runtime observation unavailable/mismatched')
@@ -395,8 +432,33 @@ class Coordinator:
         if input(text + '\nType CONFIRM to continue: ') != 'CONFIRM':
             raise Hold('human confirmation declined; no next effect')
 
+    def initialize_receipts(self) -> None:
+        """After host/maintenance confirmation, before any lifecycle effect."""
+        if self.backup.parent == self.home / 'operator-backups' and not self.backup.parent.exists():
+            self.backup.parent.mkdir(mode=0o700)
+        literal(self.backup.parent)
+        self.backup.mkdir(mode=0o700)
+        if self.backup.lstat().st_uid != os.getuid() or stat.S_IMODE(self.backup.lstat().st_mode) != 0o700:
+            raise Hold('exclusive recovery destination custody/mode unavailable')
+        receipts = self.backup / 'receipts'
+        receipts.mkdir(mode=0o700)
+        self.receipts = receipts
+        exclusive(self.backup / 'INCOMPLETE.json', canonical({
+            'complete': False, 'phase': 'receipts-only; backup not yet started',
+            'source': self.source_pin, 'installation': self.frozen,
+            'last_accepted_layout': self.last_layout,
+            'recovery': 'preserve intent/results and original logs/owners; no automatic restart/restore/replay'}))
+        for directory in (self.home, self.backup.parent):
+            fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            try:
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+        print(f'   Recovery evidence: {self.receipts}; backup INCOMPLETE until manifest.json')
+
     def stop(self):
         self.revalidate()
+        self.initialize_receipts()
         path = self.home / 'daemon.pid'
         if not path.exists():
             raise Hold('already-stopped installation lacks positive original lifecycle closure; original host owner must reconcile; no PID-absence inference')
@@ -423,20 +485,14 @@ class Coordinator:
     def backup_inventory(self):
         """Complete stopped-window copies, with SQLite backup rather than copydb."""
         self.revalidate(offline=True)
-        # Only the default private container may be created; custom parents must
-        # already exist. Do not recursively create arbitrary operator paths.
-        if self.backup.parent == self.home / 'operator-backups' and not self.backup.parent.exists():
-            self.backup.parent.mkdir(mode=0o700)
-        literal(self.backup.parent)
-        self.backup.mkdir(mode=0o700)
-        if self.backup.lstat().st_uid != os.getuid() or stat.S_IMODE(self.backup.lstat().st_mode) != 0o700:
-            raise Hold('exclusive recovery destination custody/mode unavailable')
-        self.receipts = self.backup / 'receipts'
-        self.receipts.mkdir(mode=0o700)
+        # Reuse the exclusive pre-stop receipt directory. It is not a backup
+        # until the full inventory and copies have closed below.
+        if self.receipts != self.backup / 'receipts':
+            raise Hold('pre-stop recovery evidence unavailable; no backup/preparation')
         inventory = {'complete': False, 'source': self.source_pin, 'installation': self.frozen,
                      'tools': self.tools, 'python': self.python_pin, 'commands_before_backup': self.commands[:], 'files': [],
                      'restore': 'manual original-owner operation only; preserve credential custody; pre-J code must never boot J'}
-        exclusive(self.backup / 'INCOMPLETE.json', canonical(inventory))
+        exclusive(self.backup / 'BACKUP-STARTED.json', canonical(inventory))
         dest = self.backup / 'files'
         dest.mkdir(mode=0o700)
         count = 0
@@ -660,6 +716,95 @@ class Coordinator:
         self.run_transition(('I',), 'J', 'migrate_workflow_coding_schema.py', args, 3,
                             'migration-needed: ' + coding_migration_guidance())
 
+    def launch_process(self, pid: int, kind: str, rows: dict) -> dict:
+        """Bind one checked Linux observation to executable/source/home custody."""
+        row = rows.get(pid)
+        if row is None or row.start_identity is None or row.ppid is None:
+            raise Hold(f'{kind} process identity/ancestry unavailable; no import/restart')
+        proc = Path('/proc') / str(pid)
+        def stat_fields() -> tuple[str, str]:
+            raw = (proc / 'stat').read_text()
+            fields = raw[raw.rfind(')') + 2:].split()
+            if (len(fields) < 20 or fields[0] in ('Z', 'X')
+                    or (int(fields[1]), fields[19]) != (row.ppid, row.start_identity)):
+                raise Hold(f'{kind} process moved/reused/dead; original lifecycle owner must reconcile')
+            return fields[1], fields[19]
+        before = stat_fields()
+        if proc.stat().st_uid != os.getuid():
+            raise Hold(f'{kind} process custody differs from original human owner')
+        def bounded(name: str) -> bytes:
+            with (proc / name).open('rb') as stream:
+                raw = stream.read(_LIMIT + 1)
+            if len(raw) > _LIMIT:
+                raise Hold(f'{kind} process observation oversized')
+            return raw
+        command = bounded('cmdline').split(b'\0')
+        if command[-1:] != [b'']:
+            raise Hold(f'{kind} command identity unobservable')
+        command = command[:-1]
+        expected = [b'-m', b'runtime.daemon', b'--reader-guarded-start=online-team-move@3']
+        tail = [b'run', b'python', *expected] if kind == 'wrapper' else expected
+        if len(command) != len(tail) + 1 or command[1:] != tail:
+            raise Hold(f'{kind} is not the original lifecycle command')
+        environment = bounded('environ').split(b'\0')
+        env = dict(value.split(b'=', 1) for value in environment if b'=' in value)
+        if (any(key.encode() in env for key in _MARKERS)
+                or env.get(b'HOME') != str(Path.home()).encode()
+                or (env.get(b'HAPPYRANCH_DAEMON_HOME') or str(Path.home() / '.happyranch').encode()) != str(self.home).encode()
+                or any(key.encode() in env for key in ('PYTHONPATH', 'PYTHONHOME', 'UV_PROJECT_ENVIRONMENT', 'UV_PYTHON', 'UV_WORKING_DIRECTORY', 'UV_PROJECT'))):
+            raise Hold(f'{kind} home/environment attribution differs or is unavailable')
+        executable = os.readlink(proc / 'exe')
+        cwd = os.readlink(proc / 'cwd')
+        pin = self.tools['uv'] if kind == 'wrapper' else self.python_pin
+        actual = os.stat(proc / 'exe')
+        actual_identity = (actual.st_dev, actual.st_ino, actual.st_mode, actual.st_uid, actual.st_nlink)
+        if (cwd != str(self.source) or executable != pin['target']
+                or actual_identity != tuple(pin['identity']) or self.hash_file(proc / 'exe') != pin['sha256']):
+            raise Hold(f'{kind} executable/source/custody mismatch')
+        if (before != stat_fields() or os.readlink(proc / 'exe') != executable
+                or os.readlink(proc / 'cwd') != cwd or bounded('cmdline').split(b'\0')[:-1] != command
+                or bounded('environ').split(b'\0') != environment):
+            raise Hold(f'{kind} process moved during attribution')
+        # No raw environment/command payload is saved. Only closed identities.
+        return {'pid': pid, 'start_identity': row.start_identity, 'ppid': row.ppid,
+                'executable': executable, 'executable_identity': actual_identity,
+                'cwd': cwd, 'home': str(self.home), 'uid': os.getuid()}
+
+    def started_processes(self, wrapper_pid: int, port: int) -> dict:
+        file_pins = {name: identity(self.home / name) for name in ('daemon.pid', 'daemon.port')}
+        if any(pin[3] != os.getuid() for pin in file_pins.values()):
+            raise Hold('original daemon pid/port custody mismatch; import held')
+        pid_raw = read_file(self.home / 'daemon.pid', 64)
+        port_raw = read_file(self.home / 'daemon.port', 64)
+        if (re.fullmatch(rb'[1-9][0-9]{0,9}\n?', pid_raw) is None
+                or port_raw.strip() != str(port).encode() or not 1 <= port <= 65535):
+            raise Hold('original daemon pid/port file mismatch; import held')
+        pid = int(pid_raw)
+        rows = {r.pid: r for r in checked_processes()}
+        wrapper = self.launch_process(wrapper_pid, 'wrapper', rows)
+        daemon = self.launch_process(pid, 'daemon', rows)
+        for process in (wrapper, daemon):
+            key = (process['pid'], process['start_identity'])
+            if (key in self.before_start or key == self.original_process
+                    or int(process['start_identity']) < self.start_floor):
+                raise Hold('start reported an existing/reused/unattributed original process; import held')
+        if (pid == wrapper_pid or daemon['ppid'] != wrapper_pid
+                or int(daemon['start_identity']) < int(wrapper['start_identity'])):
+            raise Hold('original uv wrapper/Python child relationship unavailable; import held')
+        later = {r.pid: r for r in checked_processes()}
+        if (self.launch_process(wrapper_pid, 'wrapper', later) != wrapper
+                or self.launch_process(pid, 'daemon', later) != daemon
+                or read_file(self.home / 'daemon.pid', 64) != pid_raw
+                or read_file(self.home / 'daemon.port', 64) != port_raw
+                or {name: identity(self.home / name) for name in file_pins} != file_pins):
+            raise Hold('original start identities or pid/port files moved; import held')
+        return {'wrapper': wrapper, 'daemon': daemon, 'port': port, 'files': file_pins,
+                'start_floor': self.start_floor, 'original_pair_absent_before_start': True}
+
+    def revalidate_start(self) -> None:
+        if self.started_processes(self.started['wrapper']['pid'], self.started['port']) != self.started:
+            raise Hold('original started pair changed; original lifecycle owner must reconcile; no import/restart')
+
     def serving(self):
         """Use existing observations; missing compatibility coverage holds import."""
         from cli.client.client import OpcClient
@@ -667,6 +812,8 @@ class Coordinator:
         if self.ui_inventory() != self.ui:
             raise Hold('prepared served artifact moved')
         with OpcClient.from_env() as client:
+            if hasattr(self, 'started') and client.base_url != f'http://127.0.0.1:{self.started["port"]}':
+                raise Hold('serving client port differs from authenticated daemon; import held')
             health = client.get('/api/v1/health')
             if health.status_code != 200 or health.json().get('active_runtime') != str(self.runtime):
                 raise Hold('serving runtime does not match selected registry')
@@ -711,6 +858,8 @@ class Coordinator:
             # equality. Do not accept a checkbox to override missing code facts.
             port = read_file(self.home / 'daemon.port', 64).decode().strip()
             self.confirm(f'Open http://127.0.0.1:{port}/orgs/{self.args.org}/settings/coding in your browser. Confirm the actual Coding page renders, not a placeholder/error. Loaded owner and asset checks above remain required.')
+
+        self.revalidate_start()
 
     def import_release(self):
         from runtime.workflows._coding_release_history import parse_import_command
@@ -774,20 +923,21 @@ class Coordinator:
         self.migrate()
         print('6. Starting selected compatible source once')
         self.revalidate(offline=True)
+        self.before_start = {(r.pid, r.start_identity) for r in checked_processes()}
+        self.start_floor = int(time.clock_gettime(time.CLOCK_BOOTTIME) * os.sysconf('SC_CLK_TCK'))
         code, out, err = self.command([self.tools['bash']['path'], 'scripts/daemon.sh', 'start'], private=True)
         started = re.fullmatch(r'daemon started \(pid ([1-9][0-9]*), port ([1-9][0-9]*)\)\n', out)
         if started is None or err:
             raise Hold('original start returned an unexpected result; preserve original host owner, no automatic restart/import')
-        pid, port = (int(x) for x in started.groups())
-        process = next((r for r in checked_processes() if r.pid == pid), None)
-        if (process is None or (process.pid, process.start_identity) == self.original_process
-                or read_file(self.home / 'daemon.pid', 64).strip() != str(pid).encode()
-                or read_file(self.home / 'daemon.port', 64).strip() != str(port).encode()):
-            raise Hold('original new start/process/port identity unavailable; import held')
+        wrapper_pid, port = (int(x) for x in started.groups())
+        self.started = self.started_processes(wrapper_pid, port)
+        exclusive(self.receipts / 'started-processes.json', canonical(self.started))
         self.boots = None  # Only this accepted original start permits a new boot.
         code, out, err = self.command([self.tools['bash']['path'], 'scripts/daemon.sh', 'status'], private=True)
+        self.revalidate_start()
+        pid = self.started['daemon']['pid']
         if out != f'running (pid {pid}, port {port})\n' or err:
-            raise Hold('original new status mismatches actual start; import held')
+            raise Hold('original new status mismatches actual daemon PID/port; import held')
         self.serving()
         print('7. Checking original human release import')
         self.import_release()
@@ -853,7 +1003,8 @@ def main(argv=None):
             message = f'{type(exc).__name__}: observation/command unavailable; original owner must reconcile'
         print('Setup held: ' + message, file=sys.stderr)
         if coordinator:
-            print(f'Last accepted layout: {coordinator.last_layout}; recovery: {coordinator.backup}; '
+            print(f'Last accepted layout: {coordinator.last_layout}; recovery evidence: {coordinator.receipts or "not initialized (no lifecycle effect permitted)"}; '
+                  f'backup candidate: {coordinator.backup} (complete only with manifest.json); '
                   f'original import: {coordinator.import_file}. No automatic restore/restart/replay. Keep originals.', file=sys.stderr)
         return 1
 

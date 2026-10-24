@@ -3595,12 +3595,23 @@ stopped host without positive original closure, stale/KILL stop, unavailable
 native observation or earlier-layout profile/recovery owner with no
 supported complete closure composition gives an original-owner hold.
 
+After clearance, confirmation and revalidation, the private recovery directory
+is initialized before stop. command-NNN.intent.json is durable before invocation;
+command-NNN.json records the observed exit (null if unobserved), launch/closure
+uncertainty, stream sizes and bounded digests. Incomplete captures explicitly
+identify prefix-only evidence. Lifecycle stderr/arbitrary log bodies remain with
+the original log owner; only closed safe stdout is retained. An intent without a
+result remains unresolved after interruption/crash or failed persistence; it never
+authorizes replay. Receipt failure prevents the next effect. The printed existing
+receipt path is recovery evidence, not a complete backup or proof of stop closure.
+
 Under a cleared stopped window the command inventories all affected durable
 files/DBs/config/source/environment/UI and writes exclusive 0700/0600 recovery
 material. SQLite backup includes committed WAL and checks integrity/FKs; original
 WAL/SHM remain. Credential contents are never copied/read; custody stays unchanged.
 Aliases, unaccounted files, drift or incomplete inventory prevent dependency/UI
-and migration writes. `INCOMPLETE.json` is the initial observation; only a full
+and migration writes. `INCOMPLETE.json` marks the receipt-only directory before stop;
+`BACKUP-STARTED.json` begins the inventory without replacing pre-stop receipts. Only a full
 `manifest.json` establishes complete backup. `FAILED.json`, when available,
 retains partial mapping. Each saved file records its exact original restore path,
 identity and hash. Recovery is manually owned, never automatic restore/replay;
@@ -3612,6 +3623,14 @@ dist must equal that checkout's web/dist. Needed original migrations run singly,
 requiring exact needed exits/diagnostics, writer0, original post-check0 and full
 exact targets before the next step. A failed/uncertain step leaves last accepted
 layout/command evidence and original recovery owner; no automatic restart.
+
+Start prints the uv wrapper PID; daemon.pid contains its Python child PID.
+The coordinator authenticates both against checked process observations, selected
+executables/source/home/custody, the pre-start boundary and direct parent/start
+relationship. Status must report the actual daemon PID and daemon.port value.
+Repeated pair/file observations bracket status and serving/import checks; absent,
+unrelated, reused or moving identities hold without restart. The saved
+receipts/started-processes.json contains only closed identity evidence.
 
 After one start, missing actual boot/loaded-workflow/source/org/UI observations
 hold import. Current memory loaded fingerprints are partial; they cannot attest
