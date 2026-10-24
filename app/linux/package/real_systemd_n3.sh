@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# Incomplete LOCAL N3 campaign: authentic trust setup is unmet; no run allocated.
+# Incomplete N3: selected614 removes BOTH-absence-only obstruction in SOURCE.
+# THR228seq621 / ROOT12797: new grant0/1 before publication; prior grants exhausted.
+# Manager alone owns the one automatic PR800 attempt; compile is no runtime proof.
 # Retired rollback/credential-negative/overlap evidence stays absent under schema4.
 # First prerequisite refusal remains nonzero; downstream positives are conditional.
 # No complete/PASS artifact or equivalent keeper is supplied by these reductions.

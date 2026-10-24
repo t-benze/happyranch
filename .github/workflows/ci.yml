@@ -51,9 +51,9 @@ jobs:
 
   managed-n3-real-systemd:
     name: Managed N3 Real systemd (Ubuntu 24.04)
-    # THR228seq514/523 conditional FINAL candidate after FAILED39124834332/1:
-    # exactly ONE PR800 synchronization from ef586038, attempt1. LOCAL source
-    # grants no publication; ROOT11824 must renew full review and same-head QA.
+    # THR228seq621 / ROOT12797: new allocation0/1 before publication; prior
+    # grants exhausted. Exactly ONE PR800 synchronization from1045f94a,
+    # attempt1, after fresh full local review/QA. Compile is no runtime proof.
     # Later updates, reopen/main/manual/rerun events
     # cannot renew this allocation. before/after belong to synchronize payloads.
     if: >-
@@ -64,7 +64,7 @@ jobs:
           github.event.pull_request.head.repo.full_name == github.repository &&
           github.event.pull_request.head.ref == 'task/TASK-6475' &&
           github.event.pull_request.base.ref == 'main' &&
-          github.event.before == 'ef586038b9fc1ba6bb830b36a6998165fab41dae' &&
+          github.event.before == '1045f94a0072bfe4ea04c52c5256584e2dff821d' &&
           github.event.after != '' &&
           github.event.after != github.event.before &&
           github.event.after == github.event.pull_request.head.sha &&
@@ -97,7 +97,7 @@ jobs:
               and head.get("ref") == "task/TASK-6475"
               and head.get("repo", {}).get("full_name") == "t-benze/happyranch"
               and base.get("ref") == "main"
-              and event.get("before") == "ef586038b9fc1ba6bb830b36a6998165fab41dae"
+              and event.get("before") == "1045f94a0072bfe4ea04c52c5256584e2dff821d"
               and isinstance(after, str) and re.fullmatch(r"[0-9a-f]{40}", after) is not None
               and after != event["before"] and after == head.get("sha")
           )
@@ -108,6 +108,10 @@ jobs:
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           ref: ${{ github.event.after }}
+      - name: Validate checked out allocation subject before build preparation
+        env:
+          N3_SUBJECT_SHA: ${{ github.event.after }}
+        run: test "$(git rev-parse HEAD)" = "$N3_SUBJECT_SHA"
       - name: Install uv
         uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
         with:

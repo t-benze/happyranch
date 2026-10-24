@@ -152,8 +152,10 @@ func (s *Sidecar) Start(ctx context.Context) error {
 	// This deadline begins at entry, including credential and engine work.
 	// Serving retains ctx; cancelling startup must not cancel accepted proxies.
 	deadline := time.Now().Add(startupBudget)
-    if s.managed != nil && s.managed.startupDeadline.Before(deadline) {deadline=s.managed.startupDeadline}
-    startup, cancel := context.WithDeadline(ctx, deadline)
+	if s.managed != nil && s.managed.startupDeadline.Before(deadline) {
+		deadline = s.managed.startupDeadline
+	}
+	startup, cancel := context.WithDeadline(ctx, deadline)
 	defer cancel()
 	if err := startupContextError(startup); err != nil {
 		return terminalNetworkFailure(err)
@@ -235,7 +237,9 @@ func (s *Sidecar) Start(ctx context.Context) error {
 	var l net.Listener
 	if s.managed != nil {
 		err = s.managed.Admission(startup, func() error {
-			if startupContextError(startup) != nil { return ErrListener }
+			if startupContextError(startup) != nil {
+				return ErrListener
+			}
 			l, err = s.engine.Listen(s.cfg.ListenAddr)
 			return err
 		})
@@ -269,29 +273,46 @@ func (s *Sidecar) Start(ctx context.Context) error {
 			for {
 				select {
 				case <-ctx.Done():
-                    var cause error
-                    if s.managed.failed.Load(){cause=ErrListener}
-                    go s.shutdown(cause);return
-				case <-s.monitorStop: return
+					var cause error
+					if s.managed.failed.Load() {
+						cause = ErrListener
+					}
+					go s.shutdown(cause)
+					return
+				case <-s.monitorStop:
+					return
 				case <-ticker.C:
-					s.mu.Lock(); stopping := s.stopping; s.mu.Unlock()
-					if stopping { return }
-					check, cancelCheck := context.WithTimeout(ctx,time.Second)
+					s.mu.Lock()
+					stopping := s.stopping
+					s.mu.Unlock()
+					if stopping {
+						return
+					}
+					check, cancelCheck := context.WithTimeout(ctx, time.Second)
 					engine, ok := s.engine.(*TSNetEngine)
-					engineHealthy := ok && engine.managedHealthy(check,s.cfg)
-                    // A known local negative vetoes admission BEFORE Check can
-                    // wait for the common lock. Record/signal delivery to the
-                    // wrapper remains a separate bounded observation.
-                    if !engineHealthy { s.managed.observe(check,ErrLifecycle) }
-                    guardErr:=s.managed.Check(check)
-                    healthy:=engineHealthy && guardErr==nil
+					engineHealthy := ok && engine.managedHealthy(check, s.cfg)
+					// A known local negative vetoes admission BEFORE Check can
+					// wait for the common lock. Record/signal delivery to the
+					// wrapper remains a separate bounded observation.
+					if !engineHealthy {
+						s.managed.observe(check, ErrLifecycle)
+					}
+					guardErr := s.managed.Check(check)
+					healthy := engineHealthy && guardErr == nil
 					cancelCheck()
-                    if ctx.Err()!=nil{
-                        var cause error
-                        if s.managed.failed.Load(){cause=ErrListener}
-                        go s.shutdown(cause);return
-                    }
-					if !healthy { s.managed.observe(check,ErrLifecycle); go s.shutdown(ErrListener); return }
+					if ctx.Err() != nil {
+						var cause error
+						if s.managed.failed.Load() {
+							cause = ErrListener
+						}
+						go s.shutdown(cause)
+						return
+					}
+					if !healthy {
+						s.managed.observe(check, ErrLifecycle)
+						go s.shutdown(ErrListener)
+						return
+					}
 				}
 			}
 		}()
@@ -492,9 +513,9 @@ func (s *Sidecar) acceptLoop(ctx context.Context, l net.Listener) {
 			deliberate := s.stopping
 			s.mu.Unlock()
 			if !deliberate {
-                if s.managed!=nil{
-                    s.managed.observe(ctx,ErrListener)
-                }
+				if s.managed != nil {
+					s.managed.observe(ctx, ErrListener)
+				}
 				go s.shutdown(ErrListener)
 			}
 			return

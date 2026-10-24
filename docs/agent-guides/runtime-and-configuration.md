@@ -1,5 +1,24 @@
 # Runtime And Configuration
 
+**Current PR800 allocation — THR228seq621 / sole ROOT TASK-12797.**
+The new grant is **0/1 used before publication**; every prior grant remains
+exhausted. The manager alone may publish one reviewed PR800 update and collect
+its single automatic N3 attempt1, then report the actual result before further
+repair or rerun. The update must synchronize same-repository `task/TASK-6475`
+to `main` from verified old head `1045f94a0072bfe4ea04c52c5256584e2dff821d`
+to a distinct valid40hex event after equal to the actual PR head and checkout/
+proof subject. Manual, reopen, main, rerun and later-update events refuse.
+TASK-12798 performs only authorized local compile/lint preparation; it does not
+publish or spend the run. Source/compile approval is not runtime, crash/reboot,
+restart, installer or N6 acceptance. Earlier ROOT12232/11824 and allocation/hold
+passages retain their historical scope; seq621 supersedes the local compile and
+one-update/run holds only as stated here. No merge or deployment is authorized.
+Selected614 removes the BOTH-positive-absence-only trust obstruction in source;
+all other prerequisites still decide admission. The reduced campaign retains
+uncovered assertions and an unconditional incomplete/nonzero terminal refusal;
+no full PASS or actual reboot proof follows. Lint/static gates and separate
+Product E2E policy remain unchanged. This documentary record grants no run.
+
 <!-- K3a result-owned queued bootstrap: TASK12003 / ROOT10693 step87 -->
 ## Result-owned coding start and queued ownership (K3a)
 
