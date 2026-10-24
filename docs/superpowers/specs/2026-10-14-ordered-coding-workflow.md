@@ -2403,3 +2403,73 @@ separately root-routed scoped QA remain required; the actual entitled final
 manager alone owns expected-head/non-admin guarded merge and independent remote
 confirmation in its own live session before callback. No schema/auth/permission/
 grant/restart/deploy/live experiment, self-merge or cleanup is authorized here.
+
+## Guided host setup (THR320seq162, sole ROOT12877)
+
+The human entry from the reviewed published checkout is
+`python3 scripts/setup_coding.py --org happyranch`. This is an explicit sequential
+host coordinator in `scripts/setup_coding.py` with read-only all-layout maintenance
+composition in `scripts/_coding_setup_preflight.py`. Existing migration/validator,
+lifecycle, human CLI and Settings owners retain their contracts. There is no
+implicit startup migration, browser import action or readiness change.
+
+The command denies managed/unknown host attribution using stdlib before product
+imports, client/credential access or receipt creation. It freezes literal source,
+registry/all-runtime/org/DB/environment/tool/UI identities, preserves `.codegraph`
+without traversal, and refuses dirty/unaccounted source or active/UNKNOWN durable,
+native, outer, schedule, publication/profile, Pause/move/recovery ownership.
+F is authenticated as F and never passed to an I-only idle query. Missing original
+native closure stays unknown even for terminal tasks, absent PIDs or expired leases.
+Earlier-layout profile/recovery histories without a complete supported
+ownership composition retain their original owner hold. No settlement writer runs.
+
+After positive observations and human coordination, every effect revalidates the
+same membership, ownership and source. Original stop must positively close;
+stale/force-killed/ambiguous outcomes stop. Exclusive private recovery inventory
+covers affected registered runtime/org/config/durable DB/files, old source,
+environment and served UI. SQLite backup includes committed WAL, validates
+integrity/FKs and preserves originals. Credentials remain in existing custody,
+identity-only; aliases/unaccounted affected paths and incomplete backup refuse.
+No restore is automatic; restore/rollback is unexecuted, and pre-J code must never
+boot J. Exclusion is cooperative, without a new maintenance reservation.
+
+Only then: locked uv sync with the existing Python/no downloads, Node24/npm ci,
+and the matching original build_web local/production profile. One needed original
+F/E→G→H→I→J transition runs at a time: submission/coding needed3 versus handoff/
+revision needed1 with exact shipped stdout and empty stderr. Writer0, original
+post-check0 and complete exact target validation precede the next writer/start.
+Already-later layouts use full current readers; populated J is never certified
+by an empty-J message. Failed/uncertain commands retain last accepted layout and
+original owner, with no writer replay or automatic restart.
+
+Start runs once. Existing serving/runtime/org/health/audit and actual UI bytes plus
+human page observation must establish required facts. The current memory loaded
+identity covers selected functions, not all workflow compatibility owners; missing
+coverage holds import for the original serving observer. No fabricated attestation
+or new observation endpoint is introduced. HTTP200/SPA fallback/disk HEAD alone
+never produce success. Observability/closure limits can prevent this host from
+completing setup even though source is published.
+
+Import transparently uses the existing human release-import-show/release-import
+CLI and closed receipt/parser. Only exit1, empty stdout and exactly
+`error (404): coding_release_import_not_found` is absence. Saved admitted receipts
+skip POST. Fresh absence needs human confirmation of no prior/uncertain operation,
+exclusive canonical original file/readback/fsync and adjacent send-intent before
+one original-byte POST, followed by validated GET readback. Existing files, lost
+send/output, crashes, mismatch or later absence retain originals and permit only
+readback/original-owner recovery; never automatic replay/new key. Server human
+checks, CLI-only/browser exclusion and native remote denial remain unchanged.
+
+Success hands off the actual Settings → Coding URL for metadata adoption,
+repository/object-format selection, four distinct eligible org agents across teams
+and an eligible final manager. Human keeps Admission Disabled, saves/reopens and
+uses Check original save for uncertain persistence. Setup selects no principals,
+settings or grants. Real workflow/Founder persistence/scratch/rejection/revision/
+control/cross-team/two-org/backup/restore/reopen/rollback acceptance remains NOT
+RUN/open before ordinary use. Static checks are not behavioral acceptance.
+
+SQLite owns SHM reader-coordination writes even during RO observation. Retaining
+original WAL/SHM prohibits deletion/reset/checkpoint/journal-mode changes; it does
+not promise byte-immutable SHM readmarks. Main/WAL and logical retained data are
+separate observations. New uv/npm preparation caches use the private recovery
+destination rather than modifying unrelated existing caches.

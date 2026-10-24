@@ -4470,3 +4470,37 @@ separately root-routed scoped QA remain required; the actual entitled final
 manager alone owns expected-head/non-admin guarded merge and independent remote
 confirmation in its own live session before callback. No schema/auth/permission/
 grant/restart/deploy/live experiment, self-merge or cleanup is authorized here.
+
+## Guided human host coding setup — ROOT12877 / THR320seq162
+
+From the reviewed published host checkout, a genuine human terminal may run
+`python3 scripts/setup_coding.py --org happyranch`, then use Settings → Coding.
+This explicit coordinator reuses existing lifecycle/build/migration and human
+import owners; startup/reopen/enable still never installs J. Managed markers,
+workspace/native ancestry, active or UNKNOWN all-runtime owners and unavailable
+observations refuse before setup effects. It uses the existing source environment
+for read-only F/E/G/H/I/J preflight, never live Database/OrgState constructors.
+
+Private complete recovery inventory and WAL-inclusive SQLite backups precede
+locked dependency/UI preparation and each needed original F/E→G→H→I→J writer.
+Every writer requires its exact check result, exit0, original post-check0 and
+complete exact target validation. Stop stale/KILL/unknown closure, failed backup,
+source drift or uncertain writer stops the sequence without automatic restart,
+restore or replay. This is cooperative maintenance, not a new daemon lock.
+
+Actual serving boot/source/org/UI observations precede human CLI release import.
+Current selected memory fingerprints do not cover every workflow compatibility
+owner: missing coverage gives an explicit original-serving-owner hold before
+import; health200/disk HEAD/index equality are insufficient. Exact import absence
+alone permits fresh confirmation, exclusive original canonical file and fsynced
+send intent before one POST. Existing/uncertain originals remain owned; GET
+readback never authorizes another key/replay. No browser import surface changes.
+
+The command chooses/saves/enables no roles or settings. Adopt metadata, select
+repositories/formats and four distinct eligible org agents across teams with an
+eligible final manager; keep Admission Disabled, save/reopen, and use Check
+original save for uncertainty. Source/static delivery is not host acceptance.
+Real workflow, Founder persistence, scratch/rejection/revision/control,
+cross-team/two-org, backup/restore/reopen/rollback acceptance remain NOT RUN/open
+before ordinary coding use. See the ordered-coding spec and runtime/CLI guides
+for flags, recovery receipts, explicit pinned bootstrap and observation limits.
