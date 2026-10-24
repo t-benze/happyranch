@@ -12,6 +12,7 @@ import base64
 import json
 
 from runtime.infrastructure.database import Database
+from runtime.infrastructure.db.authority_v2_attempts import _V2StartupReads
 from runtime.models import (
     AuthorityCandidate,
     AuthorityCandidatePolicyPin,
@@ -356,6 +357,10 @@ class AuthorityPolicyStore:
         self,
     ) -> list[AuthorityPolicyV2HousekeepingTarget]:
         return self._db.list_authority_policy_v2_unfinalized_attempts()
+
+    def _startup_v2_reads(self) -> _V2StartupReads:
+        """Thin forward; connection/read/phase ownership stays in Database."""
+        return self._db._authority_policy_v2_startup_reads()
 
     def get_v2_housekeeping_target(
         self, *, root_task_id: str, manager_agent: str, manager_session_id: str,

@@ -136,11 +136,18 @@ def _sweep_on_startup(
     """
     # Imported lazily to avoid a startup-time cycle (run_step → daemon types).
     from runtime.orchestrator.run_step import _capture_root_worktree_transition, _root_worktree_batch, _RootWorktreeTransitions, _ROOT_WORKTREE_OWNER_EVENTS
+    from runtime.infrastructure.db.authority_v2_attempts import _V2StartupConnectionUnsafe
     root_transitions = _RootWorktreeTransitions()
     root_tail_failed = False
+    startup_unsafe = None
     root_delivery = dict(orch=orchestrator, events=root_transitions, active=True, teardown_incomplete=False)
     root_token = _ROOT_WORKTREE_OWNER_EVENTS.set(root_delivery)
     try:
+        # A full sweep may commit in Pause/workflow/thread/batch consumers.
+        # Reject caller-owned or unknown connections before reaching any of
+        # them; this entry observation never settles or repairs caller work.
+        startup_connection = db._authority_policy_v2_startup_reads()
+        startup_connection.require_sweep_entry()
         from runtime.orchestrator.run_step import (
             TERMINAL_STATES,
             _enqueue_parent_if_waiting,
@@ -149,6 +156,7 @@ def _sweep_on_startup(
         if orchestrator is not None:
             from runtime.orchestrator.task_pause import restore_pause_preparations
             restore_pause_preparations(orchestrator)
+        startup_connection.require_sweep_entry()
         audit = AuditLogger(db)
 
         import json as _json
@@ -514,14 +522,36 @@ def _sweep_on_startup(
         if move is not None:
             recovered_tokens.extend(move.threads.runnable_tokens())
         return list(dict.fromkeys(recovered_tokens))
+    except _V2StartupConnectionUnsafe as exc:
+        startup_unsafe = exc
+        root_tail_failed = True
+        # Keep an original interrupt/SystemExit as a BaseException, with the
+        # unsafe disposition chained and the finally suppression already set.
+        for cause in exc.causes:
+            if not isinstance(cause, Exception):
+                raise cause from exc
+        raise
     except BaseException:
         root_tail_failed = True
         raise
     finally:
         root_delivery['active'] = False
-        _ROOT_WORKTREE_OWNER_EVENTS.reset(root_token)
-        _root_worktree_batch(orchestrator, root_transitions,
-            teardown_incomplete=root_tail_failed or root_delivery['teardown_incomplete'])
+        if startup_unsafe is not None:
+            # In-memory reset only. teardown_incomplete still permits DB work
+            # in the normal batch, so skip that ENTIRE batch on this path.
+            # A secondary reset/logging failure cannot hide the unsafe cause.
+            try:
+                _ROOT_WORKTREE_OWNER_EVENTS.reset(root_token)
+            except BaseException as exc:
+                startup_unsafe.causes = (*startup_unsafe.causes, exc)
+            try:
+                logger.error("startup aborted: connection unsafe; worktree cleanup incomplete")
+            except BaseException as exc:
+                startup_unsafe.causes = (*startup_unsafe.causes, exc)
+        else:
+            _ROOT_WORKTREE_OWNER_EVENTS.reset(root_token)
+            _root_worktree_batch(orchestrator, root_transitions,
+                teardown_incomplete=root_tail_failed or root_delivery['teardown_incomplete'])
 
 
 def _publish_v2_generations_on_startup(org, queue: TaskQueue) -> None:

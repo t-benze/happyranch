@@ -1666,6 +1666,27 @@ HappyRanch is an org-agnostic runtime for operating a multi-agent organization s
 
 **Current THR-279 v2 final-return diagnostic.** When the automatic v2 hook's final continuation call returns a bounded non-success status, the hook records that exact closed status and reason through the existing best-effort `authority_hook` `capture_failure` action before requesting the unchanged `final_commit_failed` refusal. A raised finalizer exception retains its distinct existing diagnostic. This changes no continuation decision, refusal code, audit action, task note, or identity semantics.
 
+**Startup refusal safety (THR308seq133/127, ROOT12801).** Private Database-owned
+startup reads freshly materialize complete ordered history per read and retain
+only optional authenticated immutable scalar anchors for exclusion. An anchored
+exact/read/refusal failure quarantines its root before bounded logging; pending
+also excludes later same-root attempts. Missing attribution fails task recovery
+globally. Readable inert admissions still use the shipping completion/parser,
+including legacy fallback, with zero writes/fence; absent admission proof alone
+is no new eligibility rule. The existing refusal writer independently authenticates
+current ownership, and only fresh committed `refused` owns its existing tails.
+No early diagnostic append/replacement writer is added; local exclusion/logs are
+not durable fencing. Actual writer phases and owned read cleanup determine clean
+recovery. Failed cleanup, unresolved raised COMMIT, replaced/unusable connection
+or unexpected transaction abort startup before later effects and suppress the
+entire daemon finally worktree batch. Caller read transactions remain untouched;
+the full sweep rejects them before Pause/workflow work. Earlier genuine commits
+remain intact. General readers/writers and generic coherent_read_view retain
+their contracts. Cross-read sharing is not implemented in this safety prerequisite.
+S1–S3/affected Q3/Q4 behavior and sensitivity remain NOT RUN/PROOF NOT RUN without
+the accepted producer/barrier/downstream observer, owned by ROOT12801; static
+checks and source review are distinct. See the schema-refusal recovery spec.
+
 Keep this file short. It is loaded at the start of every Claude Code session. Detailed reference lives in `docs/agent-guides/`; read only the guide that matches the files you are touching.
 
 **Task-scoped audit lookup (THR-278).** Generic `Database` initialization installs

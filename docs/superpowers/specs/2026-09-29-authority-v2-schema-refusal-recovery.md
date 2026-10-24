@@ -57,6 +57,75 @@ explicitly. Replays must preserve the exact result and attempt identity and
 produce no additional step audit, escalation, notification, thread follow-up,
 candidate, evaluation, child or enqueue.
 
+## Startup safety prerequisite (THR308seq133/127; ROOT12801)
+
+Private Database-owned startup composition uses fresh complete ordered history
+on every discovery and exact read, with the original strict JSON materializer.
+There is no action/stage prefilter, shortened sibling history, obligation-only
+reader or cross-read memo. General ValueError-to-None, escaping TypeError/storage
+and swallowed obligation-read behavior remain unchanged; private strict failures
+are distinguishable before those conversions.
+
+An optional frozen scalar anchor authenticates the complete canonical admitted
+attempt, original admission audit, actual INTEGER result/task/agent/SID, sealed
+binding/release/activation/selector and owner/boot tuple, including optional
+candidate linkage. Canonical agreement, deterministic IDs and stored UUIDs alone
+are insufficient. An anchor grants exclusion only, never live-owner proof,
+refusal or owner-death authority. Absent admission evidence does not impose a
+new normal eligibility gate. Shipping `completion_report_from_result_row` plus
+`_parse_next_step`, including legacy fallback, still determines inert blocked/
+non-escalate admission with zero writes and no fence. The refusal writer keeps
+its independent current authentication and existing ownership/outcome meanings.
+Finalized/continued rechecks cannot replay discovery's stale pre-final projection.
+
+Any anchored exact/read/conversion/refusal failure installs downstream fencing
+AND failed-root quarantine before bounded logging, then skips every later
+same-root exact/refusal/tail operation. Pending also excludes later same-root
+work using its existing category. Ambiguous attribution fails task recovery
+globally when the connection is affirmatively clean. Successful non-inert
+housekeeping need not quarantine legitimate siblings. Earlier inert siblings
+cannot conceal the later fence, and earlier genuine commits/tails remain intact.
+Only the freshly committed refused outcome owns existing postcommit tails;
+already_refused/owner_lost/pending never duplicate notification/parent/thread/queue
+effects. A tail exception with unknown transaction disposition aborts startup.
+
+R1 OMIT is literal: no early `_record_hook_outcome`/capture_failure append,
+replacement diagnostic writer or extra diagnostic transaction is introduced.
+Exclusion precedes logging fixed server categories with no raw exception, history,
+prose or traceback. Logging failure cannot undo quarantine. Local sets/logs are
+not durable fencing; only existing authentic residue/commits retain durability.
+Zero new diagnostic attempts is a source requirement, not three executed faults.
+
+Startup-only observation is threaded through the real refusal writer's actual
+BEGIN/COMMIT/every rollback boundary, preserving independent authentication,
+SQL/audit ordering, cleanup and ordinary callers. Successful pre-COMMIT rollback
+plus locked same usable connection checks permits root-local recovery. Failed
+early cleanup stays unsafe even after a later successful cleanup. A raised
+unresolved COMMIT is unsafe even if later autocommit is observed. Unknown,
+replaced/unusable connection or unexpected remaining transaction is sticky unsafe.
+No authority/daemon rollback retry, reconnect or repair is added.
+
+The private read composition retains a body failure while exiting the existing
+owned coherent_read_view normally, observes cleanup separately and retains both
+causes on failure. Failed exit publishes no target/anchor. Generic read-view
+behavior is unchanged. Caller-owned helpers join the exact snapshot without
+BEGIN/COMMIT/ROLLBACK; the real refusal retains transaction_owned. Full daemon
+sweep entry rejects caller-owned/unknown connections before Pause/workflow work.
+Unsafe signaling escapes broad catches; the direct consumer rethrows before
+later effects and skips the ENTIRE finally root-worktree batch, even though
+teardown_incomplete alone would still permit DB work. It resets only in-memory
+context and retains the unsafe cause if reset/logging fails. `_build_state` and
+main propagation prevent publication/app/listener/serving after this abort.
+Normal clean ordering/batching and BaseException propagation remain intact;
+earlier genuine commits are not undone and cleanup remains explicitly incomplete.
+
+Safety source/static delivery is separate from operational proof. S1–S3 and
+affected Q3/Q4 corruption/ownership/cleanup/caller/downstream assertions and
+sensitivity are NOT RUN/PROOF NOT RUN without the accepted full v2 producer,
+deterministic barriers and actual downstream observer. ROOT12801 owns that
+limitation. General integration is SKIPPED24342; Python units RETIRED. Q1/Q2/Q5
+sharing/count/bounds remain dependent work, with no query-reduction claim here.
+
 ## Non-goals
 
 This correction adds no DDL or migration, changes no existing column meaning,
