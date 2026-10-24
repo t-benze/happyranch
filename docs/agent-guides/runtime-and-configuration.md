@@ -2364,6 +2364,20 @@ Contract (founder-approved in THR-028, refined in THR-078):
    `admitted` non-escalate causal result is read-only and does not fence the
    task from ordinary recovery in that boot.
 
+   The THR308seq133/127 safety prerequisite adds private strict startup reads
+   and optional authenticated exclusion-only anchors. Attributable later
+   exact/refusal failures quarantine the root before bounded logging, skipping
+   all later same-root work; pending also excludes siblings. Ambiguous attribution
+   fails task recovery globally. No early diagnostic append is added and local
+   quarantine is not durable fencing. Unrelated roots continue only with known
+   clean owned cleanup and a usable connection. Failed cleanup or unresolved
+   COMMIT/connection state instead aborts the sweep, skips its entire finally
+   worktree batch and propagates before state publication/serving. Caller-owned
+   helpers preserve their transaction; full sweep entry refuses it before Pause
+   or workflow effects. Earlier committed effects remain, with cleanup explicitly
+   incomplete and no automatic retry/repair. See the
+   [refusal safety contract](../superpowers/specs/2026-09-29-authority-v2-schema-refusal-recovery.md).
+
 4. **Chain-leg failure.** A failed chain leg clears the chain and returns a
    decision owner to bounded wake. Passive pipeline carriers instead fail
    closed and settle through their outer fan-out barrier with causal-leaf

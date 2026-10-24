@@ -2409,6 +2409,16 @@ _V2_INTERRUPTED_STAGE_REFUSAL = {
 }
 
 
+def _v2_startup_failure_log(reason: str) -> None:
+    """Bounded server categories only; no diagnostic writer or raw failure."""
+    try:
+        logger.error("authority v2 startup exclusion: %s", reason)
+    except Exception:
+        # The exclusion was already installed. Logging supplies no durability
+        # and cannot undo it or license continued use of an unsafe connection.
+        pass
+
+
 def refuse_authority_policy_v2_pre_final_on_startup(
     db, orchestrator: "Orchestrator | None" = None,
 ) -> set[str] | None:
@@ -2428,24 +2438,49 @@ def refuse_authority_policy_v2_pre_final_on_startup(
     optional form preserves database-only test harnesses.
     """
     from runtime.orchestrator.authority_policy_store import AuthorityPolicyStore
+    from runtime.infrastructure.db.authority_v2_attempts import (
+        _V2StartupConnectionUnsafe,
+        _V2StartupEvidenceUnavailable,
+    )
 
     store = AuthorityPolicyStore(db)
+    reads = store._startup_v2_reads()
     try:
-        targets = store.list_v2_unfinalized_attempts()
+        targets = reads.discover()
+    except _V2StartupConnectionUnsafe:
+        raise
     except Exception:
-        logger.exception("authority v2 startup refusal discovery failed")
+        reads.check()
+        _v2_startup_failure_log("discovery_unavailable")
+        reads.check()
         return None
     fenced_roots: set[str] = set()
-    for discovered in targets:
+    failed_roots: set[str] = set()
+    for discovered, anchor in targets:
+        if discovered.root_task_id in failed_roots:
+            continue
+        tail_started = False
         try:
-            target = store.get_v2_housekeeping_target(
-                root_task_id=discovered.root_task_id,
-                manager_agent=discovered.manager_agent,
-                manager_session_id=discovered.manager_session_id,
-                result_id=discovered.result_id,
-            )
-            if target is None or target.attempt_id != discovered.attempt_id:
+            target, current_anchor = reads.exact(discovered)
+            if (
+                target is None
+                or target.model_dump(exclude={"stage", "finalization_state", "obligation_code"})
+                != discovered.model_dump(exclude={"stage", "finalization_state", "obligation_code"})
+                or (anchor is not None and current_anchor != anchor)
+            ):
+                raise _V2StartupEvidenceUnavailable("exact_target_changed")
+            # A newly authenticated exact tuple may also exclude its own root
+            # on a later failure; no sibling or writer authority is inferred.
+            if anchor is None:
+                anchor = current_anchor
+            if target.finalization_state != "unfinalized":
+                # Never replay the discovery-time pre-final projection. Leave
+                # the authentic final owner to its own reconciliation, without
+                # another refusal or postcommit tail in this pass.
+                if anchor is None:
+                    return None
                 fenced_roots.add(discovered.root_task_id)
+                failed_roots.add(discovered.root_task_id)
                 continue
             if target.stage == "admitted" and orchestrator is not None:
                 try:
@@ -2472,13 +2507,17 @@ def refuse_authority_policy_v2_pre_final_on_startup(
                         report.status == "blocked"
                         or orchestrator._parse_next_step(report).action != "escalate"
                     )
+                except _V2StartupConnectionUnsafe:
+                    raise
                 except Exception:
                     # Missing/unreadable causal evidence fails closed through
                     # the existing refusal path below.
+                    reads.check()
                     non_escalate = False
                 if non_escalate:
                     # D2-B': the admission is inert residue.  Do not touch J,
                     # Q, audits, or the task, and do not fence later branches.
+                    reads.check()
                     continue
             # orchestrator=None cannot reproduce shipping parsing semantics and
             # therefore fails closed to the existing refusal path (M4).
@@ -2489,14 +2528,19 @@ def refuse_authority_policy_v2_pre_final_on_startup(
                     target.stage, "interrupted_pre_final",
                 )
             )
-            outcome = store.finalize_v2_attempt_refusal(
+            outcome = reads.refuse(
                 root_task_id=target.root_task_id,
                 manager_agent=target.manager_agent,
                 manager_session_id=target.manager_session_id,
                 result_id=target.result_id,
                 refusal_code=refusal_code,
             )
+            if outcome.status == "housekeeping_pending":
+                # A bounded writer disposition is not an exception/audit kind,
+                # but it still excludes every later same-root operation.
+                failed_roots.add(discovered.root_task_id)
             if outcome.status == "refused" and orchestrator is not None:
+                tail_started = True
                 if outcome.task_disposition == "failed":
                     from runtime.orchestrator.run_step import (
                         _enqueue_parent_if_waiting,
@@ -2549,6 +2593,7 @@ def refuse_authority_policy_v2_pre_final_on_startup(
                                 status=TaskStatus.FAILED,
                                 auto_revisit_spawned=False,
                             )
+                    reads.check()
                     continue
                 result = db.get_latest_task_result(
                     target.root_task_id,
@@ -2577,13 +2622,27 @@ def refuse_authority_policy_v2_pre_final_on_startup(
                     target.root_task_id,
                     reason="authority_v2_refusal",
                 )
-        except Exception:
-            # The prior J/R/stage residue remains the retry obligation.  The
-            # root stays fenced from every later startup effect in this pass.
-            logger.exception(
-                "authority v2 startup refusal housekeeping failed for %s",
-                discovered.attempt_id,
-            )
+            reads.check()
+        except _V2StartupConnectionUnsafe:
+            if anchor is not None:
+                fenced_roots.add(discovered.root_task_id)
+                failed_roots.add(discovered.root_task_id)
+            raise
+        except BaseException as exc:
+            if anchor is not None:
+                fenced_roots.add(discovered.root_task_id)
+                failed_roots.add(discovered.root_task_id)
+            if tail_started:
+                # A tail can contain self-committing writers. Its escaping
+                # failure supplies no affirmative cleanup/COMMIT disposition.
+                reads._abort("postcommit_tail", exc)
+            reads.check()
+            if not isinstance(exc, Exception):
+                raise
+            _v2_startup_failure_log("exact_or_refusal_unavailable")
+            reads.check()
+            if anchor is None:
+                return None
     return fenced_roots
 
 

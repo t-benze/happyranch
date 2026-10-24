@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import json
 import uuid
+from contextlib import contextmanager
+from dataclasses import dataclass, field
+from typing import Any, Iterator
 
 from runtime.infrastructure.db._shared import (
     _late_database_now as _now,
@@ -77,7 +80,279 @@ _AUTHORITY_POLICY_V2_STAGE_REFUSAL_TO_HOUSEKEEPING = {
 }
 
 
+class _V2StartupConnectionUnsafe(RuntimeError):
+    """Private startup abort; causes are retained, never formatted into logs."""
+
+    def __init__(self, reason: str, *causes: BaseException) -> None:
+        super().__init__(reason)
+        self.causes = causes
+
+
+class _V2StartupEvidenceUnavailable(ValueError):
+    """Strict startup read failed before any general-reader conversion."""
+
+
+@dataclass(frozen=True)
+class _V2StartupAnchor:
+    # Only immutable scalar values leave the owned read. This is exclusion
+    # evidence, never an owner token or permission to invoke a terminal writer.
+    identity: tuple[str | int | None, ...]
+
+
+@dataclass
+class _V2StartupRefusalPhases:
+    begin_attempted: bool = False
+    began: bool = False
+    commit_attempted: bool = False
+    committed: bool = False
+    rolled_back: bool = False
+    cleanup_errors: list[BaseException] = field(default_factory=list)
+
+    def rollback(self, conn: Any) -> None:
+        try:
+            conn.rollback()
+        except BaseException as exc:
+            self.cleanup_errors.append(exc)
+            raise
+        self.rolled_back = True
+
+    def commit(self, conn: Any) -> None:
+        self.commit_attempted = True
+        conn.commit()
+        self.committed = True
+
+
+class _V2StartupReads:
+    """Database-owned, invocation-local composition; no retained audit history.
+
+    General readers keep their historical conversions. Only this startup path
+    materializes strict full history before the validators can swallow failures.
+    """
+
+    def __init__(self, db: Any) -> None:
+        self.db = db
+        self.unsafe: _V2StartupConnectionUnsafe | None = None
+        with db._lock:
+            try:
+                self.conn = db._conn
+                self.caller_owned = self.conn.in_transaction
+                if type(self.caller_owned) is not bool:
+                    raise ValueError("unknown transaction ownership")
+            except BaseException as exc:
+                self._abort("connection_entry", exc)
+            self.check()
+
+    def _abort(self, reason: str, *causes: BaseException) -> None:
+        if self.unsafe is None:
+            self.unsafe = _V2StartupConnectionUnsafe(reason, *causes)
+        else:
+            self.unsafe.causes = (
+                *self.unsafe.causes, *(cause for cause in causes if cause is not self.unsafe),
+            )
+        raise self.unsafe
+
+    def check(self) -> None:
+        """Observe ownership/usability; never repair or settle a transaction."""
+        if self.unsafe is not None:
+            raise self.unsafe
+        with self.db._lock:
+            try:
+                if (
+                    self.db._conn is not self.conn
+                    or self.conn.in_transaction is not self.caller_owned
+                    or self.conn.execute("SELECT 1").fetchone()[0] != 1
+                ):
+                    raise ValueError("startup connection ownership changed")
+            except BaseException as exc:
+                self._abort("connection_exit", exc)
+
+    def require_sweep_entry(self) -> None:
+        self.check()
+        if self.caller_owned:
+            self._abort("caller_transaction")
+
+    @contextmanager
+    def read(self) -> Iterator[None]:
+        with self.db._lock:
+            self.check()
+            body_error = None
+            try:
+                with self.db.coherent_read_view() as conn:
+                    try:
+                        if conn is not self.conn:
+                            self._abort("read_connection_changed")
+                        yield
+                    except BaseException as exc:
+                        # Exit the existing view normally so its cleanup error
+                        # cannot replace the retained body error unnoticed.
+                        body_error = exc
+                        if isinstance(exc, _V2StartupConnectionUnsafe):
+                            self.unsafe = exc
+            except BaseException as cleanup_error:
+                causes = (() if body_error is None else (body_error,))
+                self._abort("read_cleanup", *causes, cleanup_error)
+            try:
+                self.check()
+            except _V2StartupConnectionUnsafe as exc:
+                if body_error is not None and body_error is not exc:
+                    exc.causes = (body_error, *exc.causes)
+                raise
+            if body_error is not None:
+                if isinstance(body_error, Exception):
+                    raise _V2StartupEvidenceUnavailable("startup_evidence_unavailable") from body_error
+                raise body_error.with_traceback(body_error.__traceback__)
+
+    def _project(
+        self, row: Any,
+    ) -> tuple[AuthorityPolicyV2HousekeepingTarget, _V2StartupAnchor | None]:
+        # No action/stage prefilter, prefix, or cross-read reuse. JSON parsing
+        # of every truthy payload must finish before any absence conversion.
+        history = self.db.get_audit_logs(row["root_task_id"])
+        target = self.db._v2_housekeeping_target_from_row(
+            row, obligation_code=self.db._authenticate_v2_obligation_uncommitted(
+                dict(row), _history=history,
+            ),
+        )
+        anchor = self.db._v2_startup_anchor_uncommitted(row, history)
+        return target, anchor
+
+    def discover(
+        self,
+    ) -> list[tuple[AuthorityPolicyV2HousekeepingTarget, _V2StartupAnchor | None]]:
+        with self.read():
+            rows = self.conn.execute(
+                """SELECT * FROM authority_policy_v2_attempts
+                   WHERE finalization_state='unfinalized'
+                   ORDER BY created_at, attempt_id""",
+            ).fetchall()
+            targets = [self._project(row) for row in rows]
+        return targets
+
+    def exact(
+        self, target: AuthorityPolicyV2HousekeepingTarget,
+    ) -> tuple[AuthorityPolicyV2HousekeepingTarget | None, _V2StartupAnchor | None]:
+        with self.read():
+            row = self.conn.execute(
+                """SELECT * FROM authority_policy_v2_attempts
+                   WHERE root_task_id=? AND manager_agent=?
+                     AND manager_session_id=? AND result_id=?""",
+                (target.root_task_id, target.manager_agent,
+                 target.manager_session_id, target.result_id),
+            ).fetchone()
+            result = (None, None) if row is None else self._project(row)
+        return result
+
+    def refuse(self, **identity: Any) -> AuthorityPolicyV2HousekeepingOutcome:
+        with self.db._lock:
+            self.check()
+            phases = _V2StartupRefusalPhases()
+            error = None
+            try:
+                outcome = self.db.finalize_authority_policy_v2_attempt_refusal(
+                    **identity, _startup_phases=phases,
+                )
+            except BaseException as exc:
+                error = exc
+            # These are facts from the actual writer, including EVERY early
+            # rollback. A later successful cleanup never erases an earlier one.
+            if (
+                phases.cleanup_errors
+                or (phases.commit_attempted and not phases.committed)
+                or (phases.begin_attempted and not (phases.committed or phases.rolled_back))
+            ):
+                causes = (() if error is None else (error,))
+                self._abort("refusal_transaction", *causes, *phases.cleanup_errors)
+            try:
+                self.check()
+            except _V2StartupConnectionUnsafe as exc:
+                if error is not None:
+                    exc.causes = (error, *exc.causes)
+                raise
+            if error is not None:
+                raise error.with_traceback(error.__traceback__)
+            return outcome
+
+
 class AuthorityV2AttemptsMixin:
+
+    def _authority_policy_v2_startup_reads(self) -> _V2StartupReads:
+        return _V2StartupReads(self)
+
+    def _v2_startup_anchor_uncommitted(
+        self, row: Any, history: list[dict],
+    ) -> _V2StartupAnchor | None:
+        """Authenticate one complete immutable tuple, for exclusion ONLY.
+
+        Absent admission/binding evidence yields no anchor, not a new normal
+        eligibility restriction. The terminal writer still authenticates itself.
+        """
+        attempt = self._authority_policy_v2_attempt_from_row(row)
+        if not self._authenticate_v2_result_stage_audit_uncommitted(
+            dict(row), AUTHORITY_POLICY_V2_ATTEMPT_STAGE_ADMITTED,
+            require_finalization=True, _history=history,
+        ):
+            return None
+        result = self._conn.execute(
+            "SELECT * FROM task_results WHERE id=?", (attempt.result_id,),
+        ).fetchone()
+        if result is None or (
+            result["task_id"], result["agent"], result["session_id"]
+        ) != (attempt.root_task_id, attempt.manager_agent, attempt.manager_session_id):
+            return None
+        try:
+            binding = self.get_authority_policy_v2_session_binding(
+                root_task_id=attempt.root_task_id, manager_agent=attempt.manager_agent,
+                manager_session_id=attempt.manager_session_id,
+            )
+            if binding is None:
+                return None
+            self._authenticate_v2_session_binding_uncommitted(binding)
+        except ValueError:
+            return None
+        joined = (
+            "binding_id", "team", "root_task_id", "manager_agent", "manager_session_id",
+            "contract_id", "contract_version", "contract_digest", "release_id",
+            "activation_id", "activation_epoch", "selector_id",
+        )
+        if any(getattr(binding, key) != getattr(attempt, key) for key in joined):
+            return None
+        candidate_row = self._conn.execute(
+            "SELECT * FROM authority_policy_v2_candidates WHERE result_id=?",
+            (attempt.result_id,),
+        ).fetchone()
+        candidate_identity = (None,)
+        if candidate_row is not None:
+            try:
+                candidate = self._authority_policy_v2_candidate_from_row(candidate_row)
+            except ValueError:
+                return None
+            if any(getattr(candidate, key) != getattr(attempt, key) for key in (
+                "attempt_id", "result_id", "binding_id", "team", "root_task_id",
+                "manager_agent", "manager_session_id", "contract_id", "contract_version",
+                "contract_digest", "release_id",
+                "activation_id", "activation_epoch", "selector_id", "origin_boot_id",
+                "owner_attempt_id",
+            )) or any(getattr(candidate, key) != getattr(binding, key) for key in (
+                "policy_digest", "policy_version", "provider_id", "executor_kind", "model_id",
+            )):
+                return None
+            # Retain identity/linkage only. Claim-time schema observations stay
+            # observed-only and candidate lifecycle is mutable stage evidence.
+            candidate_identity = tuple(getattr(candidate, key) for key in (
+                "candidate_id", "claim_key", "attempt_id", "result_id", "binding_id",
+                "team", "root_task_id", "manager_agent", "manager_session_id",
+                "contract_id", "contract_version", "contract_digest", "release_id",
+                "activation_id", "activation_epoch", "selector_id", "origin_boot_id",
+                "owner_attempt_id", "policy_digest", "policy_version", "provider_id",
+                "executor_kind", "model_id", "causal_result_id", "causal_result_digest",
+            ))
+        identity = tuple(
+            value for key, value in attempt.model_dump(mode="json").items()
+            if key not in ("stage", "finalization_state", "refusal_code")
+        ) + tuple(binding.model_dump(mode="json").values()) + candidate_identity
+        if any(type(value) not in (str, int, type(None)) for value in identity):
+            return None
+        return _V2StartupAnchor(identity)
 
     def _authenticate_v2_attempt_admission_uncommitted(
         self, *, task_id: str, agent: str, session_id: str, admission: dict,
@@ -138,6 +413,7 @@ class AuthorityV2AttemptsMixin:
     def _authenticate_v2_result_stage_audit_uncommitted(
         self, attempt_row: dict, stage: str, *, candidate_id: str | None = None,
         require_finalization: bool = False,
+        _history: list[dict] | None = None,
     ) -> bool:
         """Require exactly one authentic CLOSED result-stage event for ``stage``.
 
@@ -159,7 +435,9 @@ class AuthorityV2AttemptsMixin:
         attempt_id = attempt_row["attempt_id"]
         try:
             candidates = [
-                row for row in self.get_audit_logs(root_task_id)
+                row for row in (
+                    self.get_audit_logs(root_task_id) if _history is None else _history
+                )
                 if row.get("action") == AUTHORITY_POLICY_V2_RESULT_STAGE_ACTION
                 and row.get("agent") == manager_agent
                 and isinstance(row.get("payload"), dict)
@@ -2654,11 +2932,16 @@ class AuthorityV2AttemptsMixin:
             return "failed"
         return None
 
-    def _authenticate_v2_obligation_uncommitted(self, attempt_row: dict) -> str | None:
+    def _authenticate_v2_obligation_uncommitted(
+        self, attempt_row: dict, *, _history: list[dict] | None = None,
+    ) -> str | None:
         """Return the closed code of exactly one authentic failed-stage obligation."""
         try:
             rows = [
-                row for row in self.get_audit_logs(attempt_row["root_task_id"])
+                row for row in (
+                    self.get_audit_logs(attempt_row["root_task_id"])
+                    if _history is None else _history
+                )
                 if row.get("action") == AUTHORITY_POLICY_V2_HOUSEKEEPING_OBLIGATION_ACTION
                 and row.get("agent") == attempt_row["manager_agent"]
                 and isinstance(row.get("payload"), dict)
@@ -2742,6 +3025,7 @@ class AuthorityV2AttemptsMixin:
         self, *, root_task_id: str, manager_agent: str, manager_session_id: str,
         result_id: int, refusal_code: str, owner_attempt_id: str | None = None,
         recovery_session_id: str | None = None,
+        _startup_phases: _V2StartupRefusalPhases | None = None,
     ) -> AuthorityPolicyV2HousekeepingOutcome:
         """ONE terminal refusal-housekeeping transaction over exact J/R/task/Q.
 
@@ -2754,6 +3038,21 @@ class AuthorityV2AttemptsMixin:
         already-finalized J returns a read-only exact replay only when its exact
         refusal/completion evidence authenticates, and is never repaired.
         """
+        # Ordinary callers use exactly their existing connection operations.
+        # Private startup observes these REAL boundaries, including cleanup that
+        # fails before the existing exception handler attempts cleanup again.
+        def _rollback() -> None:
+            if _startup_phases is None:
+                self._conn.rollback()
+            else:
+                _startup_phases.rollback(self._conn)
+
+        def _commit() -> None:
+            if _startup_phases is None:
+                self._conn.commit()
+            else:
+                _startup_phases.commit(self._conn)
+
         attempt_id = self._authority_policy_v2_attempt_id_for_identity(
             root_task_id=root_task_id, manager_agent=manager_agent,
             manager_session_id=manager_session_id, result_id=result_id,
@@ -2774,7 +3073,11 @@ class AuthorityV2AttemptsMixin:
             return _pending("transaction_owned")
         attempt: AuthorityPolicyV2Attempt | None = None
         try:
+            if _startup_phases is not None:
+                _startup_phases.begin_attempted = True
             self._conn.execute("BEGIN IMMEDIATE")
+            if _startup_phases is not None:
+                _startup_phases.began = True
             row = self._conn.execute(
                 """SELECT * FROM authority_policy_v2_attempts
                    WHERE root_task_id=? AND manager_agent=?
@@ -2782,16 +3085,16 @@ class AuthorityV2AttemptsMixin:
                 (root_task_id, manager_agent, manager_session_id, result_id),
             ).fetchone()
             if row is None:
-                self._conn.rollback()
+                _rollback()
                 return _pending("identity_mismatch")
             try:
                 attempt = self._authority_policy_v2_attempt_from_row(row)
             except ValueError:
-                self._conn.rollback()
+                _rollback()
                 return _pending("identity_mismatch")
             attempt_row = dict(row)
             if attempt_id != attempt.attempt_id:
-                self._conn.rollback()
+                _rollback()
                 return _pending("identity_mismatch")
 
             # Optional candidate (K) identity, if one was created.
@@ -2806,7 +3109,7 @@ class AuthorityV2AttemptsMixin:
                 try:
                     candidate = self._authority_policy_v2_candidate_from_row(candidate_row)
                 except ValueError:
-                    self._conn.rollback()
+                    _rollback()
                     return _pending("identity_mismatch")
                 if (
                     candidate.attempt_id != attempt.attempt_id
@@ -2814,7 +3117,7 @@ class AuthorityV2AttemptsMixin:
                     or candidate.manager_agent != manager_agent
                     or candidate.manager_session_id != manager_session_id
                 ):
-                    self._conn.rollback()
+                    _rollback()
                     return _pending("identity_mismatch")
             candidate_id = None if candidate is None else candidate.candidate_id
 
@@ -2835,7 +3138,7 @@ class AuthorityV2AttemptsMixin:
                 or result_row["agent"] != manager_agent
                 or result_row["session_id"] != manager_session_id
             ):
-                self._conn.rollback()
+                _rollback()
                 return _pending("identity_mismatch")
             binding = self.get_authority_policy_v2_session_binding(
                 root_task_id=root_task_id, manager_agent=manager_agent,
@@ -2848,12 +3151,12 @@ class AuthorityV2AttemptsMixin:
                 or binding.manager_agent != manager_agent
                 or binding.manager_session_id != manager_session_id
             ):
-                self._conn.rollback()
+                _rollback()
                 return _pending("identity_mismatch")
             try:
                 self._authenticate_v2_session_binding_uncommitted(binding)
             except Exception:
-                self._conn.rollback()
+                _rollback()
                 return _pending("identity_mismatch")
 
             # Optional exact Q: match only this attempt's exact recovery-session
@@ -2869,7 +3172,7 @@ class AuthorityV2AttemptsMixin:
                 if receipt["recovery_session_id"] == manager_session_id
             ]
             if len(matching_receipts) > 1:
-                self._conn.rollback()
+                _rollback()
                 return _pending("identity_mismatch")
             exact_receipt = matching_receipts[0] if matching_receipts else None
             if any(
@@ -2879,7 +3182,7 @@ class AuthorityV2AttemptsMixin:
             ):
                 # A different still-live recovery obligation is not ordinary
                 # absence and must never be settled as this attempt's receipt.
-                self._conn.rollback()
+                _rollback()
                 return _pending("identity_mismatch")
             if exact_receipt is not None:
                 if (
@@ -2888,7 +3191,7 @@ class AuthorityV2AttemptsMixin:
                     or exact_receipt["state"]
                     not in ("callback_accepted", "callback_consumed")
                 ):
-                    self._conn.rollback()
+                    _rollback()
                     return _pending("identity_mismatch")
             # Receipt identity comes from a REAL Q.  An explicit recovery
             # assertion with no actual matching receipt fails closed with no
@@ -2896,7 +3199,7 @@ class AuthorityV2AttemptsMixin:
             # a genuine ordinary absence (no recovery asserted, no Q) stays
             # ordinary.
             if recovery_session_id is not None and exact_receipt is None:
-                self._conn.rollback()
+                _rollback()
                 return _pending("receipt_missing")
             effective_recovery_session_id = (
                 manager_session_id if exact_receipt is not None else None
@@ -2955,7 +3258,7 @@ class AuthorityV2AttemptsMixin:
                     terminal_ok = self._authenticate_v2_candidate_audit_uncommitted(
                         candidate, AUTHORITY_POLICY_V2_CANDIDATE_AUDIT_EVENT_REFUSED,
                     )
-                self._conn.rollback()
+                _rollback()
                 self._clear_v2_refusal_failure_authority(attempt.attempt_id)
                 if terminal_ok:
                     return AuthorityPolicyV2HousekeepingOutcome(
@@ -2968,19 +3271,19 @@ class AuthorityV2AttemptsMixin:
                     )
                 return _pending("identity_mismatch")
             if attempt.finalization_state != "unfinalized":
-                self._conn.rollback()
+                _rollback()
                 return _pending("identity_mismatch")
             if exact_receipt is not None and exact_receipt["state"] == "callback_consumed":
                 # An already-consumed exact Q without a finalized J is
                 # inconsistent terminal evidence; never repair or re-settle it.
-                self._conn.rollback()
+                _rollback()
                 return _pending("identity_mismatch")
 
             task = self._conn.execute(
                 "SELECT * FROM tasks WHERE id=?", (root_task_id,)
             ).fetchone()
             if task is None:
-                self._conn.rollback()
+                _rollback()
                 return _pending("identity_mismatch")
 
             now = _now().isoformat()
@@ -3033,14 +3336,14 @@ class AuthorityV2AttemptsMixin:
                         manager_session_id=manager_session_id, result_id=result_id,
                         now=now,
                     ):
-                        self._conn.rollback()
+                        _rollback()
                         return _pending("identity_mismatch")
                     settled = True
                 self._update_v2_attempt_finalization_uncommitted(
                     attempt, AUTHORITY_POLICY_V2_ATTEMPT_FINALIZATION_OWNER_LOST,
                     final_code,
                 )
-                self._conn.commit()
+                _commit()
                 self._clear_v2_refusal_failure_authority(attempt.attempt_id)
                 if owner_attempt_id is not None:
                     self._forget_v2_live_owner(attempt.attempt_id, owner_attempt_id)
@@ -3076,7 +3379,7 @@ class AuthorityV2AttemptsMixin:
             )
             if not (live_owner or old_boot or refusal_failed):
                 if self._authenticate_v2_obligation_uncommitted(attempt_row) is None:
-                    self._conn.rollback()
+                    _rollback()
                     return _pending("owner_lost")
 
             # Still-current causal owner: roots retain the existing escalation
@@ -3147,7 +3450,7 @@ class AuthorityV2AttemptsMixin:
                     ),
                 )
             if cursor.rowcount != 1:
-                self._conn.rollback()
+                _rollback()
                 return _pending("owner_lost")
             if task_disposition == "failed":
                 env = self._conn.execute(
@@ -3163,7 +3466,7 @@ class AuthorityV2AttemptsMixin:
                         (now, now, env["id"]),
                     )
                     if consumed.rowcount != 1:
-                        self._conn.rollback()
+                        _rollback()
                         return _pending("owner_lost")
                     self.insert_audit_log_uncommitted(
                         root_task_id,
@@ -3200,14 +3503,14 @@ class AuthorityV2AttemptsMixin:
                     manager_session_id=manager_session_id, result_id=result_id,
                     now=now,
                 ):
-                    self._conn.rollback()
+                    _rollback()
                     return _pending("identity_mismatch")
                 settled = True
             self._update_v2_attempt_finalization_uncommitted(
                 attempt, AUTHORITY_POLICY_V2_ATTEMPT_FINALIZATION_REFUSED,
                 refusal_code,
             )
-            self._conn.commit()
+            _commit()
             self._clear_v2_refusal_failure_authority(attempt.attempt_id)
             if owner_attempt_id is not None:
                 self._forget_v2_live_owner(attempt.attempt_id, owner_attempt_id)
@@ -3220,7 +3523,7 @@ class AuthorityV2AttemptsMixin:
                 task_disposition=task_disposition,
             )
         except Exception:
-            self._conn.rollback()
+            _rollback()
             # Failure ownership is established BEFORE poisoning: only the exact
             # process-local winning token that this caller presented proves the
             # authentic uninterrupted owner.  A malformed/foreign/nested/

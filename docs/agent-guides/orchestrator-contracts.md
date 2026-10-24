@@ -3411,6 +3411,48 @@ final `continued` attempts are not pre-final work and stay with the existing
 settlement/publication reconciliation. This seam never evaluates policy,
 remints evidence, falls back to ordinary/v1 enqueue, or creates a successor.
 
+The THR308seq133/127 safety prerequisite uses a private Database-owned startup
+composition, with thin store forwarding. Each discovery/exact read freshly loads
+the full ordered history through the shipping strict decoder before general
+ValueError-to-None or swallowed-obligation conversions. General callers retain
+those contracts, including escaping TypeError/storage cases. Optional frozen
+scalar anchors authenticate canonical/admission/result/session/binding/reference/
+owner/boot identity and any candidate linkage; they grant exclusion only. An
+earlier sibling never authenticates another attempt. Missing admission proof
+alone neither relabels inert residue nor blocks the independent refusal writer.
+The actual completion reconstruction and `_parse_next_step`, including legacy
+fallback, still classify readable admitted blocked/non-escalate results as inert,
+with zero writes or fence. Finalized rechecks never replay a stale pre-final target.
+
+An anchored exact/read/refusal failure adds the root to both downstream fencing
+and failed-root quarantine before bounded server-category logging. Every later
+same-root exact/refusal/tail operation is skipped. A bounded pending disposition
+also excludes later same-root work without a new audit/exception category. A
+successful non-inert sibling need not quarantine later legitimate siblings;
+earlier authentic commits/tails are never retroactively rolled back. Only fresh
+committed `refused` owns the existing postcommit tails; replay/owner_lost/pending
+do not surface again. R1 OMIT adds no startup capture_failure/diagnostic writer;
+local sets/logs cannot establish durable fencing or replace existing residue.
+
+Private startup observation records the real refusal writer's BEGIN, COMMIT and
+every existing rollback outcome without changing ordinary-call authentication,
+SQL/audit ordering or cleanup. Clean pre-COMMIT failure permits unrelated roots
+only after successful owned rollback and same usable connection checks. Failed
+early cleanup stays unsafe even after later cleanup succeeds. Raised unresolved
+COMMIT, unknown/replaced/unusable connection or unexpected transaction is sticky
+unsafe. The private read composition separately retains body and view-exit
+failures, publishes no result on failed cleanup, and adds no cleanup attempt.
+Caller-owned reads join without transaction control; the refusal still returns
+transaction_owned. The full daemon sweep rejects caller-owned/unknown entry
+before Pause/workflow effects. Unsafe signaling escapes authority catches, skips
+the ENTIRE finally worktree batch and propagates through `_build_state` before
+publication/app/listener/serving. Only in-memory context reset and bounded logging
+are attempted; cleanup remains incomplete. Normal clean ordering/batching and
+BaseException propagation remain. No generic coherent_read_view/run_step change,
+cross-read memo, query-reduction claim or live operation follows. S1–S3/affected
+Q3/Q4 behavior and sensitivity remain NOT RUN/PROOF NOT RUN without the accepted
+producer/barrier/downstream observer; ROOT12801 owns that explicit limitation.
+
 For a persisted result, the zombie reaper first invokes the real guarded
 `_consume_completion_report`. A v2 session then clears `zombie_flagged_at` only
 through `Database.consume_v2_fingerprint_and_clear_zombie`: one
