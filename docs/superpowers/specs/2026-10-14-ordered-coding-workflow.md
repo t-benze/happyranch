@@ -2455,10 +2455,22 @@ status compares the actual daemon PID/daemon.port. Repeated pair/file validation
 through serving/import holds on absent, reused, unrelated or moving identity.
 Closed identities are saved separately from private process environment contents.
 Existing serving/runtime/org/health/audit and actual UI bytes plus
-human page observation must establish required facts. The current memory loaded
-identity covers selected functions, not all workflow compatibility owners; missing
-coverage holds import for the original serving observer. No fabricated attestation
-or new observation endpoint is introduced. HTTP200/SPA fallback/disk HEAD alone
+human page observation must establish required facts. Selected memory loaded
+identity includes exactly twelve current workflow objects: workflow_schema
+validate_workflow_schema/_read_workflow_schema/_read_installed/_validate_source_data/
+_validate_release_database, workflow_coding_schema validate_coding_data/
+_read_coding_data/_validate_coding_data, and the actual org import store
+CodingReleaseImportStore.get/import_release/_current/_receipt. Already-loaded
+sys.modules, OrgState validator-alias and bound __func__/class/org agreement are
+mandatory; no fallback import/reload/new store or selected-function invocation.
+Existing origin/co_filename/interpreter/source/runtime/org/boot checks, recursive
+nested-code projection, closed sorted distinct rows/hashes and unchanged file/code/
+acquisition budgets/bookends remain. Missing/substituted/decorated/malformed/
+duplicate/moving coverage refuses. Finite identity is neither startup invocation
+nor transitive workflow proof; unrelated epoch/profile errors remain held.
+Changed identity may require separate genuine memory qualification, without epoch
+reset or collection acceptance. Missing coverage holds import for its owner.
+No fabricated attestation or new observation endpoint is introduced. HTTP200/SPA fallback/disk HEAD alone
 never produce success. Observability/closure limits can prevent this host from
 completing setup even though source is published.
 
@@ -2485,3 +2497,60 @@ original WAL/SHM prohibits deletion/reset/checkpoint/journal-mode changes; it do
 not promise byte-immutable SHM readmarks. Main/WAL and logical retained data are
 separate observations. New uv/npm preparation caches use the private recovery
 destination rather than modifying unrelated existing caches.
+
+### Accepted existing-setup correction (ROOT12897)
+
+C01–C12 diagnostics are main-owned stdlib in-memory context BEFORE the unchanged
+host guard and passed into Coordinator, so partial constructor failures are
+attributable. Guard still precedes parser/bootstrap/helper/product/client/private
+credential/receipt/output-directory access. Parser errors exit2 without argv echo;
+help exits0 after guard. Paths/arguments/exec/environment/tools/helper/constructor,
+observations, post-effect failures and interruption all use one refusal instruction:
+`Send this output to engineering_manager`. Incident/stage, safe finite category/
+class/bounded function-line references, validated escaped owner/path references,
+last completed stage/layout and attempted/uncertain effects are retained. No
+arbitrary str(exc), argv/environment, source/locals, HTTP/lifecycle/file/credential/
+receipt bodies are printed. Before authorized receipts, detail is output-only with
+no saved-file claim; afterward one bounded exclusive private diagnostic is called
+saved only after write/readback/fsync. Failed persistence/reporting preserves the
+original cause/effects and attempts a once-only minimal fallback, without setup
+effects/recursion. All-sink failure, kill and pre-main failure cannot guarantee
+delivery. Positive pre-effect proof alone permits Nothing-was-changed; missing
+Coordinator, temporary constructor files and RO SQLite SHM do not suffice.
+
+D1 consumes the original five-field preparation reference LIST locally in
+live_scope, matching the original nested validator: list of exact dict keys
+ordinal/task_id/agent/session_id/expectation_known; exact positive int ordinal,
+TASK-[0-9]{3,}, nonblank string agent, null/nonblank string session, exact bool
+expectation_known. Validate the ENTIRE list before classification. Valid empty
+only permits the next original check. Valid nonempty holds exact original private
+references, preserving observation_pending/error/null-cutoff facts; expectation
+true never filters a row away. Missing/null/int0/other int/bool/object/wrong
+container/malformed rows, including valid-prefix/bad-tail, refuse with no coercion/
+filter/deduplication/truncation. Invalid rows supply no trusted owners. Closed
+identity validation precedes row projections; missing/malformed identity and every
+independent boot/cutoff/source/runtime/org/error check still refuse. No producer,
+schema, memory epoch, collection or settlement owner changes.
+
+Record attempted/in-progress before fallible effects, completed only after
+original acceptance. Distinguish receipt-only/partial custody; stop attempt/
+accepted/uncertain; incomplete/full backup; individual uv/npm/UI preparation; each
+migration attempted versus last accepted layout; start/pair/status/serving; and
+original import file/intent/CLI-send/receipt/GET. Failed commands remain failed
+despite later effect observation. Original keys/bytes/intents/results/receipts
+remain, without overwrite, replay/restart/restore/resume or a new operation key.
+Any failed observation or evidence persistence prevents the next effect.
+
+Reserved _pending is relocation custody retaining complete immediate membership/
+identity and an explicit owner hold, even empty; all four original inboxes remain.
+Reserved _archive holds without traversal. Historical started audits are launch
+facts, not paired unclosed markers, and no general ordinary-start-to-positive-
+outer-close reader exists. Original relocation/native/job owners and Engineering
+own supported read-only investigation/positive authenticated original disposition,
+with precise protected recovery decisions returned before mutation. Pending
+JOB1989/1698/1637, UNKNOWN12877/5388/5389/5390 and FAILED12568/12298 preparations
+retain all original holds. No label, PID absence, empty Pause, age or another
+settled store proves closure. Source delivery leaves setup NOT READY, Coding
+Disabled and real host/native/loaded/workflow/Founder/backup/restore/reopen/rollback
+acceptance NOT RUN/open. Unaffected C13 metadata/repositories/formats/four distinct
+eligible cross-team agents/final manager/Disabled save-reopen/original-save remains.
